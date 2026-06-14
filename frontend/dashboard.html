@@ -142,10 +142,12 @@ const CONFIG = {
 <div id="gate">
   <div class="gbox">
     <div class="brand">Leadvyne<span>.</span> Dashboard</div>
-    <p class="sub">Enter your Client ID to view and manage your bot.</p>
-    <label class="g-label">Client ID</label>
-    <input class="g-input" id="gClientId" type="number" placeholder="e.g. 42" autocomplete="off" />
-    <button class="g-btn" id="gConnect">Open Dashboard</button>
+    <p class="sub">Sign in to view and manage your bot.</p>
+    <label class="g-label">Username</label>
+    <input class="g-input" id="gUsername" type="text" placeholder="Your client name" autocomplete="username" style="text-align:left;letter-spacing:normal" />
+    <label class="g-label">Password</label>
+    <input class="g-input" id="gPassword" type="password" placeholder="••••••••" autocomplete="current-password" style="text-align:left;letter-spacing:normal" />
+    <button class="g-btn" id="gConnect">Sign In</button>
     <div class="g-err" id="gErr"></div>
   </div>
 </div>
@@ -350,23 +352,39 @@ const TODAY = new Date().toISOString().slice(0,10);
 
 // ---- gate ----
 $id('gConnect').addEventListener('click', connect);
-$id('gClientId').addEventListener('keydown', e => { if(e.key==='Enter') connect(); });
+[$id('gUsername'), $id('gPassword')].forEach(el => el.addEventListener('keydown', e => { if(e.key==='Enter') connect(); }));
 
 async function connect() {
-  const val = $id('gClientId').value.trim();
-  if (!val) { $id('gErr').textContent = 'Enter your Client ID.'; return; }
+  const username = $id('gUsername').value.trim();
+  const password = $id('gPassword').value;
+  if (!username) { $id('gErr').textContent = 'Enter your username.'; return; }
+  if (!password) { $id('gErr').textContent = 'Enter your password.'; return; }
   $id('gErr').textContent = '';
-  $id('gConnect').disabled = true; $id('gConnect').textContent = 'Loading…';
+  $id('gConnect').disabled = true; $id('gConnect').textContent = 'Signing in…';
   try {
-    const data = await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${val}`);
-    if (!data || !data.Id) throw new Error('Client not found');
-    clientId = val;
-    clientRecord = data;
-    sessionStorage.setItem('lv_client_id', val);
+    const data = await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records?where=(client_name,eq,${encodeURIComponent(username)})&limit=1`);
+    const record = data?.list?.[0];
+    if (!record || !record.Id) throw new Error('not found');
+    if (!record.dashboard_password || record.dashboard_password !== password) throw new Error('wrong password');
+    clientId = String(record.Id);
+    clientRecord = record;
+    sessionStorage.setItem('lv_client_id', clientId);
     showDashboard();
   } catch(e) {
-    $id('gErr').textContent = 'Client ID not found. Check the ID from your provisioning email.';
-    $id('gConnect').disabled = false; $id('gConnect').textContent = 'Open Dashboard';
+    $id('gErr').textContent = 'Incorrect username or password.';
+    $id('gConnect').disabled = false; $id('gConnect').textContent = 'Sign In';
+  }
+}
+
+async function resumeSession(id) {
+  try {
+    const data = await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${id}`);
+    if (!data || !data.Id) throw new Error('not found');
+    clientId = String(data.Id);
+    clientRecord = data;
+    showDashboard();
+  } catch(e) {
+    sessionStorage.removeItem('lv_client_id');
   }
 }
 
@@ -378,8 +396,9 @@ $id('discBtn').addEventListener('click', () => {
   $id('hdr').classList.remove('show');
   $id('tabBar').style.display = 'none';
   $id('mainWrap').style.display = 'none';
-  $id('gClientId').value = '';
-  $id('gConnect').disabled = false; $id('gConnect').textContent = 'Open Dashboard';
+  $id('gUsername').value = '';
+  $id('gPassword').value = '';
+  $id('gConnect').disabled = false; $id('gConnect').textContent = 'Sign In';
 });
 
 // ---- tabs ----
@@ -763,14 +782,8 @@ $id('saveTestMode').addEventListener('click', async () => {
 
 // ---- boot ----
 (function(){
-  // Auto-login from ?client= query param (redirected from provisioning wizard)
-  const params = new URLSearchParams(window.location.search);
-  const fromWizard = params.get('client');
-  const saved = fromWizard || sessionStorage.getItem('lv_client_id');
-  if(saved){
-    $id('gClientId').value = saved;
-    connect();
-  }
+  const saved = sessionStorage.getItem('lv_client_id');
+  if (saved) resumeSession(saved);
 })();
 </script>
 </body>
