@@ -112,6 +112,18 @@ textarea.cfg:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px 
 .stage-label{font-size:12px;font-weight:600;display:block;margin-bottom:4px}
 .stage-ta{width:100%;background:#fff;border:1px solid var(--line-strong);border-radius:8px;padding:10px 12px;font-size:14px;font-family:var(--body);resize:vertical;min-height:72px;line-height:1.5}
 .stage-ta:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.lead-item{padding:11px 14px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
+.lead-item:hover{background:var(--accent-soft)}
+.lead-item.active{background:var(--accent-soft)}
+.lead-item .li-name{font-weight:600;font-size:13px}
+.lead-item .li-stage{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:2px}
+.bubble{max-width:75%;padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.45;word-break:break-word}
+.bubble.user{background:#E1F5EA;color:var(--ink);align-self:flex-start;border-bottom-left-radius:4px}
+.bubble.bot{background:var(--accent);color:#fff;align-self:flex-end;border-bottom-right-radius:4px}
+.bubble-time{font-size:10px;color:var(--muted);margin-top:2px}
+.bubble-wrap{display:flex;flex-direction:column}
+.bubble-wrap.bot{align-items:flex-end}
+.bubble-wrap.user{align-items:flex-start}
 </style>
 </head>
 <body>
@@ -150,6 +162,7 @@ const CONFIG = {
 <!-- TABS -->
 <div class="tab-bar" id="tabBar" style="display:none">
   <button class="tab active" data-tab="stats">📊 Stats</button>
+  <button class="tab" data-tab="leads">💬 Leads</button>
   <button class="tab" data-tab="settings">⚙️ Bot Settings</button>
 </div>
 
@@ -198,6 +211,52 @@ const CONFIG = {
     </div>
   </div>
 
+  <!-- LEADS PANEL -->
+  <div class="panel" id="panelLeads">
+    <!-- Broadcast bar -->
+    <div class="panel-inner" style="margin-bottom:14px">
+      <div style="font-family:var(--disp);font-size:15px;font-weight:600;margin-bottom:12px">📣 Broadcast Message</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:160px">
+          <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Filter by stage</label>
+          <select id="bcStage" style="width:100%;padding:9px 12px;border:1px solid var(--line-strong);border-radius:8px;font-size:14px;background:#FBFCFC">
+            <option value="">All active leads</option>
+          </select>
+        </div>
+        <div style="flex:2;min-width:200px">
+          <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Message</label>
+          <input id="bcMsg" type="text" placeholder="Type broadcast message…" style="width:100%;padding:9px 12px;border:1px solid var(--line-strong);border-radius:8px;font-size:14px;background:#FBFCFC" />
+        </div>
+        <button id="bcSend" style="padding:9px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-family:var(--disp);font-weight:600;font-size:14px;cursor:pointer;white-space:nowrap">Send Broadcast</button>
+      </div>
+      <div id="bcMsg2" style="font-size:12px;margin-top:8px;min-height:16px"></div>
+    </div>
+
+    <!-- Lead list + conversation -->
+    <div style="display:grid;grid-template-columns:300px 1fr;gap:16px;min-height:500px">
+      <!-- Lead list -->
+      <div class="panel-inner" style="padding:0;overflow:hidden">
+        <div style="padding:12px 14px;border-bottom:1px solid var(--line);font-family:var(--disp);font-size:13px;font-weight:600">Leads</div>
+        <div id="leadsList" style="overflow-y:auto;max-height:520px"></div>
+      </div>
+      <!-- Conversation view -->
+      <div class="panel-inner" style="padding:0;display:flex;flex-direction:column">
+        <div style="padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div style="font-family:var(--disp);font-size:13px;font-weight:600" id="convName">Select a lead</div>
+          <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+            <select id="stageOverride" style="padding:6px 10px;border:1px solid var(--line-strong);border-radius:7px;font-size:13px;background:#FBFCFC;display:none">
+              <option value="">Move to stage…</option>
+            </select>
+            <button id="stageOverrideBtn" style="display:none;padding:6px 12px;background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent);border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">Apply</button>
+          </div>
+        </div>
+        <div id="convThread" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;min-height:400px">
+          <div style="text-align:center;color:var(--muted);font-size:13px;margin-top:60px">Select a lead to view conversation</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- SETTINGS PANEL -->
   <div class="panel" id="panelSettings">
     <div class="panel-inner" style="margin-top:20px">
@@ -237,6 +296,28 @@ const CONFIG = {
         </div>
       </div>
 
+      <hr style="border:none;border-top:1px solid var(--line);margin:24px 0">
+
+      <!-- Test Mode -->
+      <div class="settings-section">
+        <div class="s-head">🧪 Test Mode</div>
+        <div class="s-note">When enabled, bot only responds to your number. Real leads are not affected.</div>
+        <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+          <div style="flex:1;min-width:160px">
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Your WhatsApp number</label>
+            <input type="text" id="cfgTestPhone" placeholder="971501234567" style="width:100%;padding:10px 12px;border:1px solid var(--line-strong);border-radius:8px;font-size:14px;background:#FBFCFC;font-family:var(--mono)" />
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Test mode</label>
+            <select id="cfgTestMode" style="padding:10px 12px;border:1px solid var(--line-strong);border-radius:8px;font-size:14px;background:#FBFCFC">
+              <option value="No">Off — respond to everyone</option>
+              <option value="Yes">On — my number only</option>
+            </select>
+          </div>
+          <button class="save-btn" id="saveTestMode">Save</button>
+          <span class="save-msg" id="saveTestModeMsg"></span>
+        </div>
+      </div>
       <hr style="border:none;border-top:1px solid var(--line);margin:24px 0">
 
       <!-- Stage Definer -->
@@ -308,6 +389,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     $id('panel' + cap(tab.dataset.tab)).classList.add('active');
     if (tab.dataset.tab === 'settings') populateSettings();
+    if (tab.dataset.tab === 'leads') loadLeads();
   });
 });
 
@@ -406,6 +488,116 @@ function renderNoLeads() {
   $id('leadsBody').innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">No leads table configured</td></tr>';
 }
 
+// ---- leads panel ----
+let allLeads = [];
+let selectedLeadId = null;
+
+async function loadLeads() {
+  if (!clientRecord) return;
+  const base = clientRecord.nocodb_base;
+  const token = clientRecord.nocodb_token;
+  const table = clientRecord.leads_table_id;
+  if (!base || !token || !table) return;
+  try {
+    const data = await ncGet(`${base}/api/v2/tables/${table}/records?limit=200&sort=-Date`, token);
+    allLeads = data.list || [];
+    renderLeadsList(allLeads);
+    populateBroadcastStages(allLeads);
+  } catch(e) { console.error('loadLeads', e); }
+}
+
+function renderLeadsList(leads) {
+  const el = $id('leadsList');
+  if (!leads.length) { el.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">No leads yet</div>'; return; }
+  el.innerHTML = leads.map(l => `
+    <div class="lead-item${l.Id === selectedLeadId ? ' active':''}" onclick="selectLead(${l.Id})">
+      <div class="li-name">${l.Name || l.Phone || 'Unknown'}</div>
+      <div class="li-stage">${l.Stage || 'new'} · ${l.Phone || ''}</div>
+    </div>`).join('');
+}
+
+function populateBroadcastStages(leads) {
+  const stages = [...new Set(leads.map(l => l.Stage).filter(Boolean))];
+  const sel = $id('bcStage');
+  sel.innerHTML = '<option value="">All active leads</option>' + stages.map(s => `<option value="${s}">${s}</option>`).join('');
+}
+
+function selectLead(id) {
+  selectedLeadId = id;
+  const lead = allLeads.find(l => l.Id === id);
+  if (!lead) return;
+  renderLeadsList(allLeads);
+  $id('convName').textContent = (lead.Name || lead.Phone || 'Lead') + ' · ' + (lead.Stage || 'new');
+
+  // Stage override dropdown
+  const flow = (() => { try { return JSON.parse(clientRecord.flow_json || '{}'); } catch(e) { return {}; } })();
+  const stages = Object.keys(flow.stages || {}).filter(s => s !== 'new');
+  const sel = $id('stageOverride');
+  sel.style.display = stages.length ? '' : 'none';
+  $id('stageOverrideBtn').style.display = stages.length ? '' : 'none';
+  sel.innerHTML = '<option value="">Move to stage…</option>' + stages.map(s => `<option value="${s}"${lead.Stage===s?' selected':''}>${s}</option>`).join('');
+
+  // Render conversation
+  let history = [];
+  try { history = JSON.parse(lead.ConvHistory || '[]'); } catch(e) {}
+  const thread = $id('convThread');
+  if (!history.length) {
+    thread.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:13px;margin-top:40px">No conversation history yet</div>';
+    return;
+  }
+  thread.innerHTML = history.map(m => `
+    <div class="bubble-wrap ${m.role === 'user' ? 'user' : 'bot'}">
+      <div class="bubble ${m.role === 'user' ? 'user' : 'bot'}">${m.content?.replace(/\n/g,'<br>') || ''}</div>
+    </div>`).join('');
+  thread.scrollTop = thread.scrollHeight;
+}
+
+// Stage override
+$id('stageOverrideBtn').addEventListener('click', async () => {
+  const stage = $id('stageOverride').value;
+  if (!stage || !selectedLeadId) return;
+  const lead = allLeads.find(l => l.Id === selectedLeadId);
+  if (!lead) return;
+  try {
+    await fetch(`${clientRecord.nocodb_base}/api/v2/tables/${clientRecord.leads_table_id}/records`, {
+      method: 'PATCH',
+      headers: { 'xc-token': clientRecord.nocodb_token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Id: selectedLeadId, Stage: stage })
+    });
+    lead.Stage = stage;
+    $id('convName').textContent = (lead.Name || lead.Phone || 'Lead') + ' · ' + stage;
+    renderLeadsList(allLeads);
+  } catch(e) { alert('Failed: ' + e.message); }
+});
+
+// Broadcast
+$id('bcSend').addEventListener('click', async () => {
+  const msg = $id('bcMsg').value.trim();
+  if (!msg) { $id('bcMsg2').textContent = 'Enter a message first.'; return; }
+  const stageFilter = $id('bcStage').value;
+  const targets = allLeads.filter(l =>
+    l.Stage !== 'human_handover' &&
+    (!stageFilter || l.Stage === stageFilter) &&
+    l.ConversationID
+  );
+  if (!targets.length) { $id('bcMsg2').textContent = 'No matching leads with conversations.'; return; }
+  $id('bcSend').disabled = true; $id('bcSend').textContent = 'Sending…';
+  let ok = 0, fail = 0;
+  for (const lead of targets) {
+    try {
+      await fetch(`${clientRecord.chatwoot_base}/api/v1/accounts/${clientRecord.chatwoot_account_id}/conversations/${lead.ConversationID}/messages`, {
+        method: 'POST',
+        headers: { 'api_access_token': clientRecord.chatwoot_token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: msg, message_type: 'outgoing', private: false })
+      });
+      ok++;
+    } catch(e) { fail++; }
+  }
+  $id('bcMsg2').textContent = `✓ Sent to ${ok} leads${fail ? ', ' + fail + ' failed' : ''}.`;
+  $id('bcSend').disabled = false; $id('bcSend').textContent = 'Send Broadcast';
+  $id('bcMsg').value = '';
+});
+
 // ---- settings ----
 function populateSettings() {
   if (!clientRecord) return;
@@ -413,6 +605,8 @@ function populateSettings() {
   $id('cfgFuCount').value = clientRecord.followup_count || '3';
   $id('cfgFuHours').value = clientRecord.followup_hours || '24, 72, 168';
   $id('cfgFuMsgs').value = clientRecord.followup_messages || '';
+  $id('cfgTestPhone').value = clientRecord.test_phone || '';
+  $id('cfgTestMode').value = clientRecord.test_mode || 'No';
   // Load stages from flow_json
   let stages = [];
   try {
@@ -561,6 +755,16 @@ function stageBadge(s){
   return `<span class="badge ${cl}">${esc(s||'—')}</span>`;
 }
 function fmtDate(d){ if(!d) return '—'; try{ return new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}); }catch{return String(d).slice(0,10);} }
+
+$id('saveTestMode').addEventListener('click', async () => {
+  const btn=$id('saveTestMode'); const msg=$id('saveTestModeMsg');
+  btn.disabled=true; btn.textContent='Saving…'; msg.textContent=''; msg.className='save-msg';
+  try {
+    await patchClient({ test_mode: $id('cfgTestMode').value, test_phone: $id('cfgTestPhone').value.replace(/[^0-9]/g,'') });
+    msg.textContent='✓ Saved'; msg.className='save-msg';
+  } catch(e) { msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally { btn.disabled=false; btn.textContent='Save'; setTimeout(()=>msg.textContent='',3000); }
+});
 
 // ---- boot ----
 (function(){
