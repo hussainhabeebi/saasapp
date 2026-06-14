@@ -2,7 +2,7 @@
   "name": "Leadvyne · Engine v3 (shared sub-workflow)",
   "nodes": [
     {
-      "parameters": {},
+      "parameters": { "inputSource": "passthrough" },
       "id": "trigger", "name": "When called by wrapper", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1,
       "position": [ -1200, 400 ]
     },
