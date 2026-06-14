@@ -130,13 +130,6 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst sysPrompt = 'You are an intent classifier for a WhatsApp sales bot. Return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}. Valid intents: DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, WANTS_MORE_INFO, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL. AFFIRMATIVE = yes/ok/sure/done/good/great/sounds good/agree — positive reply to bot content. WATCHED = watched/seen/viewed a video/content. FORM_DONE = filled a form. BOOKING = specific time or date for appointment (put in data.booking_time). DELAY = not now/later/busy/vague delay. WANTS_MORE_INFO = tell me more/explain/details. QUESTION = real product question (put in data.question). WANTS_HUMAN = speak to human/agent. SHORT_NEUTRAL = only openers like hi/hello/hey with no other context. When in doubt between SHORT_NEUTRAL and AFFIRMATIVE, prefer AFFIRMATIVE.';\nconst userMsg = 'Stage: ' + c.stage + '\\nLanguage: ' + (c.language || 'en') + '\\nUser: \"' + c.userText + '\"';\nreturn [{ json: { ...c, _intentBody: { model: c.model, temperature: 0, messages: [ { role: 'system', content: sysPrompt }, { role: 'user', content: userMsg } ] } } }];"
-      },
-      "id": "intentprep", "name": "Code · Prep intent", "type": "n8n-nodes-base.code", "typeVersion": 2,
-      "position": [ 1220, 400 ]
-    },
-    {
-      "parameters": {
         "method": "POST", "url": "https://openrouter.ai/api/v1/chat/completions",
         "sendHeaders": true,
         "headerParameters": { "parameters": [
@@ -350,8 +343,7 @@
     "HTTP · Transcribe": { "main": [ [ { "node": "Code · voice→text", "type": "main", "index": 0 } ] ] },
     "Code · voice→text": { "main": [ [ { "node": "Code · Merge text", "type": "main", "index": 0 } ] ] },
     "Code · text→text": { "main": [ [ { "node": "Code · Merge text", "type": "main", "index": 0 } ] ] },
-    "Code · Merge text": { "main": [ [ { "node": "Code · Prep intent", "type": "main", "index": 0 } ] ] },
-    "Code · Prep intent": { "main": [ [ { "node": "HTTP · Intent", "type": "main", "index": 0 } ] ] },
+    "Code · Merge text": { "main": [ [ { "node": "HTTP · Intent", "type": "main", "index": 0 } ] ] },
     "HTTP · Intent": { "main": [ [ { "node": "Code · Intent + flow", "type": "main", "index": 0 } ] ] },
     "Code · Intent + flow": { "main": [ [ { "node": "Switch · Route", "type": "main", "index": 0 } ] ] },
     "Switch · Route": { "main": [
