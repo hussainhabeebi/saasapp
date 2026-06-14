@@ -97,12 +97,29 @@
     },
     {
       "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Set · Settings').first().json.n8n_base.replace(/\\/api\\/v1\\/workflows.*$/,'') }}/REPLACE_CONTROL_NOCODB_BASE/api/v2/tables/REPLACE_CLIENTS_TABLE/records",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "REPLACE_CONTROL_NOCODB_TOKEN" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ Id: $('Code · Build wrapper').first().json.clientId, n8n_workflow_id: ($json.id || $json.data?.id || ''), webhook_url: $('Code · Build wrapper').first().json.webhook_url }) }}",
+        "options": {}
+      },
+      "id": "storewfid", "name": "HTTP · Store workflow id", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 440, 220 ], "onError": "continueRegularOutput",
+      "credentials": {}
+    },
+    {
+      "parameters": {
         "respondWith": "json",
         "responseBody": "={ \"ok\": true, \"webhook_url\": \"{{ $('Code · Build wrapper').first().json.webhook_url }}\", \"client_id\": \"{{ $('Code · Build wrapper').first().json.clientId }}\" }",
         "options": {}
       },
       "id": "respok", "name": "Respond · OK", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1,
-      "position": [ 440, 220 ]
+      "position": [ 660, 220 ]
     },
     {
       "parameters": {
@@ -123,7 +140,8 @@
     "NocoDB · Create client": { "main": [ [ { "node": "Code · Build wrapper", "type": "main", "index": 0 } ] ] },
     "Code · Build wrapper": { "main": [ [ { "node": "HTTP · Create workflow", "type": "main", "index": 0 } ] ] },
     "HTTP · Create workflow": { "main": [ [ { "node": "HTTP · Activate workflow", "type": "main", "index": 0 } ] ] },
-    "HTTP · Activate workflow": { "main": [ [ { "node": "Respond · OK", "type": "main", "index": 0 } ] ] }
+    "HTTP · Activate workflow": { "main": [ [ { "node": "HTTP · Store workflow id", "type": "main", "index": 0 } ] ] },
+    "HTTP · Store workflow id": { "main": [ [ { "node": "Respond · OK", "type": "main", "index": 0 } ] ] }
   },
   "settings": { "executionOrder": "v1" }
 }

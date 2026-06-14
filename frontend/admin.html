@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leadvyne · Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#E9EEEC; --card:#FFFFFF; --ink:#0F1F1A; --muted:#5B6B65;
+  --accent:#0E7C5A; --accent-ink:#0A5C43; --accent-soft:#D8EEE4;
+  --line:#D7E0DC; --line-strong:#C2CEC9; --warn:#9A5B12; --warn-soft:#F6ECD9;
+  --r:10px; --mono:"JetBrains Mono",ui-monospace,monospace;
+  --disp:"Space Grotesk",system-ui,sans-serif; --body:"Inter",system-ui,sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:100vh}
+
+/* LOGIN OVERLAY */
+#login-overlay{
+  position:fixed;inset:0;z-index:1000;
+  background:rgba(10,20,16,0.82);
+  backdrop-filter:blur(6px);
+  display:flex;align-items:center;justify-content:center;
+  padding:1rem;
+}
+#login-overlay.hidden{display:none}
+.login-card{
+  background:var(--card);border-radius:16px;
+  padding:2.5rem 2rem;width:100%;max-width:480px;
+  box-shadow:0 24px 64px rgba(0,0,0,0.28);
+}
+.login-card h1{font-family:var(--disp);font-size:1.5rem;font-weight:700;color:var(--ink);margin-bottom:.25rem}
+.login-card p{color:var(--muted);font-size:.875rem;margin-bottom:1.75rem}
+.form-group{margin-bottom:1rem}
+.form-group label{display:block;font-size:.8125rem;font-weight:500;color:var(--ink);margin-bottom:.375rem}
+.form-group input{
+  width:100%;padding:.625rem .875rem;border:1.5px solid var(--line-strong);
+  border-radius:var(--r);font-family:var(--body);font-size:.875rem;
+  color:var(--ink);background:#fff;outline:none;
+  transition:border-color .15s;
+}
+.form-group input:focus{border-color:var(--accent)}
+.form-group input::placeholder{color:var(--muted)}
+.form-section-label{
+  font-size:.75rem;font-weight:600;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.06em;
+  margin:1.25rem 0 .75rem;border-top:1px solid var(--line);padding-top:1rem;
+}
+.btn-primary{
+  width:100%;padding:.75rem;background:var(--accent);color:#fff;
+  border:none;border-radius:var(--r);font-family:var(--body);font-size:.9375rem;
+  font-weight:600;cursor:pointer;margin-top:1.25rem;
+  transition:background .15s,transform .1s;
+}
+.btn-primary:hover{background:var(--accent-ink)}
+.btn-primary:active{transform:scale(.98)}
+#login-error{
+  color:#c0392b;font-size:.8125rem;margin-top:.75rem;
+  padding:.5rem .75rem;background:#fdf0f0;border-radius:6px;
+  display:none;
+}
+
+/* HEADER */
+#header{
+  background:var(--card);border-bottom:1.5px solid var(--line);
+  padding:.875rem 1.5rem;
+  display:flex;align-items:center;gap:1rem;position:sticky;top:0;z-index:100;
+}
+.brand{font-family:var(--disp);font-size:1.125rem;font-weight:700;color:var(--ink)}
+.brand span{color:var(--accent)}
+.client-count-badge{
+  background:var(--accent-soft);color:var(--accent-ink);
+  font-size:.75rem;font-weight:600;padding:.25rem .625rem;border-radius:999px;
+  font-family:var(--mono);
+}
+.header-search{
+  flex:1;max-width:320px;padding:.5rem .875rem;
+  border:1.5px solid var(--line-strong);border-radius:var(--r);
+  font-family:var(--body);font-size:.875rem;color:var(--ink);
+  background:var(--bg);outline:none;transition:border-color .15s;
+}
+.header-search:focus{border-color:var(--accent);background:#fff}
+.header-search::placeholder{color:var(--muted)}
+.connected-badge{
+  display:flex;align-items:center;gap:.375rem;
+  font-size:.8125rem;font-weight:500;color:var(--accent);
+  margin-left:auto;
+}
+.connected-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0}
+.btn-disconnect{
+  padding:.5rem 1rem;background:transparent;border:1.5px solid var(--line-strong);
+  border-radius:var(--r);font-family:var(--body);font-size:.8125rem;font-weight:500;
+  color:var(--muted);cursor:pointer;transition:all .15s;
+}
+.btn-disconnect:hover{border-color:#c0392b;color:#c0392b}
+
+/* MAIN CONTENT */
+#main{padding:1.5rem;display:none}
+#main.visible{display:block}
+
+/* SKELETON */
+.skeleton-grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1rem;
+}
+.skeleton-card{
+  background:var(--card);border-radius:var(--r);padding:1.25rem;
+  border:1.5px solid var(--line);
+}
+.skel{
+  background:linear-gradient(90deg,#e5ebe8 25%,#f0f4f2 50%,#e5ebe8 75%);
+  background-size:200% 100%;animation:shimmer 1.4s infinite;
+  border-radius:6px;
+}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.skel-title{height:22px;width:60%;margin-bottom:.875rem}
+.skel-badge{height:18px;width:80px;border-radius:999px}
+.skel-row{display:flex;gap:.5rem;margin-top:.75rem}
+.skel-chip{height:22px;width:70px;border-radius:999px}
+.skel-stats{height:14px;width:50%;margin-top:1rem}
+.skel-actions{display:flex;gap:.5rem;margin-top:1rem}
+.skel-btn{height:32px;flex:1}
+
+/* CLIENT GRID */
+.client-grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1rem;
+}
+
+/* CLIENT CARD */
+.client-card{
+  background:var(--card);border-radius:var(--r);padding:1.25rem;
+  border:1.5px solid var(--line);position:relative;
+  transition:box-shadow .18s,border-color .18s;
+}
+.client-card:hover{box-shadow:0 4px 20px rgba(14,124,90,.1);border-color:var(--line-strong)}
+.card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:.5rem;margin-bottom:.875rem}
+.client-name{font-family:var(--disp);font-size:1.0625rem;font-weight:600;color:var(--ink);line-height:1.25}
+.health-dot{
+  width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:4px;
+}
+.health-dot.green{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.2)}
+.health-dot.yellow{background:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.2)}
+.health-dot.red{background:#ef4444;box-shadow:0 0 0 3px rgba(239,68,68,.2)}
+.status-row{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.75rem}
+.badge{display:inline-flex;align-items:center;font-size:.75rem;font-weight:600;padding:.2rem .6rem;border-radius:999px}
+.badge-active{background:#dcfce7;color:#166534}
+.badge-suspended{background:#fee2e2;color:#991b1b}
+.chip{
+  display:inline-flex;align-items:center;font-size:.7rem;font-weight:500;
+  padding:.2rem .55rem;border-radius:999px;background:var(--accent-soft);color:var(--accent-ink);
+  font-family:var(--mono);
+}
+.card-stats{
+  display:flex;gap:1.25rem;padding:.625rem 0;
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  margin-bottom:.875rem;
+}
+.stat-item{display:flex;flex-direction:column;gap:.125rem}
+.stat-value{font-family:var(--mono);font-size:.9375rem;font-weight:500;color:var(--ink)}
+.stat-label{font-size:.7rem;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.last-seen{font-size:.7875rem;color:var(--muted);margin-bottom:.875rem}
+.last-seen span{font-weight:500;color:var(--ink)}
+.card-actions{display:flex;align-items:center;gap:.5rem}
+.btn-edit{
+  padding:.4375rem .875rem;background:var(--bg);border:1.5px solid var(--line-strong);
+  border-radius:8px;font-family:var(--body);font-size:.8125rem;font-weight:500;
+  color:var(--ink);cursor:pointer;transition:all .15s;
+}
+.btn-edit:hover{border-color:var(--accent);color:var(--accent)}
+.btn-toggle{
+  padding:.4375rem .875rem;border:1.5px solid;
+  border-radius:8px;font-family:var(--body);font-size:.8125rem;font-weight:500;
+  cursor:pointer;transition:all .15s;
+}
+.btn-toggle.suspend{background:var(--warn-soft);border-color:#e0a96d;color:var(--warn)}
+.btn-toggle.suspend:hover{background:#f6dec0}
+.btn-toggle.activate{background:#dcfce7;border-color:#86efac;color:#166534}
+.btn-toggle.activate:hover{background:#bbf7d0}
+.btn-view{
+  margin-left:auto;padding:.4375rem .875rem;background:var(--accent);color:#fff;
+  border:none;border-radius:8px;font-family:var(--body);font-size:.8125rem;font-weight:500;
+  text-decoration:none;display:inline-flex;align-items:center;gap:.375rem;
+  transition:background .15s;cursor:pointer;
+}
+.btn-view:hover{background:var(--accent-ink)}
+
+/* EDIT MODAL */
+#edit-overlay{
+  position:fixed;inset:0;z-index:500;
+  background:rgba(10,20,16,0.78);backdrop-filter:blur(4px);
+  display:flex;align-items:center;justify-content:center;padding:1rem;
+}
+#edit-overlay.hidden{display:none}
+.edit-modal{
+  background:var(--card);border-radius:16px;width:100%;max-width:620px;
+  max-height:90vh;display:flex;flex-direction:column;
+  box-shadow:0 24px 64px rgba(0,0,0,0.28);
+}
+.edit-modal-header{
+  padding:1.5rem 1.75rem 1rem;border-bottom:1.5px solid var(--line);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.edit-modal-header h2{font-family:var(--disp);font-size:1.125rem;font-weight:700}
+.btn-close{
+  background:none;border:none;font-size:1.25rem;cursor:pointer;color:var(--muted);
+  width:32px;height:32px;display:flex;align-items:center;justify-content:center;
+  border-radius:6px;transition:background .15s;
+}
+.btn-close:hover{background:var(--bg)}
+.edit-modal-body{padding:1.25rem 1.75rem;overflow-y:auto;flex:1}
+.edit-modal-footer{
+  padding:1rem 1.75rem;border-top:1.5px solid var(--line);
+  display:flex;gap:.75rem;justify-content:flex-end;
+}
+.btn-save{
+  padding:.625rem 1.5rem;background:var(--accent);color:#fff;
+  border:none;border-radius:var(--r);font-family:var(--body);font-size:.875rem;
+  font-weight:600;cursor:pointer;transition:background .15s;
+}
+.btn-save:hover{background:var(--accent-ink)}
+.btn-save:disabled{opacity:.6;cursor:not-allowed}
+.btn-cancel{
+  padding:.625rem 1.25rem;background:transparent;border:1.5px solid var(--line-strong);
+  border-radius:var(--r);font-family:var(--body);font-size:.875rem;font-weight:500;
+  color:var(--muted);cursor:pointer;transition:all .15s;
+}
+.btn-cancel:hover{border-color:var(--ink);color:var(--ink)}
+.modal-form-group{margin-bottom:1rem}
+.modal-form-group label{display:block;font-size:.8rem;font-weight:500;color:var(--ink);margin-bottom:.375rem}
+.modal-form-group input,.modal-form-group textarea{
+  width:100%;padding:.5625rem .875rem;border:1.5px solid var(--line-strong);
+  border-radius:8px;font-family:var(--body);font-size:.875rem;color:var(--ink);
+  background:#fff;outline:none;transition:border-color .15s;resize:vertical;
+}
+.modal-form-group input:focus,.modal-form-group textarea:focus{border-color:var(--accent)}
+.modal-form-group textarea{min-height:100px;font-family:var(--mono);font-size:.8125rem;line-height:1.6}
+.modal-form-row{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+.modal-section-label{
+  font-size:.75rem;font-weight:600;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.06em;
+  margin:1.25rem 0 .75rem;border-top:1px solid var(--line);padding-top:1rem;
+}
+#save-status{font-size:.8125rem;font-weight:500;padding:.5rem .75rem;border-radius:6px;display:none}
+#save-status.success{background:#dcfce7;color:#166534}
+#save-status.error{background:#fee2e2;color:#991b1b}
+
+/* EMPTY STATE */
+.empty-state{
+  text-align:center;padding:4rem 2rem;
+  color:var(--muted);font-size:.9375rem;
+}
+.empty-state svg{margin-bottom:1rem;opacity:.4}
+
+/* TOAST */
+.toast{
+  position:fixed;bottom:1.5rem;right:1.5rem;z-index:9999;
+  background:var(--ink);color:#fff;padding:.75rem 1.25rem;
+  border-radius:var(--r);font-size:.875rem;font-weight:500;
+  box-shadow:0 8px 24px rgba(0,0,0,0.2);
+  transform:translateY(100px);opacity:0;
+  transition:transform .3s,opacity .3s;
+  max-width:320px;
+}
+.toast.show{transform:translateY(0);opacity:1}
+.toast.success{background:#166534}
+.toast.error{background:#991b1b}
+</style>
+</head>
+<body>
+
+<!-- LOGIN OVERLAY -->
+<div id="login-overlay">
+  <div class="login-card">
+    <h1>Leadvyne · Admin</h1>
+    <p>Connect to your NocoDB instance to manage all clients.</p>
+
+    <div class="form-group">
+      <label for="f-nocodb-base">NocoDB Base URL</label>
+      <input type="url" id="f-nocodb-base" placeholder="https://whizz.aiingo.com">
+    </div>
+    <div class="form-group">
+      <label for="f-clients-table">Clients Table ID</label>
+      <input type="text" id="f-clients-table" placeholder="md_xxxxxxxxxxxxxxxx">
+    </div>
+    <div class="form-group">
+      <label for="f-analytics-table">Analytics Table ID</label>
+      <input type="text" id="f-analytics-table" placeholder="md_xxxxxxxxxxxxxxxx">
+    </div>
+    <div class="form-group">
+      <label for="f-token">Master NocoDB Token (xc-token)</label>
+      <input type="password" id="f-token" placeholder="xc-auth-...">
+    </div>
+
+    <div class="form-section-label">n8n Integration</div>
+    <div class="form-group">
+      <label for="f-n8n-base">n8n Base URL</label>
+      <input type="url" id="f-n8n-base" placeholder="https://n8n.example.com">
+    </div>
+    <div class="form-group">
+      <label for="f-n8n-key">n8n API Key</label>
+      <input type="password" id="f-n8n-key" placeholder="n8n_api_...">
+    </div>
+
+    <div id="login-error">Could not connect. Please check your credentials.</div>
+    <button class="btn-primary" id="btn-connect">Connect →</button>
+  </div>
+</div>
+
+<!-- HEADER -->
+<div id="header" style="display:none">
+  <span class="brand">Leadvyne · <span>Admin</span></span>
+  <span class="client-count-badge" id="count-badge">— clients</span>
+  <input type="search" class="header-search" id="search-input" placeholder="Search clients…">
+  <div class="connected-badge"><span class="connected-dot"></span>Connected</div>
+  <button class="btn-disconnect" id="btn-disconnect">Disconnect</button>
+</div>
+
+<!-- MAIN -->
+<div id="main">
+  <div id="client-grid" class="client-grid"></div>
+</div>
+
+<!-- EDIT MODAL -->
+<div id="edit-overlay" class="hidden">
+  <div class="edit-modal">
+    <div class="edit-modal-header">
+      <h2 id="edit-modal-title">Edit Client</h2>
+      <button class="btn-close" id="btn-close-modal" title="Close">✕</button>
+    </div>
+    <div class="edit-modal-body">
+      <div class="modal-form-group">
+        <label>Client Name</label>
+        <input type="text" id="e-client-name">
+      </div>
+      <div class="modal-form-row">
+        <div class="modal-form-group">
+          <label>Language</label>
+          <input type="text" id="e-language" placeholder="en">
+        </div>
+        <div class="modal-form-group">
+          <label>Model</label>
+          <input type="text" id="e-model" placeholder="gpt-4o">
+        </div>
+      </div>
+
+      <div class="modal-section-label">Chatwoot Settings</div>
+      <div class="modal-form-group">
+        <label>Chatwoot Base URL</label>
+        <input type="url" id="e-chatwoot-base">
+      </div>
+      <div class="modal-form-row">
+        <div class="modal-form-group">
+          <label>Account ID</label>
+          <input type="text" id="e-chatwoot-account">
+        </div>
+        <div class="modal-form-group">
+          <label>Inbox ID</label>
+          <input type="text" id="e-chatwoot-inbox">
+        </div>
+      </div>
+
+      <div class="modal-section-label">Bot Configuration</div>
+      <div class="modal-form-group">
+        <label>Main Prompt</label>
+        <textarea id="e-main-prompt" style="min-height:160px"></textarea>
+      </div>
+      <div class="modal-form-row">
+        <div class="modal-form-group">
+          <label>Follow-up Count</label>
+          <input type="number" id="e-followup-count" min="0">
+        </div>
+        <div class="modal-form-group">
+          <label>Follow-up Hours</label>
+          <input type="number" id="e-followup-hours" min="0">
+        </div>
+      </div>
+      <div class="modal-form-group">
+        <label>Follow-up Messages</label>
+        <textarea id="e-followup-messages" style="min-height:100px"></textarea>
+      </div>
+
+      <div id="save-status"></div>
+    </div>
+    <div class="edit-modal-footer">
+      <button class="btn-cancel" id="btn-cancel-modal">Cancel</button>
+      <button class="btn-save" id="btn-save-modal">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+// ── Session keys ──────────────────────────────────────────────
+const KEYS = {
+  base: 'nocodb_base',
+  clients: 'clients_table_id',
+  analytics: 'analytics_table_id',
+  token: 'nocodb_token',
+  n8nBase: 'n8n_base',
+  n8nKey: 'n8n_key',
+};
+
+function session(key, val) {
+  if (val !== undefined) return sessionStorage.setItem(key, val);
+  return sessionStorage.getItem(key);
+}
+
+function clearSession() {
+  Object.values(KEYS).forEach(k => sessionStorage.removeItem(k));
+}
+
+function getConfig() {
+  return {
+    base: session(KEYS.base),
+    clients: session(KEYS.clients),
+    analytics: session(KEYS.analytics),
+    token: session(KEYS.token),
+    n8nBase: session(KEYS.n8nBase),
+    n8nKey: session(KEYS.n8nKey),
+  };
+}
+
+function configComplete(cfg) {
+  return cfg.base && cfg.clients && cfg.analytics && cfg.token;
+}
+
+// ── Toast ─────────────────────────────────────────────────────
+let toastTimeout;
+function showToast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (type ? ' ' + type : '');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => { el.className = 'toast'; }, 3000);
+}
+
+// ── NocoDB API ────────────────────────────────────────────────
+async function apiGet(url, token) {
+  const res = await fetch(url, { headers: { 'xc-token': token } });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function apiPatch(url, token, body) {
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'xc-token': token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+// ── State ─────────────────────────────────────────────────────
+let allClients = [];
+let editingId = null;
+
+// ── DOM refs ──────────────────────────────────────────────────
+const loginOverlay = document.getElementById('login-overlay');
+const header = document.getElementById('header');
+const main = document.getElementById('main');
+const grid = document.getElementById('client-grid');
+const countBadge = document.getElementById('count-badge');
+const searchInput = document.getElementById('search-input');
+const editOverlay = document.getElementById('edit-overlay');
+
+// ── Login ─────────────────────────────────────────────────────
+document.getElementById('btn-connect').addEventListener('click', async () => {
+  const cfg = {
+    base: document.getElementById('f-nocodb-base').value.trim().replace(/\/$/, ''),
+    clients: document.getElementById('f-clients-table').value.trim(),
+    analytics: document.getElementById('f-analytics-table').value.trim(),
+    token: document.getElementById('f-token').value.trim(),
+    n8nBase: document.getElementById('f-n8n-base').value.trim().replace(/\/$/, ''),
+    n8nKey: document.getElementById('f-n8n-key').value.trim(),
+  };
+
+  const errEl = document.getElementById('login-error');
+  errEl.style.display = 'none';
+
+  if (!cfg.base || !cfg.clients || !cfg.analytics || !cfg.token) {
+    errEl.textContent = 'NocoDB URL, Clients table ID, Analytics table ID, and Token are required.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('btn-connect');
+  btn.disabled = true; btn.textContent = 'Connecting…';
+
+  try {
+    // Test connection
+    await apiGet(`${cfg.base}/api/v2/tables/${cfg.clients}/records?limit=1`, cfg.token);
+    // Store
+    session(KEYS.base, cfg.base);
+    session(KEYS.clients, cfg.clients);
+    session(KEYS.analytics, cfg.analytics);
+    session(KEYS.token, cfg.token);
+    session(KEYS.n8nBase, cfg.n8nBase);
+    session(KEYS.n8nKey, cfg.n8nKey);
+    showApp();
+  } catch(e) {
+    errEl.textContent = 'Could not connect: ' + e.message;
+    errEl.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Connect →';
+  }
+});
+
+document.getElementById('btn-disconnect').addEventListener('click', () => {
+  clearSession();
+  allClients = [];
+  grid.innerHTML = '';
+  header.style.display = 'none';
+  main.classList.remove('visible');
+  loginOverlay.classList.remove('hidden');
+});
+
+// ── App init ──────────────────────────────────────────────────
+function showApp() {
+  loginOverlay.classList.add('hidden');
+  header.style.display = 'flex';
+  main.classList.add('visible');
+  loadClients();
+}
+
+// ── Skeleton ──────────────────────────────────────────────────
+function renderSkeletons(n = 3) {
+  grid.innerHTML = '';
+  for (let i = 0; i < n; i++) {
+    grid.innerHTML += `
+      <div class="skeleton-card">
+        <div class="skel skel-title"></div>
+        <div class="skel skel-badge"></div>
+        <div class="skel-row">
+          <div class="skel skel-chip"></div>
+          <div class="skel skel-chip"></div>
+        </div>
+        <div class="skel skel-stats"></div>
+        <div class="skel-actions">
+          <div class="skel skel-btn"></div>
+          <div class="skel skel-btn"></div>
+        </div>
+      </div>`;
+  }
+}
+
+// ── Load clients ──────────────────────────────────────────────
+async function loadClients() {
+  const cfg = getConfig();
+  renderSkeletons(6);
+  try {
+    const data = await apiGet(
+      `${cfg.base}/api/v2/tables/${cfg.clients}/records?limit=100`,
+      cfg.token
+    );
+    allClients = data.list || [];
+    countBadge.textContent = `${allClients.length} client${allClients.length !== 1 ? 's' : ''}`;
+    renderGrid(allClients);
+    fetchAllAnalytics();
+  } catch(e) {
+    grid.innerHTML = `<div class="empty-state"><p>Failed to load clients: ${e.message}</p></div>`;
+    showToast('Failed to load clients', 'error');
+  }
+}
+
+// ── Render grid ───────────────────────────────────────────────
+function renderGrid(clients) {
+  if (!clients.length) {
+    grid.innerHTML = '<div class="empty-state"><p>No clients found.</p></div>';
+    return;
+  }
+  grid.innerHTML = clients.map(renderCard).join('');
+  attachCardListeners();
+}
+
+function healthDotClass(client) {
+  const active = client.active === 'Yes';
+  if (!active) return 'red';
+  if (!client.last_seen) return 'yellow';
+  const ms = Date.now() - new Date(client.last_seen).getTime();
+  return ms < 86400000 ? 'green' : 'yellow';
+}
+
+function formatLastSeen(ts) {
+  if (!ts) return 'Never';
+  const d = new Date(ts);
+  const diff = Date.now() - d.getTime();
+  if (diff < 60000) return 'Just now';
+  if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`;
+  return d.toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' });
+}
+
+function renderCard(c) {
+  const active = c.active === 'Yes';
+  const hClass = healthDotClass(c);
+  const statusBadge = active
+    ? '<span class="badge badge-active">Active</span>'
+    : '<span class="badge badge-suspended">Suspended</span>';
+  const langChip = c.language ? `<span class="chip">${escHtml(c.language)}</span>` : '';
+  const modelChip = c.model ? `<span class="chip">${escHtml(c.model)}</span>` : '';
+  const toggleBtn = active
+    ? `<button class="btn-toggle suspend" data-id="${c.Id}" data-action="suspend">Suspend</button>`
+    : `<button class="btn-toggle activate" data-id="${c.Id}" data-action="activate">Activate</button>`;
+
+  return `
+    <div class="client-card" data-id="${c.Id}" id="card-${c.Id}">
+      <div class="card-top">
+        <div class="client-name">${escHtml(c.client_name || 'Unnamed Client')}</div>
+        <div class="health-dot ${hClass}" title="Health: ${hClass}"></div>
+      </div>
+      <div class="status-row">
+        ${statusBadge}
+        ${langChip}
+        ${modelChip}
+      </div>
+      <div class="card-stats">
+        <div class="stat-item">
+          <span class="stat-value" id="msgs-${c.Id}">—</span>
+          <span class="stat-label">msgs</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-value" id="errs-${c.Id}">—</span>
+          <span class="stat-label">errors</span>
+        </div>
+      </div>
+      <div class="last-seen">Last seen: <span>${formatLastSeen(c.last_seen)}</span></div>
+      <div class="card-actions">
+        <button class="btn-edit" data-id="${c.Id}">Edit</button>
+        ${toggleBtn}
+        <a class="btn-view" href="dashboard.html" target="_blank">Dashboard ↗</a>
+      </div>
+    </div>`;
+}
+
+function attachCardListeners() {
+  grid.querySelectorAll('.btn-edit').forEach(btn => {
+    btn.addEventListener('click', () => openEditModal(btn.dataset.id));
+  });
+  grid.querySelectorAll('.btn-toggle').forEach(btn => {
+    btn.addEventListener('click', () => toggleStatus(btn.dataset.id, btn.dataset.action));
+  });
+}
+
+// ── Lazy analytics fetch ──────────────────────────────────────
+async function fetchAllAnalytics() {
+  const cfg = getConfig();
+  for (const c of allClients) {
+    fetchClientAnalytics(c.Id, cfg);
+  }
+}
+
+async function fetchClientAnalytics(clientId, cfg) {
+  try {
+    const data = await apiGet(
+      `${cfg.base}/api/v2/tables/${cfg.analytics}/records?where=(ClientId,eq,${clientId})&limit=1000`,
+      cfg.token
+    );
+    const records = data.list || [];
+    const total = records.length;
+    const errors = records.filter(r => r.error || r.Error || r.is_error).length;
+    const msgsEl = document.getElementById(`msgs-${clientId}`);
+    const errsEl = document.getElementById(`errs-${clientId}`);
+    if (msgsEl) msgsEl.textContent = total.toLocaleString();
+    if (errsEl) errsEl.textContent = errors.toLocaleString();
+  } catch(_) { /* silent fail per card */ }
+}
+
+// ── Toggle status ─────────────────────────────────────────────
+async function toggleStatus(clientId, action) {
+  const cfg = getConfig();
+  const newVal = action === 'suspend' ? 'No' : 'Yes';
+  const card = document.getElementById(`card-${clientId}`);
+
+  // Optimistic update
+  const idx = allClients.findIndex(c => c.Id == clientId);
+  if (idx !== -1) allClients[idx].active = newVal;
+
+  try {
+    await apiPatch(
+      `${cfg.base}/api/v2/tables/${cfg.clients}/records`,
+      cfg.token,
+      { Id: clientId, active: newVal }
+    );
+    // Re-render this card
+    if (card && idx !== -1) {
+      card.outerHTML = renderCard(allClients[idx]);
+      attachCardListeners();
+      document.getElementById(`msgs-${clientId}`) && null; // keep stats if in DOM
+    }
+    showToast(action === 'suspend' ? 'Client suspended' : 'Client activated', 'success');
+  } catch(e) {
+    // Revert
+    if (idx !== -1) allClients[idx].active = newVal === 'Yes' ? 'No' : 'Yes';
+    showToast('Failed to update status: ' + e.message, 'error');
+  }
+}
+
+// ── Edit modal ────────────────────────────────────────────────
+function openEditModal(clientId) {
+  const c = allClients.find(cl => cl.Id == clientId);
+  if (!c) return;
+  editingId = clientId;
+
+  document.getElementById('edit-modal-title').textContent = `Edit — ${c.client_name || 'Client'}`;
+  document.getElementById('e-client-name').value = c.client_name || '';
+  document.getElementById('e-language').value = c.language || '';
+  document.getElementById('e-model').value = c.model || '';
+  document.getElementById('e-chatwoot-base').value = c.chatwoot_base || '';
+  document.getElementById('e-chatwoot-account').value = c.chatwoot_account_id || '';
+  document.getElementById('e-chatwoot-inbox').value = c.chatwoot_inbox_id || '';
+  document.getElementById('e-main-prompt').value = c.main_prompt || '';
+  document.getElementById('e-followup-count').value = c.followup_count || '';
+  document.getElementById('e-followup-hours').value = c.followup_hours || '';
+  document.getElementById('e-followup-messages').value = c.followup_messages || '';
+
+  const status = document.getElementById('save-status');
+  status.style.display = 'none';
+  document.getElementById('btn-save-modal').disabled = false;
+
+  editOverlay.classList.remove('hidden');
+}
+
+document.getElementById('btn-close-modal').addEventListener('click', closeModal);
+document.getElementById('btn-cancel-modal').addEventListener('click', closeModal);
+editOverlay.addEventListener('click', e => { if (e.target === editOverlay) closeModal(); });
+
+function closeModal() { editOverlay.classList.add('hidden'); editingId = null; }
+
+document.getElementById('btn-save-modal').addEventListener('click', async () => {
+  if (!editingId) return;
+  const cfg = getConfig();
+  const btn = document.getElementById('btn-save-modal');
+  const status = document.getElementById('save-status');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  status.style.display = 'none';
+
+  const patch = {
+    Id: editingId,
+    client_name: document.getElementById('e-client-name').value,
+    language: document.getElementById('e-language').value,
+    model: document.getElementById('e-model').value,
+    chatwoot_base: document.getElementById('e-chatwoot-base').value,
+    chatwoot_account_id: document.getElementById('e-chatwoot-account').value,
+    chatwoot_inbox_id: document.getElementById('e-chatwoot-inbox').value,
+    main_prompt: document.getElementById('e-main-prompt').value,
+    followup_count: parseInt(document.getElementById('e-followup-count').value) || 0,
+    followup_hours: parseInt(document.getElementById('e-followup-hours').value) || 0,
+    followup_messages: document.getElementById('e-followup-messages').value,
+  };
+
+  try {
+    await apiPatch(`${cfg.base}/api/v2/tables/${cfg.clients}/records`, cfg.token, patch);
+    // Update local state
+    const idx = allClients.findIndex(c => c.Id == editingId);
+    if (idx !== -1) Object.assign(allClients[idx], patch);
+
+    status.textContent = 'Saved successfully!';
+    status.className = 'success'; status.style.display = 'block';
+    btn.textContent = 'Save Changes'; btn.disabled = false;
+
+    // Re-render the card
+    const card = document.getElementById(`card-${editingId}`);
+    if (card && idx !== -1) {
+      const newHtml = renderCard(allClients[idx]);
+      card.outerHTML = newHtml;
+      attachCardListeners();
+    }
+    showToast('Client updated', 'success');
+    setTimeout(closeModal, 800);
+  } catch(e) {
+    status.textContent = 'Save failed: ' + e.message;
+    status.className = 'error'; status.style.display = 'block';
+    btn.textContent = 'Save Changes'; btn.disabled = false;
+  }
+});
+
+// ── Search ────────────────────────────────────────────────────
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.toLowerCase().trim();
+  const filtered = q ? allClients.filter(c =>
+    (c.client_name || '').toLowerCase().includes(q)
+  ) : allClients;
+  renderGrid(filtered);
+  // Re-fetch analytics for visible cards
+  const cfg = getConfig();
+  filtered.forEach(c => fetchClientAnalytics(c.Id, cfg));
+});
+
+// ── Util ──────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+// ── Boot ──────────────────────────────────────────────────────
+(function boot() {
+  const cfg = getConfig();
+  if (configComplete(cfg)) {
+    showApp();
+  }
+})();
+</script>
+</body>
+</html>
