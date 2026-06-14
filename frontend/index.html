@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Leadvyne · Provision a client</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#E9EEEC; --card:#FFFFFF; --ink:#0F1F1A; --muted:#5B6B65;
+    --accent:#0E7C5A; --accent-ink:#0A5C43; --accent-soft:#D8EEE4;
+    --line:#D7E0DC; --line-strong:#C2CEC9; --warn:#9A5B12; --warn-soft:#F6ECD9;
+    --r:10px; --mono:"JetBrains Mono",ui-monospace,monospace;
+    --disp:"Space Grotesk",system-ui,sans-serif; --body:"Inter",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px;margin:0 auto;padding:40px 24px 80px}
+
+  /* ---- login gate ---- */
+  #gate{position:fixed;inset:0;background:var(--ink);display:flex;align-items:center;justify-content:center;z-index:50;padding:24px}
+  #gate.hidden{display:none}
+  .gatebox{width:100%;max-width:380px;text-align:center}
+  .gatebox .brand{font-family:var(--disp);font-weight:700;font-size:26px;color:#fff;letter-spacing:-.01em}
+  .gatebox .brand .dot{color:#5FD6A4}
+  .gatebox p{color:#9DBBB1;font-size:13px;margin:8px 0 26px}
+  .gatebox input{width:100%;background:#16302A;border:1px solid #2A4A41;border-radius:9px;padding:13px 14px;color:#fff;font-family:var(--mono);font-size:15px;text-align:center;letter-spacing:.12em}
+  .gatebox input:focus{outline:none;border-color:#5FD6A4;box-shadow:0 0 0 3px rgba(95,214,164,.18)}
+  .gatebox button{width:100%;margin-top:12px;background:var(--accent);color:#fff;border:none;border-radius:9px;padding:13px;font-family:var(--disp);font-weight:600;font-size:15px;cursor:pointer}
+  .gatebox button:hover{background:#12936b}
+  .gatebox .err{color:#F1A6A6;font-size:12.5px;min-height:16px;margin-top:12px}
+
+  header.top{display:flex;align-items:baseline;gap:14px;margin-bottom:6px}
+  .brand{font-family:var(--disp);font-weight:700;font-size:22px;letter-spacing:-.01em}
+  .brand .dot{color:var(--accent)}
+  .top .sub{font-family:var(--mono);font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  .top .lock{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--accent-ink);background:var(--accent-soft);padding:4px 9px;border-radius:6px;cursor:pointer}
+  .lead{color:var(--muted);max-width:60ch;margin:0 0 32px}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:24px;margin-bottom:18px}
+  .sec-head{display:flex;align-items:baseline;gap:10px;margin:0 0 4px}
+  .sec-num{font-family:var(--mono);font-size:12px;color:var(--accent);font-weight:500}
+  .sec-title{font-family:var(--disp);font-weight:600;font-size:16px;margin:0}
+  .sec-note{color:var(--muted);font-size:13px;margin:2px 0 18px}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 18px}
+  .grid .full{grid-column:1/-1}
+  @media(max-width:640px){.grid{grid-template-columns:1fr}}
+
+  label{display:block;font-size:12px;font-weight:600;margin:0 0 5px}
+  label .hint{font-weight:400;color:var(--muted)}
+  input,textarea,select{width:100%;background:#FBFCFC;border:1px solid var(--line-strong);border-radius:8px;padding:10px 12px;font-size:14px;color:var(--ink);font-family:var(--body);transition:border-color .12s,box-shadow .12s}
+  input.mono,textarea.mono{font-family:var(--mono);font-size:13px}
+  textarea{resize:vertical;min-height:84px;line-height:1.55}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .field-row{display:flex;gap:10px;align-items:flex-end}.field-row>div{flex:1}
+
+  .pill-btn{font-family:var(--mono);font-size:11px;background:var(--accent-soft);color:var(--accent-ink);border:none;border-radius:6px;padding:5px 9px;cursor:pointer;font-weight:500}
+  .row-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}
+
+  .actions{display:flex;gap:12px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .submit{font-family:var(--disp);font-weight:600;font-size:15px;background:var(--accent);color:#fff;border:none;border-radius:9px;padding:13px 26px;cursor:pointer}
+  .submit:hover{background:var(--accent-ink)}.submit:disabled{opacity:.55;cursor:default}
+  .ghost{background:none;border:1px solid var(--line-strong);color:var(--muted);border-radius:9px;padding:13px 18px;cursor:pointer;font-size:14px}
+  .ghost:hover{border-color:var(--muted)}
+
+  .endpoint{font-family:var(--mono);font-size:12px;color:var(--muted);background:#FBFCFC;border:1px dashed var(--line-strong);border-radius:8px;padding:8px 11px;margin-bottom:24px}
+  .endpoint label{display:inline-block;margin:0 6px 0 0;color:var(--accent-ink)}
+  .endpoint input{display:inline-block;width:auto;min-width:340px;border:none;background:none;padding:2px 0;font-family:var(--mono);font-size:12px}
+  .endpoint input:focus{box-shadow:none}
+
+  #result{display:none}#result.show{display:block;animation:rise .35s ease}
+  @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .result-card{background:var(--ink);color:#E9EEEC;border-radius:var(--r);padding:26px;margin-bottom:18px}
+  .result-card .ok{font-family:var(--mono);font-size:12px;color:#7FE3B8;letter-spacing:.08em;text-transform:uppercase}
+  .result-card h3{font-family:var(--disp);font-size:20px;margin:6px 0 18px;font-weight:600}
+  .ticket{background:#16302A;border:1px solid #25463E;border-radius:9px;padding:14px 16px;margin-bottom:12px}
+  .ticket .k{font-family:var(--mono);font-size:11px;color:#8FB3A8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
+  .ticket .v{font-family:var(--mono);font-size:14px;color:#fff;word-break:break-all;display:flex;justify-content:space-between;gap:12px;align-items:center}
+  .copy{font-family:var(--mono);font-size:11px;background:#25463E;color:#BFE6D6;border:none;border-radius:6px;padding:5px 9px;cursor:pointer;flex:none}
+  .copy:hover{background:#2E5549}
+  .result-note{font-size:13px;color:#A9C2BA;margin:14px 0 0;line-height:1.6}
+
+  .msg{font-size:13px;margin-top:10px;min-height:18px}.msg.err{color:#B23A2E}
+  @media(prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+
+<!-- LOGIN GATE -->
+<div id="gate">
+  <div class="gatebox">
+    <div class="brand">Leadvyne<span class="dot">.</span></div>
+    <p>Enter the access passcode to provision clients.</p>
+    <input id="pass" type="password" placeholder="passcode" autocomplete="off" />
+    <button id="unlock">Unlock</button>
+    <div class="err" id="gateErr"></div>
+  </div>
+</div>
+
+<div class="wrap">
+  <header class="top">
+    <span class="brand">Leadvyne<span class="dot">.</span></span>
+    <span class="sub">Client provisioning</span>
+    <span class="lock" id="lockBtn">Lock</span>
+  </header>
+  <p class="lead">Configure a client end to end. On <b>Provision</b>, this writes the config, creates
+    and activates the client's bot workflow on your n8n, and returns the webhook URL for Chatwoot.</p>
+
+  <div class="endpoint">
+    <label for="endpoint">Onboard endpoint</label>
+    <input id="endpoint" class="mono" value="https://n8n.aiautomationsuae.com/webhook/leadvyne-onboard" />
+  </div>
+
+  <form id="form" autocomplete="off">
+    <section class="card">
+      <div class="sec-head"><span class="sec-num">01</span><h2 class="sec-title">Client</h2></div>
+      <p class="sec-note">Identity and default language.</p>
+      <div class="grid">
+        <div><label>Client name</label><input name="client_name" required placeholder="Safe Assets" /></div>
+        <div><label>Default language</label>
+          <select name="language">
+            <option value="ml">Malayalam (ml)</option><option value="en">English (en)</option>
+            <option value="hi">Hindi (hi)</option><option value="ta">Tamil (ta)</option>
+            <option value="mix">Mixed (mix)</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head"><span class="sec-num">02</span><h2 class="sec-title">Credentials</h2></div>
+      <p class="sec-note">Used at runtime by the shared engine — injected into request headers, not stored as n8n credentials.</p>
+      <div class="grid">
+        <div><label>Chatwoot base URL</label><input name="chatwoot_base" class="mono" value="https://app.aiingo.com" /></div>
+        <div class="field-row">
+          <div><label>Account id <span class="hint">(routing)</span></label><input name="chatwoot_account_id" class="mono" placeholder="10" required /></div>
+          <div><label>Inbox id <span class="hint">(routing)</span></label><input name="chatwoot_inbox_id" class="mono" placeholder="11" required /></div>
+        </div>
+        <div class="full"><label>Chatwoot API token</label><input name="chatwoot_token" class="mono" placeholder="paste token" required /></div>
+        <div><label>NocoDB base URL</label><input name="nocodb_base" class="mono" value="https://whizz.aiingo.com" /></div>
+        <div><label>Leads table id</label><input name="leads_table_id" class="mono" placeholder="mk1og9rbenjlw13" required /></div>
+        <div class="full"><label>NocoDB token</label><input name="nocodb_token" class="mono" placeholder="xc token" required /></div>
+        <div><label>OpenRouter key</label><input name="openrouter_key" class="mono" placeholder="sk-or-..." required /></div>
+        <div><label>Model</label><input name="model" class="mono" value="google/gemini-2.5-flash" /></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head"><span class="sec-num">03</span><h2 class="sec-title">Main agent prompt</h2></div>
+      <p class="sec-note">The bot's voice, scope, and guardrails — used on the FAQ path.</p>
+      <textarea name="main_prompt" rows="7" required placeholder="You are Rasi 😊 — a warm friend from Safe Assets who knows health insurance. Never say you are AI. Answer only about health insurance. Never invent premiums or plan names. Out of scope → offer the consultation or share 9292026138. Max 3–4 short lines, one question per message."></textarea>
+    </section>
+
+    <section class="card">
+      <div class="sec-head"><span class="sec-num">04</span><h2 class="sec-title">Flow</h2></div>
+      <p class="sec-note">Each stage maps an intent to the next stage + message. <code>"*"</code> is the fallback.</p>
+      <div class="row-head"><span></span><button type="button" class="pill-btn" id="loadFlow">Load sample flow</button></div>
+      <textarea name="flow_json" class="mono" rows="12" required placeholder='{ "stages": {...}, "messages": {...}, "variables": {...} }'></textarea>
+      <div class="msg err" id="flowErr"></div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head"><span class="sec-num">05</span><h2 class="sec-title">Follow-ups</h2></div>
+      <p class="sec-note">How many nudges, when (hours since last activity), and what each says.</p>
+      <div class="grid">
+        <div><label>Number of follow-ups</label><input name="followup_count" type="number" min="0" max="5" value="3" /></div>
+        <div><label>Hours after last activity <span class="hint">(comma)</span></label><input name="followup_hours" class="mono" value="24, 72, 168" /></div>
+      </div>
+      <div style="margin-top:14px"><label>Follow-up messages <span class="hint">(one per line)</span></label>
+        <textarea name="followup_messages" rows="4" placeholder="Hi 😊 a small reminder — I'm ready when you are 🙏
+Did you get a moment? Happy to set up a quick call 👍
+Last nudge — reply here anytime 😊"></textarea>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button type="submit" class="submit" id="submitBtn">Provision client</button>
+      <button type="button" class="ghost" id="copyJson">Copy config JSON</button>
+      <span class="msg" id="formMsg"></span>
+    </div>
+  </form>
+
+  <div id="result">
+    <div class="result-card">
+      <div class="ok">● Client provisioned &amp; workflow activated</div>
+      <h3 id="rName">Client</h3>
+      <div class="ticket">
+        <div class="k">Chatwoot webhook URL — paste into the inbox</div>
+        <div class="v"><span id="rHook">—</span><button class="copy" data-copy="rHook">Copy</button></div>
+      </div>
+      <div class="ticket">
+        <div class="k">Routing identity</div>
+        <div class="v"><span id="rRoute">—</span></div>
+      </div>
+      <p class="result-note">In Chatwoot → this inbox → <b>Configuration → Webhooks</b>, add the URL above
+        and subscribe to <b>Message created</b>. The dedicated workflow for this client is already live.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let AUTH = ""; // passcode held in memory only
+
+// ---- gate ----
+function unlock(){
+  const v = $('#pass').value.trim();
+  if(!v){ $('#gateErr').textContent='Enter the passcode.'; return; }
+  AUTH = v; $('#gate').classList.add('hidden'); $('#gateErr').textContent='';
+}
+$('#unlock').addEventListener('click',unlock);
+$('#pass').addEventListener('keydown',e=>{ if(e.key==='Enter') unlock(); });
+$('#lockBtn').addEventListener('click',()=>{ AUTH=""; $('#pass').value=""; $('#gate').classList.remove('hidden'); });
+
+const form = $('#form');
+const SAMPLE_FLOW = {
+  variables:{ language:"ml", advisor:"Rasi", brand:"Safe Assets", form_link:"https://forms.gle/REPLACE_ME",
+    video1:"https://youtu.be/PHmEVlyh-Ls", video2:"https://youtube.com/shorts/FHm9NFZ1i3w" },
+  stages:{
+    new:{ "*":{next:"video_1_sent",msg:"new_1",video:"video1"} },
+    video_1_sent:{ DELAY:{next:"video_1_sent",msg:"v1_later"}, "*":{next:"video_1_watched",msg:"v1_followup"} },
+    video_1_watched:{ "*":{next:"form_sent",msg:"form_intro",form:true} },
+    form_sent:{ FORM_DONE:{next:"video_2_sent",msg:"v2_intro",video:"video2"}, "*":{next:"form_sent",msg:"form_reminder",form:true} },
+    video_2_sent:{ "*":{next:"video_2_watched",msg:"v2_followup"} },
+    video_2_watched:{ "*":{next:"consultation_offer",msg:"consult_ready"} },
+    consultation_offer:{ BOOKING:{next:"consultation_booked",msg:"consult_booked"}, AFFIRMATIVE:{next:"consultation_booked",msg:"consult_booked"}, "*":{next:"meeting_not_booked",msg:"meeting_not_booked"} },
+    consultation_booked:{ "*":{next:"consultation_booked",msg:"consult_booked"} },
+    meeting_not_booked:{ BOOKING:{next:"consultation_booked",msg:"consult_booked"}, "*":{next:"consultation_offer",msg:"consult_ready"} }
+  },
+  messages:{
+    new_1:"Hi 😊 ഞാൻ Rasi, Safe Assets-ൽ നിന്ന്. ആദ്യം ഈ short video ഒന്ന് കാണൂ 👇",
+    v1_later:"തീർച്ചയായും 🙂 സമയം കിട്ടുമ്പോൾ video നോക്കൂ 👍", v1_followup:"Great! 🙌 ഒരു small form അയക്കട്ടെ?",
+    form_intro:"ഈ short form ഒന്ന് fill ചെയ്യൂ 🙏", form_reminder:"ഒരു quick reminder 😊 — form fill ചെയ്യാമോ?",
+    v2_intro:"Perfect 🙌 ഇനി claim video 👇", v2_followup:"Great 😊 ഒരു consultation arrange ചെയ്യട്ടെ?",
+    consult_ready:"നല്ലത് 🙌 എപ്പോൾ convenient — ഇന്നോ നാളെയോ?", consult_booked:"Perfect 🙏 advisor ഉടൻ contact ചെയ്യും 😊",
+    meeting_not_booked:"സാരമില്ല 🙂 തയ്യാറാകുമ്പോൾ പറയൂ 🙏"
+  }
+};
+$('#loadFlow').addEventListener('click',()=>{ form.flow_json.value = JSON.stringify(SAMPLE_FLOW,null,2); $('#flowErr').textContent=''; });
+
+function collect(){
+  const d = Object.fromEntries(new FormData(form).entries());
+  d.followup_count = parseInt(d.followup_count||'0');
+  d.passcode = AUTH;
+  return d;
+}
+function validateFlow(){
+  const v = form.flow_json.value.trim(); if(!v) return true;
+  try{ JSON.parse(v); $('#flowErr').textContent=''; return true; }
+  catch(e){ $('#flowErr').textContent='Flow is not valid JSON: '+e.message; return false; }
+}
+form.flow_json.addEventListener('blur',validateFlow);
+$('#copyJson').addEventListener('click',()=>{ if(!validateFlow())return; const c=collect(); delete c.passcode; navigator.clipboard.writeText(JSON.stringify(c,null,2)); $('#formMsg').textContent='Config JSON copied.'; $('#formMsg').className='msg'; });
+
+form.addEventListener('submit',async e=>{
+  e.preventDefault();
+  if(!AUTH){ $('#gate').classList.remove('hidden'); return; }
+  if(!validateFlow()){ $('#formMsg').textContent='Fix the flow JSON first.'; $('#formMsg').className='msg err'; return; }
+  const btn=$('#submitBtn'); btn.disabled=true; btn.textContent='Provisioning…';
+  $('#formMsg').textContent=''; $('#formMsg').className='msg';
+  try{
+    const r = await fetch($('#endpoint').value.trim(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
+    if(r.status===401){ AUTH=""; $('#gate').classList.remove('hidden'); $('#gateErr').textContent='Wrong passcode.'; throw new Error('unauthorised'); }
+    if(!r.ok) throw new Error('Endpoint returned '+r.status);
+    const data = await r.json().catch(()=>({}));
+    showResult(collect(), data);
+  }catch(err){
+    if(err.message!=='unauthorised'){
+      $('#formMsg').className='msg err';
+      $('#formMsg').innerHTML='Could not provision ('+err.message+'). Check the onboard workflow is active and CORS allows this page.';
+    }
+  }finally{ btn.disabled=false; btn.textContent='Provision client'; }
+});
+
+function showResult(d, resp){
+  $('#rName').textContent = d.client_name || 'Client';
+  $('#rHook').textContent = resp.webhook_url || '(returned by workflow)';
+  $('#rRoute').textContent = 'account '+d.chatwoot_account_id+' · inbox '+d.chatwoot_inbox_id;
+  $('#result').classList.add('show');
+  $('#result').scrollIntoView({behavior:'smooth',block:'start'});
+}
+document.querySelectorAll('.copy').forEach(b=>b.addEventListener('click',()=>{
+  navigator.clipboard.writeText($('#'+b.dataset.copy).textContent);
+  b.textContent='Copied'; setTimeout(()=>b.textContent='Copy',1200);
+}));
+</script>
+</body>
+</html>

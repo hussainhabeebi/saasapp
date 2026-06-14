@@ -1,0 +1,158 @@
+{
+  "name": "Followup Scheduler (template)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [ { "field": "hours", "hoursInterval": 1 } ] }
+      },
+      "id": "cron-001",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [ -640, 300 ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "chatwootBase", "value": "https://app.aiingo.com", "type": "string" },
+            { "id": "a2", "name": "accountId", "value": "10", "type": "string" },
+            { "id": "a3", "name": "hoursFU1", "value": 24, "type": "number" },
+            { "id": "a4", "name": "hoursFU2", "value": 72, "type": "number" },
+            { "id": "a5", "name": "hoursFU3", "value": 168, "type": "number" },
+            { "id": "a6", "name": "msgFU1", "value": "Hi 😊 ഒരു small reminder — നിങ്ങളുടെ family-ക്ക് ചേരുന്ന plan കാണാൻ ഞാൻ ready ആണ് 🙏", "type": "string" },
+            { "id": "a7", "name": "msgFU2", "value": "സമയം കിട്ടിയോ? 🙂 എപ്പോൾ വേണമെങ്കിലും ഒരു quick consultation arrange ചെയ്യാം 👍", "type": "string" },
+            { "id": "a8", "name": "msgFU3", "value": "അവസാന ഒരു nudge 🙏 — സഹായം വേണമെങ്കിൽ ഇവിടെ reply ചെയ്യൂ, ഞാൻ ഇവിടെ ഉണ്ട് 😊", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "config-001",
+      "name": "Client Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [ -420, 300 ]
+    },
+    {
+      "parameters": {
+        "authentication": "nocoDbApiToken",
+        "operation": "getAll",
+        "workspaceId": "w5qye21b",
+        "projectId": "pbe6o8e586pox0p",
+        "table": "mk1og9rbenjlw13",
+        "returnAll": true,
+        "options": {
+          "where": "=(Handover,neq,Yes)~and(Stage,nin,consultation_booked,human_handover)"
+        }
+      },
+      "id": "noco-get-001",
+      "name": "NocoDB · Get active leads",
+      "type": "n8n-nodes-base.nocoDb",
+      "typeVersion": 3,
+      "position": [ -200, 300 ],
+      "credentials": {
+        "nocoDbApiToken": { "id": "KL3kUVZOFL1V0mAd", "name": "NocoDB Token account" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Client Config').first().json;\nconst now = Date.now();\nconst out = [];\n\nfor (const item of $input.all()) {\n  const lead = item.json;\n  const last = lead.Date ? new Date(lead.Date).getTime() : 0;\n  if (!last || !lead.ConversationID) continue;\n  const hours = (now - last) / 3600000;\n\n  let fu = null, msg = null;\n  const fu1 = (lead['Follow up 1'] || 'No');\n  const fu2 = (lead['Follow up 2'] || 'No');\n  const fu3 = (lead['Follow up 3'] || 'No');\n\n  if (fu1 === 'No' && hours >= cfg.hoursFU1)      { fu = 'Follow up 1'; msg = cfg.msgFU1; }\n  else if (fu2 === 'No' && hours >= cfg.hoursFU2) { fu = 'Follow up 2'; msg = cfg.msgFU2; }\n  else if (fu3 === 'No' && hours >= cfg.hoursFU3) { fu = 'Follow up 3'; msg = cfg.msgFU3; }\n\n  if (!fu) continue;\n  out.push({ json: { id: lead.Id, convId: lead.ConversationID, fuField: fu, message: msg, accountId: cfg.accountId, chatwootBase: cfg.chatwootBase } });\n}\n\nreturn out;"
+      },
+      "id": "decide-001",
+      "name": "Code · Decide follow-ups",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [ 20, 300 ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "batch-001",
+      "name": "Loop (rate limit)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [ 240, 300 ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.chatwootBase }}/api/v1/accounts/{{ $json.accountId }}/conversations/{{ $json.convId }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"content\": {{ JSON.stringify($json.message) }}, \"message_type\": \"outgoing\", \"private\": false}",
+        "options": {}
+      },
+      "id": "send-001",
+      "name": "Chatwoot · Send follow-up",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [ 460, 300 ],
+      "credentials": {
+        "httpHeaderAuth": { "id": "iaJlpcxEB4ZJxbAQ", "name": "Safe Chatwoot" }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "nocoDbApiToken",
+        "operation": "update",
+        "workspaceId": "w5qye21b",
+        "projectId": "pbe6o8e586pox0p",
+        "table": "mk1og9rbenjlw13",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldName": "Id", "fieldValue": "={{ $json.id }}" },
+            { "fieldName": "={{ $json.fuField }}", "fieldValue": "Yes" }
+          ]
+        }
+      },
+      "id": "noco-upd-001",
+      "name": "NocoDB · Mark sent",
+      "type": "n8n-nodes-base.nocoDb",
+      "typeVersion": 3,
+      "position": [ 680, 300 ],
+      "credentials": {
+        "nocoDbApiToken": { "id": "KL3kUVZOFL1V0mAd", "name": "NocoDB Token account" }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "seconds"
+      },
+      "id": "wait-001",
+      "name": "Wait 1s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [ 900, 300 ]
+    },
+    {
+      "parameters": {
+        "content": "## Follow-up scheduler (reusable)\n\n**To clone for a new client:** duplicate this workflow, then change ONLY:\n1. Client Config node (chatwootBase, accountId, follow-up texts, hour thresholds)\n2. The NocoDB nodes' table id\n3. The Chatwoot HTTP credential (each client has its own token)\n\n⚠️ **24-hour window:** Chatwoot free-text only delivers inside WhatsApp's 24h session.\nFor leads colder than 24h, swap the send node to a WhatsApp Cloud API **template** call\n(approved template) instead of a Chatwoot text message — otherwise the send silently fails.",
+        "height": 320,
+        "width": 420
+      },
+      "id": "note-001",
+      "name": "README",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [ -640, 460 ]
+    }
+  ],
+  "connections": {
+    "Every Hour": { "main": [ [ { "node": "Client Config", "type": "main", "index": 0 } ] ] },
+    "Client Config": { "main": [ [ { "node": "NocoDB · Get active leads", "type": "main", "index": 0 } ] ] },
+    "NocoDB · Get active leads": { "main": [ [ { "node": "Code · Decide follow-ups", "type": "main", "index": 0 } ] ] },
+    "Code · Decide follow-ups": { "main": [ [ { "node": "Loop (rate limit)", "type": "main", "index": 0 } ] ] },
+    "Loop (rate limit)": { "main": [ [ { "node": "Chatwoot · Send follow-up", "type": "main", "index": 0 } ] ] },
+    "Chatwoot · Send follow-up": { "main": [ [ { "node": "NocoDB · Mark sent", "type": "main", "index": 0 } ] ] },
+    "NocoDB · Mark sent": { "main": [ [ { "node": "Wait 1s", "type": "main", "index": 0 } ] ] },
+    "Wait 1s": { "main": [ [ { "node": "Loop (rate limit)", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

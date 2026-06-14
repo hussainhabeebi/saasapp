@@ -1,0 +1,274 @@
+{
+  "name": "Leadvyne · Engine (shared sub-workflow)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger", "name": "When called by wrapper", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1,
+      "position": [ -1200, 400 ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst b = raw.body || raw;\nif (b.message_type && b.message_type !== 'incoming') return [];\nif (b.private) return [];\n\nconst conv = b.conversation || {};\nconst sender = conv?.meta?.sender || b.sender || {};\nlet phone = (sender.phone_number || sender.identifier || '').replace(/[^0-9+]/g,'').replace(/^\\+/,'');\nif (phone.startsWith('00')) phone = phone.slice(2);\n\nconst atts = b.attachments || b.message?.attachments || [];\nlet mediaType = 'text', mediaUrl = '';\nif (atts.length) {\n  const a = atts[0];\n  mediaUrl = a.data_url || a.file_url || '';\n  if ((a.file_type||'').includes('audio')) mediaType = 'voice';\n  else if ((a.file_type||'').includes('image')) mediaType = 'image';\n}\n\nconst text = (b.content || b.message?.content || '').trim();\nif (!phone) return [];\nif (mediaType === 'text' && !text) return [];\n\nreturn [{ json: {\n  client_id:  String(raw.client_id || b.client_id || ''),\n  account_id: String(b.account?.id || conv?.account_id || ''),\n  inbox_id:   String(b.inbox?.id || conv?.inbox_id || ''),\n  convId:     conv?.id || null,\n  phone, name: sender.name || '', text, mediaType, mediaUrl\n} }];"
+      },
+      "id": "parse", "name": "Code · Parse", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ -980, 400 ]
+    },
+    {
+      "parameters": {
+        "authentication": "nocoDbApiToken", "operation": "getAll",
+        "workspaceId": "REPLACE_CONTROL_WORKSPACE", "projectId": "REPLACE_CONTROL_PROJECT",
+        "table": "REPLACE_CLIENTS_TABLE", "limit": 1,
+        "options": { "where": "=(Id,eq,{{ $json.client_id }})" }
+      },
+      "id": "tenant", "name": "NocoDB · Get tenant", "type": "n8n-nodes-base.nocoDb", "typeVersion": 3,
+      "position": [ -760, 400 ], "alwaysOutputData": true,
+      "credentials": { "nocoDbApiToken": { "id": "KL3kUVZOFL1V0mAd", "name": "NocoDB Token account" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const msg = $('Code · Parse').first().json;\nconst t = $input.first().json;\nif (!t || !t.chatwoot_inbox_id) return []; // no tenant configured for this inbox\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  nocodb_base: t.nocodb_base, leads_table_id: t.leads_table_id, nocodb_token: t.nocodb_token,\n  openrouter_key: t.openrouter_key, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow\n} }];"
+      },
+      "id": "ctx", "name": "Code · Build ctx", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ -540, 400 ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.nocodb_base }}/api/v2/tables/{{ $json.leads_table_id }}/records?where=(Phone,eq,{{ $json.phone }})&limit=1",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "={{ $json.nocodb_token }}" } ] },
+        "options": {}
+      },
+      "id": "getlead", "name": "HTTP · Get lead", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ -320, 400 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Code · Build ctx').first().json;\nconst r = $input.first().json;\nconst lead = (r.list && r.list[0]) ? r.list[0] : null;\nif (lead && (lead.Handover === 'Yes' || lead.Stage === 'human_handover')) return []; // bot-off\nreturn [{ json: { ...c, leadId: lead?.Id || null, stage: lead?.Stage || 'new' } }];"
+      },
+      "id": "state", "name": "Code · State", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ -100, 400 ]
+    },
+    {
+      "parameters": {
+        "rules": { "values": [
+          { "conditions": { "options": { "version": 2, "caseSensitive": true, "typeValidation": "strict" },
+            "conditions": [ { "id": "img", "leftValue": "={{ $json.mediaType }}", "rightValue": "image", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" },
+            "renameOutput": true, "outputKey": "image" },
+          { "conditions": { "options": { "version": 2, "caseSensitive": true, "typeValidation": "strict" },
+            "conditions": [ { "id": "voc", "leftValue": "={{ $json.mediaType }}", "rightValue": "voice", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" },
+            "renameOutput": true, "outputKey": "voice" }
+        ] },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "media", "name": "Switch · Media", "type": "n8n-nodes-base.switch", "typeVersion": 3.2,
+      "position": [ 120, 400 ]
+    },
+    {
+      "parameters": {
+        "method": "POST", "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "Authorization", "value": "=Bearer {{ $json.openrouter_key }}" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, messages: [ { role:'user', content: [ { type:'text', text:'Describe what this image shows in one short sentence, focused on anything relevant to an insurance enquiry.' }, { type:'image_url', image_url: { url: $json.mediaUrl } } ] } ] }) }}",
+        "options": {}
+      },
+      "id": "vision", "name": "HTTP · Vision", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 360, 240 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Code · State').first().json;\nconst r = $input.first().json;\nconst txt = r.choices?.[0]?.message?.content || '(image received)';\nreturn [{ json: { ...c, userText: txt } }];"
+      },
+      "id": "imgtext", "name": "Code · image→text", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 580, 240 ]
+    },
+    {
+      "parameters": {
+        "method": "GET", "url": "={{ $json.mediaUrl }}",
+        "options": { "response": { "response": { "responseFormat": "file" } } }
+      },
+      "id": "dl", "name": "HTTP · Download audio", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 360, 460 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST", "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "Authorization", "value": "=Bearer {{ $('Code · State').first().json.openrouter_key }}" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Code · State').first().json.model, messages: [ { role:'user', content: [ { type:'text', text:'Transcribe this voice note verbatim. Output only the transcription.' }, { type:'input_audio', input_audio: { data: $binary.data.data, format: 'ogg' } } ] } ] }) }}",
+        "options": {}
+      },
+      "id": "stt", "name": "HTTP · Transcribe", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 580, 460 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Code · State').first().json;\nconst r = $input.first().json;\nconst txt = r.choices?.[0]?.message?.content || '(voice note received)';\nreturn [{ json: { ...c, userText: txt } }];"
+      },
+      "id": "voctext", "name": "Code · voice→text", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 800, 460 ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Code · State').first().json;\nreturn [{ json: { ...c, userText: c.text || '' } }];"
+      },
+      "id": "txtpass", "name": "Code · text→text", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 360, 620 ]
+    },
+    {
+      "parameters": {
+        "method": "POST", "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "Authorization", "value": "=Bearer {{ $json.openrouter_key }}" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, temperature: 0, messages: [ { role:'system', content: 'You are an intent classifier for a WhatsApp sales bot. Return ONLY JSON: {\\\"intent\\\":\\\"<ONE>\\\"}. Valid: DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, WANTS_MORE_INFO, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL. Short replies (ok, yes, k, done, hi) are SHORT_NEUTRAL. A specific time/day = BOOKING. Vague later = DELAY. A real insurance question = QUESTION. Wanting a human = WANTS_HUMAN.' }, { role:'user', content: 'Stage: ' + $json.stage + '\\nMessage: \"' + $json.userText + '\"' } ] }) }}",
+        "options": {}
+      },
+      "id": "intent", "name": "HTTP · Intent", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 1040, 400 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $input.first().json;\nconst raw = c.choices?.[0]?.message?.content || '';\nlet intent = 'SHORT_NEUTRAL';\ntry { const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/); if (m) intent = JSON.parse(m[0]).intent || intent; } catch(e) {}\nconst valid = ['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','WANTS_MORE_INFO','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL'];\nif (!valid.includes(intent)) intent = 'SHORT_NEUTRAL';\n// flow lookup\nconst flow = c.flow || {};\nconst node = (flow.stages && (flow.stages[c.stage] || flow.stages['new'])) || {};\nconst action = node[intent] || node['*'] || { next: c.stage, msg: null };\nlet route = 'stage';\nif (intent === 'WANTS_HUMAN') route = 'human';\nelse if (intent === 'QUESTION') route = 'faq';\n// build reply text for stage route\nlet reply = '';\nlet videoUrl = null;\nif (route === 'stage' && action.msg) {\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || '').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k.toLowerCase()] ?? vars[k] ?? '');\n  if (action.form && vars.form_link && !reply.includes(vars.form_link)) reply += '\\n\\n' + vars.form_link;\n  if (action.video) videoUrl = vars[action.video] || null;\n}\nreturn [{ json: { ...$('Code · State').first().json, userText: c.userText, intent, route, next: action.next || c.stage, reply, videoUrl } }];"
+      },
+      "id": "parseintent", "name": "Code · Intent + flow", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 1260, 400 ]
+    },
+    {
+      "parameters": {
+        "rules": { "values": [
+          { "conditions": { "options": { "version": 2, "caseSensitive": true, "typeValidation": "strict" },
+            "conditions": [ { "id": "h", "leftValue": "={{ $json.route }}", "rightValue": "human", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" },
+            "renameOutput": true, "outputKey": "human" },
+          { "conditions": { "options": { "version": 2, "caseSensitive": true, "typeValidation": "strict" },
+            "conditions": [ { "id": "f", "leftValue": "={{ $json.route }}", "rightValue": "faq", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" },
+            "renameOutput": true, "outputKey": "faq" }
+        ] },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "route", "name": "Switch · Route", "type": "n8n-nodes-base.switch", "typeVersion": 3.2,
+      "position": [ 1480, 400 ]
+    },
+    {
+      "parameters": {
+        "method": "POST", "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "Authorization", "value": "=Bearer {{ $json.openrouter_key }}" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, temperature: 0.4, messages: [ { role:'system', content: $json.main_prompt }, { role:'user', content: $json.userText } ] }) }}",
+        "options": {}
+      },
+      "id": "faqcall", "name": "HTTP · FAQ answer", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 1700, 520 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Code · Intent + flow').first().json;\nconst r = $input.first().json;\nconst reply = r.choices?.[0]?.message?.content?.trim() || 'Sir/Madam, ഒരു moment 🙏';\nreturn [{ json: { ...c, reply } }];"
+      },
+      "id": "faqextract", "name": "Code · FAQ reply", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 1920, 520 ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.chatwoot_base }}/api/v1/accounts/{{ $json.chatwoot_account_id }}/conversations/{{ $json.convId }}/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "api_access_token", "value": "={{ $json.chatwoot_token }}" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: $json.reply, message_type: 'outgoing', private: false }) }}",
+        "options": {}
+      },
+      "id": "send", "name": "HTTP · Send reply", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 2140, 460 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.chatwoot_base }}/api/v1/accounts/{{ $json.chatwoot_account_id }}/conversations/{{ $json.convId }}/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "api_access_token", "value": "={{ $json.chatwoot_token }}" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: 'Sure 🙏 connecting you to our advisor now.', message_type: 'outgoing', private: false }) }}",
+        "options": {}
+      },
+      "id": "sendhuman", "name": "HTTP · Handover msg", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 1700, 300 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $input.first().json;\nconst isHuman = c.route === 'human';\nconst body = { Phone: c.phone, Name: c.name, ConversationID: c.convId, Date: new Date().toISOString(), Language: c.language };\nif (isHuman) { body.Stage = 'human_handover'; body.Handover = 'Yes'; }\nelse { body.Stage = c.next; }\nif (!isHuman && c.next !== c.stage) { body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; }\nconst method = c.leadId ? 'PATCH' : 'POST';\nif (c.leadId) body.Id = c.leadId;\nreturn [{ json: { ...c, _method: method, _body: body } }];"
+      },
+      "id": "prepupsert", "name": "Code · Prep lead", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 2360, 460 ]
+    },
+    {
+      "parameters": {
+        "method": "={{ $json._method }}",
+        "url": "={{ $json.nocodb_base }}/api/v2/tables/{{ $json.leads_table_id }}/records",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "={{ $json.nocodb_token }}" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json._body) }}",
+        "options": {}
+      },
+      "id": "upsert", "name": "HTTP · Upsert lead", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 2580, 460 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Shared engine (sub-workflow)\n\nCalled by each client's thin wrapper via Execute Workflow, receiving the Chatwoot payload + **client_id**. Looks up that client's config row (by Id) and runs everything: parse, intent, flow, send, lead update.\n\n**Key design:** tenant tokens are injected into HTTP headers from the config row — NOT n8n credentials. The only fixed credential is the master NocoDB token on *Get tenant* (reads the clients table).\n\n**Set the 3 placeholders** on *Get tenant*: REPLACE_CONTROL_WORKSPACE / PROJECT / CLIENTS_TABLE.\n\n**Media:** image → Gemini vision (via data_url). Voice → download + Gemini transcribe; swap *HTTP · Transcribe* for your STT if ogg audio isn't accepted. Falls back gracefully.\n\nNote this workflow's id → paste it into the onboard workflow's Settings (engine_workflow_id).",
+        "height": 360, "width": 460
+      },
+      "id": "note", "name": "README", "type": "n8n-nodes-base.stickyNote", "typeVersion": 1,
+      "position": [ -1200, -60 ]
+    }
+  ],
+  "connections": {
+    "When called by wrapper": { "main": [ [ { "node": "Code · Parse", "type": "main", "index": 0 } ] ] },
+    "Code · Parse": { "main": [ [ { "node": "NocoDB · Get tenant", "type": "main", "index": 0 } ] ] },
+    "NocoDB · Get tenant": { "main": [ [ { "node": "Code · Build ctx", "type": "main", "index": 0 } ] ] },
+    "Code · Build ctx": { "main": [ [ { "node": "HTTP · Get lead", "type": "main", "index": 0 } ] ] },
+    "HTTP · Get lead": { "main": [ [ { "node": "Code · State", "type": "main", "index": 0 } ] ] },
+    "Code · State": { "main": [ [ { "node": "Switch · Media", "type": "main", "index": 0 } ] ] },
+    "Switch · Media": { "main": [
+      [ { "node": "HTTP · Vision", "type": "main", "index": 0 } ],
+      [ { "node": "HTTP · Download audio", "type": "main", "index": 0 } ],
+      [ { "node": "Code · text→text", "type": "main", "index": 0 } ]
+    ] },
+    "HTTP · Vision": { "main": [ [ { "node": "Code · image→text", "type": "main", "index": 0 } ] ] },
+    "Code · image→text": { "main": [ [ { "node": "HTTP · Intent", "type": "main", "index": 0 } ] ] },
+    "HTTP · Download audio": { "main": [ [ { "node": "HTTP · Transcribe", "type": "main", "index": 0 } ] ] },
+    "HTTP · Transcribe": { "main": [ [ { "node": "Code · voice→text", "type": "main", "index": 0 } ] ] },
+    "Code · voice→text": { "main": [ [ { "node": "HTTP · Intent", "type": "main", "index": 0 } ] ] },
+    "Code · text→text": { "main": [ [ { "node": "HTTP · Intent", "type": "main", "index": 0 } ] ] },
+    "HTTP · Intent": { "main": [ [ { "node": "Code · Intent + flow", "type": "main", "index": 0 } ] ] },
+    "Code · Intent + flow": { "main": [ [ { "node": "Switch · Route", "type": "main", "index": 0 } ] ] },
+    "Switch · Route": { "main": [
+      [ { "node": "HTTP · Handover msg", "type": "main", "index": 0 } ],
+      [ { "node": "HTTP · FAQ answer", "type": "main", "index": 0 } ],
+      [ { "node": "HTTP · Send reply", "type": "main", "index": 0 } ]
+    ] },
+    "HTTP · Handover msg": { "main": [ [ { "node": "Code · Prep lead", "type": "main", "index": 0 } ] ] },
+    "HTTP · FAQ answer": { "main": [ [ { "node": "Code · FAQ reply", "type": "main", "index": 0 } ] ] },
+    "Code · FAQ reply": { "main": [ [ { "node": "HTTP · Send reply", "type": "main", "index": 0 } ] ] },
+    "HTTP · Send reply": { "main": [ [ { "node": "Code · Prep lead", "type": "main", "index": 0 } ] ] },
+    "Code · Prep lead": { "main": [ [ { "node": "HTTP · Upsert lead", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

@@ -1,0 +1,129 @@
+{
+  "name": "Leadvyne · Onboard + Provision",
+  "nodes": [
+    {
+      "parameters": { "httpMethod": "POST", "path": "leadvyne-onboard", "responseMode": "responseNode", "options": { "allowedOrigins": "*" } },
+      "id": "wh", "name": "Webhook · Onboard", "type": "n8n-nodes-base.webhook", "typeVersion": 2,
+      "position": [ -1100, 300 ], "webhookId": "leadvyne-onboard"
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "p", "name": "passcode", "value": "REPLACE_PASSCODE", "type": "string" },
+          { "id": "n", "name": "n8n_base", "value": "https://n8n.aiautomationsuae.com", "type": "string" },
+          { "id": "e", "name": "engine_workflow_id", "value": "REPLACE_ENGINE_WORKFLOW_ID", "type": "string" }
+        ] },
+        "options": {}
+      },
+      "id": "settings", "name": "Set · Settings", "type": "n8n-nodes-base.set", "typeVersion": 3.4,
+      "position": [ -880, 300 ]
+    },
+    {
+      "parameters": {
+        "conditions": { "options": { "version": 2, "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [ {
+            "id": "auth", "leftValue": "={{ $('Webhook · Onboard').first().json.body.passcode }}",
+            "rightValue": "={{ $json.passcode }}",
+            "operator": { "type": "string", "operation": "equals" }
+          } ], "combinator": "and" },
+        "options": {}
+      },
+      "id": "ifauth", "name": "IF · Passcode", "type": "n8n-nodes-base.if", "typeVersion": 2.2,
+      "position": [ -660, 300 ]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={ \"ok\": false, \"error\": \"unauthorised\" }", "options": { "responseCode": 401 } },
+      "id": "resp401", "name": "Respond · 401", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1,
+      "position": [ -440, 480 ]
+    },
+    {
+      "parameters": {
+        "authentication": "nocoDbApiToken", "operation": "create",
+        "workspaceId": "REPLACE_CONTROL_WORKSPACE", "projectId": "REPLACE_CONTROL_PROJECT", "table": "REPLACE_CLIENTS_TABLE",
+        "fieldsUi": { "fieldValues": [
+          { "fieldName": "client_name",        "fieldValue": "={{ $('Webhook · Onboard').first().json.body.client_name }}" },
+          { "fieldName": "chatwoot_account_id", "fieldValue": "={{ $('Webhook · Onboard').first().json.body.chatwoot_account_id }}" },
+          { "fieldName": "chatwoot_inbox_id",   "fieldValue": "={{ $('Webhook · Onboard').first().json.body.chatwoot_inbox_id }}" },
+          { "fieldName": "chatwoot_base",       "fieldValue": "={{ $('Webhook · Onboard').first().json.body.chatwoot_base }}" },
+          { "fieldName": "chatwoot_token",      "fieldValue": "={{ $('Webhook · Onboard').first().json.body.chatwoot_token }}" },
+          { "fieldName": "nocodb_base",         "fieldValue": "={{ $('Webhook · Onboard').first().json.body.nocodb_base }}" },
+          { "fieldName": "leads_table_id",      "fieldValue": "={{ $('Webhook · Onboard').first().json.body.leads_table_id }}" },
+          { "fieldName": "nocodb_token",        "fieldValue": "={{ $('Webhook · Onboard').first().json.body.nocodb_token }}" },
+          { "fieldName": "openrouter_key",      "fieldValue": "={{ $('Webhook · Onboard').first().json.body.openrouter_key }}" },
+          { "fieldName": "model",               "fieldValue": "={{ $('Webhook · Onboard').first().json.body.model }}" },
+          { "fieldName": "language",            "fieldValue": "={{ $('Webhook · Onboard').first().json.body.language }}" },
+          { "fieldName": "main_prompt",         "fieldValue": "={{ $('Webhook · Onboard').first().json.body.main_prompt }}" },
+          { "fieldName": "flow_json",           "fieldValue": "={{ typeof $('Webhook · Onboard').first().json.body.flow_json === 'string' ? $('Webhook · Onboard').first().json.body.flow_json : JSON.stringify($('Webhook · Onboard').first().json.body.flow_json) }}" },
+          { "fieldName": "followup_count",      "fieldValue": "={{ $('Webhook · Onboard').first().json.body.followup_count }}" },
+          { "fieldName": "followup_hours",      "fieldValue": "={{ $('Webhook · Onboard').first().json.body.followup_hours }}" },
+          { "fieldName": "followup_messages",   "fieldValue": "={{ $('Webhook · Onboard').first().json.body.followup_messages }}" },
+          { "fieldName": "active",              "fieldValue": "Yes" }
+        ] }
+      },
+      "id": "createclient", "name": "NocoDB · Create client", "type": "n8n-nodes-base.nocoDb", "typeVersion": 3,
+      "position": [ -440, 220 ],
+      "credentials": { "nocoDbApiToken": { "id": "KL3kUVZOFL1V0mAd", "name": "NocoDB Token account" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const s   = $('Set · Settings').first().json;\nconst b   = $('Webhook · Onboard').first().json.body;\nconst row = $input.first().json;\nconst clientId = row.Id || row.id || row.ncRecordId;\nconst slug = ('c-' + b.chatwoot_inbox_id + '-' + clientId).replace(/[^a-zA-Z0-9_-]/g,'');\nconst engineId = s.engine_workflow_id;\n\nconst wrapper = {\n  name: 'Bot · ' + (b.client_name || ('client-'+clientId)) + ' (#' + clientId + ')',\n  nodes: [\n    { parameters:{ httpMethod:'POST', path: slug, responseMode:'responseNode', options:{} },\n      name:'Webhook', type:'n8n-nodes-base.webhook', typeVersion:2, position:[0,0], webhookId: slug },\n    { parameters:{ respondWith:'json', responseBody:'={ \"ok\": true }', options:{} },\n      name:'Respond ACK', type:'n8n-nodes-base.respondToWebhook', typeVersion:1.1, position:[0,200] },\n    { parameters:{ assignments:{ assignments:[ { id:'cid', name:'client_id', value:String(clientId), type:'string' } ] }, includeOtherFields:true, options:{} },\n      name:'Set client_id', type:'n8n-nodes-base.set', typeVersion:3.4, position:[260,0] },\n    { parameters:{ workflowId:{ __rl:true, value: engineId, mode:'id' }, options:{} },\n      name:'Run engine', type:'n8n-nodes-base.executeWorkflow', typeVersion:1.2, position:[520,0] }\n    /* ── add per-client nodes here (Level 2 customisation) ── */\n  ],\n  connections: {\n    'Webhook': { main: [ [ { node:'Respond ACK', type:'main', index:0 }, { node:'Set client_id', type:'main', index:0 } ] ] },\n    'Set client_id': { main: [ [ { node:'Run engine', type:'main', index:0 } ] ] }\n  },\n  settings: { executionOrder:'v1' }\n};\n\nconst webhook_url = s.n8n_base.replace(/\\/$/,'') + '/webhook/' + slug;\nreturn [{ json: { wrapper, webhook_url, clientId } }];"
+      },
+      "id": "buildwrapper", "name": "Code · Build wrapper", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ -220, 220 ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Set · Settings').first().json.n8n_base }}/api/v1/workflows",
+        "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.wrapper) }}",
+        "options": {}
+      },
+      "id": "createwf", "name": "HTTP · Create workflow", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 0, 220 ],
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_N8N_API_CRED", "name": "n8n API" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Set · Settings').first().json.n8n_base }}/api/v1/workflows/{{ $json.id || $json.data.id }}/activate",
+        "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "activatewf", "name": "HTTP · Activate workflow", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 220, 220 ],
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_N8N_API_CRED", "name": "n8n API" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"webhook_url\": \"{{ $('Code · Build wrapper').first().json.webhook_url }}\", \"client_id\": \"{{ $('Code · Build wrapper').first().json.clientId }}\" }",
+        "options": {}
+      },
+      "id": "respok", "name": "Respond · OK", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1,
+      "position": [ 440, 220 ]
+    },
+    {
+      "parameters": {
+        "content": "## Onboard + Provision (option B)\n\nFront-end POSTs here → checks passcode → writes the client row → creates and ACTIVATES that client's wrapper workflow via the n8n API → returns the webhook URL.\n\n**Set before use:**\n1. `Set · Settings`: REPLACE_PASSCODE, REPLACE_ENGINE_WORKFLOW_ID (the id of the imported engine.json).\n2. `NocoDB · Create client`: control workspace/project/clients-table ids + master credential.\n3. `HTTP · Create/Activate`: create a Header Auth credential named **n8n API** with header `X-N8N-API-KEY` = your n8n API key, and select it on both nodes.\n\nThe n8n API key lives only in that credential — it never leaves your instance.",
+        "height": 320, "width": 460
+      },
+      "id": "note", "name": "README", "type": "n8n-nodes-base.stickyNote", "typeVersion": 1,
+      "position": [ -1100, -80 ]
+    }
+  ],
+  "connections": {
+    "Webhook · Onboard": { "main": [ [ { "node": "Set · Settings", "type": "main", "index": 0 } ] ] },
+    "Set · Settings": { "main": [ [ { "node": "IF · Passcode", "type": "main", "index": 0 } ] ] },
+    "IF · Passcode": { "main": [
+      [ { "node": "NocoDB · Create client", "type": "main", "index": 0 } ],
+      [ { "node": "Respond · 401", "type": "main", "index": 0 } ]
+    ] },
+    "NocoDB · Create client": { "main": [ [ { "node": "Code · Build wrapper", "type": "main", "index": 0 } ] ] },
+    "Code · Build wrapper": { "main": [ [ { "node": "HTTP · Create workflow", "type": "main", "index": 0 } ] ] },
+    "HTTP · Create workflow": { "main": [ [ { "node": "HTTP · Activate workflow", "type": "main", "index": 0 } ] ] },
+    "HTTP · Activate workflow": { "main": [ [ { "node": "Respond · OK", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" }
+}
