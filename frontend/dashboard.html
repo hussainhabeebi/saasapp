@@ -134,6 +134,7 @@ const CONFIG = {
   NOCODB_BASE:      'https://whizz.aiingo.com',
   NOCODB_TOKEN:     'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',
   CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj',
+  LEADS_TABLE_ID:   'mvg6rcw0ia5qqrx',
 };
 </script>
 
@@ -428,11 +429,8 @@ function showWorkflowStatus() {
 async function loadStats() {
   if (!clientRecord) return;
   try {
-    const base = clientRecord.nocodb_base;
-    const token = clientRecord.nocodb_token;
-    const table = clientRecord.leads_table_id;
-    if (!base || !token || !table) { renderNoLeads(); return; }
-    const data = await ncGet(`${base}/api/v2/tables/${table}/records?limit=1000&sort=-Date`, token);
+    const url = `${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${clientId})&limit=1000&sort=-Date`;
+    const data = await ncGet(url, CONFIG.NOCODB_TOKEN);
     const leads = data.list || [];
     renderStats(leads);
     renderFunnel(leads);
@@ -483,9 +481,9 @@ function renderLeads(leads) {
 }
 
 function renderNoLeads() {
-  ['sTotal','sActive','sRate','sToday'].forEach(id=>$id(id).textContent='—');
-  $id('funnelChart').innerHTML='<div style="color:var(--muted);font-size:13px">Leads table not configured</div>';
-  $id('leadsBody').innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">No leads table configured</td></tr>';
+  ['sTotal','sActive','sRate','sToday'].forEach(id=>$id(id).textContent='0');
+  $id('funnelChart').innerHTML='<div style="color:var(--muted);font-size:13px">No leads yet</div>';
+  $id('leadsBody').innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">No leads yet</td></tr>';
 }
 
 // ---- leads panel ----
@@ -494,12 +492,9 @@ let selectedLeadId = null;
 
 async function loadLeads() {
   if (!clientRecord) return;
-  const base = clientRecord.nocodb_base;
-  const token = clientRecord.nocodb_token;
-  const table = clientRecord.leads_table_id;
-  if (!base || !token || !table) return;
   try {
-    const data = await ncGet(`${base}/api/v2/tables/${table}/records?limit=200&sort=-Date`, token);
+    const url = `${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${clientId})&limit=200&sort=-Date`;
+    const data = await ncGet(url, CONFIG.NOCODB_TOKEN);
     allLeads = data.list || [];
     renderLeadsList(allLeads);
     populateBroadcastStages(allLeads);
@@ -559,9 +554,9 @@ $id('stageOverrideBtn').addEventListener('click', async () => {
   const lead = allLeads.find(l => l.Id === selectedLeadId);
   if (!lead) return;
   try {
-    await fetch(`${clientRecord.nocodb_base}/api/v2/tables/${clientRecord.leads_table_id}/records`, {
+    await fetch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`, {
       method: 'PATCH',
-      headers: { 'xc-token': clientRecord.nocodb_token, 'Content-Type': 'application/json' },
+      headers: { 'xc-token': CONFIG.NOCODB_TOKEN, 'Content-Type': 'application/json' },
       body: JSON.stringify({ Id: selectedLeadId, Stage: stage })
     });
     lead.Stage = stage;
