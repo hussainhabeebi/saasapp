@@ -396,33 +396,26 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 <script>
 'use strict';
 
-// ── Session keys ──────────────────────────────────────────────
-const KEYS = {
-  base: 'nocodb_base',
-  clients: 'clients_table_id',
-  analytics: 'analytics_table_id',
-  token: 'nocodb_token',
-  n8nBase: 'n8n_base',
-  n8nKey: 'n8n_key',
+// ── CONFIG — fill these in once before deploying ──────────────
+const CONFIG = {
+  NOCODB_BASE:        'REPLACE_NOCODB_BASE',
+  NOCODB_TOKEN:       'REPLACE_NOCODB_MASTER_TOKEN',
+  CLIENTS_TABLE_ID:   'REPLACE_CLIENTS_TABLE_ID',
+  ANALYTICS_TABLE_ID: 'REPLACE_ANALYTICS_TABLE_ID',
+  N8N_BASE:           'REPLACE_N8N_BASE',
+  N8N_API_KEY:        'REPLACE_N8N_API_KEY',
+  ADMIN_PASSCODE:     'REPLACE_ADMIN_PASSCODE',
 };
-
-function session(key, val) {
-  if (val !== undefined) return sessionStorage.setItem(key, val);
-  return sessionStorage.getItem(key);
-}
-
-function clearSession() {
-  Object.values(KEYS).forEach(k => sessionStorage.removeItem(k));
-}
+// ─────────────────────────────────────────────────────────────
 
 function getConfig() {
   return {
-    base: session(KEYS.base),
-    clients: session(KEYS.clients),
-    analytics: session(KEYS.analytics),
-    token: session(KEYS.token),
-    n8nBase: session(KEYS.n8nBase),
-    n8nKey: session(KEYS.n8nKey),
+    base:      CONFIG.NOCODB_BASE,
+    clients:   CONFIG.CLIENTS_TABLE_ID,
+    analytics: CONFIG.ANALYTICS_TABLE_ID,
+    token:     CONFIG.NOCODB_TOKEN,
+    n8nBase:   CONFIG.N8N_BASE,
+    n8nKey:    CONFIG.N8N_API_KEY,
   };
 }
 
@@ -472,20 +465,18 @@ const editOverlay = document.getElementById('edit-overlay');
 
 // ── Login ─────────────────────────────────────────────────────
 document.getElementById('btn-connect').addEventListener('click', async () => {
-  const cfg = {
-    base: document.getElementById('f-nocodb-base').value.trim().replace(/\/$/, ''),
-    clients: document.getElementById('f-clients-table').value.trim(),
-    analytics: document.getElementById('f-analytics-table').value.trim(),
-    token: document.getElementById('f-token').value.trim(),
-    n8nBase: document.getElementById('f-n8n-base').value.trim().replace(/\/$/, ''),
-    n8nKey: document.getElementById('f-n8n-key').value.trim(),
-  };
-
+  const passcode = document.getElementById('f-token').value.trim();
   const errEl = document.getElementById('login-error');
   errEl.style.display = 'none';
 
-  if (!cfg.base || !cfg.clients || !cfg.analytics || !cfg.token) {
-    errEl.textContent = 'NocoDB URL, Clients table ID, Analytics table ID, and Token are required.';
+  if (!passcode) {
+    errEl.textContent = 'Enter the admin passcode.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  if (passcode !== CONFIG.ADMIN_PASSCODE) {
+    errEl.textContent = 'Wrong passcode.';
     errEl.style.display = 'block';
     return;
   }
@@ -494,30 +485,23 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
   btn.disabled = true; btn.textContent = 'Connecting…';
 
   try {
-    // Test connection
+    const cfg = getConfig();
     await apiGet(`${cfg.base}/api/v2/tables/${cfg.clients}/records?limit=1`, cfg.token);
-    // Store
-    session(KEYS.base, cfg.base);
-    session(KEYS.clients, cfg.clients);
-    session(KEYS.analytics, cfg.analytics);
-    session(KEYS.token, cfg.token);
-    session(KEYS.n8nBase, cfg.n8nBase);
-    session(KEYS.n8nKey, cfg.n8nKey);
     showApp();
   } catch(e) {
-    errEl.textContent = 'Could not connect: ' + e.message;
+    errEl.textContent = 'Connected to NocoDB failed: ' + e.message + '. Check CONFIG values.';
     errEl.style.display = 'block';
     btn.disabled = false; btn.textContent = 'Connect →';
   }
 });
 
 document.getElementById('btn-disconnect').addEventListener('click', () => {
-  clearSession();
   allClients = [];
   grid.innerHTML = '';
   header.style.display = 'none';
   main.classList.remove('visible');
   loginOverlay.classList.remove('hidden');
+  document.getElementById('f-token').value = '';
 });
 
 // ── App init ──────────────────────────────────────────────────
@@ -803,9 +787,11 @@ function escHtml(s) {
 
 // ── Boot ──────────────────────────────────────────────────────
 (function boot() {
+  // Config is baked in — gate only asks for passcode
+  document.getElementById('f-token').placeholder = 'Admin passcode';
   const cfg = getConfig();
-  if (configComplete(cfg)) {
-    showApp();
+  if (!configComplete(cfg)) {
+    console.warn('Leadvyne Admin: fill in CONFIG values at the top of the script before deploying.');
   }
 })();
 </script>
