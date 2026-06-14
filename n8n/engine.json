@@ -71,8 +71,8 @@
         "headerParameters": { "parameters": [
           { "name": "Authorization", "value": "=Bearer {{ $json.openrouter_key }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $json.model, messages: [ { role:'user', content: [ { type:'text', text:'Describe what this image shows in one short sentence, focused on anything relevant to an insurance enquiry.' }, { type:'image_url', image_url: { url: $json.mediaUrl } } ] } ] }) }}",
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify({ model: $json.model, messages: [ { role:'user', content: [ { type:'text', text:'Describe what this image shows in one short sentence, focused on anything relevant to an insurance enquiry.' }, { type:'image_url', image_url: { url: $json.mediaUrl } } ] } ] }) }}",
         "options": {}
       },
       "id": "vision", "name": "HTTP · Vision", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -100,8 +100,8 @@
         "headerParameters": { "parameters": [
           { "name": "Authorization", "value": "=Bearer {{ $('Code · State').first().json.openrouter_key }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $('Code · State').first().json.model, messages: [ { role:'user', content: [ { type:'text', text:'Transcribe this voice note verbatim. Output only the transcription.' }, { type:'input_audio', input_audio: { data: $binary.data.data, format: 'ogg' } } ] } ] }) }}",
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify({ model: $('Code · State').first().json.model, messages: [ { role:'user', content: [ { type:'text', text:'Transcribe this voice note verbatim. Output only the transcription.' }, { type:'input_audio', input_audio: { data: $binary.data.data, format: 'ogg' } } ] } ] }) }}",
         "options": {}
       },
       "id": "stt", "name": "HTTP · Transcribe", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -130,17 +130,24 @@
     },
     {
       "parameters": {
+        "jsCode": "const c = $input.first().json;\nconst sysPrompt = 'You are an intent classifier for a WhatsApp sales bot. Return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}. Valid intents: DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, WANTS_MORE_INFO, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL. Short replies (ok, yes, k, done, hi) = SHORT_NEUTRAL. Specific time/day = BOOKING (put datetime in data.booking_time). Vague later = DELAY. Real product/service question = QUESTION. Wanting human = WANTS_HUMAN. For QUESTION also put cleaned question in data.question.';\nconst userMsg = 'Stage: ' + c.stage + '\\nLanguage: ' + (c.language || 'en') + '\\nUser: \"' + c.userText + '\"';\nreturn [{ json: { ...c, _intentBody: { model: c.model, temperature: 0, messages: [ { role: 'system', content: sysPrompt }, { role: 'user', content: userMsg } ] } } }];"
+      },
+      "id": "intentprep", "name": "Code · Prep intent", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 1220, 400 ]
+    },
+    {
+      "parameters": {
         "method": "POST", "url": "https://openrouter.ai/api/v1/chat/completions",
         "sendHeaders": true,
         "headerParameters": { "parameters": [
-          { "name": "Authorization", "value": "=Bearer {{ $json.openrouter_key }}" },
+          { "name": "Authorization", "value": "={{ 'Bearer ' + $json.openrouter_key }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $json.model, temperature: 0, messages: [ { role:'system', content: 'You are an intent classifier for a WhatsApp sales bot. Return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}. Valid intents: DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, WANTS_MORE_INFO, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL. Short replies (ok, yes, k, done, hi) = SHORT_NEUTRAL. Specific time/day = BOOKING (put datetime in data.booking_time). Vague later = DELAY. Real product/service question = QUESTION. Wanting human = WANTS_HUMAN. For QUESTION also put cleaned question in data.question.' }, { role:'user', content: 'Stage: ' + $json.stage + '\\nLanguage: ' + ($json.language||'en') + '\\nUser: \"' + $json.userText + '\"' } ] }) }}",
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify($json._intentBody) }}",
         "options": {}
       },
       "id": "intent", "name": "HTTP · Intent", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
-      "position": [ 1220, 400 ], "onError": "continueRegularOutput"
+      "position": [ 1440, 400 ], "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -214,8 +221,8 @@
         "headerParameters": { "parameters": [
           { "name": "Authorization", "value": "=Bearer {{ $json.openrouter_key }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $json.model, temperature: 0.4, messages: $json._faqMessages }) }}",
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify({ model: $json.model, temperature: 0.4, messages: $json._faqMessages }) }}",
         "options": {}
       },
       "id": "faqcall", "name": "HTTP · FAQ answer", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -343,7 +350,8 @@
     "HTTP · Transcribe": { "main": [ [ { "node": "Code · voice→text", "type": "main", "index": 0 } ] ] },
     "Code · voice→text": { "main": [ [ { "node": "Code · Merge text", "type": "main", "index": 0 } ] ] },
     "Code · text→text": { "main": [ [ { "node": "Code · Merge text", "type": "main", "index": 0 } ] ] },
-    "Code · Merge text": { "main": [ [ { "node": "HTTP · Intent", "type": "main", "index": 0 } ] ] },
+    "Code · Merge text": { "main": [ [ { "node": "Code · Prep intent", "type": "main", "index": 0 } ] ] },
+    "Code · Prep intent": { "main": [ [ { "node": "HTTP · Intent", "type": "main", "index": 0 } ] ] },
     "HTTP · Intent": { "main": [ [ { "node": "Code · Intent + flow", "type": "main", "index": 0 } ] ] },
     "Code · Intent + flow": { "main": [ [ { "node": "Switch · Route", "type": "main", "index": 0 } ] ] },
     "Switch · Route": { "main": [
