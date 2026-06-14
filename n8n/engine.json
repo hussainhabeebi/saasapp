@@ -15,18 +15,18 @@
     },
     {
       "parameters": {
-        "authentication": "nocoDbApiToken", "operation": "getAll",
-        "workspaceId": "w5qye21b", "projectId": "p5n4bal4b7tlh9l",
-        "table": "mxl33bg4wi70fqj", "limit": 1,
-        "options": { "where": "=(Id,eq,{{ $json.client_id }})" }
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records/{{ $json.client_id }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" } ] },
+        "options": {}
       },
-      "id": "tenant", "name": "NocoDB · Get tenant", "type": "n8n-nodes-base.nocoDb", "typeVersion": 3,
-      "position": [ -760, 400 ], "alwaysOutputData": true,
-      "credentials": { "nocoDbApiToken": { "id": "KL3kUVZOFL1V0mAd", "name": "NocoDB Token account" } }
+      "id": "tenant", "name": "NocoDB · Get tenant", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ -760, 400 ], "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "jsCode": "const msg = $('Code · Parse').first().json;\nconst t = $input.first().json;\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return []; // suspended client — drop silently\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  nocodb_base: t.nocodb_base, leads_table_id: t.leads_table_id, nocodb_token: t.nocodb_token,\n  nocodb_control_base: t.nocodb_base, analytics_table_id: t.analytics_table_id || '',\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key || $env.OPENROUTER_KEY, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions,\n  client_name: t.client_name || ''\n} }];"
+        "jsCode": "const msg = $('Code · Parse').first().json;\nconst raw = $input.first().json;\nconst t = raw.list ? raw.list[0] : raw;\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return []; // suspended client — drop silently\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  nocodb_base: t.nocodb_base, leads_table_id: t.leads_table_id, nocodb_token: t.nocodb_token,\n  nocodb_control_base: t.nocodb_base, analytics_table_id: t.analytics_table_id || '',\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key || $env.OPENROUTER_KEY, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions,\n  client_name: t.client_name || ''\n} }];"
       },
       "id": "ctx", "name": "Code · Build ctx", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ -540, 400 ]
