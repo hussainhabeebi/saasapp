@@ -26,7 +26,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const msg = $('Code · Parse').first().json;\nconst raw = $input.first().json;\nconst t = raw.list ? raw.list[0] : raw;\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return []; // suspended client — drop silently\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  nocodb_base: t.nocodb_base, leads_table_id: t.leads_table_id, nocodb_token: t.nocodb_token,\n  nocodb_control_base: t.nocodb_base, analytics_table_id: t.analytics_table_id || '',\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key || $env.OPENROUTER_KEY, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions,\n  client_name: t.client_name || '',\n  test_mode: t.test_mode || 'No',\n  test_phone: t.test_phone || ''\n} }];"
+        "jsCode": "const msg = $('Code · Parse').first().json;\nconst raw = $input.first().json;\nconst t = raw.list ? raw.list[0] : raw;\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return [];\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key || $env.OPENROUTER_KEY, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions,\n  client_name: t.client_name || '',\n  test_mode: t.test_mode || 'No',\n  test_phone: t.test_phone || ''\n} }];"
       },
       "id": "ctx", "name": "Code · Build ctx", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ -540, 400 ]
@@ -44,7 +44,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code · Build ctx').first().json;\nconst r = $input.first().json;\n// Filter by ClientId in JS to avoid NocoDB compound-filter 422 errors\nconst rows = r.list || [];\nconst lead = rows.find(l => String(l.ClientId) === String(c.client_id)) || null;\nif (lead && (lead.Handover === 'Yes' || lead.Stage === 'human_handover')) return [];\n// Test mode: only respond to test_phone if enabled\nif (c.test_mode === 'Yes' && c.test_phone && c.phone !== c.test_phone.replace(/[^0-9]/g,'')) return [];\n\n// Rate limiting: simple per-user debounce — reject if same user sent message within last 4s\nconst lastMsgAt = lead?.LastMsgAt ? new Date(lead.LastMsgAt).getTime() : 0;\nif (Date.now() - lastMsgAt < 4000) return []; // debounce duplicate webhook fires\n\n// Anti-loop: check if last 3 bot messages are identical\nlet history = [];\ntry { history = JSON.parse(lead?.ConvHistory || '[]'); } catch(e) {}\nconst botMsgs = history.filter(m => m.role === 'assistant').slice(-3).map(m => m.content);\nconst looping = botMsgs.length === 3 && botMsgs.every(m => m === botMsgs[0]);\n\n// Memory: trim active history if > 20 messages\nconst memSummary = lead?.MemSummary || '';\nconst activeHistory = history.length > 20 ? history.slice(-6) : history;\n\n// Qualification state\nlet qualAnswers = {};\ntry { qualAnswers = JSON.parse(lead?.QualAnswers || '{}'); } catch(e) {}\n\nreturn [{ json: { ...c, leadId: lead?.Id || null, stage: lead?.Stage || 'new', history, activeHistory, memSummary, looping, qualAnswers } }];"
+        "jsCode": "const c = $('Code · Build ctx').first().json;\nconst r = $input.first().json;\nconst rows = r.list || [];\nconst lead = rows.find(l => String(l.ClientId) === String(c.client_id)) || null;\nif (lead && (lead.Handover === 'Yes' || lead.Stage === 'human_handover')) return [];\nif (c.test_mode === 'Yes' && c.test_phone && c.phone !== c.test_phone.replace(/[^0-9]/g,'')) return [];\n\nconst lastMsgAt = lead?.LastMsgAt ? new Date(lead.LastMsgAt).getTime() : 0;\nif (Date.now() - lastMsgAt < 4000) return [];\n\nlet history = [];\ntry { history = JSON.parse(lead?.ConvHistory || '[]'); } catch(e) {}\nconst botMsgs = history.filter(m => m.role === 'assistant').slice(-3).map(m => m.content);\nconst looping = botMsgs.length === 3 && botMsgs.every(m => m === botMsgs[0]);\n\nconst memSummary = lead?.MemSummary || '';\nconst activeHistory = history.length > 20 ? history.slice(-6) : history;\n\nlet qualAnswers = {};\ntry { qualAnswers = JSON.parse(lead?.QualAnswers || '{}'); } catch(e) {}\n\nreturn [{ json: { ...c, leadId: lead?.Id || null, stage: lead?.Stage || 'new', history, activeHistory, memSummary, looping, qualAnswers } }];"
       },
       "id": "state", "name": "Code · State", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ -100, 400 ]
@@ -69,7 +69,7 @@
         "method": "POST", "url": "https://openrouter.ai/api/v1/chat/completions",
         "sendHeaders": true,
         "headerParameters": { "parameters": [
-          { "name": "Authorization", "value": "=Bearer {{ $json.openrouter_key }}" },
+          { "name": "Authorization", "value": "={{ 'Bearer ' + $json.openrouter_key }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
         "sendBody": true, "specifyBody": "string",
         "body": "={{ JSON.stringify({ model: $json.model, messages: [ { role:'user', content: [ { type:'text', text:'Describe what this image shows in one short sentence, focused on anything relevant to an insurance enquiry.' }, { type:'image_url', image_url: { url: $json.mediaUrl } } ] } ] }) }}",
@@ -98,7 +98,7 @@
         "method": "POST", "url": "https://openrouter.ai/api/v1/chat/completions",
         "sendHeaders": true,
         "headerParameters": { "parameters": [
-          { "name": "Authorization", "value": "=Bearer {{ $('Code · State').first().json.openrouter_key }}" },
+          { "name": "Authorization", "value": "={{ 'Bearer ' + $('Code · State').first().json.openrouter_key }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
         "sendBody": true, "specifyBody": "string",
         "body": "={{ JSON.stringify({ model: $('Code · State').first().json.model, messages: [ { role:'user', content: [ { type:'text', text:'Transcribe this voice note verbatim. Output only the transcription.' }, { type:'input_audio', input_audio: { data: $binary.data.data, format: 'ogg' } } ] } ] }) }}",
@@ -130,21 +130,17 @@
     },
     {
       "parameters": {
-        "method": "POST", "url": "https://openrouter.ai/api/v1/chat/completions",
-        "sendHeaders": true,
-        "headerParameters": { "parameters": [
-          { "name": "Authorization", "value": "={{ 'Bearer ' + $json.openrouter_key }}" },
-          { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "string",
-        "body": "={{ JSON.stringify($json._intentBody) }}",
+        "promptType": "define",
+        "text": "=Stage: {{ $json.stage }}\nLanguage: {{ $json.language }}\nUser message: \"{{ $json.userText }}\"\n\nClassify the user message above. Return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}.\nAFFIRMATIVE = yes/ok/sure/done/good/great/agree — any positive reply to bot content.\nWATCHED = watched/seen a video or content.\nFORM_DONE = filled a form.\nBOOKING = specific time or date mentioned (put in data.booking_time).\nDELAY = not now/later/busy/vague postpone.\nWANTS_MORE_INFO = tell me more/explain/details.\nQUESTION = real product or service question (put cleaned question in data.question).\nWANTS_HUMAN = speak to human/agent/person.\nSHORT_NEUTRAL = only pure openers with zero other meaning: hi/hello/hey.\nWhen in doubt between SHORT_NEUTRAL and AFFIRMATIVE, always prefer AFFIRMATIVE.",
         "options": {}
       },
-      "id": "intent", "name": "HTTP · Intent", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
-      "position": [ 1440, 400 ], "onError": "continueRegularOutput"
+      "id": "aiagent", "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent", "typeVersion": 3.1,
+      "position": [ 1220, 400 ]
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\n// Support both n8n AI node output and raw OpenAI HTTP response\nconst raw = c.output || c.text || c.choices?.[0]?.message?.content || '';\nlet intent = 'SHORT_NEUTRAL', intentData = {};\ntry {\n  const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/);\n  if (m) { const p = JSON.parse(m[0]); intent = p.intent || intent; intentData = p.data || {}; }\n} catch(e) {}\nconst valid = ['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','WANTS_MORE_INFO','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL'];\nif (!valid.includes(intent)) intent = 'SHORT_NEUTRAL';\n\nconst sc = $('Code · State').first().json;\n// Anti-loop override\nif (sc.looping && sc.botConfig?.antiloop_enabled !== false) intent = 'WANTS_HUMAN';\n\n// Qualification routing\nconst qs = sc.qualQuestions || [];\nconst qualDone = !qs.length || sc.botConfig?.qual_enabled === false || (sc.stage && !sc.stage.startsWith('qual_') && sc.stage !== 'new');\nconst qualStage = sc.stage?.startsWith('qual_') ? parseInt(sc.stage.replace('qual_','')) : null;\n\n// Flow lookup — only use 'new' fallback when stage IS 'new', otherwise FAQ if stage not found\nconst flow = sc.flow || {};\nconst stageNode = flow.stages?.[sc.stage];\nconst node = stageNode || (sc.stage === 'new' || !sc.stage ? flow.stages?.['new'] : null) || {};\nconst stageNotFound = !stageNode && sc.stage && sc.stage !== 'new';\nconst action = node[intent] || node['*'] || { next: sc.stage, msg: null };\n\n// Routing: positive intents advance stage, negative/uncertain go to FAQ\nconst POSITIVE = new Set(['AFFIRMATIVE','WATCHED','FORM_DONE','BOOKING','SHORT_NEUTRAL']);\nconst NEGATIVE = new Set(['DELAY','WANTS_MORE_INFO']);\n\nlet route = 'stage';\nif (intent === 'WANTS_HUMAN' && sc.botConfig?.handover_enabled !== false) route = 'human';\nelse if (stageNotFound || intent === 'QUESTION' || NEGATIVE.has(intent)) route = 'faq';\nelse if (!qualDone && qualStage === null) route = 'qualify';\nelse if (!qualDone && qualStage !== null) route = 'qualify_next';\n\n// Build stage reply (only for positive/stage route)\nlet reply = '', videoUrl = null;\nif (route === 'stage' && action.msg) {\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || '').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k.toLowerCase()] ?? vars[k] ?? '');\n  if (action.form && vars.form_link && !reply.includes(vars.form_link)) reply += '\\n\\n' + vars.form_link;\n  if (action.video) videoUrl = vars[action.video] || null;\n}\n// If stage msg is null, route to FAQ\nif (route === 'stage' && !action.msg) route = 'faq';\n\nreturn [{ json: { ...sc, userText: c.userText, intent, intentData, route, next: action.next || sc.stage, reply, videoUrl, qualStage } }];"
+        "jsCode": "const c = $input.first().json;\n// AI Agent output is {output:'...'}, get userText from Code · Merge text\nconst mergeCtx = $('Code · Merge text').first().json;\nconst userText = mergeCtx.userText || '';\n\n// Support both n8n AI node output and raw OpenAI HTTP response\nconst raw = c.output || c.text || c.choices?.[0]?.message?.content || '';\nlet intent = 'SHORT_NEUTRAL', intentData = {};\ntry {\n  const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/);\n  if (m) { const p = JSON.parse(m[0]); intent = p.intent || intent; intentData = p.data || {}; }\n} catch(e) {}\nconst valid = ['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','WANTS_MORE_INFO','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL'];\nif (!valid.includes(intent)) intent = 'SHORT_NEUTRAL';\n\nconst sc = $('Code · State').first().json;\nif (sc.looping && sc.botConfig?.antiloop_enabled !== false) intent = 'WANTS_HUMAN';\n\nconst qs = sc.qualQuestions || [];\nconst qualDone = !qs.length || sc.botConfig?.qual_enabled === false || (sc.stage && !sc.stage.startsWith('qual_') && sc.stage !== 'new');\nconst qualStage = sc.stage?.startsWith('qual_') ? parseInt(sc.stage.replace('qual_','')) : null;\n\n// Flow lookup — only fall back to 'new' when stage IS 'new', otherwise route to FAQ\nconst flow = sc.flow || {};\nconst stageNode = flow.stages?.[sc.stage];\nconst node = stageNode || (sc.stage === 'new' || !sc.stage ? flow.stages?.['new'] : null) || {};\nconst stageNotFound = !stageNode && sc.stage && sc.stage !== 'new';\nconst action = node[intent] || node['*'] || { next: sc.stage, msg: null };\n\nconst POSITIVE = new Set(['AFFIRMATIVE','WATCHED','FORM_DONE','BOOKING','SHORT_NEUTRAL']);\nconst NEGATIVE = new Set(['DELAY','WANTS_MORE_INFO']);\n\nlet route = 'stage';\nif (intent === 'WANTS_HUMAN' && sc.botConfig?.handover_enabled !== false) route = 'human';\nelse if (stageNotFound || intent === 'QUESTION' || NEGATIVE.has(intent)) route = 'faq';\nelse if (!qualDone && qualStage === null) route = 'qualify';\nelse if (!qualDone && qualStage !== null) route = 'qualify_next';\n\nlet reply = '', videoUrl = null;\nif (route === 'stage' && action.msg) {\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || '').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k.toLowerCase()] ?? vars[k] ?? '');\n  if (action.form && vars.form_link && !reply.includes(vars.form_link)) reply += '\\n\\n' + vars.form_link;\n  if (action.video) videoUrl = vars[action.video] || null;\n}\nif (route === 'stage' && !action.msg) route = 'faq';\n\nreturn [{ json: { ...sc, userText, intent, intentData, route, next: action.next || sc.stage, reply, videoUrl, qualStage } }];"
       },
       "id": "parseintent", "name": "Code · Intent + flow", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ 1440, 400 ]
@@ -178,8 +174,8 @@
         "headerParameters": { "parameters": [
           { "name": "api_access_token", "value": "={{ $json.chatwoot_token }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ content: 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.', message_type: 'outgoing', private: false }) }}",
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify({ content: 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.', message_type: 'outgoing', private: false }) }}",
         "options": { "retryOnFail": true, "maxTries": 3, "waitBetweenTries": 2000 }
       },
       "id": "sendhuman", "name": "HTTP · Handover msg", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -193,8 +189,8 @@
         "headerParameters": { "parameters": [
           { "name": "api_access_token", "value": "={{ $('Code · Intent + flow').first().json.chatwoot_token }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ labels: ['human-requested'] }) }}",
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify({ labels: ['human-requested'] }) }}",
         "options": {}
       },
       "id": "handoverlabel", "name": "HTTP · Handover label", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -212,7 +208,7 @@
         "method": "POST", "url": "https://openrouter.ai/api/v1/chat/completions",
         "sendHeaders": true,
         "headerParameters": { "parameters": [
-          { "name": "Authorization", "value": "=Bearer {{ $json.openrouter_key }}" },
+          { "name": "Authorization", "value": "={{ 'Bearer ' + $json.openrouter_key }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
         "sendBody": true, "specifyBody": "string",
         "body": "={{ JSON.stringify({ model: $json.model, temperature: 0.4, messages: $json._faqMessages }) }}",
@@ -237,7 +233,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst qs = c.qualQuestions || [];\nconst currentIdx = c.qualStage !== null ? c.qualStage : 0;\nconst nextIdx = currentIdx + 1;\nlet qualAnswers = c.qualAnswers || {};\nif (qs[currentIdx]) qualAnswers[qs[currentIdx]] = c.userText;\nlet reply, next;\nif (nextIdx < qs.length) {\n  reply = qs[nextIdx];\n  next = 'qual_' + nextIdx;\n} else {\n  const flow = c.flow || {};\n  const firstStage = Object.keys(flow.stages || {})[0] || 'new';\n  const action = (flow.stages?.[firstStage] || {})['*'] || { next: firstStage, msg: null };\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || 'Great, thanks! Let me share some information 😊').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k] ?? '');\n  next = action.next || firstStage;\n}\nreturn [{ json: { ...c, reply, next, qualAnswers } }];"
+        "jsCode": "const c = $input.first().json;\nconst qs = c.qualQuestions || [];\nconst currentIdx = c.qualStage !== null ? c.qualStage : 0;\nconst nextIdx = currentIdx + 1;\nlet qualAnswers = c.qualAnswers || {};\nif (qs[currentIdx]) qualAnswers[qs[currentIdx]] = c.userText;\nlet reply, next;\nif (nextIdx < qs.length) {\n  reply = qs[nextIdx];\n  next = 'qual_' + nextIdx;\n} else {\n  const flow = c.flow || {};\n  const firstStage = Object.keys(flow.stages || {}).filter(k => k !== 'new')[0] || 'new';\n  const action = (flow.stages?.[firstStage] || {})['*'] || { next: firstStage, msg: null };\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || 'Great, thanks! Let me share some information 😊').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k] ?? '');\n  next = action.next || firstStage;\n}\nreturn [{ json: { ...c, reply, next, qualAnswers } }];"
       },
       "id": "qualnext", "name": "Code · Qual next", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ 1880, 700 ]
@@ -250,8 +246,8 @@
         "headerParameters": { "parameters": [
           { "name": "api_access_token", "value": "={{ $json.chatwoot_token }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ content: $json.reply, message_type: 'outgoing', private: false }) }}",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [ { "name": "content", "value": "={{ $json.reply }}" } ] },
         "options": { "retryOnFail": true, "maxTries": 3, "waitBetweenTries": 2000 }
       },
       "id": "send", "name": "HTTP · Send reply", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -259,7 +255,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Pull full context — try each source until we get one with client_id\nlet sc = null;\nconst _nodesToTry = ['Code · Intent + flow', 'Code · State', 'Code · Build ctx'];\nfor (const n of _nodesToTry) {\n  try { const t = $(n).first().json; if (t && t.client_id) { sc = t; break; } } catch(e) {}\n}\nif (!sc) sc = $input.first().json;\nconst route = sc.route || 'stage';\n\n// Get reply and next from the route-specific node (HTTP · Send reply output loses context)\nlet reply = sc.reply;\nlet next = sc.next;\nlet qualAnswers = sc.qualAnswers || {};\n\nif (route === 'faq') {\n  try { reply = $('Code · FAQ reply').first().json.reply || reply; } catch(e) {}\n} else if (route === 'qualify') {\n  try { const qn = $('Code · Qual start').first().json; reply = qn.reply; next = qn.next; } catch(e) {}\n} else if (route === 'qualify_next') {\n  try { const qn = $('Code · Qual next').first().json; reply = qn.reply; next = qn.next; qualAnswers = qn.qualAnswers || qualAnswers; } catch(e) {}\n}\n\nconst history = (sc.history || []).slice();\nif (sc.userText) history.push({ role: 'user', content: sc.userText });\nif (reply) history.push({ role: 'assistant', content: reply });\n\nconst isHuman = route === 'human';\nconst body = {\n  ClientId: String(sc.client_id),\n  Phone: sc.phone, Name: sc.name, ConversationID: sc.convId,\n  Date: new Date().toISOString(), Language: sc.language,\n  ConvHistory: JSON.stringify(history.slice(-40)),\n  LastMsgAt: new Date().toISOString()\n};\nif (qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers = JSON.stringify(qualAnswers);\nif (isHuman) { body.Stage = 'human_handover'; body.Handover = 'Yes'; }\nelse { body.Stage = next; }\nif (!isHuman && next !== sc.stage) {\n  body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No';\n}\nif (sc.intentData?.booking_time) body.BookingTime = sc.intentData.booking_time;\nconst method = sc.leadId ? 'PATCH' : 'POST';\nif (sc.leadId) body.Id = sc.leadId;\nreturn [{ json: { ...sc, reply, next, qualAnswers, _method: method, _body: body } }];"
+        "jsCode": "// Pull full context — try each source until we get one with client_id\nlet sc = null;\nconst _nodesToTry = ['Code · Intent + flow', 'Code · State', 'Code · Build ctx'];\nfor (const n of _nodesToTry) {\n  try { const t = $(n).first().json; if (t && t.client_id) { sc = t; break; } } catch(e) {}\n}\nif (!sc) sc = $input.first().json;\nconst route = sc.route || 'stage';\n\nlet reply = sc.reply;\nlet next = sc.next;\nlet qualAnswers = sc.qualAnswers || {};\n\nif (route === 'faq') {\n  try { reply = $('Code · FAQ reply').first().json.reply || reply; } catch(e) {}\n} else if (route === 'qualify') {\n  try { const qn = $('Code · Qual start').first().json; reply = qn.reply; next = qn.next; } catch(e) {}\n} else if (route === 'qualify_next') {\n  try { const qn = $('Code · Qual next').first().json; reply = qn.reply; next = qn.next; qualAnswers = qn.qualAnswers || qualAnswers; } catch(e) {}\n}\n\nconst history = (sc.history || []).slice();\nif (sc.userText) history.push({ role: 'user', content: sc.userText });\nif (reply) history.push({ role: 'assistant', content: reply });\n\nconst isHuman = route === 'human';\nconst body = {\n  ClientId: String(sc.client_id),\n  Phone: sc.phone, Name: sc.name, ConversationID: sc.convId,\n  Date: new Date().toISOString(), Language: sc.language,\n  ConvHistory: JSON.stringify(history.slice(-40)),\n  LastMsgAt: new Date().toISOString()\n};\nif (qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers = JSON.stringify(qualAnswers);\nif (isHuman) { body.Stage = 'human_handover'; body.Handover = 'Yes'; }\nelse { body.Stage = next; }\nif (!isHuman && next !== sc.stage) {\n  body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No';\n}\nif (sc.intentData?.booking_time) body.BookingTime = sc.intentData.booking_time;\nconst method = sc.leadId ? 'PATCH' : 'POST';\nif (sc.leadId) body.Id = sc.leadId;\nreturn [{ json: { ...sc, reply, next, qualAnswers, _method: method, _body: body } }];"
       },
       "id": "prepupsert", "name": "Code · Prep lead", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ 2740, 460 ]
@@ -272,8 +268,8 @@
         "headerParameters": { "parameters": [
           { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
           { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json._body) }}",
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify($json._body) }}",
         "options": {}
       },
       "id": "upsert", "name": "HTTP · Upsert lead", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -294,8 +290,8 @@
         "headerParameters": { "parameters": [
           { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
           { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json._analyticsBody) }}",
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify($json._analyticsBody) }}",
         "options": {}
       },
       "id": "loganalytics", "name": "HTTP · Log analytics", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -309,20 +305,12 @@
         "headerParameters": { "parameters": [
           { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
           { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ Id: $('Code · Prep lead').first().json.client_id, last_seen: new Date().toISOString() }) }}",
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify({ Id: $('Code · Prep lead').first().json.client_id, last_seen: new Date().toISOString() }) }}",
         "options": {}
       },
       "id": "updatelastseen", "name": "HTTP · Update last seen", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
       "position": [ 3620, 460 ], "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "content": "## Leadvyne · Engine v3\n\n### New in v3\n- **Active flag check**: suspended clients (active=No) are silently dropped at ctx step\n- **Rate limiting / debounce**: drops duplicate webhook fires within 4s per user (via LastMsgAt field)\n- **Structured intent**: LLM returns {intent, data} JSON — booking times extracted\n- **Conversation memory**: history stored in NocoDB ConvHistory; last 8 exchanges sent to FAQ LLM\n- **Lead qualification**: configurable qualifying questions stored in QualAnswers\n- **Anti-loop protection**: 3 identical consecutive bot replies → force human escalation\n- **Richer handoff**: sends message + adds 'human-requested' label in Chatwoot (retry x3)\n- **Retry on send**: Chatwoot send retries up to 3× with 2s backoff\n- **Analytics logging**: every processed message logged to control NocoDB analytics table\n- **Last seen tracking**: client record updated with last_seen timestamp for health monitoring\n\n### Placeholders to set\n1. NocoDB · Get tenant: REPLACE_CONTROL_WORKSPACE / PROJECT / CLIENTS_TABLE\n2. HTTP · Log analytics: https://whizz.aiingo.com, m2in19v8n7phitr, nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF\n3. HTTP · Update last seen: same as above\n\n### NocoDB schema additions needed\n**Leads table:** ConvHistory (Long text), QualAnswers (Long text), BookingTime (Single line), LastMsgAt (DateTime)\n**Clients table:** last_seen (DateTime), n8n_workflow_id (Single line)\n**Analytics table (new, in control NocoDB):** ClientId, ClientName, Phone, Intent, Route, Stage, NextStage, ResponseMs (Number), IsError (Checkbox), ErrorMsg, Timestamp (DateTime)",
-        "height": 500, "width": 580
-      },
-      "id": "note", "name": "README", "type": "n8n-nodes-base.stickyNote", "typeVersion": 1,
-      "position": [ -1200, -140 ]
     }
   ],
   "connections": {
@@ -343,8 +331,8 @@
     "HTTP · Transcribe": { "main": [ [ { "node": "Code · voice→text", "type": "main", "index": 0 } ] ] },
     "Code · voice→text": { "main": [ [ { "node": "Code · Merge text", "type": "main", "index": 0 } ] ] },
     "Code · text→text": { "main": [ [ { "node": "Code · Merge text", "type": "main", "index": 0 } ] ] },
-    "Code · Merge text": { "main": [ [ { "node": "HTTP · Intent", "type": "main", "index": 0 } ] ] },
-    "HTTP · Intent": { "main": [ [ { "node": "Code · Intent + flow", "type": "main", "index": 0 } ] ] },
+    "Code · Merge text": { "main": [ [ { "node": "AI Agent", "type": "main", "index": 0 } ] ] },
+    "AI Agent": { "main": [ [ { "node": "Code · Intent + flow", "type": "main", "index": 0 } ] ] },
     "Code · Intent + flow": { "main": [ [ { "node": "Switch · Route", "type": "main", "index": 0 } ] ] },
     "Switch · Route": { "main": [
       [ { "node": "HTTP · Handover msg", "type": "main", "index": 0 } ],
