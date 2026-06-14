@@ -1,158 +1,107 @@
 {
-  "name": "Followup Scheduler (template)",
+  "name": "Leadvyne · Follow-up (multi-client)",
   "nodes": [
     {
       "parameters": {
-        "rule": { "interval": [ { "field": "hours", "hoursInterval": 1 } ] }
+        "rule": { "interval": [ { "field": "hours" } ] }
       },
-      "id": "cron-001",
-      "name": "Every Hour",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.2,
-      "position": [ -640, 300 ]
+      "id": "trigger", "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.2,
+      "position": [ 0, 0 ]
     },
     {
       "parameters": {
-        "assignments": {
-          "assignments": [
-            { "id": "a1", "name": "chatwootBase", "value": "https://app.aiingo.com", "type": "string" },
-            { "id": "a2", "name": "accountId", "value": "10", "type": "string" },
-            { "id": "a3", "name": "hoursFU1", "value": 24, "type": "number" },
-            { "id": "a4", "name": "hoursFU2", "value": 72, "type": "number" },
-            { "id": "a5", "name": "hoursFU3", "value": 168, "type": "number" },
-            { "id": "a6", "name": "msgFU1", "value": "Hi 😊 ഒരു small reminder — നിങ്ങളുടെ family-ക്ക് ചേരുന്ന plan കാണാൻ ഞാൻ ready ആണ് 🙏", "type": "string" },
-            { "id": "a7", "name": "msgFU2", "value": "സമയം കിട്ടിയോ? 🙂 എപ്പോൾ വേണമെങ്കിലും ഒരു quick consultation arrange ചെയ്യാം 👍", "type": "string" },
-            { "id": "a8", "name": "msgFU3", "value": "അവസാന ഒരു nudge 🙏 — സഹായം വേണമെങ്കിൽ ഇവിടെ reply ചെയ്യൂ, ഞാൻ ഇവിടെ ഉണ്ട് 😊", "type": "string" }
-          ]
-        },
+        "method": "GET",
+        "url": "https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records?where=(active,eq,Yes)&limit=500",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
+        ] },
         "options": {}
       },
-      "id": "config-001",
-      "name": "Client Config",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [ -420, 300 ]
+      "id": "getclients", "name": "HTTP · Get clients",
+      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 220, 0 ], "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "authentication": "nocoDbApiToken",
-        "operation": "getAll",
-        "workspaceId": "w5qye21b",
-        "projectId": "pbe6o8e586pox0p",
-        "table": "mk1og9rbenjlw13",
-        "returnAll": true,
-        "options": {
-          "where": "=(Handover,neq,Yes)~and(Stage,nin,consultation_booked,human_handover)"
-        }
-      },
-      "id": "noco-get-001",
-      "name": "NocoDB · Get active leads",
-      "type": "n8n-nodes-base.nocoDb",
-      "typeVersion": 3,
-      "position": [ -200, 300 ],
-      "credentials": {
-        "nocoDbApiToken": { "id": "KL3kUVZOFL1V0mAd", "name": "NocoDB Token account" }
-      }
-    },
-    {
-      "parameters": {
-        "jsCode": "const cfg = $('Client Config').first().json;\nconst now = Date.now();\nconst out = [];\n\nfor (const item of $input.all()) {\n  const lead = item.json;\n  const last = lead.Date ? new Date(lead.Date).getTime() : 0;\n  if (!last || !lead.ConversationID) continue;\n  const hours = (now - last) / 3600000;\n\n  let fu = null, msg = null;\n  const fu1 = (lead['Follow up 1'] || 'No');\n  const fu2 = (lead['Follow up 2'] || 'No');\n  const fu3 = (lead['Follow up 3'] || 'No');\n\n  if (fu1 === 'No' && hours >= cfg.hoursFU1)      { fu = 'Follow up 1'; msg = cfg.msgFU1; }\n  else if (fu2 === 'No' && hours >= cfg.hoursFU2) { fu = 'Follow up 2'; msg = cfg.msgFU2; }\n  else if (fu3 === 'No' && hours >= cfg.hoursFU3) { fu = 'Follow up 3'; msg = cfg.msgFU3; }\n\n  if (!fu) continue;\n  out.push({ json: { id: lead.Id, convId: lead.ConversationID, fuField: fu, message: msg, accountId: cfg.accountId, chatwootBase: cfg.chatwootBase } });\n}\n\nreturn out;"
-      },
-      "id": "decide-001",
-      "name": "Code · Decide follow-ups",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [ 20, 300 ]
-    },
-    {
-      "parameters": {
-        "batchSize": 1,
+        "method": "GET",
+        "url": "https://whizz.aiingo.com/api/v2/tables/mvg6rcw0ia5qqrx/records?where=(Handover,neq,Yes)~and(Stage,nin,consultation_booked,human_handover,visit_booked,appt_booked)&limit=5000&sort=-LastMsgAt",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
+        ] },
         "options": {}
       },
-      "id": "batch-001",
-      "name": "Loop (rate limit)",
-      "type": "n8n-nodes-base.splitInBatches",
-      "typeVersion": 3,
-      "position": [ 240, 300 ]
+      "id": "getleads", "name": "HTTP · Get leads",
+      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 440, 0 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const clientsData = $('HTTP · Get clients').first().json;\nconst leadsData = $input.first().json;\nconst clients = clientsData.list || [];\nconst leads = leadsData.list || [];\n\n// Build client map by Id\nconst clientMap = {};\nclients.forEach(c => { clientMap[String(c.Id)] = c; });\n\nconst now = Date.now();\nconst out = [];\n\nfor (const lead of leads) {\n  const client = clientMap[String(lead.ClientId)];\n  if (!client) continue;\n\n  const count = parseInt(client.followup_count) || 0;\n  if (!count) continue;\n\n  const hoursArr = (client.followup_hours || '24,72,168')\n    .split(',').map(h => parseFloat(h.trim())).filter(n => !isNaN(n));\n  const msgsArr = (client.followup_messages || '')\n    .split('\\n').map(m => m.trim()).filter(Boolean);\n\n  // Use LastMsgAt if available, fall back to Date\n  const lastMs = lead.LastMsgAt\n    ? new Date(lead.LastMsgAt).getTime()\n    : (lead.Date ? new Date(lead.Date).getTime() : 0);\n  if (!lastMs || !lead.ConversationID) continue;\n\n  const hoursElapsed = (now - lastMs) / 3600000;\n\n  let fuField = null, msg = null;\n  for (let i = 0; i < Math.min(count, 3); i++) {\n    const key = 'Follow up ' + (i + 1);\n    if ((lead[key] || 'No') === 'No' && hoursArr[i] && hoursElapsed >= hoursArr[i]) {\n      fuField = key;\n      msg = msgsArr[i] || null;\n      break;\n    }\n  }\n\n  if (!fuField || !msg) continue;\n\n  out.push({ json: {\n    leadId: lead.Id,\n    convId: lead.ConversationID,\n    fuField,\n    message: msg,\n    chatwoot_base: client.chatwoot_base,\n    chatwoot_account_id: String(client.chatwoot_account_id),\n    chatwoot_token: client.chatwoot_token\n  } });\n}\n\nreturn out;"
+      },
+      "id": "decide", "name": "Code · Decide follow-ups",
+      "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 660, 0 ]
+    },
+    {
+      "parameters": { "options": {} },
+      "id": "loop", "name": "Loop (rate limit)",
+      "type": "n8n-nodes-base.splitInBatches", "typeVersion": 3,
+      "position": [ 880, 0 ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $json.chatwootBase }}/api/v1/accounts/{{ $json.accountId }}/conversations/{{ $json.convId }}/messages",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ $json.chatwoot_base }}/api/v1/accounts/{{ $json.chatwoot_account_id }}/conversations/{{ $json.convId }}/messages",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "application/json" } ] },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\"content\": {{ JSON.stringify($json.message) }}, \"message_type\": \"outgoing\", \"private\": false}",
+        "headerParameters": { "parameters": [
+          { "name": "api_access_token", "value": "={{ $json.chatwoot_token }}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify({ content: $json.message, message_type: 'outgoing', private: false }) }}",
+        "options": { "retryOnFail": true, "maxTries": 2, "waitBetweenTries": 3000 }
+      },
+      "id": "send", "name": "HTTP · Send follow-up",
+      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 1100, -16 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "https://whizz.aiingo.com/api/v2/tables/mvg6rcw0ia5qqrx/records",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify({ Id: $('Loop (rate limit)').first().json.leadId, [$('Loop (rate limit)').first().json.fuField]: 'Yes' }) }}",
         "options": {}
       },
-      "id": "send-001",
-      "name": "Chatwoot · Send follow-up",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [ 460, 300 ],
-      "credentials": {
-        "httpHeaderAuth": { "id": "iaJlpcxEB4ZJxbAQ", "name": "Safe Chatwoot" }
-      }
+      "id": "mark", "name": "HTTP · Mark sent",
+      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 1320, 0 ], "onError": "continueRegularOutput"
     },
     {
-      "parameters": {
-        "authentication": "nocoDbApiToken",
-        "operation": "update",
-        "workspaceId": "w5qye21b",
-        "projectId": "pbe6o8e586pox0p",
-        "table": "mk1og9rbenjlw13",
-        "fieldsUi": {
-          "fieldValues": [
-            { "fieldName": "Id", "fieldValue": "={{ $json.id }}" },
-            { "fieldName": "={{ $json.fuField }}", "fieldValue": "Yes" }
-          ]
-        }
-      },
-      "id": "noco-upd-001",
-      "name": "NocoDB · Mark sent",
-      "type": "n8n-nodes-base.nocoDb",
-      "typeVersion": 3,
-      "position": [ 680, 300 ],
-      "credentials": {
-        "nocoDbApiToken": { "id": "KL3kUVZOFL1V0mAd", "name": "NocoDB Token account" }
-      }
-    },
-    {
-      "parameters": {
-        "amount": 1,
-        "unit": "seconds"
-      },
-      "id": "wait-001",
-      "name": "Wait 1s",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [ 900, 300 ]
-    },
-    {
-      "parameters": {
-        "content": "## Follow-up scheduler (reusable)\n\n**To clone for a new client:** duplicate this workflow, then change ONLY:\n1. Client Config node (chatwootBase, accountId, follow-up texts, hour thresholds)\n2. The NocoDB nodes' table id\n3. The Chatwoot HTTP credential (each client has its own token)\n\n⚠️ **24-hour window:** Chatwoot free-text only delivers inside WhatsApp's 24h session.\nFor leads colder than 24h, swap the send node to a WhatsApp Cloud API **template** call\n(approved template) instead of a Chatwoot text message — otherwise the send silently fails.",
-        "height": 320,
-        "width": 420
-      },
-      "id": "note-001",
-      "name": "README",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [ -640, 460 ]
+      "parameters": { "amount": 1 },
+      "id": "wait", "name": "Wait 1s",
+      "type": "n8n-nodes-base.wait", "typeVersion": 1.1,
+      "position": [ 1540, 0 ],
+      "webhookId": "followup-wait-1s"
     }
   ],
   "connections": {
-    "Every Hour": { "main": [ [ { "node": "Client Config", "type": "main", "index": 0 } ] ] },
-    "Client Config": { "main": [ [ { "node": "NocoDB · Get active leads", "type": "main", "index": 0 } ] ] },
-    "NocoDB · Get active leads": { "main": [ [ { "node": "Code · Decide follow-ups", "type": "main", "index": 0 } ] ] },
-    "Code · Decide follow-ups": { "main": [ [ { "node": "Loop (rate limit)", "type": "main", "index": 0 } ] ] },
-    "Loop (rate limit)": { "main": [ [ { "node": "Chatwoot · Send follow-up", "type": "main", "index": 0 } ] ] },
-    "Chatwoot · Send follow-up": { "main": [ [ { "node": "NocoDB · Mark sent", "type": "main", "index": 0 } ] ] },
-    "NocoDB · Mark sent": { "main": [ [ { "node": "Wait 1s", "type": "main", "index": 0 } ] ] },
-    "Wait 1s": { "main": [ [ { "node": "Loop (rate limit)", "type": "main", "index": 0 } ] ] }
+    "Every Hour":               { "main": [ [ { "node": "HTTP · Get clients",       "type": "main", "index": 0 } ] ] },
+    "HTTP · Get clients":       { "main": [ [ { "node": "HTTP · Get leads",          "type": "main", "index": 0 } ] ] },
+    "HTTP · Get leads":         { "main": [ [ { "node": "Code · Decide follow-ups",  "type": "main", "index": 0 } ] ] },
+    "Code · Decide follow-ups": { "main": [ [ { "node": "Loop (rate limit)",         "type": "main", "index": 0 } ] ] },
+    "Loop (rate limit)":        { "main": [ [ { "node": "HTTP · Send follow-up",     "type": "main", "index": 0 } ] ] },
+    "HTTP · Send follow-up":    { "main": [ [ { "node": "HTTP · Mark sent",          "type": "main", "index": 0 } ] ] },
+    "HTTP · Mark sent":         { "main": [ [ { "node": "Wait 1s",                   "type": "main", "index": 0 } ] ] },
+    "Wait 1s":                  { "main": [ [ { "node": "Loop (rate limit)",          "type": "main", "index": 0 } ] ] }
   },
   "settings": { "executionOrder": "v1" }
 }
