@@ -11,9 +11,9 @@
         "assignments": { "assignments": [
           { "id": "p",  "name": "passcode",           "value": "Bath*2026*ld",                   "type": "string" },
           { "id": "n",  "name": "n8n_base",           "value": "https://n8n.aiautomationsuae.com", "type": "string" },
-          { "id": "e",  "name": "engine_workflow_id", "value": "REPLACE_ENGINE_WORKFLOW_ID",     "type": "string" },
+          { "id": "e",  "name": "engine_workflow_id", "value": "XGCsP4hT3OGBsDhl",               "type": "string" },
           { "id": "nb", "name": "nocodb_base",        "value": "https://whizz.aiingo.com",        "type": "string" },
-          { "id": "nt", "name": "nocodb_token",       "value": "REPLACE_NOCODB_MASTER_TOKEN",    "type": "string" },
+          { "id": "nt", "name": "nocodb_token",       "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF", "type": "string" },
           { "id": "np", "name": "nocodb_project_id",  "value": "p5n4bal4b7tlh9l",                "type": "string" },
           { "id": "ct", "name": "clients_table_id",   "value": "mxl33bg4wi70fqj",                "type": "string" },
           { "id": "at", "name": "analytics_table_id", "value": "m2in19v8n7phitr",                "type": "string" }

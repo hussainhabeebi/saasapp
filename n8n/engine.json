@@ -26,7 +26,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const msg = $('Code · Parse').first().json;\nconst t = $input.first().json;\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return []; // suspended client — drop silently\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  nocodb_base: t.nocodb_base, leads_table_id: t.leads_table_id, nocodb_token: t.nocodb_token,\n  nocodb_control_base: t.nocodb_base, analytics_table_id: t.analytics_table_id || '',\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'REPLACE_CONTROL_NOCODB_TOKEN',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions,\n  client_name: t.client_name || ''\n} }];"
+        "jsCode": "const msg = $('Code · Parse').first().json;\nconst t = $input.first().json;\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return []; // suspended client — drop silently\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  nocodb_base: t.nocodb_base, leads_table_id: t.leads_table_id, nocodb_token: t.nocodb_token,\n  nocodb_control_base: t.nocodb_base, analytics_table_id: t.analytics_table_id || '',\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions,\n  client_name: t.client_name || ''\n} }];"
       },
       "id": "ctx", "name": "Code · Build ctx", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ -540, 400 ]
@@ -292,7 +292,7 @@
         "url": "=https://whizz.aiingo.com/api/v2/tables/m2in19v8n7phitr/records",
         "sendHeaders": true,
         "headerParameters": { "parameters": [
-          { "name": "xc-token", "value": "REPLACE_CONTROL_NOCODB_TOKEN" },
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
           { "name": "Content-Type", "value": "application/json" } ] },
         "sendBody": true, "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json._analyticsBody) }}",
@@ -307,7 +307,7 @@
         "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records",
         "sendHeaders": true,
         "headerParameters": { "parameters": [
-          { "name": "xc-token", "value": "REPLACE_CONTROL_NOCODB_TOKEN" },
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
           { "name": "Content-Type", "value": "application/json" } ] },
         "sendBody": true, "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ Id: $('Code · Prep lead').first().json.client_id, last_seen: new Date().toISOString() }) }}",
@@ -318,7 +318,7 @@
     },
     {
       "parameters": {
-        "content": "## Leadvyne · Engine v3\n\n### New in v3\n- **Active flag check**: suspended clients (active=No) are silently dropped at ctx step\n- **Rate limiting / debounce**: drops duplicate webhook fires within 4s per user (via LastMsgAt field)\n- **Structured intent**: LLM returns {intent, data} JSON — booking times extracted\n- **Conversation memory**: history stored in NocoDB ConvHistory; last 8 exchanges sent to FAQ LLM\n- **Lead qualification**: configurable qualifying questions stored in QualAnswers\n- **Anti-loop protection**: 3 identical consecutive bot replies → force human escalation\n- **Richer handoff**: sends message + adds 'human-requested' label in Chatwoot (retry x3)\n- **Retry on send**: Chatwoot send retries up to 3× with 2s backoff\n- **Analytics logging**: every processed message logged to control NocoDB analytics table\n- **Last seen tracking**: client record updated with last_seen timestamp for health monitoring\n\n### Placeholders to set\n1. NocoDB · Get tenant: REPLACE_CONTROL_WORKSPACE / PROJECT / CLIENTS_TABLE\n2. HTTP · Log analytics: https://whizz.aiingo.com, m2in19v8n7phitr, REPLACE_CONTROL_NOCODB_TOKEN\n3. HTTP · Update last seen: same as above\n\n### NocoDB schema additions needed\n**Leads table:** ConvHistory (Long text), QualAnswers (Long text), BookingTime (Single line), LastMsgAt (DateTime)\n**Clients table:** last_seen (DateTime), n8n_workflow_id (Single line)\n**Analytics table (new, in control NocoDB):** ClientId, ClientName, Phone, Intent, Route, Stage, NextStage, ResponseMs (Number), IsError (Checkbox), ErrorMsg, Timestamp (DateTime)",
+        "content": "## Leadvyne · Engine v3\n\n### New in v3\n- **Active flag check**: suspended clients (active=No) are silently dropped at ctx step\n- **Rate limiting / debounce**: drops duplicate webhook fires within 4s per user (via LastMsgAt field)\n- **Structured intent**: LLM returns {intent, data} JSON — booking times extracted\n- **Conversation memory**: history stored in NocoDB ConvHistory; last 8 exchanges sent to FAQ LLM\n- **Lead qualification**: configurable qualifying questions stored in QualAnswers\n- **Anti-loop protection**: 3 identical consecutive bot replies → force human escalation\n- **Richer handoff**: sends message + adds 'human-requested' label in Chatwoot (retry x3)\n- **Retry on send**: Chatwoot send retries up to 3× with 2s backoff\n- **Analytics logging**: every processed message logged to control NocoDB analytics table\n- **Last seen tracking**: client record updated with last_seen timestamp for health monitoring\n\n### Placeholders to set\n1. NocoDB · Get tenant: REPLACE_CONTROL_WORKSPACE / PROJECT / CLIENTS_TABLE\n2. HTTP · Log analytics: https://whizz.aiingo.com, m2in19v8n7phitr, nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF\n3. HTTP · Update last seen: same as above\n\n### NocoDB schema additions needed\n**Leads table:** ConvHistory (Long text), QualAnswers (Long text), BookingTime (Single line), LastMsgAt (DateTime)\n**Clients table:** last_seen (DateTime), n8n_workflow_id (Single line)\n**Analytics table (new, in control NocoDB):** ClientId, ClientName, Phone, Intent, Route, Stage, NextStage, ResponseMs (Number), IsError (Checkbox), ErrorMsg, Timestamp (DateTime)",
         "height": 500, "width": 580
       },
       "id": "note", "name": "README", "type": "n8n-nodes-base.stickyNote", "typeVersion": 1,
