@@ -69,34 +69,19 @@
     },
     {
       "parameters": {
-        "authentication": "nocoDbApiToken", "operation": "create",
-        "workspaceId": "w5qye21b", "projectId": "p5n4bal4b7tlh9l", "table": "mxl33bg4wi70fqj",
-        "fieldsUi": { "fieldValues": [
-          { "fieldName": "client_name",        "fieldValue": "={{ $('Webhook · Onboard').first().json.body.client_name }}" },
-          { "fieldName": "chatwoot_account_id","fieldValue": "={{ $('Webhook · Onboard').first().json.body.chatwoot_account_id }}" },
-          { "fieldName": "chatwoot_inbox_id",  "fieldValue": "={{ $('Webhook · Onboard').first().json.body.chatwoot_inbox_id }}" },
-          { "fieldName": "chatwoot_base",      "fieldValue": "={{ $('Set · Settings').first().json.chatwoot_base }}" },
-          { "fieldName": "chatwoot_token",     "fieldValue": "={{ $('Webhook · Onboard').first().json.body.chatwoot_token }}" },
-          { "fieldName": "nocodb_base",        "fieldValue": "={{ $('Code · Extract table id').first().json.nocodb_base }}" },
-          { "fieldName": "nocodb_token",       "fieldValue": "={{ $('Code · Extract table id').first().json.nocodb_token }}" },
-          { "fieldName": "leads_table_id",     "fieldValue": "={{ $('Code · Extract table id').first().json.leadsTableId }}" },
-          { "fieldName": "analytics_table_id", "fieldValue": "={{ $('Code · Extract table id').first().json.analytics_table_id }}" },
-          { "fieldName": "openrouter_key",     "fieldValue": "={{ $('Set · Settings').first().json.openrouter_key }}" },
-          { "fieldName": "model",              "fieldValue": "={{ $('Set · Settings').first().json.model }}" },
-          { "fieldName": "language",           "fieldValue": "={{ $('Webhook · Onboard').first().json.body.language }}" },
-          { "fieldName": "main_prompt",        "fieldValue": "={{ $('Webhook · Onboard').first().json.body.main_prompt }}" },
-          { "fieldName": "flow_json",          "fieldValue": "={{ typeof $('Webhook · Onboard').first().json.body.flow_json === 'string' ? $('Webhook · Onboard').first().json.body.flow_json : JSON.stringify($('Webhook · Onboard').first().json.body.flow_json) }}" },
-          { "fieldName": "followup_count",     "fieldValue": "={{ $('Webhook · Onboard').first().json.body.followup_count }}" },
-          { "fieldName": "followup_hours",     "fieldValue": "={{ $('Webhook · Onboard').first().json.body.followup_hours }}" },
-          { "fieldName": "followup_messages",  "fieldValue": "={{ $('Webhook · Onboard').first().json.body.followup_messages }}" },
-          { "fieldName": "qual_questions",     "fieldValue": "={{ typeof $('Webhook · Onboard').first().json.body.qual_questions === 'string' ? $('Webhook · Onboard').first().json.body.qual_questions : JSON.stringify($('Webhook · Onboard').first().json.body.qual_questions || []) }}" },
-          { "fieldName": "bot_config",         "fieldValue": "={{ typeof $('Webhook · Onboard').first().json.body.bot_config === 'string' ? $('Webhook · Onboard').first().json.body.bot_config : JSON.stringify($('Webhook · Onboard').first().json.body.bot_config || {}) }}" },
-          { "fieldName": "active",             "fieldValue": "Yes" }
-        ] }
+        "method": "POST",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  client_name:         $('Webhook · Onboard').first().json.body.client_name,\n  chatwoot_account_id: $('Webhook · Onboard').first().json.body.chatwoot_account_id,\n  chatwoot_inbox_id:   $('Webhook · Onboard').first().json.body.chatwoot_inbox_id,\n  chatwoot_base:       $('Set · Settings').first().json.chatwoot_base,\n  chatwoot_token:      $('Webhook · Onboard').first().json.body.chatwoot_token,\n  nocodb_base:         $('Code · Extract table id').first().json.nocodb_base,\n  nocodb_token:        $('Code · Extract table id').first().json.nocodb_token,\n  leads_table_id:      $('Code · Extract table id').first().json.leadsTableId,\n  analytics_table_id:  $('Code · Extract table id').first().json.analytics_table_id,\n  openrouter_key:      $('Set · Settings').first().json.openrouter_key,\n  model:               $('Set · Settings').first().json.model,\n  language:            $('Webhook · Onboard').first().json.body.language,\n  main_prompt:         $('Webhook · Onboard').first().json.body.main_prompt,\n  flow_json:           typeof $('Webhook · Onboard').first().json.body.flow_json === 'string' ? $('Webhook · Onboard').first().json.body.flow_json : JSON.stringify($('Webhook · Onboard').first().json.body.flow_json),\n  followup_count:      $('Webhook · Onboard').first().json.body.followup_count,\n  followup_hours:      $('Webhook · Onboard').first().json.body.followup_hours,\n  followup_messages:   $('Webhook · Onboard').first().json.body.followup_messages,\n  qual_questions:      typeof $('Webhook · Onboard').first().json.body.qual_questions === 'string' ? $('Webhook · Onboard').first().json.body.qual_questions : JSON.stringify($('Webhook · Onboard').first().json.body.qual_questions || []),\n  bot_config:          typeof $('Webhook · Onboard').first().json.body.bot_config === 'string' ? $('Webhook · Onboard').first().json.body.bot_config : JSON.stringify($('Webhook · Onboard').first().json.body.bot_config || {}),\n  active:              'Yes'\n}) }}",
+        "options": {}
       },
-      "id": "createclient", "name": "NocoDB · Create client", "type": "n8n-nodes-base.nocoDb", "typeVersion": 3,
-      "position": [ 0, 220 ],
-      "credentials": { "nocoDbApiToken": { "id": "KL3kUVZOFL1V0mAd", "name": "NocoDB Token account" } }
+      "id": "createclient", "name": "NocoDB · Create client", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 0, 220 ]
     },
     {
       "parameters": {
