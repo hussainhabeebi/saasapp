@@ -635,7 +635,7 @@ function stagesToFlowJson(stages) {
       'BOOKING':        { next, msg: nextMsg },
       'WANTS_MORE_INFO':{ next: s.id, msg: 'msg_' + s.id },
       'QUESTION':       { next: s.id, msg: null },
-      'SHORT_NEUTRAL':  { next: s.id, msg: 'msg_' + s.id },
+      'SHORT_NEUTRAL':  { next, msg: nextMsg },
       '*':              { next: s.id, msg: 'msg_' + s.id }
     };
   });
