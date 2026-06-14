@@ -34,9 +34,9 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ $json.nocodb_base }}/api/v2/tables/{{ $json.leads_table_id }}/records?where=(Phone,eq,{{ $json.phone }})&limit=1",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/SHARED_LEADS_TABLE_ID/records?where=(Phone,eq,{{ $json.phone }})~and(ClientId,eq,{{ $json.client_id }})&limit=1",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "={{ $json.nocodb_token }}" } ] },
+        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" } ] },
         "options": {}
       },
       "id": "getlead", "name": "HTTP · Get lead", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -259,7 +259,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nif (!c.nocodb_base || !c.leads_table_id || !c.nocodb_token) {\n  throw new Error('Lead upsert skipped: missing nocodb_base=' + c.nocodb_base + ' leads_table_id=' + c.leads_table_id);\n}\nconst history = c.history || [];\nif (c.userText) history.push({ role: 'user', content: c.userText });\nif (c.reply) history.push({ role: 'assistant', content: c.reply });\n\nconst isHuman = c.route === 'human';\nconst body = {\n  Phone: c.phone, Name: c.name, ConversationID: c.convId,\n  Date: new Date().toISOString(), Language: c.language,\n  ConvHistory: JSON.stringify(history.slice(-40)),\n  LastMsgAt: new Date().toISOString()\n};\nif (c.qualAnswers && Object.keys(c.qualAnswers).length) body.QualAnswers = JSON.stringify(c.qualAnswers);\nif (isHuman) { body.Stage = 'human_handover'; body.Handover = 'Yes'; }\nelse { body.Stage = c.next; }\nif (!isHuman && c.next !== c.stage) {\n  body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No';\n}\nif (c.intentData?.booking_time) body.BookingTime = c.intentData.booking_time;\nconst method = c.leadId ? 'PATCH' : 'POST';\nif (c.leadId) body.Id = c.leadId;\nreturn [{ json: { ...c, _method: method, _body: body } }];"
+        "jsCode": "const c = $input.first().json;\nconst history = c.history || [];\nif (c.userText) history.push({ role: 'user', content: c.userText });\nif (c.reply) history.push({ role: 'assistant', content: c.reply });\n\nconst isHuman = c.route === 'human';\nconst body = {\n  ClientId: String(c.client_id),\n  Phone: c.phone, Name: c.name, ConversationID: c.convId,\n  Date: new Date().toISOString(), Language: c.language,\n  ConvHistory: JSON.stringify(history.slice(-40)),\n  LastMsgAt: new Date().toISOString()\n};\nif (c.qualAnswers && Object.keys(c.qualAnswers).length) body.QualAnswers = JSON.stringify(c.qualAnswers);\nif (isHuman) { body.Stage = 'human_handover'; body.Handover = 'Yes'; }\nelse { body.Stage = c.next; }\nif (!isHuman && c.next !== c.stage) {\n  body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No';\n}\nif (c.intentData?.booking_time) body.BookingTime = c.intentData.booking_time;\nconst method = c.leadId ? 'PATCH' : 'POST';\nif (c.leadId) body.Id = c.leadId;\nreturn [{ json: { ...c, _method: method, _body: body } }];"
       },
       "id": "prepupsert", "name": "Code · Prep lead", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ 2740, 460 ]
@@ -267,10 +267,10 @@
     {
       "parameters": {
         "method": "={{ $json._method }}",
-        "url": "={{ $json.nocodb_base }}/api/v2/tables/{{ $json.leads_table_id }}/records",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/SHARED_LEADS_TABLE_ID/records",
         "sendHeaders": true,
         "headerParameters": { "parameters": [
-          { "name": "xc-token", "value": "={{ $json.nocodb_token }}" },
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
           { "name": "Content-Type", "value": "application/json" } ] },
         "sendBody": true, "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json._body) }}",

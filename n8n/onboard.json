@@ -47,29 +47,6 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Set · Settings').first().json.nocodb_base }}/api/v1/db/meta/projects/{{ $('Set · Settings').first().json.nocodb_project_id }}/tables",
-        "sendHeaders": true,
-        "headerParameters": { "parameters": [
-          { "name": "xc-token",      "value": "={{ $('Set · Settings').first().json.nocodb_token }}" },
-          { "name": "Content-Type",  "value": "application/json" }
-        ] },
-        "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  title: 'Leads_' + ($('Webhook · Onboard').first().json.body.client_name || 'Client').replace(/[^a-zA-Z0-9]/g,'_') + '_' + Date.now(),\n  columns: [\n    { title: 'Phone',          uidt: 'PhoneNumber' },\n    { title: 'Name',           uidt: 'SingleLineText' },\n    { title: 'ConversationID', uidt: 'SingleLineText' },\n    { title: 'Stage',          uidt: 'SingleLineText' },\n    { title: 'Language',       uidt: 'SingleLineText' },\n    { title: 'Date',           uidt: 'DateTime' },\n    { title: 'Handover',       uidt: 'SingleLineText' },\n    { title: 'Follow up 1',    uidt: 'SingleLineText' },\n    { title: 'Follow up 2',    uidt: 'SingleLineText' },\n    { title: 'Follow up 3',    uidt: 'SingleLineText' },\n    { title: 'ConvHistory',    uidt: 'LongText' },\n    { title: 'QualAnswers',    uidt: 'LongText' },\n    { title: 'BookingTime',    uidt: 'SingleLineText' },\n    { title: 'LastMsgAt',      uidt: 'DateTime' },\n    { title: 'MemSummary',     uidt: 'LongText' }\n  ]\n}) }}",
-        "options": {}
-      },
-      "id": "createtable", "name": "HTTP · Create leads table", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
-      "position": [ -440, 220 ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const s = $('Set · Settings').first().json;\nconst r = $input.first().json;\nconst leadsTableId = r.id || r.data?.id || '';\nif (!leadsTableId) throw new Error('NocoDB table creation failed: ' + JSON.stringify(r));\nreturn [{ json: { ...s, leadsTableId } }];"
-      },
-      "id": "extracttableid", "name": "Code · Extract table id", "type": "n8n-nodes-base.code", "typeVersion": 2,
-      "position": [ -220, 220 ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
         "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records",
         "sendHeaders": true,
         "headerParameters": { "parameters": [
@@ -77,7 +54,7 @@
           { "name": "Content-Type", "value": "application/json" }
         ] },
         "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  client_name:         $('Webhook · Onboard').first().json.body.client_name,\n  chatwoot_account_id: $('Webhook · Onboard').first().json.body.chatwoot_account_id,\n  chatwoot_inbox_id:   $('Webhook · Onboard').first().json.body.chatwoot_inbox_id,\n  chatwoot_base:       $('Set · Settings').first().json.chatwoot_base,\n  chatwoot_token:      $('Webhook · Onboard').first().json.body.chatwoot_token,\n  nocodb_base:         $('Code · Extract table id').first().json.nocodb_base,\n  nocodb_token:        $('Code · Extract table id').first().json.nocodb_token,\n  leads_table_id:      $('Code · Extract table id').first().json.leadsTableId,\n  analytics_table_id:  $('Code · Extract table id').first().json.analytics_table_id,\n  openrouter_key:      $('Set · Settings').first().json.openrouter_key,\n  model:               $('Set · Settings').first().json.model,\n  language:            $('Webhook · Onboard').first().json.body.language,\n  main_prompt:         $('Webhook · Onboard').first().json.body.main_prompt,\n  flow_json:           typeof $('Webhook · Onboard').first().json.body.flow_json === 'string' ? $('Webhook · Onboard').first().json.body.flow_json : JSON.stringify($('Webhook · Onboard').first().json.body.flow_json),\n  followup_count:      $('Webhook · Onboard').first().json.body.followup_count,\n  followup_hours:      $('Webhook · Onboard').first().json.body.followup_hours,\n  followup_messages:   $('Webhook · Onboard').first().json.body.followup_messages,\n  qual_questions:      typeof $('Webhook · Onboard').first().json.body.qual_questions === 'string' ? $('Webhook · Onboard').first().json.body.qual_questions : JSON.stringify($('Webhook · Onboard').first().json.body.qual_questions || []),\n  bot_config:          typeof $('Webhook · Onboard').first().json.body.bot_config === 'string' ? $('Webhook · Onboard').first().json.body.bot_config : JSON.stringify($('Webhook · Onboard').first().json.body.bot_config || {}),\n  active:              'Yes'\n}) }}",
+        "jsonBody": "={{ JSON.stringify({\n  client_name:         $('Webhook · Onboard').first().json.body.client_name,\n  chatwoot_account_id: $('Webhook · Onboard').first().json.body.chatwoot_account_id,\n  chatwoot_inbox_id:   $('Webhook · Onboard').first().json.body.chatwoot_inbox_id,\n  chatwoot_base:       $('Set · Settings').first().json.chatwoot_base,\n  chatwoot_token:      $('Webhook · Onboard').first().json.body.chatwoot_token,\n  analytics_table_id:  $('Set · Settings').first().json.analytics_table_id,\n  openrouter_key:      $('Set · Settings').first().json.openrouter_key,\n  model:               $('Set · Settings').first().json.model,\n  language:            $('Webhook · Onboard').first().json.body.language,\n  main_prompt:         $('Webhook · Onboard').first().json.body.main_prompt,\n  flow_json:           typeof $('Webhook · Onboard').first().json.body.flow_json === 'string' ? $('Webhook · Onboard').first().json.body.flow_json : JSON.stringify($('Webhook · Onboard').first().json.body.flow_json),\n  followup_count:      $('Webhook · Onboard').first().json.body.followup_count,\n  followup_hours:      $('Webhook · Onboard').first().json.body.followup_hours,\n  followup_messages:   $('Webhook · Onboard').first().json.body.followup_messages,\n  qual_questions:      typeof $('Webhook · Onboard').first().json.body.qual_questions === 'string' ? $('Webhook · Onboard').first().json.body.qual_questions : JSON.stringify($('Webhook · Onboard').first().json.body.qual_questions || []),\n  bot_config:          typeof $('Webhook · Onboard').first().json.body.bot_config === 'string' ? $('Webhook · Onboard').first().json.body.bot_config : JSON.stringify($('Webhook · Onboard').first().json.body.bot_config || {}),\n  active:              'Yes'\n}) }}",
         "options": {}
       },
       "id": "createclient", "name": "NocoDB · Create client", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -133,7 +110,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={ \"ok\": true, \"webhook_url\": \"{{ $('Code · Build wrapper').first().json.webhook_url }}\", \"client_id\": \"{{ $('Code · Build wrapper').first().json.clientId }}\", \"leads_table_id\": \"{{ $('Code · Extract table id').first().json.leadsTableId }}\" }",
+        "responseBody": "={ \"ok\": true, \"webhook_url\": \"{{ $('Code · Build wrapper').first().json.webhook_url }}\", \"client_id\": \"{{ $('Code · Build wrapper').first().json.clientId }}\" }",
         "options": {}
       },
       "id": "respok", "name": "Respond · OK", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1,
@@ -152,11 +129,9 @@
     "Webhook · Onboard":       { "main": [ [ { "node": "Set · Settings",           "type": "main", "index": 0 } ] ] },
     "Set · Settings":          { "main": [ [ { "node": "IF · Passcode",            "type": "main", "index": 0 } ] ] },
     "IF · Passcode":           { "main": [
-      [ { "node": "HTTP · Create leads table", "type": "main", "index": 0 } ],
+      [ { "node": "NocoDB · Create client",    "type": "main", "index": 0 } ],
       [ { "node": "Respond · 401",             "type": "main", "index": 0 } ]
     ] },
-    "HTTP · Create leads table": { "main": [ [ { "node": "Code · Extract table id", "type": "main", "index": 0 } ] ] },
-    "Code · Extract table id":   { "main": [ [ { "node": "NocoDB · Create client",  "type": "main", "index": 0 } ] ] },
     "NocoDB · Create client":    { "main": [ [ { "node": "Code · Build wrapper",    "type": "main", "index": 0 } ] ] },
     "Code · Build wrapper":      { "main": [ [ { "node": "HTTP · Create workflow",  "type": "main", "index": 0 } ] ] },
     "HTTP · Create workflow":    { "main": [ [ { "node": "HTTP · Activate workflow","type": "main", "index": 0 } ] ] },
