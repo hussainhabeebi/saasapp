@@ -18,7 +18,7 @@
           { "id": "ct", "name": "clients_table_id",   "value": "mxl33bg4wi70fqj",                "type": "string" },
           { "id": "at", "name": "analytics_table_id", "value": "m2in19v8n7phitr",                "type": "string" },
           { "id": "cb", "name": "chatwoot_base",      "value": "https://app.aiingo.com",           "type": "string" },
-          { "id": "ok", "name": "openrouter_key",     "value": "REPLACE_OPENROUTER_KEY",           "type": "string" },
+          { "id": "ok", "name": "openrouter_key",     "value": "={{ $env.OPENROUTER_KEY }}",        "type": "string" },
           { "id": "md", "name": "model",              "value": "google/gemini-2.5-flash",          "type": "string" }
         ] },
         "options": {}
