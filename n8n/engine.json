@@ -1,5 +1,5 @@
 {
-  "name": "Leadvyne · Engine (shared sub-workflow)",
+  "name": "Leadvyne · Engine v3 (shared sub-workflow)",
   "nodes": [
     {
       "parameters": {},
@@ -8,7 +8,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const raw = $input.first().json;\nconst b = raw.body || raw;\nif (b.message_type && b.message_type !== 'incoming') return [];\nif (b.private) return [];\n\nconst conv = b.conversation || {};\nconst sender = conv?.meta?.sender || b.sender || {};\nlet phone = (sender.phone_number || sender.identifier || '').replace(/[^0-9+]/g,'').replace(/^\\+/,'');\nif (phone.startsWith('00')) phone = phone.slice(2);\n\nconst atts = b.attachments || b.message?.attachments || [];\nlet mediaType = 'text', mediaUrl = '';\nif (atts.length) {\n  const a = atts[0];\n  mediaUrl = a.data_url || a.file_url || '';\n  if ((a.file_type||'').includes('audio')) mediaType = 'voice';\n  else if ((a.file_type||'').includes('image')) mediaType = 'image';\n}\n\nconst text = (b.content || b.message?.content || '').trim();\nif (!phone) return [];\nif (mediaType === 'text' && !text) return [];\n\nreturn [{ json: {\n  client_id:  String(raw.client_id || b.client_id || ''),\n  account_id: String(b.account?.id || conv?.account_id || ''),\n  inbox_id:   String(b.inbox?.id || conv?.inbox_id || ''),\n  convId:     conv?.id || null,\n  phone, name: sender.name || '', text, mediaType, mediaUrl\n} }];"
+        "jsCode": "const raw = $input.first().json;\nconst b = raw.body || raw;\nif (b.message_type && b.message_type !== 'incoming') return [];\nif (b.private) return [];\n\nconst conv = b.conversation || {};\nconst sender = conv?.meta?.sender || b.sender || {};\nlet phone = (sender.phone_number || sender.identifier || '').replace(/[^0-9+]/g,'').replace(/^\\+/,'');\nif (phone.startsWith('00')) phone = phone.slice(2);\n\nconst atts = b.attachments || b.message?.attachments || [];\nlet mediaType = 'text', mediaUrl = '';\nif (atts.length) {\n  const a = atts[0];\n  mediaUrl = a.data_url || a.file_url || '';\n  if ((a.file_type||'').includes('audio')) mediaType = 'voice';\n  else if ((a.file_type||'').includes('image')) mediaType = 'image';\n}\n\nconst text = (b.content || b.message?.content || '').trim();\nif (!phone) return [];\nif (mediaType === 'text' && !text) return [];\n\nreturn [{ json: {\n  client_id:  String(raw.client_id || b.client_id || ''),\n  account_id: String(b.account?.id || conv?.account_id || ''),\n  inbox_id:   String(b.inbox?.id || conv?.inbox_id || ''),\n  convId:     conv?.id || null,\n  phone, name: sender.name || '', text, mediaType, mediaUrl,\n  _startMs: Date.now()\n} }];"
       },
       "id": "parse", "name": "Code · Parse", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ -980, 400 ]
@@ -16,8 +16,8 @@
     {
       "parameters": {
         "authentication": "nocoDbApiToken", "operation": "getAll",
-        "workspaceId": "REPLACE_CONTROL_WORKSPACE", "projectId": "REPLACE_CONTROL_PROJECT",
-        "table": "REPLACE_CLIENTS_TABLE", "limit": 1,
+        "workspaceId": "w5qye21b", "projectId": "p5n4bal4b7tlh9l",
+        "table": "mxl33bg4wi70fqj", "limit": 1,
         "options": { "where": "=(Id,eq,{{ $json.client_id }})" }
       },
       "id": "tenant", "name": "NocoDB · Get tenant", "type": "n8n-nodes-base.nocoDb", "typeVersion": 3,
@@ -26,7 +26,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const msg = $('Code · Parse').first().json;\nconst t = $input.first().json;\nif (!t || !t.chatwoot_inbox_id) return [];\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  nocodb_base: t.nocodb_base, leads_table_id: t.leads_table_id, nocodb_token: t.nocodb_token,\n  openrouter_key: t.openrouter_key, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions\n} }];"
+        "jsCode": "const msg = $('Code · Parse').first().json;\nconst t = $input.first().json;\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return []; // suspended client — drop silently\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  nocodb_base: t.nocodb_base, leads_table_id: t.leads_table_id, nocodb_token: t.nocodb_token,\n  nocodb_control_base: t.nocodb_base, analytics_table_id: t.analytics_table_id || '',\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key || $env.OPENROUTER_KEY, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions,\n  client_name: t.client_name || ''\n} }];"
       },
       "id": "ctx", "name": "Code · Build ctx", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ -540, 400 ]
@@ -44,7 +44,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code · Build ctx').first().json;\nconst r = $input.first().json;\nconst lead = (r.list && r.list[0]) ? r.list[0] : null;\nif (lead && (lead.Handover === 'Yes' || lead.Stage === 'human_handover')) return [];\n\n// parse conversation history from lead record\nlet history = [];\ntry { history = JSON.parse(lead?.ConvHistory || '[]'); } catch(e) {}\n\n// anti-loop: check if last 3 bot messages are identical\nconst botMsgs = history.filter(m => m.role === 'assistant').slice(-3).map(m => m.content);\nconst looping = botMsgs.length === 3 && botMsgs.every(m => m === botMsgs[0]);\n\n// memory: summarise if history is long (> 20 messages)\nlet memSummary = lead?.MemSummary || '';\nlet activeHistory = history;\nif (history.length > 20 && c.botConfig?.memory_enabled !== false) {\n  // keep summary + last 6 messages\n  activeHistory = history.slice(-6);\n}\n\nreturn [{ json: { ...c, leadId: lead?.Id || null, stage: lead?.Stage || 'new', history, activeHistory, memSummary, looping } }];"
+        "jsCode": "const c = $('Code · Build ctx').first().json;\nconst r = $input.first().json;\nconst lead = (r.list && r.list[0]) ? r.list[0] : null;\nif (lead && (lead.Handover === 'Yes' || lead.Stage === 'human_handover')) return [];\n\n// Rate limiting: simple per-user debounce — reject if same user sent message within last 4s\nconst lastMsgAt = lead?.LastMsgAt ? new Date(lead.LastMsgAt).getTime() : 0;\nif (Date.now() - lastMsgAt < 4000) return []; // debounce duplicate webhook fires\n\n// Anti-loop: check if last 3 bot messages are identical\nlet history = [];\ntry { history = JSON.parse(lead?.ConvHistory || '[]'); } catch(e) {}\nconst botMsgs = history.filter(m => m.role === 'assistant').slice(-3).map(m => m.content);\nconst looping = botMsgs.length === 3 && botMsgs.every(m => m === botMsgs[0]);\n\n// Memory: trim active history if > 20 messages\nconst memSummary = lead?.MemSummary || '';\nconst activeHistory = history.length > 20 ? history.slice(-6) : history;\n\n// Qualification state\nlet qualAnswers = {};\ntry { qualAnswers = JSON.parse(lead?.QualAnswers || '{}'); } catch(e) {}\n\nreturn [{ json: { ...c, leadId: lead?.Id || null, stage: lead?.Stage || 'new', history, activeHistory, memSummary, looping, qualAnswers } }];"
       },
       "id": "state", "name": "Code · State", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ -100, 400 ]
@@ -123,7 +123,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Merge all three text paths into one node before intent classification\nconst c = $input.first().json;\nreturn [{ json: c }];"
+        "jsCode": "const c = $input.first().json;\nreturn [{ json: c }];"
       },
       "id": "merge", "name": "Code · Merge text", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ 1000, 400 ]
@@ -136,7 +136,7 @@
           { "name": "Authorization", "value": "=Bearer {{ $json.openrouter_key }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
         "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $json.model, temperature: 0, messages: [ { role:'system', content: 'You are an intent classifier for a WhatsApp sales bot. Return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}. Valid intents: DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, WANTS_MORE_INFO, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL. Rules: Short replies (ok, yes, k, done, hi) = SHORT_NEUTRAL. Specific time/day = BOOKING (put datetime in data.booking_time). Vague later = DELAY. A real product/service question = QUESTION. Wanting human = WANTS_HUMAN. For QUESTION intent also put the cleaned question text in data.question.' }, { role:'user', content: 'Stage: ' + $json.stage + '\\nUser: \"' + $json.userText + '\"' } ] }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, temperature: 0, messages: [ { role:'system', content: 'You are an intent classifier for a WhatsApp sales bot. Return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}. Valid intents: DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, WANTS_MORE_INFO, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL. Short replies (ok, yes, k, done, hi) = SHORT_NEUTRAL. Specific time/day = BOOKING (put datetime in data.booking_time). Vague later = DELAY. Real product/service question = QUESTION. Wanting human = WANTS_HUMAN. For QUESTION also put cleaned question in data.question.' }, { role:'user', content: 'Stage: ' + $json.stage + '\\nUser: \"' + $json.userText + '\"' } ] }) }}",
         "options": {}
       },
       "id": "intent", "name": "HTTP · Intent", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
@@ -144,7 +144,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst raw = c.choices?.[0]?.message?.content || '';\nlet intent = 'SHORT_NEUTRAL', intentData = {};\ntry {\n  const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/);\n  if (m) {\n    const parsed = JSON.parse(m[0]);\n    intent = parsed.intent || intent;\n    intentData = parsed.data || {};\n  }\n} catch(e) {}\nconst valid = ['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','WANTS_MORE_INFO','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL'];\nif (!valid.includes(intent)) intent = 'SHORT_NEUTRAL';\n\n// anti-loop: if looping and no progress, force human\nconst sc = $('Code · State').first().json;\nif (sc.looping && sc.botConfig?.antiloop_enabled !== false) {\n  intent = 'WANTS_HUMAN';\n}\n\n// Determine if we should run lead qualification first\nconst qs = sc.qualQuestions || [];\nconst qDone = (sc.leadId && sc.stage !== 'new') || qs.length === 0 || sc.botConfig?.qual_enabled === false;\nconst qualStage = sc.stage?.startsWith('qual_') ? parseInt(sc.stage.replace('qual_','')) : null;\n\n// flow lookup\nconst flow = sc.flow || {};\nconst node = (flow.stages && (flow.stages[sc.stage] || flow.stages['new'])) || {};\nconst action = node[intent] || node['*'] || { next: sc.stage, msg: null };\n\nlet route = 'stage';\nif (intent === 'WANTS_HUMAN' && sc.botConfig?.handover_enabled !== false) route = 'human';\nelse if (intent === 'QUESTION') route = 'faq';\nelse if (!qDone && qualStage === null) route = 'qualify'; // start qualification\nelse if (!qDone && qualStage !== null) route = 'qualify_next'; // continue qualification\n\n// build reply text for stage route\nlet reply = '', videoUrl = null;\nif (route === 'stage' && action.msg) {\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || '').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k.toLowerCase()] ?? vars[k] ?? '');\n  if (action.form && vars.form_link && !reply.includes(vars.form_link)) reply += '\\n\\n' + vars.form_link;\n  if (action.video) videoUrl = vars[action.video] || null;\n}\n\nreturn [{ json: { ...sc, userText: c.userText, intent, intentData, route, next: action.next || sc.stage, reply, videoUrl, qualStage } }];"
+        "jsCode": "const c = $input.first().json;\nconst raw = c.choices?.[0]?.message?.content || '';\nlet intent = 'SHORT_NEUTRAL', intentData = {};\ntry {\n  const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/);\n  if (m) { const p = JSON.parse(m[0]); intent = p.intent || intent; intentData = p.data || {}; }\n} catch(e) {}\nconst valid = ['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','WANTS_MORE_INFO','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL'];\nif (!valid.includes(intent)) intent = 'SHORT_NEUTRAL';\n\nconst sc = $('Code · State').first().json;\n// Anti-loop override\nif (sc.looping && sc.botConfig?.antiloop_enabled !== false) intent = 'WANTS_HUMAN';\n\n// Qualification routing\nconst qs = sc.qualQuestions || [];\nconst qualDone = !qs.length || sc.botConfig?.qual_enabled === false || (sc.stage && !sc.stage.startsWith('qual_') && sc.stage !== 'new');\nconst qualStage = sc.stage?.startsWith('qual_') ? parseInt(sc.stage.replace('qual_','')) : null;\n\n// Flow lookup\nconst flow = sc.flow || {};\nconst node = (flow.stages && (flow.stages[sc.stage] || flow.stages['new'])) || {};\nconst action = node[intent] || node['*'] || { next: sc.stage, msg: null };\n\nlet route = 'stage';\nif (intent === 'WANTS_HUMAN' && sc.botConfig?.handover_enabled !== false) route = 'human';\nelse if (intent === 'QUESTION') route = 'faq';\nelse if (!qualDone && qualStage === null) route = 'qualify';\nelse if (!qualDone && qualStage !== null) route = 'qualify_next';\n\n// Build stage reply\nlet reply = '', videoUrl = null;\nif (route === 'stage' && action.msg) {\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || '').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k.toLowerCase()] ?? vars[k] ?? '');\n  if (action.form && vars.form_link && !reply.includes(vars.form_link)) reply += '\\n\\n' + vars.form_link;\n  if (action.video) videoUrl = vars[action.video] || null;\n}\n\nreturn [{ json: { ...sc, userText: c.userText, intent, intentData, route, next: action.next || sc.stage, reply, videoUrl, qualStage } }];"
       },
       "id": "parseintent", "name": "Code · Intent + flow", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ 1440, 400 ]
@@ -179,15 +179,30 @@
           { "name": "api_access_token", "value": "={{ $json.chatwoot_token }}" },
           { "name": "Content-Type", "value": "application/json" } ] },
         "sendBody": true, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ content: 'Sure 🙏 connecting you to our advisor now.', message_type: 'outgoing', private: false }) }}",
-        "options": {}
+        "jsonBody": "={{ JSON.stringify({ content: 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.', message_type: 'outgoing', private: false }) }}",
+        "options": { "retryOnFail": true, "maxTries": 3, "waitBetweenTries": 2000 }
       },
       "id": "sendhuman", "name": "HTTP · Handover msg", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
       "position": [ 1880, 160 ], "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "jsCode": "// Build FAQ call with conversation history for context\nconst c = $input.first().json;\nconst history = c.activeHistory || [];\nconst memSummary = c.memSummary || '';\nlet systemPrompt = c.main_prompt;\nif (memSummary) systemPrompt += '\\n\\n[Earlier context summary: ' + memSummary + ']';\nconst messages = [\n  { role: 'system', content: systemPrompt },\n  ...history.slice(-8), // last 8 exchanges for context\n  { role: 'user', content: c.userText }\n];\nreturn [{ json: { ...c, _faqMessages: messages } }];"
+        "method": "POST",
+        "url": "={{ $('Code · Intent + flow').first().json.chatwoot_base }}/api/v1/accounts/{{ $('Code · Intent + flow').first().json.chatwoot_account_id }}/conversations/{{ $('Code · Intent + flow').first().json.convId }}/labels",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "api_access_token", "value": "={{ $('Code · Intent + flow').first().json.chatwoot_token }}" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ labels: ['human-requested'] }) }}",
+        "options": {}
+      },
+      "id": "handoverlabel", "name": "HTTP · Handover label", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 2100, 160 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst memSummary = c.memSummary || '';\nlet systemPrompt = c.main_prompt;\nif (memSummary) systemPrompt += '\\n\\n[Earlier context summary: ' + memSummary + ']';\nconst messages = [\n  { role: 'system', content: systemPrompt },\n  ...history.slice(-8),\n  { role: 'user', content: c.userText }\n];\nreturn [{ json: { ...c, _faqMessages: messages } }];"
       },
       "id": "faqprep", "name": "Code · FAQ prep", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ 1880, 360 ]
@@ -208,24 +223,24 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code · FAQ prep').first().json;\nconst r = $input.first().json;\nconst reply = r.choices?.[0]?.message?.content?.trim() || 'Sir/Madam, ഒരു moment 🙏';\nreturn [{ json: { ...c, reply } }];"
+        "jsCode": "const c = $('Code · FAQ prep').first().json;\nconst r = $input.first().json;\nconst reply = r.choices?.[0]?.message?.content?.trim() || 'One moment 🙏';\nreturn [{ json: { ...c, reply } }];"
       },
       "id": "faqextract", "name": "Code · FAQ reply", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ 2300, 360 ]
     },
     {
       "parameters": {
-        "jsCode": "// Start lead qualification: ask first qualifying question\nconst c = $input.first().json;\nconst qs = c.qualQuestions || [];\nconst question = qs[0] || 'Could you tell me a bit more about what you are looking for?';\nreturn [{ json: { ...c, reply: question, next: 'qual_0' } }];"
+        "jsCode": "const c = $input.first().json;\nconst qs = c.qualQuestions || [];\nconst question = qs[0] || 'Could you tell me a bit more about what you are looking for?';\nreturn [{ json: { ...c, reply: question, next: 'qual_0' } }];"
       },
       "id": "qualstart", "name": "Code · Qual start", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ 1880, 540 ]
     },
     {
       "parameters": {
-        "jsCode": "// Continue qualification: save previous answer, ask next question or move on\nconst c = $input.first().json;\nconst qs = c.qualQuestions || [];\nconst currentIdx = c.qualStage !== null ? c.qualStage : 0;\nconst nextIdx = currentIdx + 1;\nlet reply, next, qualAnswers = {};\ntry { qualAnswers = JSON.parse(c.leadQualAnswers || '{}'); } catch(e) {}\n// Store the current answer keyed by question\nif (qs[currentIdx]) qualAnswers[qs[currentIdx]] = c.userText;\nif (nextIdx < qs.length) {\n  // more questions\n  reply = qs[nextIdx];\n  next = 'qual_' + nextIdx;\n} else {\n  // qualification complete — move to the first real stage\n  const flow = c.flow || {};\n  const firstStage = Object.keys(flow.stages || {})[0] || 'new';\n  const action = (flow.stages?.[firstStage] || {})['*'] || { next: firstStage, msg: null };\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || 'Great, thanks! Let me share some information with you 😊').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k] ?? '');\n  next = action.next || firstStage;\n}\nreturn [{ json: { ...c, reply, next, leadQualAnswers: JSON.stringify(qualAnswers) } }];"
+        "jsCode": "const c = $input.first().json;\nconst qs = c.qualQuestions || [];\nconst currentIdx = c.qualStage !== null ? c.qualStage : 0;\nconst nextIdx = currentIdx + 1;\nlet qualAnswers = c.qualAnswers || {};\nif (qs[currentIdx]) qualAnswers[qs[currentIdx]] = c.userText;\nlet reply, next;\nif (nextIdx < qs.length) {\n  reply = qs[nextIdx];\n  next = 'qual_' + nextIdx;\n} else {\n  const flow = c.flow || {};\n  const firstStage = Object.keys(flow.stages || {})[0] || 'new';\n  const action = (flow.stages?.[firstStage] || {})['*'] || { next: firstStage, msg: null };\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || 'Great, thanks! Let me share some information 😊').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k] ?? '');\n  next = action.next || firstStage;\n}\nreturn [{ json: { ...c, reply, next, qualAnswers } }];"
       },
       "id": "qualnext", "name": "Code · Qual next", "type": "n8n-nodes-base.code", "typeVersion": 2,
-      "position": [ 1880, 680 ]
+      "position": [ 1880, 700 ]
     },
     {
       "parameters": {
@@ -237,14 +252,14 @@
           { "name": "Content-Type", "value": "application/json" } ] },
         "sendBody": true, "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ content: $json.reply, message_type: 'outgoing', private: false }) }}",
-        "options": {}
+        "options": { "retryOnFail": true, "maxTries": 3, "waitBetweenTries": 2000 }
       },
       "id": "send", "name": "HTTP · Send reply", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
       "position": [ 2520, 460 ], "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "jsCode": "// Summarise conversation if history is getting long (called before upsert)\nconst c = $input.first().json;\n// Append current exchange to history\nconst history = c.history || [];\nif (c.userText) history.push({ role: 'user', content: c.userText });\nif (c.reply) history.push({ role: 'assistant', content: c.reply });\n\nconst isHuman = c.route === 'human';\nconst body = {\n  Phone: c.phone, Name: c.name, ConversationID: c.convId,\n  Date: new Date().toISOString(), Language: c.language,\n  ConvHistory: JSON.stringify(history.slice(-40)), // keep last 40 messages\n};\nif (c.leadQualAnswers) body.QualAnswers = c.leadQualAnswers;\nif (isHuman) { body.Stage = 'human_handover'; body.Handover = 'Yes'; }\nelse { body.Stage = c.next; }\nif (!isHuman && c.next !== c.stage) {\n  body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No';\n}\nif (c.intentData?.booking_time) body.BookingTime = c.intentData.booking_time;\nconst method = c.leadId ? 'PATCH' : 'POST';\nif (c.leadId) body.Id = c.leadId;\nreturn [{ json: { ...c, _method: method, _body: body } }];"
+        "jsCode": "const c = $input.first().json;\nconst history = c.history || [];\nif (c.userText) history.push({ role: 'user', content: c.userText });\nif (c.reply) history.push({ role: 'assistant', content: c.reply });\n\nconst isHuman = c.route === 'human';\nconst body = {\n  Phone: c.phone, Name: c.name, ConversationID: c.convId,\n  Date: new Date().toISOString(), Language: c.language,\n  ConvHistory: JSON.stringify(history.slice(-40)),\n  LastMsgAt: new Date().toISOString()\n};\nif (c.qualAnswers && Object.keys(c.qualAnswers).length) body.QualAnswers = JSON.stringify(c.qualAnswers);\nif (isHuman) { body.Stage = 'human_handover'; body.Handover = 'Yes'; }\nelse { body.Stage = c.next; }\nif (!isHuman && c.next !== c.stage) {\n  body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No';\n}\nif (c.intentData?.booking_time) body.BookingTime = c.intentData.booking_time;\nconst method = c.leadId ? 'PATCH' : 'POST';\nif (c.leadId) body.Id = c.leadId;\nreturn [{ json: { ...c, _method: method, _body: body } }];"
       },
       "id": "prepupsert", "name": "Code · Prep lead", "type": "n8n-nodes-base.code", "typeVersion": 2,
       "position": [ 2740, 460 ]
@@ -266,11 +281,48 @@
     },
     {
       "parameters": {
-        "content": "## Leadvyne · Engine v2 (shared sub-workflow)\n\nCalled by each client's thin wrapper via Execute Workflow, receiving the Chatwoot payload + **client_id**.\n\n### What's new in v2\n- **Structured intent classification**: LLM returns JSON `{intent, data}` — booking times and questions are extracted\n- **Conversation memory**: full history stored in NocoDB `ConvHistory` field; summarised if > 20 messages\n- **Lead qualification flow**: bot asks configurable qualifying questions before the main flow starts\n- **Anti-loop protection**: if bot repeats the same reply 3× in a row, auto-escalates to human\n- **FAQ with history context**: FAQ LLM call includes past conversation for coherent multi-turn answers\n- **Qual answers stored**: each qualifying Q&A saved in NocoDB `QualAnswers` field\n\n### Setup\n1. Set 3 placeholders on *NocoDB · Get tenant*: REPLACE_CONTROL_WORKSPACE / PROJECT / CLIENTS_TABLE\n2. Add `ConvHistory` (Long text), `MemSummary` (Long text), `QualAnswers` (Long text), `BookingTime` (Single line) columns to your NocoDB leads table\n3. Note this workflow's id → paste it into the onboard workflow's Settings (engine_workflow_id)",
-        "height": 420, "width": 520
+        "jsCode": "const c = $('Code · Prep lead').first().json;\nconst upsertResult = $input.first().json;\nconst isError = !!(upsertResult.error || upsertResult.msg);\nconst responseMs = Date.now() - (c._startMs || Date.now());\nreturn [{ json: {\n  ...c,\n  _analyticsBody: {\n    ClientId: String(c.client_id),\n    ClientName: c.client_name || '',\n    Phone: c.phone,\n    Intent: c.intent || '',\n    Route: c.route || '',\n    Stage: c.stage || '',\n    NextStage: c.next || '',\n    ResponseMs: responseMs,\n    IsError: isError,\n    ErrorMsg: isError ? JSON.stringify(upsertResult).substring(0, 200) : '',\n    Timestamp: new Date().toISOString()\n  }\n} }];"
+      },
+      "id": "prepanalytics", "name": "Code · Prep analytics", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 3180, 460 ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/m2in19v8n7phitr/records",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json._analyticsBody) }}",
+        "options": {}
+      },
+      "id": "loganalytics", "name": "HTTP · Log analytics", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 3400, 460 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ Id: $('Code · Prep lead').first().json.client_id, last_seen: new Date().toISOString() }) }}",
+        "options": {}
+      },
+      "id": "updatelastseen", "name": "HTTP · Update last seen", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 3620, 460 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Leadvyne · Engine v3\n\n### New in v3\n- **Active flag check**: suspended clients (active=No) are silently dropped at ctx step\n- **Rate limiting / debounce**: drops duplicate webhook fires within 4s per user (via LastMsgAt field)\n- **Structured intent**: LLM returns {intent, data} JSON — booking times extracted\n- **Conversation memory**: history stored in NocoDB ConvHistory; last 8 exchanges sent to FAQ LLM\n- **Lead qualification**: configurable qualifying questions stored in QualAnswers\n- **Anti-loop protection**: 3 identical consecutive bot replies → force human escalation\n- **Richer handoff**: sends message + adds 'human-requested' label in Chatwoot (retry x3)\n- **Retry on send**: Chatwoot send retries up to 3× with 2s backoff\n- **Analytics logging**: every processed message logged to control NocoDB analytics table\n- **Last seen tracking**: client record updated with last_seen timestamp for health monitoring\n\n### Placeholders to set\n1. NocoDB · Get tenant: REPLACE_CONTROL_WORKSPACE / PROJECT / CLIENTS_TABLE\n2. HTTP · Log analytics: https://whizz.aiingo.com, m2in19v8n7phitr, nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF\n3. HTTP · Update last seen: same as above\n\n### NocoDB schema additions needed\n**Leads table:** ConvHistory (Long text), QualAnswers (Long text), BookingTime (Single line), LastMsgAt (DateTime)\n**Clients table:** last_seen (DateTime), n8n_workflow_id (Single line)\n**Analytics table (new, in control NocoDB):** ClientId, ClientName, Phone, Intent, Route, Stage, NextStage, ResponseMs (Number), IsError (Checkbox), ErrorMsg, Timestamp (DateTime)",
+        "height": 500, "width": 580
       },
       "id": "note", "name": "README", "type": "n8n-nodes-base.stickyNote", "typeVersion": 1,
-      "position": [ -1200, -100 ]
+      "position": [ -1200, -140 ]
     }
   ],
   "connections": {
@@ -301,14 +353,18 @@
       [ { "node": "Code · Qual start", "type": "main", "index": 0 } ],
       [ { "node": "Code · Qual next", "type": "main", "index": 0 } ]
     ] },
-    "HTTP · Handover msg": { "main": [ [ { "node": "Code · Prep lead", "type": "main", "index": 0 } ] ] },
+    "HTTP · Handover msg": { "main": [ [ { "node": "HTTP · Handover label", "type": "main", "index": 0 } ] ] },
+    "HTTP · Handover label": { "main": [ [ { "node": "Code · Prep lead", "type": "main", "index": 0 } ] ] },
     "Code · FAQ prep": { "main": [ [ { "node": "HTTP · FAQ answer", "type": "main", "index": 0 } ] ] },
     "HTTP · FAQ answer": { "main": [ [ { "node": "Code · FAQ reply", "type": "main", "index": 0 } ] ] },
     "Code · FAQ reply": { "main": [ [ { "node": "HTTP · Send reply", "type": "main", "index": 0 } ] ] },
     "Code · Qual start": { "main": [ [ { "node": "HTTP · Send reply", "type": "main", "index": 0 } ] ] },
     "Code · Qual next": { "main": [ [ { "node": "HTTP · Send reply", "type": "main", "index": 0 } ] ] },
     "HTTP · Send reply": { "main": [ [ { "node": "Code · Prep lead", "type": "main", "index": 0 } ] ] },
-    "Code · Prep lead": { "main": [ [ { "node": "HTTP · Upsert lead", "type": "main", "index": 0 } ] ] }
+    "Code · Prep lead": { "main": [ [ { "node": "HTTP · Upsert lead", "type": "main", "index": 0 } ] ] },
+    "HTTP · Upsert lead": { "main": [ [ { "node": "Code · Prep analytics", "type": "main", "index": 0 } ] ] },
+    "Code · Prep analytics": { "main": [ [ { "node": "HTTP · Log analytics", "type": "main", "index": 0 } ] ] },
+    "HTTP · Log analytics": { "main": [ [ { "node": "HTTP · Update last seen", "type": "main", "index": 0 } ] ] }
   },
   "settings": { "executionOrder": "v1" }
 }

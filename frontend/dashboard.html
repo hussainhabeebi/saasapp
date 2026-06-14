@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leadvyne · Client Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#E9EEEC;--card:#FFFFFF;--ink:#0F1F1A;--muted:#5B6B65;
+  --accent:#0E7C5A;--accent-ink:#0A5C43;--accent-soft:#D8EEE4;
+  --line:#D7E0DC;--line-strong:#C2CEC9;--warn:#9A5B12;--warn-soft:#F6ECD9;
+  --r:10px;--mono:"JetBrains Mono",ui-monospace,monospace;
+  --disp:"Space Grotesk",system-ui,sans-serif;--body:"Inter",system-ui,sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:100vh;font-size:15px;-webkit-font-smoothing:antialiased}
+
+/* gate */
+#gate{position:fixed;inset:0;z-index:100;background:var(--ink);display:flex;align-items:center;justify-content:center;padding:24px}
+#gate.hidden{display:none}
+.gbox{width:100%;max-width:400px;text-align:center}
+.gbox .brand{font-family:var(--disp);font-size:24px;font-weight:700;color:#fff;margin-bottom:6px}
+.gbox .brand span{color:#5FD6A4}
+.gbox .sub{color:#9DBBB1;font-size:13px;margin-bottom:28px}
+.g-label{display:block;font-size:12px;font-weight:600;color:#9DBBB1;margin-bottom:5px;text-align:left}
+.g-input{width:100%;background:#16302A;border:1px solid #2A4A41;border-radius:9px;padding:12px 14px;color:#fff;font-family:var(--mono);font-size:15px;margin-bottom:12px;text-align:center;letter-spacing:.05em}
+.g-input:focus{outline:none;border-color:#5FD6A4;box-shadow:0 0 0 3px rgba(95,214,164,.18)}
+.g-btn{width:100%;margin-top:4px;background:var(--accent);color:#fff;border:none;border-radius:9px;padding:13px;font-family:var(--disp);font-weight:600;font-size:15px;cursor:pointer}
+.g-btn:hover{background:#12936b}
+.g-btn:disabled{opacity:.6;cursor:not-allowed}
+.g-err{color:#F1A6A6;font-size:12.5px;min-height:16px;margin-top:10px}
+
+/* header */
+#hdr{background:var(--card);border-bottom:1px solid var(--line);padding:12px 24px;display:none;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:50}
+#hdr.show{display:flex}
+.brand-sm{font-family:var(--disp);font-size:17px;font-weight:700}
+.brand-sm span{color:var(--accent)}
+.client-chip{background:var(--accent-soft);color:var(--accent-ink);font-family:var(--disp);font-size:12px;font-weight:600;padding:4px 12px;border-radius:20px}
+.hdr-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.updated{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.disc-btn{font-size:12px;color:var(--muted);border:1px solid var(--line-strong);background:none;border-radius:7px;padding:5px 10px;cursor:pointer}
+.disc-btn:hover{border-color:#B23A2E;color:#B23A2E}
+
+/* tabs */
+.tab-bar{display:flex;gap:4px;padding:20px 24px 0;max-width:1100px;margin:0 auto}
+.tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:9px 18px;border-radius:9px 9px 0 0;border:1px solid var(--line);border-bottom:none;cursor:pointer;background:#F0F4F2;color:var(--muted)}
+.tab.active{background:var(--card);color:var(--ink)}
+
+/* wrap */
+.wrap{max-width:1100px;margin:0 auto;padding:0 24px 60px}
+.panel{display:none}.panel.active{display:block}
+.panel-inner{background:var(--card);border:1px solid var(--line);border-radius:0 var(--r) var(--r) var(--r);padding:24px}
+
+/* stats */
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px;padding-top:20px}
+@media(max-width:700px){.stat-grid{grid-template-columns:1fr 1fr}}
+.stat-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:18px}
+.stat-card.accent{background:var(--accent);border-color:var(--accent-ink)}
+.s-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px}
+.stat-card.accent .s-label{color:rgba(255,255,255,.7)}
+.s-val{font-family:var(--disp);font-size:30px;font-weight:700;line-height:1}
+.stat-card.accent .s-val{color:#fff}
+.s-sub{font-size:12px;color:var(--muted);margin-top:4px}
+.stat-card.accent .s-sub{color:rgba(255,255,255,.6)}
+
+/* funnel */
+.f-row{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.f-row:last-child{margin-bottom:0}
+.f-name{font-family:var(--mono);font-size:12px;color:var(--ink);min-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.f-wrap{flex:1;background:#F0F4F2;border-radius:4px;height:10px;overflow:hidden}
+.f-bar{height:100%;background:var(--accent);border-radius:4px;transition:width .5s ease}
+.f-ct{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:32px;text-align:right}
+
+/* table */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:8px 12px;border-bottom:2px solid var(--line);text-align:left}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#FAFCFB}
+.badge{display:inline-block;font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:20px;font-weight:600}
+.badge-booked{background:#dcfce7;color:#166534}
+.badge-human{background:var(--warn-soft);color:var(--warn)}
+.badge-active{background:var(--accent-soft);color:var(--accent-ink)}
+.badge-new{background:#EEF0EF;color:var(--muted)}
+
+/* settings panel */
+.settings-section{margin-bottom:24px}
+.settings-section:last-child{margin-bottom:0}
+.s-head{font-family:var(--disp);font-size:15px;font-weight:600;margin-bottom:4px}
+.s-note{font-size:12px;color:var(--muted);margin-bottom:12px}
+textarea.cfg{width:100%;background:#FBFCFC;border:1px solid var(--line-strong);border-radius:8px;padding:10px 12px;font-family:var(--mono);font-size:13px;color:var(--ink);resize:vertical;line-height:1.55}
+textarea.cfg:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.field-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+@media(max-width:500px){.field-grid{grid-template-columns:1fr}}
+.field-grid label{font-size:12px;font-weight:600;display:block;margin-bottom:5px}
+.field-grid input{width:100%;background:#FBFCFC;border:1px solid var(--line-strong);border-radius:8px;padding:9px 12px;font-size:14px;color:var(--ink);font-family:var(--mono)}
+.field-grid input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.save-btn{background:var(--accent);color:#fff;border:none;border-radius:9px;padding:10px 22px;font-family:var(--disp);font-weight:600;font-size:14px;cursor:pointer}
+.save-btn:hover{background:var(--accent-ink)}
+.save-btn:disabled{opacity:.55;cursor:default}
+.save-msg{font-size:13px;margin-left:12px;color:var(--accent-ink)}
+.save-msg.err{color:#B23A2E}
+.flow-err{color:#B23A2E;font-size:12px;margin-top:4px;min-height:16px}
+</style>
+</head>
+<body>
+
+<!-- CONFIG — baked in -->
+<script>
+const CONFIG = {
+  NOCODB_BASE:      'https://whizz.aiingo.com',
+  NOCODB_TOKEN:     'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',
+  CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj',
+};
+</script>
+
+<!-- GATE -->
+<div id="gate">
+  <div class="gbox">
+    <div class="brand">Leadvyne<span>.</span> Dashboard</div>
+    <p class="sub">Enter your Client ID to view and manage your bot.</p>
+    <label class="g-label">Client ID</label>
+    <input class="g-input" id="gClientId" type="number" placeholder="e.g. 42" autocomplete="off" />
+    <button class="g-btn" id="gConnect">Open Dashboard</button>
+    <div class="g-err" id="gErr"></div>
+  </div>
+</div>
+
+<!-- HEADER -->
+<div id="hdr">
+  <span class="brand-sm">Leadvyne<span>.</span></span>
+  <span class="client-chip" id="clientChip">—</span>
+  <div class="hdr-right">
+    <span class="updated" id="updatedAt"></span>
+    <button class="disc-btn" id="discBtn">Disconnect</button>
+  </div>
+</div>
+
+<!-- TABS -->
+<div class="tab-bar" id="tabBar" style="display:none">
+  <button class="tab active" data-tab="stats">📊 Stats</button>
+  <button class="tab" data-tab="settings">⚙️ Bot Settings</button>
+</div>
+
+<!-- PANELS -->
+<div class="wrap" id="mainWrap" style="display:none">
+
+  <!-- STATS PANEL -->
+  <div class="panel active" id="panelStats">
+    <div class="stat-grid">
+      <div class="stat-card accent">
+        <div class="s-label">Total Leads</div>
+        <div class="s-val" id="sTotal">—</div>
+        <div class="s-sub">all time</div>
+      </div>
+      <div class="stat-card">
+        <div class="s-label">Active Conversations</div>
+        <div class="s-val" id="sActive">—</div>
+        <div class="s-sub">in progress</div>
+      </div>
+      <div class="stat-card">
+        <div class="s-label">Completion Rate</div>
+        <div class="s-val" id="sRate">—</div>
+        <div class="s-sub">consultations booked</div>
+      </div>
+      <div class="stat-card">
+        <div class="s-label">Today's Leads</div>
+        <div class="s-val" id="sToday">—</div>
+        <div class="s-sub" id="sTodayDate">—</div>
+      </div>
+    </div>
+
+    <div class="panel-inner" style="margin-bottom:18px">
+      <div style="font-family:var(--disp);font-size:15px;font-weight:600;margin-bottom:16px">Stage Funnel</div>
+      <div id="funnelChart"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+    </div>
+
+    <div class="panel-inner">
+      <div style="font-family:var(--disp);font-size:15px;font-weight:600;margin-bottom:16px">Recent Leads</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Phone</th><th>Stage</th><th>Language</th><th>Date</th></tr></thead>
+          <tbody id="leadsBody"><tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS PANEL -->
+  <div class="panel" id="panelSettings">
+    <div class="panel-inner" style="margin-top:20px">
+
+      <!-- Main Prompt -->
+      <div class="settings-section">
+        <div class="s-head">Bot Persona &amp; System Prompt</div>
+        <div class="s-note">The bot's voice, scope, and guardrails — used when answering questions.</div>
+        <textarea class="cfg" id="cfgPrompt" rows="10" placeholder="Loading…"></textarea>
+        <div style="margin-top:10px;display:flex;align-items:center">
+          <button class="save-btn" id="savePrompt">Save Prompt</button>
+          <span class="save-msg" id="savePromptMsg"></span>
+        </div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:24px 0">
+
+      <!-- Follow-ups -->
+      <div class="settings-section">
+        <div class="s-head">Follow-up Messages</div>
+        <div class="s-note">Automated nudges sent when a lead goes quiet.</div>
+        <div class="field-grid">
+          <div>
+            <label>Number of follow-ups (0–5)</label>
+            <input type="number" id="cfgFuCount" min="0" max="5" placeholder="3" />
+          </div>
+          <div>
+            <label>Hours after last activity (comma-separated)</label>
+            <input type="text" id="cfgFuHours" placeholder="24, 72, 168" />
+          </div>
+        </div>
+        <label style="font-size:12px;font-weight:600;display:block;margin-bottom:5px">Messages (one per line)</label>
+        <textarea class="cfg" id="cfgFuMsgs" rows="5" placeholder="Loading…"></textarea>
+        <div style="margin-top:10px;display:flex;align-items:center">
+          <button class="save-btn" id="saveFu">Save Follow-ups</button>
+          <span class="save-msg" id="saveFuMsg"></span>
+        </div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:24px 0">
+
+      <!-- Flow JSON -->
+      <div class="settings-section">
+        <div class="s-head">Conversation Flow</div>
+        <div class="s-note">JSON defining stages, messages, and variables. Each stage maps intents to the next stage + message.</div>
+        <textarea class="cfg" id="cfgFlow" rows="16" placeholder="Loading…"></textarea>
+        <div class="flow-err" id="flowErr"></div>
+        <div style="margin-top:10px;display:flex;align-items:center">
+          <button class="save-btn" id="saveFlow">Save Flow</button>
+          <span class="save-msg" id="saveFlowMsg"></span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+let clientId = null;
+let clientRecord = null;
+let refreshTimer = null;
+
+const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
+const TODAY = new Date().toISOString().slice(0,10);
+
+// ---- gate ----
+$id('gConnect').addEventListener('click', connect);
+$id('gClientId').addEventListener('keydown', e => { if(e.key==='Enter') connect(); });
+
+async function connect() {
+  const val = $id('gClientId').value.trim();
+  if (!val) { $id('gErr').textContent = 'Enter your Client ID.'; return; }
+  $id('gErr').textContent = '';
+  $id('gConnect').disabled = true; $id('gConnect').textContent = 'Loading…';
+  try {
+    const data = await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${val}`);
+    if (!data || !data.Id) throw new Error('Client not found');
+    clientId = val;
+    clientRecord = data;
+    sessionStorage.setItem('lv_client_id', val);
+    showDashboard();
+  } catch(e) {
+    $id('gErr').textContent = 'Client ID not found. Check the ID from your provisioning email.';
+    $id('gConnect').disabled = false; $id('gConnect').textContent = 'Open Dashboard';
+  }
+}
+
+$id('discBtn').addEventListener('click', () => {
+  sessionStorage.removeItem('lv_client_id');
+  clientId = null; clientRecord = null;
+  clearInterval(refreshTimer);
+  $id('gate').classList.remove('hidden');
+  $id('hdr').classList.remove('show');
+  $id('tabBar').style.display = 'none';
+  $id('mainWrap').style.display = 'none';
+  $id('gClientId').value = '';
+  $id('gConnect').disabled = false; $id('gConnect').textContent = 'Open Dashboard';
+});
+
+// ---- tabs ----
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    $id('panel' + cap(tab.dataset.tab)).classList.add('active');
+    if (tab.dataset.tab === 'settings') populateSettings();
+  });
+});
+
+function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+// ---- show dashboard ----
+function showDashboard() {
+  $id('gate').classList.add('hidden');
+  $id('hdr').classList.add('show');
+  $id('tabBar').style.display = 'flex';
+  $id('mainWrap').style.display = 'block';
+  $id('clientChip').textContent = clientRecord.client_name || ('Client #' + clientId);
+  $id('sTodayDate').textContent = new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  loadStats();
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(loadStats, 60000);
+}
+
+// ---- stats ----
+async function loadStats() {
+  if (!clientRecord) return;
+  try {
+    const base = clientRecord.nocodb_base;
+    const token = clientRecord.nocodb_token;
+    const table = clientRecord.leads_table_id;
+    if (!base || !token || !table) { renderNoLeads(); return; }
+    const data = await ncGet(`${base}/api/v2/tables/${table}/records?limit=1000&sort=-Date`, token);
+    const leads = data.list || [];
+    renderStats(leads);
+    renderFunnel(leads);
+    renderLeads(leads);
+    $id('updatedAt').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+function renderStats(leads) {
+  const total = leads.length;
+  const active = leads.filter(l => !TERMINAL.has(l.Stage)).length;
+  const booked = leads.filter(l => ['consultation_booked','visit_booked','appt_booked'].includes(l.Stage)).length;
+  const rate = total > 0 ? Math.round(booked/total*100)+'%' : '0%';
+  const todayN = leads.filter(l => (l.Date||'').slice(0,10) === TODAY).length;
+  $id('sTotal').textContent = total;
+  $id('sActive').textContent = active;
+  $id('sRate').textContent = rate;
+  $id('sToday').textContent = todayN;
+}
+
+function renderFunnel(leads) {
+  const counts = {};
+  leads.forEach(l => { const s=l.Stage||'unknown'; counts[s]=(counts[s]||0)+1; });
+  const sorted = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  const max = sorted[0]?.[1]||1;
+  if(!sorted.length){ $id('funnelChart').innerHTML='<div style="color:var(--muted);font-size:13px">No stage data yet</div>'; return; }
+  $id('funnelChart').innerHTML = sorted.map(([s,n])=>`
+    <div class="f-row">
+      <div class="f-name" title="${esc(s)}">${esc(s)}</div>
+      <div class="f-wrap"><div class="f-bar" style="width:${Math.round(n/max*100)}%"></div></div>
+      <div class="f-ct">${n}</div>
+    </div>`).join('');
+}
+
+function renderLeads(leads) {
+  const rows = leads.slice(0,25);
+  if(!rows.length){ $id('leadsBody').innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">No leads yet</td></tr>'; return; }
+  $id('leadsBody').innerHTML = rows.map(l=>`
+    <tr>
+      <td>${esc(l.Name||'—')}</td>
+      <td style="font-family:var(--mono);font-size:12px">${maskPhone(l.Phone)}</td>
+      <td>${stageBadge(l.Stage)}</td>
+      <td style="font-family:var(--mono);font-size:12px">${l.Language||'—'}</td>
+      <td style="color:var(--muted);font-size:12px">${fmtDate(l.Date)}</td>
+    </tr>`).join('');
+}
+
+function renderNoLeads() {
+  ['sTotal','sActive','sRate','sToday'].forEach(id=>$id(id).textContent='—');
+  $id('funnelChart').innerHTML='<div style="color:var(--muted);font-size:13px">Leads table not configured</div>';
+  $id('leadsBody').innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">No leads table configured</td></tr>';
+}
+
+// ---- settings ----
+function populateSettings() {
+  if (!clientRecord) return;
+  $id('cfgPrompt').value = clientRecord.main_prompt || '';
+  $id('cfgFuCount').value = clientRecord.followup_count || '3';
+  $id('cfgFuHours').value = clientRecord.followup_hours || '24, 72, 168';
+  $id('cfgFuMsgs').value = clientRecord.followup_messages || '';
+  $id('cfgFlow').value = clientRecord.flow_json || '';
+}
+
+async function patchClient(fields) {
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`, CONFIG.NOCODB_TOKEN, { Id: clientId, ...fields });
+  // update local record
+  Object.assign(clientRecord, fields);
+}
+
+// save prompt
+$id('savePrompt').addEventListener('click', async () => {
+  const btn=$id('savePrompt'); const msg=$id('savePromptMsg');
+  btn.disabled=true; btn.textContent='Saving…'; msg.textContent=''; msg.className='save-msg';
+  try {
+    await patchClient({ main_prompt: $id('cfgPrompt').value });
+    msg.textContent='✓ Saved'; msg.className='save-msg';
+  } catch(e) { msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally { btn.disabled=false; btn.textContent='Save Prompt'; setTimeout(()=>msg.textContent='',3000); }
+});
+
+// save follow-ups
+$id('saveFu').addEventListener('click', async () => {
+  const btn=$id('saveFu'); const msg=$id('saveFuMsg');
+  btn.disabled=true; btn.textContent='Saving…'; msg.textContent=''; msg.className='save-msg';
+  try {
+    await patchClient({
+      followup_count: parseInt($id('cfgFuCount').value)||0,
+      followup_hours: $id('cfgFuHours').value,
+      followup_messages: $id('cfgFuMsgs').value,
+    });
+    msg.textContent='✓ Saved'; msg.className='save-msg';
+  } catch(e) { msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally { btn.disabled=false; btn.textContent='Save Follow-ups'; setTimeout(()=>msg.textContent='',3000); }
+});
+
+// save flow
+$id('saveFlow').addEventListener('click', async () => {
+  const btn=$id('saveFlow'); const msg=$id('saveFlowMsg'); const errEl=$id('flowErr');
+  const val = $id('cfgFlow').value.trim();
+  try { JSON.parse(val); errEl.textContent=''; } catch(e) { errEl.textContent='Invalid JSON: '+e.message; return; }
+  btn.disabled=true; btn.textContent='Saving…'; msg.textContent=''; msg.className='save-msg';
+  try {
+    await patchClient({ flow_json: val });
+    msg.textContent='✓ Saved'; msg.className='save-msg';
+  } catch(e) { msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally { btn.disabled=false; btn.textContent='Save Flow'; setTimeout(()=>msg.textContent='',3000); }
+});
+
+$id('cfgFlow').addEventListener('blur', () => {
+  const v=$id('cfgFlow').value.trim();
+  if(!v) return;
+  try { JSON.parse(v); $id('flowErr').textContent=''; }
+  catch(e) { $id('flowErr').textContent='Invalid JSON: '+e.message; }
+});
+
+// ---- NocoDB API ----
+async function ncGet(url, token) {
+  const res = await fetch(url, { headers: { 'xc-token': token||CONFIG.NOCODB_TOKEN } });
+  if(!res.ok) throw new Error('HTTP '+res.status);
+  return res.json();
+}
+async function ncPatch(url, token, body) {
+  const res = await fetch(url, { method:'PATCH', headers:{'xc-token':token,'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  if(!res.ok) throw new Error('HTTP '+res.status);
+  return res.json();
+}
+
+// ---- helpers ----
+function $id(id){ return document.getElementById(id); }
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function maskPhone(p){ if(!p) return '—'; const s=String(p); return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2); }
+function stageBadge(s){
+  const cl = TERMINAL.has(s) ? (s==='human_handover'?'badge-human':'badge-booked') : s==='new'?'badge-new':'badge-active';
+  return `<span class="badge ${cl}">${esc(s||'—')}</span>`;
+}
+function fmtDate(d){ if(!d) return '—'; try{ return new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}); }catch{return String(d).slice(0,10);} }
+
+// ---- boot ----
+(function(){
+  const saved = sessionStorage.getItem('lv_client_id');
+  if(saved){
+    $id('gClientId').value = saved;
+    connect();
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,155 @@
+{
+  "name": "Leadvyne · Health Monitor",
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [ { "field": "minutes", "minutesInterval": 30 } ] } },
+      "id": "cron", "name": "Every 30 min", "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.2,
+      "position": [ -1000, 300 ]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "nb", "name": "n8n_base",              "value": "https://n8n.aiautomationsuae.com",              "type": "string" },
+          { "id": "cb", "name": "control_nocodb_base",   "value": "https://whizz.aiingo.com",   "type": "string" },
+          { "id": "ct", "name": "control_nocodb_token",  "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF",  "type": "string" },
+          { "id": "cl", "name": "clients_table_id",      "value": "mxl33bg4wi70fqj",         "type": "string" },
+          { "id": "at", "name": "analytics_table_id",    "value": "m2in19v8n7phitr",       "type": "string" },
+          { "id": "aw", "name": "alert_webhook_url",     "value": "REPLACE_ALERT_WEBHOOK_URL",     "type": "string" },
+          { "id": "ep", "name": "error_rate_threshold",  "value": "25",                            "type": "number" },
+          { "id": "ih", "name": "inactive_hours",        "value": "6",                             "type": "number" }
+        ] },
+        "options": {}
+      },
+      "id": "settings", "name": "Set · Config", "type": "n8n-nodes-base.set", "typeVersion": 3.4,
+      "position": [ -780, 300 ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.control_nocodb_base }}/api/v2/tables/{{ $json.clients_table_id }}/records?where=(active,eq,Yes)&limit=200",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "={{ $json.control_nocodb_token }}" } ] },
+        "options": {}
+      },
+      "id": "getclients", "name": "HTTP · Get active clients", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ -560, 300 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Set · Config').first().json;\nconst r = $input.first().json;\nconst clients = r.list || [];\nif (!clients.length) return [];\nreturn clients.map(c => ({ json: { ...cfg, client: c } }));"
+      },
+      "id": "splitclients", "name": "Code · Split clients", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ -340, 300 ]
+    },
+    {
+      "parameters": { "batchSize": 1, "options": {} },
+      "id": "batch", "name": "Loop · One at a time", "type": "n8n-nodes-base.splitInBatches", "typeVersion": 3,
+      "position": [ -120, 300 ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst c = item.client;\nconst workflowId = c.n8n_workflow_id || '';\nconst lastSeen = c.last_seen ? new Date(c.last_seen) : null;\nconst hoursSinceActive = lastSeen ? (Date.now() - lastSeen.getTime()) / 3600000 : 999;\nreturn [{ json: {\n  ...item,\n  clientId: String(c.Id),\n  clientName: c.client_name || 'Unknown',\n  workflowId,\n  lastSeen: c.last_seen || null,\n  hoursSinceActive: Math.round(hoursSinceActive * 10) / 10,\n  hasWorkflowId: !!workflowId\n} }];"
+      },
+      "id": "prepcheck", "name": "Code · Prep check", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 100, 300 ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.n8n_base }}/api/v1/workflows/{{ $json.workflowId }}",
+        "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "checkwf", "name": "HTTP · Check workflow", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 320, 180 ], "onError": "continueRegularOutput",
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_N8N_API_CRED", "name": "n8n API" } }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Code · Prep check').first().json.control_nocodb_base }}/api/v2/tables/{{ $('Code · Prep check').first().json.analytics_table_id }}/records?where=(ClientId,eq,{{ $('Code · Prep check').first().json.clientId }})~and(Timestamp,gt,{{ new Date(Date.now()-3600000).toISOString() }})~and(IsError,eq,true)&limit=200",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "={{ $('Code · Prep check').first().json.control_nocodb_token }}" } ] },
+        "options": {}
+      },
+      "id": "checkerrors", "name": "HTTP · Check error rate", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 320, 420 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Code · Prep check').first().json.control_nocodb_base }}/api/v2/tables/{{ $('Code · Prep check').first().json.analytics_table_id }}/records?where=(ClientId,eq,{{ $('Code · Prep check').first().json.clientId }})~and(Timestamp,gt,{{ new Date(Date.now()-3600000).toISOString() }})&limit=1000",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "={{ $('Code · Prep check').first().json.control_nocodb_token }}" } ] },
+        "options": {}
+      },
+      "id": "checktotal", "name": "HTTP · Check total msgs", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 320, 600 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Code · Prep check').first().json;\nconst wfResult = $('HTTP · Check workflow').first().json;\nconst errResult = $('HTTP · Check error rate').first().json;\nconst totalResult = $('HTTP · Check total msgs').first().json;\n\nconst issues = [];\n\n// 1. Workflow active check\nif (ctx.hasWorkflowId) {\n  const wfActive = wfResult.active === true || wfResult.data?.active === true;\n  if (!wfActive && !wfResult.error) issues.push('workflow_inactive');\n  if (wfResult.error || wfResult.statusCode >= 400) issues.push('workflow_not_found');\n} \n\n// 2. Inactivity check (no messages in N hours despite being active)\nif (ctx.hoursSinceActive > ctx.inactive_hours) {\n  issues.push('no_recent_activity');\n}\n\n// 3. Error rate check\nconst errorCount = (errResult.list || []).length;\nconst totalCount = (totalResult.list || []).length;\nconst errorRate = totalCount > 0 ? Math.round(errorCount / totalCount * 100) : 0;\nif (errorRate > ctx.error_rate_threshold && totalCount >= 5) {\n  issues.push('high_error_rate');\n}\n\nif (!issues.length) return []; // healthy — skip alert\n\nconst alertBody = {\n  client_id: ctx.clientId,\n  client_name: ctx.clientName,\n  issues,\n  error_rate_pct: errorRate,\n  error_count_1h: errorCount,\n  total_msgs_1h: totalCount,\n  hours_since_active: ctx.hoursSinceActive,\n  workflow_id: ctx.workflowId,\n  checked_at: new Date().toISOString()\n};\n\nreturn [{ json: { ...ctx, _alertBody: alertBody, _issues: issues } }];"
+      },
+      "id": "evaluate", "name": "Code · Evaluate health", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 580, 400 ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.alert_webhook_url }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json._alertBody) }}",
+        "options": {}
+      },
+      "id": "sendalert", "name": "HTTP · Send alert", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 800, 400 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $json.control_nocodb_base }}/api/v2/tables/{{ $json.clients_table_id }}/records",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "={{ $json.control_nocodb_token }}" },
+          { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ Id: $json.clientId, health_issues: $json._issues.join(', '), health_checked_at: new Date().toISOString() }) }}",
+        "options": {}
+      },
+      "id": "updatehealth", "name": "HTTP · Update health status", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 1020, 400 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Leadvyne · Health Monitor\n\nRuns every 30 minutes. For each active client, checks:\n\n1. **Workflow active** — calls n8n API to verify the wrapper workflow is active\n2. **Inactivity** — flags clients with no messages in `inactive_hours` (default 6h)\n3. **Error rate** — if >25% of messages in last 1h errored, raises alert\n\nWhen issues are found:\n- POSTs a JSON alert to `alert_webhook_url` (e.g. your Slack/Chatwoot/email n8n webhook)\n- Updates the client record with `health_issues` and `health_checked_at` fields\n\n### Setup\n1. Replace all REPLACE_* placeholders in `Set · Config`\n2. Create `n8n API` Header Auth credential (X-N8N-API-KEY) and select on `HTTP · Check workflow`\n3. Add to clients table: `n8n_workflow_id` (Single line), `health_issues` (Single line), `health_checked_at` (DateTime)\n4. Set `alert_webhook_url` to your alerting endpoint (Slack incoming webhook, another n8n webhook, etc.)\n5. Activate this workflow\n\n### Alert payload shape\n```json\n{\n  \"client_id\": \"42\",\n  \"client_name\": \"Safe Assets\",\n  \"issues\": [\"high_error_rate\"],\n  \"error_rate_pct\": 38,\n  \"error_count_1h\": 8,\n  \"total_msgs_1h\": 21,\n  \"hours_since_active\": 0.4,\n  \"workflow_id\": \"abc123\",\n  \"checked_at\": \"2026-06-14T10:00:00.000Z\"\n}\n```",
+        "height": 540, "width": 560
+      },
+      "id": "note", "name": "README", "type": "n8n-nodes-base.stickyNote", "typeVersion": 1,
+      "position": [ -1000, -200 ]
+    }
+  ],
+  "connections": {
+    "Every 30 min": { "main": [ [ { "node": "Set · Config", "type": "main", "index": 0 } ] ] },
+    "Set · Config": { "main": [ [ { "node": "HTTP · Get active clients", "type": "main", "index": 0 } ] ] },
+    "HTTP · Get active clients": { "main": [ [ { "node": "Code · Split clients", "type": "main", "index": 0 } ] ] },
+    "Code · Split clients": { "main": [ [ { "node": "Loop · One at a time", "type": "main", "index": 0 } ] ] },
+    "Loop · One at a time": { "main": [
+      [ { "node": "Code · Prep check", "type": "main", "index": 0 } ],
+      []
+    ] },
+    "Code · Prep check": { "main": [ [
+      { "node": "HTTP · Check workflow", "type": "main", "index": 0 },
+      { "node": "HTTP · Check error rate", "type": "main", "index": 0 },
+      { "node": "HTTP · Check total msgs", "type": "main", "index": 0 }
+    ] ] },
+    "HTTP · Check workflow": { "main": [ [ { "node": "Code · Evaluate health", "type": "main", "index": 0 } ] ] },
+    "HTTP · Check error rate": { "main": [ [ { "node": "Code · Evaluate health", "type": "main", "index": 0 } ] ] },
+    "HTTP · Check total msgs": { "main": [ [ { "node": "Code · Evaluate health", "type": "main", "index": 0 } ] ] },
+    "Code · Evaluate health": { "main": [ [ { "node": "HTTP · Send alert", "type": "main", "index": 0 } ] ] },
+    "HTTP · Send alert": { "main": [ [ { "node": "HTTP · Update health status", "type": "main", "index": 0 } ] ] },
+    "HTTP · Update health status": { "main": [ [ { "node": "Loop · One at a time", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

@@ -176,7 +176,7 @@
 
   <div class="endpoint">
     <label for="endpoint">Onboard endpoint</label>
-    <input id="endpoint" class="mono" value="https://n8n.aiautomationsuae.com/webhook/leadvyne-onboard" />
+    <input id="endpoint" class="mono" />
   </div>
 
   <!-- WIZARD PROGRESS NAV -->
@@ -231,19 +231,16 @@
     <div class="step-panel" id="step2">
       <section class="card">
         <div class="sec-head"><span class="sec-num">02</span><h2 class="sec-title">Credentials</h2></div>
-        <p class="sec-note">Runtime credentials — injected into request headers, never stored as n8n credentials.</p>
+        <p class="sec-note">Chatwoot credentials for this client. All clients share the same Chatwoot instance (app.aiingo.com), OpenRouter key, and Gemini 2.5 Flash model — no need to enter those.</p>
         <div class="grid">
-          <div><label>Chatwoot base URL</label><input name="chatwoot_base" class="mono" value="https://app.aiingo.com" /></div>
-          <div class="field-row">
+          <div class="field-row full">
             <div><label>Account id</label><input name="chatwoot_account_id" class="mono" placeholder="10" required /></div>
             <div><label>Inbox id</label><input name="chatwoot_inbox_id" class="mono" placeholder="11" required /></div>
           </div>
           <div class="full"><label>Chatwoot API token</label><input name="chatwoot_token" class="mono" placeholder="paste token" required /></div>
-          <div><label>NocoDB base URL</label><input name="nocodb_base" class="mono" value="https://whizz.aiingo.com" /></div>
-          <div><label>Leads table id</label><input name="leads_table_id" class="mono" placeholder="mk1og9rbenjlw13" required /></div>
-          <div class="full"><label>NocoDB token</label><input name="nocodb_token" class="mono" placeholder="xc token" required /></div>
-          <div><label>OpenRouter key</label><input name="openrouter_key" class="mono" placeholder="sk-or-..." required /></div>
-          <div><label>LLM Model</label><input name="model" class="mono" value="google/gemini-2.5-flash" /></div>
+        </div>
+        <div style="margin-top:12px;padding:10px 12px;background:var(--accent-soft);border-radius:8px;font-size:12px;color:var(--accent-ink)">
+          ✓ Leads table will be auto-created in NocoDB for this client on provisioning.
         </div>
       </section>
       <div class="step-nav">
@@ -482,6 +479,16 @@ Last nudge — reply here anytime 😊"></textarea>
 </div>
 
 <script>
+// ---- CONFIG — fill these in once before deploying ----
+const CONFIG = {
+  NOCODB_BASE:        'https://whizz.aiingo.com',
+  NOCODB_TOKEN:       'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',
+  CLIENTS_TABLE_ID:   'mxl33bg4wi70fqj',
+  ANALYTICS_TABLE_ID: 'm2in19v8n7phitr',
+  ONBOARD_ENDPOINT:   'https://n8n.aiautomationsuae.com/webhook/leadvyne-onboard',
+};
+// -------------------------------------------------------
+
 const $ = s => document.querySelector(s);
 let AUTH = "";
 let currentStep = 1;
@@ -495,6 +502,8 @@ function unlock(){
 $('#unlock').addEventListener('click', unlock);
 $('#pass').addEventListener('keydown', e=>{ if(e.key==='Enter') unlock(); });
 $('#lockBtn').addEventListener('click', ()=>{ AUTH=""; $('#pass').value=""; $('#gate').classList.remove('hidden'); });
+// pre-fill endpoint from CONFIG
+$('#endpoint').value = CONFIG.ONBOARD_ENDPOINT;
 
 // ---- wizard navigation ----
 function goStep(n){
@@ -744,8 +753,8 @@ function buildReview(){
   const rows = [
     ['Client name', d.client_name || '—'],
     ['Language', d.language || '—'],
-    ['Chatwoot', `${d.chatwoot_base} · account ${d.chatwoot_account_id} · inbox ${d.chatwoot_inbox_id}`],
-    ['OpenRouter model', d.model || '—'],
+    ['Chatwoot', `app.aiingo.com · account ${d.chatwoot_account_id} · inbox ${d.chatwoot_inbox_id}`],
+    ['LLM', 'Gemini 2.5 Flash (shared)'],
     ['System prompt', (d.main_prompt||'').substring(0,200)+(d.main_prompt?.length>200?'…':'')],
     ['Flow JSON', d.flow_json ? '✓ set ('+((()=>{try{const f=JSON.parse(d.flow_json);return Object.keys(f.stages||{}).length+' stages'}catch(e){return 'invalid JSON'}})())+')' : '⚠ not set'],
     ['Qualifying questions', (() => { try { const qs=JSON.parse(d.qual_questions||'[]'); return qs.length ? qs.join(', ') : 'none'; } catch(e){return 'none'} })()],
