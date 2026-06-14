@@ -9,11 +9,11 @@
     {
       "parameters": {
         "assignments": { "assignments": [
-          { "id": "nb", "name": "n8n_base",              "value": "REPLACE_N8N_BASE",              "type": "string" },
-          { "id": "cb", "name": "control_nocodb_base",   "value": "REPLACE_CONTROL_NOCODB_BASE",   "type": "string" },
+          { "id": "nb", "name": "n8n_base",              "value": "https://n8n.aiautomationsuae.com",              "type": "string" },
+          { "id": "cb", "name": "control_nocodb_base",   "value": "https://whizz.aiingo.com",   "type": "string" },
           { "id": "ct", "name": "control_nocodb_token",  "value": "REPLACE_CONTROL_NOCODB_TOKEN",  "type": "string" },
-          { "id": "cl", "name": "clients_table_id",      "value": "REPLACE_CLIENTS_TABLE",         "type": "string" },
-          { "id": "at", "name": "analytics_table_id",    "value": "REPLACE_ANALYTICS_TABLE",       "type": "string" },
+          { "id": "cl", "name": "clients_table_id",      "value": "mxl33bg4wi70fqj",         "type": "string" },
+          { "id": "at", "name": "analytics_table_id",    "value": "m2in19v8n7phitr",       "type": "string" },
           { "id": "aw", "name": "alert_webhook_url",     "value": "REPLACE_ALERT_WEBHOOK_URL",     "type": "string" },
           { "id": "ep", "name": "error_rate_threshold",  "value": "25",                            "type": "number" },
           { "id": "ih", "name": "inactive_hours",        "value": "6",                             "type": "number" }

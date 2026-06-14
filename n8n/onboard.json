@@ -9,14 +9,14 @@
     {
       "parameters": {
         "assignments": { "assignments": [
-          { "id": "p",  "name": "passcode",           "value": "REPLACE_PASSCODE",           "type": "string" },
+          { "id": "p",  "name": "passcode",           "value": "Bath*2026*ld",                   "type": "string" },
           { "id": "n",  "name": "n8n_base",           "value": "https://n8n.aiautomationsuae.com", "type": "string" },
-          { "id": "e",  "name": "engine_workflow_id", "value": "REPLACE_ENGINE_WORKFLOW_ID", "type": "string" },
-          { "id": "nb", "name": "nocodb_base",        "value": "REPLACE_NOCODB_BASE",        "type": "string" },
-          { "id": "nt", "name": "nocodb_token",       "value": "REPLACE_NOCODB_MASTER_TOKEN","type": "string" },
-          { "id": "np", "name": "nocodb_project_id",  "value": "REPLACE_CONTROL_PROJECT",    "type": "string" },
-          { "id": "ct", "name": "clients_table_id",   "value": "REPLACE_CLIENTS_TABLE",      "type": "string" },
-          { "id": "at", "name": "analytics_table_id", "value": "REPLACE_ANALYTICS_TABLE",    "type": "string" }
+          { "id": "e",  "name": "engine_workflow_id", "value": "REPLACE_ENGINE_WORKFLOW_ID",     "type": "string" },
+          { "id": "nb", "name": "nocodb_base",        "value": "https://whizz.aiingo.com",        "type": "string" },
+          { "id": "nt", "name": "nocodb_token",       "value": "REPLACE_NOCODB_MASTER_TOKEN",    "type": "string" },
+          { "id": "np", "name": "nocodb_project_id",  "value": "p5n4bal4b7tlh9l",                "type": "string" },
+          { "id": "ct", "name": "clients_table_id",   "value": "mxl33bg4wi70fqj",                "type": "string" },
+          { "id": "at", "name": "analytics_table_id", "value": "m2in19v8n7phitr",                "type": "string" }
         ] },
         "options": {}
       },
@@ -67,7 +67,7 @@
     {
       "parameters": {
         "authentication": "nocoDbApiToken", "operation": "create",
-        "workspaceId": "REPLACE_CONTROL_WORKSPACE", "projectId": "REPLACE_CONTROL_PROJECT", "table": "REPLACE_CLIENTS_TABLE",
+        "workspaceId": "w5qye21b", "projectId": "p5n4bal4b7tlh9l", "table": "mxl33bg4wi70fqj",
         "fieldsUi": { "fieldValues": [
           { "fieldName": "client_name",        "fieldValue": "={{ $('Webhook · Onboard').first().json.body.client_name }}" },
           { "fieldName": "chatwoot_account_id","fieldValue": "={{ $('Webhook · Onboard').first().json.body.chatwoot_account_id }}" },
