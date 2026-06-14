@@ -151,6 +151,7 @@ const CONFIG = {
 
   <!-- STATS PANEL -->
   <div class="panel active" id="panelStats">
+    <div id="wfBanner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:9px;font-size:13px;font-weight:500"></div>
     <div class="stat-grid">
       <div class="stat-card accent">
         <div class="s-label">Total Leads</div>
@@ -313,8 +314,24 @@ function showDashboard() {
   $id('clientChip').textContent = clientRecord.client_name || ('Client #' + clientId);
   $id('sTodayDate').textContent = new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short'});
   loadStats();
+  showWorkflowStatus();
   clearInterval(refreshTimer);
   refreshTimer = setInterval(loadStats, 60000);
+}
+
+function showWorkflowStatus() {
+  const banner = $id('wfBanner');
+  const wfId = clientRecord.n8n_workflow_id;
+  const webhookUrl = clientRecord.webhook_url;
+  if (!wfId) {
+    banner.style.display = 'block';
+    banner.style.cssText = 'display:block;margin-bottom:16px;padding:12px 16px;border-radius:9px;font-size:13px;font-weight:500;background:#FEF3C7;color:#92400E;border:1px solid #FDE68A';
+    banner.textContent = '⚠️ No n8n workflow linked to this client yet. Provisioning may still be in progress.';
+  } else {
+    banner.style.display = 'block';
+    banner.style.cssText = 'display:block;margin-bottom:16px;padding:12px 16px;border-radius:9px;font-size:13px;font-weight:500;background:var(--accent-soft);color:var(--accent-ink);border:1px solid #A7D9C5';
+    banner.innerHTML = '✅ Bot workflow active &nbsp;·&nbsp; <span style="font-family:var(--mono);font-size:11px">' + (webhookUrl || 'ID: '+wfId) + '</span>';
+  }
 }
 
 // ---- stats ----
@@ -467,7 +484,10 @@ function fmtDate(d){ if(!d) return '—'; try{ return new Date(d).toLocaleDateSt
 
 // ---- boot ----
 (function(){
-  const saved = sessionStorage.getItem('lv_client_id');
+  // Auto-login from ?client= query param (redirected from provisioning wizard)
+  const params = new URLSearchParams(window.location.search);
+  const fromWizard = params.get('client');
+  const saved = fromWizard || sessionStorage.getItem('lv_client_id');
   if(saved){
     $id('gClientId').value = saved;
     connect();
