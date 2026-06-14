@@ -17,7 +17,7 @@
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:920px;margin:0 auto;padding:40px 24px 80px}
+  .wrap{max-width:960px;margin:0 auto;padding:40px 24px 80px}
 
   /* ---- login gate ---- */
   #gate{position:fixed;inset:0;background:var(--ink);display:flex;align-items:center;justify-content:center;z-index:50;padding:24px}
@@ -37,7 +37,20 @@
   .brand .dot{color:var(--accent)}
   .top .sub{font-family:var(--mono);font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
   .top .lock{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--accent-ink);background:var(--accent-soft);padding:4px 9px;border-radius:6px;cursor:pointer}
-  .lead{color:var(--muted);max-width:60ch;margin:0 0 32px}
+  .lead{color:var(--muted);max-width:60ch;margin:0 0 24px}
+
+  /* ---- wizard progress ---- */
+  .wizard-nav{display:flex;gap:0;margin-bottom:28px;border:1px solid var(--line-strong);border-radius:var(--r);overflow:hidden;background:var(--card)}
+  .wstep{flex:1;padding:12px 10px;text-align:center;cursor:pointer;border-right:1px solid var(--line);transition:background .15s}
+  .wstep:last-child{border-right:none}
+  .wstep .snum{font-family:var(--mono);font-size:11px;color:var(--muted);display:block}
+  .wstep .slabel{font-family:var(--disp);font-size:13px;font-weight:600;color:var(--muted)}
+  .wstep.active{background:var(--accent-soft)}
+  .wstep.active .snum{color:var(--accent-ink)}
+  .wstep.active .slabel{color:var(--accent-ink)}
+  .wstep.done .slabel{color:var(--ink)}
+  .wstep.done .snum::after{content:" ✓";color:var(--accent)}
+  @media(max-width:640px){.wstep .slabel{display:none}.wstep .snum{font-size:13px}}
 
   .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:24px;margin-bottom:18px}
   .sec-head{display:flex;align-items:baseline;gap:10px;margin:0 0 4px}
@@ -60,6 +73,49 @@
   .pill-btn{font-family:var(--mono);font-size:11px;background:var(--accent-soft);color:var(--accent-ink);border:none;border-radius:6px;padding:5px 9px;cursor:pointer;font-weight:500}
   .row-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}
 
+  /* ---- template picker ---- */
+  .tmpl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:16px}
+  .tmpl-card{border:2px solid var(--line-strong);border-radius:9px;padding:14px;cursor:pointer;transition:border-color .12s,background .12s;background:#FBFCFC}
+  .tmpl-card:hover{border-color:var(--accent);background:var(--accent-soft)}
+  .tmpl-card.selected{border-color:var(--accent);background:var(--accent-soft)}
+  .tmpl-card .t-icon{font-size:22px;margin-bottom:6px}
+  .tmpl-card .t-name{font-family:var(--disp);font-weight:600;font-size:13px;color:var(--ink)}
+  .tmpl-card .t-desc{font-size:11px;color:var(--muted);margin-top:2px}
+
+  /* ---- flow builder ---- */
+  .flow-tabs{display:flex;gap:8px;margin-bottom:12px}
+  .flow-tab{font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:7px;border:1px solid var(--line-strong);cursor:pointer;background:#FBFCFC;color:var(--muted)}
+  .flow-tab.active{background:var(--accent-soft);color:var(--accent-ink);border-color:var(--accent)}
+
+  /* ---- memory / lead config ---- */
+  .toggle-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+  .toggle-row:last-child{border-bottom:none}
+  .toggle-row label{margin:0;flex:1;font-size:13px;font-weight:500}
+  .toggle-row .hint{font-size:12px;color:var(--muted);display:block;font-weight:400}
+  .tog{position:relative;display:inline-block;width:38px;height:22px;flex:none}
+  .tog input{opacity:0;width:0;height:0}
+  .tog-slider{position:absolute;inset:0;background:#C2CEC9;border-radius:11px;cursor:pointer;transition:.2s}
+  .tog-slider::before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+  .tog input:checked+.tog-slider{background:var(--accent)}
+  .tog input:checked+.tog-slider::before{transform:translateX(16px)}
+
+  /* ---- lead qualification builder ---- */
+  .qual-list{list-style:none;padding:0;margin:0 0 10px}
+  .qual-item{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+  .qual-item input{flex:1}
+  .qual-item button{font-family:var(--mono);font-size:11px;background:none;border:1px solid var(--line-strong);border-radius:6px;padding:5px 8px;cursor:pointer;color:var(--muted)}
+  .qual-item button:hover{border-color:#B23A2E;color:#B23A2E}
+  .add-qual{font-family:var(--mono);font-size:11px;background:none;border:1px dashed var(--line-strong);border-radius:7px;padding:8px;width:100%;cursor:pointer;color:var(--muted)}
+  .add-qual:hover{border-color:var(--accent);color:var(--accent-ink)}
+
+  /* ---- step panels ---- */
+  .step-panel{display:none}.step-panel.active{display:block}
+  .step-nav{display:flex;gap:12px;align-items:center;margin-top:20px;flex-wrap:wrap}
+  .btn-next{font-family:var(--disp);font-weight:600;font-size:15px;background:var(--accent);color:#fff;border:none;border-radius:9px;padding:13px 26px;cursor:pointer}
+  .btn-next:hover{background:var(--accent-ink)}
+  .btn-back{background:none;border:1px solid var(--line-strong);color:var(--muted);border-radius:9px;padding:13px 18px;cursor:pointer;font-size:14px}
+  .btn-back:hover{border-color:var(--muted)}
+
   .actions{display:flex;gap:12px;align-items:center;margin-top:8px;flex-wrap:wrap}
   .submit{font-family:var(--disp);font-weight:600;font-size:15px;background:var(--accent);color:#fff;border:none;border-radius:9px;padding:13px 26px;cursor:pointer}
   .submit:hover{background:var(--accent-ink)}.submit:disabled{opacity:.55;cursor:default}
@@ -70,6 +126,12 @@
   .endpoint label{display:inline-block;margin:0 6px 0 0;color:var(--accent-ink)}
   .endpoint input{display:inline-block;width:auto;min-width:340px;border:none;background:none;padding:2px 0;font-family:var(--mono);font-size:12px}
   .endpoint input:focus{box-shadow:none}
+
+  /* ---- review panel ---- */
+  .review-block{background:#F5F8F6;border:1px solid var(--line);border-radius:9px;padding:14px 16px;margin-bottom:12px}
+  .review-block .rk{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
+  .review-block .rv{font-size:13px;color:var(--ink);white-space:pre-wrap;word-break:break-all;max-height:120px;overflow:auto}
+  .edit-link{font-family:var(--mono);font-size:11px;color:var(--accent-ink);cursor:pointer;float:right;margin-top:-18px}
 
   #result{display:none}#result.show{display:block;animation:rise .35s ease}
   @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -82,6 +144,10 @@
   .copy{font-family:var(--mono);font-size:11px;background:#25463E;color:#BFE6D6;border:none;border-radius:6px;padding:5px 9px;cursor:pointer;flex:none}
   .copy:hover{background:#2E5549}
   .result-note{font-size:13px;color:#A9C2BA;margin:14px 0 0;line-height:1.6}
+
+  .checklist{list-style:none;padding:0;margin:14px 0 0}
+  .checklist li{font-size:13px;color:#A9C2BA;padding:4px 0;display:flex;gap:8px;align-items:flex-start}
+  .checklist li::before{content:"→";color:#5FD6A4;flex:none}
 
   .msg{font-size:13px;margin-top:10px;min-height:18px}.msg.err{color:#B23A2E}
   @media(prefers-reduced-motion:reduce){*{animation:none!important}}
@@ -106,81 +172,291 @@
     <span class="sub">Client provisioning</span>
     <span class="lock" id="lockBtn">Lock</span>
   </header>
-  <p class="lead">Configure a client end to end. On <b>Provision</b>, this writes the config, creates
-    and activates the client's bot workflow on your n8n, and returns the webhook URL for Chatwoot.</p>
+  <p class="lead">Configure a client end to end. Follow the steps to provision a fully configured bot.</p>
 
   <div class="endpoint">
     <label for="endpoint">Onboard endpoint</label>
     <input id="endpoint" class="mono" value="https://n8n.aiautomationsuae.com/webhook/leadvyne-onboard" />
   </div>
 
+  <!-- WIZARD PROGRESS NAV -->
+  <nav class="wizard-nav" id="wizNav">
+    <div class="wstep active" data-step="1"><span class="snum">01</span><span class="slabel">Identity</span></div>
+    <div class="wstep" data-step="2"><span class="snum">02</span><span class="slabel">Credentials</span></div>
+    <div class="wstep" data-step="3"><span class="snum">03</span><span class="slabel">Bot Persona</span></div>
+    <div class="wstep" data-step="4"><span class="snum">04</span><span class="slabel">Conversation Flow</span></div>
+    <div class="wstep" data-step="5"><span class="snum">05</span><span class="slabel">Lead Capture</span></div>
+    <div class="wstep" data-step="6"><span class="snum">06</span><span class="slabel">Follow-ups</span></div>
+    <div class="wstep" data-step="7"><span class="snum">07</span><span class="slabel">Review</span></div>
+  </nav>
+
   <form id="form" autocomplete="off">
-    <section class="card">
-      <div class="sec-head"><span class="sec-num">01</span><h2 class="sec-title">Client</h2></div>
-      <p class="sec-note">Identity and default language.</p>
-      <div class="grid">
-        <div><label>Client name</label><input name="client_name" required placeholder="Safe Assets" /></div>
-        <div><label>Default language</label>
-          <select name="language">
-            <option value="ml">Malayalam (ml)</option><option value="en">English (en)</option>
-            <option value="hi">Hindi (hi)</option><option value="ta">Tamil (ta)</option>
-            <option value="mix">Mixed (mix)</option>
-          </select>
+
+    <!-- STEP 1: Identity -->
+    <div class="step-panel active" id="step1">
+      <section class="card">
+        <div class="sec-head"><span class="sec-num">01</span><h2 class="sec-title">Client Identity</h2></div>
+        <p class="sec-note">Basic info and language for this client's bot.</p>
+        <div class="grid">
+          <div class="full"><label>Client / Business name</label><input name="client_name" required placeholder="Safe Assets" /></div>
+          <div><label>Industry <span class="hint">(helps pick the right template)</span></label>
+            <select id="industryPick">
+              <option value="">— pick to auto-fill persona —</option>
+              <option value="insurance">Health Insurance</option>
+              <option value="realestate">Real Estate</option>
+              <option value="ecommerce">E-commerce / Retail</option>
+              <option value="clinic">Clinic / Healthcare</option>
+              <option value="restaurant">Restaurant / Food</option>
+              <option value="edu">Education / Coaching</option>
+              <option value="custom">Custom (blank)</option>
+            </select>
+          </div>
+          <div><label>Default language</label>
+            <select name="language">
+              <option value="ml">Malayalam (ml)</option>
+              <option value="en">English (en)</option>
+              <option value="hi">Hindi (hi)</option>
+              <option value="ta">Tamil (ta)</option>
+              <option value="mix">Mixed (mix)</option>
+            </select>
+          </div>
         </div>
+      </section>
+      <div class="step-nav">
+        <button type="button" class="btn-next" onclick="goStep(2)">Next: Credentials →</button>
       </div>
-    </section>
+    </div>
 
-    <section class="card">
-      <div class="sec-head"><span class="sec-num">02</span><h2 class="sec-title">Credentials</h2></div>
-      <p class="sec-note">Used at runtime by the shared engine — injected into request headers, not stored as n8n credentials.</p>
-      <div class="grid">
-        <div><label>Chatwoot base URL</label><input name="chatwoot_base" class="mono" value="https://app.aiingo.com" /></div>
-        <div class="field-row">
-          <div><label>Account id <span class="hint">(routing)</span></label><input name="chatwoot_account_id" class="mono" placeholder="10" required /></div>
-          <div><label>Inbox id <span class="hint">(routing)</span></label><input name="chatwoot_inbox_id" class="mono" placeholder="11" required /></div>
+    <!-- STEP 2: Credentials -->
+    <div class="step-panel" id="step2">
+      <section class="card">
+        <div class="sec-head"><span class="sec-num">02</span><h2 class="sec-title">Credentials</h2></div>
+        <p class="sec-note">Runtime credentials — injected into request headers, never stored as n8n credentials.</p>
+        <div class="grid">
+          <div><label>Chatwoot base URL</label><input name="chatwoot_base" class="mono" value="https://app.aiingo.com" /></div>
+          <div class="field-row">
+            <div><label>Account id</label><input name="chatwoot_account_id" class="mono" placeholder="10" required /></div>
+            <div><label>Inbox id</label><input name="chatwoot_inbox_id" class="mono" placeholder="11" required /></div>
+          </div>
+          <div class="full"><label>Chatwoot API token</label><input name="chatwoot_token" class="mono" placeholder="paste token" required /></div>
+          <div><label>NocoDB base URL</label><input name="nocodb_base" class="mono" value="https://whizz.aiingo.com" /></div>
+          <div><label>Leads table id</label><input name="leads_table_id" class="mono" placeholder="mk1og9rbenjlw13" required /></div>
+          <div class="full"><label>NocoDB token</label><input name="nocodb_token" class="mono" placeholder="xc token" required /></div>
+          <div><label>OpenRouter key</label><input name="openrouter_key" class="mono" placeholder="sk-or-..." required /></div>
+          <div><label>LLM Model</label><input name="model" class="mono" value="google/gemini-2.5-flash" /></div>
         </div>
-        <div class="full"><label>Chatwoot API token</label><input name="chatwoot_token" class="mono" placeholder="paste token" required /></div>
-        <div><label>NocoDB base URL</label><input name="nocodb_base" class="mono" value="https://whizz.aiingo.com" /></div>
-        <div><label>Leads table id</label><input name="leads_table_id" class="mono" placeholder="mk1og9rbenjlw13" required /></div>
-        <div class="full"><label>NocoDB token</label><input name="nocodb_token" class="mono" placeholder="xc token" required /></div>
-        <div><label>OpenRouter key</label><input name="openrouter_key" class="mono" placeholder="sk-or-..." required /></div>
-        <div><label>Model</label><input name="model" class="mono" value="google/gemini-2.5-flash" /></div>
+      </section>
+      <div class="step-nav">
+        <button type="button" class="btn-back" onclick="goStep(1)">← Back</button>
+        <button type="button" class="btn-next" onclick="goStep(3)">Next: Bot Persona →</button>
       </div>
-    </section>
+    </div>
 
-    <section class="card">
-      <div class="sec-head"><span class="sec-num">03</span><h2 class="sec-title">Main agent prompt</h2></div>
-      <p class="sec-note">The bot's voice, scope, and guardrails — used on the FAQ path.</p>
-      <textarea name="main_prompt" rows="7" required placeholder="You are Rasi 😊 — a warm friend from Safe Assets who knows health insurance. Never say you are AI. Answer only about health insurance. Never invent premiums or plan names. Out of scope → offer the consultation or share 9292026138. Max 3–4 short lines, one question per message."></textarea>
-    </section>
+    <!-- STEP 3: Bot Persona -->
+    <div class="step-panel" id="step3">
+      <section class="card">
+        <div class="sec-head"><span class="sec-num">03</span><h2 class="sec-title">Bot Persona &amp; System Prompt</h2></div>
+        <p class="sec-note">Choose a template to get started, then customise the system prompt below.</p>
 
-    <section class="card">
-      <div class="sec-head"><span class="sec-num">04</span><h2 class="sec-title">Flow</h2></div>
-      <p class="sec-note">Each stage maps an intent to the next stage + message. <code>"*"</code> is the fallback.</p>
-      <div class="row-head"><span></span><button type="button" class="pill-btn" id="loadFlow">Load sample flow</button></div>
-      <textarea name="flow_json" class="mono" rows="12" required placeholder='{ "stages": {...}, "messages": {...}, "variables": {...} }'></textarea>
-      <div class="msg err" id="flowErr"></div>
-    </section>
+        <div class="tmpl-grid" id="tmplGrid">
+          <div class="tmpl-card" data-tmpl="insurance">
+            <div class="t-icon">🏥</div>
+            <div class="t-name">Health Insurance</div>
+            <div class="t-desc">Lead gen, video walk-throughs, consultation booking</div>
+          </div>
+          <div class="tmpl-card" data-tmpl="realestate">
+            <div class="t-icon">🏠</div>
+            <div class="t-name">Real Estate</div>
+            <div class="t-desc">Property enquiries, site-visit scheduling</div>
+          </div>
+          <div class="tmpl-card" data-tmpl="ecommerce">
+            <div class="t-icon">🛍️</div>
+            <div class="t-name">E-commerce</div>
+            <div class="t-desc">Product questions, order support, upsells</div>
+          </div>
+          <div class="tmpl-card" data-tmpl="clinic">
+            <div class="t-icon">🩺</div>
+            <div class="t-name">Clinic</div>
+            <div class="t-desc">Appointment booking, FAQs, follow-up reminders</div>
+          </div>
+          <div class="tmpl-card" data-tmpl="restaurant">
+            <div class="t-icon">🍽️</div>
+            <div class="t-name">Restaurant</div>
+            <div class="t-desc">Menu, reservations, delivery updates</div>
+          </div>
+          <div class="tmpl-card" data-tmpl="edu">
+            <div class="t-icon">📚</div>
+            <div class="t-name">Education</div>
+            <div class="t-desc">Course info, admissions, demo class booking</div>
+          </div>
+        </div>
 
-    <section class="card">
-      <div class="sec-head"><span class="sec-num">05</span><h2 class="sec-title">Follow-ups</h2></div>
-      <p class="sec-note">How many nudges, when (hours since last activity), and what each says.</p>
-      <div class="grid">
-        <div><label>Number of follow-ups</label><input name="followup_count" type="number" min="0" max="5" value="3" /></div>
-        <div><label>Hours after last activity <span class="hint">(comma)</span></label><input name="followup_hours" class="mono" value="24, 72, 168" /></div>
+        <label>System prompt <span class="hint">— edit freely after picking a template</span></label>
+        <textarea name="main_prompt" id="mainPrompt" rows="9" required placeholder="Pick a template above or write your own…"></textarea>
+
+        <div style="margin-top:12px">
+          <label>Bot name <span class="hint">(used in the prompt template)</span></label>
+          <input id="botName" placeholder="Rasi" style="max-width:240px" />
+        </div>
+        <div style="margin-top:10px">
+          <label>Business name <span class="hint">(used in the prompt template)</span></label>
+          <input id="bizName" placeholder="Safe Assets" style="max-width:320px" />
+        </div>
+        <div style="margin-top:10px">
+          <label>Contact / escalation number <span class="hint">(the human to call)</span></label>
+          <input id="contactNum" placeholder="9292026138" style="max-width:240px" />
+        </div>
+        <button type="button" class="pill-btn" id="applyVars" style="margin-top:10px">Apply name & number to prompt</button>
+      </section>
+      <div class="step-nav">
+        <button type="button" class="btn-back" onclick="goStep(2)">← Back</button>
+        <button type="button" class="btn-next" onclick="goStep(4)">Next: Conversation Flow →</button>
       </div>
-      <div style="margin-top:14px"><label>Follow-up messages <span class="hint">(one per line)</span></label>
-        <textarea name="followup_messages" rows="4" placeholder="Hi 😊 a small reminder — I'm ready when you are 🙏
+    </div>
+
+    <!-- STEP 4: Conversation Flow -->
+    <div class="step-panel" id="step4">
+      <section class="card">
+        <div class="sec-head"><span class="sec-num">04</span><h2 class="sec-title">Conversation Flow</h2></div>
+        <p class="sec-note">Each stage maps an intent to the next stage + message. <code>"*"</code> is the fallback. Choose a template or write JSON directly.</p>
+
+        <div class="flow-tabs">
+          <button type="button" class="flow-tab active" id="tabTmpl" onclick="switchFlowTab('tmpl')">Flow templates</button>
+          <button type="button" class="flow-tab" id="tabJson" onclick="switchFlowTab('json')">Raw JSON</button>
+        </div>
+
+        <!-- Template picker panel -->
+        <div id="flowTmplPanel">
+          <div class="tmpl-grid">
+            <div class="tmpl-card" data-flow="insurance">
+              <div class="t-icon">🏥</div>
+              <div class="t-name">Insurance funnel</div>
+              <div class="t-desc">Video → form → video → consultation</div>
+            </div>
+            <div class="tmpl-card" data-flow="realestate">
+              <div class="t-icon">🏠</div>
+              <div class="t-name">Real Estate funnel</div>
+              <div class="t-desc">Interest → brochure → site visit booking</div>
+            </div>
+            <div class="tmpl-card" data-flow="clinic">
+              <div class="t-icon">🩺</div>
+              <div class="t-name">Clinic booking</div>
+              <div class="t-desc">Symptoms → doctor info → appointment</div>
+            </div>
+            <div class="tmpl-card" data-flow="simple">
+              <div class="t-icon">💬</div>
+              <div class="t-name">Simple FAQ only</div>
+              <div class="t-desc">No stages — bot answers freely</div>
+            </div>
+          </div>
+          <p style="font-size:12px;color:var(--muted);margin:8px 0 0">After picking, switch to Raw JSON to fine-tune.</p>
+        </div>
+
+        <!-- Raw JSON panel -->
+        <div id="flowJsonPanel" style="display:none">
+          <div class="row-head">
+            <span style="font-size:12px;color:var(--muted)">Edit flow JSON directly</span>
+            <button type="button" class="pill-btn" id="loadFlow">Load insurance sample</button>
+          </div>
+          <textarea name="flow_json" class="mono" id="flowJson" rows="14" required placeholder='{ "stages": {...}, "messages": {...}, "variables": {...} }'></textarea>
+          <div class="msg err" id="flowErr"></div>
+        </div>
+        <input type="hidden" name="flow_json" id="flowJsonHidden" />
+      </section>
+      <div class="step-nav">
+        <button type="button" class="btn-back" onclick="goStep(3)">← Back</button>
+        <button type="button" class="btn-next" onclick="goStep(5)">Next: Lead Capture →</button>
+      </div>
+    </div>
+
+    <!-- STEP 5: Lead Qualification -->
+    <div class="step-panel" id="step5">
+      <section class="card">
+        <div class="sec-head"><span class="sec-num">05</span><h2 class="sec-title">Lead Capture &amp; Qualification</h2></div>
+        <p class="sec-note">Define what information the bot collects before saving a lead and what triggers escalation to human.</p>
+
+        <div style="margin-bottom:18px">
+          <div class="toggle-row">
+            <label>Enable lead qualification flow
+              <span class="hint">Bot asks qualifying questions before saving the lead</span>
+            </label>
+            <label class="tog"><input type="checkbox" name="qual_enabled" id="qualEnabled" checked /><span class="tog-slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <label>Auto-handover on WANTS_HUMAN intent
+              <span class="hint">Bot immediately routes to a human when user asks</span>
+            </label>
+            <label class="tog"><input type="checkbox" name="handover_enabled" id="handoverEnabled" checked /><span class="tog-slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <label>Conversation memory — summarise long threads
+              <span class="hint">Bot summarises past context to avoid token overflow</span>
+            </label>
+            <label class="tog"><input type="checkbox" name="memory_enabled" id="memoryEnabled" checked /><span class="tog-slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <label>Anti-loop protection
+              <span class="hint">Break if bot repeats the same message 3× in a row</span>
+            </label>
+            <label class="tog"><input type="checkbox" name="antiloop_enabled" id="antiloopEnabled" checked /><span class="tog-slider"></span></label>
+          </div>
+        </div>
+
+        <div id="qualFields">
+          <label style="font-size:13px;font-weight:600;margin-bottom:10px;display:block">Qualifying questions to collect <span class="hint">(bot asks these in sequence)</span></label>
+          <ul class="qual-list" id="qualList">
+            <li class="qual-item"><input placeholder="e.g. What is your budget?" /><button type="button" onclick="removeQual(this)">✕</button></li>
+            <li class="qual-item"><input placeholder="e.g. Which area are you looking in?" /><button type="button" onclick="removeQual(this)">✕</button></li>
+            <li class="qual-item"><input placeholder="e.g. Are you looking to buy or rent?" /><button type="button" onclick="removeQual(this)">✕</button></li>
+          </ul>
+          <button type="button" class="add-qual" onclick="addQual()">+ Add qualifying question</button>
+        </div>
+
+        <input type="hidden" name="qual_questions" id="qualQuestionsInput" />
+        <input type="hidden" name="bot_config" id="botConfigInput" />
+      </section>
+      <div class="step-nav">
+        <button type="button" class="btn-back" onclick="goStep(4)">← Back</button>
+        <button type="button" class="btn-next" onclick="goStep(6)">Next: Follow-ups →</button>
+      </div>
+    </div>
+
+    <!-- STEP 6: Follow-ups -->
+    <div class="step-panel" id="step6">
+      <section class="card">
+        <div class="sec-head"><span class="sec-num">06</span><h2 class="sec-title">Follow-ups</h2></div>
+        <p class="sec-note">Automated nudges sent when a lead goes quiet. Chatwoot free-text works within 24 h; swap to WhatsApp templates for older leads.</p>
+        <div class="grid">
+          <div><label>Number of follow-ups <span class="hint">(0–5)</span></label><input name="followup_count" type="number" min="0" max="5" value="3" /></div>
+          <div><label>Hours after last activity <span class="hint">(comma-separated)</span></label><input name="followup_hours" class="mono" value="24, 72, 168" /></div>
+        </div>
+        <div style="margin-top:14px"><label>Follow-up messages <span class="hint">(one per line, matches the count above)</span></label>
+          <textarea name="followup_messages" rows="4" placeholder="Hi 😊 a small reminder — I'm ready when you are 🙏
 Did you get a moment? Happy to set up a quick call 👍
 Last nudge — reply here anytime 😊"></textarea>
+        </div>
+      </section>
+      <div class="step-nav">
+        <button type="button" class="btn-back" onclick="goStep(5)">← Back</button>
+        <button type="button" class="btn-next" onclick="goStep(7)">Review & Provision →</button>
       </div>
-    </section>
-
-    <div class="actions">
-      <button type="submit" class="submit" id="submitBtn">Provision client</button>
-      <button type="button" class="ghost" id="copyJson">Copy config JSON</button>
-      <span class="msg" id="formMsg"></span>
     </div>
+
+    <!-- STEP 7: Review -->
+    <div class="step-panel" id="step7">
+      <section class="card">
+        <div class="sec-head"><span class="sec-num">07</span><h2 class="sec-title">Review &amp; Provision</h2></div>
+        <p class="sec-note">Check everything before provisioning the client.</p>
+        <div id="reviewPane"></div>
+      </section>
+      <div class="actions">
+        <button type="button" class="btn-back" onclick="goStep(6)">← Back</button>
+        <button type="submit" class="submit" id="submitBtn">Provision client</button>
+        <button type="button" class="ghost" id="copyJson">Copy config JSON</button>
+        <span class="msg" id="formMsg"></span>
+      </div>
+    </div>
+
   </form>
 
   <div id="result">
@@ -195,15 +471,20 @@ Last nudge — reply here anytime 😊"></textarea>
         <div class="k">Routing identity</div>
         <div class="v"><span id="rRoute">—</span></div>
       </div>
-      <p class="result-note">In Chatwoot → this inbox → <b>Configuration → Webhooks</b>, add the URL above
-        and subscribe to <b>Message created</b>. The dedicated workflow for this client is already live.</p>
+      <ul class="checklist">
+        <li>In Chatwoot → this inbox → <b>Configuration → Webhooks</b>, add the URL above and subscribe to <b>Message created</b></li>
+        <li>The dedicated workflow for this client is already live on n8n</li>
+        <li>Send a test message on WhatsApp to confirm the bot responds</li>
+        <li>Follow-up workflow: clone <code>followup-template.json</code>, set the client config, activate</li>
+      </ul>
     </div>
   </div>
 </div>
 
 <script>
 const $ = s => document.querySelector(s);
-let AUTH = ""; // passcode held in memory only
+let AUTH = "";
+let currentStep = 1;
 
 // ---- gate ----
 function unlock(){
@@ -211,58 +492,302 @@ function unlock(){
   if(!v){ $('#gateErr').textContent='Enter the passcode.'; return; }
   AUTH = v; $('#gate').classList.add('hidden'); $('#gateErr').textContent='';
 }
-$('#unlock').addEventListener('click',unlock);
-$('#pass').addEventListener('keydown',e=>{ if(e.key==='Enter') unlock(); });
-$('#lockBtn').addEventListener('click',()=>{ AUTH=""; $('#pass').value=""; $('#gate').classList.remove('hidden'); });
+$('#unlock').addEventListener('click', unlock);
+$('#pass').addEventListener('keydown', e=>{ if(e.key==='Enter') unlock(); });
+$('#lockBtn').addEventListener('click', ()=>{ AUTH=""; $('#pass').value=""; $('#gate').classList.remove('hidden'); });
 
-const form = $('#form');
-const SAMPLE_FLOW = {
-  variables:{ language:"ml", advisor:"Rasi", brand:"Safe Assets", form_link:"https://forms.gle/REPLACE_ME",
-    video1:"https://youtu.be/PHmEVlyh-Ls", video2:"https://youtube.com/shorts/FHm9NFZ1i3w" },
-  stages:{
-    new:{ "*":{next:"video_1_sent",msg:"new_1",video:"video1"} },
-    video_1_sent:{ DELAY:{next:"video_1_sent",msg:"v1_later"}, "*":{next:"video_1_watched",msg:"v1_followup"} },
-    video_1_watched:{ "*":{next:"form_sent",msg:"form_intro",form:true} },
-    form_sent:{ FORM_DONE:{next:"video_2_sent",msg:"v2_intro",video:"video2"}, "*":{next:"form_sent",msg:"form_reminder",form:true} },
-    video_2_sent:{ "*":{next:"video_2_watched",msg:"v2_followup"} },
-    video_2_watched:{ "*":{next:"consultation_offer",msg:"consult_ready"} },
-    consultation_offer:{ BOOKING:{next:"consultation_booked",msg:"consult_booked"}, AFFIRMATIVE:{next:"consultation_booked",msg:"consult_booked"}, "*":{next:"meeting_not_booked",msg:"meeting_not_booked"} },
-    consultation_booked:{ "*":{next:"consultation_booked",msg:"consult_booked"} },
-    meeting_not_booked:{ BOOKING:{next:"consultation_booked",msg:"consult_booked"}, "*":{next:"consultation_offer",msg:"consult_ready"} }
+// ---- wizard navigation ----
+function goStep(n){
+  if(n===7) buildReview();
+  syncHiddenFields();
+  document.querySelectorAll('.step-panel').forEach((p,i)=> p.classList.toggle('active', i+1===n));
+  document.querySelectorAll('.wstep').forEach((s,i)=>{
+    s.classList.remove('active','done');
+    if(i+1===n) s.classList.add('active');
+    else if(i+1<n) s.classList.add('done');
+  });
+  currentStep = n;
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+document.querySelectorAll('.wstep').forEach(s=>{
+  s.addEventListener('click', ()=> goStep(parseInt(s.dataset.step)));
+});
+
+// ---- system prompt templates ----
+const PROMPTS = {
+  insurance: (bot,biz,num) =>
+`You are ${bot} 😊 — a warm, knowledgeable friend from ${biz} who specialises in health insurance.
+Never reveal you are an AI. Speak naturally and briefly (3–4 short lines max, one question per reply).
+Answer only about health insurance and ${biz}'s plans. Never invent premiums or plan names.
+If the question is out of scope, offer a consultation or share ${num}.
+Always guide the user toward booking a free consultation.`,
+
+  realestate: (bot,biz,num) =>
+`You are ${bot} 🏠 — a friendly property advisor from ${biz}.
+Never reveal you are an AI. Keep replies short and warm (3–4 lines, one question per message).
+Help users find the right property — ask about budget, location preference, and timeline.
+Never quote specific prices unless confirmed. Out of scope → offer a site visit or share ${num}.`,
+
+  ecommerce: (bot,biz,num) =>
+`You are ${bot} 🛍️ — a helpful shopping assistant for ${biz}.
+Never reveal you are an AI. Keep replies concise and friendly.
+Answer product, order, shipping, and returns questions. Upsell gently when relevant.
+For issues you can't resolve, escalate to ${num}.`,
+
+  clinic: (bot,biz,num) =>
+`You are ${bot} 🩺 — a caring front-desk assistant for ${biz} clinic.
+Never reveal you are an AI. Never provide medical diagnoses or dosage advice.
+Help patients book appointments, answer clinic hours and service questions.
+For medical emergencies, direct them to ${num} or emergency services immediately.`,
+
+  restaurant: (bot,biz,num) =>
+`You are ${bot} 🍽️ — a friendly host for ${biz}.
+Never reveal you are an AI. Keep replies short and warm.
+Help with menu questions, table reservations, delivery status, and special requests.
+For urgent issues or large group bookings, share ${num}.`,
+
+  edu: (bot,biz,num) =>
+`You are ${bot} 📚 — an enthusiastic academic advisor for ${biz}.
+Never reveal you are an AI. Be encouraging and helpful.
+Answer course, fees, schedule, and admissions questions. Guide students toward a free demo class.
+For anything outside your scope, share ${num}.`,
+
+  custom: () => ''
+};
+
+const QUAL_TEMPLATES = {
+  insurance: ['What age group are you looking to cover?', 'Are you looking for individual or family cover?', 'Do you have any existing health conditions?'],
+  realestate: ['What is your approximate budget?', 'Which area or locality are you interested in?', 'Are you looking to buy or rent?'],
+  ecommerce: ['What product are you interested in?', 'What is your preferred delivery address city?'],
+  clinic: ['What type of consultation do you need?', 'Is this for yourself or a family member?', 'Do you have a preferred date or time?'],
+  restaurant: ['How many guests are you expecting?', 'Do you have a preferred date and time?', 'Any dietary requirements or allergies?'],
+  edu: ['Which course or subject are you interested in?', 'Are you a student or a working professional?', 'What is your current qualification level?'],
+  custom: []
+};
+
+document.querySelectorAll('.tmpl-card[data-tmpl]').forEach(card => {
+  card.addEventListener('click', ()=>{
+    document.querySelectorAll('.tmpl-card[data-tmpl]').forEach(c=>c.classList.remove('selected'));
+    card.classList.add('selected');
+    const key = card.dataset.tmpl;
+    const bot = $('#botName').value.trim() || 'Rasi';
+    const biz = $('#bizName').value.trim() || 'our company';
+    const num = $('#contactNum').value.trim() || '9999999999';
+    if(PROMPTS[key]) $('#mainPrompt').value = PROMPTS[key](bot, biz, num);
+    // pre-fill qualifying questions
+    const qs = QUAL_TEMPLATES[key] || [];
+    const list = $('#qualList');
+    list.innerHTML = '';
+    qs.forEach(q => addQualWithValue(q));
+    if(qs.length===0) addQualWithValue('');
+  });
+});
+
+// also auto-select template based on industry dropdown
+$('#industryPick').addEventListener('change', e=>{
+  const key = e.target.value;
+  const card = document.querySelector(`.tmpl-card[data-tmpl="${key}"]`);
+  if(card) card.click();
+});
+
+$('#applyVars').addEventListener('click', ()=>{
+  const bot = $('#botName').value.trim() || 'Rasi';
+  const biz = $('#bizName').value.trim() || 'our company';
+  const num = $('#contactNum').value.trim() || '9999999999';
+  let p = $('#mainPrompt').value;
+  // replace placeholders like {{bot}}, {{biz}}, {{num}} or the sample names
+  p = p.replace(/\b(Rasi|Bot Name)\b/g, bot)
+       .replace(/\b(Safe Assets|Company Name)\b/g, biz)
+       .replace(/\b(9292026138|0000000000)\b/g, num);
+  $('#mainPrompt').value = p;
+});
+
+// ---- flow templates ----
+const FLOW_TEMPLATES = {
+  insurance: {
+    variables:{ language:"ml", advisor:"Rasi", brand:"Safe Assets", form_link:"https://forms.gle/REPLACE_ME", video1:"https://youtu.be/PHmEVlyh-Ls", video2:"https://youtube.com/shorts/FHm9NFZ1i3w" },
+    stages:{
+      new:{ "*":{next:"video_1_sent",msg:"new_1",video:"video1"} },
+      video_1_sent:{ DELAY:{next:"video_1_sent",msg:"v1_later"}, "*":{next:"video_1_watched",msg:"v1_followup"} },
+      video_1_watched:{ "*":{next:"form_sent",msg:"form_intro",form:true} },
+      form_sent:{ FORM_DONE:{next:"video_2_sent",msg:"v2_intro",video:"video2"}, "*":{next:"form_sent",msg:"form_reminder",form:true} },
+      video_2_sent:{ "*":{next:"video_2_watched",msg:"v2_followup"} },
+      video_2_watched:{ "*":{next:"consultation_offer",msg:"consult_ready"} },
+      consultation_offer:{ BOOKING:{next:"consultation_booked",msg:"consult_booked"}, AFFIRMATIVE:{next:"consultation_booked",msg:"consult_booked"}, "*":{next:"meeting_not_booked",msg:"meeting_not_booked"} },
+      consultation_booked:{ "*":{next:"consultation_booked",msg:"consult_booked"} },
+      meeting_not_booked:{ BOOKING:{next:"consultation_booked",msg:"consult_booked"}, "*":{next:"consultation_offer",msg:"consult_ready"} }
+    },
+    messages:{
+      new_1:"Hi 😊 I'm Rasi from Safe Assets. Let me share a quick intro video first 👇",
+      v1_later:"Of course 🙂 watch it when you're free 👍",
+      v1_followup:"Great! 🙌 Let me send you a short form to understand your needs.",
+      form_intro:"Please fill this short form 🙏",
+      form_reminder:"A quick reminder 😊 — could you fill the form when you get a moment?",
+      v2_intro:"Perfect 🙌 Here's a short clip on how claims work 👇",
+      v2_followup:"Great 😊 Shall I set up a free consultation for you?",
+      consult_ready:"Wonderful 🙌 When's a good time — today or tomorrow?",
+      consult_booked:"Perfect 🙏 Our advisor will contact you shortly 😊",
+      meeting_not_booked:"No worries 🙂 Let me know whenever you're ready 🙏"
+    }
   },
-  messages:{
-    new_1:"Hi 😊 ഞാൻ Rasi, Safe Assets-ൽ നിന്ന്. ആദ്യം ഈ short video ഒന്ന് കാണൂ 👇",
-    v1_later:"തീർച്ചയായും 🙂 സമയം കിട്ടുമ്പോൾ video നോക്കൂ 👍", v1_followup:"Great! 🙌 ഒരു small form അയക്കട്ടെ?",
-    form_intro:"ഈ short form ഒന്ന് fill ചെയ്യൂ 🙏", form_reminder:"ഒരു quick reminder 😊 — form fill ചെയ്യാമോ?",
-    v2_intro:"Perfect 🙌 ഇനി claim video 👇", v2_followup:"Great 😊 ഒരു consultation arrange ചെയ്യട്ടെ?",
-    consult_ready:"നല്ലത് 🙌 എപ്പോൾ convenient — ഇന്നോ നാളെയോ?", consult_booked:"Perfect 🙏 advisor ഉടൻ contact ചെയ്യും 😊",
-    meeting_not_booked:"സാരമില്ല 🙂 തയ്യാറാകുമ്പോൾ പറയൂ 🙏"
+  realestate: {
+    variables:{ brand:"PropCo", brochure_link:"https://example.com/brochure", booking_link:"https://calendly.com/REPLACE_ME" },
+    stages:{
+      new:{ "*":{next:"brochure_sent",msg:"new_1"} },
+      brochure_sent:{ WANTS_MORE_INFO:{next:"brochure_sent",msg:"brochure_sent"}, "*":{next:"visit_offered",msg:"visit_intro"} },
+      visit_offered:{ BOOKING:{next:"visit_booked",msg:"visit_booked"}, AFFIRMATIVE:{next:"visit_booked",msg:"visit_booked"}, "*":{next:"visit_offered",msg:"visit_nudge"} },
+      visit_booked:{ "*":{next:"visit_booked",msg:"visit_booked"} }
+    },
+    messages:{
+      new_1:"Hi 😊 Welcome to PropCo! I'm here to help you find your perfect property. What are you looking for?",
+      brochure_sent:"Here's our latest brochure with all available properties 📋",
+      visit_intro:"Would you like to schedule a free site visit? I can arrange it at your convenience 🏠",
+      visit_nudge:"A quick note — we have slots available this weekend! Shall I book one for you?",
+      visit_booked:"Great! 🎉 Your site visit is confirmed. Our team will call you to confirm the time."
+    }
+  },
+  clinic: {
+    variables:{ clinic:"HealthCare Clinic", booking_link:"https://calendly.com/REPLACE_ME" },
+    stages:{
+      new:{ "*":{next:"symptoms_collected",msg:"new_1"} },
+      symptoms_collected:{ WANTS_MORE_INFO:{next:"symptoms_collected",msg:"doctor_info"}, "*":{next:"appt_offered",msg:"appt_intro",form:true} },
+      appt_offered:{ BOOKING:{next:"appt_booked",msg:"appt_booked"}, AFFIRMATIVE:{next:"appt_booked",msg:"appt_booked"}, "*":{next:"appt_offered",msg:"appt_nudge"} },
+      appt_booked:{ "*":{next:"appt_booked",msg:"appt_booked"} }
+    },
+    messages:{
+      new_1:"Hello 🙏 Welcome to HealthCare Clinic. How can I help you today? Please describe your concern briefly.",
+      doctor_info:"Our specialist doctors are available Monday–Saturday, 9am–6pm. All consultations are confidential.",
+      appt_intro:"I can book an appointment for you. Please use this link to choose your preferred slot 📅",
+      appt_nudge:"Shall I go ahead and book the appointment? It only takes a minute 😊",
+      appt_booked:"Your appointment is confirmed! 🎉 You'll receive a reminder before your visit. Take care 🙏"
+    }
+  },
+  simple: {
+    variables:{},
+    stages:{ new:{ "*":{next:"new",msg:"fallback"} } },
+    messages:{ fallback:"I'm here to help! Ask me anything 😊" }
   }
 };
-$('#loadFlow').addEventListener('click',()=>{ form.flow_json.value = JSON.stringify(SAMPLE_FLOW,null,2); $('#flowErr').textContent=''; });
 
-function collect(){
-  const d = Object.fromEntries(new FormData(form).entries());
-  d.followup_count = parseInt(d.followup_count||'0');
-  d.passcode = AUTH;
-  return d;
+document.querySelectorAll('.tmpl-card[data-flow]').forEach(card=>{
+  card.addEventListener('click', ()=>{
+    document.querySelectorAll('.tmpl-card[data-flow]').forEach(c=>c.classList.remove('selected'));
+    card.classList.add('selected');
+    const key = card.dataset.flow;
+    const fl = FLOW_TEMPLATES[key];
+    if(fl){
+      $('#flowJson').value = JSON.stringify(fl, null, 2);
+      switchFlowTab('json');
+      $('#flowErr').textContent='';
+    }
+  });
+});
+
+function switchFlowTab(tab){
+  $('#tabTmpl').classList.toggle('active', tab==='tmpl');
+  $('#tabJson').classList.toggle('active', tab==='json');
+  $('#flowTmplPanel').style.display = tab==='tmpl' ? '' : 'none';
+  $('#flowJsonPanel').style.display = tab==='json' ? '' : 'none';
 }
+
+$('#loadFlow').addEventListener('click', ()=>{
+  $('#flowJson').value = JSON.stringify(FLOW_TEMPLATES.insurance, null, 2);
+  $('#flowErr').textContent='';
+});
+
 function validateFlow(){
-  const v = form.flow_json.value.trim(); if(!v) return true;
+  const v = $('#flowJson').value.trim();
+  if(!v){ $('#flowErr').textContent=''; return true; }
   try{ JSON.parse(v); $('#flowErr').textContent=''; return true; }
   catch(e){ $('#flowErr').textContent='Flow is not valid JSON: '+e.message; return false; }
 }
-form.flow_json.addEventListener('blur',validateFlow);
-$('#copyJson').addEventListener('click',()=>{ if(!validateFlow())return; const c=collect(); delete c.passcode; navigator.clipboard.writeText(JSON.stringify(c,null,2)); $('#formMsg').textContent='Config JSON copied.'; $('#formMsg').className='msg'; });
+$('#flowJson').addEventListener('blur', validateFlow);
 
-form.addEventListener('submit',async e=>{
+// ---- qualifying questions ----
+function addQual(){ addQualWithValue(''); }
+function addQualWithValue(val){
+  const li = document.createElement('li');
+  li.className='qual-item';
+  li.innerHTML=`<input placeholder="e.g. What is your budget?" value="${val.replace(/"/g,'&quot;')}" /><button type="button" onclick="removeQual(this)">✕</button>`;
+  $('#qualList').appendChild(li);
+}
+function removeQual(btn){
+  const li = btn.closest('li');
+  if($('#qualList').children.length>1) li.remove();
+}
+
+// ---- hidden field sync ----
+function syncHiddenFields(){
+  // flow_json: use the textarea content if in json mode, else the selected template
+  const flowVal = $('#flowJson').value.trim();
+  $('#flowJsonHidden').value = flowVal;
+  // Also set the form's flow_json textarea (the one submitted)
+  // We remove the duplicate hidden input confusion by naming only one
+  // qual questions
+  const qs = Array.from($('#qualList').querySelectorAll('input')).map(i=>i.value.trim()).filter(Boolean);
+  $('#qualQuestionsInput').value = JSON.stringify(qs);
+  // bot config flags
+  const cfg = {
+    qual_enabled: $('#qualEnabled').checked,
+    handover_enabled: $('#handoverEnabled').checked,
+    memory_enabled: $('#memoryEnabled').checked,
+    antiloop_enabled: $('#antiloopEnabled').checked
+  };
+  $('#botConfigInput').value = JSON.stringify(cfg);
+}
+
+// ---- review builder ----
+function buildReview(){
+  syncHiddenFields();
+  const form = $('#form');
+  const d = Object.fromEntries(new FormData(form).entries());
+  const rows = [
+    ['Client name', d.client_name || '—'],
+    ['Language', d.language || '—'],
+    ['Chatwoot', `${d.chatwoot_base} · account ${d.chatwoot_account_id} · inbox ${d.chatwoot_inbox_id}`],
+    ['OpenRouter model', d.model || '—'],
+    ['System prompt', (d.main_prompt||'').substring(0,200)+(d.main_prompt?.length>200?'…':'')],
+    ['Flow JSON', d.flow_json ? '✓ set ('+((()=>{try{const f=JSON.parse(d.flow_json);return Object.keys(f.stages||{}).length+' stages'}catch(e){return 'invalid JSON'}})())+')' : '⚠ not set'],
+    ['Qualifying questions', (() => { try { const qs=JSON.parse(d.qual_questions||'[]'); return qs.length ? qs.join(', ') : 'none'; } catch(e){return 'none'} })()],
+    ['Bot config', (() => { try { const c=JSON.parse(d.bot_config||'{}'); return Object.entries(c).filter(([,v])=>v).map(([k])=>k.replace('_enabled','')).join(', '); } catch(e){return '—'} })()],
+    ['Follow-ups', `${d.followup_count||0} nudges at ${d.followup_hours||'—'} h`],
+  ];
+  $('#reviewPane').innerHTML = rows.map(([k,v])=>`
+    <div class="review-block">
+      <div class="rk">${k}</div>
+      <div class="rv">${v}</div>
+    </div>`).join('');
+}
+
+// ---- collect & submit ----
+function collect(){
+  syncHiddenFields();
+  const form = $('#form');
+  const d = Object.fromEntries(new FormData(form).entries());
+  d.followup_count = parseInt(d.followup_count||'0');
+  // use the hidden flow field if the textarea flow_json name conflicts
+  if(!d.flow_json && $('#flowJsonHidden').value) d.flow_json = $('#flowJsonHidden').value;
+  try { d.qual_questions = JSON.parse(d.qual_questions||'[]'); } catch(e){ d.qual_questions=[]; }
+  try { d.bot_config = JSON.parse(d.bot_config||'{}'); } catch(e){ d.bot_config={}; }
+  d.passcode = AUTH;
+  return d;
+}
+
+$('#copyJson').addEventListener('click', ()=>{
+  if(!validateFlow()) return;
+  const c = collect(); delete c.passcode;
+  navigator.clipboard.writeText(JSON.stringify(c, null, 2));
+  $('#formMsg').textContent='Config JSON copied.'; $('#formMsg').className='msg';
+});
+
+$('#form').addEventListener('submit', async e=>{
   e.preventDefault();
   if(!AUTH){ $('#gate').classList.remove('hidden'); return; }
   if(!validateFlow()){ $('#formMsg').textContent='Fix the flow JSON first.'; $('#formMsg').className='msg err'; return; }
   const btn=$('#submitBtn'); btn.disabled=true; btn.textContent='Provisioning…';
   $('#formMsg').textContent=''; $('#formMsg').className='msg';
   try{
-    const r = await fetch($('#endpoint').value.trim(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
+    const r = await fetch($('#endpoint').value.trim(), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(collect())});
     if(r.status===401){ AUTH=""; $('#gate').classList.remove('hidden'); $('#gateErr').textContent='Wrong passcode.'; throw new Error('unauthorised'); }
     if(!r.ok) throw new Error('Endpoint returned '+r.status);
     const data = await r.json().catch(()=>({}));
@@ -280,11 +805,12 @@ function showResult(d, resp){
   $('#rHook').textContent = resp.webhook_url || '(returned by workflow)';
   $('#rRoute').textContent = 'account '+d.chatwoot_account_id+' · inbox '+d.chatwoot_inbox_id;
   $('#result').classList.add('show');
-  $('#result').scrollIntoView({behavior:'smooth',block:'start'});
+  $('#result').scrollIntoView({behavior:'smooth', block:'start'});
 }
-document.querySelectorAll('.copy').forEach(b=>b.addEventListener('click',()=>{
+
+document.querySelectorAll('.copy').forEach(b=>b.addEventListener('click', ()=>{
   navigator.clipboard.writeText($('#'+b.dataset.copy).textContent);
-  b.textContent='Copied'; setTimeout(()=>b.textContent='Copy',1200);
+  b.textContent='Copied'; setTimeout(()=>b.textContent='Copy', 1200);
 }));
 </script>
 </body>
