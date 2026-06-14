@@ -9,7 +9,7 @@
     {
       "parameters": {
         "assignments": { "assignments": [
-          { "id": "nb", "name": "n8n_base",              "value": "https://n8n.aiautomationsuae.com",              "type": "string" },
+          { "id": "nb", "name": "n8n_base",              "value": "https://apps.leadvyne.com",              "type": "string" },
           { "id": "cb", "name": "control_nocodb_base",   "value": "https://whizz.aiingo.com",   "type": "string" },
           { "id": "ct", "name": "control_nocodb_token",  "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF",  "type": "string" },
           { "id": "cl", "name": "clients_table_id",      "value": "mxl33bg4wi70fqj",         "type": "string" },
