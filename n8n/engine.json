@@ -34,7 +34,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "=https://whizz.aiingo.com/api/v2/tables/SHARED_LEADS_TABLE_ID/records?where=(Phone,eq,{{ $json.phone }})~and(ClientId,eq,{{ $json.client_id }})&limit=1",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mvg6rcw0ia5qqrx/records?where=(Phone,eq,{{ $json.phone }})~and(ClientId,eq,{{ $json.client_id }})&limit=1",
         "sendHeaders": true,
         "headerParameters": { "parameters": [ { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" } ] },
         "options": {}
@@ -267,7 +267,7 @@
     {
       "parameters": {
         "method": "={{ $json._method }}",
-        "url": "=https://whizz.aiingo.com/api/v2/tables/SHARED_LEADS_TABLE_ID/records",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mvg6rcw0ia5qqrx/records",
         "sendHeaders": true,
         "headerParameters": { "parameters": [
           { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
