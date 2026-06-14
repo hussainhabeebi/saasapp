@@ -105,6 +105,13 @@ textarea.cfg:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px 
 .save-msg{font-size:13px;margin-left:12px;color:var(--accent-ink)}
 .save-msg.err{color:#B23A2E}
 .flow-err{color:#B23A2E;font-size:12px;margin-top:4px;min-height:16px}
+.stage-card{background:#F7FAF9;border:1px solid var(--line-strong);border-radius:9px;padding:16px;position:relative}
+.stage-num{font-family:var(--mono);font-size:11px;color:var(--accent-ink);background:var(--accent-soft);padding:2px 8px;border-radius:5px;display:inline-block;margin-bottom:8px}
+.stage-del{position:absolute;top:12px;right:12px;background:none;border:1px solid var(--line-strong);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;color:var(--muted)}
+.stage-del:hover{border-color:#B23A2E;color:#B23A2E}
+.stage-label{font-size:12px;font-weight:600;display:block;margin-bottom:4px}
+.stage-ta{width:100%;background:#fff;border:1px solid var(--line-strong);border-radius:8px;padding:10px 12px;font-size:14px;font-family:var(--body);resize:vertical;min-height:72px;line-height:1.5}
+.stage-ta:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 </style>
 </head>
 <body>
@@ -232,14 +239,15 @@ const CONFIG = {
 
       <hr style="border:none;border-top:1px solid var(--line);margin:24px 0">
 
-      <!-- Flow JSON -->
+      <!-- Stage Definer -->
       <div class="settings-section">
-        <div class="s-head">Conversation Flow</div>
-        <div class="s-note">JSON defining stages, messages, and variables. Each stage maps intents to the next stage + message.</div>
-        <textarea class="cfg" id="cfgFlow" rows="16" placeholder="Loading…"></textarea>
-        <div class="flow-err" id="flowErr"></div>
-        <div style="margin-top:10px;display:flex;align-items:center">
-          <button class="save-btn" id="saveFlow">Save Flow</button>
+        <div class="s-head">Conversation Stages</div>
+        <div class="s-note">Define the exact messages the bot sends at each stage. For generic questions at any stage, the AI will answer using the system prompt above. Responses are exact — no AI paraphrasing.</div>
+        <div id="stageList" style="display:flex;flex-direction:column;gap:12px;margin-bottom:14px"></div>
+        <button type="button" onclick="addStage()" style="width:100%;padding:10px;border:2px dashed var(--line-strong);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px;font-family:var(--body)">+ Add Stage</button>
+        <div class="flow-err" id="flowErr" style="margin-top:8px"></div>
+        <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
+          <button class="save-btn" id="saveFlow">Save Stages</button>
           <span class="save-msg" id="saveFlowMsg"></span>
         </div>
       </div>
@@ -405,7 +413,83 @@ function populateSettings() {
   $id('cfgFuCount').value = clientRecord.followup_count || '3';
   $id('cfgFuHours').value = clientRecord.followup_hours || '24, 72, 168';
   $id('cfgFuMsgs').value = clientRecord.followup_messages || '';
-  $id('cfgFlow').value = clientRecord.flow_json || '';
+  // Load stages from flow_json
+  let stages = [];
+  try {
+    const fj = JSON.parse(clientRecord.flow_json || '{}');
+    stages = flowJsonToStages(fj);
+  } catch(e) {}
+  renderStages(stages);
+}
+
+let _stages = [];
+
+function flowJsonToStages(fj) {
+  const stageKeys = Object.keys(fj.stages || {}).filter(k => k !== 'new');
+  return stageKeys.map((id, i) => ({
+    id: id || ('stage_' + (i+1)),
+    message: fj.messages?.['msg_' + id] || ''
+  }));
+}
+
+function stagesToFlowJson(stages) {
+  const messages = {};
+  const flowStages = {};
+  stages.forEach((s, i) => {
+    const next = stages[i+1] ? stages[i+1].id : s.id;
+    const nextMsg = stages[i+1] ? 'msg_' + stages[i+1].id : 'msg_' + s.id;
+    messages['msg_' + s.id] = s.message;
+    flowStages[s.id] = {
+      'AFFIRMATIVE':    { next, msg: nextMsg },
+      'WATCHED':        { next, msg: nextMsg },
+      'FORM_DONE':      { next, msg: nextMsg },
+      'BOOKING':        { next, msg: nextMsg },
+      'WANTS_MORE_INFO':{ next: s.id, msg: 'msg_' + s.id },
+      'QUESTION':       { next: s.id, msg: null },
+      'SHORT_NEUTRAL':  { next: s.id, msg: 'msg_' + s.id },
+      '*':              { next: s.id, msg: 'msg_' + s.id }
+    };
+  });
+  const firstId = stages[0]?.id;
+  flowStages['new'] = firstId
+    ? { '*': { next: firstId, msg: 'msg_' + firstId } }
+    : { '*': { next: 'new', msg: null } };
+  return { stages: flowStages, messages, variables: {} };
+}
+
+function renderStages(stages) {
+  _stages = stages.length ? stages : [];
+  const list = $id('stageList');
+  list.innerHTML = '';
+  _stages.forEach((s, i) => {
+    const card = document.createElement('div');
+    card.className = 'stage-card';
+    card.dataset.idx = i;
+    card.innerHTML = `
+      <span class="stage-num">Stage ${i+1}</span>
+      <button class="stage-del" onclick="removeStage(${i})">✕</button>
+      <label class="stage-label">Bot message at this stage</label>
+      <textarea class="stage-ta" oninput="updateStageMsg(${i},this.value)" rows="3">${s.message}</textarea>`;
+    list.appendChild(card);
+  });
+}
+
+function addStage() {
+  const id = 'stage_' + (_stages.length + 1);
+  _stages.push({ id, message: '' });
+  renderStages(_stages);
+  $id('stageList').lastElementChild?.querySelector('textarea')?.focus();
+}
+
+function removeStage(idx) {
+  _stages.splice(idx, 1);
+  // Renumber ids
+  _stages = _stages.map((s, i) => ({ ...s, id: 'stage_' + (i+1) }));
+  renderStages(_stages);
+}
+
+function updateStageMsg(idx, val) {
+  if (_stages[idx]) _stages[idx].message = val;
 }
 
 async function patchClient(fields) {
@@ -440,24 +524,20 @@ $id('saveFu').addEventListener('click', async () => {
   finally { btn.disabled=false; btn.textContent='Save Follow-ups'; setTimeout(()=>msg.textContent='',3000); }
 });
 
-// save flow
+// save stages
 $id('saveFlow').addEventListener('click', async () => {
   const btn=$id('saveFlow'); const msg=$id('saveFlowMsg'); const errEl=$id('flowErr');
-  const val = $id('cfgFlow').value.trim();
-  try { JSON.parse(val); errEl.textContent=''; } catch(e) { errEl.textContent='Invalid JSON: '+e.message; return; }
+  if (!_stages.length) { errEl.textContent='Add at least one stage.'; return; }
+  const empty = _stages.find(s => !s.message.trim());
+  if (empty) { errEl.textContent='All stages must have a message.'; return; }
+  errEl.textContent='';
+  const flowJson = JSON.stringify(stagesToFlowJson(_stages));
   btn.disabled=true; btn.textContent='Saving…'; msg.textContent=''; msg.className='save-msg';
   try {
-    await patchClient({ flow_json: val });
+    await patchClient({ flow_json: flowJson });
     msg.textContent='✓ Saved'; msg.className='save-msg';
   } catch(e) { msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
-  finally { btn.disabled=false; btn.textContent='Save Flow'; setTimeout(()=>msg.textContent='',3000); }
-});
-
-$id('cfgFlow').addEventListener('blur', () => {
-  const v=$id('cfgFlow').value.trim();
-  if(!v) return;
-  try { JSON.parse(v); $id('flowErr').textContent=''; }
-  catch(e) { $id('flowErr').textContent='Invalid JSON: '+e.message; }
+  finally { btn.disabled=false; btn.textContent='Save Stages'; setTimeout(()=>msg.textContent='',3000); }
 });
 
 // ---- NocoDB API ----
