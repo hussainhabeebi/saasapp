@@ -815,6 +815,20 @@ function showResult(d, resp){
   $('#rRoute').textContent = 'account '+d.chatwoot_account_id+' · inbox '+d.chatwoot_inbox_id;
   $('#result').classList.add('show');
   $('#result').scrollIntoView({behavior:'smooth', block:'start'});
+  // Auto-redirect to client dashboard after 4 seconds
+  if(resp.client_id){
+    const clientId = resp.client_id;
+    const countdown = document.createElement('p');
+    countdown.style.cssText='margin-top:14px;font-size:13px;color:var(--accent-ink)';
+    countdown.textContent='Redirecting to client dashboard in 4s…';
+    document.querySelector('.result-card').appendChild(countdown);
+    let t=4;
+    const iv=setInterval(()=>{
+      t--;
+      if(t<=0){ clearInterval(iv); window.location.href='dashboard.html?client='+clientId; }
+      else countdown.textContent='Redirecting to client dashboard in '+t+'s…';
+    },1000);
+  }
 }
 
 document.querySelectorAll('.copy').forEach(b=>b.addEventListener('click', ()=>{
