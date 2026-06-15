@@ -86,6 +86,21 @@ tr:hover td{background:#FAFCFB}
 .badge-human{background:var(--warn-soft);color:var(--warn)}
 .badge-active{background:var(--accent-soft);color:var(--accent-ink)}
 .badge-new{background:#EEF0EF;color:var(--muted)}
+.badge-hot{background:#fee2e2;color:#991b1b}
+.badge-warm{background:#fef3c7;color:#92400e}
+.badge-cold{background:#eff6ff;color:#1e40af}
+.dup-icon{color:#f59e0b;font-size:11px;margin-left:3px;cursor:default}
+.date-filter{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:16px 0 4px}
+.date-filter label{font-size:12px;font-weight:600;color:var(--muted)}
+.date-filter input[type=date]{padding:7px 10px;border:1px solid var(--line-strong);border-radius:8px;font-size:13px;background:#FBFCFC;color:var(--ink)}
+.date-filter input[type=date]:focus{outline:none;border-color:var(--accent)}
+.summary-card{background:#F7FAF9;border:1px solid var(--line-strong);border-radius:9px;padding:14px 16px;margin-top:10px;font-size:13px;line-height:1.6}
+.summary-card .s-title{font-family:var(--disp);font-size:13px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.summary-card .s-row{display:flex;gap:8px;margin-bottom:4px}
+.summary-card .s-key{font-weight:600;min-width:130px;color:var(--muted);font-size:12px;flex-shrink:0}
+.bk-row{display:grid;grid-template-columns:200px 160px 1fr;gap:12px;padding:10px 12px;border-bottom:1px solid var(--line);align-items:center;font-size:13px}
+.bk-row:last-child{border-bottom:none}
+.bk-time{font-family:var(--mono);font-size:12px;color:var(--accent-ink);font-weight:600}
 
 /* settings panel */
 .settings-section{margin-bottom:24px}
@@ -167,6 +182,7 @@ const CONFIG = {
   <button class="tab active" data-tab="stats">📊 Stats</button>
   <button class="tab" data-tab="leads">💬 Leads</button>
   <button class="tab" data-tab="settings">⚙️ Bot Settings</button>
+  <button class="tab" data-tab="bookings">📅 Bookings</button>
 </div>
 
 <!-- PANELS -->
@@ -175,6 +191,12 @@ const CONFIG = {
   <!-- STATS PANEL -->
   <div class="panel active" id="panelStats">
     <div id="wfBanner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:9px;font-size:13px;font-weight:500"></div>
+    <div class="date-filter">
+      <label>From</label><input type="date" id="dfFrom" />
+      <label>To</label><input type="date" id="dfTo" />
+      <button class="save-btn" id="dfApply" style="padding:7px 16px;font-size:13px">Apply</button>
+      <button class="disc-btn" id="dfReset">Reset</button>
+    </div>
     <div class="stat-grid">
       <div class="stat-card accent">
         <div class="s-label">Total Leads</div>
@@ -231,6 +253,7 @@ const CONFIG = {
           <input id="bcMsg" type="text" placeholder="Type broadcast message…" style="width:100%;padding:9px 12px;border:1px solid var(--line-strong);border-radius:8px;font-size:14px;background:#FBFCFC" />
         </div>
         <button id="bcSend" style="padding:9px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-family:var(--disp);font-weight:600;font-size:14px;cursor:pointer;white-space:nowrap">Send Broadcast</button>
+        <button id="exportCsv" style="padding:9px 18px;background:#fff;color:var(--ink);border:1px solid var(--line-strong);border-radius:8px;font-family:var(--disp);font-weight:600;font-size:14px;cursor:pointer;white-space:nowrap">📥 Export CSV</button>
       </div>
       <div id="bcMsg2" style="font-size:12px;margin-top:8px;min-height:16px"></div>
     </div>
@@ -255,6 +278,10 @@ const CONFIG = {
         </div>
         <div id="convThread" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;min-height:400px">
           <div style="text-align:center;color:var(--muted);font-size:13px;margin-top:60px">Select a lead to view conversation</div>
+        </div>
+        <div id="summaryWrap" style="padding:0 16px 16px;display:none">
+          <button id="summaryBtn" style="padding:7px 16px;background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--disp)">✨ Generate AI Summary</button>
+          <div id="summaryCard" class="summary-card" style="display:none"></div>
         </div>
       </div>
     </div>
@@ -338,6 +365,15 @@ const CONFIG = {
 
     </div>
   </div>
+
+  <!-- BOOKINGS PANEL -->
+  <div class="panel" id="panelBookings">
+    <div class="panel-inner" style="margin-top:20px">
+      <div style="font-family:var(--disp);font-size:15px;font-weight:600;margin-bottom:16px">📅 Booked Consultations</div>
+      <div id="bookingsWrap"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -346,6 +382,7 @@ const CONFIG = {
 let clientId = null;
 let clientRecord = null;
 let refreshTimer = null;
+let filterFrom = '', filterTo = '';
 
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -410,6 +447,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     $id('panel' + cap(tab.dataset.tab)).classList.add('active');
     if (tab.dataset.tab === 'settings') populateSettings();
     if (tab.dataset.tab === 'leads') loadLeads();
+    if (tab.dataset.tab === 'bookings') loadBookings();
   });
 });
 
@@ -444,6 +482,17 @@ function showWorkflowStatus() {
   }
 }
 
+$id('dfApply').addEventListener('click', () => {
+  filterFrom = $id('dfFrom').value;
+  filterTo   = $id('dfTo').value;
+  loadStats();
+});
+$id('dfReset').addEventListener('click', () => {
+  filterFrom = ''; filterTo = '';
+  $id('dfFrom').value = ''; $id('dfTo').value = '';
+  loadStats();
+});
+
 // ---- stats ----
 async function loadStats() {
   if (!clientRecord) return;
@@ -451,9 +500,15 @@ async function loadStats() {
     const url = `${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${clientId})&limit=1000&sort=-Date`;
     const data = await ncGet(url, CONFIG.NOCODB_TOKEN);
     const leads = data.list || [];
-    renderStats(leads);
-    renderFunnel(leads);
-    renderLeads(leads);
+    const filtered = leads.filter(l => {
+      const d = (l.Date||'').slice(0,10);
+      if (filterFrom && d < filterFrom) return false;
+      if (filterTo   && d > filterTo)   return false;
+      return true;
+    });
+    renderStats(filtered);
+    renderFunnel(filtered);
+    renderLeads(filtered);
     $id('updatedAt').textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch(e) {
     console.error(e);
@@ -525,8 +580,8 @@ function renderLeadsList(leads) {
   if (!leads.length) { el.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">No leads yet</div>'; return; }
   el.innerHTML = leads.map(l => `
     <div class="lead-item${l.Id === selectedLeadId ? ' active':''}" onclick="selectLead(${l.Id})">
-      <div class="li-name">${l.Name || l.Phone || 'Unknown'}</div>
-      <div class="li-stage">${l.Stage || 'new'} · ${l.Phone || ''}</div>
+      <div class="li-name">${esc(l.Name || l.Phone || 'Unknown')}${l.IsDuplicate==='Yes'?'<span class="dup-icon" title="Same phone seen on another client">⚠️</span>':''}</div>
+      <div class="li-stage">${scoreBadge(l.Score)}${esc(l.Stage || 'new')} · ${l.Phone || ''}</div>
     </div>`).join('');
 }
 
@@ -564,6 +619,9 @@ function selectLead(id) {
       <div class="bubble ${m.role === 'user' ? 'user' : 'bot'}">${m.content?.replace(/\n/g,'<br>') || ''}</div>
     </div>`).join('');
   thread.scrollTop = thread.scrollHeight;
+  $id('summaryWrap').style.display = '';
+  $id('summaryCard').style.display = 'none';
+  $id('summaryBtn').onclick = () => generateSummary(lead);
 }
 
 // Stage override
@@ -748,6 +806,64 @@ $id('saveFlow').addEventListener('click', async () => {
   finally { btn.disabled=false; btn.textContent='Save Stages'; setTimeout(()=>msg.textContent='',3000); }
 });
 
+// ---- AI summary ----
+async function generateSummary(lead) {
+  const btn = $id('summaryBtn'), card = $id('summaryCard');
+  btn.disabled = true; btn.textContent = '⏳ Generating…'; card.style.display = 'none';
+  try {
+    let history = []; try { history = JSON.parse(lead.ConvHistory || '[]'); } catch(e) {}
+    let qualAnswers = {}; try { qualAnswers = JSON.parse(lead.QualAnswers || '{}'); } catch(e) {}
+    const prompt = `You are a CRM assistant. Summarise this WhatsApp sales conversation for the sales team.\n\nLead: ${lead.Name||'Unknown'} | Phone: ${lead.Phone} | Stage: ${lead.Stage} | Score: ${lead.Score||'Cold'}\nQual Answers: ${JSON.stringify(qualAnswers)}\n\nConversation:\n${history.map(m=>(m.role==='user'?'Customer: ':'Bot: ')+m.content).join('\n')}\n\nReturn ONLY valid JSON with keys: name, interest_level (Low/Medium/High), key_points (array of 4 strings max), recommended_action (one sentence), booking_time (string or null).`;
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + clientRecord.openrouter_key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: clientRecord.model || 'google/gemini-2.5-flash', temperature: 0.2, messages: [{ role: 'user', content: prompt }] })
+    });
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content || '';
+    const m = raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('No JSON');
+    const s = JSON.parse(m[0]);
+    card.innerHTML = `
+      <div class="s-title">✨ AI Summary <span style="font-size:11px;font-weight:400;color:var(--muted)">${esc(clientRecord.model||'gemini')}</span></div>
+      <div class="s-row"><span class="s-key">Name</span><span>${esc(s.name||'—')}</span></div>
+      <div class="s-row"><span class="s-key">Interest Level</span><span>${esc(s.interest_level||'—')}</span></div>
+      ${s.booking_time?`<div class="s-row"><span class="s-key">Booking Time</span><span>${esc(s.booking_time)}</span></div>`:''}
+      <div class="s-row"><span class="s-key">Key Points</span><span>${(s.key_points||[]).map(p=>'• '+esc(p)).join('<br>')}</span></div>
+      <div class="s-row"><span class="s-key">Next Action</span><span style="font-weight:600;color:var(--accent-ink)">${esc(s.recommended_action||'—')}</span></div>`;
+    card.style.display = 'block';
+  } catch(e) {
+    card.innerHTML = `<span style="color:#B23A2E">Failed: ${esc(e.message)}</span>`;
+    card.style.display = 'block';
+  } finally { btn.disabled = false; btn.textContent = '✨ Generate AI Summary'; }
+}
+
+// ---- bookings ----
+async function loadBookings() {
+  if (!clientRecord) return;
+  try {
+    const url = `${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${clientId})~and(BookingTime,isnot,null)&limit=200&sort=BookingTime`;
+    const data = await ncGet(url);
+    const leads = (data.list || []).filter(l => l.BookingTime);
+    const wrap = $id('bookingsWrap');
+    if (!leads.length) { wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:12px 0">No bookings yet.</div>'; return; }
+    wrap.innerHTML =
+      `<div class="bk-row" style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid var(--line)"><span>Booking Time</span><span>Name</span><span>Phone</span></div>` +
+      leads.map(l => `<div class="bk-row"><span class="bk-time">${fmtDate(l.BookingTime)}</span><span>${esc(l.Name||'Unknown')}</span><span style="font-family:var(--mono);font-size:12px;color:var(--muted)">${maskPhone(l.Phone)}</span></div>`).join('');
+  } catch(e) { console.error('loadBookings', e); }
+}
+
+// ---- export CSV ----
+$id('exportCsv').addEventListener('click', () => {
+  if (!allLeads.length) { alert('No leads to export.'); return; }
+  const cols = ['Id','Name','Phone','Stage','Score','Language','Date','BookingTime','Handover','Follow up 1','Follow up 2','Follow up 3','IsDuplicate'];
+  const csv = [cols.join(','), ...allLeads.map(l => cols.map(c => '"'+(String(l[c]||'').replace(/"/g,'""'))+'"').join(','))].join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'leads_' + clientId + '_' + TODAY + '.csv';
+  a.click();
+});
+
 // ---- NocoDB API ----
 async function ncGet(url, token) {
   const res = await fetch(url, { headers: { 'xc-token': token||CONFIG.NOCODB_TOKEN } });
@@ -764,6 +880,7 @@ async function ncPatch(url, token, body) {
 function $id(id){ return document.getElementById(id); }
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function maskPhone(p){ if(!p) return '—'; const s=String(p); return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2); }
+function scoreBadge(s){ if(!s)return''; const cl=s==='Hot'?'badge-hot':s==='Warm'?'badge-warm':'badge-cold'; return `<span class="badge ${cl}" style="margin-right:4px">${esc(s)}</span>`; }
 function stageBadge(s){
   const cl = TERMINAL.has(s) ? (s==='human_handover'?'badge-human':'badge-booked') : s==='new'?'badge-new':'badge-active';
   return `<span class="badge ${cl}">${esc(s||'—')}</span>`;
