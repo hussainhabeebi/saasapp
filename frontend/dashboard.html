@@ -8,6 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
 <style>
 :root{
   --bg:#EEF2F0;--card:#fff;--ink:#0F1F1A;--muted:#5B6B65;
@@ -293,6 +295,23 @@ hr.div{border:none;border-top:1px solid var(--line);margin:20px 0}
 .coach-card{background:#F0F4FF;border:1px solid #C7D7F8;border-radius:10px;padding:14px;margin-top:10px;font-size:13px;line-height:1.6}
 .coach-card .cc-head{font-family:var(--disp);font-size:12px;font-weight:700;color:#1E3A8A;margin-bottom:8px}
 
+/* knowledge base */
+.kb-drop{border:2px dashed var(--ls);border-radius:10px;padding:24px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;margin-bottom:10px}
+.kb-drop:hover,.kb-drop.drag-over{border-color:var(--accent);background:var(--accent-soft)}
+.kb-drop-icon{font-size:28px;margin-bottom:6px}
+.kb-drop-label{font-size:13px;color:var(--muted);line-height:1.5}
+.kb-drop-label b{color:var(--ink)}
+.kb-file-list{margin-bottom:10px}
+.kb-file-item{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#F7FAF9;border:1px solid var(--ls);border-radius:8px;margin-bottom:6px;font-size:13px}
+.kb-file-icon{font-size:16px;flex-shrink:0}
+.kb-file-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kb-file-size{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.kb-file-del{background:none;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:0 4px}
+.kb-file-del:hover{color:#B23A2E}
+.kb-progress{height:4px;background:var(--accent-soft);border-radius:2px;margin:6px 0;overflow:hidden;display:none}
+.kb-progress-bar{height:100%;background:var(--accent);border-radius:2px;width:0%;transition:width .3s}
+.kb-stats{font-size:11px;color:var(--muted);font-family:var(--mono)}
+
 /* scrollbar */
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -523,6 +542,39 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
               <button class="save-btn" id="saveSvc">Save Services</button>
               <span class="save-msg" id="saveSvcMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
+            <div class="s-head">📂 Knowledge Base</div>
+            <div class="s-note">Upload PDFs, Word docs, or text files. The bot will read and reference this content when answering questions.</div>
+
+            <!-- drop zone -->
+            <div class="kb-drop" id="kbDrop" onclick="$id('kbFileInput').click()" ondragover="kbDragOver(event)" ondragleave="kbDragLeave(event)" ondrop="kbDropFile(event)">
+              <div class="kb-drop-icon">📎</div>
+              <div class="kb-drop-label"><b>Click to upload</b> or drag &amp; drop<br>PDF · DOCX · TXT · MD — max 10 MB each</div>
+            </div>
+            <input type="file" id="kbFileInput" accept=".pdf,.docx,.doc,.txt,.md" multiple style="display:none" onchange="kbHandleFiles(this.files)">
+
+            <!-- progress -->
+            <div class="kb-progress" id="kbProgress"><div class="kb-progress-bar" id="kbProgressBar"></div></div>
+            <div id="kbStatus" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+
+            <!-- current files / char count -->
+            <div class="kb-file-list" id="kbFileList"></div>
+
+            <!-- raw text editor (collapsible) -->
+            <details style="margin-bottom:10px">
+              <summary style="font-size:12px;font-weight:600;cursor:pointer;color:var(--muted);user-select:none">✏️ Edit / paste text directly</summary>
+              <textarea class="form-input" id="cfgKbText" rows="8" placeholder="Paste any text, FAQs, policies, product info…" style="margin-top:8px"></textarea>
+              <div class="kb-stats" id="kbCharCount">0 characters</div>
+            </details>
+
+            <div style="display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveKb">Save Knowledge Base</button>
+              <span class="save-msg" id="saveKbMsg"></span>
             </div>
           </div>
 
@@ -1256,6 +1308,12 @@ function populateSettings(){
   $id('cfgFuMsgs').value=clientRecord.followup_messages||'';
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
+  // knowledge base
+  _kbText=clientRecord.kb_text||'';
+  $id('cfgKbText').value=_kbText;
+  kbUpdateCount();
+  $id('kbFileList').innerHTML='';
+  $id('kbStatus').textContent=_kbText?`${_kbText.length.toLocaleString()} characters loaded`:'';
   // services
   loadServices();
   // stages
@@ -1330,6 +1388,14 @@ $id('saveGeneral').addEventListener('click',async()=>{
   }catch(e){msg.textContent='Error';msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
+
+$id('saveKb').addEventListener('click',async()=>{
+  const txt=$id('cfgKbText').value||'';
+  _kbText=txt;
+  kbUpdateCount();
+  await saveField('saveKb','saveKbMsg',{kb_text:txt});
+});
+$id('cfgKbText').addEventListener('input',kbUpdateCount);
 
 $id('savePrompt').addEventListener('click',async()=>saveField('savePrompt','savePromptMsg',{main_prompt:$id('cfgPrompt').value}));
 $id('saveFu').addEventListener('click',async()=>saveField('saveFu','saveFuMsg',{followup_count:parseInt($id('cfgFuCount').value)||0,followup_hours:$id('cfgFuHours').value,followup_messages:$id('cfgFuMsgs').value}));
@@ -1438,6 +1504,96 @@ function stageBadge(s){
 }
 function fmtDate(d){if(!d)return'—';try{return new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});}catch{return String(d).slice(0,10);}}
 function fmtDateShort(d){if(!d)return'—';try{return new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short'});}catch{return String(d).slice(0,10);}}
+
+/* ── KNOWLEDGE BASE ── */
+// Configure PDF.js worker
+if(typeof pdfjsLib !== 'undefined') pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+
+let _kbText = '';
+
+function kbDragOver(e){ e.preventDefault(); $id('kbDrop').classList.add('drag-over'); }
+function kbDragLeave(e){ $id('kbDrop').classList.remove('drag-over'); }
+function kbDropFile(e){ e.preventDefault(); $id('kbDrop').classList.remove('drag-over'); kbHandleFiles(e.dataTransfer.files); }
+
+async function kbHandleFiles(files){
+  const arr=Array.from(files);
+  if(!arr.length)return;
+  const prog=$id('kbProgress'); const bar=$id('kbProgressBar'); const status=$id('kbStatus');
+  prog.style.display='block'; bar.style.width='0%'; status.textContent='Processing…';
+  const parts=[];
+  for(let i=0;i<arr.length;i++){
+    const f=arr[i];
+    bar.style.width=Math.round((i/arr.length)*80)+'%';
+    status.textContent=`Extracting: ${f.name}`;
+    if(f.size>10*1024*1024){status.textContent=`Skipped ${f.name} — over 10 MB`;continue;}
+    try{
+      const text=await kbExtract(f);
+      if(text&&text.trim()){
+        parts.push(`\n\n---\n### ${f.name}\n${text.trim()}`);
+        kbAddFileChip(f.name, text.length);
+      }
+    }catch(err){status.textContent=`Error reading ${f.name}: ${err.message}`;}
+  }
+  bar.style.width='100%';
+  if(parts.length){
+    _kbText=(_kbText+parts.join('')).slice(0,200000);
+    $id('cfgKbText').value=_kbText;
+    kbUpdateCount();
+    status.textContent=`✓ ${parts.length} file(s) extracted — ${_kbText.length.toLocaleString()} chars total`;
+  }
+  setTimeout(()=>{prog.style.display='none';},800);
+}
+
+async function kbExtract(file){
+  const ext=file.name.split('.').pop().toLowerCase();
+  if(ext==='txt'||ext==='md'){
+    return new Promise((res,rej)=>{
+      const r=new FileReader();r.onload=e=>res(e.target.result);r.onerror=rej;r.readAsText(file);
+    });
+  }
+  if(ext==='pdf'){
+    return new Promise(async(res,rej)=>{
+      try{
+        const buf=await file.arrayBuffer();
+        const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+        let out='';
+        for(let p=1;p<=pdf.numPages;p++){
+          const page=await pdf.getPage(p);
+          const tc=await page.getTextContent();
+          out+=tc.items.map(i=>i.str).join(' ')+'\n';
+        }
+        res(out);
+      }catch(e){rej(e);}
+    });
+  }
+  if(ext==='docx'||ext==='doc'){
+    return new Promise(async(res,rej)=>{
+      try{
+        const buf=await file.arrayBuffer();
+        const result=await mammoth.extractRawText({arrayBuffer:buf});
+        res(result.value);
+      }catch(e){rej(e);}
+    });
+  }
+  throw new Error('Unsupported file type');
+}
+
+function kbAddFileChip(name, chars){
+  const list=$id('kbFileList');
+  const ext=name.split('.').pop().toLowerCase();
+  const icon=ext==='pdf'?'📄':ext==='docx'||ext==='doc'?'📝':'📃';
+  const id='kbf_'+Date.now();
+  const div=document.createElement('div');
+  div.className='kb-file-item';div.id=id;
+  div.innerHTML=`<span class="kb-file-icon">${icon}</span><span class="kb-file-name">${esc(name)}</span><span class="kb-file-size">${Math.round(chars/1000)}k chars</span><button class="kb-file-del" title="Remove" onclick="$id('${id}').remove()">✕</button>`;
+  list.appendChild(div);
+}
+
+function kbUpdateCount(){
+  const txt=$id('cfgKbText').value||'';
+  _kbText=txt;
+  $id('kbCharCount').textContent=txt.length.toLocaleString()+' characters'+(txt.length>40000?' (bot uses first 40,000)':'');
+}
 
 /* ── HOT MOMENT BANNER ── */
 function renderHotBanner(){
