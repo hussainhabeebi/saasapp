@@ -247,6 +247,51 @@ hr.div{border:none;border-top:1px solid var(--line);margin:20px 0}
 .empty-state{text-align:center;padding:48px 24px;color:var(--muted);font-size:13px}
 .empty-state .ei{font-size:32px;margin-bottom:8px}
 
+/* ── INDUSTRY THEMES (applied via JS) ── */
+.theme-travel   { --bg:#F0F9FF;--accent:#0369A1;--accent-ink:#075985;--accent-soft:#E0F2FE;--line:#BAE6FD;--ls:#7DD3FC }
+.theme-insurance{ --bg:#EFF6FF;--accent:#1D4ED8;--accent-ink:#1E3A8A;--accent-soft:#DBEAFE;--line:#BFDBFE;--ls:#93C5FD }
+.theme-real_estate{ --bg:#FFFBEB;--accent:#B45309;--accent-ink:#92400E;--accent-soft:#FEF3C7;--line:#FDE68A;--ls:#FCD34D }
+.theme-healthcare{ --bg:#F0FDFF;--accent:#0891B2;--accent-ink:#0E7490;--accent-soft:#CFFAFE;--line:#A5F3FC;--ls:#67E8F9 }
+.theme-education{ --bg:#F5F3FF;--accent:#7C3AED;--accent-ink:#6D28D9;--accent-soft:#EDE9FE;--line:#DDD6FE;--ls:#C4B5FD }
+.theme-automotive{ --bg:#FFF5F5;--accent:#DC2626;--accent-ink:#B91C1C;--accent-soft:#FEE2E2;--line:#FECACA;--ls:#FCA5A5 }
+
+/* ── TRAVEL MODULE ── */
+.travel-hero{background:linear-gradient(135deg,#0369A1,#0EA5E9);border-radius:var(--r);padding:20px;color:#fff;margin-bottom:14px;position:relative;overflow:hidden}
+.travel-hero::after{content:'✈️';position:absolute;right:16px;top:50%;transform:translateY(-50%);font-size:48px;opacity:.15}
+.travel-hero-title{font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:4px}
+.travel-hero-sub{font-size:12px;opacity:.8}
+.travel-stat-row{display:grid;gap:10px;grid-template-columns:repeat(4,1fr);margin-bottom:14px}
+.travel-stat{background:rgba(255,255,255,.15);border-radius:10px;padding:12px;text-align:center}
+.travel-stat-val{font-size:22px;font-weight:700}
+.travel-stat-lbl{font-size:10px;opacity:.75;margin-top:2px}
+
+/* destination bar */
+.dest-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
+.dest-row:last-child{border-bottom:none}
+.dest-name{flex:0 0 120px;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dest-bar-bg{flex:1;height:8px;background:var(--bg);border-radius:4px;overflow:hidden}
+.dest-bar-fill{height:100%;background:var(--accent);border-radius:4px;transition:width .4s}
+.dest-count{font-family:var(--mono);font-size:11px;color:var(--muted);min-width:20px;text-align:right}
+
+/* upcoming trips */
+.trip-card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:border-color .15s}
+.trip-card:hover{border-color:var(--accent)}
+.trip-date-box{width:44px;height:44px;border-radius:8px;background:var(--accent-soft);color:var(--accent-ink);display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0;font-family:var(--disp)}
+.trip-date-day{font-size:16px;font-weight:700;line-height:1}
+.trip-date-mon{font-size:9px;font-weight:600;text-transform:uppercase}
+.trip-info{flex:1;min-width:0}
+.trip-name{font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trip-meta{font-size:11px;color:var(--muted);margin-top:2px}
+.trip-type-badge{font-size:10px;font-weight:600;padding:2px 8px;border-radius:5px;background:var(--accent-soft);color:var(--accent-ink);white-space:nowrap}
+
+/* trip type pills */
+.trip-types{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.tt-pill{display:flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.tt-pill-icon{font-size:16px}
+.tt-pill-body{flex:1}
+.tt-pill-label{font-size:10px;color:var(--muted);font-family:var(--disp);font-weight:600}
+.tt-pill-val{font-size:18px;font-weight:700;font-family:var(--disp)}
+
 /* hot moment banner */
 .hot-banner{background:linear-gradient(135deg,#FEF3C7,#FDE68A);border:1px solid #F59E0B;border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:10px;margin-bottom:14px;cursor:pointer}
 .hot-banner-icon{font-size:20px;flex-shrink:0}
@@ -342,13 +387,21 @@ const CONFIG = {
 };
 
 const INDUSTRIES = {
-  general:     { label:'General',      booked:'Converted',     active:'Active',       tags:['Hot','Callback','No Answer','Not Interested'] },
-  insurance:   { label:'Insurance',    booked:'Policies Sold', active:'Active Quotes',tags:['Hot Lead','Callback','No Answer','Price Sensitive','Not Interested'] },
-  real_estate: { label:'Real Estate',  booked:'Deals Closed',  active:'Active Buyers',tags:['Hot Buyer','Viewing Booked','No Answer','Out of Budget','Not Interested'] },
-  healthcare:  { label:'Healthcare',   booked:'Appointments',  active:'Active Cases', tags:['Urgent','Follow Up','No Answer','Consultation Booked','Not Interested'] },
-  education:   { label:'Education',    booked:'Enrollments',   active:'Inquiries',    tags:['Interested','Callback','No Answer','Price Query','Not Interested'] },
-  automotive:  { label:'Automotive',   booked:'Cars Sold',     active:'Test Drives',  tags:['Hot Buyer','Test Drive','No Answer','Finance Query','Not Interested'] },
-  travel:      { label:'Travel & Tourism', booked:'Bookings Made', active:'Active Inquiries', tags:['Hot Lead','Quote Sent','No Answer','Price Query','Not Interested','Group Tour','Honeymoon','Corporate'] },
+  general:     { label:'General',      booked:'Converted',     active:'Active',            tags:['Hot','Callback','No Answer','Not Interested'],
+    theme:{accent:'#0E7C5A',accentInk:'#0A5C43',accentSoft:'#D8EEE4',bg:'#EEF2F0',line:'#D7E0DC'} },
+  insurance:   { label:'Insurance',    booked:'Policies Sold', active:'Active Quotes',     tags:['Hot Lead','Callback','No Answer','Price Sensitive','Not Interested'],
+    theme:{accent:'#1D4ED8',accentInk:'#1E3A8A',accentSoft:'#DBEAFE',bg:'#EFF6FF',line:'#BFDBFE'} },
+  real_estate: { label:'Real Estate',  booked:'Deals Closed',  active:'Active Buyers',     tags:['Hot Buyer','Viewing Booked','No Answer','Out of Budget','Not Interested'],
+    theme:{accent:'#B45309',accentInk:'#92400E',accentSoft:'#FEF3C7',bg:'#FFFBEB',line:'#FDE68A'} },
+  healthcare:  { label:'Healthcare',   booked:'Appointments',  active:'Active Cases',      tags:['Urgent','Follow Up','No Answer','Consultation Booked','Not Interested'],
+    theme:{accent:'#0891B2',accentInk:'#0E7490',accentSoft:'#CFFAFE',bg:'#F0FDFF',line:'#A5F3FC'} },
+  education:   { label:'Education',    booked:'Enrollments',   active:'Inquiries',         tags:['Interested','Callback','No Answer','Price Query','Not Interested'],
+    theme:{accent:'#7C3AED',accentInk:'#6D28D9',accentSoft:'#EDE9FE',bg:'#F5F3FF',line:'#DDD6FE'} },
+  automotive:  { label:'Automotive',   booked:'Cars Sold',     active:'Test Drives',       tags:['Hot Buyer','Test Drive','No Answer','Finance Query','Not Interested'],
+    theme:{accent:'#DC2626',accentInk:'#B91C1C',accentSoft:'#FEE2E2',bg:'#FFF5F5',line:'#FECACA'} },
+  travel:      { label:'Travel & Tourism', booked:'Bookings Made', active:'Active Inquiries', tags:['Hot Lead','Quote Sent','No Answer','Price Query','Not Interested','Group Tour','Honeymoon','Corporate'],
+    theme:{accent:'#0369A1',accentInk:'#075985',accentSoft:'#E0F2FE',bg:'#F0F9FF',line:'#BAE6FD'},
+    extraFields:['Destination','TravelDates','PaxCount','Budget','TripType'] },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -387,6 +440,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab active" data-page="home">🏠 Home</button>
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
     <button class="dnTab" data-page="leads">💬 Leads</button>
+    <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
     <button class="dnTab" data-page="tasks">✅ Tasks</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
@@ -492,6 +546,42 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
+    <!-- TRAVEL MODULE -->
+    <div class="page hidden" id="pageTravel">
+      <div class="page-pad">
+        <!-- Hero banner -->
+        <div class="travel-hero">
+          <div class="travel-hero-title">✈️ Travel & Tourism Hub</div>
+          <div class="travel-hero-sub" id="travelHeroSub">Loading your travel data…</div>
+          <div class="travel-stat-row" id="travelHeroStats" style="margin-top:14px;margin-bottom:0"></div>
+        </div>
+
+        <!-- Trip type breakdown -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="card-title">🧳 Trip Types</div>
+          <div class="trip-types" id="tripTypes"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+        </div>
+
+        <!-- Upcoming departures + top destinations -->
+        <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr;margin-bottom:14px">
+          <div class="card">
+            <div class="card-title">📅 Upcoming Departures <span id="upcomingCount" style="margin-left:auto;font-size:11px;color:var(--muted)"></span></div>
+            <div id="upcomingList"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+          </div>
+          <div class="card">
+            <div class="card-title">🌍 Top Destinations</div>
+            <div id="destinationChart"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+          </div>
+        </div>
+
+        <!-- Hot travel leads -->
+        <div class="card">
+          <div class="card-title">🔥 Hot Inquiries <span style="font-size:11px;color:var(--muted);margin-left:auto">Needs follow-up</span></div>
+          <div id="travelHotList"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+        </div>
+      </div>
+    </div>
+
     <!-- TASKS -->
     <div class="page hidden" id="pageTasks">
       <div class="page-pad">
@@ -518,8 +608,18 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <div class="settings-section">
             <div class="s-head">Industry</div>
-            <div class="s-note">Adapts labels, tags and terminology throughout the CRM.</div>
-            <select class="form-input" id="cfgIndustry" style="max-width:260px"></select>
+            <div class="s-note">Adapts labels, tags, terminology and <b>dashboard theme colour</b> throughout the CRM. Travel & Tourism unlocks the ✈️ Travel module.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div>
+                <label class="form-label">Industry</label>
+                <select class="form-input" id="cfgIndustry" style="max-width:260px" onchange="previewTheme(this.value)"></select>
+              </div>
+              <div id="themePreviewBox" style="display:flex;gap:6px;align-items:center;padding:8px 12px;border:1px solid var(--line);border-radius:8px;font-size:12px;color:var(--muted)">
+                <span id="themeSwatchA" style="width:14px;height:14px;border-radius:50%;background:var(--accent);display:inline-block"></span>
+                <span id="themeSwatchB" style="width:14px;height:14px;border-radius:50%;background:var(--accent-soft);display:inline-block"></span>
+                <span id="themeLabel">Current theme</span>
+              </div>
+            </div>
           </div>
 
           <hr class="div">
@@ -662,6 +762,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem active" data-page="home"><span class="bnIcon">🏠</span><span class="bnLabel">Home</span></button>
     <button class="bnItem" data-page="pipeline"><span class="bnIcon">📋</span><span class="bnLabel">Pipeline</span></button>
     <button class="bnItem" data-page="leads"><span class="bnIcon">💬</span><span class="bnLabel">Leads</span></button>
+    <button class="bnItem industry-tab" data-page="travel" data-industry="travel" style="display:none"><span class="bnIcon">✈️</span><span class="bnLabel">Travel</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
     <button class="bnItem" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
   </div>
@@ -688,6 +789,32 @@ const TODAY = new Date().toISOString().slice(0,10);
     <div class="form-group"><label class="form-label">Tags (comma separated)</label><input class="form-input" id="fTags" type="text" placeholder="Hot, Callback" /></div>
     <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="fNotes" rows="3" placeholder="Add a note…"></textarea></div>
     <div class="form-group"><label class="form-label">Reminder Date</label><input class="form-input" id="fReminder" type="date" /></div>
+    <!-- Travel fields (shown when travel industry) -->
+    <div id="travelFields" style="display:none;border-top:1px solid var(--line);padding-top:14px;margin-top:4px">
+      <div style="font-size:11px;font-weight:600;color:var(--accent-ink);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">✈️ Travel Details</div>
+      <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="fDestination" type="text" placeholder="Dubai, Bali, Paris…" /></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="form-group"><label class="form-label">Travel Date (From)</label><input class="form-input" id="fTravelFrom" type="date" /></div>
+        <div class="form-group"><label class="form-label">Travel Date (To)</label><input class="form-input" id="fTravelTo" type="date" /></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+        <div class="form-group"><label class="form-label">Adults</label><input class="form-input" id="fPaxAdults" type="number" min="1" placeholder="2" /></div>
+        <div class="form-group"><label class="form-label">Children</label><input class="form-input" id="fPaxChildren" type="number" min="0" placeholder="0" /></div>
+        <div class="form-group"><label class="form-label">Budget (USD)</label><input class="form-input" id="fBudget" type="number" min="0" placeholder="5000" /></div>
+      </div>
+      <div class="form-group"><label class="form-label">Trip Type</label>
+        <select class="form-input" id="fTripType">
+          <option value="">Select type…</option>
+          <option value="FIT">FIT (Individual)</option>
+          <option value="Group">Group Tour</option>
+          <option value="Honeymoon">Honeymoon</option>
+          <option value="Corporate">Corporate</option>
+          <option value="Family">Family</option>
+          <option value="Adventure">Adventure</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Special Requests</label><textarea class="form-input" id="fSpecialReq" rows="2" placeholder="Wheelchair access, vegetarian meals…"></textarea></div>
+    </div>
     <input type="hidden" id="fLeadId" />
   </div>
   <div class="modal-footer">
@@ -896,6 +1023,7 @@ function navigate(page){
   document.querySelectorAll(`[data-page="${page}"]`).forEach(b=>b.classList.add('active'));
   if(page==='pipeline') renderKanban();
   if(page==='leads') renderLeadsList();
+  if(page==='travel') renderTravel();
   if(page==='settings') populateSettings();
 }
 
@@ -908,6 +1036,7 @@ function showApp(){
   $id('gate').classList.add('hidden');
   $id('app').classList.add('show');
   $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
+  applyTheme(clientRecord.industry||'general');
   loadAll();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
@@ -1121,9 +1250,10 @@ function filterLeads(){renderLeadsList();}
 
 /* ── ADD / EDIT LEAD ── */
 function openAddLead(){
-  $id('modalLeadTitle').textContent='Add Lead';
+  $id('modalLeadTitle').textContent=clientRecord?.industry==='travel'?'Add Inquiry':'Add Lead';
   $id('fLeadId').value='';
   $id('fName').value=''; $id('fPhone').value=''; $id('fNotes').value=''; $id('fTags').value=''; $id('fReminder').value='';
+  if(clientRecord?.industry==='travel'){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';}
   populateFormSelects();
   $id('fStage').value='new'; $id('fScore').value='Cold';
   openModal('modalLead');
@@ -1134,6 +1264,18 @@ function openEditLead(lead){
   $id('fLeadId').value=lead.Id;
   $id('fName').value=lead.Name||''; $id('fPhone').value=lead.Phone||'';
   $id('fNotes').value=lead.Notes||''; $id('fTags').value=lead.Tags||''; $id('fReminder').value=lead.ReminderDate||'';
+  // Travel fields
+  if(clientRecord?.industry==='travel'){
+    const dates=(lead.TravelDates||'').split('→');
+    $id('fDestination').value=lead.Destination||'';
+    $id('fTravelFrom').value=(dates[0]||'').trim();
+    $id('fTravelTo').value=(dates[1]||'').trim();
+    $id('fBudget').value=lead.Budget||'';
+    $id('fTripType').value=lead.TripType||'';
+    $id('fSpecialReq').value=lead.SpecialRequests||'';
+    const paxMatch=(lead.PaxCount||'').match(/^(\d+)/);
+    $id('fPaxAdults').value=paxMatch?paxMatch[1]:'';
+  }
   populateFormSelects();
   $id('fStage').value=lead.Stage||'new'; $id('fOwner').value=lead.Owner||''; $id('fScore').value=lead.Score||'Cold';
   openModal('modalLead');
@@ -1162,6 +1304,17 @@ async function saveLead(){
     Date:new Date().toISOString(),
     Language:clientRecord.language||'en',
   };
+  // Travel fields
+  if(clientRecord?.industry==='travel'){
+    const from=$id('fTravelFrom').value;const to=$id('fTravelTo').value;
+    if(from||to)body.TravelDates=from+(to?' → '+to:'');
+    if($id('fDestination').value)body.Destination=$id('fDestination').value.trim();
+    const adults=parseInt($id('fPaxAdults').value)||0;const children=parseInt($id('fPaxChildren').value)||0;
+    if(adults||children)body.PaxCount=(adults+children)+' ('+adults+'A'+(children?' '+children+'C':'')+')';
+    if($id('fBudget').value)body.Budget=parseInt($id('fBudget').value)||0;
+    if($id('fTripType').value)body.TripType=$id('fTripType').value;
+    if($id('fSpecialReq').value)body.SpecialRequests=$id('fSpecialReq').value.trim();
+  }
   if(!body.Phone){alert('Phone is required.');return;}
   if(id){body.Id=parseInt(id); await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);}
   else{await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);}
@@ -1448,8 +1601,10 @@ $id('saveGeneral').addEventListener('click',async()=>{
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   try{
     const agents=$id('cfgAgents').value.trim().split('\n').map(s=>s.trim()).filter(Boolean);
-    await patchClient({industry:$id('cfgIndustry').value,agents:JSON.stringify(agents)});
-    msg.textContent='✓ Saved';
+    const ind=$id('cfgIndustry').value;
+    await patchClient({industry:ind,agents:JSON.stringify(agents)});
+    applyTheme(ind);
+    msg.textContent='✓ Saved — theme applied';
   }catch(e){msg.textContent='Error';msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
@@ -1883,10 +2038,20 @@ function renderLeadProfile(lead){
   const card=$id('leadProfileCard');
   let qa={};try{qa=JSON.parse(lead.QualAnswers||'{}');}catch(e){}
   const qaKeys=Object.keys(qa);
-  if(!qaKeys.length&&!lead.QualScore&&lead.HotMoment!=='Yes'){card.style.display='none';return;}
+  const isTravelClient=clientRecord?.industry==='travel';
+  const hasTravelData=isTravelClient&&(lead.Destination||lead.TravelDates||lead.TripType||lead.Budget);
+  if(!qaKeys.length&&!lead.QualScore&&lead.HotMoment!=='Yes'&&!hasTravelData){card.style.display='none';return;}
   card.style.display='block';
   card.innerHTML=`<div class="profile-card">
-    <div class="pc-title">🧬 Lead Profile</div>
+    <div class="pc-title">${isTravelClient?'✈️ Travel Profile':'🧬 Lead Profile'}</div>
+    ${hasTravelData?`
+      ${lead.Destination?`<div class="pc-row"><div class="pc-key">Destination</div><div class="pc-val">🌍 ${esc(lead.Destination)}</div></div>`:''}
+      ${lead.TravelDates?`<div class="pc-row"><div class="pc-key">Travel Dates</div><div class="pc-val">📅 ${esc(lead.TravelDates)}</div></div>`:''}
+      ${lead.TripType?`<div class="pc-row"><div class="pc-key">Trip Type</div><div class="pc-val">${esc(lead.TripType)}</div></div>`:''}
+      ${lead.PaxCount?`<div class="pc-row"><div class="pc-key">Passengers</div><div class="pc-val">👥 ${esc(lead.PaxCount)}</div></div>`:''}
+      ${lead.Budget?`<div class="pc-row"><div class="pc-key">Budget</div><div class="pc-val">💰 USD ${Number(lead.Budget).toLocaleString()}</div></div>`:''}
+      ${lead.SpecialRequests?`<div class="pc-row"><div class="pc-key">Special Req.</div><div class="pc-val">${esc(lead.SpecialRequests)}</div></div>`:''}
+    `:''}
     ${lead.QualScore?`<div class="pc-row"><div class="pc-key">Qual Score</div><div class="pc-val">${qsPill(parseInt(lead.QualScore))} ${lead.QualScore}/10</div></div>`:''}
     ${lead.HotMoment==='Yes'?`<div class="pc-row"><div class="pc-key">Hot Moment</div><div class="pc-val">🔥 ${esc(lead.HotMomentText||'Buying signal')}</div></div>`:''}
     ${lead.Score?`<div class="pc-row"><div class="pc-key">Score</div><div class="pc-val">${scoreBadge(lead.Score)}</div></div>`:''}
@@ -1947,6 +2112,112 @@ async function generateDealCoach(){
     card.innerHTML=`<div class="cc-head">🤖 Deal Coach Recommendations</div>${esc(text).replace(/\n/g,'<br>')}`;
   }catch(e){card.style.display='block';card.innerHTML='<div class="cc-head">Error</div>Could not generate recommendations.';}
   btn.disabled=false;btn.textContent='🤖 AI Deal Coach';
+}
+
+/* ── INDUSTRY THEME ── */
+function applyTheme(industryKey){
+  const ind=INDUSTRIES[industryKey]||INDUSTRIES.general;
+  const t=ind.theme||INDUSTRIES.general.theme;
+  // Remove all theme classes
+  document.documentElement.classList.remove(...Object.keys(INDUSTRIES).map(k=>'theme-'+k));
+  if(industryKey&&industryKey!=='general') document.documentElement.classList.add('theme-'+industryKey);
+  // Show/hide industry-specific tabs
+  document.querySelectorAll('.industry-tab').forEach(el=>{
+    const target=el.dataset.industry;
+    el.style.display=(industryKey===target)?'':'none';
+  });
+  // Show/hide travel fields in lead form
+  const tf=$id('travelFields');if(tf)tf.style.display=industryKey==='travel'?'block':'none';
+}
+
+function previewTheme(val){
+  const ind=INDUSTRIES[val]||INDUSTRIES.general;
+  const t=ind.theme||INDUSTRIES.general.theme;
+  $id('themeSwatchA').style.background=t.accent;
+  $id('themeSwatchB').style.background=t.accentSoft;
+  $id('themeLabel').textContent=ind.label+' theme';
+}
+
+/* ── TRAVEL MODULE ── */
+function renderTravel(){
+  const leads=allLeads;
+  const now=new Date();
+
+  // Hero stats
+  const booked=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
+  const upcoming=leads.filter(l=>{if(!l.TravelDates&&!l.BookingTime)return false;const d=new Date(l.TravelDates||l.BookingTime);return d>now;});
+  const hot=leads.filter(l=>l.Score==='Hot'||l.HotMoment==='Yes');
+  const totalPax=leads.reduce((s,l)=>s+(parseInt(l.PaxCount)||0),0);
+
+  $id('travelHeroSub').textContent=`${leads.length} inquiries · ${booked.length} confirmed bookings`;
+  $id('travelHeroStats').innerHTML=`
+    <div class="travel-stat"><div class="travel-stat-val">${leads.length}</div><div class="travel-stat-lbl">Inquiries</div></div>
+    <div class="travel-stat"><div class="travel-stat-val">${booked.length}</div><div class="travel-stat-lbl">Booked</div></div>
+    <div class="travel-stat"><div class="travel-stat-val">${upcoming.length}</div><div class="travel-stat-lbl">Upcoming</div></div>
+    <div class="travel-stat"><div class="travel-stat-val">${totalPax||'—'}</div><div class="travel-stat-lbl">Total Pax</div></div>`;
+
+  // Trip types
+  const types={FIT:0,Group:0,Honeymoon:0,Corporate:0,Family:0,Adventure:0,Other:0};
+  leads.forEach(l=>{const t=l.TripType||'Other';types[t]=(types[t]||0)+1;});
+  const typeIcons={FIT:'🧍',Group:'👥',Honeymoon:'💑',Corporate:'💼',Family:'👨‍👩‍👧',Adventure:'🏔️',Other:'✈️'};
+  $id('tripTypes').innerHTML=Object.entries(types).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).map(([t,n])=>`
+    <div class="tt-pill">
+      <div class="tt-pill-icon">${typeIcons[t]||'✈️'}</div>
+      <div class="tt-pill-body"><div class="tt-pill-label">${t}</div><div class="tt-pill-val">${n}</div></div>
+    </div>`).join('')||'<div style="color:var(--muted);font-size:13px">No trip type data. Add TripType field to leads.</div>';
+
+  // Upcoming departures (next 90 days)
+  const dep90=leads.filter(l=>{
+    const raw=l.TravelDates||l.BookingTime||'';
+    if(!raw)return false;
+    const d=new Date(raw.split('→')[0].trim()||raw);
+    return d>now&&d<new Date(now.getTime()+90*86400000);
+  }).sort((a,b)=>{
+    const da=new Date((a.TravelDates||a.BookingTime||'').split('→')[0].trim());
+    const db=new Date((b.TravelDates||b.BookingTime||'').split('→')[0].trim());
+    return da-db;
+  });
+  $id('upcomingCount').textContent=dep90.length?dep90.length+' in next 90 days':'';
+  $id('upcomingList').innerHTML=dep90.slice(0,8).map(l=>{
+    const raw=(l.TravelDates||l.BookingTime||'').split('→')[0].trim();
+    const d=new Date(raw);
+    const day=d.getDate();
+    const mon=d.toLocaleDateString('en-GB',{month:'short'});
+    return`<div class="trip-card" onclick="openDetail(${l.Id})">
+      <div class="trip-date-box"><div class="trip-date-day">${day}</div><div class="trip-date-mon">${mon}</div></div>
+      <div class="trip-info">
+        <div class="trip-name">${esc(l.Name||'—')}</div>
+        <div class="trip-meta">${esc(l.Destination||'Destination TBD')} · ${esc(l.PaxCount||'?')} pax · ${esc(l.Owner||'Unassigned')}</div>
+      </div>
+      ${l.TripType?`<div class="trip-type-badge">${esc(l.TripType)}</div>`:''}
+    </div>`;
+  }).join('')||'<div style="color:var(--muted);font-size:13px">No upcoming departures in next 90 days</div>';
+
+  // Top destinations
+  const destCount={};
+  leads.forEach(l=>{if(l.Destination){const d=(l.Destination||'').trim();if(d)destCount[d]=(destCount[d]||0)+1;}});
+  const dests=Object.entries(destCount).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  const maxD=dests[0]?.[1]||1;
+  $id('destinationChart').innerHTML=dests.length?dests.map(([d,n])=>`
+    <div class="dest-row">
+      <div class="dest-name">${esc(d)}</div>
+      <div class="dest-bar-bg"><div class="dest-bar-fill" style="width:${Math.round(n/maxD*100)}%"></div></div>
+      <div class="dest-count">${n}</div>
+    </div>`).join('')
+    :'<div style="color:var(--muted);font-size:13px">No destination data. Add Destination field to leads.</div>';
+
+  // Hot inquiries
+  const hotLeads=leads.filter(l=>!TERMINAL.has(l.Stage)&&(l.Score==='Hot'||l.HotMoment==='Yes')).slice(0,10);
+  $id('travelHotList').innerHTML=hotLeads.length?hotLeads.map(l=>`
+    <div class="predict-row" style="cursor:pointer" onclick="openDetail(${l.Id})">
+      <div style="font-size:16px">🔥</div>
+      <div class="predict-name">
+        <b>${esc(l.Name||'—')}</b>
+        <div style="font-size:11px;color:var(--muted)">${esc(l.Destination||'No destination')} · ${esc(l.TripType||'?')} · ${esc(l.Stage||'new')}</div>
+      </div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted)">${fmtDateShort(l.LastMsgAt||l.Date)}</div>
+    </div>`).join('')
+    :'<div style="color:var(--muted);font-size:13px">No hot inquiries right now 🎉</div>';
 }
 
 /* ── LEAD RE-OPEN ── */
