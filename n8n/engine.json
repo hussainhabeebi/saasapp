@@ -328,34 +328,16 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $json.openrouter_key }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify({\n  model: $json.model,\n  temperature: 0.1,\n  max_tokens: 60,\n  messages: [\n    {\n      role: 'system',\n      content: 'Classify the user message. Return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}.\\nValid intents: AFFIRMATIVE (yes/ok/sure/agree/positive reply), WATCHED (watched video/content), FORM_DONE (filled form), BOOKING (specific time/date mentioned \u2014 put in data.booking_time), DELAY (not now/later/busy), WANTS_MORE_INFO (tell me more/explain/details), QUESTION (real product question \u2014 put cleaned question in data.question), WANTS_HUMAN (speak to human/agent/person), SHORT_NEUTRAL (only pure openers with zero other meaning: hi/hello/hey).\\nWhen in doubt between SHORT_NEUTRAL and AFFIRMATIVE, prefer AFFIRMATIVE.'\n    },\n    {\n      role: 'user',\n      content: 'Stage: ' + $json.stage + '\\nMessage: ' + $json.userText\n    }\n  ]\n}) }}",
+        "promptType": "define",
+        "text": "=Classify the user message and return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}.\n\nStage: {{ $json.stage }}\nMessage: \"{{ $json.userText }}\"\n\nIntents:\nAFFIRMATIVE = yes/ok/sure/agree/any positive reply\nWATCHED = watched video or content\nFORM_DONE = filled a form\nBOOKING = specific time/date mentioned (put in data.booking_time)\nDELAY = not now/later/busy\nWANTS_MORE_INFO = tell me more/explain\nQUESTION = real product question (put in data.question)\nWANTS_HUMAN = speak to human/agent\nSHORT_NEUTRAL = only pure openers: hi/hello/hey\n\nWhen in doubt between SHORT_NEUTRAL and AFFIRMATIVE, prefer AFFIRMATIVE.\nReturn ONLY the JSON object, nothing else.",
         "options": {
-          "retryOnFail": true,
-          "maxTries": 2,
-          "waitBetweenTries": 2000
+          "systemMessage": "You are an intent classifier. Return only valid JSON."
         }
       },
       "id": "aiagent",
-      "name": "HTTP \u00b7 Intent classify",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "name": "AI Agent \u00b7 Intent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
       "position": [
         1220,
         400
@@ -556,7 +538,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst memSummary = c.memSummary || '';\nconst lang = c.language || 'en';\nlet systemPrompt = c.main_prompt;\n// Inject memory summary right after main prompt so AI sees it first\nif (memSummary) {\n  systemPrompt += '\\n\\n## Conversation Memory (what happened earlier)\\n' + memSummary;\n}\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s => `- ${s.name}${s.category ? ' ['+s.category+']' : ''}: ${s.description || ''} | Price: ${s.currency || 'AED'} ${s.price} per ${s.per || 'person'}`).join('\\n');\n  systemPrompt += '\\n\\n## Services & Prices\\n' + svcLines;\n}\nif (c.kb_summary && c.kb_summary.trim()) {\n  systemPrompt += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 8000);\n}\nsystemPrompt += '\\n\\nIMPORTANT: Respond ONLY in ' + lang + '. Never switch languages. For any question not answerable from your product knowledge, politely say you will connect them with an advisor.';\nconst messages = [\n  { role: 'system', content: systemPrompt },\n  ...history.slice(-8),\n  { role: 'user', content: c.userText }\n];\nreturn [{ json: { ...c, _faqMessages: messages } }];"
+        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst memSummary = c.memSummary || '';\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\nif (memSummary) {\n  sys += '\\n\\n## Conversation Memory (earlier context)\\n' + memSummary;\n}\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}${s.category?' ['+s.category+']':''}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services & Prices\\n' + svcLines;\n}\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 8000);\n}\n// Embed recent history as readable text in system prompt\nif (history.length) {\n  const histText = history.slice(-8).map(m => m.role+': '+m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\nsys += '\\n\\nIMPORTANT: Respond ONLY in ' + lang + '. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
       },
       "id": "faqprep",
       "name": "Code \u00b7 FAQ prep",
@@ -569,35 +551,27 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
+        "prompt": {
+          "values": [
             {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $json.openrouter_key }}"
+              "type": "systemMessage",
+              "message": "={{ $('Code \u00b7 FAQ prep').first().json._systemPrompt }}"
             },
             {
-              "name": "Content-Type",
-              "value": "application/json"
+              "type": "userMessage",
+              "message": "={{ $('Code \u00b7 FAQ prep').first().json.userText }}"
             }
           ]
-        },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify({ model: $json.model, temperature: 0.4, messages: $json._faqMessages }) }}",
-        "options": {}
+        }
       },
       "id": "faqcall",
-      "name": "HTTP \u00b7 FAQ answer",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "name": "LLM Chain \u00b7 FAQ",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
       "position": [
         2100,
         360
-      ],
-      "onError": "continueRegularOutput"
+      ]
     },
     {
       "parameters": {
@@ -948,127 +922,57 @@
     },
     {
       "parameters": {
-        "jsCode": "const sc = $('Code \u00b7 Prep lead').first().json;\nconst history = sc.history || [];\n// Summarize every 25 messages, but only if we have >25 turns\nconst shouldSummarize = history.length > 25 && history.length % 25 === 0;\nif (!shouldSummarize || !sc.openrouter_key) {\n  return [{ json: { ...sc, _doMemSummary: false } }];\n}\nconst last25 = history.slice(-25).map(m => m.role+': '+m.content).join('\\n');\nreturn [{ json: { ...sc, _doMemSummary: true, _memMessages: [\n  { role:'system', content:'Summarize this sales conversation in 3 concise sentences. Capture: what the customer wants, their budget/timeline if mentioned, current stage/concerns, and anything the agent should remember. Be factual, no filler.' },\n  { role:'user', content: last25 }\n] } }];"
-      },
-      "id": "memCheck",
-      "name": "Code \u00b7 Memory check",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        3180,
-        460
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "m1",
-              "leftValue": "={{ $json._doMemSummary }}",
-              "rightValue": true,
-              "operator": {
-                "type": "boolean",
-                "operation": "equals"
-              }
-            }
-          ],
-          "combinator": "and"
+        "model": {
+          "mode": "id",
+          "value": "={{ $('Code \u00b7 Merge text').first().json.model || 'google/gemini-2.5-flash' }}"
         },
-        "options": {}
-      },
-      "id": "memIf",
-      "name": "IF \u00b7 Summarize memory?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        3400,
-        460
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $('Code \u00b7 Prep lead').first().json.openrouter_key }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify({ model: $json.model, max_tokens: 200, temperature: 0.3, messages: $json._memMessages }) }}",
         "options": {
-          "retryOnFail": true,
-          "maxTries": 2,
-          "waitBetweenTries": 3000
+          "baseURL": "https://openrouter.ai/api/v1",
+          "temperature": 0.1,
+          "maxTokens": 80
         }
       },
-      "id": "memAi",
-      "name": "HTTP \u00b7 AI memory summary",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "lmIntent",
+      "name": "OpenAI Chat Model \u00b7 Intent",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
       "position": [
-        3620,
-        340
+        1220,
+        580
       ],
-      "onError": "continueRegularOutput"
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_OPENROUTER_CRED",
+          "name": "OpenRouter account"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "const sc = $('Code \u00b7 Memory check').first().json;\nconst r = $input.first().json;\nconst summary = r?.choices?.[0]?.message?.content?.trim() || '';\nif (!summary || !sc.leadId) return [];\nreturn [{ json: { _leadId: sc.leadId, _newMem: summary,\n  nocodb_token: sc.control_nocodb_token } }];"
-      },
-      "id": "memExtract",
-      "name": "Code \u00b7 Extract memory",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        3820,
-        340
-      ]
-    },
-    {
-      "parameters": {
-        "method": "PATCH",
-        "url": "https://whizz.aiingo.com/api/v2/tables/mvg6rcw0ia5qqrx/records",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "xc-token",
-              "value": "={{ $json.nocodb_token }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
+        "model": {
+          "mode": "id",
+          "value": "={{ $('Code \u00b7 FAQ prep').first().json.model || 'google/gemini-2.5-flash' }}"
         },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify({ Id: $json._leadId, MemSummary: $json._newMem }) }}",
-        "options": {}
+        "options": {
+          "baseURL": "https://openrouter.ai/api/v1",
+          "temperature": 0.4,
+          "maxTokens": 600
+        }
       },
-      "id": "memSave",
-      "name": "HTTP \u00b7 Save MemSummary",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "lmFaq",
+      "name": "OpenAI Chat Model \u00b7 FAQ",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
       "position": [
-        4020,
-        340
+        2100,
+        540
       ],
-      "onError": "continueRegularOutput"
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_OPENROUTER_CRED",
+          "name": "OpenRouter account"
+        }
+      }
     }
   ],
   "connections": {
@@ -1222,7 +1126,7 @@
       "main": [
         [
           {
-            "node": "HTTP \u00b7 Intent classify",
+            "node": "AI Agent \u00b7 Intent",
             "type": "main",
             "index": 0
           }
@@ -1305,18 +1209,7 @@
       "main": [
         [
           {
-            "node": "HTTP \u00b7 FAQ answer",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP \u00b7 FAQ answer": {
-      "main": [
-        [
-          {
-            "node": "Code \u00b7 FAQ reply",
+            "node": "LLM Chain \u00b7 FAQ",
             "type": "main",
             "index": 0
           }
@@ -1382,7 +1275,7 @@
       "main": [
         [
           {
-            "node": "Code \u00b7 Memory check",
+            "node": "Code \u00b7 Prep analytics",
             "type": "main",
             "index": 0
           }
@@ -1484,52 +1377,45 @@
         ]
       ]
     },
-    "Code \u00b7 Memory check": {
+    "AI Agent \u00b7 Intent": {
       "main": [
         [
           {
-            "node": "IF \u00b7 Summarize memory?",
+            "node": "Code \u00b7 Intent + flow",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "IF \u00b7 Summarize memory?": {
+    "LLM Chain \u00b7 FAQ": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Prep analytics",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "HTTP \u00b7 AI memory summary",
+            "node": "Code \u00b7 FAQ reply",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP \u00b7 AI memory summary": {
-      "main": [
+    "OpenAI Chat Model \u00b7 Intent": {
+      "ai_languageModel": [
         [
           {
-            "node": "Code \u00b7 Extract memory",
-            "type": "main",
+            "node": "AI Agent \u00b7 Intent",
+            "type": "ai_languageModel",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Extract memory": {
-      "main": [
+    "OpenAI Chat Model \u00b7 FAQ": {
+      "ai_languageModel": [
         [
           {
-            "node": "HTTP \u00b7 Save MemSummary",
-            "type": "main",
+            "node": "LLM Chain \u00b7 FAQ",
+            "type": "ai_languageModel",
             "index": 0
           }
         ]
