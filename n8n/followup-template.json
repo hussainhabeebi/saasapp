@@ -39,7 +39,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const clientsData = $('HTTP · Get clients').first().json;\nconst leadsData = $input.first().json;\nconst clients = clientsData.list || [];\nconst leads = leadsData.list || [];\n\n// Build client map by Id\nconst clientMap = {};\nclients.forEach(c => { clientMap[String(c.Id)] = c; });\n\nconst now = Date.now();\nconst out = [];\n\nfor (const lead of leads) {\n  const client = clientMap[String(lead.ClientId)];\n  if (!client) continue;\n\n  const count = parseInt(client.followup_count) || 0;\n  if (!count) continue;\n\n  const hoursArr = (client.followup_hours || '24,72,168')\n    .split(',').map(h => parseFloat(h.trim())).filter(n => !isNaN(n));\n  const msgsArr = (client.followup_messages || '')\n    .split('\\n').map(m => m.trim()).filter(Boolean);\n\n  // Use LastMsgAt if available, fall back to Date\n  const lastMs = lead.LastMsgAt\n    ? new Date(lead.LastMsgAt).getTime()\n    : (lead.Date ? new Date(lead.Date).getTime() : 0);\n  if (!lastMs || !lead.ConversationID) continue;\n\n  const hoursElapsed = (now - lastMs) / 3600000;\n\n  let fuField = null, msg = null;\n  for (let i = 0; i < Math.min(count, 3); i++) {\n    const key = 'Follow up ' + (i + 1);\n    if ((lead[key] || 'No') === 'No' && hoursArr[i] && hoursElapsed >= hoursArr[i]) {\n      fuField = key;\n      msg = msgsArr[i] || null;\n      break;\n    }\n  }\n\n  if (!fuField || !msg) continue;\n\n  out.push({ json: {\n    leadId: lead.Id,\n    convId: lead.ConversationID,\n    fuField,\n    message: msg,\n    chatwoot_base: client.chatwoot_base,\n    chatwoot_account_id: String(client.chatwoot_account_id),\n    chatwoot_token: client.chatwoot_token\n  } });\n}\n\nreturn out;"
+        "jsCode": "const clientsData = $('HTTP · Get clients').first().json;\nconst leadsData = $input.first().json;\nconst clients = clientsData.list || [];\nconst leads = leadsData.list || [];\n\n// Build client map by Id\nconst clientMap = {};\nclients.forEach(c => { clientMap[String(c.Id)] = c; });\n\nconst now = Date.now();\nconst out = [];\n\nfor (const lead of leads) {\n  const client = clientMap[String(lead.ClientId)];\n  if (!client) continue;\n\n  const count = parseInt(client.followup_count) || 0;\n  if (!count) continue;\n\n  const hoursArr = (client.followup_hours || '24,72,168')\n    .split(',').map(h => parseFloat(h.trim())).filter(n => !isNaN(n));\n  const msgsArr = (client.followup_messages || '')\n    .split('\\n').map(m => m.trim()).filter(Boolean);\n\n  // Use LastMsgAt if available, fall back to Date\n  const lastMs = lead.LastMsgAt\n    ? new Date(lead.LastMsgAt).getTime()\n    : (lead.Date ? new Date(lead.Date).getTime() : 0);\n  if (!lastMs || !lead.ConversationID) continue;\n\n  const hoursElapsed = (now - lastMs) / 3600000;\n\n  let fuField = null, msg = null;\n  for (let i = 0; i < Math.min(count, 3); i++) {\n    const key = 'Follow up ' + (i + 1);\n    if ((lead[key] || 'No') === 'No' && hoursArr[i] && hoursElapsed >= hoursArr[i]) {\n      fuField = key;\n      msg = msgsArr[i] || null;\n      break;\n    }\n  }\n\n  if (!fuField || !msg) continue;\n\n  out.push({ json: {\n    leadId: lead.Id,\n    convId: lead.ConversationID,\n    fuField,\n    message: msg,\n    leadName: lead.Name || '',\n    convHistory: lead.ConvHistory || '',\n    chatwoot_base: client.chatwoot_base,\n    chatwoot_account_id: String(client.chatwoot_account_id),\n    chatwoot_token: client.chatwoot_token,\n    _client: { openrouter_key: client.openrouter_key || '', model: client.model || 'google/gemini-2.5-flash' }\n  } });\n}\n\nreturn out;"
       },
       "id": "decide", "name": "Code · Decide follow-ups",
       "type": "n8n-nodes-base.code", "typeVersion": 2,
@@ -50,6 +50,39 @@
       "id": "loop", "name": "Loop (rate limit)",
       "type": "n8n-nodes-base.splitInBatches", "typeVersion": 3,
       "position": [ 880, 0 ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst client = item._client || {};\nconst openrouterKey = client.openrouter_key || '';\nconst model = client.model || 'google/gemini-2.5-flash';\nconst leadName = item.leadName || '';\nconst convHistory = item.convHistory || '';\nconst baseMsg = item.message || '';\nif (!openrouterKey || !convHistory) return [{ json: item }];\n// Parse last few messages for context\nlet history = []; try { history = JSON.parse(convHistory); } catch(e) {}\nconst lastMsgs = history.slice(-6).map(m => m.role+': '+m.content).join('\\n');\nreturn [{ json: { ...item, _personalize: true, _orKey: openrouterKey, _model: model, _lastMsgs: lastMsgs, _baseMsg: baseMsg, _leadName: leadName } }];"
+      },
+      "id": "prepPersonalize", "name": "Code · Prep personalize",
+      "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 880, -16 ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "Authorization", "value": "=Bearer {{ $json._orKey }}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify({ model: $json._model, max_tokens: 200, messages: [ { role: 'system', content: 'You are a helpful sales assistant. Write a SHORT, warm follow-up WhatsApp message (1-2 sentences max) personalised to the conversation context. Use the lead name if provided. Base it on the template but make it feel personal and relevant. Return ONLY the message text, no quotes, no explanation.' }, { role: 'user', content: 'Lead name: ' + ($json._leadName||'there') + '\\nTemplate: ' + $json._baseMsg + '\\nRecent conversation:\\n' + ($json._lastMsgs||'(no history)') } ] }) }}",
+        "options": { "retryOnFail": true, "maxTries": 2, "waitBetweenTries": 3000 }
+      },
+      "id": "aiPersonalize", "name": "HTTP · AI personalize",
+      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 1100, -80 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const prep = $('Code · Prep personalize').first().json;\nlet finalMsg = prep.message;\ntry {\n  const aiResp = $input.first().json;\n  const aiText = aiResp?.choices?.[0]?.message?.content?.trim();\n  if (aiText && aiText.length > 5) finalMsg = aiText;\n} catch(e) {}\nreturn [{ json: { ...prep, message: finalMsg } }];"
+      },
+      "id": "mergeMsg", "name": "Code · Merge message",
+      "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 1320, -16 ]
     },
     {
       "parameters": {
@@ -66,7 +99,7 @@
       },
       "id": "send", "name": "HTTP · Send follow-up",
       "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
-      "position": [ 1100, -16 ], "onError": "continueRegularOutput"
+      "position": [ 1540, -16 ], "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -78,18 +111,18 @@
           { "name": "Content-Type", "value": "application/json" }
         ] },
         "sendBody": true, "specifyBody": "string",
-        "body": "={{ JSON.stringify({ Id: $('Loop (rate limit)').first().json.leadId, [$('Loop (rate limit)').first().json.fuField]: 'Yes' }) }}",
+        "body": "={{ JSON.stringify({ Id: $('Code · Prep personalize').first().json.leadId, [$('Code · Prep personalize').first().json.fuField]: 'Yes' }) }}",
         "options": {}
       },
       "id": "mark", "name": "HTTP · Mark sent",
       "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
-      "position": [ 1320, 0 ], "onError": "continueRegularOutput"
+      "position": [ 1760, 0 ], "onError": "continueRegularOutput"
     },
     {
       "parameters": { "amount": 1 },
       "id": "wait", "name": "Wait 1s",
       "type": "n8n-nodes-base.wait", "typeVersion": 1.1,
-      "position": [ 1540, 0 ],
+      "position": [ 1980, 0 ],
       "webhookId": "followup-wait-1s"
     }
   ],
@@ -98,7 +131,10 @@
     "HTTP · Get clients":       { "main": [ [ { "node": "HTTP · Get leads",          "type": "main", "index": 0 } ] ] },
     "HTTP · Get leads":         { "main": [ [ { "node": "Code · Decide follow-ups",  "type": "main", "index": 0 } ] ] },
     "Code · Decide follow-ups": { "main": [ [ { "node": "Loop (rate limit)",         "type": "main", "index": 0 } ] ] },
-    "Loop (rate limit)":        { "main": [ [ { "node": "HTTP · Send follow-up",     "type": "main", "index": 0 } ] ] },
+    "Loop (rate limit)":        { "main": [ [ { "node": "Code · Prep personalize",   "type": "main", "index": 0 } ] ] },
+    "Code · Prep personalize":  { "main": [ [ { "node": "HTTP · AI personalize",     "type": "main", "index": 0 } ] ] },
+    "HTTP · AI personalize":    { "main": [ [ { "node": "Code · Merge message",      "type": "main", "index": 0 } ] ] },
+    "Code · Merge message":     { "main": [ [ { "node": "HTTP · Send follow-up",     "type": "main", "index": 0 } ] ] },
     "HTTP · Send follow-up":    { "main": [ [ { "node": "HTTP · Mark sent",          "type": "main", "index": 0 } ] ] },
     "HTTP · Mark sent":         { "main": [ [ { "node": "Wait 1s",                   "type": "main", "index": 0 } ] ] },
     "Wait 1s":                  { "main": [ [ { "node": "Loop (rate limit)",          "type": "main", "index": 0 } ] ] }
