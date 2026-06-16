@@ -341,7 +341,8 @@
       "position": [
         1220,
         400
-      ]
+      ],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -1415,6 +1416,17 @@
           {
             "node": "LLM Chain \u00b7 FAQ",
             "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP \u00b7 Intent classify": {
+      "main": [
+        [
+          {
+            "node": "Code \u00b7 Intent + flow",
+            "type": "main",
             "index": 0
           }
         ]
