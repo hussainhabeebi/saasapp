@@ -1,0 +1,101 @@
+{
+  "name": "Leadvyne · Cal.com Booking",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leadvyne-cal-booking",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook", "name": "Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2,
+      "position": [ -1200, 400 ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const nocodb_base = 'https://whizz.aiingo.com';\nconst nocodb_token = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';\nconst leads_table_id = 'mvg6rcw0ia5qqrx';\nreturn [{ json: { nocodb_base, nocodb_token, leads_table_id } }];"
+      },
+      "id": "settings", "name": "Code · Settings", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ -980, 400 ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $('Webhook').first().json.body || $('Webhook').first().json;\nconst payload = body.payload || body;\nconst triggerEvent = body.triggerEvent || body.trigger_event || '';\n\n// Extract phone\nlet phone = '';\nif (payload.responses?.phone?.value) {\n  phone = payload.responses.phone.value;\n} else if (payload.attendees && payload.attendees[0]) {\n  const att = payload.attendees[0];\n  phone = att.phone || att.customFields?.phone || '';\n}\n\n// Normalize phone: strip non-digits, remove leading +\nphone = String(phone).replace(/[^0-9+]/g, '').replace(/^\\+/, '');\nif (phone.startsWith('00')) phone = phone.slice(2);\n\nconst isCancelled = triggerEvent === 'BOOKING_CANCELLED' || triggerEvent === 'booking.cancelled';\nconst startTime = payload.startTime || '';\nconst uid = payload.uid || '';\nconst title = payload.title || '';\n\nreturn [{ json: { phone, isCancelled, startTime, uid, title, triggerEvent } }];"
+      },
+      "id": "parsePayload", "name": "Code · Parse payload", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ -760, 400 ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Code · Settings').first().json.nocodb_base }}/api/v2/tables/={{ $('Code · Settings').first().json.leads_table_id }}/records?where=(Phone,eq,{{ $json.phone }})&limit=1",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "={{ $('Code · Settings').first().json.nocodb_token }}" } ] },
+        "options": {}
+      },
+      "id": "findLead", "name": "HTTP · Find lead", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ -540, 400 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const parse = $('Code · Parse payload').first().json;\nconst settings = $('Code · Settings').first().json;\nconst result = $input.first().json;\nconst leads = result.list || [];\nconst lead = leads[0] || null;\n\nif (!lead) {\n  return [{ json: { _skip: true, reason: 'Lead not found for phone: ' + parse.phone } }];\n}\n\nlet updateBody = { Id: lead.Id };\nif (parse.isCancelled) {\n  updateBody.Stage = 'new';\n  updateBody.BookingTime = '';\n} else {\n  updateBody.Stage = 'consultation_booked';\n  updateBody.BookingTime = parse.startTime;\n  updateBody['Follow up 1'] = 'No';\n  updateBody['Follow up 2'] = 'No';\n  updateBody['Follow up 3'] = 'No';\n}\n\nreturn [{ json: { ...parse, leadId: lead.Id, updateBody, _skip: false, nocodb_base: settings.nocodb_base, nocodb_token: settings.nocodb_token, leads_table_id: settings.leads_table_id } }];"
+      },
+      "id": "prepUpdate", "name": "Code · Prep update", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ -320, 400 ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "version": 2 },
+          "conditions": [ {
+            "id": "skip",
+            "leftValue": "={{ $json._skip }}",
+            "rightValue": true,
+            "operator": { "type": "boolean", "operation": "false", "singleValue": true }
+          } ],
+          "combinator": "and"
+        }
+      },
+      "id": "ifNotSkip", "name": "If · Not skip", "type": "n8n-nodes-base.if", "typeVersion": 2.2,
+      "position": [ -100, 400 ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $json.nocodb_base }}/api/v2/tables/={{ $json.leads_table_id }}/records",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "={{ $json.nocodb_token }}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true, "specifyBody": "string",
+        "body": "={{ JSON.stringify($json.updateBody) }}",
+        "options": {}
+      },
+      "id": "updateLead", "name": "HTTP · Update lead", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 120, 300 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true }",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond", "name": "Respond 200", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1,
+      "position": [ 340, 400 ]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [ [ { "node": "Code · Settings", "type": "main", "index": 0 } ] ] },
+    "Code · Settings": { "main": [ [ { "node": "Code · Parse payload", "type": "main", "index": 0 } ] ] },
+    "Code · Parse payload": { "main": [ [ { "node": "HTTP · Find lead", "type": "main", "index": 0 } ] ] },
+    "HTTP · Find lead": { "main": [ [ { "node": "Code · Prep update", "type": "main", "index": 0 } ] ] },
+    "Code · Prep update": { "main": [ [ { "node": "If · Not skip", "type": "main", "index": 0 } ] ] },
+    "If · Not skip": { "main": [
+      [ { "node": "HTTP · Update lead", "type": "main", "index": 0 } ],
+      [ { "node": "Respond 200", "type": "main", "index": 0 } ]
+    ] },
+    "HTTP · Update lead": { "main": [ [ { "node": "Respond 200", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" }
+}
