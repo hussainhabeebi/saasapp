@@ -870,7 +870,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const prev = $('Code \u00b7 Collect reply').first().json;\nconst resp = $input.first().json;\nconst b64 = resp?.audios?.[0] || '';\nif (!b64) return [{ json: { ...prev, _ttsOk: false } }];\nconst buf = Buffer.from(b64, 'base64');\nreturn [{ json: { ...prev, _ttsOk: true }, binary: {\n  voiceReply: await this.helpers.prepareBinaryData(buf, 'reply.mp3', 'audio/mpeg')\n} }];"
+        "jsCode": "const prev = $('Code \u00b7 Collect reply').first().json;\nconst resp = $input.first().json;\n// Sarvam TTS returns { audios: ['<base64_mp3>'] }\nconst base64Audio = resp?.audios?.[0] || '';\nif (!base64Audio) return [{ json: { ...prev, _ttsOk: false } }];\nreturn [{\n  json: { ...prev, _ttsOk: true },\n  binary: {\n    data: {\n      data: base64Audio,\n      mimeType: 'audio/mpeg',\n      fileName: 'voice-reply.mp3',\n      fileExtension: 'mp3'\n    }\n  }\n}];"
       },
       "id": "ttsBinary",
       "name": "Code \u00b7 TTS binary",
@@ -907,9 +907,9 @@
               "value": "false"
             },
             {
+              "parameterType": "formBinaryData",
               "name": "attachments[]",
-              "value": "={{ $binary.voiceReply }}",
-              "parameterType": "formBinaryData"
+              "inputDataFieldName": "data"
             }
           ]
         },
