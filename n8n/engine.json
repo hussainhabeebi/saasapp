@@ -535,7 +535,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst memSummary = c.memSummary || '';\nconst lang = c.language || 'en';\nlet systemPrompt = c.main_prompt;\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s => `- ${s.name}${s.category ? ' ['+s.category+']' : ''}: ${s.description || ''} | Price: ${s.currency || 'AED'} ${s.price} per ${s.per || 'person'}`).join('\\n');\n  systemPrompt += '\\n\\n## Services & Prices\\n' + svcLines;\n}\nif (c.kb_summary && c.kb_summary.trim()) {\n  systemPrompt += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 8000);\n}\nif (memSummary) systemPrompt += '\\n\\n[Earlier context summary: ' + memSummary + ']';\nsystemPrompt += '\\n\\nIMPORTANT: Respond ONLY in ' + lang + '. Never switch languages. For any question not answerable from your product knowledge, politely say you will connect them with an advisor.';\nconst messages = [\n  { role: 'system', content: systemPrompt },\n  ...history.slice(-8),\n  { role: 'user', content: c.userText }\n];\nreturn [{ json: { ...c, _faqMessages: messages } }];"
+        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst memSummary = c.memSummary || '';\nconst lang = c.language || 'en';\nlet systemPrompt = c.main_prompt;\n// Inject memory summary right after main prompt so AI sees it first\nif (memSummary) {\n  systemPrompt += '\\n\\n## Conversation Memory (what happened earlier)\\n' + memSummary;\n}\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s => `- ${s.name}${s.category ? ' ['+s.category+']' : ''}: ${s.description || ''} | Price: ${s.currency || 'AED'} ${s.price} per ${s.per || 'person'}`).join('\\n');\n  systemPrompt += '\\n\\n## Services & Prices\\n' + svcLines;\n}\nif (c.kb_summary && c.kb_summary.trim()) {\n  systemPrompt += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 8000);\n}\nsystemPrompt += '\\n\\nIMPORTANT: Respond ONLY in ' + lang + '. Never switch languages. For any question not answerable from your product knowledge, politely say you will connect them with an advisor.';\nconst messages = [\n  { role: 'system', content: systemPrompt },\n  ...history.slice(-8),\n  { role: 'user', content: c.userText }\n];\nreturn [{ json: { ...c, _faqMessages: messages } }];"
       },
       "id": "faqprep",
       "name": "Code \u00b7 FAQ prep",
@@ -977,7 +977,7 @@
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $json.openrouter_key }}"
+              "value": "={{ 'Bearer ' + $('Code \u00b7 Prep lead').first().json.openrouter_key }}"
             },
             {
               "name": "Content-Type",
