@@ -250,6 +250,14 @@ hr.div{border:none;border-top:1px solid var(--line);margin:20px 0}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
 
+/* services */
+.svc-card{background:#F7FAF9;border:1px solid var(--ls);border-radius:10px;padding:14px;position:relative;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:start}
+@media(max-width:600px){.svc-card{grid-template-columns:1fr;gap:8px}}
+.svc-del{background:none;border:1px solid var(--ls);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px;color:var(--muted);align-self:flex-start}
+.svc-del:hover{border-color:#B23A2E;color:#B23A2E}
+.svc-price-row{display:flex;gap:6px}
+.svc-currency{width:72px;flex-shrink:0}
+
 /* summary card */
 .summary-card{background:#F7FAF9;border:1px solid var(--ls);border-radius:9px;padding:14px;margin-top:10px;font-size:13px;line-height:1.6}
 .s-row{display:flex;gap:8px;margin-bottom:4px}
@@ -273,6 +281,7 @@ const INDUSTRIES = {
   healthcare:  { label:'Healthcare',   booked:'Appointments',  active:'Active Cases', tags:['Urgent','Follow Up','No Answer','Consultation Booked','Not Interested'] },
   education:   { label:'Education',    booked:'Enrollments',   active:'Inquiries',    tags:['Interested','Callback','No Answer','Price Query','Not Interested'] },
   automotive:  { label:'Automotive',   booked:'Cars Sold',     active:'Test Drives',  tags:['Hot Buyer','Test Drive','No Answer','Finance Query','Not Interested'] },
+  travel:      { label:'Travel & Tourism', booked:'Bookings Made', active:'Active Inquiries', tags:['Hot Lead','Quote Sent','No Answer','Price Query','Not Interested','Group Tour','Honeymoon','Corporate'] },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -403,6 +412,19 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:24px">
             <button class="save-btn" id="saveGeneral">Save</button>
             <span class="save-msg" id="saveGeneralMsg"></span>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
+            <div class="s-head">🧳 Services &amp; Prices</div>
+            <div class="s-note">Define your packages, tours, or services with prices. The bot will reference these when answering customer questions.</div>
+            <div id="svcList" style="margin-bottom:12px"></div>
+            <button type="button" onclick="addService()" style="width:100%;padding:10px;border:2px dashed var(--ls);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px">+ Add Service / Package</button>
+            <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveSvc">Save Services</button>
+              <span class="save-msg" id="saveSvcMsg"></span>
+            </div>
           </div>
 
           <hr class="div">
@@ -1113,11 +1135,69 @@ function populateSettings(){
   $id('cfgFuMsgs').value=clientRecord.followup_messages||'';
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
+  // services
+  loadServices();
   // stages
   let stages=[];
   try{stages=flowJsonToStages(JSON.parse(clientRecord.flow_json||'{}'));}catch(e){}
   renderStages(stages);
 }
+
+/* ── SERVICES ── */
+let _services=[];
+
+function loadServices(){
+  try{_services=JSON.parse(clientRecord.services||'[]');}catch(e){_services=[];}
+  renderServices();
+}
+
+function renderServices(){
+  const list=$id('svcList');
+  if(!_services.length){list.innerHTML='<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No services added yet.</div>';return;}
+  list.innerHTML=_services.map((s,i)=>`
+    <div class="svc-card">
+      <div>
+        <label class="form-label">Service / Package Name</label>
+        <input class="form-input" value="${esc(s.name||'')}" oninput="_services[${i}].name=this.value" placeholder="e.g. Dubai City Tour" />
+        <label class="form-label" style="margin-top:8px">Description</label>
+        <textarea class="form-input" rows="2" oninput="_services[${i}].description=this.value" placeholder="What's included…">${esc(s.description||'')}</textarea>
+      </div>
+      <div>
+        <label class="form-label">Price</label>
+        <div class="svc-price-row">
+          <select class="form-input svc-currency" onchange="_services[${i}].currency=this.value">
+            ${['AED','USD','EUR','GBP','SAR','QAR','KWD','INR','OMR','BHD'].map(c=>`<option value="${c}"${(s.currency||'AED')===c?' selected':''}>${c}</option>`).join('')}
+          </select>
+          <input class="form-input" type="number" min="0" value="${s.price||''}" oninput="_services[${i}].price=this.value" placeholder="0" />
+        </div>
+        <label class="form-label" style="margin-top:8px">Per</label>
+        <select class="form-input" onchange="_services[${i}].per=this.value">
+          ${['person','group','night','trip','package'].map(p=>`<option value="${p}"${(s.per||'person')===p?' selected':''}>${p}</option>`).join('')}
+        </select>
+        <label class="form-label" style="margin-top:8px">Category (optional)</label>
+        <input class="form-input" value="${esc(s.category||'')}" oninput="_services[${i}].category=this.value" placeholder="e.g. Day Tours" />
+      </div>
+      <button class="svc-del" onclick="removeService(${i})">✕</button>
+    </div>`).join('');
+}
+
+function addService(){
+  _services.push({name:'',description:'',price:'',currency:'AED',per:'person',category:''});
+  renderServices();
+  $id('svcList').lastElementChild?.querySelector('input')?.focus();
+}
+
+function removeService(i){_services.splice(i,1);renderServices();}
+
+$id('saveSvc').addEventListener('click',async()=>{
+  const btn=$id('saveSvc'),msg=$id('saveSvcMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    await patchClient({services:JSON.stringify(_services)});
+    msg.textContent='✓ Saved';msg.className='save-msg';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
 
 $id('saveGeneral').addEventListener('click',async()=>{
   const btn=$id('saveGeneral'),msg=$id('saveGeneralMsg');
