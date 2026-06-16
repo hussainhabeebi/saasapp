@@ -328,18 +328,39 @@
     },
     {
       "parameters": {
-        "promptType": "define",
-        "text": "=Stage: {{ $json.stage }}\nLanguage: {{ $json.language }}\nUser message: \"{{ $json.userText }}\"\n\nClassify the user message above. Return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}.\nAFFIRMATIVE = yes/ok/sure/done/good/great/agree \u2014 any positive reply to bot content.\nWATCHED = watched/seen a video or content.\nFORM_DONE = filled a form.\nBOOKING = specific time or date mentioned (put in data.booking_time).\nDELAY = not now/later/busy/vague postpone.\nWANTS_MORE_INFO = tell me more/explain/details.\nQUESTION = real product or service question (put cleaned question in data.question).\nWANTS_HUMAN = speak to human/agent/person.\nSHORT_NEUTRAL = only pure openers with zero other meaning: hi/hello/hey.\nWhen in doubt between SHORT_NEUTRAL and AFFIRMATIVE, always prefer AFFIRMATIVE.",
-        "options": {}
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $json.openrouter_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ JSON.stringify({\n  model: $json.model,\n  temperature: 0.1,\n  max_tokens: 60,\n  messages: [\n    {\n      role: 'system',\n      content: 'Classify the user message. Return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}.\\nValid intents: AFFIRMATIVE (yes/ok/sure/agree/positive reply), WATCHED (watched video/content), FORM_DONE (filled form), BOOKING (specific time/date mentioned \u2014 put in data.booking_time), DELAY (not now/later/busy), WANTS_MORE_INFO (tell me more/explain/details), QUESTION (real product question \u2014 put cleaned question in data.question), WANTS_HUMAN (speak to human/agent/person), SHORT_NEUTRAL (only pure openers with zero other meaning: hi/hello/hey).\\nWhen in doubt between SHORT_NEUTRAL and AFFIRMATIVE, prefer AFFIRMATIVE.'\n    },\n    {\n      role: 'user',\n      content: 'Stage: ' + $json.stage + '\\nMessage: ' + $json.userText\n    }\n  ]\n}) }}",
+        "options": {
+          "retryOnFail": true,
+          "maxTries": 2,
+          "waitBetweenTries": 2000
+        }
       },
       "id": "aiagent",
-      "name": "AI Agent",
-      "type": "@n8n/n8n-nodes-langchain.agent",
-      "typeVersion": 3.1,
+      "name": "HTTP \u00b7 Intent classify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
         1220,
         400
-      ]
+      ],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -1201,18 +1222,7 @@
       "main": [
         [
           {
-            "node": "AI Agent",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "AI Agent": {
-      "main": [
-        [
-          {
-            "node": "Code \u00b7 Intent + flow",
+            "node": "HTTP \u00b7 Intent classify",
             "type": "main",
             "index": 0
           }
@@ -1519,6 +1529,17 @@
         [
           {
             "node": "HTTP \u00b7 Save MemSummary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP \u00b7 Intent classify": {
+      "main": [
+        [
+          {
+            "node": "Code \u00b7 Intent + flow",
             "type": "main",
             "index": 0
           }
