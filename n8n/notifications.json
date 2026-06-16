@@ -1,0 +1,112 @@
+{
+  "name": "Leadvyne · Notifications (email)",
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [ { "field": "minutes", "minutesInterval": 15 } ] } },
+      "id": "trigger", "name": "Every 15 min",
+      "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.2,
+      "position": [ 0, 0 ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records?where=(active,eq,Yes)&limit=500",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" } ] },
+        "options": {}
+      },
+      "id": "getclients", "name": "HTTP · Get clients",
+      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 220, 0 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const clientsData = $input.first().json;\nconst clients = (clientsData.list || []).filter(c => c.notification_email && c.notification_email.trim());\nif (!clients.length) return [];\n\n// 16-min window to slightly overlap with 15-min schedule\nconst cutoff = new Date(Date.now() - 16 * 60 * 1000).toISOString();\nreturn clients.map(c => ({ json: { ...c, _cutoff: cutoff } }));"
+      },
+      "id": "filterclients", "name": "Code · Filter clients",
+      "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 440, 0 ]
+    },
+    {
+      "parameters": { "options": {} },
+      "id": "loop", "name": "Loop clients",
+      "type": "n8n-nodes-base.splitInBatches", "typeVersion": 3,
+      "position": [ 660, 0 ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mvg6rcw0ia5qqrx/records?where=(ClientId,eq,{{ $json.Id }})~and(HotMoment,eq,Yes)~and(LastMsgAt,gt,{{ $json._cutoff }})&limit=50",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" } ] },
+        "options": {}
+      },
+      "id": "gethotleads", "name": "HTTP · Get hot leads",
+      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 880, -60 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mvg6rcw0ia5qqrx/records?where=(ClientId,eq,{{ $('Loop clients').first().json.Id }})~and(Stage,eq,human_handover)~and(Date,gt,{{ $('Loop clients').first().json._cutoff }})&limit=50",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" } ] },
+        "options": {}
+      },
+      "id": "gethandovers", "name": "HTTP · Get handovers",
+      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [ 880, 60 ], "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const client = $('Loop clients').first().json;\nconst hotData = $('HTTP · Get hot leads').first().json;\nconst handoverData = $('HTTP · Get handovers').first().json;\nconst hotLeads = hotData.list || [];\nconst handovers = handoverData.list || [];\n\nconst alerts = [];\nhotLeads.forEach(l => {\n  const phone = String(l.Phone||'');\n  const masked = phone.length > 4 ? phone.slice(0,2)+'***'+phone.slice(-2) : phone;\n  alerts.push({\n    subject: '🔥 Hot lead: ' + (l.Name||'Unknown'),\n    body: `A hot buying signal was detected.\\n\\nLead: ${l.Name||'Unknown'}\\nPhone: ${masked}\\nStage: ${l.Stage||'new'}\\nSignal: ${l.HotMomentText||'Buying keyword detected'}\\nClient: ${client.client_name}\\nTime: ${new Date(l.LastMsgAt||l.Date).toLocaleString()}\\n\\nOpen your dashboard to follow up.`,\n    to: client.notification_email\n  });\n});\nhandovers.forEach(l => {\n  const phone = String(l.Phone||'');\n  const masked = phone.length > 4 ? phone.slice(0,2)+'***'+phone.slice(-2) : phone;\n  alerts.push({\n    subject: '🙋 Human handover: ' + (l.Name||'Unknown'),\n    body: `A lead has requested human assistance.\\n\\nLead: ${l.Name||'Unknown'}\\nPhone: ${masked}\\nClient: ${client.client_name}\\nTime: ${new Date(l.Date).toLocaleString()}\\n\\nOpen your dashboard to take over the conversation.`,\n    to: client.notification_email\n  });\n});\n\nreturn alerts.map(a => ({ json: a }));"
+      },
+      "id": "buildalerts", "name": "Code · Build alerts",
+      "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [ 1100, 0 ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@leadvyne.com",
+        "toEmail": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "text": "={{ $json.body }}",
+        "options": {}
+      },
+      "id": "sendemail", "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend", "typeVersion": 2.1,
+      "position": [ 1320, 0 ],
+      "credentials": { "smtp": { "id": "REPLACE_SMTP_CRED", "name": "SMTP Account" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": { "amount": 1 },
+      "id": "wait", "name": "Wait 1s",
+      "type": "n8n-nodes-base.wait", "typeVersion": 1.1,
+      "position": [ 1540, 0 ],
+      "webhookId": "notif-wait-1s"
+    },
+    {
+      "parameters": {
+        "content": "## Notifications · Email\n\nRuns every 15 minutes. For each active client with a `notification_email`:\n1. Checks for new hot leads (HotMoment=Yes in last 16 min)\n2. Checks for new human handover requests (Stage=human_handover in last 16 min)\n3. Sends one email per alert\n\n### Setup\n1. Add SMTP credential named **SMTP Account** (Settings → Credentials)\n2. Set `notification_email` on client records in NocoDB (or add field to onboard form)\n3. Activate this workflow\n\n### NocoDB field needed\nAdd `notification_email` (text) column to Clients table.",
+        "height": 340, "width": 480
+      },
+      "id": "note", "name": "README",
+      "type": "n8n-nodes-base.stickyNote", "typeVersion": 1,
+      "position": [ 0, -220 ]
+    }
+  ],
+  "connections": {
+    "Every 15 min":        { "main": [ [ { "node": "HTTP · Get clients",   "type": "main", "index": 0 } ] ] },
+    "HTTP · Get clients":  { "main": [ [ { "node": "Code · Filter clients","type": "main", "index": 0 } ] ] },
+    "Code · Filter clients":{ "main": [ [ { "node": "Loop clients",         "type": "main", "index": 0 } ] ] },
+    "Loop clients":        { "main": [ [ { "node": "HTTP · Get hot leads", "type": "main", "index": 0 },
+                                         { "node": "HTTP · Get handovers", "type": "main", "index": 0 } ] ] },
+    "HTTP · Get hot leads":{ "main": [ [ { "node": "Code · Build alerts",  "type": "main", "index": 0 } ] ] },
+    "HTTP · Get handovers":{ "main": [ [ { "node": "Code · Build alerts",  "type": "main", "index": 0 } ] ] },
+    "Code · Build alerts": { "main": [ [ { "node": "Send Email",           "type": "main", "index": 0 } ] ] },
+    "Send Email":          { "main": [ [ { "node": "Wait 1s",              "type": "main", "index": 0 } ] ] },
+    "Wait 1s":             { "main": [ [ { "node": "Loop clients",         "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

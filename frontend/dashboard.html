@@ -376,6 +376,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <span class="hchip" id="hChip">—</span>
     <div class="hright">
       <span id="hUpdated"></span>
+      <button class="icon-btn" title="PDF Report" onclick="generateReport()">📄</button>
       <button class="icon-btn" id="hRefresh" title="Refresh">↻</button>
       <button class="icon-btn" id="hLogout" title="Sign out">⏻</button>
     </div>
@@ -480,8 +481,10 @@ const TODAY = new Date().toISOString().slice(0,10);
           <select class="form-input" id="leadOwnerFilter" onchange="filterLeads()" style="flex:0 0 120px;padding:9px 10px">
             <option value="">All owners</option>
           </select>
+          <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
           <button class="btn btn-primary btn-sm" onclick="openAddLead()">+ Add Lead</button>
           <button class="btn btn-secondary btn-sm" onclick="exportCsv()">📥 CSV</button>
+          <button class="btn btn-secondary btn-sm" onclick="openImport()">📤 Import</button>
         </div>
         <div class="card" style="padding:0;overflow:hidden">
           <div id="leadsList"></div>
@@ -525,6 +528,16 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div class="s-head">Agents</div>
             <div class="s-note">One agent name per line. Used for lead assignment.</div>
             <textarea class="form-input" id="cfgAgents" rows="4" placeholder="Sarah&#10;John&#10;Ahmed"></textarea>
+          </div>
+
+          <div class="settings-section">
+            <div class="s-head">🔔 Notification Email</div>
+            <div class="s-note">Get emailed when a hot lead or human handover is detected. Requires SMTP setup in n8n notifications workflow.</div>
+            <input class="form-input" id="cfgNotifEmail" type="email" placeholder="you@example.com" style="max-width:320px">
+            <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveNotifEmail">Save</button>
+              <span class="save-msg" id="saveNotifEmailMsg"></span>
+            </div>
           </div>
 
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:24px">
@@ -781,13 +794,51 @@ const TODAY = new Date().toISOString().slice(0,10);
 
 </div>
 
+<!-- MODAL: Import CSV -->
+<div class="modal" id="modalImport" style="max-width:560px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><span class="modal-title">📤 Import Leads (CSV)</span><button class="icon-btn" onclick="closeModal('modalImport')">✕</button></div>
+  <div class="modal-body">
+    <div class="kb-drop" id="importDrop" onclick="$id('importFile').click()" ondragover="event.preventDefault();this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="event.preventDefault();this.classList.remove('drag-over');importHandleFile(event.dataTransfer.files[0])">
+      <div class="kb-drop-icon">📋</div>
+      <div class="kb-drop-label"><b>Click to upload CSV</b> or drag &amp; drop<br>Required columns: Phone · Optional: Name, Stage, Owner</div>
+    </div>
+    <input type="file" id="importFile" accept=".csv" style="display:none" onchange="importHandleFile(this.files[0])">
+    <div id="importPreview" style="margin-top:12px"></div>
+    <div id="importMapping" style="margin-top:10px;display:none">
+      <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--muted)">COLUMN MAPPING</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px" id="importMapGrid"></div>
+    </div>
+    <div id="importStatus" style="font-size:12px;color:var(--muted);margin-top:8px"></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="importBtn" style="flex:1;display:none" onclick="doImport()">Import</button>
+    <button class="btn btn-secondary" onclick="closeModal('modalImport')">Cancel</button>
+  </div>
+</div>
+
+<!-- MODAL: Merge Lead -->
+<div class="modal" id="modalMerge" style="max-width:480px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><span class="modal-title">🔀 Merge Duplicate Lead</span><button class="icon-btn" onclick="closeModal('modalMerge')">✕</button></div>
+  <div class="modal-body">
+    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Select which lead to merge <b>into</b> the current lead. The selected lead's notes, calls and tags will be copied, then it will be deleted.</div>
+    <input class="search-input" id="mergeSearch" type="text" placeholder="Search by name or phone…" oninput="renderMergeList()" style="margin-bottom:10px">
+    <div id="mergeList" style="max-height:260px;overflow-y:auto"></div>
+    <div id="mergeStatus" style="font-size:12px;color:var(--muted);margin-top:8px"></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-secondary" style="flex:1" onclick="closeModal('modalMerge')">Cancel</button>
+  </div>
+</div>
+
 <script>
 'use strict';
 
 /* ── STATE ── */
 let clientId = null, clientRecord = null, refreshTimer = null;
 let allLeads = [], currentLead = null, chartMode = 'week', leadsChart = null;
-let _stages = [];
+let _stages = [], _convSearchActive = false;
 
 function getIndustry(){ return INDUSTRIES[clientRecord?.industry] || INDUSTRIES.general; }
 function getAgents(){ try{ return JSON.parse(clientRecord?.agents||'[]'); }catch(e){ return (clientRecord?.agents||'').split('\n').map(s=>s.trim()).filter(Boolean); } }
@@ -1026,7 +1077,15 @@ function renderLeadsList(){
   const sf=$id('leadStageFilter')?.value||'';
   const of=$id('leadOwnerFilter')?.value||'';
   const filtered=allLeads.filter(l=>{
-    if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q))return false;
+    if(q){
+      const nameMatch=(l.Name||'').toLowerCase().includes(q);
+      const phoneMatch=(l.Phone||'').includes(q);
+      let convMatch=false;
+      if(_convSearchActive){
+        try{const h=JSON.parse(l.ConvHistory||'[]');convMatch=h.some(m=>(m.content||'').toLowerCase().includes(q));}catch(e){}
+      }
+      if(!nameMatch&&!phoneMatch&&!convMatch)return false;
+    }
     if(sf&&l.Stage!==sf)return false;
     if(of&&(l.Owner||'')!==of)return false;
     return true;
@@ -1126,7 +1185,11 @@ function openDetail(id){
     <a class="action-btn" href="${callLink}"><span class="ab-icon">📞</span>Call</a>
     <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>
     <button class="action-btn" onclick="openEditLead(currentLead)"><span class="ab-icon">✏️</span>Edit</button>
-    <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>`;
+    <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
+    ${TERMINAL.has(lead.Stage)?`<button class="action-btn" onclick="reopenLead()"><span class="ab-icon">🔄</span>Re-open</button>`:''}
+    ${lead.IsDuplicate==='Yes'?`<button class="action-btn" onclick="openMerge()"><span class="ab-icon">🔀</span>Merge</button>`:''}
+    ${lead.OptOut==='Yes'?`<span style="background:#FEE2E2;color:#991B1B;padding:4px 10px;border-radius:8px;font-size:11px;font-weight:600">🚫 Opted out</span>`:''}
+  `;
 
   // tags
   renderDetailTags(lead);
@@ -1308,6 +1371,7 @@ function populateSettings(){
   $id('cfgFuMsgs').value=clientRecord.followup_messages||'';
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
+  $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   // knowledge base
   _kbText=clientRecord.kb_text||'';
   $id('cfgKbText').value=_kbText;
@@ -1374,6 +1438,7 @@ $id('saveSvc').addEventListener('click',async()=>{
   try{
     await patchClient({services:JSON.stringify(_services)});
     msg.textContent='✓ Saved';msg.className='save-msg';
+    if(clientRecord?.kb_text?.trim())triggerKbRefresh();
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
@@ -1417,8 +1482,12 @@ $id('saveKb').addEventListener('click',async()=>{
 });
 $id('cfgKbText').addEventListener('input',kbUpdateCount);
 
-$id('savePrompt').addEventListener('click',async()=>saveField('savePrompt','savePromptMsg',{main_prompt:$id('cfgPrompt').value}));
+$id('savePrompt').addEventListener('click',async()=>{
+  await saveField('savePrompt','savePromptMsg',{main_prompt:$id('cfgPrompt').value});
+  if(clientRecord?.kb_text?.trim())triggerKbRefresh();
+});
 $id('saveFu').addEventListener('click',async()=>saveField('saveFu','saveFuMsg',{followup_count:parseInt($id('cfgFuCount').value)||0,followup_hours:$id('cfgFuHours').value,followup_messages:$id('cfgFuMsgs').value}));
+$id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
 
 $id('saveFlow').addEventListener('click',async()=>{
@@ -1878,6 +1947,250 @@ async function generateDealCoach(){
     card.innerHTML=`<div class="cc-head">🤖 Deal Coach Recommendations</div>${esc(text).replace(/\n/g,'<br>')}`;
   }catch(e){card.style.display='block';card.innerHTML='<div class="cc-head">Error</div>Could not generate recommendations.';}
   btn.disabled=false;btn.textContent='🤖 AI Deal Coach';
+}
+
+/* ── LEAD RE-OPEN ── */
+async function reopenLead(){
+  if(!currentLead)return;
+  if(!confirm('Re-open this lead? The bot will start responding again from the beginning.'))return;
+  const patch={Id:currentLead.Id,Stage:'new',Handover:'No',OptOut:'No','Follow up 1':'No','Follow up 2':'No','Follow up 3':'No'};
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
+  Object.assign(currentLead,patch);
+  const idx=allLeads.findIndex(l=>l.Id===currentLead.Id);
+  if(idx>=0)Object.assign(allLeads[idx],patch);
+  closeModal('modalDetail');
+  showToast('Lead re-opened');
+  loadAll();
+}
+
+function showToast(msg,type='ok'){
+  let t=$id('_toast');
+  if(!t){t=document.createElement('div');t.id='_toast';t.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#0F1F1A;color:#fff;padding:10px 20px;border-radius:10px;font-size:13px;font-weight:600;z-index:9999;opacity:0;transition:opacity .2s';document.body.appendChild(t);}
+  t.textContent=msg;t.style.opacity='1';
+  setTimeout(()=>t.style.opacity='0',2500);
+}
+
+/* ── KB AUTO-REFRESH ── */
+async function triggerKbRefresh(){
+  try{
+    const n8nBase=(clientRecord?.n8n_base||'https://apps.leadvyne.com').replace(/\/$/,'');
+    await fetch(n8nBase+'/webhook/leadvyne-kb-process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,kb_text:clientRecord.kb_text||''})});
+  }catch(e){}
+}
+
+/* ── CONVERSATION SEARCH ── */
+let _convSearchActive=false;
+function toggleConvSearch(){
+  _convSearchActive=!_convSearchActive;
+  const btn=$id('convSearchBtn');
+  btn.style.background=_convSearchActive?'var(--accent)':'';
+  btn.style.color=_convSearchActive?'#fff':'';
+  $id('leadSearch').placeholder=_convSearchActive?'Search name, phone or conversation…':'Search name or phone…';
+  renderLeadsList();
+}
+
+/* ── PDF REPORT ── */
+function generateReport(){
+  const ind=getIndustry();
+  const booked=allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
+  const active=allLeads.filter(l=>!TERMINAL.has(l.Stage));
+  const hot=allLeads.filter(l=>l.Score==='Hot').length;
+  const rate=allLeads.length?Math.round(booked.length/allLeads.length*100):0;
+
+  const stageCount={};
+  allLeads.forEach(l=>{const s=l.Stage||'new';stageCount[s]=(stageCount[s]||0)+1;});
+  const stageRows=Object.entries(stageCount).sort((a,b)=>b[1]-a[1]).map(([s,n])=>`<tr><td>${s}</td><td>${n}</td><td>${Math.round(n/allLeads.length*100)}%</td></tr>`).join('');
+
+  const agentGroups={};
+  allLeads.forEach(l=>{const o=l.Owner||'Unassigned';if(!agentGroups[o])agentGroups[o]={total:0,booked:0};agentGroups[o].total++;if(TERMINAL.has(l.Stage)&&l.Stage!=='human_handover')agentGroups[o].booked++;});
+  const agentRows=Object.entries(agentGroups).sort((a,b)=>b[1].total-a[1].total).map(([a,d])=>`<tr><td>${a}</td><td>${d.total}</td><td>${d.booked}</td><td>${d.total?Math.round(d.booked/d.total*100)+'%':'0%'}</td></tr>`).join('');
+
+  const hotLeads=allLeads.filter(l=>l.Score==='Hot'||l.HotMoment==='Yes').slice(0,10);
+  const hotRows=hotLeads.map(l=>`<tr><td>${l.Name||'—'}</td><td>${l.Phone||'—'}</td><td>${l.Stage||'new'}</td><td>${l.Score||'Cold'}</td><td>${fmtDate(l.LastMsgAt||l.Date)}</td></tr>`).join('');
+
+  const w=window.open('','_blank');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Leadvyne Report — ${clientRecord?.client_name||''}</title>
+<style>
+body{font-family:'Inter',sans-serif;color:#0F1F1A;padding:40px;max-width:900px;margin:0 auto;font-size:13px}
+h1{font-size:22px;margin-bottom:4px}
+.sub{color:#5B6B65;font-size:12px;margin-bottom:32px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:32px}
+.stat-box{border:1px solid #D7E0DC;border-radius:10px;padding:16px;text-align:center}
+.stat-val{font-size:28px;font-weight:700;color:#0E7C5A}
+.stat-lbl{font-size:11px;color:#5B6B65;margin-top:4px}
+h2{font-size:14px;font-weight:700;margin:24px 0 10px}
+table{width:100%;border-collapse:collapse}
+th{background:#EEF2F0;text-align:left;padding:8px 10px;font-size:11px;color:#5B6B65;font-weight:600}
+td{padding:8px 10px;border-bottom:1px solid #EEF2F0;font-size:12px}
+@media print{body{padding:20px}}
+</style></head><body>
+<h1>Leadvyne · CRM Report</h1>
+<div class="sub">${clientRecord?.client_name||''} · Generated ${new Date().toLocaleString()}</div>
+<div class="grid">
+  <div class="stat-box"><div class="stat-val">${allLeads.length}</div><div class="stat-lbl">Total Leads</div></div>
+  <div class="stat-box"><div class="stat-val">${active.length}</div><div class="stat-lbl">Active</div></div>
+  <div class="stat-box"><div class="stat-val">${booked.length}</div><div class="stat-lbl">${ind.booked}</div></div>
+  <div class="stat-box"><div class="stat-val">${rate}%</div><div class="stat-lbl">Conversion Rate</div></div>
+</div>
+<h2>Pipeline by Stage</h2>
+<table><thead><tr><th>Stage</th><th>Count</th><th>Share</th></tr></thead><tbody>${stageRows}</tbody></table>
+<h2>Agent Performance</h2>
+<table><thead><tr><th>Agent</th><th>Leads</th><th>Converted</th><th>Rate</th></tr></thead><tbody>${agentRows}</tbody></table>
+<h2>Hot Leads</h2>
+<table><thead><tr><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Last Activity</th></tr></thead><tbody>${hotRows||'<tr><td colspan="5" style="color:#999">No hot leads</td></tr>'}</tbody></table>
+<script>window.print();<\/script>
+</body></html>`);
+  w.document.close();
+}
+
+/* ── IMPORT CSV ── */
+let _importRows=[], _importHeaders=[];
+const IMPORT_FIELDS=['Name','Phone','Stage','Owner','Score'];
+
+function openImport(){
+  _importRows=[];_importHeaders=[];
+  $id('importPreview').innerHTML='';
+  $id('importMapping').style.display='none';
+  $id('importBtn').style.display='none';
+  $id('importStatus').textContent='';
+  $id('importFile').value='';
+  openModal('modalImport');
+}
+
+function importHandleFile(file){
+  if(!file)return;
+  const r=new FileReader();
+  r.onload=e=>{
+    const lines=e.target.result.split(/\r?\n/).filter(l=>l.trim());
+    if(lines.length<2){$id('importStatus').textContent='CSV needs at least a header row + 1 data row';return;}
+    _importHeaders=parseCSVLine(lines[0]);
+    _importRows=lines.slice(1).map(l=>parseCSVLine(l)).filter(r=>r.some(c=>c.trim()));
+    renderImportPreview();
+    renderImportMapping();
+    $id('importStatus').textContent=`${_importRows.length} rows found`;
+    $id('importBtn').style.display='';
+    $id('importBtn').textContent=`Import ${_importRows.length} leads`;
+  };
+  r.readAsText(file);
+}
+
+function parseCSVLine(line){
+  const out=[];let cur='',inQ=false;
+  for(let i=0;i<line.length;i++){
+    const c=line[i];
+    if(c==='"'){if(inQ&&line[i+1]==='"'){cur+='"';i++;}else inQ=!inQ;}
+    else if(c===','&&!inQ){out.push(cur.trim());cur='';}
+    else cur+=c;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+function renderImportPreview(){
+  const preview=[_importHeaders,..._importRows.slice(0,4)];
+  $id('importPreview').innerHTML=`<div style="overflow-x:auto"><table style="font-size:11px;width:100%"><thead><tr>${_importHeaders.map(h=>`<th style="padding:4px 8px;background:var(--bg);text-align:left">${esc(h)}</th>`).join('')}</tr></thead><tbody>${_importRows.slice(0,4).map(r=>`<tr>${r.map(c=>`<td style="padding:4px 8px;border-bottom:1px solid var(--line)">${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>${_importRows.length>4?`<div style="font-size:11px;color:var(--muted);padding:4px 0">…and ${_importRows.length-4} more rows</div>`:''}</div>`;
+}
+
+function renderImportMapping(){
+  const grid=$id('importMapGrid');
+  grid.innerHTML=IMPORT_FIELDS.map(f=>{
+    const guessIdx=_importHeaders.findIndex(h=>h.toLowerCase().includes(f.toLowerCase()));
+    return`<div><label class="form-label">${f}</label><select class="form-input" id="map_${f}"><option value="">— skip —</option>${_importHeaders.map((h,i)=>`<option value="${i}"${i===guessIdx?' selected':''}>${esc(h)}</option>`).join('')}</select></div>`;
+  }).join('');
+  $id('importMapping').style.display='block';
+}
+
+async function doImport(){
+  const btn=$id('importBtn');btn.disabled=true;
+  const mapping={};
+  IMPORT_FIELDS.forEach(f=>{const v=$id('map_'+f)?.value;if(v!=='')mapping[f]=parseInt(v);});
+  if(mapping.Phone===undefined){$id('importStatus').textContent='Phone column is required';btn.disabled=false;return;}
+
+  const flow=getFlow();
+  const validStages=['new',...Object.keys(flow.stages||{}),'human_handover'];
+  let ok=0,fail=0;
+  $id('importStatus').textContent='Importing…';
+
+  for(let i=0;i<_importRows.length;i++){
+    const row=_importRows[i];
+    const lead={ClientId:String(clientId)};
+    IMPORT_FIELDS.forEach(f=>{if(mapping[f]!==undefined)lead[f]=(row[mapping[f]]||'').trim();});
+    if(!lead.Phone){fail++;continue;}
+    lead.Phone=lead.Phone.replace(/[^0-9]/g,'');
+    if(!lead.Stage||!validStages.includes(lead.Stage))lead.Stage='new';
+    if(!lead.Score||!['Hot','Warm','Cold'].includes(lead.Score))lead.Score='Cold';
+    lead.Date=new Date().toISOString();
+    try{
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,lead);
+      ok++;
+    }catch(e){fail++;}
+    $id('importStatus').textContent=`Importing… ${i+1}/${_importRows.length}`;
+    await new Promise(r=>setTimeout(r,80));
+  }
+  $id('importStatus').textContent=`✓ Imported ${ok} leads${fail?', '+fail+' failed':''}`;
+  btn.disabled=false;
+  await loadAll();
+}
+
+/* ── LEAD MERGE ── */
+function openMerge(){
+  $id('mergeSearch').value='';
+  $id('mergeStatus').textContent='';
+  renderMergeList();
+  openModal('modalMerge');
+}
+
+function renderMergeList(){
+  const q=($id('mergeSearch')?.value||'').toLowerCase();
+  const candidates=allLeads.filter(l=>l.Id!==currentLead?.Id&&(
+    (l.Phone&&l.Phone===currentLead?.Phone)||
+    (l.IsDuplicate==='Yes')||
+    (q&&((l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)))
+  ));
+  if(!candidates.length){$id('mergeList').innerHTML='<div style="color:var(--muted);font-size:13px;padding:10px 0">No candidates found. Search by name or phone above.</div>';return;}
+  $id('mergeList').innerHTML=candidates.slice(0,20).map(l=>`
+    <div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="confirmMerge(${l.Id})">
+      <div style="flex:1">
+        <div style="font-weight:600;font-size:13px">${esc(l.Name||'—')}</div>
+        <div style="font-size:11px;color:var(--muted)">${maskPhone(l.Phone)} · ${esc(l.Stage||'new')}</div>
+      </div>
+      <button class="btn btn-secondary btn-sm">Merge from this</button>
+    </div>`).join('');
+}
+
+async function confirmMerge(dupId){
+  if(!confirm('Merge selected lead into current? The selected lead will be deleted after copying its data.'))return;
+  await doMerge(dupId);
+}
+
+async function doMerge(dupId){
+  const dup=allLeads.find(l=>l.Id===dupId);
+  if(!dup||!currentLead){return;}
+  $id('mergeStatus').textContent='Merging…';
+
+  // Merge notes
+  const existNotes=currentLead.NotesList||'';
+  const dupNotes=dup.NotesList||'';
+  const mergedNotes=existNotes+(dupNotes?'\n---\n'+dupNotes:'');
+
+  // Merge call logs
+  const existCalls=currentLead.CallLog||'';
+  const dupCalls=dup.CallLog||'';
+  const mergedCalls=existCalls+(dupCalls?'\n'+dupCalls:'');
+
+  // Merge tags
+  const existTags=parseTags(currentLead.Tags);
+  const dupTags=parseTags(dup.Tags);
+  const mergedTags=[...new Set([...existTags,...dupTags])].join(', ');
+
+  // Patch primary lead
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:currentLead.Id,NotesList:mergedNotes,CallLog:mergedCalls,Tags:mergedTags});
+
+  // Delete duplicate
+  await fetch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{method:'DELETE',headers:{'xc-token':CONFIG.NOCODB_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({Id:dupId})});
+
+  $id('mergeStatus').textContent='✓ Merged';
+  setTimeout(()=>{closeModal('modalMerge');closeModal('modalDetail');loadAll();},800);
 }
 
 /* ── BOOT ── */
