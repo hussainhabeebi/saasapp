@@ -115,6 +115,21 @@ tr:hover td{background:#FAFCFB}
 .badge-human{background:var(--warn-soft);color:var(--warn)}
 .badge-active{background:var(--accent-soft);color:var(--accent-ink)}
 .badge-new{background:#EEF0EF;color:var(--muted)}
+.badge-hot{background:#fee2e2;color:#991b1b}
+.badge-warm{background:#fef3c7;color:#92400e}
+.badge-cold{background:#eff6ff;color:#1e40af}
+.dup-icon{color:#f59e0b;font-size:11px;margin-left:3px;cursor:default}
+.date-filter{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:16px 0 4px}
+.date-filter label{font-size:12px;font-weight:600;color:var(--muted)}
+.date-filter input[type=date]{padding:7px 10px;border:1px solid var(--line-strong);border-radius:8px;font-size:13px;background:#FBFCFC;color:var(--ink)}
+.date-filter input[type=date]:focus{outline:none;border-color:var(--accent)}
+.summary-card{background:#F7FAF9;border:1px solid var(--line-strong);border-radius:9px;padding:14px 16px;margin-top:10px;font-size:13px;line-height:1.6}
+.summary-card .s-title{font-family:var(--disp);font-size:13px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.summary-card .s-row{display:flex;gap:8px;margin-bottom:4px}
+.summary-card .s-key{font-weight:600;min-width:130px;color:var(--muted);font-size:12px;flex-shrink:0}
+.bk-row{display:grid;grid-template-columns:200px 160px 1fr;gap:12px;padding:10px 12px;border-bottom:1px solid var(--line);align-items:center;font-size:13px}
+.bk-row:last-child{border-bottom:none}
+.bk-time{font-family:var(--mono);font-size:12px;color:var(--accent-ink);font-weight:600}
 
 /* tags */
 .tag{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#F0F4F2;color:var(--ink);cursor:default}
@@ -447,6 +462,10 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
 
         </div>
+        <div id="summaryWrap" style="padding:0 16px 16px;display:none">
+          <button id="summaryBtn" style="padding:7px 16px;background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--disp)">✨ Generate AI Summary</button>
+          <div id="summaryCard" class="summary-card" style="display:none"></div>
+        </div>
       </div>
     </div>
 
@@ -565,6 +584,15 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="btn btn-primary" style="flex:1" onclick="saveCall()">Save Call</button>
     <button class="btn btn-secondary" onclick="closeModal('modalCall')">Cancel</button>
   </div>
+
+  <!-- BOOKINGS PANEL -->
+  <div class="panel" id="panelBookings">
+    <div class="panel-inner" style="margin-top:20px">
+      <div style="font-family:var(--disp);font-size:15px;font-weight:600;margin-bottom:16px">📅 Booked Consultations</div>
+      <div id="bookingsWrap"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+    </div>
+  </div>
+
 </div>
 
 <script>
