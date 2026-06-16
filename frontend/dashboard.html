@@ -1393,7 +1393,27 @@ $id('saveKb').addEventListener('click',async()=>{
   const txt=$id('cfgKbText').value||'';
   _kbText=txt;
   kbUpdateCount();
+  const btn=$id('saveKb'),msgEl=$id('saveKbMsg');
+  btn.disabled=true;
+  // 1. Save raw text
   await saveField('saveKb','saveKbMsg',{kb_text:txt});
+  if(!txt.trim()){btn.disabled=false;return;}
+  // 2. Trigger KB processor workflow to build summary
+  msgEl.textContent='Processing with AI…';msgEl.className='save-msg';
+  try{
+    const n8nBase=(clientRecord?.n8n_base||'https://apps.leadvyne.com').replace(/\/$/,'');
+    const r=await fetch(n8nBase+'/webhook/leadvyne-kb-process',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({client_id:clientId,kb_text:txt})
+    });
+    const d=await r.json();
+    msgEl.textContent=d.ok?`✓ Processed — ${(d.chars||0).toLocaleString()} chars summary`:'Saved (processor unavailable)';
+    // update local record
+    if(d.ok)clientRecord.kb_summary='updated';
+  }catch(e){msgEl.textContent='Saved (processor offline — will use raw text)';}
+  btn.disabled=false;
+  setTimeout(()=>msgEl.textContent='',5000);
 });
 $id('cfgKbText').addEventListener('input',kbUpdateCount);
 
