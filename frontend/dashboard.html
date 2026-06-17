@@ -371,6 +371,12 @@ hr.div{border:none;border-top:1px solid var(--line);margin:20px 0}
 .svc-price-row{display:flex;gap:6px}
 .svc-currency{width:72px;flex-shrink:0}
 
+/* price sheets */
+.sheet-card{background:#F7FAF9;border:1px solid var(--ls);border-radius:10px;padding:14px;position:relative;margin-bottom:10px;display:grid;grid-template-columns:1fr auto;gap:10px;align-items:start}
+@media(max-width:600px){.sheet-card{grid-template-columns:1fr}}
+.sheet-del{background:none;border:1px solid var(--ls);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px;color:var(--muted);align-self:flex-start}
+.sheet-del:hover{border-color:#B23A2E;color:#B23A2E}
+
 /* summary card */
 .summary-card{background:#F7FAF9;border:1px solid var(--ls);border-radius:9px;padding:14px;margin-top:10px;font-size:13px;line-height:1.6}
 .s-row{display:flex;gap:8px;margin-bottom:4px}
@@ -656,6 +662,19 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
               <button class="save-btn" id="saveSvc">Save Services</button>
               <span class="save-msg" id="saveSvcMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
+            <div class="s-head">📊 Price Sheet Categories</div>
+            <div class="s-note">Link Google Sheets for detailed pricing. The bot will fetch live prices from the sheet when a customer asks. Each sheet must be publicly viewable (anyone with the link).</div>
+            <div id="sheetList" style="margin-bottom:12px"></div>
+            <button type="button" onclick="addPriceSheet()" style="width:100%;padding:10px;border:2px dashed var(--ls);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px">+ Add Category &amp; Sheet</button>
+            <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveSheets">Save Price Sheets</button>
+              <span class="save-msg" id="saveSheetsMsg"></span>
             </div>
           </div>
 
@@ -1555,6 +1574,8 @@ function populateSettings(){
   $id('kbStatus').textContent=_kbText?`${_kbText.length.toLocaleString()} characters loaded`:'';
   // services
   loadServices();
+  // price sheets
+  loadPriceSheets();
   // stages
   let stages=[];
   try{stages=flowJsonToStages(JSON.parse(clientRecord.flow_json||'{}'));}catch(e){}
@@ -1614,6 +1635,55 @@ $id('saveSvc').addEventListener('click',async()=>{
     await patchClient({services:JSON.stringify(_services)});
     msg.textContent='✓ Saved';msg.className='save-msg';
     if(clientRecord?.kb_text?.trim())triggerKbRefresh();
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+/* ── PRICE SHEETS ── */
+let _priceSheets=[];
+
+function extractSheetId(input){
+  const m=input.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  return m?m[1]:input.trim();
+}
+
+function loadPriceSheets(){
+  try{_priceSheets=JSON.parse(clientRecord.price_sheets||'[]');}catch(e){_priceSheets=[];}
+  renderPriceSheets();
+}
+
+function renderPriceSheets(){
+  const list=$id('sheetList');
+  if(!_priceSheets.length){list.innerHTML='<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No price sheet categories added yet.</div>';return;}
+  list.innerHTML=_priceSheets.map((s,i)=>`
+    <div class="sheet-card">
+      <div>
+        <label class="form-label">Category Name</label>
+        <input class="form-input" value="${esc(s.category||'')}" oninput="_priceSheets[${i}].category=this.value" placeholder="e.g. Day Tours, Hotels, Visa Packages" />
+        <label class="form-label" style="margin-top:8px">Google Sheet Link</label>
+        <input class="form-input" value="${esc(s.sheet_url||'')}" oninput="_priceSheets[${i}].sheet_url=this.value;_priceSheets[${i}].sheet_id=extractSheetId(this.value)" placeholder="Paste the Google Sheet link here" />
+        ${s.sheet_id?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Sheet ID: <code>${esc(s.sheet_id)}</code></div>`:''}
+      </div>
+      <button class="sheet-del" onclick="removePriceSheet(${i})">✕</button>
+    </div>`).join('');
+}
+
+function addPriceSheet(){
+  _priceSheets.push({category:'',sheet_url:'',sheet_id:''});
+  renderPriceSheets();
+  $id('sheetList').lastElementChild?.querySelector('input')?.focus();
+}
+
+function removePriceSheet(i){_priceSheets.splice(i,1);renderPriceSheets();}
+
+$id('saveSheets').addEventListener('click',async()=>{
+  const btn=$id('saveSheets'),msg=$id('saveSheetsMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    const toSave=_priceSheets.map(s=>({...s,sheet_id:extractSheetId(s.sheet_url||s.sheet_id||'')}));
+    await patchClient({price_sheets:JSON.stringify(toSave)});
+    _priceSheets=toSave;
+    msg.textContent='✓ Saved';msg.className='save-msg';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
