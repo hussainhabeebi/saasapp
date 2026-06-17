@@ -241,10 +241,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst msg = (c.userText || '').trim();\nconst low = msg.toLowerCase();\nlet intent = null, intentData = {};\n\n// WANTS_HUMAN\nif (!intent && /\\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\\b/.test(low)) intent = 'WANTS_HUMAN';\n\n// BOOKING\nif (!intent) {\n  const bookMatch = low.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\\d{1,2}[:\\/\\-]\\d{1,2}|\\d{1,2}\\s*(am|pm)|morning|afternoon|evening|tonight|next week)\\b/);\n  if (bookMatch) { intent = 'BOOKING'; intentData = { booking_time: msg }; }\n}\n\n// WATCHED\nif (!intent && /\\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\\b/.test(low)) intent = 'WATCHED';\n\n// FORM_DONE\nif (!intent && /\\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\\b/.test(low)) intent = 'FORM_DONE';\n\n// DELAY\nif (!intent && /\\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\\b/.test(low)) intent = 'DELAY';\n\n// SHORT_NEUTRAL — pure openers only\nif (!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\\.!]*$/.test(low)) intent = 'SHORT_NEUTRAL';\n\n// AFFIRMATIVE — only clear confirmations\nif (!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\\.!]*$/.test(low)) intent = 'AFFIRMATIVE';\n\n// Everything else → QUESTION (goes to FAQ)\nif (!intent) { intent = 'QUESTION'; intentData = { question: msg }; }\n\nreturn [{ json: { ...c, output: JSON.stringify({ intent, data: intentData }) } }];"
+        "jsCode": "const c = $input.first().json;\nconst msg = (c.userText || '').trim();\nconst low = msg.toLowerCase();\nlet intent = null, intentData = {};\n\n// WANTS_HUMAN\nif (!intent && /\\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\\b/.test(low)) intent = 'WANTS_HUMAN';\n\n// BOOKING\nif (!intent) {\n  const bookMatch = low.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\\d{1,2}[:\\/\\-]\\d{1,2}|\\d{1,2}\\s*(am|pm)|morning|afternoon|evening|tonight|next week)\\b/);\n  if (bookMatch) { intent = 'BOOKING'; intentData = { booking_time: msg }; }\n}\n\n// WATCHED\nif (!intent && /\\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\\b/.test(low)) intent = 'WATCHED';\n\n// FORM_DONE\nif (!intent && /\\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\\b/.test(low)) intent = 'FORM_DONE';\n\n// DELAY\nif (!intent && /\\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\\b/.test(low)) intent = 'DELAY';\n\n// SHORT_NEUTRAL \u2014 pure openers only\nif (!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\\.!]*$/.test(low)) intent = 'SHORT_NEUTRAL';\n\n// AFFIRMATIVE \u2014 only clear confirmations\nif (!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\\.!]*$/.test(low)) intent = 'AFFIRMATIVE';\n\n// Everything else \u2192 QUESTION (goes to FAQ)\nif (!intent) { intent = 'QUESTION'; intentData = { question: msg }; }\n\nreturn [{ json: { ...c, output: JSON.stringify({ intent, data: intentData }) } }];"
       },
       "id": "aiagent",
-      "name": "Code · Intent classify",
+      "name": "Code \u00b7 Intent classify",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -709,7 +709,7 @@
       "parameters": {
         "model": {
           "mode": "id",
-          "value": "={{ $('Code · FAQ prep').first().json.model || 'google/gemini-2.5-flash' }}"
+          "value": "={{ $('Code \u00b7 FAQ prep').first().json.model || 'google/gemini-2.5-flash' }}"
         },
         "options": {
           "baseURL": "https://openrouter.ai/api/v1",
@@ -1150,80 +1150,7 @@
       "main": [
         [
           {
-            "node": "Code · Prep lead",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "LLM Chain · FAQ": {
-      "main": [
-        [
-          {
-            "node": "Code · FAQ reply",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "HTTP · FAQ fallback",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "OpenAI Chat Model · FAQ": {
-      "ai_languageModel": [
-        [
-          {
-            "node": "LLM Chain · FAQ",
-            "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP · Intent classify": {
-      "main": [
-        [
-          {
-            "node": "Code · Intent + flow",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code · Intent prep": {
-      "main": [
-        [
-          {
-            "node": "Code · Intent classify",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code · Intent classify": {
-      "main": [
-        [
-          {
-            "node": "Code · Intent + flow",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP · FAQ fallback": {
-      "main": [
-        [
-          {
-            "node": "Code · FAQ reply",
+            "node": "Code \u00b7 FAQ reply",
             "type": "main",
             "index": 0
           }
