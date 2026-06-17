@@ -589,11 +589,12 @@
       "position": [
         2100,
         360
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code · FAQ prep').first().json;\nconst r = $input.first().json;\nconst reply = r.output || r.text || r.choices?.[0]?.message?.content?.trim() || 'One moment 🙏';\nreturn [{ json: { ...c, reply } }];"
+        "jsCode": "const c = $('Code · FAQ prep').first().json;\nconst r = $input.first().json;\nconst reply = r.text || r.output || r.choices?.[0]?.message?.content?.trim() || 'One moment 🙏';\nreturn [{ json: { ...c, reply } }];"
       },
       "id": "faqextract",
       "name": "Code · FAQ reply",
@@ -977,6 +978,38 @@
         1020,
         400
       ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $('Code · FAQ prep').first().json.openrouter_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ JSON.stringify({ model: $('Code · FAQ prep').first().json.model || 'google/gemini-2.5-flash', max_tokens: 300, messages: [ { role: 'system', content: $('Code · FAQ prep').first().json._systemPrompt }, { role: 'user', content: $('Code · FAQ prep').first().json.userText } ] }) }}",
+        "options": {}
+      },
+      "id": "faqFallback",
+      "name": "HTTP · FAQ fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2100,
+        560
+      ],
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -1396,6 +1429,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "HTTP · FAQ fallback",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -1437,6 +1477,17 @@
         [
           {
             "node": "Code · Intent + flow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · FAQ fallback": {
+      "main": [
+        [
+          {
+            "node": "Code · FAQ reply",
             "type": "main",
             "index": 0
           }
