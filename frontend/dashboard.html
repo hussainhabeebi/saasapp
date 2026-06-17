@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Leadvyne · CRM</title>
+<link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -58,7 +59,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .dnTab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
 
 /* pages */
-#pages{flex:1;overflow:hidden;position:relative}
+#pages{flex:1;overflow:hidden;position:relative;min-width:0}
 .page{position:absolute;inset:0;overflow-y:auto;padding-bottom:calc(var(--nav)+12px)}
 @media(min-width:768px){.page{padding-bottom:24px}}
 .page.hidden{display:none}
@@ -1044,7 +1045,7 @@ function showApp(){
 }
 
 const _CACHE_KEY=()=>`lv_leads_${clientId}`;
-const _CACHE_TTL=60000; // 60s
+const _CACHE_TTL=300000; // 5 min
 
 async function loadAll(silent=false){
   // 1. Render from cache instantly if available
@@ -1541,7 +1542,7 @@ function populateSettings(){
   // prompt / followup / test
   $id('cfgPrompt').value=clientRecord.main_prompt||'';
   $id('cfgFuCount').value=clientRecord.followup_count||'3';
-  $id('cfgFuHours').value=clientRecord.followup_hours||'24, 72, 168';
+  $id('cfgFuHours').value=clientRecord.followup_hours||'2, 12, 20';
   $id('cfgFuMsgs').value=clientRecord.followup_messages||'';
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
