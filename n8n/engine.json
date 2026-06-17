@@ -215,6 +215,93 @@
     },
     {
       "parameters": {
+        "method": "GET",
+        "url": "={{ $json.mediaUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "dl",
+      "name": "HTTP · Download audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        360,
+        460
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.sarvam.ai/speech-to-text",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-subscription-key",
+              "value": "={{ $('Code · State').first().json.sarvam_key }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "file",
+              "value": "={{ $binary.data }}",
+              "parameterType": "formBinaryData"
+            },
+            {
+              "name": "model",
+              "value": "saarika:v2"
+            },
+            {
+              "name": "language_code",
+              "value": "={{ $('Code · State').first().json.sarvam_lang || 'ml-IN' }}"
+            },
+            {
+              "name": "with_timestamps",
+              "value": "false"
+            }
+          ]
+        },
+        "options": {
+          "retryOnFail": true,
+          "maxTries": 2,
+          "waitBetweenTries": 3000
+        }
+      },
+      "id": "stt",
+      "name": "HTTP · Sarvam STT",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        580,
+        460
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Code · State').first().json;\nconst r = $input.first().json;\n// Sarvam STT returns { transcript: '...' }, OpenRouter returns choices[]\nconst txt = r.transcript || r.choices?.[0]?.message?.content || '(voice note received)';\nreturn [{ json: { ...c, userText: txt } }];"
+      },
+      "id": "voctext",
+      "name": "Code · voice→text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        460
+      ]
+    },
+    {
+      "parameters": {
         "jsCode": "const c = $('Code · State').first().json;\nreturn [{ json: { ...c, userText: c.text || '' } }];"
       },
       "id": "txtpass",
@@ -502,11 +589,12 @@
       "position": [
         2100,
         360
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code · FAQ prep').first().json;\nconst r = $input.first().json;\nconst reply = r.output || r.text || r.choices?.[0]?.message?.content?.trim() || 'One moment 🙏';\nreturn [{ json: { ...c, reply } }];"
+        "jsCode": "const c = $('Code · FAQ prep').first().json;\nconst r = $input.first().json;\nconst reply = r.text || r.output || r.choices?.[0]?.message?.content?.trim() || 'One moment 🙏';\nreturn [{ json: { ...c, reply } }];"
       },
       "id": "faqextract",
       "name": "Code · FAQ reply",
@@ -708,6 +796,151 @@
     },
     {
       "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "v1",
+              "leftValue": "={{ $('Code · State').first().json.mediaType }}",
+              "rightValue": "voice",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "v2",
+              "leftValue": "={{ $('Code · State').first().json.sarvam_key }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "voiceTtsIf",
+      "name": "IF · Voice reply?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2740,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const state = $('Code · State').first().json;\nlet reply = '';\nconst tries = ['Code · FAQ reply','Code · Qual start','Code · Qual next','Code · Intent + flow'];\nfor (const n of tries) {\n  try { const r = $(n).first().json.reply; if (r) { reply = r; break; } } catch(e) {}\n}\nreturn [{ json: { ...state, _ttsText: reply.slice(0, 500) } }];"
+      },
+      "id": "collectReply",
+      "name": "Code · Collect reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2960,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.sarvam.ai/text-to-speech",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-subscription-key",
+              "value": "={{ $json.sarvam_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ JSON.stringify({ inputs:[$json._ttsText], target_language_code: $json.sarvam_lang||'ml-IN', speaker:'ananya', pitch:0, pace:1.0, loudness:1.5, speech_sample_rate:22050, enable_preprocessing:true, model:'bulbul:v2' }) }}",
+        "options": {
+          "retryOnFail": true,
+          "maxTries": 2,
+          "waitBetweenTries": 3000
+        }
+      },
+      "id": "sarvamTts",
+      "name": "HTTP · Sarvam TTS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3160,
+        340
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $('Code · Collect reply').first().json;\nconst resp = $input.first().json;\n// Sarvam TTS returns { audios: ['<base64_mp3>'] }\nconst base64Audio = resp?.audios?.[0] || '';\nif (!base64Audio) return [{ json: { ...prev, _ttsOk: false } }];\nreturn [{\n  json: { ...prev, _ttsOk: true },\n  binary: {\n    data: {\n      data: base64Audio,\n      mimeType: 'audio/mpeg',\n      fileName: 'voice-reply.mp3',\n      fileExtension: 'mp3'\n    }\n  }\n}];"
+      },
+      "id": "ttsBinary",
+      "name": "Code · TTS binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.chatwoot_base }}/api/v1/accounts/{{ $json.chatwoot_account_id }}/conversations/{{ $json.convId }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "={{ $json.chatwoot_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message_type",
+              "value": "outgoing"
+            },
+            {
+              "name": "private",
+              "value": "false"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachments[]",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "sendVoiceReply",
+      "name": "HTTP · Send voice reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3560,
+        340
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
         "model": {
           "mode": "id",
           "value": "={{ $('Code · FAQ prep').first().json.model || 'google/gemini-2.5-flash' }}"
@@ -745,6 +978,38 @@
         1020,
         400
       ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $('Code · FAQ prep').first().json.openrouter_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ JSON.stringify({ model: $('Code · FAQ prep').first().json.model || 'google/gemini-2.5-flash', max_tokens: 300, messages: [ { role: 'system', content: $('Code · FAQ prep').first().json._systemPrompt }, { role: 'user', content: $('Code · FAQ prep').first().json.userText } ] }) }}",
+        "options": {}
+      },
+      "id": "faqFallback",
+      "name": "HTTP · FAQ fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2100,
+        560
+      ],
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -823,7 +1088,13 @@
             "index": 0
           }
         ],
-        [],
+        [
+          {
+            "node": "HTTP · Download audio",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Code · text→text",
@@ -845,6 +1116,28 @@
       ]
     },
     "Code · image→text": {
+      "main": [
+        [
+          {
+            "node": "Code · Merge text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Download audio": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Sarvam STT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · voice→text": {
       "main": [
         [
           {
@@ -1002,7 +1295,13 @@
     },
     "HTTP · Send reply": {
       "main": [
-        []
+        [
+          {
+            "node": "IF · Voice reply?",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Code · Prep lead": {
@@ -1049,11 +1348,91 @@
         ]
       ]
     },
+    "HTTP · Sarvam STT": {
+      "main": [
+        [
+          {
+            "node": "Code · voice→text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF · Voice reply?": {
+      "main": [
+        [
+          {
+            "node": "Code · Collect reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code · Prep lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Collect reply": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Sarvam TTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Sarvam TTS": {
+      "main": [
+        [
+          {
+            "node": "Code · TTS binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · TTS binary": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Send voice reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Send voice reply": {
+      "main": [
+        [
+          {
+            "node": "Code · Prep lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "LLM Chain · FAQ": {
       "main": [
         [
           {
             "node": "Code · FAQ reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP · FAQ fallback",
             "type": "main",
             "index": 0
           }
@@ -1098,6 +1477,17 @@
         [
           {
             "node": "Code · Intent + flow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · FAQ fallback": {
+      "main": [
+        [
+          {
+            "node": "Code · FAQ reply",
             "type": "main",
             "index": 0
           }
