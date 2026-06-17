@@ -569,15 +569,13 @@
     },
     {
       "parameters": {
-        "prompt": {
-          "values": [
+        "promptType": "define",
+        "text": "={{ $('Code · FAQ prep').first().json.userText }}",
+        "messages": {
+          "messageValues": [
             {
-              "type": "systemMessage",
+              "type": "SystemMessagePromptTemplate",
               "message": "={{ $('Code · FAQ prep').first().json._systemPrompt }}"
-            },
-            {
-              "type": "userMessage",
-              "message": "={{ $('Code · FAQ prep').first().json.userText }}"
             }
           ]
         }
