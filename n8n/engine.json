@@ -241,21 +241,16 @@
     },
     {
       "parameters": {
-        "promptType": "define",
-        "text": "=Classify the user message and return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}.\n\nStage: {{ $json.stage }}\nMessage: \"{{ $json.userText }}\"\n\nIntents:\nAFFIRMATIVE = yes/ok/sure/agree/any positive reply\nWATCHED = watched video or content\nFORM_DONE = filled a form\nBOOKING = specific time/date mentioned (put in data.booking_time)\nDELAY = not now/later/busy\nWANTS_MORE_INFO = tell me more/explain\nQUESTION = real product question (put in data.question)\nWANTS_HUMAN = speak to human/agent\nSHORT_NEUTRAL = only pure openers: hi/hello/hey\n\nWhen in doubt between SHORT_NEUTRAL and AFFIRMATIVE, prefer AFFIRMATIVE.\nReturn ONLY the JSON object, nothing else.",
-        "options": {
-          "systemMessage": "You are an intent classifier. Return only valid JSON."
-        }
+        "jsCode": "const c = $input.first().json;\nconst msg = (c.userText || '').trim();\nconst low = msg.toLowerCase();\nlet intent = null, intentData = {};\n\n// WANTS_HUMAN\nif (!intent && /\\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\\b/.test(low)) intent = 'WANTS_HUMAN';\n\n// BOOKING — contains a time or date reference\nif (!intent) {\n  const bookMatch = low.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\\d{1,2}[:\\/\\-]\\d{1,2}|\\d{1,2}\\s*(am|pm)|morning|afternoon|evening|tonight|next week)\\b/);\n  if (bookMatch) { intent = 'BOOKING'; intentData = { booking_time: msg }; }\n}\n\n// WATCHED\nif (!intent && /\\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\\b/.test(low)) intent = 'WATCHED';\n\n// FORM_DONE\nif (!intent && /\\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\\b/.test(low)) intent = 'FORM_DONE';\n\n// DELAY\nif (!intent && /\\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\\b/.test(low)) intent = 'DELAY';\n\n// WANTS_MORE_INFO\nif (!intent && /\\b(tell me more|explain|more details|elaborate|more info|can you explain|what do you mean|clarify|describe)\\b/.test(low)) intent = 'WANTS_MORE_INFO';\n\n// QUESTION — ends with ? or starts with question word\nif (!intent && (/\\?/.test(msg) || /^(what|how|when|why|where|who|which|is|are|do|does|can|could|will|would|should|has|have|did)\\b/.test(low))) {\n  intent = 'QUESTION'; intentData = { question: msg };\n}\n\n// SHORT_NEUTRAL — pure openers only\nif (!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\\.!]*$/.test(low)) intent = 'SHORT_NEUTRAL';\n\n// AFFIRMATIVE\nif (!intent && /\\b(yes|yeah|yep|yup|ok|okay|sure|alright|fine|great|good|sounds good|perfect|absolutely|definitely|of course|confirmed|confirm|agreed|agree|proceed|go ahead|ready|i am ready|let.?s go|done|nice|wonderful|awesome|cool|noted)\\b/.test(low)) intent = 'AFFIRMATIVE';\n\n// Default: SHORT_NEUTRAL for very short messages, else AFFIRMATIVE\nif (!intent) intent = msg.length <= 10 ? 'SHORT_NEUTRAL' : 'AFFIRMATIVE';\n\nreturn [{ json: { ...c, output: JSON.stringify({ intent, data: intentData }) } }];"
       },
       "id": "aiagent",
-      "name": "AI Agent · Intent",
-      "type": "@n8n/n8n-nodes-langchain.agent",
-      "typeVersion": 1.7,
+      "name": "Code · Intent classify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         1220,
         400
-      ],
-      "onError": "continueRegularOutput"
+      ]
     },
     {
       "parameters": {
@@ -714,33 +709,6 @@
       "parameters": {
         "model": {
           "mode": "id",
-          "value": "={{ $('Code · Merge text').first().json.model || 'google/gemini-2.5-flash' }}"
-        },
-        "options": {
-          "baseURL": "https://openrouter.ai/api/v1",
-          "temperature": 0.1,
-          "maxTokens": 80
-        }
-      },
-      "id": "lmIntent",
-      "name": "OpenAI Chat Model · Intent",
-      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
-      "typeVersion": 1.2,
-      "position": [
-        1220,
-        580
-      ],
-      "credentials": {
-        "openAiApi": {
-          "id": "REPLACE_OPENROUTER_CRED",
-          "name": "OpenRouter account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "model": {
-          "mode": "id",
           "value": "={{ $('Code · FAQ prep').first().json.model || 'google/gemini-2.5-flash' }}"
         },
         "options": {
@@ -1189,17 +1157,6 @@
         ]
       ]
     },
-    "AI Agent · Intent": {
-      "main": [
-        [
-          {
-            "node": "Code · Intent + flow",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "LLM Chain · FAQ": {
       "main": [
         [
@@ -1213,17 +1170,6 @@
           {
             "node": "HTTP · FAQ fallback",
             "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "OpenAI Chat Model · Intent": {
-      "ai_languageModel": [
-        [
-          {
-            "node": "AI Agent · Intent",
-            "type": "ai_languageModel",
             "index": 0
           }
         ]
@@ -1255,7 +1201,18 @@
       "main": [
         [
           {
-            "node": "AI Agent · Intent",
+            "node": "Code · Intent classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Intent classify": {
+      "main": [
+        [
+          {
+            "node": "Code · Intent + flow",
             "type": "main",
             "index": 0
           }
