@@ -519,7 +519,8 @@ function updateCreatePreview(){
 // ── LEADS ──
 async function loadLeads(){
   try{
-    const url=`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${clientId})&limit=5000&sort=-Date`;
+    const leadsTable=clientRecord.nocodb_leads_table||CONFIG.LEADS_TABLE_ID;
+    const url=`${CONFIG.NOCODB_BASE}/api/v2/tables/${leadsTable}/records?where=(ClientId,eq,${clientId})&limit=5000&sort=-Date`;
     const data=await ncGet(url);
     allLeads=data.list||[];
     // Populate stage filter
