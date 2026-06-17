@@ -1,0 +1,236 @@
+{
+  "name": "Leadvyne · Broadcast",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "broadcast",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "bc-webhook",
+      "name": "Webhook · Broadcast",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate & extract payload\nconst body = $input.first().json.body || $input.first().json;\nconst { client_id, template_name, template_lang, template_params, lead_ids } = body;\n\nif (!client_id) throw new Error('client_id required');\nif (!template_name) throw new Error('template_name required');\nif (!Array.isArray(lead_ids) || lead_ids.length === 0) throw new Error('lead_ids must be a non-empty array');\n\nreturn [{ json: { client_id, template_name, template_lang: template_lang || 'en', template_params: template_params || [], lead_ids } }];"
+      },
+      "id": "bc-validate",
+      "name": "Code · Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records/{{ $json.client_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "bc-get-tenant",
+      "name": "NocoDB · Get tenant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "credentials": { "httpHeaderAuth": { "id": "nocodb-api", "name": "NocoDB API" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const tenant = $input.first().json;\nconst prev = $('Code · Validate').first().json;\n\nif (!tenant || !tenant.Id) throw new Error('Tenant not found for client_id: ' + prev.client_id);\n\nreturn [{\n  json: {\n    client_id: prev.client_id,\n    template_name: prev.template_name,\n    template_lang: prev.template_lang,\n    template_params: prev.template_params,\n    lead_ids: prev.lead_ids,\n    chatwoot_base: tenant.chatwoot_base,\n    chatwoot_account_id: tenant.chatwoot_account_id,\n    chatwoot_token: tenant.chatwoot_token,\n    nocodb_leads_table: tenant.nocodb_leads_table || 'mvg6rcw0ia5qqrx'\n  }\n}];"
+      },
+      "id": "bc-merge-config",
+      "name": "Code · Merge config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $json.nocodb_leads_table }}/records?where=(Id,in,{{ $json.lead_ids.join(',') }})&limit=500",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "bc-fetch-leads",
+      "name": "NocoDB · Fetch leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300],
+      "credentials": { "httpHeaderAuth": { "id": "nocodb-api", "name": "NocoDB API" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const leadsResp = $input.first().json;\nconst cfg = $('Code · Merge config').first().json;\n\nconst leads = (leadsResp.list || []).filter(l => l.conv_id || l.chatwoot_conv_id);\n\nif (leads.length === 0) throw new Error('No leads with conversations found for provided lead_ids');\n\n// Build per-lead broadcast items\nreturn leads.map(lead => ({\n  json: {\n    lead_id: lead.Id,\n    lead_name: lead.Name || lead.name || '',\n    conv_id: lead.conv_id || lead.chatwoot_conv_id,\n    chatwoot_base: cfg.chatwoot_base,\n    chatwoot_account_id: cfg.chatwoot_account_id,\n    chatwoot_token: cfg.chatwoot_token,\n    template_name: cfg.template_name,\n    template_lang: cfg.template_lang,\n    template_params: cfg.template_params\n  }\n}));"
+      },
+      "id": "bc-prep-items",
+      "name": "Code · Prep items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": { "reset": false }
+      },
+      "id": "bc-split",
+      "name": "Split · Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.chatwoot_base }}/api/v1/accounts/{{ $json.chatwoot_account_id }}/conversations/{{ $json.conv_id }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "message_type", "value": "outgoing" },
+            { "name": "content_type", "value": "text" },
+            { "name": "content", "value": "={{ $json.template_name }}" },
+            { "name": "private", "value": "false" },
+            {
+              "name": "template_params",
+              "value": "={{ JSON.stringify({ name: $json.template_name, category: 'MARKETING', language: $json.template_lang, processed_params: $json.template_params }) }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "bc-send-msg",
+      "name": "HTTP · Send template",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 180],
+      "credentials": { "httpHeaderAuth": { "id": "chatwoot-api", "name": "Chatwoot API" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "seconds"
+      },
+      "id": "bc-wait",
+      "name": "Wait · Rate limit",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2000, 180],
+      "webhookId": "bc-wait-hook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect success result\nconst item = $input.first().json;\nconst lead = $('Split · Leads').first().json;\nreturn [{ json: { lead_id: lead.lead_id, lead_name: lead.lead_name, conv_id: lead.conv_id, status: 'sent', message_id: item.id } }];"
+      },
+      "id": "bc-ok",
+      "name": "Code · Mark sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect error result\nconst lead = $('Split · Leads').first().json;\nconst err = $input.first().json;\nreturn [{ json: { lead_id: lead.lead_id, lead_name: lead.lead_name, conv_id: lead.conv_id, status: 'failed', error: err.message || JSON.stringify(err) } }];"
+      },
+      "id": "bc-err",
+      "name": "Code · Mark failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all results after loop finishes\nconst results = $input.all().map(i => i.json);\nconst sent = results.filter(r => r.status === 'sent').length;\nconst failed = results.filter(r => r.status === 'failed').length;\nreturn [{ json: { total: results.length, sent, failed, results } }];"
+      },
+      "id": "bc-aggregate",
+      "name": "Code · Aggregate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "bc-respond",
+      "name": "Respond · Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2660, 300]
+    }
+  ],
+  "connections": {
+    "Webhook · Broadcast": {
+      "main": [[{ "node": "Code · Validate", "type": "main", "index": 0 }]]
+    },
+    "Code · Validate": {
+      "main": [[{ "node": "NocoDB · Get tenant", "type": "main", "index": 0 }]]
+    },
+    "NocoDB · Get tenant": {
+      "main": [[{ "node": "Code · Merge config", "type": "main", "index": 0 }]]
+    },
+    "Code · Merge config": {
+      "main": [[{ "node": "NocoDB · Fetch leads", "type": "main", "index": 0 }]]
+    },
+    "NocoDB · Fetch leads": {
+      "main": [[{ "node": "Code · Prep items", "type": "main", "index": 0 }]]
+    },
+    "Code · Prep items": {
+      "main": [[{ "node": "Split · Leads", "type": "main", "index": 0 }]]
+    },
+    "Split · Leads": {
+      "main": [
+        [{ "node": "HTTP · Send template", "type": "main", "index": 0 }],
+        [{ "node": "Code · Aggregate", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP · Send template": {
+      "main": [
+        [{ "node": "Wait · Rate limit", "type": "main", "index": 0 }],
+        [{ "node": "Code · Mark failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Wait · Rate limit": {
+      "main": [[{ "node": "Code · Mark sent", "type": "main", "index": 0 }]]
+    },
+    "Code · Mark sent": {
+      "main": [[{ "node": "Split · Leads", "type": "main", "index": 0 }]]
+    },
+    "Code · Mark failed": {
+      "main": [[{ "node": "Split · Leads", "type": "main", "index": 0 }]]
+    },
+    "Code · Aggregate": {
+      "main": [[{ "node": "Respond · Result", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "meta": { "templateId": "leadvyne-broadcast-v1" },
+  "pinData": {},
+  "versionId": "bc-v1",
+  "triggerCount": 0,
+  "tags": [{ "name": "leadvyne" }]
+}
