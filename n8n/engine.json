@@ -215,6 +215,93 @@
     },
     {
       "parameters": {
+        "method": "GET",
+        "url": "={{ $json.mediaUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "dl",
+      "name": "HTTP · Download audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        360,
+        460
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.sarvam.ai/speech-to-text",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-subscription-key",
+              "value": "={{ $('Code · State').first().json.sarvam_key }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "file",
+              "value": "={{ $binary.data }}",
+              "parameterType": "formBinaryData"
+            },
+            {
+              "name": "model",
+              "value": "saarika:v2"
+            },
+            {
+              "name": "language_code",
+              "value": "={{ $('Code · State').first().json.sarvam_lang || 'ml-IN' }}"
+            },
+            {
+              "name": "with_timestamps",
+              "value": "false"
+            }
+          ]
+        },
+        "options": {
+          "retryOnFail": true,
+          "maxTries": 2,
+          "waitBetweenTries": 3000
+        }
+      },
+      "id": "stt",
+      "name": "HTTP · Sarvam STT",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        580,
+        460
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Code · State').first().json;\nconst r = $input.first().json;\n// Sarvam STT returns { transcript: '...' }, OpenRouter returns choices[]\nconst txt = r.transcript || r.choices?.[0]?.message?.content || '(voice note received)';\nreturn [{ json: { ...c, userText: txt } }];"
+      },
+      "id": "voctext",
+      "name": "Code · voice→text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        460
+      ]
+    },
+    {
+      "parameters": {
         "jsCode": "const c = $('Code · State').first().json;\nreturn [{ json: { ...c, userText: c.text || '' } }];"
       },
       "id": "txtpass",
@@ -241,16 +328,21 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst msg = (c.userText || '').trim();\nconst low = msg.toLowerCase();\nlet intent = null, intentData = {};\n\n// WANTS_HUMAN\nif (!intent && /\\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\\b/.test(low)) intent = 'WANTS_HUMAN';\n\n// BOOKING — contains a time or date reference\nif (!intent) {\n  const bookMatch = low.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\\d{1,2}[:\\/\\-]\\d{1,2}|\\d{1,2}\\s*(am|pm)|morning|afternoon|evening|tonight|next week)\\b/);\n  if (bookMatch) { intent = 'BOOKING'; intentData = { booking_time: msg }; }\n}\n\n// WATCHED\nif (!intent && /\\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\\b/.test(low)) intent = 'WATCHED';\n\n// FORM_DONE\nif (!intent && /\\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\\b/.test(low)) intent = 'FORM_DONE';\n\n// DELAY\nif (!intent && /\\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\\b/.test(low)) intent = 'DELAY';\n\n// WANTS_MORE_INFO\nif (!intent && /\\b(tell me more|explain|more details|elaborate|more info|can you explain|what do you mean|clarify|describe)\\b/.test(low)) intent = 'WANTS_MORE_INFO';\n\n// QUESTION — ends with ? or starts with question word\nif (!intent && (/\\?/.test(msg) || /^(what|how|when|why|where|who|which|is|are|do|does|can|could|will|would|should|has|have|did)\\b/.test(low))) {\n  intent = 'QUESTION'; intentData = { question: msg };\n}\n\n// SHORT_NEUTRAL — pure openers only\nif (!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\\.!]*$/.test(low)) intent = 'SHORT_NEUTRAL';\n\n// AFFIRMATIVE\nif (!intent && /\\b(yes|yeah|yep|yup|ok|okay|sure|alright|fine|great|good|sounds good|perfect|absolutely|definitely|of course|confirmed|confirm|agreed|agree|proceed|go ahead|ready|i am ready|let.?s go|done|nice|wonderful|awesome|cool|noted)\\b/.test(low)) intent = 'AFFIRMATIVE';\n\n// Default: SHORT_NEUTRAL for very short messages, else AFFIRMATIVE\nif (!intent) intent = msg.length <= 10 ? 'SHORT_NEUTRAL' : 'AFFIRMATIVE';\n\nreturn [{ json: { ...c, output: JSON.stringify({ intent, data: intentData }) } }];"
+        "promptType": "define",
+        "text": "=Classify the user message and return ONLY valid JSON: {\"intent\":\"<ONE>\",\"data\":{}}.\n\nStage: {{ $json.stage }}\nMessage: \"{{ $json.userText }}\"\n\nIntents:\nAFFIRMATIVE = yes/ok/sure/agree/any positive reply\nWATCHED = watched video or content\nFORM_DONE = filled a form\nBOOKING = specific time/date mentioned (put in data.booking_time)\nDELAY = not now/later/busy\nWANTS_MORE_INFO = tell me more/explain\nQUESTION = real product question (put in data.question)\nWANTS_HUMAN = speak to human/agent\nSHORT_NEUTRAL = only pure openers: hi/hello/hey\n\nWhen in doubt between SHORT_NEUTRAL and AFFIRMATIVE, prefer AFFIRMATIVE.\nReturn ONLY the JSON object, nothing else.",
+        "options": {
+          "systemMessage": "You are an intent classifier. Return only valid JSON."
+        }
       },
       "id": "aiagent",
-      "name": "Code · Intent classify",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "name": "AI Agent · Intent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
       "position": [
         1220,
         400
-      ]
+      ],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -708,6 +800,178 @@
     },
     {
       "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "v1",
+              "leftValue": "={{ $('Code · State').first().json.mediaType }}",
+              "rightValue": "voice",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "v2",
+              "leftValue": "={{ $('Code · State').first().json.sarvam_key }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "voiceTtsIf",
+      "name": "IF · Voice reply?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2740,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const state = $('Code · State').first().json;\nlet reply = '';\nconst tries = ['Code · FAQ reply','Code · Qual start','Code · Qual next','Code · Intent + flow'];\nfor (const n of tries) {\n  try { const r = $(n).first().json.reply; if (r) { reply = r; break; } } catch(e) {}\n}\nreturn [{ json: { ...state, _ttsText: reply.slice(0, 500) } }];"
+      },
+      "id": "collectReply",
+      "name": "Code · Collect reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2960,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.sarvam.ai/text-to-speech",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-subscription-key",
+              "value": "={{ $json.sarvam_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ JSON.stringify({ inputs:[$json._ttsText], target_language_code: $json.sarvam_lang||'ml-IN', speaker:'ananya', pitch:0, pace:1.0, loudness:1.5, speech_sample_rate:22050, enable_preprocessing:true, model:'bulbul:v2' }) }}",
+        "options": {
+          "retryOnFail": true,
+          "maxTries": 2,
+          "waitBetweenTries": 3000
+        }
+      },
+      "id": "sarvamTts",
+      "name": "HTTP · Sarvam TTS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3160,
+        340
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $('Code · Collect reply').first().json;\nconst resp = $input.first().json;\n// Sarvam TTS returns { audios: ['<base64_mp3>'] }\nconst base64Audio = resp?.audios?.[0] || '';\nif (!base64Audio) return [{ json: { ...prev, _ttsOk: false } }];\nreturn [{\n  json: { ...prev, _ttsOk: true },\n  binary: {\n    data: {\n      data: base64Audio,\n      mimeType: 'audio/mpeg',\n      fileName: 'voice-reply.mp3',\n      fileExtension: 'mp3'\n    }\n  }\n}];"
+      },
+      "id": "ttsBinary",
+      "name": "Code · TTS binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.chatwoot_base }}/api/v1/accounts/{{ $json.chatwoot_account_id }}/conversations/{{ $json.convId }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "={{ $json.chatwoot_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message_type",
+              "value": "outgoing"
+            },
+            {
+              "name": "private",
+              "value": "false"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachments[]",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "sendVoiceReply",
+      "name": "HTTP · Send voice reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3560,
+        340
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "model": {
+          "mode": "id",
+          "value": "={{ $('Code · Merge text').first().json.model || 'google/gemini-2.5-flash' }}"
+        },
+        "options": {
+          "baseURL": "https://openrouter.ai/api/v1",
+          "temperature": 0.1,
+          "maxTokens": 80
+        }
+      },
+      "id": "lmIntent",
+      "name": "OpenAI Chat Model · Intent",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1220,
+        580
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_OPENROUTER_CRED",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
         "model": {
           "mode": "id",
           "value": "={{ $('Code · FAQ prep').first().json.model || 'google/gemini-2.5-flash' }}"
@@ -823,7 +1087,13 @@
             "index": 0
           }
         ],
-        [],
+        [
+          {
+            "node": "HTTP · Download audio",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Code · text→text",
@@ -845,6 +1115,28 @@
       ]
     },
     "Code · image→text": {
+      "main": [
+        [
+          {
+            "node": "Code · Merge text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Download audio": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Sarvam STT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · voice→text": {
       "main": [
         [
           {
@@ -1002,7 +1294,13 @@
     },
     "HTTP · Send reply": {
       "main": [
-        []
+        [
+          {
+            "node": "IF · Voice reply?",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Code · Prep lead": {
@@ -1049,12 +1347,107 @@
         ]
       ]
     },
+    "HTTP · Sarvam STT": {
+      "main": [
+        [
+          {
+            "node": "Code · voice→text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF · Voice reply?": {
+      "main": [
+        [
+          {
+            "node": "Code · Collect reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code · Prep lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Collect reply": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Sarvam TTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Sarvam TTS": {
+      "main": [
+        [
+          {
+            "node": "Code · TTS binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · TTS binary": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Send voice reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Send voice reply": {
+      "main": [
+        [
+          {
+            "node": "Code · Prep lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent · Intent": {
+      "main": [
+        [
+          {
+            "node": "Code · Intent + flow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "LLM Chain · FAQ": {
       "main": [
         [
           {
             "node": "Code · FAQ reply",
             "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model · Intent": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent · Intent",
+            "type": "ai_languageModel",
             "index": 0
           }
         ]
@@ -1086,18 +1479,7 @@
       "main": [
         [
           {
-            "node": "Code · Intent classify",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code · Intent classify": {
-      "main": [
-        [
-          {
-            "node": "Code · Intent + flow",
+            "node": "AI Agent · Intent",
             "type": "main",
             "index": 0
           }
