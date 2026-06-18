@@ -443,6 +443,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="leads">💬 Leads</button>
     <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
     <button class="dnTab" data-page="tasks">✅ Tasks</button>
+    <button class="dnTab" data-page="broadcast">📢 Broadcast</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
 
@@ -765,6 +766,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem" data-page="leads"><span class="bnIcon">💬</span><span class="bnLabel">Leads</span></button>
     <button class="bnItem industry-tab" data-page="travel" data-industry="travel" style="display:none"><span class="bnIcon">✈️</span><span class="bnLabel">Travel</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
+    <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
     <button class="bnItem" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
   </div>
 </div><!-- /app -->
@@ -1030,7 +1032,10 @@ function navigate(page){
 }
 
 document.querySelectorAll('.bnItem,.dnTab').forEach(b=>{
-  b.addEventListener('click',()=>navigate(b.dataset.page));
+  b.addEventListener('click',()=>{
+    if(b.dataset.page==='broadcast'){ window.open('broadcast.html','_blank'); return; }
+    navigate(b.dataset.page);
+  });
 });
 
 /* ── SHOW APP ── */
