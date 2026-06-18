@@ -13,7 +13,9 @@
   --bg:#F2F5F3;--card:#FFFFFF;--ink:#0C1E16;--muted:#637870;
   --accent:#0E7C5A;--accent-ink:#0A5C43;--accent-soft:#E2F5EC;
   --line:#E4EBE7;--ls:#C8D6D0;--warn:#9A5B12;--warn-soft:#FEF0DA;
+  --red:#DC2626;--yellow:#F59E0B;
   --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --shadow-md:0 4px 20px rgba(0,0,0,.10);
   --r:18px;--r-sm:12px;
   --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
 }
@@ -24,62 +26,100 @@ html,body{min-height:100%;background:var(--bg);color:var(--ink);font-family:var(
 #gate{position:fixed;inset:0;z-index:200;background:linear-gradient(160deg,#071410 0%,#0D2218 60%,#0A1A13 100%);display:flex;align-items:center;justify-content:center;padding:24px}
 #gate.hidden{display:none}
 .gbox{width:100%;max-width:360px}
-.gbrand{font-family:var(--disp);font-size:26px;font-weight:700;color:#fff;margin-bottom:6px}.gbrand span{color:#4ECFA0}
-.gsub{font-size:13.5px;color:#6FA898;margin-bottom:32px;line-height:1.5}
+.gbrand{font-family:var(--disp);font-size:28px;font-weight:700;color:#fff;margin-bottom:6px;letter-spacing:-.3px}
+.gbrand span{color:#4ECFA0}
+.gsub{color:#6FA898;font-size:13.5px;margin-bottom:36px;line-height:1.5}
 .gfld{display:flex;flex-direction:column;gap:12px;margin-bottom:8px}
-.ginput{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);border-radius:14px;padding:14px 18px;color:#fff;font-size:15px;font-family:var(--body);outline:none;transition:border-color .2s,background .2s}
+.ginput{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);border-radius:14px;padding:14px 18px;color:#fff;font-family:var(--body);font-size:15px;transition:border-color .2s,background .2s}
 .ginput::placeholder{color:rgba(255,255,255,.3)}
-.ginput:focus{border-color:#4ECFA0;background:rgba(255,255,255,.10);box-shadow:0 0 0 4px rgba(78,207,160,.12)}
+.ginput:focus{outline:none;border-color:#4ECFA0;background:rgba(255,255,255,.10);box-shadow:0 0 0 4px rgba(78,207,160,.12)}
 .gbtn{margin-top:8px;width:100%;background:linear-gradient(135deg,#0E7C5A,#0CB870);color:#fff;border:none;border-radius:14px;padding:15px;font-family:var(--disp);font-weight:700;font-size:15px;cursor:pointer;transition:opacity .15s}
 .gbtn:hover{opacity:.9}
 .gbtn:disabled{opacity:.5;cursor:not-allowed}
-.gerr{color:#FCA5A5;font-size:12.5px;margin-top:10px;min-height:20px}
+.gerr{color:#FCA5A5;font-size:12.5px;min-height:20px;margin-top:10px}
 
 /* LAYOUT */
-.wrap{max-width:1100px;margin:0 auto;padding:24px 16px 60px}
-.top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;gap:12px;flex-wrap:wrap}
-.top-bar h1{font-family:var(--disp);font-size:20px;font-weight:700}
-.chip{background:var(--accent-soft);color:var(--accent-ink);border-radius:20px;padding:4px 12px;font-size:12px;font-weight:600}
-.btn{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,var(--accent),#0CB870);color:#fff;border:none;border-radius:var(--r-sm);padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--body);transition:opacity .15s}
-.btn:hover{opacity:.88}
-.btn.sec{background:var(--card);color:var(--accent);border:1.5px solid var(--accent);box-shadow:var(--shadow)}
-.btn.sec:hover{background:var(--accent-soft)}
-.btn:disabled{opacity:.45;cursor:not-allowed}
-.btn-sm{padding:7px 13px;font-size:12px}
+.wrap{max-width:1120px;margin:0 auto;padding:20px 16px 60px}
+
+/* TOP BAR */
+.top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;gap:12px;flex-wrap:wrap}
+.top-brand{font-family:var(--disp);font-size:18px;font-weight:700;letter-spacing:-.2px}
+.top-brand span{color:var(--accent)}
+.chip{background:var(--accent-soft);color:var(--accent-ink);border-radius:20px;padding:4px 12px;font-size:12px;font-weight:600;font-family:var(--disp)}
+
+/* TABS */
+.tabs{display:flex;gap:4px;background:var(--card);border-radius:var(--r);padding:5px;margin-bottom:22px;box-shadow:var(--shadow)}
+.tab{flex:1;text-align:center;padding:10px 14px;font-size:13px;font-weight:600;border-radius:var(--r-sm);cursor:pointer;color:var(--muted);transition:all .2s;font-family:var(--disp);border:none;background:none}
+.tab.active{background:linear-gradient(135deg,var(--accent),#0CB870);color:#fff;box-shadow:var(--shadow)}
+
+/* CARDS */
 .card{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);padding:22px;margin-bottom:16px}
-.card-title{font-family:var(--disp);font-size:14px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;gap:8px}
-.badge{display:inline-block;border-radius:20px;padding:3px 9px;font-size:11px;font-weight:700}
-.badge.green{background:var(--accent-soft);color:var(--accent-ink)}
-.badge.warn{background:var(--warn-soft);color:var(--warn)}
-.badge.blue{background:#DBEAFE;color:#1D4ED8}
-.badge.gray{background:var(--bg);color:var(--muted)}
-label{font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:6px;letter-spacing:.02em}
-input[type=text],input[type=number],select,textarea{width:100%;background:var(--bg);border:1.5px solid var(--line);border-radius:var(--r-sm);padding:10px 14px;font-size:13px;font-family:var(--body);color:var(--ink);outline:none;transition:border-color .15s}
-input:focus,select:focus,textarea:focus{border-color:var(--accent);background:var(--card);box-shadow:0 0 0 3px var(--accent-soft)}
-textarea{resize:vertical;min-height:80px}
-.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
-.form-row.three{grid-template-columns:1fr 1fr 1fr}
-.form-field{margin-bottom:14px}
-.divider{border:none;border-top:1px solid var(--line);margin:18px 0}
+.card-title{font-family:var(--disp);font-size:14px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;gap:8px;color:var(--ink)}
+.step-num{background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0}
+
+/* BUTTONS */
+.btn{display:inline-flex;align-items:center;gap:6px;border:none;border-radius:var(--r-sm);padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--disp);transition:opacity .15s,transform .1s}
+.btn:active{transform:scale(.97)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-primary{background:linear-gradient(135deg,var(--accent),#0CB870);color:#fff}
+.btn-primary:hover{opacity:.88}
+.btn-sec{background:var(--card);color:var(--accent);border:1.5px solid var(--accent);box-shadow:var(--shadow)}
+.btn-sec:hover{background:var(--accent-soft)}
+.btn-sm{padding:7px 13px;font-size:12px}
+.btn-ghost{background:none;border:1.5px solid var(--line);color:var(--muted);border-radius:var(--r-sm);font-size:12px;cursor:pointer;font-family:var(--disp);font-weight:600;padding:7px 12px}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
+
+/* MSGS */
 .msg{padding:11px 15px;border-radius:var(--r-sm);font-size:13px;margin-bottom:12px;line-height:1.5}
 .msg.info{background:#EFF6FF;color:#1D4ED8}
 .msg.warn{background:var(--warn-soft);color:var(--warn)}
 .msg.success{background:var(--accent-soft);color:var(--accent-ink)}
 .msg.error{background:#FEE2E2;color:#991B1B}
+.hidden{display:none!important}
+
+/* FORM */
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.form-row.three{grid-template-columns:1fr 1fr 1fr}
+.form-field{margin-bottom:14px}
+label{font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:6px;letter-spacing:.02em}
+input[type=text],input[type=number],select,textarea{width:100%;background:var(--bg);border:1.5px solid var(--line);border-radius:var(--r-sm);padding:10px 14px;font-size:13px;font-family:var(--body);color:var(--ink);outline:none;transition:border-color .15s}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);background:var(--card);box-shadow:0 0 0 3px var(--accent-soft)}
+textarea{resize:vertical;min-height:90px;line-height:1.6}
+.divider{border:none;border-top:1px solid var(--line);margin:18px 0}
+
+/* BADGE */
+.badge{display:inline-block;border-radius:20px;padding:3px 9px;font-size:11px;font-weight:700}
+.badge.green{background:var(--accent-soft);color:var(--accent-ink)}
+.badge.warn{background:var(--warn-soft);color:var(--warn)}
+.badge.gray{background:var(--bg);color:var(--muted)}
+.badge.blue{background:#DBEAFE;color:#1D4ED8}
+
+/* IMAGE UPLOAD */
+.img-drop{border:2px dashed var(--line);border-radius:var(--r-sm);padding:20px;text-align:center;cursor:pointer;transition:all .2s;position:relative}
+.img-drop:hover,.img-drop.drag-over{border-color:var(--accent);background:var(--accent-soft)}
+.img-drop-icon{font-size:28px;margin-bottom:6px}
+.img-drop-label{font-size:13px;color:var(--muted);line-height:1.5}
+.img-drop-label b{color:var(--ink)}
+#imgPreview{display:none;margin-top:12px;position:relative}
+#imgPreview img{max-width:200px;max-height:150px;border-radius:10px;object-fit:cover;border:1px solid var(--line)}
+.img-clear{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;border:none;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;line-height:1}
 
 /* TEMPLATES GRID */
 .tpl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-bottom:16px}
 .tpl-card{border:2px solid var(--line);border-radius:var(--r-sm);padding:16px;cursor:pointer;transition:all .15s;background:var(--bg)}
-.tpl-card:hover{border-color:var(--accent);background:var(--accent-soft);box-shadow:var(--shadow)}
-.tpl-card.selected{border-color:var(--accent);background:var(--accent-soft);box-shadow:var(--shadow)}
+.tpl-card:hover,.tpl-card.selected{border-color:var(--accent);background:var(--accent-soft);box-shadow:var(--shadow)}
 .tpl-name{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px}
 .tpl-lang{font-size:11px;color:var(--muted);margin-bottom:6px}
 .tpl-body{font-size:12px;color:var(--ink);line-height:1.6;max-height:60px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
 .tpl-status{margin-top:8px}
 
+/* PREVIEW BUBBLE */
+.preview-bubble{background:#DCF8C6;border-radius:16px 16px 4px 16px;padding:13px 15px;font-size:13px;line-height:1.7;max-width:320px;color:#1A1A1A;white-space:pre-wrap;word-break:break-word;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+
 /* LEADS TABLE */
 .leads-toolbar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
-.leads-toolbar input{max-width:200px}
+.leads-toolbar input{max-width:210px;padding:9px 13px;border:1.5px solid var(--line);border-radius:var(--r-sm);font-size:13px;background:var(--card);color:var(--ink);outline:none}
+.leads-toolbar input:focus{border-color:var(--accent)}
 .leads-toolbar select{max-width:150px}
 .tbl{width:100%;border-collapse:collapse;font-size:13px}
 .tbl th{text-align:left;padding:9px 12px;font-size:10.5px;color:var(--muted);font-weight:700;border-bottom:2px solid var(--line);white-space:nowrap;text-transform:uppercase;letter-spacing:.04em}
@@ -89,31 +129,37 @@ textarea{resize:vertical;min-height:80px}
 .tbl-wrap{overflow-x:auto;max-height:340px;overflow-y:auto}
 .chk{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
 .sel-bar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--accent-soft);border-radius:var(--r-sm);margin-bottom:10px;font-size:13px;font-weight:600;color:var(--accent-ink)}
-
-/* PREVIEW */
-.preview-bubble{background:#DCF8C6;border-radius:16px 16px 4px 16px;padding:13px 15px;font-size:13px;line-height:1.7;max-width:320px;color:#1A1A1A;white-space:pre-wrap;word-break:break-word;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.in24-badge{display:inline-block;background:#DBEAFE;color:#1D4ED8;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;font-family:var(--mono)}
 
 /* PROGRESS */
-#progressWrap{display:none}
-.progress-bar-bg{background:var(--line);border-radius:6px;height:8px;overflow:hidden;margin:10px 0}
+#dmProgressWrap,#tplProgressWrap{display:none;margin-top:16px}
+.progress-bar-bg{background:var(--line);border-radius:6px;height:8px;overflow:hidden;margin:8px 0}
 .progress-bar-fill{background:linear-gradient(90deg,var(--accent),#0CB870);height:100%;border-radius:6px;transition:width .3s}
 .log-box{background:var(--bg);border-radius:var(--r-sm);padding:12px;max-height:180px;overflow-y:auto;font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:8px}
 
-/* TABS */
-.tabs{display:flex;gap:4px;background:var(--bg);border-radius:var(--r-sm);padding:4px;margin-bottom:22px;box-shadow:inset 0 1px 3px rgba(0,0,0,.06)}
-.tab{flex:1;text-align:center;padding:9px 14px;font-size:13px;font-weight:600;border-radius:10px;cursor:pointer;color:var(--muted);transition:all .2s;font-family:var(--disp)}
-.tab.active{background:var(--card);color:var(--ink);box-shadow:var(--shadow)}
+/* CATEGORY SELECTOR */
+.cat-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:0}
+.cat-card{border:2px solid var(--line);border-radius:var(--r);padding:22px 20px;cursor:pointer;transition:all .2s;background:var(--bg);text-align:left}
+.cat-card:hover{border-color:var(--accent);background:var(--accent-soft);box-shadow:var(--shadow-md)}
+.cat-icon{font-size:32px;margin-bottom:10px}
+.cat-title{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:4px}
+.cat-desc{font-size:12.5px;color:var(--muted);line-height:1.5}
+.cat-tag{display:inline-block;margin-top:10px;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;background:var(--accent-soft);color:var(--accent-ink)}
 
 @media(max-width:600px){
-  .form-row{grid-template-columns:1fr}
-  .form-row.three{grid-template-columns:1fr}
+  .form-row,.form-row.three{grid-template-columns:1fr}
   .tpl-grid{grid-template-columns:1fr}
+  .cat-grid{grid-template-columns:1fr}
 }
+
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 </style>
 </head>
 <body>
 
-<!-- GATE -->
+<!-- GATE (shown only if not logged in via dashboard) -->
 <div id="gate">
   <div class="gbox">
     <div class="gbrand">Leadvyne<span>.</span></div>
@@ -134,48 +180,164 @@ textarea{resize:vertical;min-height:80px}
   <!-- Top bar -->
   <div class="top-bar">
     <div style="display:flex;align-items:center;gap:12px">
-      <div style="font-family:var(--disp);font-size:18px;font-weight:700">Leadvyne<span style="color:var(--accent)">.</span></div>
-      <span style="color:var(--muted);font-size:13px">Broadcast</span>
+      <div class="top-brand">Leadvyne<span>.</span></div>
+      <span style="color:var(--muted);font-size:13px;font-weight:500">Broadcast</span>
     </div>
     <div style="display:flex;align-items:center;gap:10px">
       <span class="chip" id="clientChip"></span>
-      <button class="btn sec btn-sm" onclick="logout()">Sign out</button>
+      <button class="btn btn-sec btn-sm" onclick="goBack()">← Dashboard</button>
+      <button class="btn btn-ghost btn-sm" onclick="logout()">Sign out</button>
     </div>
   </div>
 
   <!-- Tabs -->
   <div class="tabs">
-    <div class="tab active" id="tab-send" onclick="showTab('send')">📤 Send Broadcast</div>
-    <div class="tab" id="tab-templates" onclick="showTab('templates')">📋 Manage Templates</div>
+    <button class="tab active" id="tab-dm" onclick="showTab('dm')">💬 Direct Message</button>
+    <button class="tab" id="tab-meta" onclick="showTab('meta')">📣 Meta Broadcast</button>
+    <button class="tab" id="tab-templates" onclick="showTab('templates')">📋 Manage Templates</button>
   </div>
 
-  <!-- ── SEND BROADCAST TAB ── -->
-  <div id="view-send">
+  <!-- ══════════════════════════════════════
+       TAB 1: DIRECT MESSAGE (within 24h)
+  ══════════════════════════════════════ -->
+  <div id="view-dm">
+
+    <div class="msg info">
+      💬 <b>Direct Messages</b> can only be sent to contacts who messaged you <b>within the last 24 hours</b>. WhatsApp allows free-form messages (including images) within this window.
+    </div>
+
+    <!-- Step 1: Compose -->
+    <div class="card">
+      <div class="card-title"><span class="step-num">1</span> Compose Message</div>
+
+      <div class="form-field">
+        <label>Message Text</label>
+        <textarea id="dmText" placeholder="Type your message here… Use {{name}} to personalize with the lead's name." oninput="updateDmPreview()"></textarea>
+      </div>
+
+      <div class="form-field">
+        <label>Image Attachment <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+        <div class="img-drop" id="imgDrop" onclick="document.getElementById('imgFile').click()"
+          ondragover="event.preventDefault();this.classList.add('drag-over')"
+          ondragleave="this.classList.remove('drag-over')"
+          ondrop="event.preventDefault();this.classList.remove('drag-over');handleImgDrop(event.dataTransfer.files[0])">
+          <div class="img-drop-icon">🖼️</div>
+          <div class="img-drop-label"><b>Click to upload</b> or drag &amp; drop<br>JPG, PNG, GIF, WebP — max 5 MB</div>
+        </div>
+        <input type="file" id="imgFile" accept="image/*" style="display:none" onchange="handleImgFile(this.files[0])">
+        <div id="imgPreview">
+          <img id="imgThumb" src="" alt="Preview">
+          <button class="img-clear" onclick="clearImage()" title="Remove image">✕</button>
+          <div style="font-size:11px;color:var(--muted);margin-top:6px;font-family:var(--mono)" id="imgName"></div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <div class="form-field" style="margin-bottom:0">
+            <label>Personalization</label>
+            <select id="dmPersonalize">
+              <option value="yes">Yes — replace {{name}} with lead's name</option>
+              <option value="no">No — send as-is</option>
+            </select>
+          </div>
+        </div>
+        <div style="flex:0 0 260px">
+          <label>Preview</label>
+          <div class="preview-bubble" id="dmPreviewBubble" style="min-height:48px">Type a message to preview…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: Select recipients (24h) -->
+    <div class="card">
+      <div class="card-title">
+        <span class="step-num">2</span> Select Recipients
+        <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          <span class="badge blue" id="dm24hCount">— within 24h</span>
+          <span class="badge gray" id="dmTotalCount">— total</span>
+        </span>
+      </div>
+
+      <div class="msg warn" id="dmNo24h" style="display:none">⚠️ No leads have messaged in the last 24 hours. Direct messages can only be sent within the 24h window.</div>
+
+      <div class="leads-toolbar">
+        <input type="text" id="dmSearch" placeholder="Search name / phone…" oninput="filterDmLeads()">
+        <select id="dmStageFilter" onchange="filterDmLeads()">
+          <option value="">All stages</option>
+        </select>
+        <select id="dmWindowFilter" onchange="filterDmLeads()">
+          <option value="24h">Within 24h only</option>
+          <option value="all">Show all leads</option>
+        </select>
+        <button class="btn btn-sec btn-sm" onclick="selectAllDm()">Select all</button>
+        <button class="btn btn-ghost btn-sm" onclick="selectNoneDm()">Clear</button>
+      </div>
+
+      <div id="dmSelBar" class="sel-bar hidden">
+        <span id="dmSelCount">0 selected</span>
+        <span style="flex:1"></span>
+        <span style="font-size:12px">Ready to send</span>
+      </div>
+
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr>
+            <th><input type="checkbox" class="chk" id="dmChkAll" onchange="toggleAllDm(this)"></th>
+            <th>Name</th><th>Phone</th><th>Stage</th><th>Last Message</th><th>Window</th>
+          </tr></thead>
+          <tbody id="dmLeadsTbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Step 3: Send -->
+    <div class="card">
+      <div class="card-title"><span class="step-num">3</span> Send</div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary" id="dmSendBtn" onclick="sendDm()">💬 Send Direct Messages</button>
+        <span id="dmSendStatus" style="font-size:13px;color:var(--muted)"></span>
+      </div>
+      <div id="dmProgressWrap">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px">
+          <span id="dmProgLabel">Sending…</span><span id="dmProgPct">0%</span>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="dmProgBar" style="width:0%"></div></div>
+        <div class="log-box" id="dmLogBox"></div>
+      </div>
+    </div>
+
+  </div><!-- /view-dm -->
+
+  <!-- ══════════════════════════════════════
+       TAB 2: META BROADCAST (templates)
+  ══════════════════════════════════════ -->
+  <div id="view-meta" style="display:none">
+
+    <div class="msg warn">
+      📣 <b>Meta Templates</b> are required for contacts who haven't messaged in the last 24 hours. Templates must be approved by Meta before use.
+    </div>
 
     <!-- Step 1: Pick Template -->
     <div class="card">
       <div class="card-title">
-        <span style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">1</span>
-        Select WhatsApp Template
-        <button class="btn sec btn-sm" onclick="loadTemplates()" id="refreshTplBtn">↻ Refresh</button>
+        <span class="step-num">1</span> Select WhatsApp Template
+        <button class="btn btn-sec btn-sm" onclick="loadTemplates()" style="margin-left:auto">↻ Refresh</button>
       </div>
       <div id="tplLoading" class="msg info">Loading templates from Meta…</div>
       <div id="tplError" class="msg error hidden"></div>
       <div id="tplGrid" class="tpl-grid hidden"></div>
-      <div id="tplNone" class="msg warn hidden">No approved templates found. Create one in the Templates tab.</div>
+      <div id="tplNone" class="msg warn hidden">No approved templates found. Create one in the Manage Templates tab.</div>
     </div>
 
     <!-- Step 2: Fill Variables -->
     <div class="card" id="varCard" style="display:none">
-      <div class="card-title">
-        <span style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">2</span>
-        Fill Template Variables
-      </div>
+      <div class="card-title"><span class="step-num">2</span> Fill Template Variables</div>
       <div style="display:flex;gap:16px;flex-wrap:wrap">
         <div style="flex:1;min-width:240px">
           <div id="varFields"></div>
           <div class="form-field">
-            <label>Personalize with lead name? <span style="color:var(--accent)">{{name}}</span> auto-filled</label>
+            <label>Personalize with lead name?</label>
             <select id="varPersonalize">
               <option value="yes">Yes — use lead name in {{1}} if applicable</option>
               <option value="no">No — use variables as-is</option>
@@ -190,76 +352,73 @@ textarea{resize:vertical;min-height:80px}
     </div>
 
     <!-- Step 3: Select Leads -->
-    <div class="card" id="leadsCard" style="display:none">
+    <div class="card" id="metaLeadsCard" style="display:none">
       <div class="card-title">
-        <span style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">3</span>
-        Select Recipients
-        <span id="leadCountChip" class="chip" style="margin-left:auto"></span>
+        <span class="step-num">3</span> Select Recipients
+        <span id="metaLeadCountChip" class="badge gray" style="margin-left:auto"></span>
       </div>
       <div class="leads-toolbar">
-        <input type="text" id="leadSearch" placeholder="Search name / phone…" oninput="filterLeads()">
-        <select id="leadStageFilter" onchange="filterLeads()">
+        <input type="text" id="metaLeadSearch" placeholder="Search name / phone…" oninput="filterMetaLeads()">
+        <select id="metaStageFilter" onchange="filterMetaLeads()">
           <option value="">All stages</option>
         </select>
-        <select id="leadScoreFilter" onchange="filterLeads()">
+        <select id="metaScoreFilter" onchange="filterMetaLeads()">
           <option value="">All scores</option>
           <option value="Hot">Hot</option>
           <option value="Warm">Warm</option>
           <option value="Cold">Cold</option>
         </select>
-        <button class="btn sec btn-sm" onclick="selectAll()">Select all</button>
-        <button class="btn sec btn-sm" onclick="selectNone()">Clear</button>
+        <button class="btn btn-sec btn-sm" onclick="selectAllMeta()">Select all</button>
+        <button class="btn btn-ghost btn-sm" onclick="selectNoneMeta()">Clear</button>
       </div>
-      <div id="selBar" class="sel-bar hidden">
-        <span id="selCount">0 selected</span>
+      <div id="metaSelBar" class="sel-bar hidden">
+        <span id="metaSelCount">0 selected</span>
         <span style="flex:1"></span>
-        <span style="font-size:12px;color:var(--accent-ink)">Ready to send</span>
+        <span style="font-size:12px">Ready to send</span>
       </div>
       <div class="tbl-wrap">
         <table class="tbl">
           <thead><tr>
-            <th><input type="checkbox" class="chk" id="chkAll" onchange="toggleAll(this)"></th>
+            <th><input type="checkbox" class="chk" id="metaChkAll" onchange="toggleAllMeta(this)"></th>
             <th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Last seen</th>
           </tr></thead>
-          <tbody id="leadsTbody"></tbody>
+          <tbody id="metaLeadsTbody"></tbody>
         </table>
       </div>
     </div>
 
     <!-- Step 4: Send -->
-    <div class="card" id="sendCard" style="display:none">
-      <div class="card-title">
-        <span style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">4</span>
-        Send Broadcast
-      </div>
-      <div class="msg warn">⚠️ WhatsApp only allows template messages to contacts who haven't messaged in 24h. Ensure your template is approved by Meta before sending.</div>
+    <div class="card" id="metaSendCard" style="display:none">
+      <div class="card-title"><span class="step-num">4</span> Send Broadcast</div>
+      <div class="msg warn">⚠️ WhatsApp only allows template messages to contacts who haven't messaged in 24h. Ensure your template is approved by Meta.</div>
       <div style="display:flex;gap:12px;margin-top:14px;flex-wrap:wrap;align-items:center">
-        <button class="btn" id="sendBtn" onclick="sendBroadcast()">📤 Send to selected leads</button>
-        <span id="sendStatus" style="font-size:13px;color:var(--muted)"></span>
+        <button class="btn btn-primary" id="tplSendBtn" onclick="sendTemplateBroadcast()">📣 Send to selected leads</button>
+        <span id="tplSendStatus" style="font-size:13px;color:var(--muted)"></span>
       </div>
-      <!-- Progress -->
-      <div id="progressWrap" style="margin-top:16px">
+      <div id="tplProgressWrap">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px">
-          <span id="progLabel">Sending…</span><span id="progPct">0%</span>
+          <span id="tplProgLabel">Sending…</span><span id="tplProgPct">0%</span>
         </div>
-        <div class="progress-bar-bg"><div class="progress-bar-fill" id="progBar" style="width:0%"></div></div>
-        <div class="log-box" id="logBox"></div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="tplProgBar" style="width:0%"></div></div>
+        <div class="log-box" id="tplLogBox"></div>
       </div>
     </div>
 
-  </div><!-- /view-send -->
+  </div><!-- /view-meta -->
 
-  <!-- ── TEMPLATES TAB ── -->
+  <!-- ══════════════════════════════════════
+       TAB 3: MANAGE TEMPLATES
+  ══════════════════════════════════════ -->
   <div id="view-templates" style="display:none">
 
     <!-- Create Template -->
     <div class="card">
       <div class="card-title">➕ Create New Template</div>
-      <div class="msg info">Templates are submitted to Meta for approval (usually 24–48h). Use only approved templates for broadcasts.</div>
+      <div class="msg info">Templates are submitted to Meta for approval (usually 24–48h). Only approved templates can be used for broadcasts.</div>
       <div class="form-row">
         <div class="form-field">
           <label>Template Name (lowercase, underscores only)</label>
-          <input type="text" id="newTplName" placeholder="e.g. promo_offer_jan" pattern="[a-z0-9_]+" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_]/g,'')">
+          <input type="text" id="newTplName" placeholder="e.g. promo_offer_jan" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_]/g,'')">
         </div>
         <div class="form-field">
           <label>Category</label>
@@ -303,7 +462,7 @@ textarea{resize:vertical;min-height:80px}
         </div>
       </div>
       <div style="display:flex;gap:10px;align-items:center">
-        <button class="btn" onclick="submitTemplate()">Submit to Meta</button>
+        <button class="btn btn-primary" onclick="submitTemplate()">Submit to Meta</button>
         <span id="createMsg" style="font-size:13px"></span>
       </div>
     </div>
@@ -311,14 +470,16 @@ textarea{resize:vertical;min-height:80px}
     <!-- Template List -->
     <div class="card">
       <div class="card-title">📋 All Templates
-        <button class="btn sec btn-sm" style="margin-left:auto" onclick="loadTemplates()">↻ Refresh</button>
+        <button class="btn btn-sec btn-sm" style="margin-left:auto" onclick="loadTemplates()">↻ Refresh</button>
       </div>
       <div id="tplListLoading" class="msg info">Loading…</div>
       <div id="tplListWrap" class="hidden">
-        <table class="tbl">
-          <thead><tr><th>Name</th><th>Category</th><th>Language</th><th>Status</th><th>Body</th></tr></thead>
-          <tbody id="tplListTbody"></tbody>
-        </table>
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead><tr><th>Name</th><th>Category</th><th>Language</th><th>Status</th><th>Body</th></tr></thead>
+            <tbody id="tplListTbody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -333,82 +494,291 @@ const CONFIG = {
   NOCODB_TOKEN:     'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',
   CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj',
   LEADS_TABLE_ID:   'mvg6rcw0ia5qqrx',
-  N8N_BASE:         'https://apps.leadvyne.com',
 };
 
-let clientId=null, clientRecord=null, allLeads=[], filteredLeads=[], selectedIds=new Set();
-let allTemplates=[], selectedTemplate=null;
+const MS_24H = 24 * 60 * 60 * 1000;
 
-// ── AUTH ──
-const $id=id=>document.getElementById(id);
+let clientId=null, clientRecord=null, allLeads=[];
+let dmFilteredLeads=[], dmSelectedIds=new Set();
+let metaFilteredLeads=[], metaSelectedIds=new Set();
+let allTemplates=[], selectedTemplate=null;
+let imgFile=null;
+
+const $id = id => document.getElementById(id);
+
+// ── UTILS ──
+function esc(s){ const d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function timeSince(dt){
+  if(!dt) return '—';
+  const s=Math.floor((Date.now()-new Date(dt))/1000);
+  if(s<60) return s+'s ago';
+  if(s<3600) return Math.floor(s/60)+'m ago';
+  if(s<86400) return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
+}
+function within24h(dt){ return dt && (Date.now()-new Date(dt).getTime()) < MS_24H; }
 
 async function ncGet(url){
   const r=await fetch(url,{headers:{'xc-token':CONFIG.NOCODB_TOKEN}});
   if(!r.ok) throw new Error(await r.text());
   return r.json();
 }
-async function ncPost(url,body){
-  const r=await fetch(url,{method:'POST',headers:{'xc-token':CONFIG.NOCODB_TOKEN,'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(!r.ok) throw new Error(await r.text());
-  return r.json();
-}
 
+// ── AUTH — shared with dashboard (uses lv_cid) ──
 $id('gBtn').addEventListener('click', login);
 document.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!$id('gate').classList.contains('hidden')) login(); });
 
 async function login(){
   const user=$id('gUser').value.trim(), pass=$id('gPass').value.trim();
-  if(!pass){$id('gErr').textContent='Enter password.';return;}
+  if(!user||!pass){ $id('gErr').textContent='Enter username and password.'; return; }
+  $id('gBtn').disabled=true; $id('gBtn').textContent='Signing in…';
   try{
     const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records?where=(client_name,eq,${encodeURIComponent(user)})&limit=1`);
     const rec=data.list?.[0];
     if(!rec||rec.dashboard_password!==pass) throw new Error('wrong');
     clientId=String(rec.Id); clientRecord=rec;
-    sessionStorage.setItem('lv_bc_cid',clientId);
+    sessionStorage.setItem('lv_cid', clientId);
     initApp();
-  }catch(e){ $id('gErr').textContent='Incorrect username or password.'; }
+  }catch(e){
+    $id('gErr').textContent='Incorrect username or password.';
+    $id('gBtn').disabled=false; $id('gBtn').textContent='Sign In';
+  }
 }
 
 async function tryAutoLogin(){
-  const id=sessionStorage.getItem('lv_bc_cid');
+  // Try dashboard session first (lv_cid), then legacy broadcast key
+  const id = sessionStorage.getItem('lv_cid') || sessionStorage.getItem('lv_bc_cid');
   if(!id) return;
   try{
     const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${id}`);
     clientId=String(data.Id); clientRecord=data;
     initApp();
-  }catch(e){ sessionStorage.removeItem('lv_bc_cid'); }
+  }catch(e){ /* show gate */ }
 }
 
 function logout(){
+  sessionStorage.removeItem('lv_cid');
   sessionStorage.removeItem('lv_bc_cid');
   clientId=null; clientRecord=null;
   $id('main').classList.add('hidden');
   $id('gate').classList.remove('hidden');
+  $id('gBtn').disabled=false; $id('gBtn').textContent='Sign In';
+  $id('gUser').value=''; $id('gPass').value='';
+}
+
+function goBack(){
+  window.location.href='dashboard.html';
 }
 
 async function initApp(){
   $id('gate').classList.add('hidden');
   $id('main').classList.remove('hidden');
   $id('clientChip').textContent=clientRecord.client_name||('Client #'+clientId);
-  await Promise.all([loadTemplates(), loadLeads()]);
+  await Promise.all([loadLeads(), loadTemplates()]);
 }
 
 // ── TABS ──
 function showTab(tab){
-  ['send','templates'].forEach(t=>{
-    $id('view-'+t).style.display=t===tab?'':'none';
-    $id('tab-'+t).classList.toggle('active',t===tab);
+  ['dm','meta','templates'].forEach(t=>{
+    $id('view-'+t).style.display = t===tab ? '' : 'none';
+    $id('tab-'+t).classList.toggle('active', t===tab);
   });
+}
+
+// ── LEADS ──
+async function loadLeads(){
+  try{
+    const leadsTable=clientRecord.nocodb_leads_table||CONFIG.LEADS_TABLE_ID;
+    const url=`${CONFIG.NOCODB_BASE}/api/v2/tables/${leadsTable}/records?where=(ClientId,eq,${clientId})&limit=5000&sort=-Date`;
+    const data=await ncGet(url);
+    allLeads=data.list||[];
+
+    // Populate stage filters
+    const stages=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))].sort();
+    [['dmStageFilter','dmStageFilter'],['metaStageFilter','metaStageFilter']].forEach(([id])=>{
+      const sf=$id(id);
+      while(sf.options.length>1) sf.remove(1);
+      stages.forEach(s=>{ const o=document.createElement('option');o.value=s;o.textContent=s;sf.appendChild(o); });
+    });
+
+    filterDmLeads();
+    filterMetaLeads();
+  }catch(e){ console.error('loadLeads',e); }
+}
+
+// ── DM LEADS ──
+function filterDmLeads(){
+  const q=($id('dmSearch').value||'').toLowerCase();
+  const stage=$id('dmStageFilter').value;
+  const window=$id('dmWindowFilter').value;
+
+  let leads=allLeads.filter(l=>{
+    if(stage&&l.Stage!==stage) return false;
+    if(window==='24h'&&!within24h(l.LastMsgAt)) return false;
+    if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
+    return true;
+  });
+  dmFilteredLeads=leads;
+
+  const total24h=allLeads.filter(l=>within24h(l.LastMsgAt)).length;
+  $id('dm24hCount').textContent=total24h+' within 24h';
+  $id('dmTotalCount').textContent=allLeads.length+' total';
+  $id('dmNo24h').style.display=total24h===0?'':'none';
+
+  renderDmLeads();
+}
+
+function renderDmLeads(){
+  const tbody=$id('dmLeadsTbody');
+  tbody.innerHTML=dmFilteredLeads.map(l=>{
+    const chk=dmSelectedIds.has(String(l.Id));
+    const in24=within24h(l.LastMsgAt);
+    const ago=timeSince(l.LastMsgAt);
+    return `<tr>
+      <td><input type="checkbox" class="chk" data-id="${l.Id}" ${chk?'checked':''} onchange="toggleDmLead(this)"></td>
+      <td style="font-weight:600">${esc(l.Name||'—')}</td>
+      <td style="font-family:var(--mono);font-size:12px">${esc(l.Phone||'—')}</td>
+      <td><span class="badge gray" style="font-size:10px">${esc(l.Stage||'new')}</span></td>
+      <td style="font-size:12px;color:var(--muted)">${ago}</td>
+      <td>${in24?'<span class="in24-badge">✓ 24h</span>':'<span style="font-size:11px;color:var(--muted)">expired</span>'}</td>
+    </tr>`;
+  }).join('');
+  updateDmSelBar();
+}
+
+function toggleDmLead(el){ const id=el.dataset.id; if(el.checked)dmSelectedIds.add(id);else dmSelectedIds.delete(id); updateDmSelBar(); }
+function toggleAllDm(el){ dmFilteredLeads.forEach(l=>{ if(el.checked)dmSelectedIds.add(String(l.Id));else dmSelectedIds.delete(String(l.Id)); }); renderDmLeads(); }
+function selectAllDm(){ dmFilteredLeads.forEach(l=>dmSelectedIds.add(String(l.Id))); renderDmLeads(); }
+function selectNoneDm(){ dmSelectedIds.clear(); renderDmLeads(); }
+function updateDmSelBar(){ const n=dmSelectedIds.size; $id('dmSelBar').classList.toggle('hidden',n===0); $id('dmSelCount').textContent=n+' selected'; }
+
+// ── META LEADS ──
+function filterMetaLeads(){
+  const q=($id('metaLeadSearch').value||'').toLowerCase();
+  const stage=$id('metaStageFilter').value;
+  const score=$id('metaScoreFilter').value;
+  metaFilteredLeads=allLeads.filter(l=>{
+    if(stage&&l.Stage!==stage) return false;
+    if(score&&l.Score!==score) return false;
+    if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
+    return true;
+  });
+  renderMetaLeads();
+}
+
+function renderMetaLeads(){
+  const tbody=$id('metaLeadsTbody');
+  tbody.innerHTML=metaFilteredLeads.map(l=>{
+    const chk=metaSelectedIds.has(String(l.Id));
+    const scoreColor=l.Score==='Hot'?'#DC2626':l.Score==='Warm'?'#B45309':'#637870';
+    const ago=timeSince(l.LastMsgAt||l.Date);
+    return `<tr>
+      <td><input type="checkbox" class="chk" data-id="${l.Id}" ${chk?'checked':''} onchange="toggleMetaLead(this)"></td>
+      <td style="font-weight:600">${esc(l.Name||'—')}</td>
+      <td style="font-family:var(--mono);font-size:12px">${esc(l.Phone||'—')}</td>
+      <td><span class="badge gray" style="font-size:10px">${esc(l.Stage||'new')}</span></td>
+      <td><span style="font-size:12px;font-weight:700;color:${scoreColor}">${esc(l.Score||'—')}</span></td>
+      <td style="font-size:12px;color:var(--muted)">${ago}</td>
+    </tr>`;
+  }).join('');
+  $id('metaLeadCountChip').textContent=metaFilteredLeads.length+' leads';
+  updateMetaSelBar();
+}
+
+function toggleMetaLead(el){ const id=el.dataset.id; if(el.checked)metaSelectedIds.add(id);else metaSelectedIds.delete(id); updateMetaSelBar(); }
+function toggleAllMeta(el){ metaFilteredLeads.forEach(l=>{ if(el.checked)metaSelectedIds.add(String(l.Id));else metaSelectedIds.delete(String(l.Id)); }); renderMetaLeads(); }
+function selectAllMeta(){ metaFilteredLeads.forEach(l=>metaSelectedIds.add(String(l.Id))); renderMetaLeads(); }
+function selectNoneMeta(){ metaSelectedIds.clear(); renderMetaLeads(); }
+function updateMetaSelBar(){ const n=metaSelectedIds.size; $id('metaSelBar').classList.toggle('hidden',n===0); $id('metaSelCount').textContent=n+' selected'; }
+
+// ── IMAGE HANDLING ──
+function handleImgFile(file){
+  if(!file) return;
+  if(file.size>5*1024*1024){ alert('Image must be under 5 MB.'); return; }
+  imgFile=file;
+  const url=URL.createObjectURL(file);
+  $id('imgThumb').src=url;
+  $id('imgName').textContent=file.name+' ('+Math.round(file.size/1024)+' KB)';
+  $id('imgPreview').style.display='';
+  $id('imgDrop').style.display='none';
+}
+function handleImgDrop(file){ if(file&&file.type.startsWith('image/')) handleImgFile(file); }
+function clearImage(){
+  imgFile=null;
+  $id('imgThumb').src='';
+  $id('imgPreview').style.display='none';
+  $id('imgDrop').style.display='';
+  document.getElementById('imgFile').value='';
+}
+
+// ── DM PREVIEW ──
+function updateDmPreview(){
+  let txt=$id('dmText').value||'';
+  txt=txt.replace(/\{\{name\}\}/gi,'John');
+  $id('dmPreviewBubble').textContent=txt||'Type a message to preview…';
+}
+
+// ── SEND DIRECT MESSAGES ──
+async function sendDm(){
+  const text=($id('dmText').value||'').trim();
+  if(!text&&!imgFile){ alert('Enter a message or attach an image.'); return; }
+  if(!dmSelectedIds.size){ alert('Select at least one recipient.'); return; }
+
+  const leads=allLeads.filter(l=>dmSelectedIds.has(String(l.Id)));
+  const personalize=$id('dmPersonalize').value==='yes';
+  const base=clientRecord.chatwoot_base||'';
+  const accountId=clientRecord.chatwoot_account_id||'';
+  const token=clientRecord.chatwoot_token||'';
+
+  const btn=$id('dmSendBtn');
+  btn.disabled=true;
+  $id('dmSendStatus').textContent='';
+  $id('dmProgressWrap').style.display='';
+  $id('dmLogBox').innerHTML='';
+  setProgress('dm',0,leads.length);
+
+  let sent=0,failed=0;
+  for(let i=0;i<leads.length;i++){
+    const lead=leads[i];
+    const convId=lead.ConversationID||lead.convId||'';
+    if(!convId){ failed++; appendLog('dm',`⚠️ ${lead.Name||lead.Phone} — no conversation ID`); setProgress('dm',i+1,leads.length); await sleep(400); continue; }
+
+    let content=text;
+    if(personalize) content=content.replace(/\{\{name\}\}/gi, lead.Name||'');
+
+    try{
+      const fd=new FormData();
+      fd.append('message_type','outgoing');
+      fd.append('private','false');
+      if(content) fd.append('content',content);
+      if(imgFile) fd.append('attachments[]',imgFile,imgFile.name);
+
+      const r=await fetch(`${base}/api/v1/accounts/${accountId}/conversations/${convId}/messages`,{
+        method:'POST',
+        headers:{'api_access_token':token},
+        body:fd
+      });
+      if(!r.ok){ const err=await r.text(); throw new Error(`${r.status}: ${err.slice(0,80)}`); }
+      sent++;
+      appendLog('dm',`✅ ${lead.Name||lead.Phone} — sent`);
+    }catch(e){
+      failed++;
+      appendLog('dm',`❌ ${lead.Name||lead.Phone} — ${e.message}`);
+    }
+    setProgress('dm',i+1,leads.length);
+    await sleep(600);
+  }
+
+  $id('dmProgLabel').textContent=`Done — ${sent} sent, ${failed} failed`;
+  $id('dmSendStatus').textContent=`${sent} sent · ${failed} failed`;
+  btn.disabled=false;
 }
 
 // ── TEMPLATES ──
 async function loadTemplates(){
-  $id('tplLoading').classList.remove('hidden');
-  $id('tplGrid').classList.add('hidden');
-  $id('tplNone').classList.add('hidden');
-  $id('tplError').classList.add('hidden');
-  $id('tplListLoading').classList.remove('hidden');
-  $id('tplListWrap').classList.add('hidden');
+  ['tplLoading','tplListLoading'].forEach(id=>$id(id).classList.remove('hidden'));
+  ['tplGrid','tplNone','tplError','tplListWrap'].forEach(id=>$id(id).classList.add('hidden'));
 
   try{
     const base=clientRecord.chatwoot_base||'';
@@ -417,23 +787,20 @@ async function loadTemplates(){
     const inboxId=clientRecord.chatwoot_inbox_id||'';
     if(!base||!accountId||!token||!inboxId) throw new Error('Missing Chatwoot credentials in client config');
 
-    const url=`${base}/api/v1/accounts/${accountId}/inboxes/${inboxId}/whatsapp_templates`;
-    const r=await fetch(url,{headers:{'api_access_token':token}});
-    if(!r.ok) throw new Error(`Chatwoot API error: ${r.status}`);
+    const r=await fetch(`${base}/api/v1/accounts/${accountId}/inboxes/${inboxId}/whatsapp_templates`,{headers:{'api_access_token':token}});
+    if(!r.ok) throw new Error(`Chatwoot API ${r.status}`);
     const data=await r.json();
     allTemplates=(data||[]).filter(t=>t.status==='approved'||t.status==='APPROVED');
 
     renderTemplateGrid();
     renderTemplateList(data||[]);
-    $id('tplLoading').classList.add('hidden');
-    $id('tplListLoading').classList.add('hidden');
   }catch(e){
-    $id('tplLoading').classList.add('hidden');
-    $id('tplListLoading').classList.add('hidden');
     $id('tplError').textContent='Failed to load templates: '+e.message;
     $id('tplError').classList.remove('hidden');
-    $id('tplListWrap').innerHTML=`<div class="msg error">${e.message}</div>`;
+    $id('tplListWrap').innerHTML=`<div class="msg error">${esc(e.message)}</div>`;
     $id('tplListWrap').classList.remove('hidden');
+  }finally{
+    ['tplLoading','tplListLoading'].forEach(id=>$id(id).classList.add('hidden'));
   }
 }
 
@@ -453,33 +820,27 @@ function renderTemplateGrid(){
 }
 
 function renderTemplateList(templates){
-  const tbody=$id('tplListTbody');
-  tbody.innerHTML=templates.map(t=>{
+  $id('tplListTbody').innerHTML=templates.map(t=>{
     const body=getTemplateBody(t);
-    const status=t.status||'unknown';
-    const badge=status.toLowerCase()==='approved'?'green':status.toLowerCase()==='pending'?'warn':'gray';
+    const st=t.status||'unknown';
+    const cls=st.toLowerCase()==='approved'?'green':st.toLowerCase()==='pending'?'warn':'gray';
     return `<tr>
       <td><span style="font-family:var(--mono);font-size:12px">${esc(t.name)}</span></td>
       <td>${esc(t.category||'')}</td>
       <td>${esc(t.language||t.language_code||'')}</td>
-      <td><span class="badge ${badge}">${esc(status.toUpperCase())}</span></td>
-      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${esc(body)}</td>
+      <td><span class="badge ${cls}">${esc(st.toUpperCase())}</span></td>
+      <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${esc(body)}</td>
     </tr>`;
   }).join('');
   $id('tplListWrap').classList.remove('hidden');
 }
 
 function getTemplateBody(t){
-  if(t.components){
-    const body=t.components.find(c=>c.type==='BODY'||c.type==='body');
-    if(body) return body.text||'';
-  }
+  if(t.components){ const b=t.components.find(c=>c.type==='BODY'||c.type==='body'); if(b) return b.text||''; }
   return t.body||t.content||'';
 }
-
 function getTemplateVarCount(t){
-  const body=getTemplateBody(t);
-  const matches=body.match(/\{\{\d+\}\}/g)||[];
+  const matches=getTemplateBody(t).match(/\{\{\d+\}\}/g)||[];
   return [...new Set(matches)].length;
 }
 
@@ -488,8 +849,8 @@ function selectTemplate(idx){
   document.querySelectorAll('.tpl-card').forEach((el,i)=>el.classList.toggle('selected',i===idx));
   buildVarFields();
   $id('varCard').style.display='';
-  $id('leadsCard').style.display='';
-  $id('sendCard').style.display='';
+  $id('metaLeadsCard').style.display='';
+  $id('metaSendCard').style.display='';
   updatePreview();
 }
 
@@ -509,10 +870,7 @@ function updatePreview(){
   if(!selectedTemplate){ $id('previewBubble').textContent='Select a template to preview'; return; }
   let body=getTemplateBody(selectedTemplate);
   const count=getTemplateVarCount(selectedTemplate);
-  for(let i=1;i<=count;i++){
-    const val=$id('var'+i)?.value||`{{${i}}}`;
-    body=body.replace(new RegExp(`\\{\\{${i}\\}\\}`,'g'),val);
-  }
+  for(let i=1;i<=count;i++){ const val=$id('var'+i)?.value||`{{${i}}}`; body=body.replace(new RegExp(`\\{\\{${i}\\}\\}`,'g'),val); }
   $id('previewBubble').textContent=body;
 }
 
@@ -520,139 +878,64 @@ function updateCreatePreview(){
   $id('createPreview').textContent=$id('newTplBody').value||'Your message will appear here';
 }
 
-// ── LEADS ──
-async function loadLeads(){
-  try{
-    const leadsTable=clientRecord.nocodb_leads_table||CONFIG.LEADS_TABLE_ID;
-    const url=`${CONFIG.NOCODB_BASE}/api/v2/tables/${leadsTable}/records?where=(ClientId,eq,${clientId})&limit=5000&sort=-Date`;
-    const data=await ncGet(url);
-    allLeads=data.list||[];
-    // Populate stage filter
-    const stages=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))].sort();
-    const sf=$id('leadStageFilter');
-    stages.forEach(s=>{ const o=document.createElement('option');o.value=s;o.textContent=s;sf.appendChild(o); });
-    filterLeads();
-  }catch(e){ console.error('loadLeads',e); }
-}
-
-function filterLeads(){
-  const q=$id('leadSearch').value.toLowerCase();
-  const stage=$id('leadStageFilter').value;
-  const score=$id('leadScoreFilter').value;
-  filteredLeads=allLeads.filter(l=>{
-    if(stage&&l.Stage!==stage) return false;
-    if(score&&l.Score!==score) return false;
-    if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
-    return true;
-  });
-  renderLeads();
-}
-
-function renderLeads(){
-  const tbody=$id('leadsTbody');
-  tbody.innerHTML=filteredLeads.map(l=>{
-    const chk=selectedIds.has(String(l.Id));
-    const scoreColor=l.Score==='Hot'?'#DC2626':l.Score==='Warm'?'#B45309':'#5B6B65';
-    const ago=l.LastMsgAt?timeSince(l.LastMsgAt):(l.Date?timeSince(l.Date):'—');
-    return `<tr>
-      <td><input type="checkbox" class="chk" data-id="${l.Id}" ${chk?'checked':''} onchange="toggleLead(this)"></td>
-      <td style="font-weight:500">${esc(l.Name||'—')}</td>
-      <td style="font-family:var(--mono);font-size:12px">${esc(l.Phone||'—')}</td>
-      <td><span class="badge gray" style="font-size:10px">${esc(l.Stage||'new')}</span></td>
-      <td><span style="font-size:12px;font-weight:600;color:${scoreColor}">${esc(l.Score||'—')}</span></td>
-      <td style="font-size:12px;color:var(--muted)">${ago}</td>
-    </tr>`;
-  }).join('');
-  $id('leadCountChip').textContent=filteredLeads.length+' leads';
-  updateSelBar();
-}
-
-function toggleLead(el){
-  const id=el.dataset.id;
-  if(el.checked) selectedIds.add(id); else selectedIds.delete(id);
-  updateSelBar();
-}
-
-function toggleAll(el){
-  filteredLeads.forEach(l=>{ if(el.checked) selectedIds.add(String(l.Id)); else selectedIds.delete(String(l.Id)); });
-  renderLeads();
-}
-
-function selectAll(){ filteredLeads.forEach(l=>selectedIds.add(String(l.Id))); renderLeads(); }
-function selectNone(){ selectedIds.clear(); renderLeads(); }
-
-function updateSelBar(){
-  const n=selectedIds.size;
-  $id('selBar').classList.toggle('hidden',n===0);
-  $id('selCount').textContent=n+' selected';
-}
-
-// ── SEND ──
-async function sendBroadcast(){
+// ── SEND TEMPLATE BROADCAST ──
+async function sendTemplateBroadcast(){
   if(!selectedTemplate){ alert('Please select a template first.'); return; }
-  if(!selectedIds.size){ alert('Please select at least one lead.'); return; }
+  if(!metaSelectedIds.size){ alert('Please select at least one lead.'); return; }
 
-  const leads=allLeads.filter(l=>selectedIds.has(String(l.Id)));
+  const leads=allLeads.filter(l=>metaSelectedIds.has(String(l.Id)));
   const varCount=getTemplateVarCount(selectedTemplate);
   const vars=[];
   for(let i=1;i<=varCount;i++) vars.push($id('var'+i)?.value||'');
   const personalize=$id('varPersonalize').value==='yes';
 
-  const btn=$id('sendBtn');
+  const base=clientRecord.chatwoot_base||'';
+  const accountId=clientRecord.chatwoot_account_id||'';
+  const token=clientRecord.chatwoot_token||'';
+
+  const btn=$id('tplSendBtn');
   btn.disabled=true;
-  $id('sendStatus').textContent='';
-  $id('progressWrap').style.display='';
-  $id('logBox').innerHTML='';
-  setProgress(0,leads.length);
+  $id('tplSendStatus').textContent='';
+  $id('tplProgressWrap').style.display='';
+  $id('tplLogBox').innerHTML='';
+  setProgress('tpl',0,leads.length);
 
   let sent=0,failed=0;
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
+    const convId=lead.ConversationID||lead.convId||'';
+    if(!convId){ failed++; appendLog('tpl',`⚠️ ${lead.Name||lead.Phone} — no conversation ID`); setProgress('tpl',i+1,leads.length); await sleep(400); continue; }
+
     const resolvedVars=vars.map((v,idx)=>idx===0&&personalize?(lead.Name||v):v);
+    const params={
+      name:selectedTemplate.name,
+      category:selectedTemplate.category||'MARKETING',
+      language:selectedTemplate.language||selectedTemplate.language_code||'en',
+      processed_params:Object.fromEntries(resolvedVars.map((v,j)=>[String(j+1),v]))
+    };
+    let content=getTemplateBody(selectedTemplate);
+    resolvedVars.forEach((v,j)=>{ content=content.replace(new RegExp(`\\{\\{${j+1}\\}\\}`,'g'),v); });
+
     try{
-      await sendTemplateToLead(lead, resolvedVars);
+      const r=await fetch(`${base}/api/v1/accounts/${accountId}/conversations/${convId}/messages`,{
+        method:'POST',
+        headers:{'api_access_token':token,'Content-Type':'application/json'},
+        body:JSON.stringify({content,message_type:'outgoing',private:false,template_params:params})
+      });
+      if(!r.ok){ const err=await r.text(); throw new Error(`${r.status}: ${err.slice(0,80)}`); }
       sent++;
-      appendLog(`✅ ${lead.Name||lead.Phone} — sent`);
+      appendLog('tpl',`✅ ${lead.Name||lead.Phone} — sent`);
     }catch(e){
       failed++;
-      appendLog(`❌ ${lead.Name||lead.Phone} — ${e.message}`);
+      appendLog('tpl',`❌ ${lead.Name||lead.Phone} — ${e.message}`);
     }
-    setProgress(i+1,leads.length);
-    await sleep(600); // rate limit
+    setProgress('tpl',i+1,leads.length);
+    await sleep(600);
   }
 
-  $id('progLabel').textContent=`Done — ${sent} sent, ${failed} failed`;
+  $id('tplProgLabel').textContent=`Done — ${sent} sent, ${failed} failed`;
+  $id('tplSendStatus').textContent=`${sent} sent · ${failed} failed`;
   btn.disabled=false;
-  $id('sendStatus').textContent=`${sent} sent · ${failed} failed`;
-}
-
-async function sendTemplateToLead(lead, resolvedVars){
-  const base=clientRecord.chatwoot_base||'';
-  const accountId=clientRecord.chatwoot_account_id||'';
-  const token=clientRecord.chatwoot_token||'';
-  const convId=lead.ConversationID||lead.convId||'';
-  if(!convId) throw new Error('No conversation ID');
-
-  const params={
-    name: selectedTemplate.name,
-    category: selectedTemplate.category||'MARKETING',
-    language: selectedTemplate.language||selectedTemplate.language_code||'en',
-    processed_params: Object.fromEntries(resolvedVars.map((v,i)=>[String(i+1),v]))
-  };
-
-  const body=getTemplateBody(selectedTemplate);
-  let content=body;
-  resolvedVars.forEach((v,i)=>{ content=content.replace(new RegExp(`\\{\\{${i+1}\\}\\}`,'g'),v); });
-
-  const r=await fetch(`${base}/api/v1/accounts/${accountId}/conversations/${convId}/messages`,{
-    method:'POST',
-    headers:{'api_access_token':token,'Content-Type':'application/json'},
-    body:JSON.stringify({content, message_type:'outgoing', private:false, template_params:params})
-  });
-  if(!r.ok){
-    const err=await r.text();
-    throw new Error(`Chatwoot ${r.status}: ${err.slice(0,80)}`);
-  }
 }
 
 // ── CREATE TEMPLATE ──
@@ -664,7 +947,7 @@ async function submitTemplate(){
   const header=$id('newTplHeader').value.trim();
   const footer=$id('newTplFooter').value.trim();
 
-  if(!name||!body){ $id('createMsg').textContent='Name and body are required.'; $id('createMsg').style.color='#DC2626'; return; }
+  if(!name||!body){ $id('createMsg').textContent='Name and body are required.'; $id('createMsg').style.color='var(--red)'; return; }
 
   const base=clientRecord.chatwoot_base||'';
   const accountId=clientRecord.chatwoot_account_id||'';
@@ -679,38 +962,29 @@ async function submitTemplate(){
     const r=await fetch(`${base}/api/v1/accounts/${accountId}/inboxes/${inboxId}/whatsapp_templates`,{
       method:'POST',
       headers:{'api_access_token':token,'Content-Type':'application/json'},
-      body:JSON.stringify({name, category, language, components})
+      body:JSON.stringify({name,category,language,components})
     });
     if(!r.ok) throw new Error(await r.text());
-    $id('createMsg').textContent='✅ Template submitted! Awaiting Meta approval (24–48h).';
+    $id('createMsg').textContent='✅ Submitted! Awaiting Meta approval (24–48h).';
     $id('createMsg').style.color='var(--accent-ink)';
     loadTemplates();
   }catch(e){
     $id('createMsg').textContent='Error: '+e.message.slice(0,120);
-    $id('createMsg').style.color='#DC2626';
+    $id('createMsg').style.color='var(--red)';
   }
 }
 
-// ── UTILS ──
-function esc(s){ const d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
-function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-function setProgress(done,total){
+// ── PROGRESS HELPERS ──
+function setProgress(prefix,done,total){
   const pct=total?Math.round(done/total*100):0;
-  $id('progBar').style.width=pct+'%';
-  $id('progPct').textContent=pct+'%';
-  $id('progLabel').textContent=`Sending… ${done}/${total}`;
+  $id(prefix+'ProgBar').style.width=pct+'%';
+  $id(prefix+'ProgPct').textContent=pct+'%';
+  $id(prefix+'ProgLabel').textContent=`Sending… ${done}/${total}`;
 }
-function appendLog(msg){
-  const box=$id('logBox');
+function appendLog(prefix,msg){
+  const box=$id(prefix+'LogBox');
   box.innerHTML+=msg+'\n';
   box.scrollTop=box.scrollHeight;
-}
-function timeSince(dt){
-  const s=Math.floor((Date.now()-new Date(dt))/1000);
-  if(s<60) return s+'s ago';
-  if(s<3600) return Math.floor(s/60)+'m ago';
-  if(s<86400) return Math.floor(s/3600)+'h ago';
-  return Math.floor(s/86400)+'d ago';
 }
 
 // ── BOOT ──
