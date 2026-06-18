@@ -69,6 +69,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .page{position:absolute;inset:0;overflow-y:auto;padding-bottom:calc(var(--nav)+16px)}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
+#pageAgency:not(.hidden){display:flex;flex-direction:column}
 .page-pad{padding:16px}
 @media(min-width:768px){.page-pad{max-width:1200px;margin:0 auto;padding:22px 28px}}
 
@@ -636,7 +637,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     </div>
 
     <!-- TRAVEL AGENCY MODULE -->
-    <div class="page hidden" id="pageAgency" style="display:flex;flex-direction:column">
+    <div class="page hidden" id="pageAgency">
       <div id="agencySubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
         <button class="ta-tab active" data-ta="dashboard">📊 Dashboard</button>
         <button class="ta-tab" data-ta="packages">📦 Packages</button>
