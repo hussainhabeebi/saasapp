@@ -381,6 +381,50 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 
 .s-row{display:flex;gap:8px;margin-bottom:4px}
 .s-key{font-weight:600;min-width:120px;color:var(--muted);font-size:12px;flex-shrink:0}
+
+/* ── TRAVEL AGENCY MODULE ── */
+.ta-tab{font-family:var(--disp);font-size:12px;font-weight:600;padding:11px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
+.ta-tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.ta-card{background:var(--card);border-radius:var(--r);padding:18px;box-shadow:var(--shadow);margin-bottom:14px}
+.ta-card-title{font-family:var(--disp);font-size:14px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px;color:var(--ink)}
+.pkg-card{background:var(--card);border-radius:var(--r);padding:18px;box-shadow:var(--shadow);cursor:pointer;transition:box-shadow .15s;border:1.5px solid var(--line)}
+.pkg-card:hover{box-shadow:var(--shadow-md);border-color:var(--accent)}
+.pkg-name{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:4px}
+.pkg-meta{font-size:11.5px;color:var(--muted);margin-bottom:10px}
+.pkg-price{font-family:var(--disp);font-size:20px;font-weight:700;color:var(--accent-ink)}
+.pkg-price-sub{font-size:10px;color:var(--muted);margin-left:4px}
+.pkg-type-badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:5px;background:var(--accent-soft);color:var(--accent-ink)}
+.case-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
+.case-row:hover{background:var(--bg)}
+.case-row:last-child{border-bottom:none}
+.case-type-icon{width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.case-body{flex:1;min-width:0}
+.case-name{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.case-sub{font-size:11.5px;color:var(--muted);margin-top:2px}
+.stage-pill{display:inline-flex;align-items:center;font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;font-family:var(--mono)}
+.stage-pending{background:#FEF3C7;color:#92400E}
+.stage-active{background:var(--accent-soft);color:var(--accent-ink)}
+.stage-done{background:#DCFCE7;color:#166534}
+.stage-blocked{background:#FEE2E2;color:#991B1B}
+.itin-card{background:var(--card);border-radius:var(--r);padding:16px;box-shadow:var(--shadow);cursor:pointer;transition:box-shadow .15s;border:1.5px solid var(--line);margin-bottom:10px}
+.itin-card:hover{box-shadow:var(--shadow-md);border-color:var(--accent)}
+.itin-day{background:var(--bg);border-radius:var(--r-sm);padding:12px 14px;margin-bottom:8px;border-left:3px solid var(--accent)}
+.itin-day-hd{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--accent-ink);margin-bottom:6px}
+.itin-item{display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px}
+.itin-item:last-child{border-bottom:none}
+.itin-item-icon{width:22px;height:22px;border-radius:6px;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;margin-top:1px}
+.pilgrim-row{display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px}
+.pilgrim-row:last-child{border-bottom:none}
+.doc-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600;padding:2px 7px;border-radius:5px;margin:1px}
+.doc-ok{background:#DCFCE7;color:#166534}
+.doc-missing{background:#FEE2E2;color:#991B1B}
+.booking-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
+.booking-row:hover{background:var(--bg)}
+.booking-row:last-child{border-bottom:none}
+.payment-bar-wrap{height:6px;background:var(--bg);border-radius:4px;flex:1;overflow:hidden;margin:0 8px}
+.payment-bar-fill{height:100%;background:var(--accent);border-radius:4px}
+.ledger-credit{color:#166534;font-family:var(--mono);font-weight:700}
+.ledger-debit{color:#991B1B;font-family:var(--mono);font-weight:700}
 </style>
 </head>
 <body>
@@ -448,6 +492,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
     <button class="dnTab" data-page="leads">💬 Leads</button>
     <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
+    <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="tasks">✅ Tasks</button>
     <button class="dnTab" data-page="broadcast">📢 Broadcast</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
@@ -587,6 +632,22 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div class="card-title">🔥 Hot Inquiries <span style="font-size:11px;color:var(--muted);margin-left:auto">Needs follow-up</span></div>
           <div id="travelHotList"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
         </div>
+      </div>
+    </div>
+
+    <!-- TRAVEL AGENCY MODULE -->
+    <div class="page hidden" id="pageAgency" style="display:flex;flex-direction:column">
+      <div id="agencySubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
+        <button class="ta-tab active" data-ta="dashboard">📊 Dashboard</button>
+        <button class="ta-tab" data-ta="packages">📦 Packages</button>
+        <button class="ta-tab" data-ta="itineraries">🗺️ Itineraries</button>
+        <button class="ta-tab" data-ta="services">🗂️ Services</button>
+        <button class="ta-tab" data-ta="umrah">🕌 Umrah</button>
+        <button class="ta-tab" data-ta="bookings">🎫 Bookings</button>
+        <button class="ta-tab" data-ta="finance">💰 Finance</button>
+      </div>
+      <div class="page-pad" id="agencyContent" style="flex:1">
+        <div style="color:var(--muted);font-size:13px;padding:40px 0;text-align:center">Loading…</div>
       </div>
     </div>
 
@@ -755,6 +816,21 @@ const TODAY = new Date().toISOString().slice(0,10);
             </div>
           </div>
 
+          <hr class="div">
+
+          <div class="settings-section">
+            <div class="s-head">🏢 Travel Agency Module</div>
+            <div class="s-note">Enable the full Travel Agency management suite — packages, itineraries, service cases, Umrah/Hajj groups, bookings, and finance. Adds a dedicated <b>Agency</b> tab to the dashboard.</div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <select class="form-input" id="cfgTaEnabled" style="max-width:200px">
+                <option value="No">Disabled</option>
+                <option value="Yes">Enabled</option>
+              </select>
+              <button class="save-btn" id="saveTaEnabled">Save</button>
+              <span class="save-msg" id="saveTaEnabledMsg"></span>
+            </div>
+          </div>
+
         </div>
         <div id="summaryWrap" style="padding:0 16px 16px;display:none">
           <button id="summaryBtn" style="padding:7px 16px;background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--disp)">✨ Generate AI Summary</button>
@@ -771,10 +847,165 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem" data-page="pipeline"><span class="bnIcon">📋</span><span class="bnLabel">Pipeline</span></button>
     <button class="bnItem" data-page="leads"><span class="bnIcon">💬</span><span class="bnLabel">Leads</span></button>
     <button class="bnItem industry-tab" data-page="travel" data-industry="travel" style="display:none"><span class="bnIcon">✈️</span><span class="bnLabel">Travel</span></button>
+    <button class="bnItem" data-page="agency" id="bnAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
     <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
     <button class="bnItem" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
   </div>
+
+  <!-- TA: PACKAGE MODAL -->
+  <div class="modal" id="modalPkg" style="width:580px">
+    <span class="modal-drag"></span>
+    <div class="modal-hd"><div class="modal-title" id="pkgModalTitle">New Package</div><button class="icon-btn" onclick="closeModal('modalPkg')">✕</button></div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Package Name *</label><input class="form-input" id="pkgName" placeholder="e.g. Dubai 5 Nights City Tour"></div>
+        <div class="form-group"><label class="form-label">Type</label><select class="form-input" id="pkgType"><option value="tour">Tour</option><option value="umrah">Umrah</option><option value="hajj">Hajj</option><option value="hotel">Hotel Only</option><option value="visa">Visa Package</option><option value="custom">Custom</option></select></div>
+        <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="pkgDest" placeholder="Dubai, UAE"></div>
+        <div class="form-group"><label class="form-label">Nights</label><input class="form-input" type="number" id="pkgNights" placeholder="5" min="0"></div>
+        <div class="form-group"><label class="form-label">Min Pax</label><input class="form-input" type="number" id="pkgPaxMin" value="1" min="1"></div>
+        <div class="form-group"><label class="form-label">Max Pax</label><input class="form-input" type="number" id="pkgPaxMax" value="99"></div>
+        <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="pkgCurrency"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option><option>GBP</option></select></div>
+        <div class="form-group"><label class="form-label">Base (Cost) Price / pax</label><input class="form-input" type="number" id="pkgBasePrice" placeholder="0"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sell Price / pax (with margin)</label><input class="form-input" type="number" id="pkgSellPrice" placeholder="0"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Inclusions (one per line)</label><textarea class="form-input" id="pkgInclusions" rows="4" placeholder="Visa&#10;Return flights&#10;4-star hotel&#10;Airport transfers"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Exclusions (one per line)</label><textarea class="form-input" id="pkgExclusions" rows="3" placeholder="Travel insurance&#10;Personal expenses"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="pkgNotes" rows="2"></textarea></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="savePkgBtn" onclick="savePkg()">Save Package</button>
+      <span class="save-msg" id="savePkgMsg"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modalPkg')">Cancel</button>
+    </div>
+  </div>
+
+  <!-- TA: ITINERARY MODAL -->
+  <div class="modal" id="modalItin" style="width:640px">
+    <span class="modal-drag"></span>
+    <div class="modal-hd"><div class="modal-title" id="itinModalTitle">New Itinerary</div><button class="icon-btn" onclick="closeModal('modalItin')">✕</button></div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Title *</label><input class="form-input" id="itinTitle" placeholder="e.g. Dubai City Tour 5D4N"></div>
+        <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="itinDest" placeholder="Dubai, UAE"></div>
+        <div class="form-group"><label class="form-label">From Date</label><input class="form-input" type="date" id="itinFrom"></div>
+        <div class="form-group"><label class="form-label">To Date</label><input class="form-input" type="date" id="itinTo"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="itinNotes" rows="2"></textarea></div>
+      </div>
+      <div class="sec-hd">Day-by-Day Plan</div>
+      <div id="itinDaysList"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="saveItinBtn" onclick="saveItin()">Save Itinerary</button>
+      <span class="save-msg" id="saveItinMsg"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modalItin')">Cancel</button>
+    </div>
+  </div>
+
+  <!-- TA: SERVICE CASE MODAL -->
+  <div class="modal" id="modalCase" style="width:540px">
+    <span class="modal-drag"></span>
+    <div class="modal-hd"><div class="modal-title" id="caseModalTitle">New Service Case</div><button class="icon-btn" onclick="closeModal('modalCase')">✕</button></div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label class="form-label">Client Name *</label><input class="form-input" id="caseClientName" placeholder="Full name"></div>
+        <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="caseClientPhone" placeholder="971501234567" type="tel"></div>
+        <div class="form-group"><label class="form-label">Service Type</label><select class="form-input" id="caseType" onchange="updateCaseStages()"><option value="visa">🛂 Visa</option><option value="attestation">📜 Attestation</option><option value="ticketing">✈️ Ticketing</option><option value="insurance">🛡️ Insurance</option><option value="recruitment">👷 Recruitment</option><option value="forex">💱 Forex</option><option value="passport">📘 Passport</option><option value="emigration">🚢 Emigration</option></select></div>
+        <div class="form-group"><label class="form-label">Current Stage</label><select class="form-input" id="caseStage"></select></div>
+        <div class="form-group"><label class="form-label">Reference No.</label><input class="form-input" id="caseRefNo" placeholder="Passport no / PNR etc."></div>
+        <div class="form-group"><label class="form-label">Due Date</label><input class="form-input" type="date" id="caseDueDate"></div>
+        <div class="form-group"><label class="form-label">Fee</label><input class="form-input" type="number" id="caseFee" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Status</label><select class="form-input" id="caseStatus"><option value="open">Open</option><option value="blocked">Blocked</option><option value="closed">Closed</option></select></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="caseNotes" rows="3"></textarea></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="saveCaseBtn" onclick="saveCase()">Save Case</button>
+      <span class="save-msg" id="saveCaseMsg"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modalCase')">Cancel</button>
+    </div>
+  </div>
+
+  <!-- TA: UMRAH GROUP MODAL -->
+  <div class="modal" id="modalUmrah" style="width:580px">
+    <span class="modal-drag"></span>
+    <div class="modal-hd"><div class="modal-title" id="umrahModalTitle">New Umrah Group</div><button class="icon-btn" onclick="closeModal('modalUmrah')">✕</button></div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Group Name *</label><input class="form-input" id="umrahName" placeholder="e.g. Ramadan 2026 Group"></div>
+        <div class="form-group"><label class="form-label">Departure Date</label><input class="form-input" type="date" id="umrahDep"></div>
+        <div class="form-group"><label class="form-label">Return Date</label><input class="form-input" type="date" id="umrahRet"></div>
+        <div class="form-group"><label class="form-label">Total Seats</label><input class="form-input" type="number" id="umrahSeats" placeholder="40"></div>
+        <div class="form-group"><label class="form-label">Price per Pax</label><input class="form-input" type="number" id="umrahPrice" placeholder="0"></div>
+        <div class="sec-hd" style="grid-column:1/-1;margin-top:4px">Hotel Details</div>
+        <div class="form-group"><label class="form-label">Makkah Hotel</label><input class="form-input" id="umrahMakkahHotel" placeholder="Hilton Makkah"></div>
+        <div class="form-group"><label class="form-label">Madinah Hotel</label><input class="form-input" id="umrahMadinahHotel" placeholder="Anwar Al Madinah"></div>
+        <div class="form-group"><label class="form-label">Makkah Nights</label><input class="form-input" type="number" id="umrahMakkahNights" placeholder="5"></div>
+        <div class="form-group"><label class="form-label">Madinah Nights</label><input class="form-input" type="number" id="umrahMadinahNights" placeholder="3"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Transport</label><input class="form-input" id="umrahTransport" placeholder="Bus, Flight details etc."></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="umrahNotes" rows="2"></textarea></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="saveUmrahBtn" onclick="saveUmrah()">Save Group</button>
+      <span class="save-msg" id="saveUmrahMsg"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modalUmrah')">Cancel</button>
+    </div>
+  </div>
+
+  <!-- TA: ADD PILGRIM MODAL -->
+  <div class="modal" id="modalPilgrim" style="width:480px">
+    <span class="modal-drag"></span>
+    <div class="modal-hd"><div class="modal-title">Add Pilgrim</div><button class="icon-btn" onclick="closeModal('modalPilgrim')">✕</button></div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="pilgrimName" placeholder="Full name"></div>
+        <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="pilgrimPhone" type="tel" placeholder="971501234567"></div>
+        <div class="form-group"><label class="form-label">Passport No.</label><input class="form-input" id="pilgrimPassport" placeholder="K1234567"></div>
+        <div class="form-group"><label class="form-label">Room Type</label><select class="form-input" id="pilgrimRoomType"><option value="quad">Quad</option><option value="triple">Triple</option><option value="double">Double</option><option value="single">Single</option></select></div>
+        <div class="form-group" style="grid-column:1/-1">
+          <label class="form-label">Documents Collected</label>
+          <div style="display:flex;gap:16px;margin-top:6px;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="pilgrimHasPassport"> 📘 Passport copy</label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="pilgrimHasPhoto"> 📷 Passport photo</label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="pilgrimHasVaccine"> 💉 Vaccination cert.</label>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="savePilgrimBtn" onclick="savePilgrim()">Add Pilgrim</button>
+      <span class="save-msg" id="savePilgrimMsg"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modalPilgrim')">Cancel</button>
+    </div>
+  </div>
+
+  <!-- TA: BOOKING MODAL -->
+  <div class="modal" id="modalBooking" style="width:560px">
+    <span class="modal-drag"></span>
+    <div class="modal-hd"><div class="modal-title" id="bookingModalTitle">New Quote / Booking</div><button class="icon-btn" onclick="closeModal('modalBooking')">✕</button></div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label class="form-label">Client Name *</label><input class="form-input" id="bookingClientName" placeholder="Full name"></div>
+        <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="bookingClientPhone" type="tel" placeholder="971501234567"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Package / Tour Name</label><input class="form-input" id="bookingPackage" placeholder="Dubai 5N Tour"></div>
+        <div class="form-group"><label class="form-label">Departure Date</label><input class="form-input" type="date" id="bookingDep"></div>
+        <div class="form-group"><label class="form-label">Pax (persons)</label><input class="form-input" type="number" id="bookingPax" value="1" min="1"></div>
+        <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="bookingCurrency"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option></select></div>
+        <div class="form-group"><label class="form-label">Cost Price (total)</label><input class="form-input" type="number" id="bookingCostPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Sell Price (total)</label><input class="form-input" type="number" id="bookingSellPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Deposit Received</label><input class="form-input" type="number" id="bookingDeposit" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Status</label><select class="form-input" id="bookingStatus"><option value="quoted">Quoted</option><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></select></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="bookingNotes" rows="2"></textarea></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="saveBookingBtn" onclick="saveBooking()">Save</button>
+      <span class="save-msg" id="saveBookingMsg"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modalBooking')">Cancel</button>
+    </div>
+  </div>
+
 </div><!-- /app -->
 
 <!-- OVERLAY -->
@@ -1034,6 +1265,7 @@ function navigate(page){
   if(page==='pipeline') renderKanban();
   if(page==='leads') renderLeadsList();
   if(page==='travel') renderTravel();
+  if(page==='agency') renderAgency();
   if(page==='settings') populateSettings();
 }
 
@@ -1050,6 +1282,7 @@ function showApp(){
   $id('app').classList.add('show');
   $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
   applyTheme(clientRecord.industry||'general');
+  updateAgencyTabVisibility();
   loadAll();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
@@ -1570,6 +1803,8 @@ function populateSettings(){
   let stages=[];
   try{stages=flowJsonToStages(JSON.parse(clientRecord.flow_json||'{}'));}catch(e){}
   renderStages(stages);
+  // travel agency
+  initTaSettings();
 }
 
 /* ── SERVICES ── */
@@ -2496,6 +2731,667 @@ async function doMerge(dupId){
   $id('mergeStatus').textContent='✓ Merged';
   setTimeout(()=>{closeModal('modalMerge');closeModal('modalDetail');loadAll();},800);
 }
+
+/* ── TRAVEL AGENCY MODULE ── */
+let _taPage = 'dashboard';
+let _taPackages = [];
+let _taBookings = [];
+let _taCases = [];
+let _taItineraries = [];
+let _taUmrahGroups = [];
+
+function taLoad() {
+  try { _taPackages = JSON.parse(clientRecord.ta_packages || '[]'); } catch(e) { _taPackages = []; }
+  try { _taBookings = JSON.parse(clientRecord.ta_bookings || '[]'); } catch(e) { _taBookings = []; }
+  try { _taCases = JSON.parse(clientRecord.ta_cases || '[]'); } catch(e) { _taCases = []; }
+  try { _taItineraries = JSON.parse(clientRecord.ta_itineraries || '[]'); } catch(e) { _taItineraries = []; }
+  try { _taUmrahGroups = JSON.parse(clientRecord.ta_umrah_groups || '[]'); } catch(e) { _taUmrahGroups = []; }
+}
+
+async function taSave(field, data) {
+  await patchClient({ [field]: JSON.stringify(data) });
+}
+
+function renderAgency() {
+  taLoad();
+  renderAgencySubPage(_taPage);
+}
+
+function renderAgencySubPage(page) {
+  _taPage = page;
+  document.querySelectorAll('.ta-tab').forEach(t => t.classList.toggle('active', t.dataset.ta === page));
+  const el = $id('agencyContent');
+  if (!el) return;
+  switch(page) {
+    case 'dashboard':   el.innerHTML = renderTaDashboard(); break;
+    case 'packages':    el.innerHTML = renderTaPackages(); break;
+    case 'itineraries': el.innerHTML = renderTaItineraries(); break;
+    case 'services':    el.innerHTML = renderTaServices(); break;
+    case 'umrah':       el.innerHTML = renderTaUmrah(); break;
+    case 'bookings':    el.innerHTML = renderTaBookings(); break;
+    case 'finance':     el.innerHTML = renderTaFinance(); break;
+  }
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('.ta-tab');
+  if (t && t.dataset.ta) renderAgencySubPage(t.dataset.ta);
+});
+
+/* ── TA: DASHBOARD ── */
+function renderTaDashboard() {
+  const totalPkg = _taPackages.length;
+  const activeBookings = _taBookings.filter(b => b.status !== 'cancelled' && b.status !== 'completed').length;
+  const pendingCases = _taCases.filter(c => c.status !== 'closed').length;
+  const totalRevenue = _taBookings.filter(b => b.status !== 'cancelled').reduce((s, b) => s + (parseFloat(b.sell_price) || 0), 0);
+  const recentBookings = [..._taBookings].sort((a,b) => (b.created_at||'').localeCompare(a.created_at||'')).slice(0,5);
+  const upcomingDeps = [..._taBookings].filter(b => b.departure_date && b.departure_date >= TODAY && b.status !== 'cancelled').sort((a,b) => a.departure_date.localeCompare(b.departure_date)).slice(0,5);
+  const revK = totalRevenue >= 1000 ? (totalRevenue/1000).toFixed(1)+'k' : totalRevenue.toFixed(0);
+  return `
+  <div style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+    <div class="stat accent"><div class="stat-lbl">Packages</div><div class="stat-val">${totalPkg}</div><div class="stat-sub">in catalogue</div></div>
+    <div class="stat"><div class="stat-lbl">Active Bookings</div><div class="stat-val">${activeBookings}</div><div class="stat-sub">in progress</div></div>
+    <div class="stat"><div class="stat-lbl">Open Cases</div><div class="stat-val">${pendingCases}</div><div class="stat-sub">visa/attest/ticket</div></div>
+    <div class="stat"><div class="stat-lbl">Revenue</div><div class="stat-val">${revK}</div><div class="stat-sub">total booked</div></div>
+  </div>
+  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+    <div class="ta-card">
+      <div class="ta-card-title">🎫 Recent Bookings</div>
+      ${recentBookings.length ? recentBookings.map(b => `
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.client_name||'—')}</div>
+            <div style="font-size:11px;color:var(--muted)">${esc(b.package_name||'Custom')} · ${esc(b.departure_date||'TBD')}</div>
+          </div>
+          <span class="stage-pill ${b.status==='confirmed'||b.status==='completed'?'stage-done':b.status==='cancelled'?'stage-blocked':'stage-pending'}">${esc(b.status||'quoted')}</span>
+        </div>`).join('') : '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No bookings yet</div>'}
+    </div>
+    <div class="ta-card">
+      <div class="ta-card-title">📅 Upcoming Departures</div>
+      ${upcomingDeps.length ? upcomingDeps.map(b => {
+        const d = new Date(b.departure_date);
+        return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px">
+          <div style="width:40px;height:40px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0;font-family:var(--disp)">
+            <span style="font-size:15px;font-weight:700;line-height:1">${d.getDate()}</span>
+            <span style="font-size:8px;font-weight:700;text-transform:uppercase">${d.toLocaleString('en',{month:'short'})}</span>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.client_name||'—')}</div>
+            <div style="font-size:11px;color:var(--muted)">${esc(b.package_name||'Custom')} · ${b.pax||1} pax</div>
+          </div>
+        </div>`;
+      }).join('') : '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No upcoming departures</div>'}
+    </div>
+  </div>
+  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+    <div class="ta-card">
+      <div class="ta-card-title">🗂️ Open Service Cases</div>
+      ${_taCases.filter(c=>c.status!=='closed').slice(0,5).map(c=>`
+        <div class="case-row" style="padding:10px 0">
+          <div class="case-type-icon">${caseIcon(c.type)}</div>
+          <div class="case-body">
+            <div class="case-name">${esc(c.client_name||'—')}</div>
+            <div class="case-sub">${cap(c.type||'case')} · ${esc(c.stage||'pending')}</div>
+          </div>
+          <span class="stage-pill ${c.status==='blocked'?'stage-blocked':'stage-active'}">${esc(c.status||'open')}</span>
+        </div>`).join('') || '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No open cases</div>'}
+    </div>
+    <div class="ta-card">
+      <div class="ta-card-title">🕌 Umrah Groups</div>
+      ${_taUmrahGroups.slice(0,4).map(g=>`
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600">${esc(g.name||'Group')}</div>
+            <div style="font-size:11px;color:var(--muted)">${esc(g.departure_date||'TBD')} · ${(g.pilgrims||[]).length}/${g.seats||0} seats</div>
+          </div>
+          <div style="background:var(--accent-soft);color:var(--accent-ink);padding:3px 8px;border-radius:6px;font-size:10px;font-weight:700;font-family:var(--mono)">${g.seats?Math.round(((g.pilgrims||[]).length/g.seats)*100):0}%</div>
+        </div>`).join('') || '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No groups created</div>'}
+    </div>
+  </div>`;
+}
+
+function caseIcon(type) {
+  const m = { visa:'🛂', attestation:'📜', ticketing:'✈️', insurance:'🛡️', recruitment:'👷', forex:'💱', passport:'📘', emigration:'🚢', umrah:'🕌' };
+  return m[type] || '🗂️';
+}
+
+/* ── TA: PACKAGES ── */
+function renderTaPackages() {
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">📦 Package Catalogue</div>
+    <button class="btn btn-primary btn-sm" onclick="openPkgModal()">+ New Package</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+    ${['','tour','umrah','hajj','hotel','visa','custom'].map((t,i)=>`<button class="btn btn-ghost" onclick="filterPkgs('${t}')" id="pkgF_${t||'all'}" style="${i===0?'border-color:var(--accent);color:var(--accent)':''}">${t?cap(t):'All'}</button>`).join('')}
+  </div>
+  <div id="pkgGrid" style="display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
+    ${_taPackages.length ? _taPackages.map((p,i) => renderPkgCard(p,i)).join('') : '<div style="grid-column:1/-1;text-align:center;padding:52px 24px;color:var(--muted);font-size:13px"><div style="font-size:36px;margin-bottom:10px">📦</div>No packages yet.<br>Create your first package to get started.</div>'}
+  </div>`;
+}
+
+function renderPkgCard(p, i) {
+  const inc = (p.inclusions||[]).slice(0,3);
+  const margin = p.sell_price && p.base_price && parseFloat(p.sell_price)>parseFloat(p.base_price) ? Math.round((parseFloat(p.sell_price)-parseFloat(p.base_price))/parseFloat(p.sell_price)*100) : 0;
+  return `
+  <div class="pkg-card" onclick="openPkgModal(${i})">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
+      <span class="pkg-type-badge">${esc(p.type||'tour')}</span>
+      <button onclick="event.stopPropagation();deletePkg(${i})" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Delete">✕</button>
+    </div>
+    <div class="pkg-name">${esc(p.name||'—')}</div>
+    <div class="pkg-meta">${esc(p.destination||'—')} · ${p.nights||0} nights · ${p.pax_min||1}–${p.pax_max||99} pax</div>
+    ${inc.length ? `<div style="margin-bottom:10px">${inc.map(x=>`<div style="font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px;margin-bottom:3px">✓ ${esc(x)}</div>`).join('')}${(p.inclusions||[]).length>3?`<div style="font-size:11px;color:var(--accent-ink)">+${(p.inclusions||[]).length-3} more</div>`:''}</div>` : ''}
+    <div style="display:flex;align-items:baseline;gap:4px;margin-top:auto">
+      <span class="pkg-price">${esc(p.currency||'AED')} ${(parseFloat(p.sell_price||p.base_price)||0).toLocaleString()}</span>
+      <span class="pkg-price-sub">/ person</span>
+    </div>
+    ${margin>0 ? `<div style="font-size:10px;color:#166534;margin-top:2px">Cost: ${esc(p.currency||'AED')} ${parseFloat(p.base_price).toLocaleString()} · Margin: ${margin}%</div>` : ''}
+  </div>`;
+}
+
+function filterPkgs(type) {
+  document.querySelectorAll('[id^="pkgF_"]').forEach(b => { b.style.borderColor=''; b.style.color=''; });
+  const active = $id('pkgF_'+(type||'all'));
+  if (active) { active.style.borderColor='var(--accent)'; active.style.color='var(--accent)'; }
+  const grid = $id('pkgGrid');
+  if (!grid) return;
+  const filtered = type ? _taPackages.filter(p => p.type === type) : _taPackages;
+  grid.innerHTML = filtered.length ? filtered.map((p) => renderPkgCard(p, _taPackages.indexOf(p))).join('') : '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted);font-size:13px">No packages in this category</div>';
+}
+
+let _editPkgIdx = -1;
+function openPkgModal(idx) {
+  _editPkgIdx = (idx !== undefined) ? idx : -1;
+  const p = (_editPkgIdx >= 0) ? _taPackages[_editPkgIdx] : {};
+  $id('pkgModalTitle').textContent = _editPkgIdx >= 0 ? 'Edit Package' : 'New Package';
+  $id('pkgName').value = p.name||''; $id('pkgType').value = p.type||'tour';
+  $id('pkgDest').value = p.destination||''; $id('pkgNights').value = p.nights||'';
+  $id('pkgPaxMin').value = p.pax_min||1; $id('pkgPaxMax').value = p.pax_max||99;
+  $id('pkgCurrency').value = p.currency||'AED'; $id('pkgBasePrice').value = p.base_price||'';
+  $id('pkgSellPrice').value = p.sell_price||'';
+  $id('pkgInclusions').value = (p.inclusions||[]).join('\n');
+  $id('pkgExclusions').value = (p.exclusions||[]).join('\n');
+  $id('pkgNotes').value = p.notes||'';
+  openModal('modalPkg');
+}
+
+async function savePkg() {
+  const btn=$id('savePkgBtn'), msg=$id('savePkgMsg');
+  btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+  const p = {
+    name:$id('pkgName').value.trim(), type:$id('pkgType').value,
+    destination:$id('pkgDest').value.trim(), nights:parseInt($id('pkgNights').value)||0,
+    pax_min:parseInt($id('pkgPaxMin').value)||1, pax_max:parseInt($id('pkgPaxMax').value)||99,
+    currency:$id('pkgCurrency').value, base_price:parseFloat($id('pkgBasePrice').value)||0,
+    sell_price:parseFloat($id('pkgSellPrice').value)||0,
+    inclusions:$id('pkgInclusions').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    exclusions:$id('pkgExclusions').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    notes:$id('pkgNotes').value.trim(), created_at:new Date().toISOString().slice(0,10),
+  };
+  if (!p.name) { msg.textContent='Name required'; msg.className='save-msg err'; btn.disabled=false; return; }
+  try {
+    if (_editPkgIdx>=0) _taPackages[_editPkgIdx]=p; else _taPackages.push(p);
+    await taSave('ta_packages',_taPackages);
+    msg.textContent='✓ Saved'; setTimeout(()=>{closeModal('modalPkg');renderAgencySubPage('packages');},600);
+  } catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deletePkg(i) {
+  if (!confirm('Delete this package?')) return;
+  _taPackages.splice(i,1); await taSave('ta_packages',_taPackages); renderAgencySubPage('packages');
+}
+
+/* ── TA: ITINERARIES ── */
+let _editItinIdx = -1;
+let _itinDays = [];
+
+function renderTaItineraries() {
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🗺️ Itineraries</div>
+    <button class="btn btn-primary btn-sm" onclick="openItinModal()">+ New Itinerary</button>
+  </div>
+  ${_taItineraries.length ? _taItineraries.map((it,i) => `
+    <div class="itin-card">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
+        <div>
+          <div style="font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:3px">${esc(it.title||'—')}</div>
+          <div style="font-size:11.5px;color:var(--muted)">${esc(it.destination||'—')} · ${(it.days||[]).length} days · Created ${esc(it.created_at||'')}</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-secondary btn-sm" onclick="openItinModal(${i})">Edit</button>
+          <button onclick="deleteItin(${i})" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;padding:0 4px">✕</button>
+        </div>
+      </div>
+      ${(it.days||[]).slice(0,2).map(d=>`
+        <div class="itin-day">
+          <div class="itin-day-hd">Day ${d.day_no}: ${esc(d.title||'')}</div>
+          ${(d.items||[]).slice(0,3).map(item=>`<div class="itin-item"><div class="itin-item-icon">${itinItemIcon(item.type)}</div><div>${esc(item.description||'')}</div></div>`).join('')}
+        </div>`).join('')}
+      ${(it.days||[]).length>2?`<div style="font-size:11px;color:var(--accent-ink);margin-top:6px">+${(it.days||[]).length-2} more days…</div>`:''}
+    </div>`).join('') : '<div style="text-align:center;padding:52px 24px;color:var(--muted);font-size:13px"><div style="font-size:36px;margin-bottom:10px">🗺️</div>No itineraries yet.<br>Build your first day-by-day itinerary.</div>'}`;
+}
+
+function itinItemIcon(type) {
+  const m={activity:'🎯',transfer:'🚌',hotel:'🏨',meal:'🍽️',note:'📝',flight:'✈️'};
+  return m[type]||'📌';
+}
+
+function openItinModal(idx) {
+  _editItinIdx = (idx!==undefined)?idx:-1;
+  const it = (_editItinIdx>=0)?_taItineraries[_editItinIdx]:{};
+  _itinDays = JSON.parse(JSON.stringify(it.days||[]));
+  $id('itinModalTitle').textContent = _editItinIdx>=0?'Edit Itinerary':'New Itinerary';
+  $id('itinTitle').value=it.title||''; $id('itinDest').value=it.destination||'';
+  $id('itinFrom').value=it.from_date||''; $id('itinTo').value=it.to_date||'';
+  $id('itinNotes').value=it.notes||'';
+  renderItinDays(); openModal('modalItin');
+}
+
+function renderItinDays() {
+  $id('itinDaysList').innerHTML = _itinDays.map((d,di)=>`
+    <div style="background:var(--bg);border-radius:var(--r-sm);padding:14px;margin-bottom:10px;border-left:3px solid var(--accent)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="font-family:var(--mono);font-size:10px;font-weight:700;color:var(--accent-ink);background:var(--accent-soft);padding:2px 8px;border-radius:5px">Day ${d.day_no}</span>
+        <input class="form-input" style="flex:1;padding:6px 10px;font-size:13px" placeholder="Day title" value="${esc(d.title||'')}" oninput="_itinDays[${di}].title=this.value">
+        <button onclick="removeItinDay(${di})" style="background:none;border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;color:var(--muted)">✕</button>
+      </div>
+      ${(d.items||[]).map((item,ii)=>`
+        <div style="display:grid;grid-template-columns:100px 1fr auto;gap:6px;margin-bottom:6px;align-items:center">
+          <select class="form-input" style="padding:5px 8px;font-size:12px" onchange="_itinDays[${di}].items[${ii}].type=this.value">
+            ${['activity','transfer','hotel','meal','flight','note'].map(t=>`<option value="${t}" ${item.type===t?'selected':''}>${cap(t)}</option>`).join('')}
+          </select>
+          <input class="form-input" style="padding:6px 10px;font-size:13px" placeholder="Description" value="${esc(item.description||'')}" oninput="_itinDays[${di}].items[${ii}].description=this.value">
+          <button onclick="removeItinItem(${di},${ii})" style="background:none;border:1px solid var(--line);border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--muted);font-size:12px">✕</button>
+        </div>`).join('')}
+      <button onclick="addItinItem(${di})" style="width:100%;padding:7px;border:1.5px dashed var(--ls);border-radius:6px;background:none;cursor:pointer;color:var(--muted);font-size:12px">+ Add Item</button>
+    </div>`).join('')+'<button onclick="addItinDay()" style="width:100%;padding:10px;border:2px dashed var(--ls);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px;margin-top:4px">+ Add Day</button>';
+}
+
+function addItinDay(){_itinDays.push({day_no:_itinDays.length+1,title:'',items:[]});renderItinDays();}
+function removeItinDay(i){_itinDays.splice(i,1);_itinDays.forEach((d,j)=>d.day_no=j+1);renderItinDays();}
+function addItinItem(di){_itinDays[di].items.push({type:'activity',description:''});renderItinDays();}
+function removeItinItem(di,ii){_itinDays[di].items.splice(ii,1);renderItinDays();}
+
+async function saveItin() {
+  const btn=$id('saveItinBtn'),msg=$id('saveItinMsg');
+  btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:$id('itinFrom').value,to_date:$id('itinTo').value,notes:$id('itinNotes').value.trim(),days:_itinDays,created_at:new Date().toISOString().slice(0,10)};
+  if(!it.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editItinIdx>=0)_taItineraries[_editItinIdx]=it;else _taItineraries.push(it);
+    await taSave('ta_itineraries',_taItineraries);
+    msg.textContent='✓ Saved';setTimeout(()=>{closeModal('modalItin');renderAgencySubPage('itineraries');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteItin(i){
+  if(!confirm('Delete this itinerary?'))return;
+  _taItineraries.splice(i,1);await taSave('ta_itineraries',_taItineraries);renderAgencySubPage('itineraries');
+}
+
+/* ── TA: SERVICES ── */
+const TA_CASE_STAGES = {
+  visa:['document_collection','application_submitted','medical','stamping','delivered'],
+  attestation:['notary','home_dept','mea','embassy','delivered'],
+  ticketing:['fare_search','booking','ticketed','delivered'],
+  insurance:['quote','payment','policy_issued','delivered'],
+  recruitment:['qualification','job_match','offer','visa','deployment'],
+  forex:['order','payment','delivered'],
+  passport:['application','verification','delivered'],
+  emigration:['document_collection','processing','clearance','delivered'],
+};
+
+function renderTaServices() {
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🗂️ Service Cases</div>
+    <button class="btn btn-primary btn-sm" onclick="openCaseModal()">+ New Case</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+    <button class="btn btn-ghost" onclick="filterCases('')" style="border-color:var(--accent);color:var(--accent)">All (${_taCases.length})</button>
+    ${Object.keys(TA_CASE_STAGES).map(t=>`<button class="btn btn-ghost" onclick="filterCases('${t}')">${caseIcon(t)} ${cap(t)} (${_taCases.filter(c=>c.type===t).length})</button>`).join('')}
+  </div>
+  <div class="ta-card" style="padding:0;overflow:hidden">
+    <div id="caseList">
+      ${_taCases.length?_taCases.map((c,i)=>renderCaseRow(c,i)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No service cases yet</div>'}
+    </div>
+  </div>`;
+}
+
+function renderCaseRow(c,i){
+  const stages=TA_CASE_STAGES[c.type]||[];
+  const stageIdx=stages.indexOf(c.stage);
+  const pct=stages.length?Math.round(((stageIdx+1)/stages.length)*100):0;
+  return `
+  <div class="case-row" onclick="openCaseModal(${i})">
+    <div class="case-type-icon">${caseIcon(c.type)}</div>
+    <div class="case-body">
+      <div class="case-name">${esc(c.client_name||'—')}</div>
+      <div class="case-sub">${cap(c.type||'case')} · ${esc(c.ref_no||'')} · ${esc((c.stage||'pending').replace(/_/g,' '))}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:5px">
+        <div style="flex:1;height:4px;background:var(--bg);border-radius:3px;overflow:hidden"><div style="height:100%;background:var(--accent);border-radius:3px;width:${pct}%"></div></div>
+        <span style="font-size:10px;color:var(--muted);font-family:var(--mono)">${pct}%</span>
+      </div>
+    </div>
+    <div style="text-align:right;flex-shrink:0">
+      <span class="stage-pill ${c.status==='closed'?'stage-done':c.status==='blocked'?'stage-blocked':'stage-active'}">${esc(c.status||'open')}</span>
+      ${c.due_date?`<div style="font-size:10px;color:var(--muted);margin-top:4px;font-family:var(--mono)">${esc(c.due_date)}</div>`:''}
+    </div>
+  </div>`;
+}
+
+function filterCases(type){
+  const list=$id('caseList');if(!list)return;
+  const filtered=type?_taCases.filter(c=>c.type===type):_taCases;
+  list.innerHTML=filtered.length?filtered.map((c)=>renderCaseRow(c,_taCases.indexOf(c))).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No cases</div>';
+}
+
+let _editCaseIdx=-1;
+function openCaseModal(idx){
+  _editCaseIdx=(idx!==undefined)?idx:-1;
+  const c=(_editCaseIdx>=0)?_taCases[_editCaseIdx]:{};
+  $id('caseModalTitle').textContent=_editCaseIdx>=0?'Edit Case':'New Service Case';
+  $id('caseClientName').value=c.client_name||''; $id('caseClientPhone').value=c.client_phone||'';
+  $id('caseType').value=c.type||'visa'; $id('caseRefNo').value=c.ref_no||'';
+  $id('caseDueDate').value=c.due_date||''; $id('caseFee').value=c.fee||'';
+  $id('caseStatus').value=c.status||'open'; $id('caseNotes').value=c.notes||'';
+  updateCaseStages(); $id('caseStage').value=c.stage||'';
+  openModal('modalCase');
+}
+
+function updateCaseStages(){
+  const type=$id('caseType').value;
+  const stages=TA_CASE_STAGES[type]||[];
+  $id('caseStage').innerHTML=stages.map(s=>`<option value="${s}">${s.replace(/_/g,' ')}</option>`).join('');
+}
+
+async function saveCase(){
+  const btn=$id('saveCaseBtn'),msg=$id('saveCaseMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const c={client_name:$id('caseClientName').value.trim(),client_phone:$id('caseClientPhone').value.trim(),type:$id('caseType').value,ref_no:$id('caseRefNo').value.trim(),stage:$id('caseStage').value,due_date:$id('caseDueDate').value,fee:parseFloat($id('caseFee').value)||0,status:$id('caseStatus').value,notes:$id('caseNotes').value.trim(),created_at:new Date().toISOString().slice(0,10)};
+  if(!c.client_name){msg.textContent='Client name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editCaseIdx>=0)_taCases[_editCaseIdx]=c;else _taCases.push(c);
+    await taSave('ta_cases',_taCases);
+    msg.textContent='✓ Saved';setTimeout(()=>{closeModal('modalCase');renderAgencySubPage('services');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteCase(i){
+  if(!confirm('Delete this case?'))return;
+  _taCases.splice(i,1);await taSave('ta_cases',_taCases);renderAgencySubPage('services');
+}
+
+/* ── TA: UMRAH ── */
+let _editUmrahIdx=-1;
+let _editPilgrimGroupIdx=-1;
+
+function renderTaUmrah(){
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🕌 Umrah & Hajj Groups</div>
+    <button class="btn btn-primary btn-sm" onclick="openUmrahModal()">+ New Group</button>
+  </div>
+  ${_taUmrahGroups.length?_taUmrahGroups.map((g,i)=>`
+    <div class="ta-card">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px">
+        <div>
+          <div style="font-family:var(--disp);font-size:15px;font-weight:700">${esc(g.name||'Group')}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">Departure: ${esc(g.departure_date||'TBD')} · Return: ${esc(g.return_date||'TBD')}</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <div style="font-family:var(--disp);font-size:11px;background:var(--accent-soft);color:var(--accent-ink);padding:4px 10px;border-radius:8px">${(g.pilgrims||[]).length}/${g.seats||0} seats</div>
+          <button class="btn btn-secondary btn-sm" onclick="openUmrahModal(${i})">Edit</button>
+          <button onclick="deleteUmrahGroup(${i})" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px">✕</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+        <div style="text-align:center;background:var(--bg);border-radius:8px;padding:10px"><div style="font-family:var(--disp);font-size:13px;font-weight:700;margin-bottom:2px">${esc(g.makkah_hotel||'—')}</div><div style="font-size:10px;color:var(--muted)">Makkah Hotel</div></div>
+        <div style="text-align:center;background:var(--bg);border-radius:8px;padding:10px"><div style="font-family:var(--disp);font-size:13px;font-weight:700;margin-bottom:2px">${esc(g.madinah_hotel||'—')}</div><div style="font-size:10px;color:var(--muted)">Madinah Hotel</div></div>
+        <div style="text-align:center;background:var(--bg);border-radius:8px;padding:10px"><div style="font-family:var(--disp);font-size:18px;font-weight:700">${g.makkah_nights||0}</div><div style="font-size:10px;color:var(--muted)">Makkah Nights</div></div>
+        <div style="text-align:center;background:var(--bg);border-radius:8px;padding:10px"><div style="font-family:var(--disp);font-size:18px;font-weight:700">${g.madinah_nights||0}</div><div style="font-size:10px;color:var(--muted)">Madinah Nights</div></div>
+      </div>
+      <div style="font-family:var(--disp);font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+        <span>Pilgrims (${(g.pilgrims||[]).length})</span>
+        <button onclick="openAddPilgrimModal(${i})" class="btn btn-secondary btn-sm">+ Add Pilgrim</button>
+      </div>
+      ${(g.pilgrims||[]).length?`<div style="max-height:240px;overflow-y:auto">${g.pilgrims.map((p,pi)=>`
+        <div class="pilgrim-row">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:13px">${esc(p.name||'—')}</div>
+            <div style="font-size:11px;color:var(--muted)">${maskPhone(p.phone)} · ${esc(p.passport_no||'')} · ${esc(p.room_type||'')}</div>
+          </div>
+          <div>
+            <span class="doc-pill ${p.passport?'doc-ok':'doc-missing'}">📘</span>
+            <span class="doc-pill ${p.photo?'doc-ok':'doc-missing'}">📷</span>
+            <span class="doc-pill ${p.vaccine?'doc-ok':'doc-missing'}">💉</span>
+            <span class="doc-pill ${p.visa?'doc-ok':'doc-missing'}">🛂</span>
+          </div>
+        </div>`).join('')}</div>`:'<div style="color:var(--muted);font-size:13px;text-align:center;padding:14px 0">No pilgrims added yet</div>'}
+    </div>`).join(''):'<div style="text-align:center;padding:52px 24px;color:var(--muted);font-size:13px"><div style="font-size:36px;margin-bottom:10px">🕌</div>No Umrah groups yet.<br>Create your first group departure.</div>'}`;
+}
+
+function openUmrahModal(idx){
+  _editUmrahIdx=(idx!==undefined)?idx:-1;
+  const g=(_editUmrahIdx>=0)?_taUmrahGroups[_editUmrahIdx]:{};
+  $id('umrahModalTitle').textContent=_editUmrahIdx>=0?'Edit Group':'New Umrah Group';
+  $id('umrahName').value=g.name||''; $id('umrahDep').value=g.departure_date||'';
+  $id('umrahRet').value=g.return_date||''; $id('umrahSeats').value=g.seats||'';
+  $id('umrahMakkahHotel').value=g.makkah_hotel||''; $id('umrahMadinahHotel').value=g.madinah_hotel||'';
+  $id('umrahMakkahNights').value=g.makkah_nights||''; $id('umrahMadinahNights').value=g.madinah_nights||'';
+  $id('umrahTransport').value=g.transport||''; $id('umrahPrice').value=g.price_per_pax||'';
+  $id('umrahNotes').value=g.notes||'';
+  openModal('modalUmrah');
+}
+
+async function saveUmrah(){
+  const btn=$id('saveUmrahBtn'),msg=$id('saveUmrahMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const existing=(_editUmrahIdx>=0)?_taUmrahGroups[_editUmrahIdx]:{};
+  const g={...existing,name:$id('umrahName').value.trim(),departure_date:$id('umrahDep').value,return_date:$id('umrahRet').value,seats:parseInt($id('umrahSeats').value)||0,makkah_hotel:$id('umrahMakkahHotel').value.trim(),madinah_hotel:$id('umrahMadinahHotel').value.trim(),makkah_nights:parseInt($id('umrahMakkahNights').value)||0,madinah_nights:parseInt($id('umrahMadinahNights').value)||0,transport:$id('umrahTransport').value.trim(),price_per_pax:parseFloat($id('umrahPrice').value)||0,notes:$id('umrahNotes').value.trim(),pilgrims:existing.pilgrims||[],created_at:existing.created_at||new Date().toISOString().slice(0,10)};
+  if(!g.name){msg.textContent='Group name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editUmrahIdx>=0)_taUmrahGroups[_editUmrahIdx]=g;else _taUmrahGroups.push(g);
+    await taSave('ta_umrah_groups',_taUmrahGroups);
+    msg.textContent='✓ Saved';setTimeout(()=>{closeModal('modalUmrah');renderAgencySubPage('umrah');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteUmrahGroup(i){
+  if(!confirm('Delete this group?'))return;
+  _taUmrahGroups.splice(i,1);await taSave('ta_umrah_groups',_taUmrahGroups);renderAgencySubPage('umrah');
+}
+
+function openAddPilgrimModal(groupIdx){
+  _editPilgrimGroupIdx=groupIdx;
+  ['pilgrimName','pilgrimPhone','pilgrimPassport'].forEach(id=>$id(id).value='');
+  $id('pilgrimRoomType').value='quad';
+  ['pilgrimHasPassport','pilgrimHasPhoto','pilgrimHasVaccine'].forEach(id=>$id(id).checked=false);
+  openModal('modalPilgrim');
+}
+
+async function savePilgrim(){
+  const btn=$id('savePilgrimBtn'),msg=$id('savePilgrimMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const p={name:$id('pilgrimName').value.trim(),phone:$id('pilgrimPhone').value.trim(),passport_no:$id('pilgrimPassport').value.trim(),room_type:$id('pilgrimRoomType').value,passport:$id('pilgrimHasPassport').checked,photo:$id('pilgrimHasPhoto').checked,vaccine:$id('pilgrimHasVaccine').checked,visa:false,added_at:new Date().toISOString().slice(0,10)};
+  if(!p.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    _taUmrahGroups[_editPilgrimGroupIdx].pilgrims=_taUmrahGroups[_editPilgrimGroupIdx].pilgrims||[];
+    _taUmrahGroups[_editPilgrimGroupIdx].pilgrims.push(p);
+    await taSave('ta_umrah_groups',_taUmrahGroups);
+    msg.textContent='✓ Added';setTimeout(()=>{closeModal('modalPilgrim');renderAgencySubPage('umrah');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+/* ── TA: BOOKINGS ── */
+let _editBookingIdx=-1;
+
+function renderTaBookings(){
+  const byStatus={quoted:0,confirmed:0,completed:0,cancelled:0};
+  _taBookings.forEach(b=>{if(byStatus[b.status]!==undefined)byStatus[b.status]++;});
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🎫 Bookings & Quotes</div>
+    <button class="btn btn-primary btn-sm" onclick="openBookingModal()">+ New Quote</button>
+  </div>
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+    ${[['quoted','Quoted','#FEF3C7','#92400E'],['confirmed','Confirmed','#DCFCE7','#166534'],['completed','Completed','var(--accent-soft)','var(--accent-ink)'],['cancelled','Cancelled','#FEE2E2','#991B1B']].map(([s,l,bg,col])=>`
+      <div style="background:${bg};border-radius:var(--r-sm);padding:12px 14px">
+        <div style="font-size:10px;font-weight:700;color:${col};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
+        <div style="font-family:var(--disp);font-size:22px;font-weight:700;color:${col}">${byStatus[s]||0}</div>
+      </div>`).join('')}
+  </div>
+  <div class="ta-card" style="padding:0;overflow:hidden">
+    <div id="bookingList">
+      ${_taBookings.length?_taBookings.map((b,i)=>renderBookingRow(b,i)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No bookings yet</div>'}
+    </div>
+  </div>`;
+}
+
+function renderBookingRow(b,i){
+  const paid=parseFloat(b.deposit)||0,total=parseFloat(b.sell_price)||0;
+  const pct=total?Math.round((paid/total)*100):0;
+  return `
+  <div class="booking-row" onclick="openBookingModal(${i})">
+    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🎫</div>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.client_name||'—')}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(b.package_name||'Custom')} · ${esc(b.departure_date||'TBD')} · ${b.pax||1} pax</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:5px">
+        <div class="payment-bar-wrap"><div class="payment-bar-fill" style="width:${pct}%"></div></div>
+        <span style="font-size:10px;color:var(--muted);white-space:nowrap">${pct}% paid</span>
+      </div>
+    </div>
+    <div style="text-align:right;flex-shrink:0">
+      <div style="font-family:var(--disp);font-size:14px;font-weight:700">${esc(b.currency||'AED')} ${total.toLocaleString()}</div>
+      <span class="stage-pill ${b.status==='confirmed'||b.status==='completed'?'stage-done':b.status==='cancelled'?'stage-blocked':'stage-pending'}" style="margin-top:4px">${esc(b.status||'quoted')}</span>
+    </div>
+  </div>`;
+}
+
+function openBookingModal(idx){
+  _editBookingIdx=(idx!==undefined)?idx:-1;
+  const b=(_editBookingIdx>=0)?_taBookings[_editBookingIdx]:{};
+  $id('bookingModalTitle').textContent=_editBookingIdx>=0?'Edit Booking':'New Quote / Booking';
+  $id('bookingClientName').value=b.client_name||''; $id('bookingClientPhone').value=b.client_phone||'';
+  $id('bookingPackage').value=b.package_name||''; $id('bookingDep').value=b.departure_date||'';
+  $id('bookingPax').value=b.pax||1; $id('bookingCurrency').value=b.currency||'AED';
+  $id('bookingCostPrice').value=b.cost_price||''; $id('bookingSellPrice').value=b.sell_price||'';
+  $id('bookingDeposit').value=b.deposit||''; $id('bookingStatus').value=b.status||'quoted';
+  $id('bookingNotes').value=b.notes||'';
+  openModal('modalBooking');
+}
+
+async function saveBooking(){
+  const btn=$id('saveBookingBtn'),msg=$id('saveBookingMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const b={client_name:$id('bookingClientName').value.trim(),client_phone:$id('bookingClientPhone').value.trim(),package_name:$id('bookingPackage').value.trim(),departure_date:$id('bookingDep').value,pax:parseInt($id('bookingPax').value)||1,currency:$id('bookingCurrency').value,cost_price:parseFloat($id('bookingCostPrice').value)||0,sell_price:parseFloat($id('bookingSellPrice').value)||0,deposit:parseFloat($id('bookingDeposit').value)||0,status:$id('bookingStatus').value,notes:$id('bookingNotes').value.trim(),created_at:(_editBookingIdx>=0?_taBookings[_editBookingIdx].created_at:null)||new Date().toISOString().slice(0,10)};
+  if(!b.client_name){msg.textContent='Client name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editBookingIdx>=0)_taBookings[_editBookingIdx]=b;else _taBookings.push(b);
+    await taSave('ta_bookings',_taBookings);
+    msg.textContent='✓ Saved';setTimeout(()=>{closeModal('modalBooking');renderAgencySubPage('bookings');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteBooking(i){
+  if(!confirm('Delete this booking?'))return;
+  _taBookings.splice(i,1);await taSave('ta_bookings',_taBookings);renderAgencySubPage('bookings');
+}
+
+/* ── TA: FINANCE ── */
+function renderTaFinance(){
+  const allTxns=[
+    ..._taBookings.filter(b=>b.status!=='cancelled').map(b=>({date:b.created_at,desc:`Booking: ${b.client_name} – ${b.package_name||'Custom'}`,amount:parseFloat(b.sell_price)||0,cost:parseFloat(b.cost_price)||0,type:'booking'})),
+    ..._taCases.filter(c=>c.fee>0).map(c=>({date:c.created_at,desc:`${cap(c.type||'case')}: ${c.client_name}`,amount:parseFloat(c.fee)||0,cost:0,type:'case'})),
+  ].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  const totalRev=allTxns.reduce((s,t)=>s+t.amount,0);
+  const totalCost=allTxns.reduce((s,t)=>s+t.cost,0);
+  const totalMargin=totalRev-totalCost;
+  const marginPct=totalRev?Math.round(totalMargin/totalRev*100):0;
+  const byType={};
+  allTxns.forEach(t=>{byType[t.type]=(byType[t.type]||0)+t.amount;});
+  const pendingPay=_taBookings.filter(b=>b.status!=='cancelled'&&b.status!=='completed'&&parseFloat(b.sell_price)>parseFloat(b.deposit||0));
+  return `
+  <div style="font-family:var(--disp);font-size:16px;font-weight:700;margin-bottom:14px">💰 Finance</div>
+  <div style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+    <div class="stat accent"><div class="stat-lbl">Total Revenue</div><div class="stat-val">${(totalRev/1000).toFixed(1)}k</div><div class="stat-sub">bookings + cases</div></div>
+    <div class="stat"><div class="stat-lbl">Total Cost</div><div class="stat-val">${(totalCost/1000).toFixed(1)}k</div><div class="stat-sub">cost of services</div></div>
+    <div class="stat"><div class="stat-lbl">Gross Margin</div><div class="stat-val">${(totalMargin/1000).toFixed(1)}k</div><div class="stat-sub">${marginPct}% margin</div></div>
+    <div class="stat"><div class="stat-lbl">Transactions</div><div class="stat-val">${allTxns.length}</div><div class="stat-sub">total records</div></div>
+  </div>
+  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+    <div class="ta-card">
+      <div class="ta-card-title">📊 Revenue by Category</div>
+      ${Object.entries(byType).map(([t,v])=>`
+        <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px">
+          <span style="min-width:100px">${caseIcon(t)} ${cap(t)}</span>
+          <div style="flex:1;height:6px;background:var(--bg);border-radius:4px;overflow:hidden"><div style="height:100%;background:var(--accent);border-radius:4px;width:${totalRev?Math.round((v/totalRev)*100):0}%"></div></div>
+          <span style="font-family:var(--mono);font-size:12px;font-weight:700;min-width:60px;text-align:right">${v.toLocaleString()}</span>
+        </div>`).join('')||'<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No data yet</div>'}
+    </div>
+    <div class="ta-card">
+      <div class="ta-card-title">💳 Pending Payments</div>
+      ${pendingPay.slice(0,6).map(b=>{
+        const bal=(parseFloat(b.sell_price)||0)-(parseFloat(b.deposit)||0);
+        return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px">
+          <div style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.client_name||'—')}</div>
+          <span style="font-family:var(--mono);font-weight:700;color:#991B1B;white-space:nowrap">${esc(b.currency||'AED')} ${bal.toLocaleString()} due</span>
+        </div>`;
+      }).join('')||'<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">All clear</div>'}
+    </div>
+  </div>
+  <div class="ta-card">
+    <div class="ta-card-title">📋 Transaction Ledger</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Date</th><th>Description</th><th>Revenue</th><th>Cost</th><th>Margin</th></tr></thead>
+        <tbody>
+          ${allTxns.slice(0,50).map(t=>`
+            <tr>
+              <td style="font-family:var(--mono);font-size:11px;white-space:nowrap">${esc(t.date||'—')}</td>
+              <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.desc)}</td>
+              <td class="ledger-credit">${t.amount.toLocaleString()}</td>
+              <td style="font-family:var(--mono);color:var(--muted)">${t.cost?t.cost.toLocaleString():'—'}</td>
+              <td style="font-family:var(--mono);font-weight:700;color:${(t.amount-t.cost)>=0?'#166534':'#991B1B'}">${(t.amount-t.cost).toLocaleString()}</td>
+            </tr>`).join('')}
+          ${!allTxns.length?'<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:30px">No transactions</td></tr>':''}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+/* ── TA: SETTINGS ── */
+function initTaSettings(){
+  $id('cfgTaEnabled').value=clientRecord.ta_enabled||'No';
+  updateAgencyTabVisibility();
+}
+
+function updateAgencyTabVisibility(){
+  const enabled=(clientRecord.ta_enabled==='Yes');
+  [$id('dnAgencyTab'),$id('bnAgencyTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+}
+
+$id('saveTaEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveTaEnabled'),msg=$id('saveTaEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    clientRecord.ta_enabled=$id('cfgTaEnabled').value;
+    await patchClient({ta_enabled:clientRecord.ta_enabled});
+    updateAgencyTabVisibility();
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error';msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
 
 /* ── BOOT ── */
 (function(){
