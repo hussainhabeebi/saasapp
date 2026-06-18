@@ -3367,7 +3367,7 @@ function renderBookingRow(b){
   const paid=parseFloat(b.deposit)||0,total=parseFloat(b.sell_price)||0;
   const pct=total?Math.round((paid/total)*100):0;
   return `
-  <div class="booking-row" onclick="openBookingModal('${b.Id}')">`
+  <div class="booking-row" onclick="openBookingModal('${b.Id}')">
     <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🎫</div>
     <div style="flex:1;min-width:0">
       <div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.client_name||'—')}</div>
