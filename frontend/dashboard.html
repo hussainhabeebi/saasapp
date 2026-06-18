@@ -2739,23 +2739,137 @@ let _taBookings = [];
 let _taCases = [];
 let _taItineraries = [];
 let _taUmrahGroups = [];
+let _taLoaded = false;
 
-function taLoad() {
-  try { _taPackages = JSON.parse(clientRecord.ta_packages || '[]'); } catch(e) { _taPackages = []; }
-  try { _taBookings = JSON.parse(clientRecord.ta_bookings || '[]'); } catch(e) { _taBookings = []; }
-  try { _taCases = JSON.parse(clientRecord.ta_cases || '[]'); } catch(e) { _taCases = []; }
-  try { _taItineraries = JSON.parse(clientRecord.ta_itineraries || '[]'); } catch(e) { _taItineraries = []; }
-  try { _taUmrahGroups = JSON.parse(clientRecord.ta_umrah_groups || '[]'); } catch(e) { _taUmrahGroups = []; }
+/* ── TA: TABLE IDS & CRUD HELPERS ── */
+function taTableIds(){
+  try{return JSON.parse(clientRecord.ta_table_ids||'{}');}catch(e){return{};}
+}
+function taTablesReady(){
+  const ids=taTableIds();
+  return !!(ids.packages&&ids.bookings&&ids.cases&&ids.itineraries&&ids.umrah_groups);
+}
+function safeJson(s,def=[]){try{return JSON.parse(s||'null')||def;}catch(e){return def;}}
+
+async function taFetch(key){
+  const id=taTableIds()[key];
+  if(!id)return[];
+  const d=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records?where=(client_id,eq,${clientId})&limit=500&sort=-CreatedAt`);
+  return d.list||[];
+}
+async function taCreate(key,record){
+  const id=taTableIds()[key];
+  return ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{...record,client_id:String(clientId)});
+}
+async function taUpdate(key,rowId,record){
+  const id=taTableIds()[key];
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{Id:rowId,...record});
+}
+async function taDeleteRow(key,rowId){
+  const id=taTableIds()[key];
+  await fetch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{method:'DELETE',headers:{'xc-token':CONFIG.NOCODB_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({Id:rowId})});
 }
 
-async function taSave(field, data) {
-  await patchClient({ [field]: JSON.stringify(data) });
+async function taLoad(){
+  if(!taTablesReady())return;
+  const [pkgs,bks,cs,its,ug]=await Promise.all([
+    taFetch('packages'),taFetch('bookings'),taFetch('cases'),taFetch('itineraries'),taFetch('umrah_groups')
+  ]);
+  _taPackages=pkgs;
+  _taBookings=bks;
+  _taCases=cs;
+  _taItineraries=its.map(r=>({...r,days:safeJson(r.days)}));
+  _taUmrahGroups=ug.map(r=>({...r,pilgrims:safeJson(r.pilgrims)}));
+  _taLoaded=true;
 }
 
-function renderAgency() {
-  taLoad();
+async function renderAgency(){
+  const el=$id('agencyContent');
+  if(!taTablesReady()){el.innerHTML=renderTaSetupNeeded();document.querySelectorAll('.ta-tab').forEach(t=>t.classList.remove('active'));return;}
+  if(!_taLoaded){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';await taLoad();}
   renderAgencySubPage(_taPage);
 }
+
+/* ── TA: TABLE SETUP ── */
+async function taSetupTables(){
+  const btn=$id('taSetupBtn'),msg=$id('taSetupMsg');
+  btn.disabled=true;msg.textContent='Creating tables…';msg.className='save-msg';
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const baseId=info.base_id;
+    if(!baseId)throw new Error('Could not determine base_id');
+    const defs={
+      packages:{title:'ta_packages',columns:[
+        {title:'client_id',uidt:'SingleLineText'},{title:'name',uidt:'SingleLineText'},
+        {title:'type',uidt:'SingleLineText'},{title:'destination',uidt:'SingleLineText'},
+        {title:'nights',uidt:'Number'},{title:'pax_min',uidt:'Number'},{title:'pax_max',uidt:'Number'},
+        {title:'currency',uidt:'SingleLineText'},{title:'base_price',uidt:'Decimal'},{title:'sell_price',uidt:'Decimal'},
+        {title:'inclusions',uidt:'LongText'},{title:'exclusions',uidt:'LongText'},{title:'notes',uidt:'LongText'},
+      ]},
+      bookings:{title:'ta_bookings',columns:[
+        {title:'client_id',uidt:'SingleLineText'},{title:'client_name',uidt:'SingleLineText'},
+        {title:'client_phone',uidt:'SingleLineText'},{title:'package_name',uidt:'SingleLineText'},
+        {title:'departure_date',uidt:'Date'},{title:'pax',uidt:'Number'},
+        {title:'currency',uidt:'SingleLineText'},{title:'cost_price',uidt:'Decimal'},
+        {title:'sell_price',uidt:'Decimal'},{title:'deposit',uidt:'Decimal'},
+        {title:'status',uidt:'SingleLineText'},{title:'notes',uidt:'LongText'},
+      ]},
+      cases:{title:'ta_cases',columns:[
+        {title:'client_id',uidt:'SingleLineText'},{title:'client_name',uidt:'SingleLineText'},
+        {title:'client_phone',uidt:'SingleLineText'},{title:'type',uidt:'SingleLineText'},
+        {title:'stage',uidt:'SingleLineText'},{title:'ref_no',uidt:'SingleLineText'},
+        {title:'due_date',uidt:'Date'},{title:'fee',uidt:'Decimal'},
+        {title:'status',uidt:'SingleLineText'},{title:'notes',uidt:'LongText'},
+      ]},
+      itineraries:{title:'ta_itineraries',columns:[
+        {title:'client_id',uidt:'SingleLineText'},{title:'title',uidt:'SingleLineText'},
+        {title:'destination',uidt:'SingleLineText'},{title:'from_date',uidt:'Date'},
+        {title:'to_date',uidt:'Date'},{title:'days',uidt:'LongText'},{title:'notes',uidt:'LongText'},
+      ]},
+      umrah_groups:{title:'ta_umrah_groups',columns:[
+        {title:'client_id',uidt:'SingleLineText'},{title:'name',uidt:'SingleLineText'},
+        {title:'departure_date',uidt:'Date'},{title:'return_date',uidt:'Date'},
+        {title:'seats',uidt:'Number'},{title:'makkah_hotel',uidt:'SingleLineText'},
+        {title:'madinah_hotel',uidt:'SingleLineText'},{title:'makkah_nights',uidt:'Number'},
+        {title:'madinah_nights',uidt:'Number'},{title:'transport',uidt:'SingleLineText'},
+        {title:'price_per_pax',uidt:'Decimal'},{title:'pilgrims',uidt:'LongText'},{title:'notes',uidt:'LongText'},
+      ]},
+    };
+    const tableIds={};
+    for(const[key,def]of Object.entries(defs)){
+      msg.textContent=`Creating ${def.title}…`;
+      const r=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`,def);
+      if(!r.id)throw new Error(`Failed to create ${def.title}: ${JSON.stringify(r)}`);
+      tableIds[key]=r.id;
+    }
+    await patchClient({ta_table_ids:JSON.stringify(tableIds)});
+    msg.textContent='✓ All tables created! Loading…';
+    await taLoad();
+    renderAgencySubPage(_taPage);
+  }catch(e){
+    msg.textContent='Error: '+e.message;msg.className='save-msg err';
+    btn.disabled=false;
+  }
+}
+
+function renderTaSetupNeeded(){
+  return `
+  <div style="text-align:center;padding:60px 24px;max-width:500px;margin:0 auto">
+    <div style="font-size:48px;margin-bottom:16px">🗄️</div>
+    <div style="font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:8px">One-time Database Setup</div>
+    <div style="font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:24px">
+      The Travel Agency module needs 5 dedicated tables in your NocoDB database.<br>
+      This runs once and takes about 10 seconds.
+    </div>
+    <div style="background:var(--bg);border-radius:var(--r-sm);padding:16px;margin-bottom:24px;text-align:left;font-size:12.5px;color:var(--muted)">
+      Will create: <b style="color:var(--ink)">ta_packages</b> · <b style="color:var(--ink)">ta_bookings</b> · <b style="color:var(--ink)">ta_cases</b> · <b style="color:var(--ink)">ta_itineraries</b> · <b style="color:var(--ink)">ta_umrah_groups</b>
+    </div>
+    <button class="btn btn-primary" id="taSetupBtn" onclick="taSetupTables()" style="padding:12px 28px;font-size:14px">🚀 Create Tables Now</button>
+    <span class="save-msg" id="taSetupMsg" style="display:block;margin-top:12px;min-height:18px"></span>
+  </div>`;
+}
+
+/* old taLoad/taSave/renderAgency replaced above */
 
 function renderAgencySubPage(page) {
   _taPage = page;
@@ -2870,18 +2984,19 @@ function renderTaPackages() {
   </div>`;
 }
 
-function renderPkgCard(p, i) {
-  const inc = (p.inclusions||[]).slice(0,3);
+function renderPkgCard(p) {
+  const inc = safeJson(p.inclusions, p.inclusions instanceof Array ? p.inclusions : []).slice(0,3);
+  const incArr = safeJson(p.inclusions, p.inclusions instanceof Array ? p.inclusions : []);
   const margin = p.sell_price && p.base_price && parseFloat(p.sell_price)>parseFloat(p.base_price) ? Math.round((parseFloat(p.sell_price)-parseFloat(p.base_price))/parseFloat(p.sell_price)*100) : 0;
   return `
-  <div class="pkg-card" onclick="openPkgModal(${i})">
+  <div class="pkg-card" onclick="openPkgModal('${p.Id}')">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
       <span class="pkg-type-badge">${esc(p.type||'tour')}</span>
-      <button onclick="event.stopPropagation();deletePkg(${i})" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Delete">✕</button>
+      <button onclick="event.stopPropagation();deletePkg('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Delete">✕</button>
     </div>
     <div class="pkg-name">${esc(p.name||'—')}</div>
     <div class="pkg-meta">${esc(p.destination||'—')} · ${p.nights||0} nights · ${p.pax_min||1}–${p.pax_max||99} pax</div>
-    ${inc.length ? `<div style="margin-bottom:10px">${inc.map(x=>`<div style="font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px;margin-bottom:3px">✓ ${esc(x)}</div>`).join('')}${(p.inclusions||[]).length>3?`<div style="font-size:11px;color:var(--accent-ink)">+${(p.inclusions||[]).length-3} more</div>`:''}</div>` : ''}
+    ${inc.length ? `<div style="margin-bottom:10px">${inc.map(x=>`<div style="font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px;margin-bottom:3px">✓ ${esc(x)}</div>`).join('')}${incArr.length>3?`<div style="font-size:11px;color:var(--accent-ink)">+${incArr.length-3} more</div>`:''}</div>` : ''}
     <div style="display:flex;align-items:baseline;gap:4px;margin-top:auto">
       <span class="pkg-price">${esc(p.currency||'AED')} ${(parseFloat(p.sell_price||p.base_price)||0).toLocaleString()}</span>
       <span class="pkg-price-sub">/ person</span>
@@ -2891,60 +3006,53 @@ function renderPkgCard(p, i) {
 }
 
 function filterPkgs(type) {
-  document.querySelectorAll('[id^="pkgF_"]').forEach(b => { b.style.borderColor=''; b.style.color=''; });
-  const active = $id('pkgF_'+(type||'all'));
-  if (active) { active.style.borderColor='var(--accent)'; active.style.color='var(--accent)'; }
-  const grid = $id('pkgGrid');
-  if (!grid) return;
-  const filtered = type ? _taPackages.filter(p => p.type === type) : _taPackages;
-  grid.innerHTML = filtered.length ? filtered.map((p) => renderPkgCard(p, _taPackages.indexOf(p))).join('') : '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted);font-size:13px">No packages in this category</div>';
+  document.querySelectorAll('[id^="pkgF_"]').forEach(b=>{b.style.borderColor='';b.style.color='';});
+  const active=$id('pkgF_'+(type||'all'));
+  if(active){active.style.borderColor='var(--accent)';active.style.color='var(--accent)';}
+  const grid=$id('pkgGrid');if(!grid)return;
+  const filtered=type?_taPackages.filter(p=>p.type===type):_taPackages;
+  grid.innerHTML=filtered.length?filtered.map(p=>renderPkgCard(p)).join(''):'<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted);font-size:13px">No packages in this category</div>';
 }
 
-let _editPkgIdx = -1;
-function openPkgModal(idx) {
-  _editPkgIdx = (idx !== undefined) ? idx : -1;
-  const p = (_editPkgIdx >= 0) ? _taPackages[_editPkgIdx] : {};
-  $id('pkgModalTitle').textContent = _editPkgIdx >= 0 ? 'Edit Package' : 'New Package';
-  $id('pkgName').value = p.name||''; $id('pkgType').value = p.type||'tour';
-  $id('pkgDest').value = p.destination||''; $id('pkgNights').value = p.nights||'';
-  $id('pkgPaxMin').value = p.pax_min||1; $id('pkgPaxMax').value = p.pax_max||99;
-  $id('pkgCurrency').value = p.currency||'AED'; $id('pkgBasePrice').value = p.base_price||'';
-  $id('pkgSellPrice').value = p.sell_price||'';
-  $id('pkgInclusions').value = (p.inclusions||[]).join('\n');
-  $id('pkgExclusions').value = (p.exclusions||[]).join('\n');
-  $id('pkgNotes').value = p.notes||'';
+let _editPkgId=null;
+function openPkgModal(id){
+  _editPkgId=id||null;
+  const p=id?(_taPackages.find(x=>String(x.Id)===String(id))||{}):{};
+  $id('pkgModalTitle').textContent=id?'Edit Package':'New Package';
+  $id('pkgName').value=p.name||''; $id('pkgType').value=p.type||'tour';
+  $id('pkgDest').value=p.destination||''; $id('pkgNights').value=p.nights||'';
+  $id('pkgPaxMin').value=p.pax_min||1; $id('pkgPaxMax').value=p.pax_max||99;
+  $id('pkgCurrency').value=p.currency||'AED'; $id('pkgBasePrice').value=p.base_price||'';
+  $id('pkgSellPrice').value=p.sell_price||'';
+  $id('pkgInclusions').value=safeJson(p.inclusions,p.inclusions instanceof Array?p.inclusions:[]).join('\n');
+  $id('pkgExclusions').value=safeJson(p.exclusions,p.exclusions instanceof Array?p.exclusions:[]).join('\n');
+  $id('pkgNotes').value=p.notes||'';
   openModal('modalPkg');
 }
 
-async function savePkg() {
-  const btn=$id('savePkgBtn'), msg=$id('savePkgMsg');
-  btn.disabled=true; msg.textContent=''; msg.className='save-msg';
-  const p = {
-    name:$id('pkgName').value.trim(), type:$id('pkgType').value,
-    destination:$id('pkgDest').value.trim(), nights:parseInt($id('pkgNights').value)||0,
-    pax_min:parseInt($id('pkgPaxMin').value)||1, pax_max:parseInt($id('pkgPaxMax').value)||99,
-    currency:$id('pkgCurrency').value, base_price:parseFloat($id('pkgBasePrice').value)||0,
-    sell_price:parseFloat($id('pkgSellPrice').value)||0,
-    inclusions:$id('pkgInclusions').value.split('\n').map(s=>s.trim()).filter(Boolean),
-    exclusions:$id('pkgExclusions').value.split('\n').map(s=>s.trim()).filter(Boolean),
-    notes:$id('pkgNotes').value.trim(), created_at:new Date().toISOString().slice(0,10),
-  };
-  if (!p.name) { msg.textContent='Name required'; msg.className='save-msg err'; btn.disabled=false; return; }
-  try {
-    if (_editPkgIdx>=0) _taPackages[_editPkgIdx]=p; else _taPackages.push(p);
-    await taSave('ta_packages',_taPackages);
-    msg.textContent='✓ Saved'; setTimeout(()=>{closeModal('modalPkg');renderAgencySubPage('packages');},600);
-  } catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+async function savePkg(){
+  const btn=$id('savePkgBtn'),msg=$id('savePkgMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const inc=$id('pkgInclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const exc=$id('pkgExclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const p={name:$id('pkgName').value.trim(),type:$id('pkgType').value,destination:$id('pkgDest').value.trim(),nights:parseInt($id('pkgNights').value)||0,pax_min:parseInt($id('pkgPaxMin').value)||1,pax_max:parseInt($id('pkgPaxMax').value)||99,currency:$id('pkgCurrency').value,base_price:parseFloat($id('pkgBasePrice').value)||0,sell_price:parseFloat($id('pkgSellPrice').value)||0,inclusions:JSON.stringify(inc),exclusions:JSON.stringify(exc),notes:$id('pkgNotes').value.trim()};
+  if(!p.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editPkgId) await taUpdate('packages',_editPkgId,p); else await taCreate('packages',p);
+    msg.textContent='✓ Saved';
+    _taLoaded=false;
+    setTimeout(async()=>{closeModal('modalPkg');await taLoad();renderAgencySubPage('packages');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
-async function deletePkg(i) {
-  if (!confirm('Delete this package?')) return;
-  _taPackages.splice(i,1); await taSave('ta_packages',_taPackages); renderAgencySubPage('packages');
+async function deletePkg(id){
+  if(!confirm('Delete this package?'))return;
+  await taDeleteRow('packages',id);_taLoaded=false;await taLoad();renderAgencySubPage('packages');
 }
 
 /* ── TA: ITINERARIES ── */
-let _editItinIdx = -1;
+let _editItinId = null;
 let _itinDays = [];
 
 function renderTaItineraries() {
@@ -2953,7 +3061,7 @@ function renderTaItineraries() {
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🗺️ Itineraries</div>
     <button class="btn btn-primary btn-sm" onclick="openItinModal()">+ New Itinerary</button>
   </div>
-  ${_taItineraries.length ? _taItineraries.map((it,i) => `
+  ${_taItineraries.length ? _taItineraries.map((it) => `
     <div class="itin-card">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
         <div>
@@ -2961,8 +3069,8 @@ function renderTaItineraries() {
           <div style="font-size:11.5px;color:var(--muted)">${esc(it.destination||'—')} · ${(it.days||[]).length} days · Created ${esc(it.created_at||'')}</div>
         </div>
         <div style="display:flex;gap:6px">
-          <button class="btn btn-secondary btn-sm" onclick="openItinModal(${i})">Edit</button>
-          <button onclick="deleteItin(${i})" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;padding:0 4px">✕</button>
+          <button class="btn btn-secondary btn-sm" onclick="openItinModal('${it.Id}')">Edit</button>
+          <button onclick="event.stopPropagation();deleteItin('${it.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;padding:0 4px">✕</button>
         </div>
       </div>
       ${(it.days||[]).slice(0,2).map(d=>`
@@ -2979,11 +3087,11 @@ function itinItemIcon(type) {
   return m[type]||'📌';
 }
 
-function openItinModal(idx) {
-  _editItinIdx = (idx!==undefined)?idx:-1;
-  const it = (_editItinIdx>=0)?_taItineraries[_editItinIdx]:{};
+function openItinModal(id) {
+  _editItinId = id||null;
+  const it = id?(_taItineraries.find(x=>String(x.Id)===String(id))||{}):{};
   _itinDays = JSON.parse(JSON.stringify(it.days||[]));
-  $id('itinModalTitle').textContent = _editItinIdx>=0?'Edit Itinerary':'New Itinerary';
+  $id('itinModalTitle').textContent = id?'Edit Itinerary':'New Itinerary';
   $id('itinTitle').value=it.title||''; $id('itinDest').value=it.destination||'';
   $id('itinFrom').value=it.from_date||''; $id('itinTo').value=it.to_date||'';
   $id('itinNotes').value=it.notes||'';
@@ -3018,19 +3126,19 @@ function removeItinItem(di,ii){_itinDays[di].items.splice(ii,1);renderItinDays()
 async function saveItin() {
   const btn=$id('saveItinBtn'),msg=$id('saveItinMsg');
   btn.disabled=true; msg.textContent=''; msg.className='save-msg';
-  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:$id('itinFrom').value,to_date:$id('itinTo').value,notes:$id('itinNotes').value.trim(),days:_itinDays,created_at:new Date().toISOString().slice(0,10)};
+  const existing=_editItinId?(_taItineraries.find(x=>String(x.Id)===String(_editItinId))||{}):{};
+  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:$id('itinFrom').value,to_date:$id('itinTo').value,notes:$id('itinNotes').value.trim(),days:JSON.stringify(_itinDays),created_at:existing.created_at||new Date().toISOString().slice(0,10)};
   if(!it.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
-    if(_editItinIdx>=0)_taItineraries[_editItinIdx]=it;else _taItineraries.push(it);
-    await taSave('ta_itineraries',_taItineraries);
-    msg.textContent='✓ Saved';setTimeout(()=>{closeModal('modalItin');renderAgencySubPage('itineraries');},600);
+    if(_editItinId) await taUpdate('itineraries',_editItinId,it); else await taCreate('itineraries',it);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalItin');await taLoad();renderAgencySubPage('itineraries');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
-async function deleteItin(i){
+async function deleteItin(id){
   if(!confirm('Delete this itinerary?'))return;
-  _taItineraries.splice(i,1);await taSave('ta_itineraries',_taItineraries);renderAgencySubPage('itineraries');
+  await taDeleteRow('itineraries',id);_taLoaded=false;await taLoad();renderAgencySubPage('itineraries');
 }
 
 /* ── TA: SERVICES ── */
@@ -3057,17 +3165,17 @@ function renderTaServices() {
   </div>
   <div class="ta-card" style="padding:0;overflow:hidden">
     <div id="caseList">
-      ${_taCases.length?_taCases.map((c,i)=>renderCaseRow(c,i)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No service cases yet</div>'}
+      ${_taCases.length?_taCases.map((c)=>renderCaseRow(c)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No service cases yet</div>'}
     </div>
   </div>`;
 }
 
-function renderCaseRow(c,i){
+function renderCaseRow(c){
   const stages=TA_CASE_STAGES[c.type]||[];
   const stageIdx=stages.indexOf(c.stage);
   const pct=stages.length?Math.round(((stageIdx+1)/stages.length)*100):0;
   return `
-  <div class="case-row" onclick="openCaseModal(${i})">
+  <div class="case-row" onclick="openCaseModal('${c.Id}')">
     <div class="case-type-icon">${caseIcon(c.type)}</div>
     <div class="case-body">
       <div class="case-name">${esc(c.client_name||'—')}</div>
@@ -3087,14 +3195,14 @@ function renderCaseRow(c,i){
 function filterCases(type){
   const list=$id('caseList');if(!list)return;
   const filtered=type?_taCases.filter(c=>c.type===type):_taCases;
-  list.innerHTML=filtered.length?filtered.map((c)=>renderCaseRow(c,_taCases.indexOf(c))).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No cases</div>';
+  list.innerHTML=filtered.length?filtered.map((c)=>renderCaseRow(c)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No cases</div>';
 }
 
-let _editCaseIdx=-1;
-function openCaseModal(idx){
-  _editCaseIdx=(idx!==undefined)?idx:-1;
-  const c=(_editCaseIdx>=0)?_taCases[_editCaseIdx]:{};
-  $id('caseModalTitle').textContent=_editCaseIdx>=0?'Edit Case':'New Service Case';
+let _editCaseId=null;
+function openCaseModal(id){
+  _editCaseId=id||null;
+  const c=id?(_taCases.find(x=>String(x.Id)===String(id))||{}):{};
+  $id('caseModalTitle').textContent=id?'Edit Case':'New Service Case';
   $id('caseClientName').value=c.client_name||''; $id('caseClientPhone').value=c.client_phone||'';
   $id('caseType').value=c.type||'visa'; $id('caseRefNo').value=c.ref_no||'';
   $id('caseDueDate').value=c.due_date||''; $id('caseFee').value=c.fee||'';
@@ -3112,24 +3220,24 @@ function updateCaseStages(){
 async function saveCase(){
   const btn=$id('saveCaseBtn'),msg=$id('saveCaseMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
-  const c={client_name:$id('caseClientName').value.trim(),client_phone:$id('caseClientPhone').value.trim(),type:$id('caseType').value,ref_no:$id('caseRefNo').value.trim(),stage:$id('caseStage').value,due_date:$id('caseDueDate').value,fee:parseFloat($id('caseFee').value)||0,status:$id('caseStatus').value,notes:$id('caseNotes').value.trim(),created_at:new Date().toISOString().slice(0,10)};
+  const existing=_editCaseId?(_taCases.find(x=>String(x.Id)===String(_editCaseId))||{}):{};
+  const c={client_name:$id('caseClientName').value.trim(),client_phone:$id('caseClientPhone').value.trim(),type:$id('caseType').value,ref_no:$id('caseRefNo').value.trim(),stage:$id('caseStage').value,due_date:$id('caseDueDate').value,fee:parseFloat($id('caseFee').value)||0,status:$id('caseStatus').value,notes:$id('caseNotes').value.trim(),created_at:existing.created_at||new Date().toISOString().slice(0,10)};
   if(!c.client_name){msg.textContent='Client name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
-    if(_editCaseIdx>=0)_taCases[_editCaseIdx]=c;else _taCases.push(c);
-    await taSave('ta_cases',_taCases);
-    msg.textContent='✓ Saved';setTimeout(()=>{closeModal('modalCase');renderAgencySubPage('services');},600);
+    if(_editCaseId) await taUpdate('cases',_editCaseId,c); else await taCreate('cases',c);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCase');await taLoad();renderAgencySubPage('services');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
-async function deleteCase(i){
+async function deleteCase(id){
   if(!confirm('Delete this case?'))return;
-  _taCases.splice(i,1);await taSave('ta_cases',_taCases);renderAgencySubPage('services');
+  await taDeleteRow('cases',id);_taLoaded=false;await taLoad();renderAgencySubPage('services');
 }
 
 /* ── TA: UMRAH ── */
-let _editUmrahIdx=-1;
-let _editPilgrimGroupIdx=-1;
+let _editUmrahId=null;
+let _editPilgrimGroupId=null;
 
 function renderTaUmrah(){
   return `
@@ -3137,7 +3245,7 @@ function renderTaUmrah(){
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🕌 Umrah & Hajj Groups</div>
     <button class="btn btn-primary btn-sm" onclick="openUmrahModal()">+ New Group</button>
   </div>
-  ${_taUmrahGroups.length?_taUmrahGroups.map((g,i)=>`
+  ${_taUmrahGroups.length?_taUmrahGroups.map((g)=>`
     <div class="ta-card">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px">
         <div>
@@ -3146,8 +3254,8 @@ function renderTaUmrah(){
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <div style="font-family:var(--disp);font-size:11px;background:var(--accent-soft);color:var(--accent-ink);padding:4px 10px;border-radius:8px">${(g.pilgrims||[]).length}/${g.seats||0} seats</div>
-          <button class="btn btn-secondary btn-sm" onclick="openUmrahModal(${i})">Edit</button>
-          <button onclick="deleteUmrahGroup(${i})" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px">✕</button>
+          <button class="btn btn-secondary btn-sm" onclick="openUmrahModal('${g.Id}')">Edit</button>
+          <button onclick="event.stopPropagation();deleteUmrahGroup('${g.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px">✕</button>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
@@ -3158,7 +3266,7 @@ function renderTaUmrah(){
       </div>
       <div style="font-family:var(--disp);font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
         <span>Pilgrims (${(g.pilgrims||[]).length})</span>
-        <button onclick="openAddPilgrimModal(${i})" class="btn btn-secondary btn-sm">+ Add Pilgrim</button>
+        <button onclick="openAddPilgrimModal('${g.Id}')" class="btn btn-secondary btn-sm">+ Add Pilgrim</button>
       </div>
       ${(g.pilgrims||[]).length?`<div style="max-height:240px;overflow-y:auto">${g.pilgrims.map((p,pi)=>`
         <div class="pilgrim-row">
@@ -3176,10 +3284,10 @@ function renderTaUmrah(){
     </div>`).join(''):'<div style="text-align:center;padding:52px 24px;color:var(--muted);font-size:13px"><div style="font-size:36px;margin-bottom:10px">🕌</div>No Umrah groups yet.<br>Create your first group departure.</div>'}`;
 }
 
-function openUmrahModal(idx){
-  _editUmrahIdx=(idx!==undefined)?idx:-1;
-  const g=(_editUmrahIdx>=0)?_taUmrahGroups[_editUmrahIdx]:{};
-  $id('umrahModalTitle').textContent=_editUmrahIdx>=0?'Edit Group':'New Umrah Group';
+function openUmrahModal(id){
+  _editUmrahId=id||null;
+  const g=id?(_taUmrahGroups.find(x=>String(x.Id)===String(id))||{}):{};
+  $id('umrahModalTitle').textContent=id?'Edit Group':'New Umrah Group';
   $id('umrahName').value=g.name||''; $id('umrahDep').value=g.departure_date||'';
   $id('umrahRet').value=g.return_date||''; $id('umrahSeats').value=g.seats||'';
   $id('umrahMakkahHotel').value=g.makkah_hotel||''; $id('umrahMadinahHotel').value=g.madinah_hotel||'';
@@ -3192,24 +3300,23 @@ function openUmrahModal(idx){
 async function saveUmrah(){
   const btn=$id('saveUmrahBtn'),msg=$id('saveUmrahMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
-  const existing=(_editUmrahIdx>=0)?_taUmrahGroups[_editUmrahIdx]:{};
-  const g={...existing,name:$id('umrahName').value.trim(),departure_date:$id('umrahDep').value,return_date:$id('umrahRet').value,seats:parseInt($id('umrahSeats').value)||0,makkah_hotel:$id('umrahMakkahHotel').value.trim(),madinah_hotel:$id('umrahMadinahHotel').value.trim(),makkah_nights:parseInt($id('umrahMakkahNights').value)||0,madinah_nights:parseInt($id('umrahMadinahNights').value)||0,transport:$id('umrahTransport').value.trim(),price_per_pax:parseFloat($id('umrahPrice').value)||0,notes:$id('umrahNotes').value.trim(),pilgrims:existing.pilgrims||[],created_at:existing.created_at||new Date().toISOString().slice(0,10)};
+  const existing=_editUmrahId?(_taUmrahGroups.find(x=>String(x.Id)===String(_editUmrahId))||{}):{};
+  const g={name:$id('umrahName').value.trim(),departure_date:$id('umrahDep').value,return_date:$id('umrahRet').value,seats:parseInt($id('umrahSeats').value)||0,makkah_hotel:$id('umrahMakkahHotel').value.trim(),madinah_hotel:$id('umrahMadinahHotel').value.trim(),makkah_nights:parseInt($id('umrahMakkahNights').value)||0,madinah_nights:parseInt($id('umrahMadinahNights').value)||0,transport:$id('umrahTransport').value.trim(),price_per_pax:parseFloat($id('umrahPrice').value)||0,notes:$id('umrahNotes').value.trim(),pilgrims:JSON.stringify(existing.pilgrims||[]),created_at:existing.created_at||new Date().toISOString().slice(0,10)};
   if(!g.name){msg.textContent='Group name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
-    if(_editUmrahIdx>=0)_taUmrahGroups[_editUmrahIdx]=g;else _taUmrahGroups.push(g);
-    await taSave('ta_umrah_groups',_taUmrahGroups);
-    msg.textContent='✓ Saved';setTimeout(()=>{closeModal('modalUmrah');renderAgencySubPage('umrah');},600);
+    if(_editUmrahId) await taUpdate('umrah_groups',_editUmrahId,g); else await taCreate('umrah_groups',g);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalUmrah');await taLoad();renderAgencySubPage('umrah');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
-async function deleteUmrahGroup(i){
+async function deleteUmrahGroup(id){
   if(!confirm('Delete this group?'))return;
-  _taUmrahGroups.splice(i,1);await taSave('ta_umrah_groups',_taUmrahGroups);renderAgencySubPage('umrah');
+  await taDeleteRow('umrah_groups',id);_taLoaded=false;await taLoad();renderAgencySubPage('umrah');
 }
 
-function openAddPilgrimModal(groupIdx){
-  _editPilgrimGroupIdx=groupIdx;
+function openAddPilgrimModal(groupId){
+  _editPilgrimGroupId=groupId;
   ['pilgrimName','pilgrimPhone','pilgrimPassport'].forEach(id=>$id(id).value='');
   $id('pilgrimRoomType').value='quad';
   ['pilgrimHasPassport','pilgrimHasPhoto','pilgrimHasVaccine'].forEach(id=>$id(id).checked=false);
@@ -3222,16 +3329,17 @@ async function savePilgrim(){
   const p={name:$id('pilgrimName').value.trim(),phone:$id('pilgrimPhone').value.trim(),passport_no:$id('pilgrimPassport').value.trim(),room_type:$id('pilgrimRoomType').value,passport:$id('pilgrimHasPassport').checked,photo:$id('pilgrimHasPhoto').checked,vaccine:$id('pilgrimHasVaccine').checked,visa:false,added_at:new Date().toISOString().slice(0,10)};
   if(!p.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
-    _taUmrahGroups[_editPilgrimGroupIdx].pilgrims=_taUmrahGroups[_editPilgrimGroupIdx].pilgrims||[];
-    _taUmrahGroups[_editPilgrimGroupIdx].pilgrims.push(p);
-    await taSave('ta_umrah_groups',_taUmrahGroups);
-    msg.textContent='✓ Added';setTimeout(()=>{closeModal('modalPilgrim');renderAgencySubPage('umrah');},600);
+    const grp=_taUmrahGroups.find(x=>String(x.Id)===String(_editPilgrimGroupId));
+    if(!grp)throw new Error('Group not found');
+    const pilgrims=[...(grp.pilgrims||[]),p];
+    await taUpdate('umrah_groups',_editPilgrimGroupId,{pilgrims:JSON.stringify(pilgrims)});
+    msg.textContent='✓ Added';_taLoaded=false;setTimeout(async()=>{closeModal('modalPilgrim');await taLoad();renderAgencySubPage('umrah');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 /* ── TA: BOOKINGS ── */
-let _editBookingIdx=-1;
+let _editBookingId=null;
 
 function renderTaBookings(){
   const byStatus={quoted:0,confirmed:0,completed:0,cancelled:0};
@@ -3250,16 +3358,16 @@ function renderTaBookings(){
   </div>
   <div class="ta-card" style="padding:0;overflow:hidden">
     <div id="bookingList">
-      ${_taBookings.length?_taBookings.map((b,i)=>renderBookingRow(b,i)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No bookings yet</div>'}
+      ${_taBookings.length?_taBookings.map((b)=>renderBookingRow(b)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No bookings yet</div>'}
     </div>
   </div>`;
 }
 
-function renderBookingRow(b,i){
+function renderBookingRow(b){
   const paid=parseFloat(b.deposit)||0,total=parseFloat(b.sell_price)||0;
   const pct=total?Math.round((paid/total)*100):0;
   return `
-  <div class="booking-row" onclick="openBookingModal(${i})">
+  <div class="booking-row" onclick="openBookingModal('${b.Id}')">`
     <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🎫</div>
     <div style="flex:1;min-width:0">
       <div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.client_name||'—')}</div>
@@ -3276,10 +3384,10 @@ function renderBookingRow(b,i){
   </div>`;
 }
 
-function openBookingModal(idx){
-  _editBookingIdx=(idx!==undefined)?idx:-1;
-  const b=(_editBookingIdx>=0)?_taBookings[_editBookingIdx]:{};
-  $id('bookingModalTitle').textContent=_editBookingIdx>=0?'Edit Booking':'New Quote / Booking';
+function openBookingModal(id){
+  _editBookingId=id||null;
+  const b=id?(_taBookings.find(x=>String(x.Id)===String(id))||{}):{};
+  $id('bookingModalTitle').textContent=id?'Edit Booking':'New Quote / Booking';
   $id('bookingClientName').value=b.client_name||''; $id('bookingClientPhone').value=b.client_phone||'';
   $id('bookingPackage').value=b.package_name||''; $id('bookingDep').value=b.departure_date||'';
   $id('bookingPax').value=b.pax||1; $id('bookingCurrency').value=b.currency||'AED';
@@ -3292,19 +3400,19 @@ function openBookingModal(idx){
 async function saveBooking(){
   const btn=$id('saveBookingBtn'),msg=$id('saveBookingMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
-  const b={client_name:$id('bookingClientName').value.trim(),client_phone:$id('bookingClientPhone').value.trim(),package_name:$id('bookingPackage').value.trim(),departure_date:$id('bookingDep').value,pax:parseInt($id('bookingPax').value)||1,currency:$id('bookingCurrency').value,cost_price:parseFloat($id('bookingCostPrice').value)||0,sell_price:parseFloat($id('bookingSellPrice').value)||0,deposit:parseFloat($id('bookingDeposit').value)||0,status:$id('bookingStatus').value,notes:$id('bookingNotes').value.trim(),created_at:(_editBookingIdx>=0?_taBookings[_editBookingIdx].created_at:null)||new Date().toISOString().slice(0,10)};
+  const existing=_editBookingId?(_taBookings.find(x=>String(x.Id)===String(_editBookingId))||{}):{};
+  const b={client_name:$id('bookingClientName').value.trim(),client_phone:$id('bookingClientPhone').value.trim(),package_name:$id('bookingPackage').value.trim(),departure_date:$id('bookingDep').value,pax:parseInt($id('bookingPax').value)||1,currency:$id('bookingCurrency').value,cost_price:parseFloat($id('bookingCostPrice').value)||0,sell_price:parseFloat($id('bookingSellPrice').value)||0,deposit:parseFloat($id('bookingDeposit').value)||0,status:$id('bookingStatus').value,notes:$id('bookingNotes').value.trim(),created_at:existing.created_at||new Date().toISOString().slice(0,10)};
   if(!b.client_name){msg.textContent='Client name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
-    if(_editBookingIdx>=0)_taBookings[_editBookingIdx]=b;else _taBookings.push(b);
-    await taSave('ta_bookings',_taBookings);
-    msg.textContent='✓ Saved';setTimeout(()=>{closeModal('modalBooking');renderAgencySubPage('bookings');},600);
+    if(_editBookingId) await taUpdate('bookings',_editBookingId,b); else await taCreate('bookings',b);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalBooking');await taLoad();renderAgencySubPage('bookings');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
-async function deleteBooking(i){
+async function deleteBooking(id){
   if(!confirm('Delete this booking?'))return;
-  _taBookings.splice(i,1);await taSave('ta_bookings',_taBookings);renderAgencySubPage('bookings');
+  await taDeleteRow('bookings',id);_taLoaded=false;await taLoad();renderAgencySubPage('bookings');
 }
 
 /* ── TA: FINANCE ── */
