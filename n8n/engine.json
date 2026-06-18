@@ -776,6 +776,61 @@
         560
       ],
       "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.mediaUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "http-download-audio",
+      "name": "HTTP \u00b7 Download audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "options": {}
+      },
+      "id": "openai-transcribe",
+      "name": "OpenAI \u00b7 Transcribe",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.3,
+      "position": [
+        1560,
+        500
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-creds",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Code \u00b7 State').first().json;\nconst r = $input.first().json;\nconst txt = r.text || '(could not transcribe voice note)';\nreturn [{ json: { ...c, userText: txt } }];"
+      },
+      "id": "code-voice-text",
+      "name": "Code \u00b7 voice\u2192text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        500
+      ]
     }
   ],
   "connections": {
@@ -856,7 +911,7 @@
         ],
         [
           {
-            "node": "Code \u00b7 text\u2192text",
+            "node": "HTTP \u00b7 Download audio",
             "type": "main",
             "index": 0
           }
@@ -1151,6 +1206,39 @@
         [
           {
             "node": "Code \u00b7 FAQ reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP \u00b7 Download audio": {
+      "main": [
+        [
+          {
+            "node": "OpenAI \u00b7 Transcribe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI \u00b7 Transcribe": {
+      "main": [
+        [
+          {
+            "node": "Code \u00b7 voice\u2192text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code \u00b7 voice\u2192text": {
+      "main": [
+        [
+          {
+            "node": "Code \u00b7 Merge text",
             "type": "main",
             "index": 0
           }
