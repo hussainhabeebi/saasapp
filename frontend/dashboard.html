@@ -2339,21 +2339,27 @@ function renderSmartMatch(lead){
   const matchCard=$id('smartMatchCard');
   const matchList=$id('smartMatchList');
   let services=[];try{services=JSON.parse(clientRecord?.services||'[]');}catch(e){}
-  if(!services.length){matchCard.style.display='none';return;}
-  const conv=lead.ConvHistory||lead.HotMomentText||'';
-  const convLower=conv.toLowerCase();
-  const scored=services.map(s=>{
+
+  // Build a unified catalog: old services + TA packages + TA itineraries
+  const catalog=[
+    ...services.map(s=>({_type:'service',name:s.name,subtitle:(s.description||'')+' · '+(s.currency||'AED')+' '+(s.price||''),searchText:(s.name+' '+s.description+' '+(s.category||'')).toLowerCase()})),
+    ..._taPackages.map(p=>({_type:'package',name:'📦 '+p.name,subtitle:(p.destination?p.destination+' · ':'')+p.nights+'n · '+(p.currency||'AED')+' '+(p.sell_price||p.base_price||''),searchText:(p.name+' '+(p.destination||'')+' '+(p.type||'')+' '+safeJson(p.inclusions,[]).join(' ')).toLowerCase()})),
+    ..._taItineraries.map(it=>({_type:'itinerary',name:'🗺️ '+it.title,subtitle:(it.destination||'')+' · '+(it.days||[]).length+' days',searchText:(it.title+' '+(it.destination||'')+' '+(it.notes||'')).toLowerCase()})),
+  ];
+
+  if(!catalog.length){matchCard.style.display='none';return;}
+  const conv=(lead.ConvHistory||lead.HotMomentText||'').toLowerCase();
+  const scored=catalog.map(item=>{
     let score=0;
-    const text=(s.name+' '+s.description+' '+(s.category||'')).toLowerCase();
-    text.split(/\s+/).forEach(w=>{if(w.length>3&&convLower.includes(w))score++;});
-    return{...s,matchScore:score};
-  }).filter(s=>s.matchScore>0).sort((a,b)=>b.matchScore-a.matchScore).slice(0,3);
+    item.searchText.split(/\s+/).forEach(w=>{if(w.length>3&&conv.includes(w))score++;});
+    return{...item,matchScore:score};
+  }).filter(s=>s.matchScore>0).sort((a,b)=>b.matchScore-a.matchScore).slice(0,4);
   if(!scored.length){matchCard.style.display='none';return;}
   matchCard.style.display='block';
   matchList.innerHTML=scored.map(s=>`
     <div style="padding:8px;background:#F7FAF9;border:1px solid var(--ls);border-radius:8px;margin-bottom:6px;font-size:12px">
       <div style="font-weight:600;font-family:var(--disp)">${esc(s.name)}</div>
-      <div style="color:var(--muted)">${esc(s.description||'')} · ${esc(s.currency||'AED')} ${esc(String(s.price||''))} per ${esc(s.per||'person')}</div>
+      <div style="color:var(--muted)">${esc(s.subtitle)}</div>
     </div>`).join('');
 }
 
@@ -2369,15 +2375,19 @@ async function generateDealCoach(){
     let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
     let qa={};try{qa=JSON.parse(lead.QualAnswers||'{}');}catch(e){}
     let services=[];try{services=JSON.parse(clientRecord?.services||'[]');}catch(e){}
-    const svcText=services.length?'\nServices: '+services.map(s=>s.name).join(', '):'';
+    const svcText=services.length?'\nServices offered: '+services.map(s=>s.name+(s.price?' ('+s.currency+' '+s.price+')':'')).join(', '):'';
+    // TA catalog context
+    const pkgText=_taPackages.length?'\nTravel Packages:\n'+_taPackages.slice(0,8).map(p=>`- ${p.name} | ${p.destination||''} | ${p.nights||''}n | ${p.currency||'AED'} ${p.sell_price||p.base_price||''} | Pax ${p.pax_min||1}-${p.pax_max||''}`).join('\n'):'';
+    const itinText=_taItineraries.length?'\nItineraries: '+_taItineraries.slice(0,5).map(i=>i.title+(i.destination?' ('+i.destination+')':'')).join(', '):'';
+    const umrahText=_taUmrahGroups.filter(g=>g.departure_date>=TODAY).slice(0,3).length?'\nUpcoming Umrah/Hajj Groups:\n'+_taUmrahGroups.filter(g=>g.departure_date>=TODAY).slice(0,3).map(g=>`- ${g.name} | Dep: ${g.departure_date} | ${g.seats||0} seats | AED ${g.price_per_pax||''}/pax`).join('\n'):'';
     const qaText=Object.keys(qa).length?'\nQual answers: '+JSON.stringify(qa):'';
     const histText=hist.slice(-8).map(m=>m.role+': '+m.content).join('\n');
     const resp=await fetch('https://openrouter.ai/api/v1/chat/completions',{
       method:'POST',
       headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'},
-      body:JSON.stringify({model,max_tokens:300,messages:[
-        {role:'system',content:'You are a sales coach. Analyse this lead and give 3 concise, actionable recommendations to close the deal. Format as: 1. [action] 2. [action] 3. [action]. Be specific and practical.'},
-        {role:'user',content:`Lead: ${lead.Name||'Unknown'}\nStage: ${lead.Stage||'new'}\nScore: ${lead.Score||'Cold'}\nQual Score: ${lead.QualScore||'N/A'}\nHot moment: ${lead.HotMoment==='Yes'?lead.HotMomentText:'No'}${qaText}${svcText}\nRecent conversation:\n${histText}`}
+      body:JSON.stringify({model,max_tokens:400,messages:[
+        {role:'system',content:'You are a travel agency sales coach. Analyse the lead and give 3 concise, actionable recommendations to close the deal. If relevant packages or itineraries are listed, suggest specific ones by name. Format as: 1. [action] 2. [action] 3. [action]. Be specific and practical.'},
+        {role:'user',content:`Lead: ${lead.Name||'Unknown'}\nStage: ${lead.Stage||'new'}\nScore: ${lead.Score||'Cold'}\nQual Score: ${lead.QualScore||'N/A'}\nHot moment: ${lead.HotMoment==='Yes'?lead.HotMomentText:'No'}${qaText}${svcText}${pkgText}${itinText}${umrahText}\nRecent conversation:\n${histText}`}
       ]})
     });
     const data=await resp.json();
