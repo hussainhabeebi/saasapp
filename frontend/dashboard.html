@@ -426,6 +426,19 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .payment-bar-fill{height:100%;background:var(--accent);border-radius:4px}
 .ledger-credit{color:#166534;font-family:var(--mono);font-weight:700}
 .ledger-debit{color:#991B1B;font-family:var(--mono);font-weight:700}
+.car-card{background:var(--card);border:1.5px solid var(--line);border-radius:var(--r-sm);padding:16px;position:relative;transition:box-shadow .15s;cursor:pointer}
+.car-card:hover{box-shadow:var(--shadow-md)}
+.car-status-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.car-status-available{background:#DCFCE7;color:#166534}
+.car-status-booked{background:#FEF3C7;color:#92400E}
+.car-status-maintenance{background:#FEE2E2;color:#991B1B}
+.car-status-inactive{background:var(--bg);color:var(--muted)}
+.cal-cell{height:28px;border-radius:4px;font-size:10px;display:flex;align-items:center;justify-content:center;cursor:default}
+.cal-booked{background:var(--accent-soft);color:var(--accent-ink);font-weight:700}
+.cal-today{outline:2px solid var(--accent)}
+.car-bk-row{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
+.car-bk-row:hover{background:var(--bg)}
+.car-bk-row:last-child{border-bottom:none}
 </style>
 </head>
 <body>
@@ -645,6 +658,7 @@ const TODAY = new Date().toISOString().slice(0,10);
         <button class="ta-tab" data-ta="services">🗂️ Services</button>
         <button class="ta-tab" data-ta="umrah">🕌 Umrah</button>
         <button class="ta-tab" data-ta="bookings">🎫 Bookings</button>
+        <button class="ta-tab" data-ta="cars">🚗 Cars</button>
         <button class="ta-tab" data-ta="finance">💰 Finance</button>
       </div>
       <div class="page-pad" id="agencyContent" style="flex:1">
@@ -1006,6 +1020,156 @@ const TODAY = new Date().toISOString().slice(0,10);
       <button class="btn btn-secondary" onclick="closeModal('modalBooking')">Cancel</button>
     </div>
   </div>
+<div class="modal" id="modalCar">
+  <div class="modal-hd">
+    <div style="flex:1;font-family:var(--disp);font-size:16px;font-weight:700" id="carModalTitle">Add Car</div>
+    <button class="modal-close" onclick="closeModal('modalCar')">✕</button>
+  </div>
+  <div class="modal-body" style="overflow-y:auto;flex:1;padding:20px 22px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group" style="grid-column:1/-1">
+        <label class="form-label">Display Name *</label>
+        <input class="form-input" id="carName" placeholder="e.g. Toyota Camry 2023">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Make</label>
+        <input class="form-input" id="carMake" placeholder="Toyota">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Model</label>
+        <input class="form-input" id="carModel" placeholder="Camry">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Year</label>
+        <input class="form-input" id="carYear" type="number" placeholder="2023">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Plate No.</label>
+        <input class="form-input" id="carPlate" placeholder="ABC 1234">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Category</label>
+        <select class="form-input" id="carCategory">
+          <option value="sedan">Sedan</option>
+          <option value="suv">SUV</option>
+          <option value="van">Van / MPV</option>
+          <option value="luxury">Luxury</option>
+          <option value="bus">Bus / Coaster</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Color</label>
+        <input class="form-input" id="carColor" placeholder="White">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Seats</label>
+        <input class="form-input" id="carSeats" type="number" placeholder="5">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Daily Rate</label>
+        <input class="form-input" id="carDailyRate" type="number" placeholder="150">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Currency</label>
+        <select class="form-input" id="carCurrency">
+          <option>AED</option><option>USD</option><option>EUR</option><option>GBP</option><option>SAR</option><option>INR</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Status</label>
+        <select class="form-input" id="carStatus">
+          <option value="available">Available</option>
+          <option value="booked">Booked</option>
+          <option value="maintenance">Maintenance</option>
+          <option value="inactive">Inactive</option>
+        </select>
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label class="form-label">Features (comma-separated)</label>
+        <input class="form-input" id="carFeatures" placeholder="AC, GPS, WiFi, Child Seat">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label class="form-label">Notes</label>
+        <textarea class="form-input" id="carNotes" rows="2" style="resize:vertical"></textarea>
+      </div>
+    </div>
+  </div>
+  <div class="modal-ft">
+    <button class="btn btn-primary" id="saveCarBtn" onclick="saveCar()">Save Car</button>
+    <span class="save-msg" id="saveCarMsg"></span>
+  </div>
+</div>
+<div class="modal" id="modalCarBooking">
+  <div class="modal-hd">
+    <div style="flex:1;font-family:var(--disp);font-size:16px;font-weight:700" id="carBkModalTitle">New Car Booking</div>
+    <button class="modal-close" onclick="closeModal('modalCarBooking')">✕</button>
+  </div>
+  <div class="modal-body" style="overflow-y:auto;flex:1;padding:20px 22px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group">
+        <label class="form-label">Customer Name *</label>
+        <input class="form-input" id="carBkCustomer" placeholder="Full name">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Phone</label>
+        <input class="form-input" id="carBkPhone" placeholder="+971...">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label class="form-label">Car *</label>
+        <select class="form-input" id="carBkCarId" onchange="onCarBkCarChange()"></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Pickup Date *</label>
+        <input class="form-input" id="carBkPickup" type="date" oninput="calcCarBkTotal()">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Dropoff Date *</label>
+        <input class="form-input" id="carBkDropoff" type="date" oninput="calcCarBkTotal()">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Days</label>
+        <input class="form-input" id="carBkDays" type="number" readonly style="background:var(--bg)">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Daily Rate</label>
+        <input class="form-input" id="carBkRate" type="number" oninput="calcCarBkTotal()">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Total Amount</label>
+        <input class="form-input" id="carBkTotal" type="number" readonly style="background:var(--bg)">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Deposit Paid</label>
+        <input class="form-input" id="carBkDeposit" type="number" placeholder="0">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Currency</label>
+        <select class="form-input" id="carBkCurrency">
+          <option>AED</option><option>USD</option><option>EUR</option><option>GBP</option><option>SAR</option><option>INR</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Status</label>
+        <select class="form-input" id="carBkStatus">
+          <option value="pending">Pending</option>
+          <option value="confirmed">Confirmed</option>
+          <option value="active">Active (On Road)</option>
+          <option value="completed">Completed</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label class="form-label">Notes</label>
+        <textarea class="form-input" id="carBkNotes" rows="2" style="resize:vertical"></textarea>
+      </div>
+    </div>
+  </div>
+  <div class="modal-ft">
+    <button class="btn btn-primary" id="saveCarBkBtn" onclick="saveCarBooking()">Save Booking</button>
+    <span class="save-msg" id="saveCarBkMsg"></span>
+  </div>
+</div>
 
 </div><!-- /app -->
 
@@ -2339,19 +2503,18 @@ function renderSmartMatch(lead){
   const matchCard=$id('smartMatchCard');
   const matchList=$id('smartMatchList');
   let services=[];try{services=JSON.parse(clientRecord?.services||'[]');}catch(e){}
-
-  // Build a unified catalog: old services + TA packages + TA itineraries
+  const conv=lead.ConvHistory||lead.HotMomentText||'';
+  const convLower=conv.toLowerCase();
   const catalog=[
     ...services.map(s=>({_type:'service',name:s.name,subtitle:(s.description||'')+' · '+(s.currency||'AED')+' '+(s.price||''),searchText:(s.name+' '+s.description+' '+(s.category||'')).toLowerCase()})),
-    ..._taPackages.map(p=>({_type:'package',name:'📦 '+p.name,subtitle:(p.destination?p.destination+' · ':'')+p.nights+'n · '+(p.currency||'AED')+' '+(p.sell_price||p.base_price||''),searchText:(p.name+' '+(p.destination||'')+' '+(p.type||'')+' '+safeJson(p.inclusions,[]).join(' ')).toLowerCase()})),
+    ..._taPackages.map(p=>({_type:'package',name:'📦 '+p.name,subtitle:(p.destination?p.destination+' · ':'')+p.nights+'n · '+(p.currency||'AED')+' '+(p.sell_price||p.base_price||''),searchText:(p.name+' '+(p.destination||'')+' '+(p.type||'')).toLowerCase()})),
     ..._taItineraries.map(it=>({_type:'itinerary',name:'🗺️ '+it.title,subtitle:(it.destination||'')+' · '+(it.days||[]).length+' days',searchText:(it.title+' '+(it.destination||'')+' '+(it.notes||'')).toLowerCase()})),
+    ..._taCars.filter(c=>c.status!=='inactive').map(c=>({_type:'car',name:'🚗 '+c.name,subtitle:(c.category?cap(c.category)+' · ':'')+c.seats+' seats · '+(c.currency||'AED')+' '+(c.daily_rate||'')+'/day',searchText:(c.name+' '+(c.make||'')+' '+(c.model||'')+' '+(c.category||'')+' '+(c.color||'')).toLowerCase()})),
   ];
-
   if(!catalog.length){matchCard.style.display='none';return;}
-  const conv=(lead.ConvHistory||lead.HotMomentText||'').toLowerCase();
   const scored=catalog.map(item=>{
     let score=0;
-    item.searchText.split(/\s+/).forEach(w=>{if(w.length>3&&conv.includes(w))score++;});
+    item.searchText.split(/\s+/).forEach(w=>{if(w.length>3&&convLower.includes(w))score++;});
     return{...item,matchScore:score};
   }).filter(s=>s.matchScore>0).sort((a,b)=>b.matchScore-a.matchScore).slice(0,4);
   if(!scored.length){matchCard.style.display='none';return;}
@@ -2375,11 +2538,11 @@ async function generateDealCoach(){
     let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
     let qa={};try{qa=JSON.parse(lead.QualAnswers||'{}');}catch(e){}
     let services=[];try{services=JSON.parse(clientRecord?.services||'[]');}catch(e){}
-    const svcText=services.length?'\nServices offered: '+services.map(s=>s.name+(s.price?' ('+s.currency+' '+s.price+')':'')).join(', '):'';
-    // TA catalog context
+    const svcText=services.length?'\nServices: '+services.map(s=>s.name).join(', '):'';
     const pkgText=_taPackages.length?'\nTravel Packages:\n'+_taPackages.slice(0,8).map(p=>`- ${p.name} | ${p.destination||''} | ${p.nights||''}n | ${p.currency||'AED'} ${p.sell_price||p.base_price||''} | Pax ${p.pax_min||1}-${p.pax_max||''}`).join('\n'):'';
     const itinText=_taItineraries.length?'\nItineraries: '+_taItineraries.slice(0,5).map(i=>i.title+(i.destination?' ('+i.destination+')':'')).join(', '):'';
     const umrahText=_taUmrahGroups.filter(g=>g.departure_date>=TODAY).slice(0,3).length?'\nUpcoming Umrah/Hajj Groups:\n'+_taUmrahGroups.filter(g=>g.departure_date>=TODAY).slice(0,3).map(g=>`- ${g.name} | Dep: ${g.departure_date} | ${g.seats||0} seats | AED ${g.price_per_pax||''}/pax`).join('\n'):'';
+    const carsText=_taCars.filter(c=>c.status!=='inactive').length?'\nAvailable Cars:\n'+_taCars.filter(c=>c.status!=='inactive').slice(0,6).map(c=>`- ${c.name} | ${cap(c.category||'car')} | ${c.seats||'?'} seats | ${c.currency||'AED'} ${c.daily_rate||0}/day`).join('\n'):'';
     const qaText=Object.keys(qa).length?'\nQual answers: '+JSON.stringify(qa):'';
     const histText=hist.slice(-8).map(m=>m.role+': '+m.content).join('\n');
     const resp=await fetch('https://openrouter.ai/api/v1/chat/completions',{
@@ -2387,7 +2550,7 @@ async function generateDealCoach(){
       headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'},
       body:JSON.stringify({model,max_tokens:400,messages:[
         {role:'system',content:'You are a travel agency sales coach. Analyse the lead and give 3 concise, actionable recommendations to close the deal. If relevant packages or itineraries are listed, suggest specific ones by name. Format as: 1. [action] 2. [action] 3. [action]. Be specific and practical.'},
-        {role:'user',content:`Lead: ${lead.Name||'Unknown'}\nStage: ${lead.Stage||'new'}\nScore: ${lead.Score||'Cold'}\nQual Score: ${lead.QualScore||'N/A'}\nHot moment: ${lead.HotMoment==='Yes'?lead.HotMomentText:'No'}${qaText}${svcText}${pkgText}${itinText}${umrahText}\nRecent conversation:\n${histText}`}
+        {role:'user',content:`Lead: ${lead.Name||'Unknown'}\nStage: ${lead.Stage||'new'}\nScore: ${lead.Score||'Cold'}\nQual Score: ${lead.QualScore||'N/A'}\nHot moment: ${lead.HotMoment==='Yes'?lead.HotMomentText:'No'}${qaText}${svcText}${pkgText}${itinText}${umrahText}${carsText}\nRecent conversation:\n${histText}`}
       ]})
     });
     const data=await resp.json();
@@ -2750,11 +2913,7 @@ async function doMerge(dupId){
 
 /* ── TRAVEL AGENCY MODULE ── */
 let _taPage = 'dashboard';
-let _taPackages = [];
-let _taBookings = [];
-let _taCases = [];
-let _taItineraries = [];
-let _taUmrahGroups = [];
+let _taPackages = [], _taBookings = [], _taCases = [], _taItineraries = [], _taUmrahGroups = [], _taCars = [], _taCarBookings = [];
 let _taLoaded = false;
 
 /* ── TA: TABLE IDS & CRUD HELPERS ── */
@@ -2788,14 +2947,15 @@ async function taDeleteRow(key,rowId){
 
 async function taLoad(){
   if(!taTablesReady())return;
-  const [pkgs,bks,cs,its,ug]=await Promise.all([
-    taFetch('packages'),taFetch('bookings'),taFetch('cases'),taFetch('itineraries'),taFetch('umrah_groups')
+  const [pkgs,bks,cs,its,ug,cars,carbks]=await Promise.all([
+    taFetch('packages'),taFetch('bookings'),taFetch('cases'),
+    taFetch('itineraries'),taFetch('umrah_groups'),
+    taFetch('cars'),taFetch('car_bookings')
   ]);
-  _taPackages=pkgs;
-  _taBookings=bks;
-  _taCases=cs;
+  _taPackages=pkgs; _taBookings=bks; _taCases=cs;
   _taItineraries=its.map(r=>({...r,days:safeJson(r.days)}));
   _taUmrahGroups=ug.map(r=>({...r,pilgrims:safeJson(r.pilgrims)}));
+  _taCars=cars; _taCarBookings=carbks;
   _taLoaded=true;
 }
 
@@ -2864,6 +3024,24 @@ async function taSetupTables(){
         {title:'madinah_nights',uidt:'Number'},{title:'transport',uidt:'SingleLineText'},
         {title:'price_per_pax',uidt:'Decimal'},{title:'pilgrims',uidt:'LongText'},{title:'notes',uidt:'LongText'},
       ]},
+      cars:{title:'ta_cars',columns:[
+        {title:'client_id',uidt:'SingleLineText'},{title:'name',uidt:'SingleLineText'},
+        {title:'make',uidt:'SingleLineText'},{title:'model',uidt:'SingleLineText'},
+        {title:'year',uidt:'Number'},{title:'plate_no',uidt:'SingleLineText'},
+        {title:'category',uidt:'SingleLineText'},{title:'color',uidt:'SingleLineText'},
+        {title:'seats',uidt:'Number'},{title:'daily_rate',uidt:'Decimal'},
+        {title:'currency',uidt:'SingleLineText'},{title:'status',uidt:'SingleLineText'},
+        {title:'features',uidt:'LongText'},{title:'notes',uidt:'LongText'},
+      ]},
+      car_bookings:{title:'ta_car_bookings',columns:[
+        {title:'client_id',uidt:'SingleLineText'},{title:'customer_name',uidt:'SingleLineText'},
+        {title:'customer_phone',uidt:'SingleLineText'},{title:'car_id',uidt:'SingleLineText'},
+        {title:'car_name',uidt:'SingleLineText'},{title:'pickup_date',uidt:'Date'},
+        {title:'dropoff_date',uidt:'Date'},{title:'days',uidt:'Number'},
+        {title:'daily_rate',uidt:'Decimal'},{title:'total_amount',uidt:'Decimal'},
+        {title:'deposit',uidt:'Decimal'},{title:'currency',uidt:'SingleLineText'},
+        {title:'status',uidt:'SingleLineText'},{title:'notes',uidt:'LongText'},
+      ]},
     };
     // Fetch existing tables in this base to handle re-runs gracefully
     msg.textContent='Checking existing tables…';
@@ -2928,6 +3106,7 @@ function renderAgencySubPage(page) {
     case 'services':    el.innerHTML = renderTaServices(); break;
     case 'umrah':       el.innerHTML = renderTaUmrah(); break;
     case 'bookings':    el.innerHTML = renderTaBookings(); break;
+    case 'cars': el.innerHTML = renderTaCars(); renderCarCalendar(); break;
     case 'finance':     el.innerHTML = renderTaFinance(); break;
   }
 }
@@ -3458,6 +3637,251 @@ async function saveBooking(){
 async function deleteBooking(id){
   if(!confirm('Delete this booking?'))return;
   await taDeleteRow('bookings',id);_taLoaded=false;await taLoad();renderAgencySubPage('bookings');
+}
+
+/* ── TA: CARS ── */
+let _editCarId=null;
+let _editCarBkId=null;
+let _carCalMonth=new Date().getMonth();
+let _carCalYear=new Date().getFullYear();
+
+function carStatusClass(s){return 'car-status-'+(s||'available');}
+function carIcon(cat){const m={sedan:'🚗',suv:'🚙',van:'🚐',luxury:'💎',bus:'🚌',other:'🚘'};return m[cat]||'🚗';}
+
+function renderTaCars(){
+  const today=TODAY;
+  const available=_taCars.filter(c=>c.status==='available'||!c.status).length;
+  const bookedToday=_taCarBookings.filter(b=>b.status!=='cancelled'&&b.pickup_date<=today&&b.dropoff_date>=today).length;
+  const totalRev=_taCarBookings.filter(b=>b.status==='completed'||b.status==='active').reduce((s,b)=>s+(parseFloat(b.total_amount)||0),0);
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🚗 Cars & Rentals</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-secondary btn-sm" onclick="openCarBookingModal()">+ New Booking</button>
+      <button class="btn btn-primary btn-sm" onclick="openCarModal()">+ Add Car</button>
+    </div>
+  </div>
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+    <div class="stat accent"><div class="stat-lbl">Total Cars</div><div class="stat-val">${_taCars.length}</div></div>
+    <div class="stat"><div class="stat-lbl">Available</div><div class="stat-val">${available}</div></div>
+    <div class="stat"><div class="stat-lbl">Out Today</div><div class="stat-val">${bookedToday}</div></div>
+    <div class="stat"><div class="stat-lbl">Revenue</div><div class="stat-val">${totalRev>=1000?(totalRev/1000).toFixed(1)+'k':totalRev.toFixed(0)}</div></div>
+  </div>
+  ${_taCars.length?`
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:16px">
+    ${_taCars.map(c=>renderCarCard(c)).join('')}
+  </div>`:'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px"><div style="font-size:36px;margin-bottom:8px">🚗</div>No cars added yet.<br>Add your first car to start tracking.</div>'}
+  <div class="ta-card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div class="ta-card-title" style="margin-bottom:0">📅 Booking Calendar</div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button onclick="shiftCarCal(-1)" class="btn btn-ghost" style="padding:4px 10px;font-size:13px">‹</button>
+        <span style="font-family:var(--disp);font-size:13px;font-weight:700" id="carCalLabel"></span>
+        <button onclick="shiftCarCal(1)" class="btn btn-ghost" style="padding:4px 10px;font-size:13px">›</button>
+      </div>
+    </div>
+    <div id="carCalWrap" style="overflow-x:auto"></div>
+  </div>
+  <div class="ta-card" style="padding:0;overflow:hidden">
+    <div style="padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between">
+      <div class="ta-card-title" style="margin-bottom:0">🎫 Car Bookings</div>
+    </div>
+    ${_taCarBookings.length?_taCarBookings.map(b=>renderCarBkRow(b)).join(''):'<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">No car bookings yet</div>'}
+  </div>`;
+}
+
+function renderCarCard(c){
+  const activeBookings=_taCarBookings.filter(b=>b.car_id===String(c.Id)&&b.status!=='cancelled'&&b.status!=='completed');
+  const todayBk=activeBookings.find(b=>b.pickup_date<=TODAY&&b.dropoff_date>=TODAY);
+  const status=todayBk?'booked':(c.status||'available');
+  return `
+  <div class="car-card" onclick="openCarModal('${c.Id}')">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+      <div style="font-size:28px">${carIcon(c.category)}</div>
+      <span class="car-status-badge ${carStatusClass(status)}">${status}</span>
+    </div>
+    <div style="font-family:var(--disp);font-size:14px;font-weight:700;margin-bottom:2px">${esc(c.name||'—')}</div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">${esc(c.plate_no||'')}${c.color?' · '+esc(c.color):''} · ${c.seats||'?'} seats</div>
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div style="font-family:var(--disp);font-size:13px;font-weight:700;color:var(--accent-ink)">${esc(c.currency||'AED')} ${c.daily_rate||0}<span style="font-size:10px;font-weight:400;color:var(--muted)">/day</span></div>
+      ${activeBookings.length?`<span style="font-size:10px;color:var(--accent-ink);background:var(--accent-soft);padding:2px 8px;border-radius:10px">${activeBookings.length} booking${activeBookings.length>1?'s':''}</span>`:''}
+    </div>
+    ${todayBk?`<div style="margin-top:8px;font-size:11px;background:#FEF3C7;color:#92400E;padding:5px 8px;border-radius:6px">Out: ${esc(todayBk.customer_name||'—')} → returns ${esc(todayBk.dropoff_date)}</div>`:''}
+    <div style="margin-top:8px;display:flex;gap:6px">
+      <button onclick="event.stopPropagation();openCarBookingModal(null,'${c.Id}')" class="btn btn-secondary btn-sm" style="flex:1;font-size:11px">+ Book</button>
+      <button onclick="event.stopPropagation();deleteCar('${c.Id}')" style="background:none;border:1px solid var(--line);border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--muted);font-size:12px">✕</button>
+    </div>
+  </div>`;
+}
+
+function renderCarBkRow(b){
+  const car=_taCars.find(c=>String(c.Id)===String(b.car_id));
+  const paid=parseFloat(b.deposit)||0,total=parseFloat(b.total_amount)||0;
+  const pct=total?Math.round((paid/total)*100):0;
+  const statusColors={pending:'stage-pending',confirmed:'stage-active',active:'stage-active',completed:'stage-done',cancelled:'stage-blocked'};
+  return `
+  <div class="car-bk-row" onclick="openCarBookingModal('${b.Id}')">
+    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">${carIcon(car?.category)}</div>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:13.5px">${esc(b.customer_name||'—')}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(b.car_name||car?.name||'—')} · ${esc(b.pickup_date||'?')} → ${esc(b.dropoff_date||'?')} · ${b.days||'?'} days</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+        <div class="payment-bar-wrap"><div class="payment-bar-fill" style="width:${pct}%"></div></div>
+        <span style="font-size:10px;color:var(--muted)">${pct}% paid</span>
+      </div>
+    </div>
+    <div style="text-align:right;flex-shrink:0">
+      <div style="font-family:var(--disp);font-size:13px;font-weight:700">${esc(b.currency||'AED')} ${total.toLocaleString()}</div>
+      <span class="stage-pill ${statusColors[b.status]||'stage-pending'}" style="margin-top:3px">${esc(b.status||'pending')}</span>
+    </div>
+  </div>`;
+}
+
+function renderCarCalendar(){
+  const yr=_carCalYear,mo=_carCalMonth;
+  const daysInMonth=new Date(yr,mo+1,0).getDate();
+  const monthName=new Date(yr,mo,1).toLocaleString('en',{month:'long',year:'numeric'});
+  setTimeout(()=>{const lbl=$id('carCalLabel');if(lbl)lbl.textContent=monthName;renderCarCalGrid();},0);
+  return '';
+}
+
+function renderCarCalGrid(){
+  const wrap=$id('carCalWrap');if(!wrap)return;
+  const yr=_carCalYear,mo=_carCalMonth;
+  const daysInMonth=new Date(yr,mo+1,0).getDate();
+  const todayStr=TODAY;
+  const pad=n=>String(n).padStart(2,'0');
+  const days=Array.from({length:daysInMonth},(_,i)=>`${yr}-${pad(mo+1)}-${pad(i+1)}`);
+
+  // Header row
+  let html=`<div style="display:grid;grid-template-columns:140px repeat(${daysInMonth},minmax(26px,1fr));gap:2px;min-width:${140+daysInMonth*28}px">`;
+  html+=`<div style="font-size:10px;font-weight:700;color:var(--muted);padding:4px 6px">Car</div>`;
+  days.forEach(d=>{
+    const dn=parseInt(d.slice(8));
+    const isToday=d===todayStr;
+    html+=`<div style="text-align:center;font-size:9px;font-weight:${isToday?'700':'400'};color:${isToday?'var(--accent-ink)':'var(--muted)'}; padding:2px 0">${dn}</div>`;
+  });
+
+  if(!_taCars.length){html+=`<div style="grid-column:1/-1;padding:20px;text-align:center;color:var(--muted);font-size:12px">No cars</div>`;}
+
+  _taCars.forEach(car=>{
+    // Get bookings for this car in this month
+    const carBks=_taCarBookings.filter(b=>b.car_id===String(car.Id)&&b.status!=='cancelled');
+    html+=`<div style="font-size:11px;font-weight:600;padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(car.name)}">${carIcon(car.category)} ${esc(car.name)}</div>`;
+    days.forEach(d=>{
+      const bk=carBks.find(b=>b.pickup_date<=d&&b.dropoff_date>=d);
+      const isToday=d===todayStr;
+      if(bk){
+        const isStart=bk.pickup_date===d,isEnd=bk.dropoff_date===d;
+        html+=`<div class="cal-cell cal-booked${isToday?' cal-today':''}" style="border-radius:${isStart?'6px 0 0 6px':isEnd?'0 6px 6px 0':'0'}" title="${esc(bk.customer_name||'')} (${esc(bk.pickup_date)}→${esc(bk.dropoff_date)})">${isStart?'▶':isEnd?'◀':''}</div>`;
+      } else {
+        html+=`<div class="cal-cell${isToday?' cal-today':''}" style="background:var(--bg)"></div>`;
+      }
+    });
+  });
+  html+='</div>';
+  wrap.innerHTML=html;
+}
+
+function shiftCarCal(dir){
+  _carCalMonth+=dir;
+  if(_carCalMonth>11){_carCalMonth=0;_carCalYear++;}
+  if(_carCalMonth<0){_carCalMonth=11;_carCalYear--;}
+  const yr=_carCalYear,mo=_carCalMonth;
+  const lbl=$id('carCalLabel');
+  if(lbl)lbl.textContent=new Date(yr,mo,1).toLocaleString('en',{month:'long',year:'numeric'});
+  renderCarCalGrid();
+}
+
+function openCarModal(id){
+  _editCarId=id||null;
+  const c=id?(_taCars.find(x=>String(x.Id)===String(id))||{}):{};
+  $id('carModalTitle').textContent=id?'Edit Car':'Add Car';
+  $id('carName').value=c.name||''; $id('carMake').value=c.make||'';
+  $id('carModel').value=c.model||''; $id('carYear').value=c.year||'';
+  $id('carPlate').value=c.plate_no||''; $id('carCategory').value=c.category||'sedan';
+  $id('carColor').value=c.color||''; $id('carSeats').value=c.seats||'';
+  $id('carDailyRate').value=c.daily_rate||''; $id('carCurrency').value=c.currency||'AED';
+  $id('carStatus').value=c.status||'available';
+  $id('carFeatures').value=safeJson(c.features,[]).join(', ');
+  $id('carNotes').value=c.notes||'';
+  openModal('modalCar');
+}
+
+async function saveCar(){
+  const btn=$id('saveCarBtn'),msg=$id('saveCarMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const existing=_editCarId?(_taCars.find(x=>String(x.Id)===String(_editCarId))||{}):{};
+  const featuresRaw=$id('carFeatures').value.trim();
+  const c={name:$id('carName').value.trim(),make:$id('carMake').value.trim(),model:$id('carModel').value.trim(),year:parseInt($id('carYear').value)||0,plate_no:$id('carPlate').value.trim(),category:$id('carCategory').value,color:$id('carColor').value.trim(),seats:parseInt($id('carSeats').value)||0,daily_rate:parseFloat($id('carDailyRate').value)||0,currency:$id('carCurrency').value,status:$id('carStatus').value,features:JSON.stringify(featuresRaw?featuresRaw.split(',').map(s=>s.trim()).filter(Boolean):[]),notes:$id('carNotes').value.trim()};
+  if(!c.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editCarId) await taUpdate('cars',_editCarId,c); else await taCreate('cars',c);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCar');await taLoad();renderAgencySubPage('cars');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteCar(id){
+  if(!confirm('Delete this car? All its bookings will remain.'))return;
+  await taDeleteRow('cars',id);_taLoaded=false;await taLoad();renderAgencySubPage('cars');
+}
+
+function populateCarSelect(selectedCarId){
+  const sel=$id('carBkCarId');if(!sel)return;
+  sel.innerHTML=_taCars.filter(c=>c.status!=='inactive').map(c=>`<option value="${c.Id}" ${String(c.Id)===String(selectedCarId)?'selected':''}>${carIcon(c.category)} ${esc(c.name)} (${c.currency||'AED'} ${c.daily_rate||0}/day)</option>`).join('');
+}
+
+function onCarBkCarChange(){
+  const sel=$id('carBkCarId');if(!sel)return;
+  const car=_taCars.find(c=>String(c.Id)===sel.value);
+  if(car){$id('carBkRate').value=car.daily_rate||'';$id('carBkCurrency').value=car.currency||'AED';}
+  calcCarBkTotal();
+}
+
+function calcCarBkTotal(){
+  const pickup=$id('carBkPickup').value,dropoff=$id('carBkDropoff').value;
+  const rate=parseFloat($id('carBkRate').value)||0;
+  if(pickup&&dropoff&&dropoff>pickup){
+    const days=Math.ceil((new Date(dropoff)-new Date(pickup))/(1000*60*60*24));
+    $id('carBkDays').value=days;
+    $id('carBkTotal').value=(days*rate).toFixed(2);
+  } else {$id('carBkDays').value='';$id('carBkTotal').value='';}
+}
+
+function openCarBookingModal(id,preCarId){
+  _editCarBkId=id||null;
+  const b=id?(_taCarBookings.find(x=>String(x.Id)===String(id))||{}):{};
+  $id('carBkModalTitle').textContent=id?'Edit Car Booking':'New Car Booking';
+  populateCarSelect(preCarId||b.car_id);
+  $id('carBkCustomer').value=b.customer_name||''; $id('carBkPhone').value=b.customer_phone||'';
+  $id('carBkPickup').value=b.pickup_date||''; $id('carBkDropoff').value=b.dropoff_date||'';
+  $id('carBkDays').value=b.days||''; $id('carBkRate').value=b.daily_rate||'';
+  $id('carBkTotal').value=b.total_amount||''; $id('carBkDeposit').value=b.deposit||'';
+  $id('carBkCurrency').value=b.currency||'AED'; $id('carBkStatus').value=b.status||'pending';
+  $id('carBkNotes').value=b.notes||'';
+  if(!id&&preCarId){const car=_taCars.find(c=>String(c.Id)===String(preCarId));if(car){$id('carBkRate').value=car.daily_rate||'';$id('carBkCurrency').value=car.currency||'AED';}}
+  openModal('modalCarBooking');
+}
+
+async function saveCarBooking(){
+  const btn=$id('saveCarBkBtn'),msg=$id('saveCarBkMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const existing=_editCarBkId?(_taCarBookings.find(x=>String(x.Id)===String(_editCarBkId))||{}):{};
+  const carId=$id('carBkCarId').value;
+  const car=_taCars.find(c=>String(c.Id)===carId);
+  const b={customer_name:$id('carBkCustomer').value.trim(),customer_phone:$id('carBkPhone').value.trim(),car_id:String(carId),car_name:car?.name||'',pickup_date:$id('carBkPickup').value,dropoff_date:$id('carBkDropoff').value,days:parseInt($id('carBkDays').value)||0,daily_rate:parseFloat($id('carBkRate').value)||0,total_amount:parseFloat($id('carBkTotal').value)||0,deposit:parseFloat($id('carBkDeposit').value)||0,currency:$id('carBkCurrency').value,status:$id('carBkStatus').value,notes:$id('carBkNotes').value.trim(),created_at:existing.created_at||new Date().toISOString().slice(0,10)};
+  if(!b.customer_name||!b.car_id||!b.pickup_date||!b.dropoff_date){msg.textContent='Customer, car and dates required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editCarBkId) await taUpdate('car_bookings',_editCarBkId,b); else await taCreate('car_bookings',b);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCarBooking');await taLoad();renderAgencySubPage('cars');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteCarBooking(id){
+  if(!confirm('Delete this booking?'))return;
+  await taDeleteRow('car_bookings',id);_taLoaded=false;await taLoad();renderAgencySubPage('cars');
 }
 
 /* ── TA: FINANCE ── */
