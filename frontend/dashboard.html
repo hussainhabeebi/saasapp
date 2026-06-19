@@ -1278,10 +1278,15 @@ document.querySelectorAll('.bnItem,.dnTab').forEach(b=>{
 });
 
 /* ── SHOW APP ── */
+function taSaveLocal(key,val){try{const k='lv_ta_'+clientId;const c=JSON.parse(localStorage.getItem(k)||'{}');c[key]=val;localStorage.setItem(k,JSON.stringify(c));}catch(e){}}
+function taLoadLocal(){try{return JSON.parse(localStorage.getItem('lv_ta_'+clientId)||'{}');}catch(e){return{};}}
+function taMergeLocal(){const loc=taLoadLocal();if(loc.ta_enabled&&!clientRecord.ta_enabled)clientRecord.ta_enabled=loc.ta_enabled;if(loc.ta_table_ids&&!clientRecord.ta_table_ids)clientRecord.ta_table_ids=loc.ta_table_ids;}
+
 function showApp(){
   $id('gate').classList.add('hidden');
   $id('app').classList.add('show');
   $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
+  taMergeLocal();
   applyTheme(clientRecord.industry||'general');
   updateAgencyTabVisibility();
   loadAll();
@@ -2869,7 +2874,10 @@ async function taSetupTables(){
         tableIds[key]=r.id;
       }
     }
-    await patchClient({ta_table_ids:JSON.stringify(tableIds)});
+    const tableIdsJson=JSON.stringify(tableIds);
+    taSaveLocal('ta_table_ids',tableIdsJson);
+    clientRecord.ta_table_ids=tableIdsJson;
+    await patchClient({ta_table_ids:tableIdsJson}).catch(()=>{});
     msg.textContent='✓ All tables created! Loading…';
     await taLoad();
     renderAgencySubPage(_taPage);
@@ -3529,8 +3537,10 @@ $id('saveTaEnabled').addEventListener('click',async()=>{
     if(!cols.includes('ta_table_ids')){
       await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ta_table_ids',title:'ta_table_ids',uidt:'LongText'}).catch(()=>{});
     }
-    clientRecord.ta_enabled=$id('cfgTaEnabled').value;
-    await patchClient({ta_enabled:clientRecord.ta_enabled});
+    const val=$id('cfgTaEnabled').value;
+    clientRecord.ta_enabled=val;
+    taSaveLocal('ta_enabled',val);
+    await patchClient({ta_enabled:val}).catch(()=>{});
     updateAgencyTabVisibility();
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
