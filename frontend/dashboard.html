@@ -855,11 +855,6 @@ const TODAY = new Date().toISOString().slice(0,10);
               <button class="save-btn" id="saveTaEnabled">Save</button>
               <span class="save-msg" id="saveTaEnabledMsg"></span>
             </div>
-            <div class='form-group' style='margin-top:12px'>
-              <label class='form-label'>TA Context Webhook URL <span style='font-size:11px;color:var(--sub)'>(n8n sub-workflow)</span></label>
-              <input class='form-input' id='cfgTaWebhook' placeholder='https://your-n8n.com/webhook/ta-context'>
-              <div style='font-size:11px;color:var(--sub);margin-top:4px'>Paste the webhook URL of the Leadvyne · TA Context sub-workflow. The bot uses this to fetch live package data.</div>
-            </div>
           </div>
 
         </div>
@@ -4022,7 +4017,6 @@ function renderTaFinance(){
 /* ── TA: SETTINGS ── */
 function initTaSettings(){
   $id('cfgTaEnabled').value=clientRecord.ta_enabled||'No';
-  $id('cfgTaWebhook').value = clientRecord.ta_context_webhook || taLoadLocal().ta_context_webhook || '';
   updateAgencyTabVisibility();
 }
 
@@ -4048,10 +4042,6 @@ $id('saveTaEnabled').addEventListener('click',async()=>{
     clientRecord.ta_enabled=val;
     taSaveLocal('ta_enabled',val);
     await patchClient({ta_enabled:val}).catch(()=>{});
-    const webhook = ($id('cfgTaWebhook').value||'').trim();
-    clientRecord.ta_context_webhook = webhook;
-    taSaveLocal('ta_context_webhook', webhook);
-    await patchClient({ ta_context_webhook: webhook }).catch(()=>{});
     updateAgencyTabVisibility();
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
