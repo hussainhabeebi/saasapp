@@ -2850,12 +2850,24 @@ async function taSetupTables(){
         {title:'price_per_pax',uidt:'Decimal'},{title:'pilgrims',uidt:'LongText'},{title:'notes',uidt:'LongText'},
       ]},
     };
+    // Fetch existing tables in this base to handle re-runs gracefully
+    msg.textContent='Checking existing tables…';
+    const baseTables=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`).catch(()=>({list:[]}));
+    const existingTableMap={};
+    (baseTables.list||[]).forEach(t=>{ existingTableMap[t.title]=t.id; });
+
     const tableIds={};
     for(const[key,def]of Object.entries(defs)){
-      msg.textContent=`Creating ${def.title}…`;
-      const r=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`,def);
-      if(!r.id)throw new Error(`Failed to create ${def.title}: ${JSON.stringify(r)}`);
-      tableIds[key]=r.id;
+      if(existingTableMap[def.title]){
+        // Table already exists — reuse its ID
+        msg.textContent=`Found existing ${def.title}…`;
+        tableIds[key]=existingTableMap[def.title];
+      } else {
+        msg.textContent=`Creating ${def.title}…`;
+        const r=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`,def);
+        if(!r.id)throw new Error(`Failed to create ${def.title}: ${JSON.stringify(r)}`);
+        tableIds[key]=r.id;
+      }
     }
     await patchClient({ta_table_ids:JSON.stringify(tableIds)});
     msg.textContent='✓ All tables created! Loading…';
