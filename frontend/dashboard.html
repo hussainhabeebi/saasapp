@@ -2794,11 +2794,25 @@ async function renderAgency(){
 /* ── TA: TABLE SETUP ── */
 async function taSetupTables(){
   const btn=$id('taSetupBtn'),msg=$id('taSetupMsg');
-  btn.disabled=true;msg.textContent='Creating tables…';msg.className='save-msg';
+  btn.disabled=true;msg.textContent='Preparing…';msg.className='save-msg';
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const baseId=info.base_id;
     if(!baseId)throw new Error('Could not determine base_id');
+
+    // Add ta_table_ids and ta_enabled fields to clients table if not present
+    const existingCols=(info.columns||[]).map(c=>c.title);
+    const clientFields=[
+      {column_name:'ta_table_ids',title:'ta_table_ids',uidt:'LongText'},
+      {column_name:'ta_enabled',title:'ta_enabled',uidt:'SingleLineText'},
+    ];
+    for(const f of clientFields){
+      if(!existingCols.includes(f.title)){
+        msg.textContent=`Adding ${f.title} column…`;
+        await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
+      }
+    }
+
     const defs={
       packages:{title:'ta_packages',columns:[
         {title:'client_id',uidt:'SingleLineText'},{title:'name',uidt:'SingleLineText'},
@@ -3494,11 +3508,20 @@ $id('saveTaEnabled').addEventListener('click',async()=>{
   const btn=$id('saveTaEnabled'),msg=$id('saveTaEnabledMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   try{
+    // Ensure ta_enabled column exists in clients table before saving
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('ta_enabled')){
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ta_enabled',title:'ta_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    }
+    if(!cols.includes('ta_table_ids')){
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ta_table_ids',title:'ta_table_ids',uidt:'LongText'}).catch(()=>{});
+    }
     clientRecord.ta_enabled=$id('cfgTaEnabled').value;
     await patchClient({ta_enabled:clientRecord.ta_enabled});
     updateAgencyTabVisibility();
     msg.textContent='✓ Saved';
-  }catch(e){msg.textContent='Error';msg.className='save-msg err';}
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
 
