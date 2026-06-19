@@ -879,7 +879,11 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
   </div>
 
-  <!-- TA: PACKAGE MODAL -->
+</div><!-- /app -->
+
+<!-- OVERLAY -->
+<div id="overlay" onclick="closeAllModals()"></div>
+<!-- TA: PACKAGE MODAL -->
   <div class="modal" id="modalPkg" style="width:580px">
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="pkgModalTitle">New Package</div><button class="icon-btn" onclick="closeModal('modalPkg')">✕</button></div>
@@ -1182,10 +1186,6 @@ const TODAY = new Date().toISOString().slice(0,10);
   </div>
 </div>
 
-</div><!-- /app -->
-
-<!-- OVERLAY -->
-<div id="overlay" onclick="closeAllModals()"></div>
 
 <!-- MODAL: Add/Edit Lead -->
 <div class="modal" id="modalLead">
