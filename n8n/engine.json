@@ -469,14 +469,27 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role+': '+m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';\n\n// Inject TA packages & Umrah groups if available\nconst NOCODB_BASE = 'https://whizz.aiingo.com';\nconst NOCODB_TOKEN = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';\ntry {\n  const tableIds = typeof c.ta_table_ids === 'object' ? c.ta_table_ids : JSON.parse(c.ta_table_ids || '{}');\n  const clientId = c.client_id;\n  if (tableIds.packages) {\n    const pkgRes = await $http.request({\n      method: 'GET',\n      url: `${NOCODB_BASE}/api/v2/tables/${tableIds.packages}/records?where=(client_id,eq,${clientId})&limit=30`,\n      headers: { 'xc-token': NOCODB_TOKEN }\n    });\n    const pkgs = pkgRes.list || [];\n    if (pkgs.length) {\n      const pkgLines = pkgs.map(p => {\n        let line = `- ${p.name}`;\n        if (p.destination) line += ` | Destination: ${p.destination}`;\n        if (p.nights) line += ` | ${p.nights} nights`;\n        if (p.type) line += ` | Type: ${p.type}`;\n        if (p.sell_price || p.base_price) line += ` | Price: ${p.currency || 'AED'} ${p.sell_price || p.base_price} per person`;\n        if (p.pax_min || p.pax_max) line += ` | Pax: ${p.pax_min || 1}-${p.pax_max || ''}`;\n        try {\n          const inc = JSON.parse(p.inclusions || '[]');\n          if (inc.length) line += ` | Includes: ${inc.join(', ')}`;\n        } catch(e) {}\n        return line;\n      }).join('\\n');\n      sys += '\\n\\n## Travel Packages\\n' + pkgLines;\n    }\n  }\n  if (tableIds.umrah_groups) {\n    const ugRes = await $http.request({\n      method: 'GET',\n      url: `${NOCODB_BASE}/api/v2/tables/${tableIds.umrah_groups}/records?where=(client_id,eq,${clientId})&limit=10&sort=departure_date`,\n      headers: { 'xc-token': NOCODB_TOKEN }\n    });\n    const groups = (ugRes.list || []).filter(g => g.departure_date >= new Date().toISOString().slice(0,10));\n    if (groups.length) {\n      const ugLines = groups.map(g => `- ${g.name} | Departs: ${g.departure_date} | ${g.seats || 0} seats available | ${g.currency || 'AED'} ${g.price_per_pax || ''}/person`).join('\\n');\n      sys += '\\n\\n## Upcoming Umrah / Hajj Groups\\n' + ugLines;\n    }\n  }\n  if (tableIds.cars) {\n    const carRes = await $http.request({\n      method: 'GET',\n      url: `${NOCODB_BASE}/api/v2/tables/${tableIds.cars}/records?where=(client_id,eq,${clientId})~and(status,eq,available)&limit=20`,\n      headers: { 'xc-token': NOCODB_TOKEN }\n    });\n    const cars = carRes.list || [];\n    if (cars.length) {\n      const carLines = cars.map(c2 => `- ${c2.name}${c2.category ? ' ('+c2.category+')' : ''} | ${c2.seats || '?'} seats | ${c2.currency || 'AED'} ${c2.daily_rate || 0}/day${c2.plate_no ? ' | Plate: '+c2.plate_no : ''}`).join('\\n');\n      sys += '\\n\\n## Available Cars for Rent\\n' + carLines;\n    }\n  }\n} catch(taErr) {\n  // TA fetch failed silently — continue without it\n}\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
+        "jsCode": "const c = $input.first().json;\nconst NOCODB_BASE = 'https://whizz.aiingo.com';\nconst TOKEN = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';\nconst tableIds = c.ta_table_ids || {};\nconst clientId = c.client_id;\nconst headers = { 'xc-token': TOKEN };\n\nasync function fetchTable(tableId, extra='') {\n  if (!tableId) return [];\n  try {\n    const r = await $http.request({ method:'GET', url:`${NOCODB_BASE}/api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})${extra}&limit=30`, headers });\n    return r.list || [];\n  } catch(e) { return []; }\n}\n\nconst today = new Date().toISOString().slice(0,10);\nconst [packages, umrahGroups, cars, itineraries] = await Promise.all([\n  fetchTable(tableIds.packages),\n  fetchTable(tableIds.umrah_groups, '&sort=departure_date'),\n  fetchTable(tableIds.cars, '~and(status,eq,available)'),\n  fetchTable(tableIds.itineraries)\n]);\n\nconst filteredUmrah = umrahGroups.filter(g => g.departure_date >= today);\nlet block = '';\n\nif (packages.length) {\n  const lines = packages.map(p => {\n    let l = `- ${p.name}`;\n    if (p.destination) l += ` | Destination: ${p.destination}`;\n    if (p.nights) l += ` | ${p.nights} nights`;\n    if (p.type) l += ` | Type: ${p.type}`;\n    if (p.sell_price || p.base_price) l += ` | Price: ${p.currency||'AED'} ${p.sell_price||p.base_price}/person`;\n    if (p.pax_min || p.pax_max) l += ` | Pax: ${p.pax_min||1}-${p.pax_max||''}`;\n    try { const inc=JSON.parse(p.inclusions||'[]'); if(inc.length) l += ` | Includes: ${inc.join(', ')}`; } catch(e){}\n    return l;\n  }).join('\\n');\n  block += '\\n\\n## Travel Packages\\n' + lines;\n}\n\nif (filteredUmrah.length) {\n  const lines = filteredUmrah.map(g => `- ${g.name} | Departs: ${g.departure_date} | Seats: ${g.seats||0} | ${g.currency||'AED'} ${g.price_per_pax||''}/person`).join('\\n');\n  block += '\\n\\n## Upcoming Umrah / Hajj Groups\\n' + lines;\n}\n\nif (itineraries.length) {\n  const lines = itineraries.map(it => {\n    let days = []; try { days = JSON.parse(it.days||'[]'); } catch(e) {}\n    return `- ${it.title}${it.destination?' | '+it.destination:''} | ${days.length} days`;\n  }).join('\\n');\n  block += '\\n\\n## Itineraries\\n' + lines;\n}\n\nif (cars.length) {\n  const lines = cars.map(car => `- ${car.name}${car.category?' ('+car.category+')':''} | ${car.seats||'?'} seats | ${car.currency||'AED'} ${car.daily_rate||0}/day${car.plate_no?' | Plate: '+car.plate_no:''}`).join('\\n');\n  block += '\\n\\n## Available Cars for Rent\\n' + lines;\n}\n\nreturn [{ json: { ...c, taContextBlock: block } }];"
+      },
+      "id": "tacontext",
+      "name": "Code · TA Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role+': '+m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';\n\nconst taBlock = c.taContextBlock || '';\nif (taBlock) sys += taBlock;\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
       },
       "id": "faqprep",
       "name": "Code · FAQ prep",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1880,
+        2100,
         360
       ]
     },
@@ -936,7 +949,7 @@
         ],
         [
           {
-            "node": "Code · FAQ prep",
+            "node": "Code · TA Context",
             "type": "main",
             "index": 0
           }
@@ -987,6 +1000,17 @@
         [
           {
             "node": "Code · Prep lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · TA Context": {
+      "main": [
+        [
+          {
+            "node": "Code · FAQ prep",
             "type": "main",
             "index": 0
           }
