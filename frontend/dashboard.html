@@ -492,6 +492,10 @@ const TODAY = new Date().toISOString().slice(0,10);
   <div id="hdr">
     <span class="hbrand">Leadvyne<span>.</span></span>
     <span class="hchip" id="hChip">—</span>
+    <div id="notifBell" style="position:relative;cursor:pointer;display:none" onclick="toggleNotifDropdown()">
+      🔔<span id="notifBadge" style="display:none;position:absolute;top:-4px;right:-4px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center"></span>
+      <div id="notifDropdown" style="display:none;position:absolute;right:0;top:28px;width:320px;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.15);z-index:999;max-height:400px;overflow-y:auto"></div>
+    </div>
     <div class="hright">
       <span id="hUpdated"></span>
       <button class="icon-btn" title="PDF Report" onclick="generateReport()">📄</button>
@@ -518,6 +522,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- HOME -->
     <div class="page" id="pageHome">
       <div class="page-pad">
+        <div id="remindersPanel" style="display:none;margin-bottom:14px"></div>
         <div class="row-grid g4" id="statsGrid" style="margin-bottom:14px"></div>
         <div style="display:grid;gap:14px;grid-template-columns:1fr" class="mb14">
           <div class="card">
@@ -538,6 +543,12 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div id="agentTable"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
           </div>
         </div>
+        <!-- Conversion trend -->
+        <div class="card" style="margin-top:14px">
+          <div class="card-title">📈 Conversion Trend <span style="font-size:11px;color:var(--muted);margin-left:6px">Last 8 weeks</span></div>
+          <div style="height:160px"><canvas id="convTrendChart"></canvas></div>
+        </div>
+
         <!-- Hot moments banner -->
         <div id="hotBanner" style="display:none"></div>
 
@@ -1275,6 +1286,12 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- conversation -->
     <div class="sec-hd">💬 Conversation</div>
     <div id="detailThread" style="display:flex;flex-direction:column;gap:8px;max-height:300px;overflow-y:auto;padding:4px 0"></div>
+    <!-- WA Reply bar -->
+    <div id="waReplyBar" style="display:none;padding:12px 16px;border-top:1px solid var(--line);gap:8px;align-items:flex-end">
+      <textarea id="waReplyText" class="form-input" rows="2" style="flex:1;resize:none" placeholder="Type a WhatsApp reply…"></textarea>
+      <button class="btn btn-primary btn-sm" onclick="sendWaReply()">Send</button>
+      <span id="waReplyMsg" class="save-msg"></span>
+    </div>
     <!-- AI summary -->
     <div style="margin-top:12px">
       <button class="btn btn-secondary btn-sm" onclick="generateSummary()">✨ AI Summary</button>
@@ -1371,6 +1388,9 @@ const TODAY = new Date().toISOString().slice(0,10);
 let clientId = null, clientRecord = null, refreshTimer = null;
 let allLeads = [], currentLead = null, chartMode = 'week', leadsChart = null;
 let _stages = [], _convSearchActive = false;
+let _leadsPage=1; const LEADS_PGS=50;
+let _notifTimer=null, _notifSeen=[], _notifItems=[];
+let _reminderTimer=null;
 
 function getIndustry(){ return INDUSTRIES[clientRecord?.industry] || INDUSTRIES.general; }
 function getAgents(){ try{ return JSON.parse(clientRecord?.agents||'[]'); }catch(e){ return (clientRecord?.agents||'').split('\n').map(s=>s.trim()).filter(Boolean); } }
@@ -1412,7 +1432,10 @@ $id('hLogout').addEventListener('click',()=>{
   if(clientId) sessionStorage.removeItem(_CACHE_KEY());
   clientId=null; clientRecord=null; allLeads=[];
   clearInterval(refreshTimer);
+  clearInterval(_notifTimer);
+  clearInterval(_reminderTimer);
   if(leadsChart){leadsChart.destroy();leadsChart=null;}
+  const notifBell=$id('notifBell');if(notifBell)notifBell.style.display='none';
   $id('app').classList.remove('show');
   $id('gate').classList.remove('hidden');
   $id('gUser').value=''; $id('gPass').value='';
@@ -1456,6 +1479,12 @@ function showApp(){
   loadAll();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
+  setTimeout(pollNotifications,3000);
+  clearInterval(_notifTimer);
+  _notifTimer=setInterval(pollNotifications,60000);
+  setTimeout(checkReminders,3000);
+  clearInterval(_reminderTimer);
+  _reminderTimer=setInterval(checkReminders,6*3600*1000);
 }
 
 const _CACHE_KEY=()=>`lv_leads_${clientId}`;
@@ -1502,8 +1531,10 @@ function renderHome(){
     <div class="stat"><div class="stat-lbl">${esc(ind.booked)}</div><div class="stat-val">${booked.length}</div><div class="stat-sub">${rate} conversion</div></div>
     <div class="stat"><div class="stat-lbl">Today's Leads</div><div class="stat-val">${today.length}</div><div class="stat-sub">${new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</div></div>`;
 
+  checkReminders();
   renderChart();
   renderFunnel();
+  renderConvTrend();
   renderAgentTable();
   renderRecentTable();
   renderHotBanner();
@@ -1541,27 +1572,55 @@ function renderChart(){
 }
 
 /* ── FUNNEL ── */
+let _funnelChart=null;
 function renderFunnel(){
   const flow=getFlow();
-  const stageOrder=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  let stageOrder=Object.keys(flow.stages||{}).filter(k=>k!=='new');
   if(!stageOrder.length){
     const counts={};
     allLeads.forEach(l=>{const s=l.Stage||'unknown';counts[s]=(counts[s]||0)+1;});
-    const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,8);
-    const max=sorted[0]?.[1]||1;
-    $id('funnelChart').innerHTML=sorted.map(([s,n])=>`<div class="f-row"><div class="f-name">${esc(s)}</div><div class="f-wrap"><div class="f-bar" style="width:${Math.round(n/max*100)}%"></div></div><div class="f-ct">${n}</div></div>`).join('');
-    return;
+    stageOrder=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([s])=>s);
   }
-  let html='';
-  let prev=null;
-  stageOrder.forEach(s=>{
-    const n=allLeads.filter(l=>l.Stage===s).length;
-    const max=allLeads.length||1;
-    const drop=prev!==null&&prev>0?'↓ '+(100-Math.round(n/prev*100))+'%':'';
-    html+=`<div class="f-row"><div class="f-name">${esc(s)}</div><div class="f-wrap"><div class="f-bar" style="width:${Math.round(n/max*100)}%"></div></div><div class="f-ct">${n}</div><div class="f-drop">${drop}</div></div>`;
-    prev=n;
+  const data=stageOrder.map(s=>allLeads.filter(l=>l.Stage===s).length);
+  const colors=stageOrder.map((_,i)=>`hsl(${155-i*15},60%,${45+i*8}%)`);
+  const el=$id('funnelChart');
+  el.innerHTML='<canvas id="funnelCanvas" style="max-height:220px"></canvas>';
+  const canvas=$id('funnelCanvas');
+  if(_funnelChart){_funnelChart.destroy();}
+  if(!stageOrder.length){el.innerHTML='<div style="color:var(--muted);font-size:13px">No data yet</div>';return;}
+  _funnelChart=new Chart(canvas,{
+    type:'bar',
+    data:{labels:stageOrder,datasets:[{data,backgroundColor:colors,borderRadius:6}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,grid:{color:'#EEF2F0'},ticks:{font:{size:10}}},y:{grid:{display:false},ticks:{font:{size:10}}}}}
   });
-  $id('funnelChart').innerHTML=html||'<div style="color:var(--muted);font-size:13px">No data yet</div>';
+}
+
+/* ── CONVERSION TREND ── */
+let _convTrendChart=null;
+function renderConvTrend(){
+  const canvas=$id('convTrendChart');
+  if(!canvas)return;
+  const labels=[],newCounts=[],convCounts=[];
+  const now=new Date();
+  for(let i=7;i>=0;i--){
+    const d=new Date(now);
+    d.setDate(d.getDate()-i*7);
+    const wStart=new Date(d);wStart.setDate(wStart.getDate()-6);
+    const wStartStr=wStart.toISOString().slice(0,10);
+    const wEndStr=d.toISOString().slice(0,10);
+    labels.push(wStartStr.slice(5));
+    newCounts.push(allLeads.filter(l=>{const dt=(l.Date||'').slice(0,10);return dt>=wStartStr&&dt<=wEndStr;}).length);
+    convCounts.push(allLeads.filter(l=>{const dt=(l.Date||'').slice(0,10);return dt>=wStartStr&&dt<=wEndStr&&(l.Stage==='won'||l.Stage==='converted'||TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');}).length);
+  }
+  if(_convTrendChart){_convTrendChart.destroy();}
+  _convTrendChart=new Chart(canvas,{
+    type:'line',
+    data:{labels,datasets:[
+      {label:'New Leads',data:newCounts,borderColor:'#0E7C5A',backgroundColor:'rgba(14,124,90,.08)',tension:.35,fill:true,pointRadius:2},
+      {label:'Converted',data:convCounts,borderColor:'#F59E0B',backgroundColor:'rgba(245,158,11,.08)',tension:.35,fill:true,pointRadius:2}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,labels:{font:{size:10}}}},scales:{x:{grid:{display:false},ticks:{font:{size:10}}},y:{beginAtZero:true,grid:{color:'#EEF2F0'},ticks:{font:{size:10},stepSize:1}}}}
+  });
 }
 
 /* ── AGENT TABLE ── */
@@ -1662,7 +1721,9 @@ function renderLeadsList(){
 
   const el=$id('leadsList');
   if(!filtered.length){el.innerHTML='<div class="empty-state"><div class="ei">💬</div>No leads match your filter.</div>';return;}
-  el.innerHTML=filtered.map(l=>{
+  const visible=filtered.slice(0,_leadsPage*LEADS_PGS);
+  const remaining=filtered.length-visible.length;
+  el.innerHTML=visible.map(l=>{
     const initials=(l.Name||l.Phone||'?').charAt(0).toUpperCase();
     const tags=parseTags(l.Tags);
     return `<div class="lead-item" onclick="openDetail(${l.Id})">
@@ -1679,9 +1740,12 @@ function renderLeadsList(){
       </div>
     </div>`;
   }).join('');
+  if(remaining>0){
+    el.innerHTML+=`<div style="text-align:center;padding:14px"><button class="btn btn-secondary btn-sm" onclick="_leadsPage++;renderLeadsList()">Load more (${remaining} remaining)</button></div>`;
+  }
 }
 
-function filterLeads(){renderLeadsList();}
+function filterLeads(){_leadsPage=1;renderLeadsList();}
 
 /* ── ADD / EDIT LEAD ── */
 function openAddLead(){
@@ -1816,6 +1880,7 @@ function openDetail(id){
   $id('detailSummary').style.display='none';
   $id('dealCoachCard').style.display='none';
   renderLeadProfile(lead);
+  renderWaReply(lead);
   openModal('modalDetail');
 }
 
@@ -2926,10 +2991,10 @@ function taTablesReady(){
 }
 function safeJson(s,def=[]){try{return JSON.parse(s||'null')||def;}catch(e){return def;}}
 
-async function taFetch(key){
+async function taFetch(key,limit=500,offset=0){
   const id=taTableIds()[key];
   if(!id)return[];
-  const d=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records?where=(client_id,eq,${clientId})&limit=500&sort=-CreatedAt`);
+  const d=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records?where=(client_id,eq,${clientId})&limit=${limit}&sort=-CreatedAt&offset=${offset}`);
   return d.list||[];
 }
 async function taCreate(key,record){
@@ -3293,6 +3358,8 @@ function renderTaItineraries() {
           <div style="font-size:11.5px;color:var(--muted)">${esc(it.destination||'—')} · ${(it.days||[]).length} days · Created ${esc(it.created_at||'')}</div>
         </div>
         <div style="display:flex;gap:6px">
+          <button class="btn btn-sm" onclick="printItinerary('${it.Id}')">🖨️ PDF</button>
+          ${clientRecord?.wa_phone_id?`<button class="btn btn-sm" onclick="sendItinViaWa('${it.Id}')">📲 WA</button>`:''}
           <button class="btn btn-secondary btn-sm" onclick="openItinModal('${it.Id}')">Edit</button>
           <button onclick="event.stopPropagation();deleteItin('${it.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;padding:0 4px">✕</button>
         </div>
@@ -3980,6 +4047,157 @@ $id('saveTaEnabled').addEventListener('click',async()=>{
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
+
+/* ── NOTIFICATIONS ── */
+async function pollNotifications(){
+  if(!clientId)return;
+  const items=[];
+  const now=new Date();
+  const cutoff=new Date(now-24*3600*1000).toISOString().slice(0,19).replace('T',' ');
+  try{
+    const d=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(client_id,eq,${clientId})~and(CreatedAt,gte,${encodeURIComponent(cutoff)})&limit=20&sort=-CreatedAt`);
+    (d.list||[]).forEach(l=>items.push({id:'lead_'+l.Id,icon:'👤',text:'New lead: '+(l.Name||l.Phone||'Unknown'),time:l.CreatedAt}));
+  }catch(e){}
+  if(_taLoaded){
+    const td=now.toISOString().slice(0,10);
+    const tm=new Date(now.getTime()+86400000).toISOString().slice(0,10);
+    _taCarBookings.filter(b=>b.pickup_date===td||b.pickup_date===tm).forEach(b=>
+      items.push({id:'carbk_'+b.Id,icon:'🚗',text:'Car pickup '+(b.pickup_date===td?'today':'tomorrow')+': '+b.customer_name+' – '+b.car_name,time:b.pickup_date}));
+    _taBookings.filter(b=>b.departure_date===td||b.departure_date===tm).forEach(b=>
+      items.push({id:'tabk_'+b.Id,icon:'✈️',text:'Departure '+(b.departure_date===td?'today':'tomorrow')+': '+(b.client_name||'')+(b.package_name?' – '+b.package_name:''),time:b.departure_date}));
+  }
+  _notifItems=items;
+  const unseen=items.filter(i=>!_notifSeen.includes(i.id));
+  const bell=$id('notifBell'),badge=$id('notifBadge');
+  if(bell)bell.style.display='flex';
+  if(badge){badge.textContent=unseen.length||'';badge.style.display=unseen.length?'':'none';}
+}
+
+function toggleNotifDropdown(){
+  const dd=$id('notifDropdown');
+  if(!dd)return;
+  if(dd.style.display==='none'){
+    dd.style.display='block';
+    dd.innerHTML=_notifItems.length?_notifItems.map(i=>`<div style="padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;display:flex;gap:10px"><span>${i.icon}</span><div><div>${esc(i.text)}</div><div style="font-size:11px;color:var(--muted)">${i.time||''}</div></div></div>`).join(''):'<div style="padding:16px;color:var(--muted);font-size:13px">No recent notifications</div>';
+    _notifSeen=[..._notifItems.map(i=>i.id)];
+    const badge=$id('notifBadge');if(badge)badge.style.display='none';
+  } else { dd.style.display='none'; }
+}
+
+document.addEventListener('click',e=>{
+  if(!e.target.closest('#notifBell')){const dd=$id('notifDropdown');if(dd)dd.style.display='none';}
+});
+
+/* ── REMINDERS PANEL ── */
+async function checkReminders(){
+  if(!clientId)return;
+  const now=new Date(), today=now.toISOString().slice(0,10);
+  const in48h=new Date(now.getTime()+48*3600*1000).toISOString().slice(0,10);
+  const in30d=new Date(now.getTime()+30*24*3600*1000).toISOString().slice(0,10);
+  const alerts=[];
+  if(_taLoaded){
+    _taCarBookings.filter(b=>b.pickup_date&&b.pickup_date>=today&&b.pickup_date<=in48h&&b.status!=='cancelled')
+      .forEach(b=>alerts.push({icon:'🚗',text:`Car pickup: ${b.customer_name} – ${b.car_name} on ${b.pickup_date}`}));
+    _taBookings.filter(b=>b.departure_date&&b.departure_date>=today&&b.departure_date<=in48h&&b.status!=='cancelled')
+      .forEach(b=>alerts.push({icon:'✈️',text:`Departure: ${b.client_name||''} – ${b.package_name||'Booking'} on ${b.departure_date}`}));
+  }
+  allLeads.filter(l=>l.passport_expiry&&l.passport_expiry>=today&&l.passport_expiry<=in30d)
+    .forEach(l=>alerts.push({icon:'📘',text:`Passport expiring: ${l.Name||l.Phone} on ${l.passport_expiry}`}));
+  const el=$id('remindersPanel');
+  if(!el)return;
+  if(!alerts.length){el.style.display='none';return;}
+  el.style.display='block';
+  el.innerHTML=`<div class="card" style="border-left:3px solid #f59e0b;padding:14px 16px">
+    <div style="font-weight:700;font-size:13px;margin-bottom:10px">⏰ Reminders (${alerts.length})</div>
+    ${alerts.map(a=>`<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px"><span>${a.icon}</span><span>${esc(a.text)}</span></div>`).join('')}
+  </div>`;
+}
+
+/* ── WA REPLY ── */
+function renderWaReply(lead){
+  const bar=$id('waReplyBar');
+  if(!bar)return;
+  if(!clientRecord?.wa_phone_id||!clientRecord?.wa_token){bar.style.display='none';return;}
+  let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+  const lastInbound=hist.filter(m=>m.role==='user'||m.direction==='in').slice(-1)[0];
+  const ts=lastInbound?.ts||lead.LastMsgAt||lead.UpdatedAt||'';
+  const within24h=ts&&(Date.now()-new Date(ts).getTime())<24*3600*1000;
+  bar.style.display=within24h?'flex':'none';
+}
+
+async function sendWaReply(){
+  const lead=currentLead;if(!lead)return;
+  const text=$id('waReplyText').value.trim();
+  const msg=$id('waReplyMsg');
+  if(!text){msg.textContent='Enter a message';msg.className='save-msg err';return;}
+  const phone=(lead.Phone||'').replace(/[^0-9]/g,'');
+  if(!phone){msg.textContent='No phone number';msg.className='save-msg err';return;}
+  msg.textContent='Sending…';msg.className='save-msg';
+  try{
+    const resp=await fetch(`https://graph.facebook.com/v18.0/${clientRecord.wa_phone_id}/messages`,{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+clientRecord.wa_token,'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp',to:phone,type:'text',text:{body:text}})
+    });
+    if(!resp.ok){const e=await resp.json();throw new Error(e?.error?.message||resp.status);}
+    let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    hist.push({role:'assistant',content:text,ts:new Date().toISOString(),direction:'out'});
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
+    lead.ConvHistory=JSON.stringify(hist);
+    $id('waReplyText').value='';
+    msg.textContent='✓ Sent';msg.className='save-msg';
+    // re-render thread
+    const thread=$id('detailThread');
+    if(thread){
+      thread.innerHTML=hist.map(m=>`<div style="display:flex;flex-direction:column;align-items:${m.role==='user'?'flex-start':'flex-end'}"><div style="max-width:80%;padding:8px 12px;border-radius:12px;font-size:13px;background:${m.role==='user'?'#E1F5EA':'var(--accent)'};color:${m.role==='user'?'var(--ink)':'#fff'}">${(m.content||'').replace(/\n/g,'<br>')}</div></div>`).join('');
+      setTimeout(()=>thread.scrollTop=thread.scrollHeight,50);
+    }
+    setTimeout(()=>msg.textContent='',3000);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+}
+
+/* ── ITINERARY PDF + WA ── */
+function printItinerary(id){
+  const it=_taItineraries.find(x=>String(x.Id)===String(id));
+  if(!it)return;
+  const days=it.days||[];
+  const w=window.open('','_blank');
+  if(!w)return;
+  let body=`<h1>${esc(it.title||'Itinerary')}</h1><p>${esc(it.destination||'')} &middot; ${days.length} days</p>`;
+  days.forEach(d=>{
+    body+=`<h2>Day ${d.day_no}: ${esc(d.title||'')}</h2><ul>`;
+    (d.items||[]).forEach(i=>{body+=`<li>${esc(i.description||'')}</li>`;});
+    body+='</ul>';
+  });
+  if(it.notes)body+=`<p><em>${esc(it.notes)}</em></p>`;
+  w.document.write(`<!DOCTYPE html><html><head><title>${esc(it.title||'Itinerary')}</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;color:#111}h1{font-size:22px}h2{font-size:16px;margin-top:20px;color:#0E7C5A}ul{margin:8px 0 0 18px}li{margin-bottom:4px}</style></head><body>${body}</body></html>`);
+  w.document.close();
+  w.print();
+}
+
+async function sendItinViaWa(id){
+  const it=_taItineraries.find(x=>String(x.Id)===String(id));
+  if(!it)return;
+  const phone=prompt('Send to phone (with country code, e.g. 971501234567):');
+  if(!phone)return;
+  const days=it.days||[];
+  let body=`*${it.title}*\n${it.destination||''} · ${days.length} days\n\n`;
+  days.forEach(d=>{
+    body+=`*Day ${d.day_no}: ${d.title||''}*\n`;
+    (d.items||[]).forEach(i=>{body+=`• ${i.description||''}\n`;});
+    body+='\n';
+  });
+  if(it.notes)body+=`_${it.notes}_`;
+  try{
+    const resp=await fetch(`https://graph.facebook.com/v18.0/${clientRecord.wa_phone_id}/messages`,{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+clientRecord.wa_token,'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp',to:phone.replace(/[^0-9]/g,''),type:'text',text:{body,preview_url:false}})
+    });
+    if(!resp.ok){const e=await resp.json();throw new Error(e?.error?.message||resp.status);}
+    alert('✓ Itinerary sent via WhatsApp');
+  }catch(e){alert('Error: '+e.message);}
+}
 
 /* ── BOOT ── */
 (function(){
