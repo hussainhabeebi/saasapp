@@ -334,7 +334,7 @@ footer .ml{font-family:var(--ml);font-size:12px;color:rgba(255,255,255,.2);margi
     <div class="section-tag" style="text-align:center">Get Started</div>
     <h2>Start your free trial</h2>
     <div class="signup-ml">ഇന്നുതന്നെ ആരംഭിക്കൂ</div>
-    <p>Enter your details and our team will set up your WhatsApp AI bot within 24 hours. No credit card needed.</p>
+    <p>Enter your details and get instant access to your dashboard on our shared trial number. No credit card needed.</p>
 
     <div class="signup-card">
       <div id="signupForm">
@@ -350,19 +350,19 @@ footer .ml{font-family:var(--ml);font-size:12px;color:rgba(255,255,255,.2);margi
           <label>Business Type <span class="ml">ബിസിനസ്സ് തരം</span></label>
           <input id="businessType" type="text" placeholder="e.g. Travel Agency, Real Estate, Clinic…" />
         </div>
-        <button class="signup-btn" id="signupBtn" onclick="submitSignup()">Get My AI Bot in 24 Hours →</button>
+        <button class="signup-btn" id="signupBtn" onclick="submitSignup()">Create My Dashboard →</button>
         <div class="form-msg" id="signupMsg"></div>
         <p class="signup-note">
-          We'll contact you via WhatsApp to complete setup. Free for the first 30 days.
-          <span class="ml">ഞങ്ങൾ 24 മണിക്കൂറിനകം WhatsApp-ൽ ബന്ധപ്പെടും. ആദ്യ 30 ദിവസം സൗജന്യം.</span>
+          You'll be redirected to your dashboard instantly. Shared trial number — free for 30 days.
+          <span class="ml">ഉടനെ നിങ്ങളുടെ ഡാഷ്‌ബോർഡിലേക്ക് redirect ആകും. ആദ്യ 30 ദിവസം സൗജന്യം.</span>
         </p>
       </div>
 
       <div class="success-box" id="successBox">
-        <div class="success-icon">🎉</div>
-        <h3>You're on the list!</h3>
-        <p>Our team will contact you on WhatsApp within 24 hours to set up your bot.</p>
-        <span class="ml">ഞങ്ങൾ 24 മണിക്കൂറിനകം WhatsApp-ൽ ബന്ധപ്പെടും 🙏</span>
+        <div class="success-icon">🚀</div>
+        <h3>Dashboard created!</h3>
+        <p>Redirecting to your dashboard…</p>
+        <span class="ml">നിങ്ങളുടെ ഡാഷ്‌ബോർഡ് തയ്യാർ 🎉</span>
       </div>
     </div>
   </div>
@@ -380,16 +380,32 @@ footer .ml{font-family:var(--ml);font-size:12px;color:rgba(255,255,255,.2);margi
 <a href="admin.html" class="admin-link">admin ↗</a>
 
 <script>
-const NOCODB_BASE  = 'https://whizz.aiingo.com';
-const NOCODB_TOKEN = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';
-const LEADS_TABLE  = 'm2in19v8n7phitr';
+// ── TRIAL CONFIG — fill these before going live ──────────────────
+const TRIAL = {
+  onboard_endpoint:     'https://apps.leadvyne.com/webhook/leadvyne-onboard',
+  passcode:             'FILL_PASSCODE_HERE',
+  chatwoot_base:        'https://app.aiingo.com',
+  chatwoot_account_id:  'FILL_ACCOUNT_ID',
+  chatwoot_inbox_id:    'FILL_INBOX_ID',
+  chatwoot_token:       'FILL_CHATWOOT_TOKEN',
+  language:             'ml',
+  model:                'google/gemini-2.5-flash',
+};
+// ─────────────────────────────────────────────────────────────────
+
+const DEFAULT_PROMPT = (company, biz) =>
+`You are a friendly AI assistant for ${company}. Business type: ${biz || 'general'}.
+Never reveal you are an AI. Keep replies short and warm (3–4 lines max, one question per reply).
+Answer questions about the business, products, and services.
+For anything you cannot answer, politely say you will connect them with an advisor.
+Always respond in the same language the customer uses.`;
 
 async function submitSignup() {
-  const company  = document.getElementById('companyName').value.trim();
-  const mobile   = document.getElementById('mobileNumber').value.trim();
-  const bizType  = document.getElementById('businessType').value.trim();
-  const msg      = document.getElementById('signupMsg');
-  const btn      = document.getElementById('signupBtn');
+  const company = document.getElementById('companyName').value.trim();
+  const mobile  = document.getElementById('mobileNumber').value.trim();
+  const bizType = document.getElementById('businessType').value.trim();
+  const msg     = document.getElementById('signupMsg');
+  const btn     = document.getElementById('signupBtn');
 
   msg.textContent = '';
   msg.className = 'form-msg';
@@ -398,28 +414,58 @@ async function submitSignup() {
   if (!mobile)  { msg.textContent = 'Please enter your mobile number.'; msg.className = 'form-msg err'; return; }
 
   btn.disabled = true;
-  btn.textContent = 'Submitting…';
+  btn.textContent = 'Setting up your dashboard…';
 
   try {
-    await fetch(`${NOCODB_BASE}/api/v2/tables/${LEADS_TABLE}/records`, {
-      method: 'POST',
-      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        Name: company,
-        Phone: mobile,
-        business_type: bizType,
-        source: 'landing_page',
-        status: 'new',
-        created_at: new Date().toISOString()
-      })
-    });
-  } catch(e) {
-    // silently ignore — still show success to user
-  }
+    const payload = {
+      passcode:             TRIAL.passcode,
+      client_name:          company,
+      phone:                mobile,
+      business_type:        bizType,
+      chatwoot_base:        TRIAL.chatwoot_base,
+      chatwoot_account_id:  TRIAL.chatwoot_account_id,
+      chatwoot_inbox_id:    TRIAL.chatwoot_inbox_id,
+      chatwoot_token:       TRIAL.chatwoot_token,
+      language:             TRIAL.language,
+      model:                TRIAL.model,
+      main_prompt:          DEFAULT_PROMPT(company, bizType),
+      source:               'trial_signup',
+      flow_json:            JSON.stringify({ stages: { new: { '*': { next: 'new', msg: 'fallback' } } }, messages: { fallback: `Hi! I'm the AI assistant for ${company}. How can I help you today? 😊` }, variables: {} }),
+      qual_questions:       [],
+      bot_config:           { qual_enabled: false, handover_enabled: true, memory_enabled: true, antiloop_enabled: true },
+      followup_count:       2,
+      followup_hours:       '4, 24',
+      followup_messages:    `Hi 😊 Just checking in — happy to help anytime!\nA quick reminder — I'm here if you have any questions 🙏`,
+      is_trial:             true,
+    };
 
-  // show success regardless (don't block UX on backend errors)
-  document.getElementById('signupForm').style.display = 'none';
-  document.getElementById('successBox').classList.add('show');
+    const res = await fetch(TRIAL.onboard_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) throw new Error(data.message || 'Provisioning failed');
+
+    // Show success then redirect to dashboard
+    document.getElementById('signupForm').style.display = 'none';
+    document.getElementById('successBox').classList.add('show');
+
+    const clientId = data.client_id;
+    if (clientId) {
+      setTimeout(() => {
+        window.location.href = 'dashboard.html?client=' + clientId;
+      }, 2000);
+    }
+
+  } catch(e) {
+    msg.textContent = 'Could not create dashboard. Please try again or contact us on WhatsApp.';
+    msg.className = 'form-msg err';
+    btn.disabled = false;
+    btn.textContent = 'Create My Dashboard →';
+  }
 }
 
 // Enter key on inputs
