@@ -101,6 +101,31 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .chip .flag{font-size:18px}
 .chip.active{background:var(--green-soft);border-color:var(--green);color:var(--green)}
 
+/* ── OWN NUMBER ── */
+.own-number{background:#fff;padding:80px 24px;border-top:1px solid var(--line)}
+.own-inner{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:start}
+@media(max-width:780px){.own-inner{grid-template-columns:1fr;gap:40px}}
+.own-left .section-tag{margin-bottom:10px}
+.own-left h2{font-family:var(--disp);font-weight:800;font-size:clamp(26px,3.5vw,40px);letter-spacing:-.025em;line-height:1.12;margin-bottom:12px}
+.own-left h2 span{color:var(--green)}
+.own-sub{font-size:15px;color:var(--muted);line-height:1.65;margin-bottom:6px}
+.own-sub-ml{font-family:var(--ml);font-size:13px;color:var(--green);font-weight:600;margin-bottom:28px}
+.own-steps{display:flex;flex-direction:column;gap:20px}
+.own-step{display:flex;gap:16px;align-items:flex-start}
+.own-step-num{width:32px;height:32px;background:var(--green-soft);border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--disp);font-weight:700;font-size:14px;color:var(--green);flex:none}
+.own-step strong{font-size:14px;font-weight:600;display:block;margin-bottom:3px}
+.own-step span{font-size:13px;color:var(--muted);line-height:1.5}
+.own-step a{color:var(--green);font-weight:600;text-decoration:none}
+.own-step a:hover{text-decoration:underline}
+
+.enroll-card{background:var(--bg);border:1.5px solid var(--line);border-radius:20px;padding:28px}
+.enroll-head{margin-bottom:20px}
+.enroll-tag{font-family:var(--disp);font-weight:700;font-size:16px;display:block}
+.enroll-tag-ml{font-family:var(--ml);font-size:12px;color:var(--muted);margin-top:3px;display:block}
+.mono-in{font-family:"JetBrains Mono",monospace!important;font-size:13px!important}
+.chatwoot-link{display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;font-weight:600;color:var(--green);text-decoration:none;background:var(--green-soft);padding:7px 12px;border-radius:8px}
+.chatwoot-link:hover{background:#c4e6d8}
+
 /* ── SIGNUP ── */
 .signup{padding:80px 24px;background:var(--bg)}
 .signup-inner{max-width:560px;margin:0 auto;text-align:center}
@@ -154,7 +179,10 @@ footer .ml{font-family:var(--ml);font-size:12px;color:rgba(255,255,255,.2);margi
 <!-- NAV -->
 <nav>
   <div class="brand">Leadvyne<span>.</span></div>
-  <a href="#signup" class="nav-cta">Get Started Free</a>
+  <div style="display:flex;gap:10px;align-items:center">
+    <a href="#own-number" style="font-size:13px;font-weight:600;color:rgba(255,255,255,.6);text-decoration:none;padding:8px 14px">Use My Number</a>
+    <a href="#signup" class="nav-cta">Start Free Trial</a>
+  </div>
 </nav>
 
 <!-- HERO -->
@@ -328,6 +356,80 @@ footer .ml{font-family:var(--ml);font-size:12px;color:rgba(255,255,255,.2);margi
   </div>
 </div>
 
+<!-- OWN NUMBER -->
+<div class="own-number" id="own-number">
+  <div class="own-inner">
+    <div class="own-left">
+      <div class="section-tag">Upgrade</div>
+      <h2>Use Your Own<br><span>WhatsApp Number</span></h2>
+      <p class="own-sub">Already on the trial? Connect your business WhatsApp number so the bot replies as YOU — not from our shared number.</p>
+      <div class="own-sub-ml">നിങ്ങളുടെ സ്വന്തം WhatsApp നമ്പർ ഉപയോഗിക്കൂ</div>
+      <div class="own-steps">
+        <div class="own-step">
+          <div class="own-step-num">1</div>
+          <div>
+            <strong>Create inbox on Chatwoot</strong><br>
+            <span>Go to <a href="https://app.aiingo.com" target="_blank">app.aiingo.com</a> → Settings → Inboxes → Add Inbox → WhatsApp (Cloud API)</span>
+          </div>
+        </div>
+        <div class="own-step">
+          <div class="own-step-num">2</div>
+          <div>
+            <strong>Copy your credentials</strong><br>
+            <span>Get your Account ID, Inbox ID, and API Access Token from Chatwoot settings</span>
+          </div>
+        </div>
+        <div class="own-step">
+          <div class="own-step-num">3</div>
+          <div>
+            <strong>Paste below &amp; enroll</strong><br>
+            <span>We'll switch your bot to your number instantly</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="own-right">
+      <div class="enroll-card">
+        <div class="enroll-head">
+          <span class="enroll-tag">Enroll Your Number</span>
+          <span class="enroll-tag-ml">നിങ്ങളുടെ നമ്പർ ചേർക്കൂ</span>
+        </div>
+        <div id="enrollForm">
+          <div class="field">
+            <label>Your Client ID <span class="ml">നിങ്ങളുടെ Client ID</span></label>
+            <input id="enrollClientId" type="text" placeholder="e.g. 12 (from your dashboard URL)" class="mono-in" />
+          </div>
+          <div class="field">
+            <label>Chatwoot Account ID</label>
+            <input id="enrollAccountId" type="text" placeholder="e.g. 5" class="mono-in" />
+          </div>
+          <div class="field">
+            <label>Chatwoot Inbox ID</label>
+            <input id="enrollInboxId" type="text" placeholder="e.g. 8" class="mono-in" />
+          </div>
+          <div class="field">
+            <label>Chatwoot API Token</label>
+            <input id="enrollToken" type="password" placeholder="paste token from app.aiingo.com" class="mono-in" />
+          </div>
+          <a href="https://app.aiingo.com" target="_blank" class="chatwoot-link">
+            Open app.aiingo.com to get these ↗
+          </a>
+          <button class="signup-btn" id="enrollBtn" onclick="submitEnroll()" style="margin-top:16px">Connect My Number →</button>
+          <div class="form-msg" id="enrollMsg"></div>
+        </div>
+        <div class="success-box" id="enrollSuccess">
+          <div class="success-icon">✅</div>
+          <h3>Number connected!</h3>
+          <p>Your bot now replies from your own WhatsApp number.</p>
+          <span class="ml">നിങ്ങളുടെ WhatsApp നമ്പർ ബോട്ടിൽ ചേർത്തു 🎉</span>
+          <a id="enrollDashLink" href="dashboard.html" class="btn-primary" style="display:inline-block;margin-top:18px;font-size:14px">Go to Dashboard →</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- SIGNUP -->
 <div class="signup" id="signup">
   <div class="signup-inner">
@@ -465,6 +567,56 @@ async function submitSignup() {
     msg.className = 'form-msg err';
     btn.disabled = false;
     btn.textContent = 'Create My Dashboard →';
+  }
+}
+
+// ── ENROLL OWN NUMBER ──────────────────────────────────────────
+const NOCODB_BASE    = 'https://whizz.aiingo.com';
+const NOCODB_TOKEN   = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';
+const CLIENTS_TABLE  = 'mxl33bg4wi70fqj';
+
+async function submitEnroll() {
+  const clientId  = document.getElementById('enrollClientId').value.trim();
+  const accountId = document.getElementById('enrollAccountId').value.trim();
+  const inboxId   = document.getElementById('enrollInboxId').value.trim();
+  const token     = document.getElementById('enrollToken').value.trim();
+  const msg       = document.getElementById('enrollMsg');
+  const btn       = document.getElementById('enrollBtn');
+
+  msg.textContent = ''; msg.className = 'form-msg';
+
+  if (!clientId)  { msg.textContent = 'Enter your Client ID (from your dashboard URL).'; msg.className = 'form-msg err'; return; }
+  if (!accountId) { msg.textContent = 'Enter your Chatwoot Account ID.'; msg.className = 'form-msg err'; return; }
+  if (!inboxId)   { msg.textContent = 'Enter your Chatwoot Inbox ID.'; msg.className = 'form-msg err'; return; }
+  if (!token)     { msg.textContent = 'Enter your Chatwoot API Token.'; msg.className = 'form-msg err'; return; }
+
+  btn.disabled = true; btn.textContent = 'Connecting…';
+
+  try {
+    const res = await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`, {
+      method: 'PATCH',
+      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        Id: parseInt(clientId),
+        chatwoot_account_id: accountId,
+        chatwoot_inbox_id:   inboxId,
+        chatwoot_token:      token,
+        chatwoot_base:       'https://app.aiingo.com',
+        own_number:          'Yes'
+      })
+    });
+
+    if (!res.ok) throw new Error('Update failed');
+
+    document.getElementById('enrollForm').style.display = 'none';
+    const s = document.getElementById('enrollSuccess');
+    s.classList.add('show');
+    document.getElementById('enrollDashLink').href = 'dashboard.html?client=' + clientId;
+
+  } catch(e) {
+    msg.textContent = 'Could not connect. Check your credentials and try again.';
+    msg.className = 'form-msg err';
+    btn.disabled = false; btn.textContent = 'Connect My Number →';
   }
 }
 
