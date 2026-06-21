@@ -197,6 +197,26 @@ tr:last-child td{border-bottom:none}
   </div>
 
   <div class="card">
+    <div class="card-title">Order Reminders</div>
+    <div class="s-sec">
+      <span class="s-lbl">Google Review Link</span>
+      <input class="s-input" id="cfgReviewLink" type="url" placeholder="https://g.page/r/…/review">
+      <div class="s-hint">Sent automatically when order status → <strong>delivered</strong>. Leave blank to skip the review link.</div>
+    </div>
+    <div style="background:var(--accent-soft);border-radius:10px;padding:14px;font-size:13px;color:var(--accent-ink);margin-bottom:14px">
+      <strong>How reminders work:</strong><br>
+      Set up a NocoDB webhook on the <em>ecom_orders</em> table → <em>after.update</em> → POST to:<br>
+      <code style="font-family:var(--mono);font-size:12px;word-break:break-all">https://n8n.aiingo.com/webhook/leadvyne-ecom-order-event</code><br><br>
+      • Status → <strong>received / confirmed / processing</strong> → sends order confirmation WhatsApp<br>
+      • Status → <strong>delivered / completed</strong> → sends review request WhatsApp
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveReviewLink()">Save</button>
+      <span class="save-msg" id="reviewLinkMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">Products Sheet Sync</div>
     <div class="s-sec">
       <span class="s-lbl">Google Sheet URL (Products)</span>
@@ -265,10 +285,15 @@ async function init() {
   try { ecomTableIds = JSON.parse(clientRecord.ecom_table_ids || '{}'); } catch(e) { ecomTableIds = {}; }
 
   // Populate settings
-  if (ecomTableIds.products) document.getElementById('cfgProductsTable').value = ecomTableIds.products;
-  if (ecomTableIds.orders)   document.getElementById('cfgOrdersTable').value   = ecomTableIds.orders;
+  // Default table IDs if not yet saved in client record
+  const DEFAULT_ECOM_IDS = { products: 'mjlc2vi6iqbp87c', orders: 'mjqaeatoe88gay6' };
+  if (!ecomTableIds.products && DEFAULT_ECOM_IDS.products) ecomTableIds.products = DEFAULT_ECOM_IDS.products;
+  if (!ecomTableIds.orders   && DEFAULT_ECOM_IDS.orders)   ecomTableIds.orders   = DEFAULT_ECOM_IDS.orders;
+  document.getElementById('cfgProductsTable').value = ecomTableIds.products || '';
+  document.getElementById('cfgOrdersTable').value   = ecomTableIds.orders   || '';
   if (clientRecord.ecom_products_sheet) document.getElementById('cfgProductsSheet').value = clientRecord.ecom_products_sheet;
   if (clientRecord.ecom_orders_sheet)   document.getElementById('cfgOrdersSheet').value   = clientRecord.ecom_orders_sheet;
+  if (clientRecord.review_link)         document.getElementById('cfgReviewLink').value    = clientRecord.review_link;
 
   loadProducts();
   loadOrders();
@@ -374,6 +399,12 @@ async function saveProductsSheet() {
   const url = document.getElementById('cfgProductsSheet').value.trim();
   await patchClient({ ecom_products_sheet: url });
   showMsg('prodSheetMsg', 'Saved ✓');
+}
+
+async function saveReviewLink() {
+  const url = document.getElementById('cfgReviewLink').value.trim();
+  await patchClient({ review_link: url });
+  showMsg('reviewLinkMsg', 'Saved ✓');
 }
 
 async function saveOrdersSheet() {
