@@ -9,130 +9,44 @@
       "name": "Execute Workflow Trigger",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [0, 60]
+      "position": [0, 0]
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst text = (c.userText || '').toLowerCase();\nconst ids = c.ta_table_ids || {};\n\n// Detect which tables are relevant\nconst needsPackages   = ids.packages   && !/umrah|hajj/i.test(text);\nconst needsUmrah      = ids.umrah_groups && /umrah|hajj|makkah|madinah|saudi/i.test(text);\nconst needsCars       = ids.cars       && /car|vehicle|rent|suv|sedan|bus/i.test(text);\nconst needsItineraries = ids.itineraries && /itinerar|day|plan|schedule|trip|tour/i.test(text);\n\n// Extract keyword for package name search (first meaningful word)\nconst stopWords = new Set(['package','rate','price','cost','details','pls','please','tell','me','the','a','an','is','are','what','how','give','want','need','about','any']);\nconst words = text.split(/\\s+/).filter(w => w.length > 2 && !stopWords.has(w));\nconst keyword = words[0] || '';\n\nreturn [{ json: { ...c, _filter: { needsPackages, needsUmrah, needsCars, needsItineraries, keyword } } }];"
+        "jsCode": "const c = $input.first().json;\nconst text = (c.userText || '').toLowerCase();\nconst ids = c.ta_table_ids || {};\n\n// ── Intent signals ──────────────────────────────────────────────\nconst isUmrah      = /umrah|hajj|makkah|madinah|saudi|ziyarat/i.test(text);\nconst isCar        = /\\bcar\\b|vehicle|rent|suv|sedan|bus|transport|cab|taxi/i.test(text);\nconst isItinerary  = /itinerar|day.?plan|day.?trip|schedule|program|\\bplan\\b|\\btour\\b/i.test(text);\nconst isService    = /visa|passport|attestat|apostil|insurance|service/i.test(text);\nconst isBooking    = /my.?book|booking|confirm|reserv|ticket|status/i.test(text);\n// packages: anything travel-ish that isn't exclusively car/service/booking\nconst isPackage    = /package|holiday|trip|travel|tour|destination|dubai|kerala|europe|thailand|singapore|malaysia|maldives|kashmir|goa|international|domestic/i.test(text);\n\n// Always fetch packages for general travel questions\nconst needsPackages    = !!(ids.packages    && (isPackage || isUmrah || (!isCar && !isService && !isBooking)));\nconst needsUmrah       = !!(ids.umrah_groups && isUmrah);\nconst needsCars        = !!(ids.cars        && isCar);\nconst needsItineraries = !!(ids.itineraries && (isItinerary || isPackage || isUmrah));\nconst needsServices    = !!(ids.services    && isService);\nconst needsBookings    = !!(ids.bookings    && isBooking);\n\n// Keyword for name search (skip stop words)\nconst stopWords = new Set(['package','packages','rate','rates','price','cost','details','pls','please','tell','me','the','a','an','is','are','what','how','give','want','need','about','any','good','best','cheap','available','do','you','have','your','can','get']);\nconst words = text.split(/\\s+/).filter(w => w.length > 2 && !stopWords.has(w));\nconst keyword = words[0] || '';\n\nreturn [{ json: { ...c, _filter: { needsPackages, needsUmrah, needsCars, needsItineraries, needsServices, needsBookings, keyword } } }];"
       },
       "id": "a1b2c3d4-0005-0000-0000-000000000005",
       "name": "Code · Detect Intent",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [220, 60]
+      "position": [220, 0]
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "={{ $('Code · Detect Intent').first().json._filter.needsPackages ? 'https://whizz.aiingo.com/api/v2/tables/' + $('Execute Workflow Trigger').first().json.ta_table_ids.packages + '/records?where=(client_id,eq,' + $('Execute Workflow Trigger').first().json.client_id + ')' + ($('Code · Detect Intent').first().json._filter.keyword ? '~and(name,like,%25' + $('Code · Detect Intent').first().json._filter.keyword + '%25)' : '') + '&limit=10' : 'https://whizz.aiingo.com/api/v2/tables/skip/records' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
-          ]
-        },
-        "options": {}
+        "jsCode": "const c = $input.first().json;\nconst f = c._filter || {};\nconst ids = c.ta_table_ids || {};\nconst clientId = c.client_id;\nconst BASE = 'https://whizz.aiingo.com';\nconst TOKEN = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';\nconst headers = { 'xc-token': TOKEN };\nconst kw = f.keyword || '';\n\nasync function fetch(tableId, extra = '') {\n  if (!tableId) return [];\n  try {\n    const r = await $http.request({ method: 'GET', url: `${BASE}/api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})${extra}&limit=15`, headers });\n    return r.list || [];\n  } catch(e) { return []; }\n}\n\nconst kwFilter = kw ? `~and(name,like,%${kw}%)` : '';\nconst today = new Date().toISOString().slice(0, 10);\n\nconst [packages, umrahGroups, cars, itineraries, services, bookings] = await Promise.all([\n  f.needsPackages    ? fetch(ids.packages,    kwFilter) : [],\n  f.needsUmrah       ? fetch(ids.umrah_groups, '&sort=departure_date') : [],\n  f.needsCars        ? fetch(ids.cars,         '~and(status,eq,available)') : [],\n  f.needsItineraries ? fetch(ids.itineraries,  kwFilter) : [],\n  f.needsServices    ? fetch(ids.services,     '') : [],\n  f.needsBookings    ? fetch(ids.bookings,     '&sort=-CreatedAt') : []\n]);\n\nreturn [{ json: { ...c,\n  packages,\n  umrahGroups: umrahGroups.filter(g => g.departure_date >= today),\n  cars,\n  itineraries,\n  services,\n  bookings\n} }];"
       },
-      "id": "a1b2c3d4-0010-0000-0000-000000000010",
-      "name": "HTTP · Get Packages",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [440, -120],
-      "onError": "continueRegularOutput"
+      "id": "a1b2c3d4-0006-0000-0000-000000000006",
+      "name": "Code · Fetch TA Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0]
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Execute Workflow Trigger').first().json.ta_table_ids.umrah_groups }}/records?where=(client_id,eq,{{ $('Execute Workflow Trigger').first().json.client_id }})&sort=departure_date&limit=10",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
-          ]
-        },
-        "options": {}
-      },
-      "id": "a1b2c3d4-0011-0000-0000-000000000011",
-      "name": "HTTP · Get Umrah Groups",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [440, 0],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "method": "GET",
-        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Execute Workflow Trigger').first().json.ta_table_ids.cars }}/records?where=(client_id,eq,{{ $('Execute Workflow Trigger').first().json.client_id }})~and(status,eq,available)&limit=10",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
-          ]
-        },
-        "options": {}
-      },
-      "id": "a1b2c3d4-0012-0000-0000-000000000012",
-      "name": "HTTP · Get Cars",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [440, 120],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "method": "GET",
-        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Execute Workflow Trigger').first().json.ta_table_ids.itineraries }}/records?where=(client_id,eq,{{ $('Execute Workflow Trigger').first().json.client_id }})&limit=10",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
-          ]
-        },
-        "options": {}
-      },
-      "id": "a1b2c3d4-0013-0000-0000-000000000013",
-      "name": "HTTP · Get Itineraries",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [440, 240],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "jsCode": "const c = $('Execute Workflow Trigger').first().json;\nconst f = $('Code · Detect Intent').first().json._filter;\nconst today = new Date().toISOString().slice(0, 10);\n\nconst packages    = f.needsPackages    ? ($('HTTP · Get Packages').first().json.list    || []) : [];\nconst umrahGroups = f.needsUmrah       ? ($('HTTP · Get Umrah Groups').first().json.list || []).filter(g => g.departure_date >= today) : [];\nconst cars        = f.needsCars        ? ($('HTTP · Get Cars').first().json.list        || []) : [];\nconst itineraries = f.needsItineraries ? ($('HTTP · Get Itineraries').first().json.list || []) : [];\n\nlet block = '';\n\nif (packages.length) {\n  const lines = packages.map(p => {\n    let l = `- ${p.name}`;\n    if (p.destination) l += ` | Destination: ${p.destination}`;\n    if (p.nights)      l += ` | ${p.nights} nights`;\n    if (p.type)        l += ` | Type: ${p.type}`;\n    if (p.sell_price || p.base_price) l += ` | Price: ${p.currency||'INR'} ${p.sell_price||p.base_price}/person`;\n    if (p.pax_min || p.pax_max) l += ` | Pax: ${p.pax_min||1}-${p.pax_max||''}`;\n    try { const inc = JSON.parse(p.inclusions||'[]'); if (inc.length) l += ` | Includes: ${inc.join(', ')}`; } catch(e) {}\n    return l;\n  }).join('\\n');\n  block += '\\n\\n## Travel Packages\\n' + lines;\n}\n\nif (umrahGroups.length) {\n  const lines = umrahGroups.map(g => `- ${g.name} | Departs: ${g.departure_date} | Seats: ${g.seats||0} | ${g.currency||'INR'} ${g.price_per_pax||''}/person`).join('\\n');\n  block += '\\n\\n## Upcoming Umrah / Hajj Groups\\n' + lines;\n}\n\nif (itineraries.length) {\n  const lines = itineraries.map(it => {\n    let days = []; try { days = JSON.parse(it.days||'[]'); } catch(e) {}\n    return `- ${it.title}${it.destination?' | '+it.destination:''} | ${days.length} days`;\n  }).join('\\n');\n  block += '\\n\\n## Itineraries\\n' + lines;\n}\n\nif (cars.length) {\n  const lines = cars.map(car => `- ${car.name}${car.category?' ('+car.category+')':''} | ${car.seats||'?'} seats | ${car.currency||'INR'} ${car.daily_rate||0}/day${car.plate_no?' | Plate: '+car.plate_no:''}`).join('\\n');\n  block += '\\n\\n## Available Cars for Rent\\n' + lines;\n}\n\nreturn [{ json: { ...c, taContextBlock: block } }];"
+        "jsCode": "const { packages, umrahGroups, cars, itineraries, services, bookings } = $input.first().json;\nconst c = $input.first().json;\nlet block = '';\n\nif (packages && packages.length) {\n  const lines = packages.map(p => {\n    let l = `- ${p.name}`;\n    if (p.destination) l += ` | Destination: ${p.destination}`;\n    if (p.nights)      l += ` | ${p.nights} nights`;\n    if (p.type)        l += ` | Type: ${p.type}`;\n    if (p.sell_price || p.base_price) l += ` | Price: ${p.currency||'INR'} ${p.sell_price||p.base_price}/person`;\n    if (p.pax_min || p.pax_max) l += ` | Pax: ${p.pax_min||1}-${p.pax_max||''}`;\n    try { const inc = JSON.parse(p.inclusions||'[]'); if (inc.length) l += ` | Includes: ${inc.join(', ')}`; } catch(e) {}\n    return l;\n  }).join('\\n');\n  block += '\\n\\n## Travel Packages\\n' + lines;\n}\n\nif (umrahGroups && umrahGroups.length) {\n  const lines = umrahGroups.map(g => `- ${g.name} | Departs: ${g.departure_date} | Seats: ${g.seats||0} | ${g.currency||'INR'} ${g.price_per_pax||''}/person`).join('\\n');\n  block += '\\n\\n## Upcoming Umrah / Hajj Groups\\n' + lines;\n}\n\nif (itineraries && itineraries.length) {\n  const lines = itineraries.map(it => {\n    let days = []; try { days = JSON.parse(it.days||'[]'); } catch(e) {}\n    return `- ${it.title||it.name}${it.destination?' | '+it.destination:''} | ${days.length} days`;\n  }).join('\\n');\n  block += '\\n\\n## Itineraries\\n' + lines;\n}\n\nif (cars && cars.length) {\n  const lines = cars.map(car => `- ${car.name}${car.category?' ('+car.category+')':''} | ${car.seats||'?'} seats | ${car.currency||'INR'} ${car.daily_rate||0}/day${car.plate_no?' | Plate: '+car.plate_no:''}`).join('\\n');\n  block += '\\n\\n## Available Cars for Rent\\n' + lines;\n}\n\nif (services && services.length) {\n  const lines = services.map(s => `- ${s.name}${s.description?' | '+s.description:''} | ${s.currency||'INR'} ${s.price||''}`).join('\\n');\n  block += '\\n\\n## Services\\n' + lines;\n}\n\nif (bookings && bookings.length) {\n  const lines = bookings.map(b => `- Ref: ${b.Id} | ${b.package_name||b.name||''} | Status: ${b.status||''} | Date: ${b.travel_date||b.CreatedAt||''}`).join('\\n');\n  block += '\\n\\n## Recent Bookings\\n' + lines;\n}\n\nreturn [{ json: { ...c, taContextBlock: block } }];"
       },
       "id": "a1b2c3d4-0003-0000-0000-000000000003",
       "name": "Code · Build TA Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [660, 60]
+      "position": [660, 0]
     }
   ],
   "connections": {
-    "Execute Workflow Trigger": {
-      "main": [
-        [
-          { "node": "Code · Detect Intent", "type": "main", "index": 0 }
-        ]
-      ]
-    },
-    "Code · Detect Intent": {
-      "main": [
-        [
-          { "node": "HTTP · Get Packages",     "type": "main", "index": 0 },
-          { "node": "HTTP · Get Umrah Groups", "type": "main", "index": 0 },
-          { "node": "HTTP · Get Cars",         "type": "main", "index": 0 },
-          { "node": "HTTP · Get Itineraries",  "type": "main", "index": 0 }
-        ]
-      ]
-    },
-    "HTTP · Get Packages":     { "main": [ [ { "node": "Code · Build TA Prompt", "type": "main", "index": 0 } ] ] },
-    "HTTP · Get Umrah Groups": { "main": [ [ { "node": "Code · Build TA Prompt", "type": "main", "index": 0 } ] ] },
-    "HTTP · Get Cars":         { "main": [ [ { "node": "Code · Build TA Prompt", "type": "main", "index": 0 } ] ] },
-    "HTTP · Get Itineraries":  { "main": [ [ { "node": "Code · Build TA Prompt", "type": "main", "index": 0 } ] ] }
+    "Execute Workflow Trigger": { "main": [ [ { "node": "Code · Detect Intent",  "type": "main", "index": 0 } ] ] },
+    "Code · Detect Intent":    { "main": [ [ { "node": "Code · Fetch TA Data",   "type": "main", "index": 0 } ] ] },
+    "Code · Fetch TA Data":    { "main": [ [ { "node": "Code · Build TA Prompt", "type": "main", "index": 0 } ] ] }
   },
-  "settings": {
-    "executionOrder": "v1"
-  },
+  "settings": { "executionOrder": "v1" },
   "versionId": "a1b2c3d4-0000-0000-0000-000000000000"
 }
