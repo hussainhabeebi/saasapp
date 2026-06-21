@@ -469,6 +469,8 @@ const INDUSTRIES = {
   travel:      { label:'Travel & Tourism', booked:'Bookings Made', active:'Active Inquiries', tags:['Hot Lead','Quote Sent','No Answer','Price Query','Not Interested','Group Tour','Honeymoon','Corporate'],
     theme:{accent:'#0369A1',accentInk:'#075985',accentSoft:'#E0F2FE',bg:'#F0F9FF',line:'#BAE6FD'},
     extraFields:['Destination','TravelDates','PaxCount','Budget','TripType'] },
+  ecommerce:   { label:'Ecommerce', booked:'Orders Closed', active:'Active Inquiries', tags:['Hot Buyer','Cart Abandoned','No Answer','Price Query','Shipped','Returned','Not Interested'],
+    theme:{accent:'#7C3AED',accentInk:'#6D28D9',accentSoft:'#EDE9FE',bg:'#F5F3FF',line:'#DDD6FE'} },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -512,6 +514,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
     <button class="dnTab" data-page="leads">💬 Leads</button>
     <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
+    <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')">🛒 Ecommerce</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="tasks">✅ Tasks</button>
     <button class="dnTab" data-page="broadcast">📢 Broadcast</button>
@@ -908,6 +911,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem" data-page="pipeline"><span class="bnIcon">📋</span><span class="bnLabel">Pipeline</span></button>
     <button class="bnItem" data-page="leads"><span class="bnIcon">💬</span><span class="bnLabel">Leads</span></button>
     <button class="bnItem industry-tab" data-page="travel" data-industry="travel" style="display:none"><span class="bnIcon">✈️</span><span class="bnLabel">Travel</span></button>
+    <button class="bnItem industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
     <button class="bnItem" data-page="agency" id="bnAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
     <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>

@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Leadvyne · Ecommerce</title>
+<link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F5F3FF;--card:#FFFFFF;--ink:#0C0A1E;--muted:#5B5280;
+  --accent:#7C3AED;--accent-ink:#6D28D9;--accent-soft:#EDE9FE;
+  --line:#E4E0F5;--ls:#C8C0E8;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --r:16px;--r-sm:10px;
+  --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column}
+
+/* GATE */
+#gate{position:fixed;inset:0;z-index:200;background:linear-gradient(160deg,#0A071A 0%,#1A1040 60%,#0E0920 100%);display:flex;align-items:center;justify-content:center;padding:24px}
+#gate.hidden{display:none}
+.gbox{width:100%;max-width:360px}
+.gbrand{font-family:var(--disp);font-size:26px;font-weight:700;color:#fff;margin-bottom:6px}
+.gbrand span{color:#A78BFA}
+.gsub{color:#8B7FB8;font-size:13px;margin-bottom:32px}
+.ginput{width:100%;background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.12);border-radius:12px;padding:13px 16px;color:#fff;font-family:var(--body);font-size:15px;transition:border-color .2s;margin-bottom:10px}
+.ginput::placeholder{color:rgba(255,255,255,.3)}
+.ginput:focus{outline:none;border-color:#A78BFA;background:rgba(255,255,255,.10)}
+.gbtn{width:100%;background:linear-gradient(135deg,#7C3AED,#9F5CF5);color:#fff;border:none;border-radius:12px;padding:14px;font-family:var(--disp);font-weight:700;font-size:15px;cursor:pointer;margin-top:4px;transition:opacity .15s}
+.gbtn:hover{opacity:.9}
+.gbtn:disabled{opacity:.5;cursor:not-allowed}
+.gerr{color:#FCA5A5;font-size:12px;min-height:18px;margin-top:8px}
+
+/* HEADER */
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:56px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 1px 0 var(--line)}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700}
+.brand span{color:var(--accent)}
+.chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
+.hback{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body)}
+.hback:hover{background:var(--bg)}
+
+/* TABS */
+#tabs{background:var(--card);border-bottom:1px solid var(--line);display:flex;padding:0 20px;flex-shrink:0}
+.tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s}
+.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+
+/* MAIN */
+main{flex:1;overflow-y:auto;padding:20px}
+.inner{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.page{display:none}
+.page.active{display:block}
+
+/* CARDS */
+.card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:20px;box-shadow:var(--shadow)}
+.card-title{font-family:var(--disp);font-size:14px;font-weight:700;color:var(--muted);margin-bottom:14px;text-transform:uppercase;letter-spacing:.04em}
+
+/* STAT ROW */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.stat{background:var(--card);border-radius:var(--r-sm);border:1px solid var(--line);padding:16px 18px}
+.stat-val{font-family:var(--disp);font-size:26px;font-weight:700;color:var(--accent-ink)}
+.stat-lbl{font-size:12px;color:var(--muted);margin-top:2px}
+
+/* TABLE */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+.badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;background:var(--accent-soft);color:var(--accent-ink)}
+.badge.shipped{background:#D1FAE5;color:#065F46}
+.badge.pending{background:#FEF3C7;color:#92400E}
+.badge.cancelled{background:#FEE2E2;color:#991B1B}
+.badge.processing{background:#DBEAFE;color:#1E3A8A}
+
+/* SETTINGS */
+.s-sec{margin-bottom:24px}
+.s-lbl{font-family:var(--disp);font-size:13px;font-weight:700;color:var(--muted);margin-bottom:8px;display:block;text-transform:uppercase;letter-spacing:.04em}
+.s-input{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:11px 14px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg);transition:border-color .2s}
+.s-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.s-hint{font-size:12px;color:var(--muted);margin-top:5px}
+.s-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.save-btn{background:linear-gradient(135deg,#7C3AED,#9F5CF5);color:#fff;border:none;border-radius:10px;padding:10px 18px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
+.save-btn:hover{opacity:.9}
+.save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)}
+.save-msg{font-size:12px;color:var(--accent);align-self:center}
+
+/* LOADING */
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-row td{text-align:center;padding:30px;color:var(--muted)}
+.empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty-icon{font-size:36px;margin-bottom:10px}
+</style>
+</head>
+<body>
+
+<!-- GATE -->
+<div id="gate">
+  <div class="gbox">
+    <div class="gbrand">Leadvyne<span>.</span> Ecommerce</div>
+    <p class="gsub">Sign in to manage your store</p>
+    <input class="ginput" id="gUser" type="text" placeholder="Username" autocomplete="username">
+    <input class="ginput" id="gPass" type="password" placeholder="Password" autocomplete="current-password">
+    <button class="gbtn" id="gBtn">Sign In</button>
+    <div class="gerr" id="gErr"></div>
+  </div>
+</div>
+
+<!-- APP -->
+<header>
+  <span class="brand">Leadvyne<span>.</span></span>
+  <span class="chip">🛒 Ecommerce</span>
+  <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
+</header>
+
+<div id="tabs">
+  <button class="tab active" data-tab="products" onclick="showTab('products')">📦 Products</button>
+  <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
+  <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
+</div>
+
+<main>
+<div class="inner">
+
+<!-- PRODUCTS TAB -->
+<div id="tabProducts" class="page active">
+  <div class="stats" id="productStats">
+    <div class="stat"><div class="stat-val" id="statTotalProducts">—</div><div class="stat-lbl">Total Products</div></div>
+    <div class="stat"><div class="stat-val" id="statInStock">—</div><div class="stat-lbl">In Stock</div></div>
+    <div class="stat"><div class="stat-val" id="statOutOfStock">—</div><div class="stat-lbl">Out of Stock</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Products</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th><th>SKU</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="productsTbody">
+          <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ORDERS TAB -->
+<div id="tabOrders" class="page">
+  <div class="stats" id="orderStats">
+    <div class="stat"><div class="stat-val" id="statTotalOrders">—</div><div class="stat-lbl">Total Orders</div></div>
+    <div class="stat"><div class="stat-val" id="statPending">—</div><div class="stat-lbl">Pending</div></div>
+    <div class="stat"><div class="stat-val" id="statShipped">—</div><div class="stat-lbl">Shipped</div></div>
+    <div class="stat"><div class="stat-val" id="statRevenue">—</div><div class="stat-lbl">Revenue</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Orders</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="ordersTbody">
+          <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS TAB -->
+<div id="tabSettings" class="page">
+  <div class="card">
+    <div class="card-title">Ecommerce Table IDs (NocoDB)</div>
+    <div class="s-sec">
+      <span class="s-lbl">Products Table ID</span>
+      <input class="s-input" id="cfgProductsTable" type="text" placeholder="e.g. abc123xyz">
+      <div class="s-hint">NocoDB table ID for your products catalogue</div>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Orders Table ID</span>
+      <input class="s-input" id="cfgOrdersTable" type="text" placeholder="e.g. def456uvw">
+      <div class="s-hint">NocoDB table ID for orders</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveTableIds()">Save Table IDs</button>
+      <span class="save-msg" id="tableIdsMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Products Sheet Sync</div>
+    <div class="s-sec">
+      <span class="s-lbl">Google Sheet URL (Products)</span>
+      <input class="s-input" id="cfgProductsSheet" type="url" placeholder="https://docs.google.com/spreadsheets/d/…">
+      <div class="s-hint">Sheet must have headers: name, sku, category, price, stock, status, description</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveProductsSheet()">Save</button>
+      <button class="save-btn sec" onclick="syncSheet('products')">▶ Sync Products Now</button>
+      <span class="save-msg" id="prodSheetMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Orders Sheet Sync</div>
+    <div class="s-sec">
+      <span class="s-lbl">Google Sheet URL (Orders)</span>
+      <input class="s-input" id="cfgOrdersSheet" type="url" placeholder="https://docs.google.com/spreadsheets/d/…">
+      <div class="s-hint">Sheet must have headers: order_id, customer_name, order_date, items, total, status</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveOrdersSheet()">Save</button>
+      <button class="save-btn sec" onclick="syncSheet('orders')">▶ Sync Orders Now</button>
+      <span class="save-msg" id="ordSheetMsg"></span>
+    </div>
+  </div>
+</div>
+
+</div><!-- /inner -->
+</main>
+
+<script>
+const NOCODB_BASE = 'https://whizz.aiingo.com';
+const NOCODB_TOKEN = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';
+const CLIENTS_TABLE = 'mxl33bg4wi70fqj';
+const N8N_BASE = 'https://n8n.aiingo.com';
+
+const params = new URLSearchParams(location.search);
+let clientId = params.get('client') || '';
+let clientRecord = null;
+let ecomTableIds = {};
+
+// ── AUTH ──────────────────────────────────────────
+const USERS = { leadvyne: 'lv2025' };
+
+document.getElementById('gBtn').onclick = async () => {
+  const u = document.getElementById('gUser').value.trim();
+  const p = document.getElementById('gPass').value.trim();
+  if (!USERS[u] || USERS[u] !== p) {
+    document.getElementById('gErr').textContent = 'Invalid credentials'; return;
+  }
+  document.getElementById('gate').classList.add('hidden');
+  await init();
+};
+document.getElementById('gPass').onkeydown = e => { if(e.key==='Enter') document.getElementById('gBtn').click(); };
+
+// ── INIT ──────────────────────────────────────────
+async function init() {
+  if (!clientId) { clientId = prompt('Enter your Client ID:') || ''; }
+  if (!clientId) return;
+
+  const res = await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`, {
+    headers: { 'xc-token': NOCODB_TOKEN }
+  });
+  clientRecord = await res.json();
+  try { ecomTableIds = JSON.parse(clientRecord.ecom_table_ids || '{}'); } catch(e) { ecomTableIds = {}; }
+
+  // Populate settings
+  if (ecomTableIds.products) document.getElementById('cfgProductsTable').value = ecomTableIds.products;
+  if (ecomTableIds.orders)   document.getElementById('cfgOrdersTable').value   = ecomTableIds.orders;
+  if (clientRecord.ecom_products_sheet) document.getElementById('cfgProductsSheet').value = clientRecord.ecom_products_sheet;
+  if (clientRecord.ecom_orders_sheet)   document.getElementById('cfgOrdersSheet').value   = clientRecord.ecom_orders_sheet;
+
+  loadProducts();
+  loadOrders();
+}
+
+// ── TAB NAV ──────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.getElementById('tabProducts').classList.toggle('active', name === 'products');
+  document.getElementById('tabOrders').classList.toggle('active', name === 'orders');
+  document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
+}
+
+// ── PRODUCTS ──────────────────────────────────────
+async function loadProducts() {
+  const tbody = document.getElementById('productsTbody');
+  if (!ecomTableIds.products) {
+    tbody.innerHTML = '<tr><td colspan="6" class="loading-row">Set Products Table ID in Settings first</td></tr>';
+    return;
+  }
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records?where=(client_id,eq,${clientId})&limit=200`, {
+      headers: { 'xc-token': NOCODB_TOKEN }
+    });
+    const data = await r.json();
+    const list = data.list || [];
+    const inStock = list.filter(p => p.stock > 0).length;
+    const outOfStock = list.filter(p => !p.stock || p.stock <= 0).length;
+    document.getElementById('statTotalProducts').textContent = list.length;
+    document.getElementById('statInStock').textContent = inStock;
+    document.getElementById('statOutOfStock').textContent = outOfStock;
+
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📦</div>No products found</div></td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(p => `
+      <tr>
+        <td><strong>${esc(p.name||p.title||'—')}</strong></td>
+        <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
+        <td>${esc(p.category||'—')}</td>
+        <td>${esc(p.currency||'INR')} ${p.price||0}</td>
+        <td>${p.stock ?? '—'}</td>
+        <td><span class="badge ${p.status==='active'?'shipped':p.status==='inactive'?'cancelled':''}">${esc(p.status||'—')}</span></td>
+      </tr>`).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="loading-row">Error: ${e.message}</td></tr>`;
+  }
+}
+
+// ── ORDERS ──────────────────────────────────────
+async function loadOrders() {
+  const tbody = document.getElementById('ordersTbody');
+  if (!ecomTableIds.orders) {
+    tbody.innerHTML = '<tr><td colspan="6" class="loading-row">Set Orders Table ID in Settings first</td></tr>';
+    return;
+  }
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.orders}/records?where=(client_id,eq,${clientId})&sort=-order_date&limit=200`, {
+      headers: { 'xc-token': NOCODB_TOKEN }
+    });
+    const data = await r.json();
+    const list = data.list || [];
+    const pending  = list.filter(o => o.status === 'pending').length;
+    const shipped  = list.filter(o => o.status === 'shipped').length;
+    const revenue  = list.reduce((s, o) => s + (parseFloat(o.total)||0), 0);
+    document.getElementById('statTotalOrders').textContent = list.length;
+    document.getElementById('statPending').textContent = pending;
+    document.getElementById('statShipped').textContent = shipped;
+    document.getElementById('statRevenue').textContent = revenue.toLocaleString();
+
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">🧾</div>No orders found</div></td></tr>';
+      return;
+    }
+    const statusClass = s => ({shipped:'shipped',pending:'pending',cancelled:'cancelled',processing:'processing'}[s]||'');
+    tbody.innerHTML = list.map(o => `
+      <tr>
+        <td style="font-family:var(--mono);font-size:12px">#${esc(String(o.order_id||o.Id||'—'))}</td>
+        <td>${esc(o.customer_name||'—')}</td>
+        <td>${esc(o.order_date||'—')}</td>
+        <td>${esc(o.items||'—')}</td>
+        <td>${esc(o.currency||'INR')} ${o.total||0}</td>
+        <td><span class="badge ${statusClass(o.status)}">${esc(o.status||'—')}</span></td>
+      </tr>`).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="loading-row">Error: ${e.message}</td></tr>`;
+  }
+}
+
+// ── SETTINGS SAVE ─────────────────────────────────
+async function saveTableIds() {
+  const products = document.getElementById('cfgProductsTable').value.trim();
+  const orders   = document.getElementById('cfgOrdersTable').value.trim();
+  ecomTableIds = { products, orders };
+  await patchClient({ ecom_table_ids: JSON.stringify(ecomTableIds) });
+  showMsg('tableIdsMsg', 'Saved ✓');
+  loadProducts();
+  loadOrders();
+}
+
+async function saveProductsSheet() {
+  const url = document.getElementById('cfgProductsSheet').value.trim();
+  await patchClient({ ecom_products_sheet: url });
+  showMsg('prodSheetMsg', 'Saved ✓');
+}
+
+async function saveOrdersSheet() {
+  const url = document.getElementById('cfgOrdersSheet').value.trim();
+  await patchClient({ ecom_orders_sheet: url });
+  showMsg('ordSheetMsg', 'Saved ✓');
+}
+
+async function syncSheet(type) {
+  const msgId = type === 'products' ? 'prodSheetMsg' : 'ordSheetMsg';
+  const sheetKey = type === 'products' ? 'ecom_products_sheet' : 'ecom_orders_sheet';
+  const sheetUrl = (type === 'products' ? document.getElementById('cfgProductsSheet') : document.getElementById('cfgOrdersSheet')).value.trim()
+    || clientRecord?.[sheetKey] || '';
+  const tableId = ecomTableIds[type === 'products' ? 'products' : 'orders'] || '';
+  if (!sheetUrl) { showMsg(msgId, 'No sheet URL set'); return; }
+  if (!tableId)  { showMsg(msgId, 'No table ID set'); return; }
+  showMsg(msgId, 'Syncing…');
+  try {
+    await fetch(`${N8N_BASE}/webhook/leadvyne-ecom-sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, sync_type: type, gsheet_url: sheetUrl, table_id: tableId })
+    });
+    showMsg(msgId, 'Sync started ✓');
+    setTimeout(() => { if(type==='products') loadProducts(); else loadOrders(); }, 3000);
+  } catch(e) {
+    showMsg(msgId, 'Error: ' + e.message);
+  }
+}
+
+// ── HELPERS ───────────────────────────────────────
+async function patchClient(body) {
+  await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`, {
+    method: 'PATCH',
+    headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ Id: parseInt(clientId), ...body })
+  });
+}
+
+function showMsg(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  setTimeout(() => { el.textContent = ''; }, 3000);
+}
+
+function esc(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>
