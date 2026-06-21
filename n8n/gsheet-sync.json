@@ -1,0 +1,150 @@
+{
+  "name": "Leadvyne · GSheet Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leadvyne-gsheet-sync",
+        "responseMode": "responseNode",
+        "options": { "allowedOrigins": "*" }
+      },
+      "id": "gs-wh",
+      "name": "Webhook · GSheet Sync",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-800, 0],
+      "webhookId": "leadvyne-gsheet-sync"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true }",
+        "options": {}
+      },
+      "id": "gs-ack",
+      "name": "Respond · ACK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-600, -120]
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $('Webhook · GSheet Sync').first().json.body;\nconst clientId = b.client_id;\nconst gsheetUrl = b.gsheet_url || '';\nconst columns = b.columns || ['Phone','Name','Stage','Score','Date'];\n\n// Extract spreadsheet ID from URL\nconst match = gsheetUrl.match(/\\/spreadsheets\\/d\\/([a-zA-Z0-9-_]+)/);\nif (!match) throw new Error('Invalid Google Sheet URL');\nconst spreadsheetId = match[1];\n\nreturn [{ json: { clientId, spreadsheetId, columns, gsheetUrl } }];"
+      },
+      "id": "gs-parse",
+      "name": "Code · Parse Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-600, 0]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mvg6rcw0ia5qqrx/records?where=(ClientId,eq,{{ $json.clientId }})&limit=500&sort=-Date",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "gs-fetch",
+      "name": "HTTP · Fetch Leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-380, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('Code · Parse Request').first().json;\nconst leads = $('HTTP · Fetch Leads').first().json.list || [];\nconst cols = meta.columns;\n\n// Build rows — header + data\nconst header = cols;\nconst rows = leads.map(l => cols.map(c => {\n  const v = l[c];\n  if (v === null || v === undefined) return '';\n  if (typeof v === 'object') return JSON.stringify(v);\n  return String(v);\n}));\n\nreturn [{ json: { spreadsheetId: meta.spreadsheetId, header, rows, total: rows.length } }];"
+      },
+      "id": "gs-build",
+      "name": "Code · Build Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-160, 0]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "clear",
+        "documentId": "={{ $json.spreadsheetId }}",
+        "sheetName": "Sheet1",
+        "options": {}
+      },
+      "id": "gs-clear",
+      "name": "GSheet · Clear",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [60, 0],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "REPLACE_GSHEET_CRED", "name": "Google Sheets" } }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": "={{ $('Code · Build Rows').first().json.spreadsheetId }}",
+        "sheetName": "Sheet1",
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "gs-write-header",
+      "name": "GSheet · Write Header",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [280, 0],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "REPLACE_GSHEET_CRED", "name": "Google Sheets" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const { spreadsheetId, header, rows } = $('Code · Build Rows').first().json;\n// Return one item per row so GSheet node appends each\nreturn rows.map(r => {\n  const obj = {};\n  header.forEach((h, i) => { obj[h] = r[i]; });\n  return { json: obj };\n});"
+      },
+      "id": "gs-split",
+      "name": "Code · Split Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 0]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": "={{ $('Code · Build Rows').first().json.spreadsheetId }}",
+        "sheetName": "Sheet1",
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "gs-write-rows",
+      "name": "GSheet · Write Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [720, 0],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "REPLACE_GSHEET_CRED", "name": "Google Sheets" } }
+    }
+  ],
+  "connections": {
+    "Webhook · GSheet Sync": {
+      "main": [
+        [
+          { "node": "Respond · ACK",       "type": "main", "index": 0 },
+          { "node": "Code · Parse Request", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Code · Parse Request": { "main": [ [ { "node": "HTTP · Fetch Leads",  "type": "main", "index": 0 } ] ] },
+    "HTTP · Fetch Leads":   { "main": [ [ { "node": "Code · Build Rows",   "type": "main", "index": 0 } ] ] },
+    "Code · Build Rows":    { "main": [ [ { "node": "GSheet · Clear",      "type": "main", "index": 0 } ] ] },
+    "GSheet · Clear":       { "main": [ [ { "node": "GSheet · Write Header","type": "main", "index": 0 } ] ] },
+    "GSheet · Write Header":{ "main": [ [ { "node": "Code · Split Rows",   "type": "main", "index": 0 } ] ] },
+    "Code · Split Rows":    { "main": [ [ { "node": "GSheet · Write Rows", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

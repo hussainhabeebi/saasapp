@@ -245,6 +245,8 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .save-btn:disabled{opacity:.5;cursor:default}
 .save-msg{font-size:12px;margin-left:10px;color:var(--accent-ink)}
 .save-msg.err{color:var(--red)}
+.gcol-check{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;background:var(--bg);border:1px solid var(--ls);border-radius:6px;padding:5px 10px;cursor:pointer;color:var(--ink)}
+.gcol-check input{accent-color:var(--accent);cursor:pointer}
 
 /* stage builder */
 .stage-card{background:var(--bg);border:1.5px solid var(--line);border-radius:var(--r-sm);padding:16px;position:relative;margin-bottom:10px}
@@ -839,6 +841,39 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
               <button class="save-btn" id="saveFlow">Save Stages</button>
               <span class="save-msg" id="saveFlowMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
+            <div class="s-head">📊 Google Sheets Sync</div>
+            <div class="s-note">Sync your lead data to a Google Sheet automatically. Paste the sheet link and choose which columns to export.</div>
+            <div class="field" style="margin-top:12px">
+              <label style="font-size:12px;font-weight:600;color:var(--muted)">Google Sheet URL</label>
+              <input id="cfgGsheetUrl" type="url" class="form-input" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-size:12px" />
+            </div>
+            <div style="margin-top:12px">
+              <label style="font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:8px">Columns to Sync</label>
+              <div style="display:flex;flex-wrap:wrap;gap:8px" id="gsheetColPicker">
+                <label class="gcol-check"><input type="checkbox" value="Phone" checked> Phone</label>
+                <label class="gcol-check"><input type="checkbox" value="Name" checked> Name</label>
+                <label class="gcol-check"><input type="checkbox" value="Stage" checked> Stage</label>
+                <label class="gcol-check"><input type="checkbox" value="Score" checked> Score</label>
+                <label class="gcol-check"><input type="checkbox" value="Language"> Language</label>
+                <label class="gcol-check"><input type="checkbox" value="Date" checked> Date</label>
+                <label class="gcol-check"><input type="checkbox" value="LastMsgAt"> Last Message</label>
+                <label class="gcol-check"><input type="checkbox" value="Handover"> Handover</label>
+                <label class="gcol-check"><input type="checkbox" value="HotMoment"> Hot Moment</label>
+                <label class="gcol-check"><input type="checkbox" value="QualScore"> Qual Score</label>
+                <label class="gcol-check"><input type="checkbox" value="BookingTime"> Booking Time</label>
+                <label class="gcol-check"><input type="checkbox" value="QualAnswers"> Qual Answers</label>
+              </div>
+            </div>
+            <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <button class="save-btn" onclick="saveGsheetConfig()">Save Config</button>
+              <button class="save-btn" onclick="triggerGsheetSync()" style="background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)">▶ Sync Now</button>
+              <span class="save-msg" id="gsheetMsg"></span>
             </div>
           </div>
 
@@ -2007,9 +2042,53 @@ function exportSingle(){
 
 function dlFile(href,name){const a=document.createElement('a');a.href=href;a.download=name;a.click();}
 
+/* ── GOOGLE SHEETS SYNC ── */
+function saveGsheetConfig(){
+  const url = $id('cfgGsheetUrl').value.trim();
+  const cols = [...document.querySelectorAll('#gsheetColPicker input:checked')].map(i=>i.value);
+  const msg = $id('gsheetMsg');
+  if(!url){ msg.textContent='Paste a Google Sheet URL first.'; msg.className='save-msg err'; return; }
+  if(!cols.length){ msg.textContent='Select at least one column.'; msg.className='save-msg err'; return; }
+  msg.textContent='Saving…'; msg.className='save-msg';
+  fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`,{
+    method:'PATCH',
+    headers:{'xc-token':NOCODB_TOKEN,'Content-Type':'application/json'},
+    body:JSON.stringify({ Id:parseInt(clientId), gsheet_url:url, gsheet_cols:JSON.stringify(cols) })
+  }).then(r=>{
+    if(!r.ok)throw new Error();
+    msg.textContent='✓ Saved'; msg.className='save-msg';
+    clientRecord.gsheet_url=url; clientRecord.gsheet_cols=JSON.stringify(cols);
+  }).catch(()=>{ msg.textContent='Save failed.'; msg.className='save-msg err'; });
+}
+
+async function triggerGsheetSync(){
+  const msg = $id('gsheetMsg');
+  const url = clientRecord?.gsheet_url||$id('cfgGsheetUrl').value.trim();
+  const cols = clientRecord?.gsheet_cols ? JSON.parse(clientRecord.gsheet_cols) : [...document.querySelectorAll('#gsheetColPicker input:checked')].map(i=>i.value);
+  if(!url){ msg.textContent='Save a Sheet URL first.'; msg.className='save-msg err'; return; }
+  msg.textContent='Syncing…'; msg.className='save-msg';
+  try {
+    const n8nBase = (clientRecord?.n8n_base||'https://apps.leadvyne.com').replace(/\/$/,'');
+    const res = await fetch(`${n8nBase}/webhook/leadvyne-gsheet-sync`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ client_id:clientId, gsheet_url:url, columns:cols })
+    });
+    if(!res.ok) throw new Error();
+    msg.textContent='✓ Sync triggered — check your sheet in a moment.'; msg.className='save-msg';
+  } catch(e){ msg.textContent='Sync failed. Is the workflow active?'; msg.className='save-msg err'; }
+}
+
 /* ── SETTINGS ── */
 function populateSettings(){
   if(!clientRecord)return;
+  // gsheet
+  if(clientRecord.gsheet_url) $id('cfgGsheetUrl').value=clientRecord.gsheet_url;
+  if(clientRecord.gsheet_cols){
+    try{
+      const saved=JSON.parse(clientRecord.gsheet_cols);
+      document.querySelectorAll('#gsheetColPicker input').forEach(i=>{ i.checked=saved.includes(i.value); });
+    }catch(e){}
+  }
   // industry
   const indEl=$id('cfgIndustry');
   indEl.innerHTML=Object.entries(INDUSTRIES).map(([k,v])=>`<option value="${k}"${clientRecord.industry===k?' selected':''}>${v.label}</option>`).join('');
