@@ -9,52 +9,122 @@
       "name": "Execute Workflow Trigger",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [0, 0]
+      "position": [0, 60]
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst BASE = 'https://whizz.aiingo.com';\nconst TOKEN = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';\nconst clientId = c.client_id;\nconst headers = { 'xc-token': TOKEN };\n\nlet tableMap = {};\nconst configured = c.ta_table_ids || {};\nif (configured.packages || configured.umrah_groups || configured.cars || configured.itineraries) {\n  tableMap = configured;\n} else {\n  try {\n    const basesResp = await $http.request({ method: 'GET', url: `${BASE}/api/v2/meta/bases`, headers });\n    const TA_NAMES = ['packages', 'umrah_groups', 'cars', 'itineraries'];\n    for (const base of (basesResp.list || [])) {\n      if (Object.keys(tableMap).length === TA_NAMES.length) break;\n      const tResp = await $http.request({ method: 'GET', url: `${BASE}/api/v2/meta/bases/${base.id}/tables`, headers }).catch(() => ({ list: [] }));\n      for (const t of (tResp.list || [])) {\n        const key = t.title.toLowerCase().replace(/\\s+/g, '_');\n        if (TA_NAMES.includes(key) && !tableMap[key]) tableMap[key] = t.id;\n      }\n    }\n  } catch(e) {}\n}\n\nasync function fetchTable(tableId, extra = '') {\n  if (!tableId) return [];\n  try {\n    const r = await $http.request({ method: 'GET', url: `${BASE}/api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})${extra}&limit=30`, headers });\n    return r.list || [];\n  } catch(e) { return []; }\n}\n\nconst today = new Date().toISOString().slice(0, 10);\nconst [packages, umrahGroups, cars, itineraries] = await Promise.all([\n  fetchTable(tableMap.packages),\n  fetchTable(tableMap.umrah_groups, '&sort=departure_date'),\n  fetchTable(tableMap.cars, '~and(status,eq,available)'),\n  fetchTable(tableMap.itineraries)\n]);\n\nreturn [{ json: { ...c, packages, umrahGroups: umrahGroups.filter(g => g.departure_date >= today), cars, itineraries } }];"
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Execute Workflow Trigger').first().json.ta_table_ids.packages }}/records?where=(client_id,eq,{{ $('Execute Workflow Trigger').first().json.client_id }})&limit=30",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
+          ]
+        },
+        "options": {}
       },
-      "id": "a1b2c3d4-0002-0000-0000-000000000002",
-      "name": "Code · Fetch TA Data",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [220, 0]
+      "id": "a1b2c3d4-0010-0000-0000-000000000010",
+      "name": "HTTP · Get Packages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, -120],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "jsCode": "const input = $input.first().json;\nconst { packages, umrahGroups, cars, itineraries } = input;\nlet block = '';\n\nif (packages && packages.length) {\n  const lines = packages.map(p => {\n    let l = `- ${p.name}`;\n    if (p.destination) l += ` | Destination: ${p.destination}`;\n    if (p.nights) l += ` | ${p.nights} nights`;\n    if (p.type) l += ` | Type: ${p.type}`;\n    if (p.sell_price || p.base_price) l += ` | Price: ${p.currency||'INR'} ${p.sell_price||p.base_price}/person`;\n    if (p.pax_min || p.pax_max) l += ` | Pax: ${p.pax_min||1}-${p.pax_max||''}`;\n    try { const inc=JSON.parse(p.inclusions||'[]'); if(inc.length) l += ` | Includes: ${inc.join(', ')}`; } catch(e){}\n    return l;\n  }).join('\\n');\n  block += '\\n\\n## Travel Packages\\n' + lines;\n}\n\nif (umrahGroups && umrahGroups.length) {\n  const lines = umrahGroups.map(g => `- ${g.name} | Departs: ${g.departure_date} | Seats: ${g.seats||0} | ${g.currency||'INR'} ${g.price_per_pax||''}/person`).join('\\n');\n  block += '\\n\\n## Upcoming Umrah / Hajj Groups\\n' + lines;\n}\n\nif (itineraries && itineraries.length) {\n  const lines = itineraries.map(it => {\n    let days = []; try { days = JSON.parse(it.days||'[]'); } catch(e) {}\n    return `- ${it.title}${it.destination?' | '+it.destination:''} | ${days.length} days`;\n  }).join('\\n');\n  block += '\\n\\n## Itineraries\\n' + lines;\n}\n\nif (cars && cars.length) {\n  const lines = cars.map(c => `- ${c.name}${c.category?' ('+c.category+')':''} | ${c.seats||'?'} seats | ${c.currency||'INR'} ${c.daily_rate||0}/day${c.plate_no?' | Plate: '+c.plate_no:''}`).join('\\n');\n  block += '\\n\\n## Available Cars for Rent\\n' + lines;\n}\n\nreturn [{ json: { ...input, taContextBlock: block } }];"
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Execute Workflow Trigger').first().json.ta_table_ids.umrah_groups }}/records?where=(client_id,eq,{{ $('Execute Workflow Trigger').first().json.client_id }})&sort=departure_date&limit=30",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0011-0000-0000-000000000011",
+      "name": "HTTP · Get Umrah Groups",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Execute Workflow Trigger').first().json.ta_table_ids.cars }}/records?where=(client_id,eq,{{ $('Execute Workflow Trigger').first().json.client_id }})~and(status,eq,available)&limit=30",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0012-0000-0000-000000000012",
+      "name": "HTTP · Get Cars",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 120],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Execute Workflow Trigger').first().json.ta_table_ids.itineraries }}/records?where=(client_id,eq,{{ $('Execute Workflow Trigger').first().json.client_id }})&limit=30",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0013-0000-0000-000000000013",
+      "name": "HTTP · Get Itineraries",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 240],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "waitForAll",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0020-0000-0000-000000000020",
+      "name": "Merge · All TA Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [440, 60]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Execute Workflow Trigger').first().json;\nconst today = new Date().toISOString().slice(0, 10);\n\nconst packages    = $('HTTP · Get Packages').first().json.list    || [];\nconst umrahGroups = ($('HTTP · Get Umrah Groups').first().json.list || []).filter(g => g.departure_date >= today);\nconst cars        = $('HTTP · Get Cars').first().json.list        || [];\nconst itineraries = $('HTTP · Get Itineraries').first().json.list || [];\n\nlet block = '';\n\nif (packages.length) {\n  const lines = packages.map(p => {\n    let l = `- ${p.name}`;\n    if (p.destination) l += ` | Destination: ${p.destination}`;\n    if (p.nights)      l += ` | ${p.nights} nights`;\n    if (p.type)        l += ` | Type: ${p.type}`;\n    if (p.sell_price || p.base_price) l += ` | Price: ${p.currency||'INR'} ${p.sell_price||p.base_price}/person`;\n    if (p.pax_min || p.pax_max) l += ` | Pax: ${p.pax_min||1}-${p.pax_max||''}`;\n    try { const inc = JSON.parse(p.inclusions||'[]'); if (inc.length) l += ` | Includes: ${inc.join(', ')}`; } catch(e) {}\n    return l;\n  }).join('\\n');\n  block += '\\n\\n## Travel Packages\\n' + lines;\n}\n\nif (umrahGroups.length) {\n  const lines = umrahGroups.map(g => `- ${g.name} | Departs: ${g.departure_date} | Seats: ${g.seats||0} | ${g.currency||'INR'} ${g.price_per_pax||''}/person`).join('\\n');\n  block += '\\n\\n## Upcoming Umrah / Hajj Groups\\n' + lines;\n}\n\nif (itineraries.length) {\n  const lines = itineraries.map(it => {\n    let days = []; try { days = JSON.parse(it.days||'[]'); } catch(e) {}\n    return `- ${it.title}${it.destination?' | '+it.destination:''} | ${days.length} days`;\n  }).join('\\n');\n  block += '\\n\\n## Itineraries\\n' + lines;\n}\n\nif (cars.length) {\n  const lines = cars.map(car => `- ${car.name}${car.category?' ('+car.category+')':''} | ${car.seats||'?'} seats | ${car.currency||'INR'} ${car.daily_rate||0}/day${car.plate_no?' | Plate: '+car.plate_no:''}`).join('\\n');\n  block += '\\n\\n## Available Cars for Rent\\n' + lines;\n}\n\nreturn [{ json: { ...c, taContextBlock: block } }];"
       },
       "id": "a1b2c3d4-0003-0000-0000-000000000003",
       "name": "Code · Build TA Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [440, 0]
+      "position": [660, 60]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
       "main": [
         [
-          {
-            "node": "Code · Fetch TA Data",
-            "type": "main",
-            "index": 0
-          }
+          { "node": "HTTP · Get Packages",     "type": "main", "index": 0 },
+          { "node": "HTTP · Get Umrah Groups", "type": "main", "index": 0 },
+          { "node": "HTTP · Get Cars",         "type": "main", "index": 0 },
+          { "node": "HTTP · Get Itineraries",  "type": "main", "index": 0 }
         ]
       ]
     },
-    "Code · Fetch TA Data": {
-      "main": [
-        [
-          {
-            "node": "Code · Build TA Prompt",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    }
+    "HTTP · Get Packages":     { "main": [ [ { "node": "Merge · All TA Data", "type": "main", "index": 0 } ] ] },
+    "HTTP · Get Umrah Groups": { "main": [ [ { "node": "Merge · All TA Data", "type": "main", "index": 1 } ] ] },
+    "HTTP · Get Cars":         { "main": [ [ { "node": "Merge · All TA Data", "type": "main", "index": 2 } ] ] },
+    "HTTP · Get Itineraries":  { "main": [ [ { "node": "Merge · All TA Data", "type": "main", "index": 3 } ] ] },
+    "Merge · All TA Data":     { "main": [ [ { "node": "Code · Build TA Prompt", "type": "main", "index": 0 } ] ] }
   },
   "settings": {
     "executionOrder": "v1"
