@@ -511,6 +511,8 @@ const INDUSTRIES = {
     extraFields:['Destination','TravelDates','PaxCount','Budget','TripType'] },
   ecommerce:   { label:'Ecommerce', booked:'Orders Closed', active:'Active Inquiries', tags:['Hot Buyer','Cart Abandoned','No Answer','Price Query','Shipped','Returned','Not Interested'],
     theme:{accent:'#7C3AED',accentInk:'#6D28D9',accentSoft:'#EDE9FE',bg:'#F5F3FF',line:'#DDD6FE'} },
+  consultancy: { label:'Consultancy / Recruitment', booked:'Placements', active:'Active Candidates', tags:['Qualified','Interview Scheduled','Offer Sent','On Hold','Not Interested'],
+    theme:{accent:'#2563EB',accentInk:'#1D4ED8',accentSoft:'#DBEAFE',bg:'#EFF6FF',line:'#BFDBFE'} },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -939,14 +941,25 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <div class="settings-section">
             <div class="s-head">🏢 Travel Agency Module</div>
-            <div class="s-note">Enable the full Travel Agency management suite — packages, itineraries, service cases, Umrah/Hajj groups, bookings, and finance. Adds a dedicated <b>Agency</b> tab to the dashboard.</div>
-            <div style="display:flex;align-items:center;gap:12px">
-              <select class="form-input" id="cfgTaEnabled" style="max-width:200px">
-                <option value="No">Disabled</option>
-                <option value="Yes">Enabled</option>
-              </select>
-              <button class="save-btn" id="saveTaEnabled">Save</button>
-              <span class="save-msg" id="saveTaEnabledMsg"></span>
+            <div class="s-note">Automatically enabled when Industry is set to <b>Travel &amp; Tourism</b>. Includes packages, itineraries, service cases, Umrah/Hajj groups, bookings, and finance.</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span id="cfgTaEnabled" style="display:none"></span>
+              <span id="saveTaEnabledMsg" class="save-msg"></span>
+              <button id="saveTaEnabled" style="display:none"></button>
+              <span id="taModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
+            <div class="s-head">💼 Recruitment &amp; Consultancy Module</div>
+            <div class="s-note">Automatically enabled when Industry is set to <b>Consultancy / Recruitment</b>. Includes job postings, candidate pipeline, AI screening, placements, and fee tracking.</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span id="cfgRecruitEnabled" style="display:none"></span>
+              <span id="saveRecruitEnabledMsg" class="save-msg"></span>
+              <button id="saveRecruitEnabled" style="display:none"></button>
+              <span id="rcModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
           </div>
 
@@ -2408,8 +2421,17 @@ $id('saveGeneral').addEventListener('click',async()=>{
   try{
     const agents=$id('cfgAgents').value.trim().split('\n').map(s=>s.trim()).filter(Boolean);
     const ind=$id('cfgIndustry').value;
-    await patchClient({industry:ind,agents:JSON.stringify(agents)});
+    const patch={industry:ind,agents:JSON.stringify(agents)};
+    // Auto-enable matching module based on industry
+    if(ind==='travel'){patch.ta_enabled='Yes';clientRecord.ta_enabled='Yes';taSaveLocal('ta_enabled','Yes');}
+    else{patch.ta_enabled='No';clientRecord.ta_enabled='No';taSaveLocal('ta_enabled','No');}
+    if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';rcSaveLocal('recruit_enabled','Yes');}
+    else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
+    await patchClient(patch);
     applyTheme(ind);
+    updateRecruitTabVisibility();
+    _renderModuleBadge('taModuleStatusBadge',ind==='travel');
+    _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
     msg.textContent='✓ Saved — theme applied';
   }catch(e){msg.textContent='Error';msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
@@ -2943,6 +2965,8 @@ function applyTheme(industryKey){
   });
   // Show/hide travel fields in lead form
   const tf=$id('travelFields');if(tf)tf.style.display=industryKey==='travel'?'block':'none';
+  // Recruit tab visibility synced from clientRecord (already set before applyTheme is called)
+  if(typeof updateRecruitTabVisibility==='function') updateRecruitTabVisibility();
 }
 
 function previewTheme(val){
@@ -4318,8 +4342,14 @@ function renderTaFinance(){
 }
 
 /* ── TA: SETTINGS ── */
+function _renderModuleBadge(badgeId,enabled){
+  const el=$id(badgeId);if(!el)return;
+  el.textContent=enabled?'✓ Active':'— Inactive';
+  el.style.background=enabled?'#DCFCE7':'#F1F5F9';
+  el.style.color=enabled?'#166534':'#64748B';
+}
 function initTaSettings(){
-  $id('cfgTaEnabled').value=clientRecord.ta_enabled||'No';
+  _renderModuleBadge('taModuleStatusBadge',clientRecord.ta_enabled==='Yes');
   updateAgencyTabVisibility();
 }
 
@@ -5210,7 +5240,7 @@ function renderRcPipeline(){
 
 /* ── RC: SETTINGS ── */
 function initRcSettings(){
-  $id('cfgRecruitEnabled').value=clientRecord.recruit_enabled||'No';
+  _renderModuleBadge('rcModuleStatusBadge',clientRecord.recruit_enabled==='Yes');
   updateRecruitTabVisibility();
 }
 
