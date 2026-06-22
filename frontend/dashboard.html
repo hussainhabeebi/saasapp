@@ -1523,7 +1523,11 @@ const TODAY = new Date().toISOString().slice(0,10);
           <option value="open">Open</option><option value="on_hold">On Hold</option><option value="filled">Filled</option><option value="closed">Closed</option>
         </select>
       </div>
-      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Requirements</label><textarea class="form-input" id="rcJobRequirements" rows="3" placeholder="Key skills, qualifications, experience…"></textarea></div>
+      <div class="form-group"><label class="form-label">Min Age</label><input class="form-input" type="number" id="rcJobMinAge" min="16" placeholder="e.g. 21"></div>
+      <div class="form-group"><label class="form-label">Max Age</label><input class="form-input" type="number" id="rcJobMaxAge" placeholder="e.g. 45"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Min Experience (years)</label><input class="form-input" type="number" id="rcJobMinExp" min="0" placeholder="e.g. 3" style="max-width:200px"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Required Qualifications <span style="color:var(--muted);font-weight:400;font-size:11px">— AI uses this to screen candidates</span></label><textarea class="form-input" id="rcJobQualifications" rows="4" placeholder="One per line, e.g.:&#10;Bachelor's degree in Engineering&#10;Valid UAE driving license&#10;Fluent in Arabic and English&#10;No criminal record"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Other Requirements</label><textarea class="form-input" id="rcJobRequirements" rows="2" placeholder="Additional skills, tools, preferences…"></textarea></div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Job Description</label><textarea class="form-input" id="rcJobDescription" rows="3" placeholder="Role responsibilities and details…"></textarea></div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Internal Notes</label><textarea class="form-input" id="rcJobNotes" rows="2"></textarea></div>
     </div>
@@ -1546,6 +1550,8 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="rcCandEmail" type="email" placeholder="email@example.com"></div>
       <div class="form-group"><label class="form-label">Role Applied For</label><input class="form-input" id="rcCandRole" placeholder="e.g. Sales Manager"></div>
       <div class="form-group"><label class="form-label">Years of Experience</label><input class="form-input" type="number" id="rcCandYearsExp" min="0" placeholder="3"></div>
+      <div class="form-group"><label class="form-label">Age</label><input class="form-input" type="number" id="rcCandAge" min="16" max="80" placeholder="e.g. 28"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Applying For Job</label><select class="form-input" id="rcCandJobId"><option value="">— Select Job (for AI screening) —</option></select></div>
       <div class="form-group"><label class="form-label">Source</label>
         <select class="form-input" id="rcCandSource">
           <option value="whatsapp">WhatsApp</option><option value="referral">Referral</option><option value="walk-in">Walk-in</option>
@@ -4503,6 +4509,22 @@ let _rcLoaded=false;
 let _editJobId=null,_editCandId=null,_editPlacementId=null;
 
 function rcTablesReady(){try{const ids=JSON.parse(clientRecord?.recruit_table_ids||'{}');return !!(ids.jobs&&ids.candidates&&ids.placements);}catch(e){return false;}}
+
+async function rcEnsureColumns(){
+  if(!rcTablesReady())return;
+  const extraJob=[{column_name:'min_age',title:'min_age',uidt:'Number'},{column_name:'max_age',title:'max_age',uidt:'Number'},
+    {column_name:'min_experience',title:'min_experience',uidt:'Number'},{column_name:'required_qualifications',title:'required_qualifications',uidt:'LongText'}];
+  const extraCand=[{column_name:'age',title:'age',uidt:'Number'},{column_name:'job_id',title:'job_id',uidt:'SingleLineText'},
+    {column_name:'qualification_status',title:'qualification_status',uidt:'SingleLineText'},{column_name:'screening_notes',title:'screening_notes',uidt:'LongText'}];
+  const tryAdd=async(tableId,cols)=>{
+    try{
+      const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${tableId}`);
+      const existing=(info.columns||[]).map(c=>c.title);
+      for(const f of cols){if(!existing.includes(f.title))await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${tableId}/fields`,f).catch(()=>{});}
+    }catch(e){}
+  };
+  await Promise.all([tryAdd(rcTableId('jobs'),extraJob),tryAdd(rcTableId('candidates'),extraCand)]);
+}
 function rcTableId(key){try{return JSON.parse(clientRecord?.recruit_table_ids||'{}')[key]||null;}catch(e){return null;}}
 
 function rcSaveLocal(key,val){try{const k='lv_rc_'+clientId;const c=JSON.parse(localStorage.getItem(k)||'{}');c[key]=val;localStorage.setItem(k,JSON.stringify(c));}catch(e){}}
@@ -4522,6 +4544,7 @@ async function renderRecruit(){
 }
 
 async function rcLoad(){
+  rcEnsureColumns();
   const [jobs,candidates,placements]=await Promise.all([
     ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId('jobs')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
     ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId('candidates')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
@@ -4587,7 +4610,10 @@ async function rcSetupTables(){
         {column_name:'location',title:'location',uidt:'SingleLineText'},{column_name:'job_type',title:'job_type',uidt:'SingleLineText'},
         {column_name:'category',title:'category',uidt:'SingleLineText'},{column_name:'min_salary',title:'min_salary',uidt:'Number'},
         {column_name:'max_salary',title:'max_salary',uidt:'Number'},{column_name:'currency',title:'currency',uidt:'SingleLineText'},
-        {column_name:'status',title:'status',uidt:'SingleLineText'},{column_name:'requirements',title:'requirements',uidt:'LongText'},
+        {column_name:'status',title:'status',uidt:'SingleLineText'},{column_name:'min_age',title:'min_age',uidt:'Number'},
+        {column_name:'max_age',title:'max_age',uidt:'Number'},{column_name:'min_experience',title:'min_experience',uidt:'Number'},
+        {column_name:'required_qualifications',title:'required_qualifications',uidt:'LongText'},
+        {column_name:'requirements',title:'requirements',uidt:'LongText'},
         {column_name:'description',title:'description',uidt:'LongText'},{column_name:'notes',title:'notes',uidt:'LongText'},
         {column_name:'created_at',title:'created_at',uidt:'SingleLineText'},
       ]},
@@ -4596,8 +4622,11 @@ async function rcSetupTables(){
         {column_name:'email',title:'email',uidt:'SingleLineText'},{column_name:'role_applied',title:'role_applied',uidt:'SingleLineText'},
         {column_name:'years_experience',title:'years_experience',uidt:'Number'},{column_name:'skills',title:'skills',uidt:'LongText'},
         {column_name:'current_salary',title:'current_salary',uidt:'Number'},{column_name:'expected_salary',title:'expected_salary',uidt:'Number'},
+        {column_name:'age',title:'age',uidt:'Number'},{column_name:'job_id',title:'job_id',uidt:'SingleLineText'},
         {column_name:'currency',title:'currency',uidt:'SingleLineText'},{column_name:'status',title:'status',uidt:'SingleLineText'},
         {column_name:'source',title:'source',uidt:'SingleLineText'},{column_name:'owner',title:'owner',uidt:'SingleLineText'},
+        {column_name:'qualification_status',title:'qualification_status',uidt:'SingleLineText'},
+        {column_name:'screening_notes',title:'screening_notes',uidt:'LongText'},
         {column_name:'notes',title:'notes',uidt:'LongText'},{column_name:'resume_notes',title:'resume_notes',uidt:'LongText'},
         {column_name:'interview_date',title:'interview_date',uidt:'SingleLineText'},{column_name:'created_at',title:'created_at',uidt:'SingleLineText'},
       ]},
@@ -4684,6 +4713,52 @@ function renderRcDashboard(){
       <div class="card"><div class="card-title">🔄 Candidate Funnel</div>${funnelRows||'<div style="color:var(--muted);font-size:13px">No candidates yet.</div>'}</div>
       <div class="card"><div class="card-title">📅 Upcoming Interviews</div>${interviewRows}</div>
     </div>
+    ${(()=>{
+      const screened=_rcCandidates.filter(c=>c.qualification_status);
+      const passed=screened.filter(c=>c.qualification_status==='pass').length;
+      const failed=screened.filter(c=>c.qualification_status==='fail').length;
+      const pending=_rcCandidates.filter(c=>c.job_id&&!c.qualification_status).length;
+      const passRate=screened.length?Math.round(passed/screened.length*100):0;
+      const jobBreakdown=_rcJobs.filter(j=>j.required_qualifications||j.min_age||j.min_experience).map(j=>{
+        const jCands=_rcCandidates.filter(c=>String(c.job_id)===String(j.Id)&&c.qualification_status);
+        const jPass=jCands.filter(c=>c.qualification_status==='pass').length;
+        const jFail=jCands.filter(c=>c.qualification_status==='fail').length;
+        return jCands.length?`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+          <div style="flex:1;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.title||'Untitled')}</div>
+          <span style="background:#DCFCE7;color:#166534;font-size:11px;font-weight:700;padding:3px 8px;border-radius:10px">✓ ${jPass}</span>
+          <span style="background:#FEE2E2;color:#991B1B;font-size:11px;font-weight:700;padding:3px 8px;border-radius:10px">✗ ${jFail}</span>
+        </div>`:null;
+      }).filter(Boolean);
+      if(!screened.length&&!pending)return'';
+      return`<div class="card" style="margin-bottom:14px">
+        <div class="card-title">🎯 Qualification Report</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+          <div style="background:#EFF6FF;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#1D4ED8;font-family:var(--disp)">${screened.length}</div>
+            <div style="font-size:11px;color:#3B82F6;font-weight:600;margin-top:2px">Screened</div>
+          </div>
+          <div style="background:#DCFCE7;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#166534;font-family:var(--disp)">${passed}</div>
+            <div style="font-size:11px;color:#16A34A;font-weight:600;margin-top:2px">Qualified</div>
+          </div>
+          <div style="background:#FEE2E2;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#991B1B;font-family:var(--disp)">${failed}</div>
+            <div style="font-size:11px;color:#DC2626;font-weight:600;margin-top:2px">Not Qualified</div>
+          </div>
+          <div style="background:#FEF3C7;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#92400E;font-family:var(--disp)">${pending}</div>
+            <div style="font-size:11px;color:#D97706;font-weight:600;margin-top:2px">Awaiting Screen</div>
+          </div>
+        </div>
+        ${screened.length?`<div style="display:flex;align-items:center;gap:10px;margin-bottom:${jobBreakdown.length?'14px':'0'}">
+          <div style="flex:1;background:#E5E7EB;border-radius:99px;height:10px;overflow:hidden">
+            <div style="background:linear-gradient(90deg,#16A34A,#22C55E);height:100%;width:${passRate}%;border-radius:99px;transition:width .4s"></div>
+          </div>
+          <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:#166534;flex-shrink:0">${passRate}% pass rate</span>
+        </div>`:''}
+        ${jobBreakdown.length?`<div><div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Per Job Breakdown</div>${jobBreakdown.join('')}</div>`:''}
+      </div>`;
+    })()}
     <div class="card"><div class="card-title">👥 Recent Candidates <button class="btn btn-primary btn-sm" onclick="renderRcSubPage('candidates')" style="margin-left:auto">View All</button></div>${recentRows}</div>`;
 }
 
@@ -4730,7 +4805,7 @@ function renderRcJobs(filter=''){
 
 function openAddJob(){
   _editJobId=null;
-  ['rcJobTitle','rcJobCompany','rcJobLocation','rcJobRequirements','rcJobDescription','rcJobNotes'].forEach(id=>{const el=$id(id);if(el)el.value='';});
+  ['rcJobTitle','rcJobCompany','rcJobLocation','rcJobRequirements','rcJobDescription','rcJobNotes','rcJobQualifications','rcJobMinAge','rcJobMaxAge','rcJobMinExp'].forEach(id=>{const el=$id(id);if(el)el.value='';});
   $id('rcJobType').value='fulltime';$id('rcJobCategory').value='Other';
   $id('rcJobCurrency').value='AED';$id('rcJobMinSalary').value='';$id('rcJobMaxSalary').value='';$id('rcJobStatus').value='open';
   $id('rcJobModalTitle').textContent='New Job Posting';$id('saveRcJobMsg').textContent='';
@@ -4744,6 +4819,8 @@ function openEditJob(id){
   $id('rcJobType').value=j.job_type||'fulltime';$id('rcJobCategory').value=j.category||'Other';
   $id('rcJobMinSalary').value=j.min_salary||'';$id('rcJobMaxSalary').value=j.max_salary||'';
   $id('rcJobCurrency').value=j.currency||'AED';$id('rcJobStatus').value=j.status||'open';
+  $id('rcJobMinAge').value=j.min_age||'';$id('rcJobMaxAge').value=j.max_age||'';
+  $id('rcJobMinExp').value=j.min_experience||'';$id('rcJobQualifications').value=j.required_qualifications||'';
   $id('rcJobRequirements').value=j.requirements||'';$id('rcJobDescription').value=j.description||'';$id('rcJobNotes').value=j.notes||'';
   $id('rcJobModalTitle').textContent='Edit Job Posting';$id('saveRcJobMsg').textContent='';
   openModal('modalRcJob');
@@ -4756,6 +4833,8 @@ async function saveRcJob(){
     job_type:$id('rcJobType').value,category:$id('rcJobCategory').value,
     min_salary:parseFloat($id('rcJobMinSalary').value)||0,max_salary:parseFloat($id('rcJobMaxSalary').value)||0,
     currency:$id('rcJobCurrency').value,status:$id('rcJobStatus').value,
+    min_age:parseInt($id('rcJobMinAge').value)||0,max_age:parseInt($id('rcJobMaxAge').value)||0,
+    min_experience:parseInt($id('rcJobMinExp').value)||0,required_qualifications:$id('rcJobQualifications').value.trim(),
     requirements:$id('rcJobRequirements').value.trim(),description:$id('rcJobDescription').value.trim(),
     notes:$id('rcJobNotes').value.trim(),created_at:new Date().toISOString().slice(0,10)};
   if(!body.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
@@ -4831,6 +4910,7 @@ function renderRcCandList(cands){
     </div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">
       <span class="${rcCandStatusClass(c.status)}">${rcCandStatusLabel(c.status)}</span>
+      ${c.qualification_status==='pass'?`<span style="background:#DCFCE7;color:#166534;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✓ Qualified</span>`:c.qualification_status==='fail'?`<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✗ Failed</span>`:''}
       ${c.owner?`<span style="font-size:10px;color:var(--muted)">${esc(c.owner)}</span>`:''}
       ${c.expected_salary?`<span style="font-family:var(--mono);font-size:10px;color:#2563EB;font-weight:600">${c.currency||'AED'} ${parseInt(c.expected_salary).toLocaleString()}</span>`:''}
     </div>
@@ -4852,15 +4932,31 @@ function openCandidateDetail(id){
       <button class="action-btn" onclick="openEditCandidate('${c.Id}');closeModal('modalRcCandDetail')"><span class="ab-icon">✏️</span>Edit</button>
       <button class="action-btn" onclick="deleteCandidate('${c.Id}')"><span class="ab-icon">🗑</span>Remove</button>
     </div>
+    ${(()=>{
+      const qs=c.qualification_status||'';
+      const job=_rcJobs.find(j=>String(j.Id)===String(c.job_id));
+      const hasQualCriteria=job&&(job.required_qualifications||job.min_age||job.min_experience);
+      const qsBg={pass:'#DCFCE7',fail:'#FEE2E2',pending:'#FEF3C7'}[qs]||'#F1F5F9';
+      const qsColor={pass:'#166534',fail:'#991B1B',pending:'#92400E'}[qs]||'#475569';
+      const qsLabel={pass:'✓ Qualified',fail:'✗ Not Qualified',pending:'⏳ Pending Review'}[qs]||'Not Screened';
+      return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        ${qs?`<span style="background:${qsBg};color:${qsColor};font-weight:700;font-size:12px;padding:5px 12px;border-radius:20px;font-family:var(--disp)">${qsLabel}</span>`:''}
+        ${hasQualCriteria?`<button class="btn btn-primary btn-sm" id="aiScreenBtn_${c.Id}" onclick="aiScreenCandidate('${c.Id}')">🤖 AI Screen</button>`:''}
+        ${hasQualCriteria&&!qs?'<span style="font-size:11px;color:var(--muted)">Not yet screened against job criteria</span>':''}
+      </div>
+      ${c.screening_notes?`<div style="background:#F8FAFC;border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px;font-size:12.5px;line-height:1.6;color:var(--ink)"><div style="font-weight:600;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">AI Screening Notes</div>${esc(c.screening_notes).replace(/\n/g,'<br>')}</div>`:''}`;
+    })()}
     <div class="profile-card">
       <div class="pc-title">Candidate Profile</div>
       <div class="pc-row"><span class="pc-key">Phone</span><span class="pc-val">${esc(c.phone||'—')}</span></div>
       <div class="pc-row"><span class="pc-key">Email</span><span class="pc-val">${esc(c.email||'—')}</span></div>
       <div class="pc-row"><span class="pc-key">Role Applied</span><span class="pc-val">${esc(c.role_applied||'—')}</span></div>
+      <div class="pc-row"><span class="pc-key">Age</span><span class="pc-val">${c.age?c.age+' years':'—'}</span></div>
       <div class="pc-row"><span class="pc-key">Experience</span><span class="pc-val">${c.years_experience?c.years_experience+' years':'—'}</span></div>
       <div class="pc-row"><span class="pc-key">Source</span><span class="pc-val">${esc(c.source||'—')}</span></div>
       <div class="pc-row"><span class="pc-key">Current Salary</span><span class="pc-val">${c.current_salary?(c.currency||'AED')+' '+parseInt(c.current_salary).toLocaleString():'—'}</span></div>
       <div class="pc-row"><span class="pc-key">Expected Salary</span><span class="pc-val">${c.expected_salary?(c.currency||'AED')+' '+parseInt(c.expected_salary).toLocaleString():'—'}</span></div>
+      ${c.job_id&&_rcJobs.find(j=>String(j.Id)===String(c.job_id))?`<div class="pc-row"><span class="pc-key">Job Applied</span><span class="pc-val">${esc((_rcJobs.find(j=>String(j.Id)===String(c.job_id))||{}).title||'—')}</span></div>`:''}
     </div>
     <div class="sec-hd">Stage</div>
     <select class="form-input" style="max-width:240px" onchange="patchRcCandidate('${c.Id}','status',this.value)">
@@ -4879,12 +4975,72 @@ async function patchRcCandidate(id,field,value){
   await rcUpdate('candidates',id,{[field]:value});
 }
 
+async function aiScreenCandidate(id){
+  const c=_rcCandidates.find(x=>String(x.Id)===String(id));if(!c)return;
+  const job=_rcJobs.find(j=>String(j.Id)===String(c.job_id));
+  if(!job){alert('No job linked. Edit the candidate and select the job they are applying for.');return;}
+  const key=clientRecord?.openrouter_key||'';
+  if(!key){alert('No OpenRouter API key set in settings. Please add it in Settings → Bot Config.');return;}
+  const btn=$id('aiScreenBtn_'+id);
+  if(btn){btn.disabled=true;btn.textContent='🤖 Screening…';}
+  const criteria=[];
+  if(job.min_age)criteria.push(`Minimum age: ${job.min_age}`);
+  if(job.max_age)criteria.push(`Maximum age: ${job.max_age}`);
+  if(job.min_experience)criteria.push(`Minimum experience: ${job.min_experience} years`);
+  if(job.required_qualifications)criteria.push(...job.required_qualifications.split('\n').map(l=>l.trim()).filter(Boolean));
+  const prompt=`You are a recruitment screening assistant. Evaluate the candidate against the job requirements and give a clear PASS or FAIL verdict.
+
+JOB: ${job.title||'Untitled'}${job.company?' at '+job.company:''}
+REQUIRED CRITERIA:
+${criteria.map((l,i)=>`${i+1}. ${l}`).join('\n')||'(No specific criteria defined)'}
+
+CANDIDATE PROFILE:
+- Name: ${c.name||'—'}
+- Age: ${c.age?c.age+' years':'Not provided'}
+- Experience: ${c.years_experience?c.years_experience+' years':'Not provided'}
+- Role Applied: ${c.role_applied||'—'}
+- Skills: ${c.skills||'—'}
+- Resume Notes: ${c.resume_notes||'—'}
+
+Respond in this exact JSON format:
+{"result":"pass","notes":"Brief bullet-point reasoning, one per criterion. State clearly which criteria are met, not met, or unknown due to missing info."}
+or
+{"result":"fail","notes":"Brief bullet-point reasoning..."}`;
+  try{
+    const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',
+      headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'},
+      body:JSON.stringify({model:clientRecord.model||'google/gemini-2.5-flash',temperature:0.1,
+        messages:[{role:'user',content:prompt}]})});
+    const data=await res.json();
+    const raw=data.choices?.[0]?.message?.content||'';
+    let result='pending',notes='Could not parse AI response.';
+    try{
+      const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+      if(m){const p=JSON.parse(m[0]);result=p.result==='pass'?'pass':'fail';notes=p.notes||'';}
+    }catch(e){}
+    const c2=_rcCandidates.find(x=>String(x.Id)===String(id));
+    if(c2){c2.qualification_status=result;c2.screening_notes=notes;}
+    await rcUpdate('candidates',id,{qualification_status:result,screening_notes:notes});
+    openCandidateDetail(id);
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent='🤖 AI Screen';}
+    alert('Screening failed: '+e.message);
+  }
+}
+
+function _rcPopulateJobDropdown(selectedId=''){
+  const el=$id('rcCandJobId');if(!el)return;
+  const openJobs=_rcJobs.filter(j=>j.status==='open'||j.status==='on_hold');
+  el.innerHTML='<option value="">— Select Job (for AI screening) —</option>'+openJobs.map(j=>`<option value="${j.Id}"${String(j.Id)===String(selectedId)?' selected':''}>${esc(j.title||'Untitled')}${j.company?' – '+esc(j.company):''}</option>`).join('');
+}
+
 function openAddCandidate(){
   _editCandId=null;
   ['rcCandName','rcCandPhone','rcCandEmail','rcCandRole','rcCandSkills','rcCandResumeNotes','rcCandNotes','rcCandInterviewDate'].forEach(id=>{const el=$id(id);if(el)el.value='';});
-  $id('rcCandYearsExp').value='';$id('rcCandCurrentSalary').value='';$id('rcCandExpectedSalary').value='';
+  $id('rcCandYearsExp').value='';$id('rcCandAge').value='';$id('rcCandCurrentSalary').value='';$id('rcCandExpectedSalary').value='';
   $id('rcCandCurrency').value='AED';$id('rcCandStatus').value='new';$id('rcCandSource').value='whatsapp';
   $id('rcCandOwner').innerHTML='<option value="">Unassigned</option>'+getAgents().map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('');
+  _rcPopulateJobDropdown();
   $id('rcCandModalTitle').textContent='New Candidate';$id('saveRcCandMsg').textContent='';
   openModal('modalRcCand');
 }
@@ -4894,12 +5050,14 @@ function openEditCandidate(id){
   _editCandId=id;
   $id('rcCandName').value=c.name||'';$id('rcCandPhone').value=c.phone||'';$id('rcCandEmail').value=c.email||'';
   $id('rcCandRole').value=c.role_applied||'';$id('rcCandYearsExp').value=c.years_experience||'';
+  $id('rcCandAge').value=c.age||'';
   $id('rcCandSkills').value=c.skills||'';$id('rcCandCurrentSalary').value=c.current_salary||'';
   $id('rcCandExpectedSalary').value=c.expected_salary||'';$id('rcCandCurrency').value=c.currency||'AED';
   $id('rcCandStatus').value=c.status||'new';$id('rcCandSource').value=c.source||'whatsapp';
   $id('rcCandOwner').innerHTML='<option value="">Unassigned</option>'+getAgents().map(a=>`<option value="${esc(a)}"${a===c.owner?' selected':''}>${esc(a)}</option>`).join('');
   $id('rcCandOwner').value=c.owner||'';$id('rcCandResumeNotes').value=c.resume_notes||'';
   $id('rcCandNotes').value=c.notes||'';$id('rcCandInterviewDate').value=c.interview_date||'';
+  _rcPopulateJobDropdown(c.job_id||'');
   $id('rcCandModalTitle').textContent='Edit Candidate';$id('saveRcCandMsg').textContent='';
   openModal('modalRcCand');
 }
@@ -4909,7 +5067,9 @@ async function saveRcCandidate(){
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   const body={name:$id('rcCandName').value.trim(),phone:$id('rcCandPhone').value.trim().replace(/[^0-9+]/g,''),
     email:$id('rcCandEmail').value.trim(),role_applied:$id('rcCandRole').value.trim(),
-    years_experience:parseFloat($id('rcCandYearsExp').value)||0,skills:$id('rcCandSkills').value.trim(),
+    years_experience:parseFloat($id('rcCandYearsExp').value)||0,age:parseInt($id('rcCandAge').value)||0,
+    job_id:$id('rcCandJobId').value||'',
+    skills:$id('rcCandSkills').value.trim(),
     current_salary:parseFloat($id('rcCandCurrentSalary').value)||0,expected_salary:parseFloat($id('rcCandExpectedSalary').value)||0,
     currency:$id('rcCandCurrency').value,status:$id('rcCandStatus').value,source:$id('rcCandSource').value,
     owner:$id('rcCandOwner').value,resume_notes:$id('rcCandResumeNotes').value.trim(),notes:$id('rcCandNotes').value.trim(),
