@@ -465,11 +465,23 @@ footer .ml{font-family:var(--ml);font-size:12px;color:rgba(255,255,255,.2);margi
           <label>Business Type <span class="ml">ബിസിനസ്സ് തരം</span></label>
           <input id="businessType" type="text" placeholder="e.g. Travel Agency, Real Estate, Clinic…" />
         </div>
+        <div class="field">
+          <label>Chatwoot Account ID <span class="ml">ചാറ്റ്‌വൂട്ട് അക്കൗണ്ട് ID</span></label>
+          <input id="chatwootAccountId" type="text" placeholder="e.g. 12" />
+        </div>
+        <div class="field">
+          <label>Chatwoot Inbox ID <span class="ml">ഇൻബോക്സ് ID</span></label>
+          <input id="chatwootInboxId" type="text" placeholder="e.g. 5" />
+        </div>
+        <div class="field">
+          <label>Chatwoot User Token <span class="ml">യൂസർ ടോക്കൺ</span></label>
+          <input id="chatwootToken" type="text" placeholder="Paste your Chatwoot access token" />
+        </div>
         <button class="signup-btn" id="signupBtn" onclick="submitSignup()">Create My Dashboard →</button>
         <div class="form-msg" id="signupMsg"></div>
         <p class="signup-note">
-          You'll be redirected to your dashboard instantly. Shared trial number — free for 30 days.
-          <span class="ml">ഉടനെ നിങ്ങളുടെ ഡാഷ്‌ബോർഡിലേക്ക് redirect ആകും. ആദ്യ 30 ദിവസം സൗജന്യം.</span>
+          You'll be redirected to your dashboard instantly.
+          <span class="ml">ഉടനെ നിങ്ങളുടെ ഡാഷ്‌ബോർഡിലേക്ക് redirect ആകും.</span>
         </p>
       </div>
 
@@ -498,11 +510,8 @@ footer .ml{font-family:var(--ml);font-size:12px;color:rgba(255,255,255,.2);margi
 // ── TRIAL CONFIG — fill these before going live ──────────────────
 const TRIAL = {
   onboard_endpoint:     'https://apps.leadvyne.com/webhook/leadvyne-onboard',
-  passcode:             'FILL_PASSCODE_HERE',
+  passcode:             'Bath*2026*ld',
   chatwoot_base:        'https://app.aiingo.com',
-  chatwoot_account_id:  'FILL_ACCOUNT_ID',
-  chatwoot_inbox_id:    'FILL_INBOX_ID',
-  chatwoot_token:       'FILL_CHATWOOT_TOKEN',
   language:             'ml',
   model:                'google/gemini-2.5-flash',
 };
@@ -516,17 +525,23 @@ For anything you cannot answer, politely say you will connect them with an advis
 Always respond in the same language the customer uses.`;
 
 async function submitSignup() {
-  const company = document.getElementById('companyName').value.trim();
-  const mobile  = document.getElementById('mobileNumber').value.trim();
-  const bizType = document.getElementById('businessType').value.trim();
-  const msg     = document.getElementById('signupMsg');
-  const btn     = document.getElementById('signupBtn');
+  const company   = document.getElementById('companyName').value.trim();
+  const mobile    = document.getElementById('mobileNumber').value.trim();
+  const bizType   = document.getElementById('businessType').value.trim();
+  const accountId = document.getElementById('chatwootAccountId').value.trim();
+  const inboxId   = document.getElementById('chatwootInboxId').value.trim();
+  const token     = document.getElementById('chatwootToken').value.trim();
+  const msg       = document.getElementById('signupMsg');
+  const btn       = document.getElementById('signupBtn');
 
   msg.textContent = '';
   msg.className = 'form-msg';
 
-  if (!company) { msg.textContent = 'Please enter your company name.'; msg.className = 'form-msg err'; return; }
-  if (!mobile)  { msg.textContent = 'Please enter your mobile number.'; msg.className = 'form-msg err'; return; }
+  if (!company)   { msg.textContent = 'Please enter your company name.'; msg.className = 'form-msg err'; return; }
+  if (!mobile)    { msg.textContent = 'Please enter your mobile number.'; msg.className = 'form-msg err'; return; }
+  if (!accountId) { msg.textContent = 'Please enter your Chatwoot Account ID.'; msg.className = 'form-msg err'; return; }
+  if (!inboxId)   { msg.textContent = 'Please enter your Chatwoot Inbox ID.'; msg.className = 'form-msg err'; return; }
+  if (!token)     { msg.textContent = 'Please enter your Chatwoot User Token.'; msg.className = 'form-msg err'; return; }
 
   btn.disabled = true;
   btn.textContent = 'Setting up your dashboard…';
@@ -538,9 +553,9 @@ async function submitSignup() {
       phone:                mobile,
       business_type:        bizType,
       chatwoot_base:        TRIAL.chatwoot_base,
-      chatwoot_account_id:  TRIAL.chatwoot_account_id,
-      chatwoot_inbox_id:    TRIAL.chatwoot_inbox_id,
-      chatwoot_token:       TRIAL.chatwoot_token,
+      chatwoot_account_id:  accountId,
+      chatwoot_inbox_id:    inboxId,
+      chatwoot_token:       token,
       language:             TRIAL.language,
       model:                TRIAL.model,
       main_prompt:          DEFAULT_PROMPT(company, bizType),

@@ -30,10 +30,13 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 /* ── GATE ── */
 #gate{position:fixed;inset:0;z-index:200;background:linear-gradient(160deg,#071410 0%,#0D2218 60%,#0A1A13 100%);display:flex;align-items:center;justify-content:center;padding:24px}
 #gate.hidden{display:none}
-.gbox{width:100%;max-width:360px}
+.gbox{width:100%;max-width:380px}
 .gbrand{font-family:var(--disp);font-size:28px;font-weight:700;color:#fff;margin-bottom:6px;letter-spacing:-.3px}
 .gbrand span{color:#4ECFA0}
-.gsub{color:#6FA898;font-size:13.5px;margin-bottom:36px;line-height:1.5}
+.gsub{color:#6FA898;font-size:13.5px;margin-bottom:20px;line-height:1.5}
+.gtabs{display:flex;gap:0;margin-bottom:24px;background:rgba(255,255,255,.07);border-radius:12px;padding:4px}
+.gtab{flex:1;padding:9px;border:none;background:none;color:rgba(255,255,255,.45);font-family:var(--disp);font-size:13px;font-weight:600;cursor:pointer;border-radius:9px;transition:background .15s,color .15s}
+.gtab.active{background:rgba(255,255,255,.13);color:#fff}
 .gfld{display:flex;flex-direction:column;gap:12px;margin-bottom:8px}
 .ginput{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);border-radius:14px;padding:14px 18px;color:#fff;font-family:var(--body);font-size:15px;transition:border-color .2s,background .2s}
 .ginput::placeholder{color:rgba(255,255,255,.3)}
@@ -43,6 +46,8 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .gbtn:active{transform:scale(.98)}
 .gbtn:disabled{opacity:.5;cursor:not-allowed}
 .gerr{color:#FCA5A5;font-size:12.5px;min-height:20px;margin-top:10px}
+.gsuccess{color:#6EE7B7;font-size:12.5px;min-height:20px;margin-top:10px}
+.glabel{color:rgba(255,255,255,.45);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:-6px;font-family:var(--disp)}
 
 /* ── APP SHELL ── */
 #app{position:fixed;inset:0;display:none;flex-direction:column}
@@ -522,13 +527,35 @@ const TODAY = new Date().toISOString().slice(0,10);
 <div id="gate">
   <div class="gbox">
     <div class="gbrand">Leadvyne<span>.</span></div>
-    <p class="gsub">Sign in to your CRM dashboard</p>
-    <div class="gfld">
-      <input class="ginput" id="gUser" type="text" placeholder="Username" autocomplete="username" />
-      <input class="ginput" id="gPass" type="password" placeholder="Password" autocomplete="current-password" />
+    <p class="gsub">WhatsApp CRM &amp; AI Bot Platform</p>
+    <div class="gtabs">
+      <button class="gtab active" id="gtabLogin" onclick="gSwitchTab('login')">Sign In</button>
+      <button class="gtab" id="gtabSignup" onclick="gSwitchTab('signup')">Get Started</button>
     </div>
-    <button class="gbtn" id="gBtn">Sign In</button>
-    <div class="gerr" id="gErr"></div>
+
+    <!-- LOGIN -->
+    <div id="gPanelLogin">
+      <div class="gfld">
+        <input class="ginput" id="gUser" type="text" placeholder="Business name" autocomplete="username" />
+        <input class="ginput" id="gPass" type="password" placeholder="Password" autocomplete="current-password" />
+      </div>
+      <button class="gbtn" id="gBtn">Sign In</button>
+      <div class="gerr" id="gErr"></div>
+    </div>
+
+    <!-- SIGNUP -->
+    <div id="gPanelSignup" style="display:none">
+      <div class="gfld">
+        <input class="ginput" id="sgName" type="text" placeholder="Business name *" />
+        <input class="ginput" id="sgAccountId" type="text" placeholder="Chatwoot Account ID *" />
+        <input class="ginput" id="sgInboxId" type="text" placeholder="Chatwoot Inbox ID *" />
+        <input class="ginput" id="sgToken" type="text" placeholder="Chatwoot User Token *" />
+        <input class="ginput" id="sgPassword" type="password" placeholder="Set a dashboard password *" />
+      </div>
+      <button class="gbtn" id="sgBtn" onclick="doSignup()">Create Account</button>
+      <div class="gerr" id="sgErr"></div>
+      <div class="gsuccess" id="sgOk"></div>
+    </div>
   </div>
 </div>
 
@@ -1665,6 +1692,50 @@ function getAgents(){ try{ return JSON.parse(clientRecord?.agents||'[]'); }catch
 /* ── AUTH ── */
 $id('gBtn').addEventListener('click', connect);
 [$id('gUser'),$id('gPass')].forEach(el=>el.addEventListener('keydown',e=>{if(e.key==='Enter')connect();}));
+
+function gSwitchTab(tab){
+  const isLogin=tab==='login';
+  $id('gPanelLogin').style.display=isLogin?'':'none';
+  $id('gPanelSignup').style.display=isLogin?'none':'';
+  $id('gtabLogin').classList.toggle('active',isLogin);
+  $id('gtabSignup').classList.toggle('active',!isLogin);
+}
+
+async function doSignup(){
+  const name=$id('sgName').value.trim();
+  const accountId=$id('sgAccountId').value.trim();
+  const inboxId=$id('sgInboxId').value.trim();
+  const token=$id('sgToken').value.trim();
+  const password=$id('sgPassword').value.trim();
+  const err=$id('sgErr'),ok=$id('sgOk'),btn=$id('sgBtn');
+  err.textContent='';ok.textContent='';
+  if(!name||!accountId||!inboxId||!token||!password){err.textContent='All fields are required.';return;}
+  btn.disabled=true;btn.textContent='Creating account…';
+  try{
+    const res=await fetch('https://apps.leadvyne.com/webhook/leadvyne-onboard',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        passcode:'Bath*2026*ld',
+        client_name:name,
+        chatwoot_account_id:accountId,
+        chatwoot_inbox_id:inboxId,
+        chatwoot_token:token,
+        dashboard_password:password,
+        language:'en',industry:'general'
+      })
+    });
+    const data=await res.json();
+    if(!res.ok||data.ok===false)throw new Error(data.error||'Onboarding failed');
+    ok.textContent='✓ Account created! Signing you in…';
+    // Auto-login with new credentials
+    setTimeout(async()=>{
+      $id('gUser').value=name;$id('gPass').value=password;
+      gSwitchTab('login');
+      await connect();
+    },1200);
+  }catch(e){err.textContent=e.message||'Something went wrong. Please try again.';}
+  finally{btn.disabled=false;btn.textContent='Create Account';}
+}
 
 async function connect(){
   const user=$id('gUser').value.trim(), pass=$id('gPass').value;
