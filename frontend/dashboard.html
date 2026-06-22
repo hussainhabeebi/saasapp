@@ -963,6 +963,21 @@ const TODAY = new Date().toISOString().slice(0,10);
             </div>
           </div>
 
+          <hr class="div">
+
+          <div class="settings-section">
+            <div class="s-head">💼 Recruitment &amp; Consultancy Module</div>
+            <div class="s-note">Enable the full Recruitment &amp; Job Consultancy suite — job postings, candidate pipeline, placements, and fee tracking. Adds a dedicated <b>Recruit</b> tab to the dashboard.</div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <select class="form-input" id="cfgRecruitEnabled" style="max-width:200px">
+                <option value="No">Disabled</option>
+                <option value="Yes">Enabled</option>
+              </select>
+              <button class="save-btn" id="saveRecruitEnabled">Save</button>
+              <span class="save-msg" id="saveRecruitEnabledMsg"></span>
+            </div>
+          </div>
+
         </div>
         <div id="summaryWrap" style="padding:0 16px 16px;display:none">
           <button id="summaryBtn" style="padding:7px 16px;background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--disp)">✨ Generate AI Summary</button>
