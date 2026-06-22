@@ -369,6 +369,46 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .kb-progress-bar{height:100%;background:var(--accent);border-radius:2px;width:0%;transition:width .3s}
 .kb-stats{font-size:11px;color:var(--muted);font-family:var(--mono)}
 
+/* ── RECRUITMENT MODULE ── */
+.recruit-hero{background:linear-gradient(135deg,#2563EB,#4F46E5);border-radius:var(--r);padding:22px;color:#fff;margin-bottom:16px;position:relative;overflow:hidden;box-shadow:var(--shadow-md)}
+.recruit-hero::after{content:'💼';position:absolute;right:18px;top:50%;transform:translateY(-50%);font-size:52px;opacity:.12}
+.recruit-hero-title{font-family:var(--disp);font-size:20px;font-weight:700;margin-bottom:4px}
+.recruit-hero-sub{font-size:12.5px;opacity:.8}
+.recruit-stat-row{display:grid;gap:10px;grid-template-columns:repeat(4,1fr);margin-top:14px;margin-bottom:0}
+.recruit-stat{background:rgba(255,255,255,.18);backdrop-filter:blur(4px);border-radius:12px;padding:12px;text-align:center}
+.recruit-stat-val{font-family:var(--disp);font-size:22px;font-weight:700;line-height:1.1}
+.recruit-stat-lbl{font-size:10px;opacity:.75;margin-top:2px}
+@media(max-width:600px){.recruit-stat-row{grid-template-columns:repeat(2,1fr)}}
+.rc-tab{font-family:var(--disp);font-size:12px;font-weight:600;padding:11px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
+.rc-tab.active{color:#1D4ED8;border-bottom-color:#2563EB}
+.job-card{background:var(--card);border-radius:var(--r);padding:18px;box-shadow:var(--shadow);margin-bottom:12px;border:1.5px solid var(--line);cursor:pointer;transition:box-shadow .15s,border-color .15s}
+.job-card:hover{box-shadow:var(--shadow-md);border-color:#2563EB}
+.job-title{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:2px}
+.job-company{font-size:12.5px;color:var(--muted);margin-bottom:8px}
+.job-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.job-type-badge{font-size:10px;font-weight:700;padding:3px 9px;border-radius:6px;background:#DBEAFE;color:#1E3A8A}
+.job-status-open{background:#DCFCE7;color:#166534}.job-status-filled{background:#FEF3C7;color:#92400E}
+.job-status-closed{background:#F1F5F9;color:#475569}.job-status-on_hold{background:#FEE2E2;color:#991B1B}
+.job-salary{font-family:var(--mono);font-size:11px;color:#1D4ED8;font-weight:700}
+.cand-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
+.cand-row:hover{background:var(--bg)}.cand-row:last-child{border-bottom:none}
+.cand-avatar{width:38px;height:38px;border-radius:50%;background:#DBEAFE;color:#1E3A8A;display:flex;align-items:center;justify-content:center;font-family:var(--disp);font-weight:700;font-size:14px;flex-shrink:0}
+.cand-body{flex:1;min-width:0}
+.cand-name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cand-sub{font-size:11.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cand-status-new{background:#F1F5F9;color:#475569}.cand-status-screening{background:#DBEAFE;color:#1E40AF}
+.cand-status-interview_scheduled{background:#EDE9FE;color:#6D28D9}.cand-status-interview_done{background:#FEF3C7;color:#92400E}
+.cand-status-offer_sent{background:#D1FAE5;color:#065F46}.cand-status-placed{background:#DCFCE7;color:#166534}
+.cand-status-rejected{background:#FEE2E2;color:#991B1B}.cand-status-withdrawn{background:#F1F5F9;color:#475569}
+.placement-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
+.placement-row:hover{background:var(--bg)}.placement-row:last-child{border-bottom:none}
+.rc-pipeline-col{min-width:210px;width:210px;background:var(--bg);border-radius:var(--r);padding:10px;flex-shrink:0;display:flex;flex-direction:column;gap:8px}
+.rc-pipeline-hd{font-family:var(--disp);font-size:10px;font-weight:700;padding:5px 4px;display:flex;align-items:center;justify-content:space-between;color:var(--ink);text-transform:uppercase;letter-spacing:.04em}
+.rc-pipeline-ct{background:var(--line);color:var(--muted);font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;font-family:var(--mono)}
+.rc-cand-card{background:var(--card);border-radius:var(--r-sm);padding:12px;cursor:pointer;transition:box-shadow .15s;box-shadow:var(--shadow);border-left:3px solid #2563EB}
+.rc-cand-card:hover{box-shadow:var(--shadow-md)}
+.rc-cand-name{font-weight:600;font-size:13px;margin-bottom:3px}.rc-cand-role{font-size:11px;color:var(--muted)}
+
 /* scrollbar */
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -516,6 +556,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')">🛒 Ecommerce</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
+    <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
     <button class="dnTab" data-page="tasks">✅ Tasks</button>
     <button class="dnTab" data-page="broadcast">📢 Broadcast</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
@@ -679,6 +720,20 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
       <div class="page-pad" id="agencyContent" style="flex:1">
         <div style="color:var(--muted);font-size:13px;padding:40px 0;text-align:center">Loading…</div>
+      </div>
+    </div>
+
+    <!-- RECRUITMENT & CONSULTANCY MODULE -->
+    <div class="page hidden" id="pageRecruit">
+      <div id="recruitSubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
+        <button class="rc-tab active" data-rc="dashboard">📊 Dashboard</button>
+        <button class="rc-tab" data-rc="jobs">📋 Jobs</button>
+        <button class="rc-tab" data-rc="candidates">👥 Candidates</button>
+        <button class="rc-tab" data-rc="placements">🏆 Placements</button>
+        <button class="rc-tab" data-rc="pipeline">🔄 Pipeline</button>
+      </div>
+      <div class="page-pad" id="recruitContent">
+        <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
       </div>
     </div>
 
@@ -895,6 +950,21 @@ const TODAY = new Date().toISOString().slice(0,10);
             </div>
           </div>
 
+          <hr class="div">
+
+          <div class="settings-section">
+            <div class="s-head">💼 Recruitment &amp; Consultancy Module</div>
+            <div class="s-note">Enable the full Recruitment &amp; Job Consultancy suite — job postings, candidate pipeline, placements, and fee tracking. Adds a dedicated <b>Recruit</b> tab to the dashboard.</div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <select class="form-input" id="cfgRecruitEnabled" style="max-width:200px">
+                <option value="No">Disabled</option>
+                <option value="Yes">Enabled</option>
+              </select>
+              <button class="save-btn" id="saveRecruitEnabled">Save</button>
+              <span class="save-msg" id="saveRecruitEnabledMsg"></span>
+            </div>
+          </div>
+
         </div>
         <div id="summaryWrap" style="padding:0 16px 16px;display:none">
           <button id="summaryBtn" style="padding:7px 16px;background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--disp)">✨ Generate AI Summary</button>
@@ -913,6 +983,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem industry-tab" data-page="travel" data-industry="travel" style="display:none"><span class="bnIcon">✈️</span><span class="bnLabel">Travel</span></button>
     <button class="bnItem industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
     <button class="bnItem" data-page="agency" id="bnAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
+    <button class="bnItem" data-page="recruit" id="bnRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
     <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
     <button class="bnItem" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
@@ -1420,6 +1491,150 @@ const TODAY = new Date().toISOString().slice(0,10);
   </div>
 </div>
 
+<!-- MODAL: RC Job Posting -->
+<div class="modal" id="modalRcJob" style="width:580px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="rcJobModalTitle">New Job Posting</div><button class="icon-btn" onclick="closeModal('modalRcJob')">✕</button></div>
+  <div class="modal-body">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Job Title *</label><input class="form-input" id="rcJobTitle" placeholder="e.g. Senior Sales Manager"></div>
+      <div class="form-group"><label class="form-label">Company / Client</label><input class="form-input" id="rcJobCompany" placeholder="Company name"></div>
+      <div class="form-group"><label class="form-label">Location</label><input class="form-input" id="rcJobLocation" placeholder="Dubai, UAE / Remote"></div>
+      <div class="form-group"><label class="form-label">Job Type</label>
+        <select class="form-input" id="rcJobType">
+          <option value="fulltime">Full-time</option><option value="parttime">Part-time</option>
+          <option value="contract">Contract</option><option value="temp">Temporary</option><option value="freelance">Freelance</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Category</label>
+        <select class="form-input" id="rcJobCategory">
+          <option>IT / Technology</option><option>Sales &amp; Marketing</option><option>Finance &amp; Accounting</option>
+          <option>HR &amp; Admin</option><option>Engineering</option><option>Healthcare</option>
+          <option>Hospitality</option><option>Logistics</option><option>Education</option><option>Other</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Currency</label>
+        <select class="form-input" id="rcJobCurrency"><option>AED</option><option>USD</option><option>EUR</option><option>GBP</option><option>SAR</option><option>INR</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Min Salary / Month</label><input class="form-input" type="number" id="rcJobMinSalary" placeholder="0"></div>
+      <div class="form-group"><label class="form-label">Max Salary / Month</label><input class="form-input" type="number" id="rcJobMaxSalary" placeholder="0"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Status</label>
+        <select class="form-input" id="rcJobStatus" style="max-width:200px">
+          <option value="open">Open</option><option value="on_hold">On Hold</option><option value="filled">Filled</option><option value="closed">Closed</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Min Age</label><input class="form-input" type="number" id="rcJobMinAge" min="16" placeholder="e.g. 21"></div>
+      <div class="form-group"><label class="form-label">Max Age</label><input class="form-input" type="number" id="rcJobMaxAge" placeholder="e.g. 45"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Min Experience (years)</label><input class="form-input" type="number" id="rcJobMinExp" min="0" placeholder="e.g. 3" style="max-width:200px"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Required Qualifications <span style="color:var(--muted);font-weight:400;font-size:11px">— AI uses this to screen candidates</span></label><textarea class="form-input" id="rcJobQualifications" rows="4" placeholder="One per line, e.g.:&#10;Bachelor's degree in Engineering&#10;Valid UAE driving license&#10;Fluent in Arabic and English&#10;No criminal record"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Other Requirements</label><textarea class="form-input" id="rcJobRequirements" rows="2" placeholder="Additional skills, tools, preferences…"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Job Description</label><textarea class="form-input" id="rcJobDescription" rows="3" placeholder="Role responsibilities and details…"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Internal Notes</label><textarea class="form-input" id="rcJobNotes" rows="2"></textarea></div>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="saveRcJobBtn" onclick="saveRcJob()">Save Job</button>
+    <span class="save-msg" id="saveRcJobMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalRcJob')">Cancel</button>
+  </div>
+</div>
+
+<!-- MODAL: RC Candidate -->
+<div class="modal" id="modalRcCand" style="width:580px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="rcCandModalTitle">New Candidate</div><button class="icon-btn" onclick="closeModal('modalRcCand')">✕</button></div>
+  <div class="modal-body">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="rcCandName" placeholder="Full name"></div>
+      <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="rcCandPhone" type="tel" placeholder="971501234567"></div>
+      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="rcCandEmail" type="email" placeholder="email@example.com"></div>
+      <div class="form-group"><label class="form-label">Role Applied For</label><input class="form-input" id="rcCandRole" placeholder="e.g. Sales Manager"></div>
+      <div class="form-group"><label class="form-label">Years of Experience</label><input class="form-input" type="number" id="rcCandYearsExp" min="0" placeholder="3"></div>
+      <div class="form-group"><label class="form-label">Age</label><input class="form-input" type="number" id="rcCandAge" min="16" max="80" placeholder="e.g. 28"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Applying For Job</label><select class="form-input" id="rcCandJobId"><option value="">— Select Job (for AI screening) —</option></select></div>
+      <div class="form-group"><label class="form-label">Source</label>
+        <select class="form-input" id="rcCandSource">
+          <option value="whatsapp">WhatsApp</option><option value="referral">Referral</option><option value="walk-in">Walk-in</option>
+          <option value="portal">Job Portal</option><option value="linkedin">LinkedIn</option><option value="other">Other</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Currency</label>
+        <select class="form-input" id="rcCandCurrency"><option>AED</option><option>USD</option><option>EUR</option><option>GBP</option><option>SAR</option><option>INR</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Current Salary / Month</label><input class="form-input" type="number" id="rcCandCurrentSalary" placeholder="0"></div>
+      <div class="form-group"><label class="form-label">Expected Salary / Month</label><input class="form-input" type="number" id="rcCandExpectedSalary" placeholder="0"></div>
+      <div class="form-group"><label class="form-label">Stage</label>
+        <select class="form-input" id="rcCandStatus">
+          <option value="new">New</option><option value="screening">Screening</option>
+          <option value="interview_scheduled">Interview Scheduled</option><option value="interview_done">Interviewed</option>
+          <option value="offer_sent">Offer Sent</option><option value="placed">Placed</option>
+          <option value="rejected">Rejected</option><option value="withdrawn">Withdrawn</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Interview Date</label><input class="form-input" type="date" id="rcCandInterviewDate"></div>
+      <div class="form-group"><label class="form-label">Assigned To</label><select class="form-input" id="rcCandOwner"><option value="">Unassigned</option></select></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Skills (comma-separated)</label><input class="form-input" id="rcCandSkills" placeholder="Excel, CRM, Arabic, Sales, Driving License…"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Resume / Profile Notes</label><textarea class="form-input" id="rcCandResumeNotes" rows="3" placeholder="Key highlights from the resume or profile…"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Internal Notes</label><textarea class="form-input" id="rcCandNotes" rows="2" placeholder="Additional notes for your team…"></textarea></div>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="saveRcCandBtn" onclick="saveRcCandidate()">Save Candidate</button>
+    <span class="save-msg" id="saveRcCandMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalRcCand')">Cancel</button>
+  </div>
+</div>
+
+<!-- MODAL: RC Candidate Detail -->
+<div class="modal" id="modalRcCandDetail" style="max-width:560px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd">
+    <div style="flex:1;min-width:0">
+      <div class="modal-title" id="rcCandDetailName">—</div>
+      <div style="font-size:11px;color:var(--muted);font-family:var(--mono)" id="rcCandDetailSub">—</div>
+    </div>
+    <button class="icon-btn" onclick="closeModal('modalRcCandDetail')">✕</button>
+  </div>
+  <div class="modal-body" id="rcCandDetailBody"></div>
+</div>
+
+<!-- MODAL: RC Placement -->
+<div class="modal" id="modalRcPlacement" style="width:540px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="rcPlacementModalTitle">New Placement</div><button class="icon-btn" onclick="closeModal('modalRcPlacement')">✕</button></div>
+  <div class="modal-body">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Candidate Name *</label><input class="form-input" id="rcPlacementCandName" placeholder="Full name"></div>
+      <div class="form-group"><label class="form-label">Candidate Phone</label><input class="form-input" id="rcPlacementCandPhone" type="tel" placeholder="971501234567"></div>
+      <div class="form-group"><label class="form-label">Job Title</label><input class="form-input" id="rcPlacementJobTitle" placeholder="Position placed into"></div>
+      <div class="form-group"><label class="form-label">Client Company</label><input class="form-input" id="rcPlacementCompany" placeholder="Employer name"></div>
+      <div class="form-group"><label class="form-label">Placement Date</label><input class="form-input" type="date" id="rcPlacementDate"></div>
+      <div class="form-group"><label class="form-label">Status</label>
+        <select class="form-input" id="rcPlacementStatus">
+          <option value="pending">Pending</option><option value="confirmed">Confirmed</option>
+          <option value="invoiced">Invoiced</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Fee Type</label>
+        <select class="form-input" id="rcPlacementFeeType">
+          <option value="fixed">Fixed Amount</option><option value="percentage">% of Annual Salary</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Currency</label>
+        <select class="form-input" id="rcPlacementCurrency"><option>AED</option><option>USD</option><option>EUR</option><option>GBP</option><option>SAR</option><option>INR</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Fee Amount</label><input class="form-input" type="number" id="rcPlacementFee" placeholder="0"></div>
+      <div class="form-group"><label class="form-label">Percentage (%)</label><input class="form-input" type="number" id="rcPlacementPercentage" placeholder="e.g. 10" min="0" max="100"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="rcPlacementNotes" rows="2"></textarea></div>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="saveRcPlacementBtn" onclick="saveRcPlacement()">Save Placement</button>
+    <span class="save-msg" id="saveRcPlacementMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalRcPlacement')">Cancel</button>
+  </div>
+</div>
+
 <script>
 'use strict';
 
@@ -1493,6 +1708,7 @@ function navigate(page){
   if(page==='leads') renderLeadsList();
   if(page==='travel') renderTravel();
   if(page==='agency') renderAgency();
+  if(page==='recruit') renderRecruit();
   if(page==='settings') populateSettings();
 }
 
@@ -1513,8 +1729,10 @@ function showApp(){
   $id('app').classList.add('show');
   $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
   taMergeLocal();
+  rcMergeLocal();
   applyTheme(clientRecord.industry||'general');
   updateAgencyTabVisibility();
+  updateRecruitTabVisibility();
   loadAll();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
@@ -2123,6 +2341,8 @@ function populateSettings(){
   renderStages(stages);
   // travel agency
   initTaSettings();
+  // recruitment
+  initRcSettings();
 }
 
 /* ── SERVICES ── */
@@ -4281,6 +4501,737 @@ async function sendItinViaWa(id){
     alert('✓ Itinerary sent via WhatsApp');
   }catch(e){alert('Error: '+e.message);}
 }
+
+/* ── RECRUITMENT & CONSULTANCY MODULE ── */
+let _rcPage='dashboard';
+let _rcJobs=[],_rcCandidates=[],_rcPlacements=[];
+let _rcLoaded=false;
+let _editJobId=null,_editCandId=null,_editPlacementId=null;
+
+function rcTablesReady(){try{const ids=JSON.parse(clientRecord?.recruit_table_ids||'{}');return !!(ids.jobs&&ids.candidates&&ids.placements);}catch(e){return false;}}
+
+async function rcEnsureColumns(){
+  if(!rcTablesReady())return;
+  const extraJob=[{column_name:'min_age',title:'min_age',uidt:'Number'},{column_name:'max_age',title:'max_age',uidt:'Number'},
+    {column_name:'min_experience',title:'min_experience',uidt:'Number'},{column_name:'required_qualifications',title:'required_qualifications',uidt:'LongText'}];
+  const extraCand=[{column_name:'age',title:'age',uidt:'Number'},{column_name:'job_id',title:'job_id',uidt:'SingleLineText'},
+    {column_name:'qualification_status',title:'qualification_status',uidt:'SingleLineText'},{column_name:'screening_notes',title:'screening_notes',uidt:'LongText'}];
+  const tryAdd=async(tableId,cols)=>{
+    try{
+      const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${tableId}`);
+      const existing=(info.columns||[]).map(c=>c.title);
+      for(const f of cols){if(!existing.includes(f.title))await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${tableId}/fields`,f).catch(()=>{});}
+    }catch(e){}
+  };
+  await Promise.all([tryAdd(rcTableId('jobs'),extraJob),tryAdd(rcTableId('candidates'),extraCand)]);
+}
+function rcTableId(key){try{return JSON.parse(clientRecord?.recruit_table_ids||'{}')[key]||null;}catch(e){return null;}}
+
+function rcSaveLocal(key,val){try{const k='lv_rc_'+clientId;const c=JSON.parse(localStorage.getItem(k)||'{}');c[key]=val;localStorage.setItem(k,JSON.stringify(c));}catch(e){}}
+function rcLoadLocal(){try{return JSON.parse(localStorage.getItem('lv_rc_'+clientId)||'{}');}catch(e){return{};}}
+function rcMergeLocal(){const loc=rcLoadLocal();if(loc.recruit_enabled&&!clientRecord.recruit_enabled)clientRecord.recruit_enabled=loc.recruit_enabled;if(loc.recruit_table_ids&&!clientRecord.recruit_table_ids)clientRecord.recruit_table_ids=loc.recruit_table_ids;}
+
+function updateRecruitTabVisibility(){
+  const enabled=(clientRecord.recruit_enabled==='Yes');
+  [$id('dnRecruitTab'),$id('bnRecruitTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+}
+
+async function renderRecruit(){
+  const el=$id('recruitContent');
+  if(!rcTablesReady()){el.innerHTML=renderRcSetupNeeded();document.querySelectorAll('.rc-tab').forEach(t=>t.classList.remove('active'));return;}
+  if(!_rcLoaded){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';await rcLoad();}
+  renderRcSubPage(_rcPage);
+}
+
+async function rcLoad(){
+  rcEnsureColumns();
+  const [jobs,candidates,placements]=await Promise.all([
+    ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId('jobs')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
+    ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId('candidates')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
+    ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId('placements')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
+  ]);
+  _rcJobs=jobs.list||[];
+  _rcCandidates=candidates.list||[];
+  _rcPlacements=placements.list||[];
+  _rcLoaded=true;
+}
+
+async function rcCreate(key,body){return ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId(key)}/records`,body);}
+async function rcUpdate(key,id,body){return ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId(key)}/records`,{Id:id,...body});}
+async function rcDelete(key,id){
+  const r=await fetch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId(key)}/records`,{method:'DELETE',headers:{'xc-token':CONFIG.NOCODB_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({Id:id})});
+  if(!r.ok)throw new Error('HTTP '+r.status);
+}
+
+function renderRcSubPage(page){
+  _rcPage=page;
+  document.querySelectorAll('.rc-tab').forEach(t=>t.classList.toggle('active',t.dataset.rc===page));
+  switch(page){
+    case'dashboard':renderRcDashboard();break;
+    case'jobs':renderRcJobs();break;
+    case'candidates':renderRcCandidates();break;
+    case'placements':renderRcPlacements();break;
+    case'pipeline':renderRcPipeline();break;
+  }
+}
+
+document.addEventListener('click',e=>{
+  const t=e.target.closest('.rc-tab');
+  if(t&&t.dataset.rc)renderRcSubPage(t.dataset.rc);
+});
+
+function renderRcSetupNeeded(){
+  return`<div style="text-align:center;padding:60px 24px;max-width:480px;margin:0 auto">
+    <div style="font-size:52px;margin-bottom:16px">💼</div>
+    <div style="font-family:var(--disp);font-size:20px;font-weight:700;margin-bottom:8px">Set Up Recruitment Tables</div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:24px;line-height:1.7">Create the NocoDB tables for Jobs, Candidates, and Placements. This only takes a few seconds.</div>
+    <button class="btn btn-primary" id="rcSetupBtn" onclick="rcSetupTables()" style="padding:12px 28px;font-size:14px">🚀 Create Tables Now</button>
+    <span class="save-msg" id="rcSetupMsg" style="display:block;margin-top:12px;min-height:18px"></span>
+  </div>`;
+}
+
+async function rcSetupTables(){
+  const btn=$id('rcSetupBtn'),msg=$id('rcSetupMsg');
+  if(!btn)return;
+  btn.disabled=true;msg.textContent='Creating tables…';msg.className='save-msg';
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const baseId=info.base_id;
+    if(!baseId)throw new Error('Could not determine base_id');
+
+    const existingCols=(info.columns||[]).map(c=>c.title);
+    for(const f of [{column_name:'recruit_table_ids',title:'recruit_table_ids',uidt:'LongText'},{column_name:'recruit_enabled',title:'recruit_enabled',uidt:'SingleLineText'}]){
+      if(!existingCols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
+    }
+
+    const tableDefs=[
+      {key:'jobs',title:`RC_Jobs_${clientId}`,columns:[
+        {column_name:'title',title:'title',uidt:'SingleLineText'},{column_name:'company',title:'company',uidt:'SingleLineText'},
+        {column_name:'location',title:'location',uidt:'SingleLineText'},{column_name:'job_type',title:'job_type',uidt:'SingleLineText'},
+        {column_name:'category',title:'category',uidt:'SingleLineText'},{column_name:'min_salary',title:'min_salary',uidt:'Number'},
+        {column_name:'max_salary',title:'max_salary',uidt:'Number'},{column_name:'currency',title:'currency',uidt:'SingleLineText'},
+        {column_name:'status',title:'status',uidt:'SingleLineText'},{column_name:'min_age',title:'min_age',uidt:'Number'},
+        {column_name:'max_age',title:'max_age',uidt:'Number'},{column_name:'min_experience',title:'min_experience',uidt:'Number'},
+        {column_name:'required_qualifications',title:'required_qualifications',uidt:'LongText'},
+        {column_name:'requirements',title:'requirements',uidt:'LongText'},
+        {column_name:'description',title:'description',uidt:'LongText'},{column_name:'notes',title:'notes',uidt:'LongText'},
+        {column_name:'created_at',title:'created_at',uidt:'SingleLineText'},
+      ]},
+      {key:'candidates',title:`RC_Candidates_${clientId}`,columns:[
+        {column_name:'name',title:'name',uidt:'SingleLineText'},{column_name:'phone',title:'phone',uidt:'SingleLineText'},
+        {column_name:'email',title:'email',uidt:'SingleLineText'},{column_name:'role_applied',title:'role_applied',uidt:'SingleLineText'},
+        {column_name:'years_experience',title:'years_experience',uidt:'Number'},{column_name:'skills',title:'skills',uidt:'LongText'},
+        {column_name:'current_salary',title:'current_salary',uidt:'Number'},{column_name:'expected_salary',title:'expected_salary',uidt:'Number'},
+        {column_name:'age',title:'age',uidt:'Number'},{column_name:'job_id',title:'job_id',uidt:'SingleLineText'},
+        {column_name:'currency',title:'currency',uidt:'SingleLineText'},{column_name:'status',title:'status',uidt:'SingleLineText'},
+        {column_name:'source',title:'source',uidt:'SingleLineText'},{column_name:'owner',title:'owner',uidt:'SingleLineText'},
+        {column_name:'qualification_status',title:'qualification_status',uidt:'SingleLineText'},
+        {column_name:'screening_notes',title:'screening_notes',uidt:'LongText'},
+        {column_name:'notes',title:'notes',uidt:'LongText'},{column_name:'resume_notes',title:'resume_notes',uidt:'LongText'},
+        {column_name:'interview_date',title:'interview_date',uidt:'SingleLineText'},{column_name:'created_at',title:'created_at',uidt:'SingleLineText'},
+      ]},
+      {key:'placements',title:`RC_Placements_${clientId}`,columns:[
+        {column_name:'candidate_name',title:'candidate_name',uidt:'SingleLineText'},{column_name:'candidate_phone',title:'candidate_phone',uidt:'SingleLineText'},
+        {column_name:'job_title',title:'job_title',uidt:'SingleLineText'},{column_name:'client_company',title:'client_company',uidt:'SingleLineText'},
+        {column_name:'placement_date',title:'placement_date',uidt:'SingleLineText'},{column_name:'fee_amount',title:'fee_amount',uidt:'Number'},
+        {column_name:'currency',title:'currency',uidt:'SingleLineText'},{column_name:'fee_type',title:'fee_type',uidt:'SingleLineText'},
+        {column_name:'percentage',title:'percentage',uidt:'Number'},{column_name:'status',title:'status',uidt:'SingleLineText'},
+        {column_name:'notes',title:'notes',uidt:'LongText'},{column_name:'created_at',title:'created_at',uidt:'SingleLineText'},
+      ]},
+    ];
+
+    const tableIds={};
+    let existingTables=[];
+    try{const tablesRes=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`);existingTables=tablesRes.list||[];}catch(e){}
+
+    for(const def of tableDefs){
+      msg.textContent=`Creating ${def.key} table…`;
+      const existing=existingTables.find(t=>t.title===def.title);
+      if(existing){tableIds[def.key]=existing.id;continue;}
+      const r=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`,{title:def.title,columns:def.columns});
+      if(!r.id)throw new Error(`Failed to create ${def.title}`);
+      tableIds[def.key]=r.id;
+    }
+
+    const tableIdsJson=JSON.stringify(tableIds);
+    rcSaveLocal('recruit_table_ids',tableIdsJson);
+    clientRecord.recruit_table_ids=tableIdsJson;
+    await patchClient({recruit_table_ids:tableIdsJson}).catch(()=>{});
+    msg.textContent='✓ Tables created! Loading…';
+    await rcLoad();
+    renderRcSubPage(_rcPage);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';btn.disabled=false;}
+}
+
+/* ── RC: DASHBOARD ── */
+function renderRcDashboard(){
+  const el=$id('recruitContent');
+  const openJobs=_rcJobs.filter(j=>j.status==='open').length;
+  const activeCands=_rcCandidates.filter(c=>!['placed','rejected','withdrawn'].includes(c.status)).length;
+  const placed=_rcCandidates.filter(c=>c.status==='placed').length;
+  const paidRevenue=_rcPlacements.filter(p=>p.status==='paid').reduce((s,p)=>s+(parseFloat(p.fee_amount)||0),0);
+  const currency=_rcPlacements.find(p=>p.currency)?.currency||'AED';
+
+  const stageOrder=['new','screening','interview_scheduled','interview_done','offer_sent','placed'];
+  const stageLabels={new:'New',screening:'Screening',interview_scheduled:'Interview',interview_done:'Interviewed',offer_sent:'Offer Sent',placed:'Placed'};
+  const maxCount=Math.max(1,...stageOrder.map(s=>_rcCandidates.filter(c=>c.status===s).length));
+  const funnelRows=stageOrder.map(s=>{
+    const ct=_rcCandidates.filter(c=>c.status===s).length;
+    return`<div class="f-row"><div class="f-name">${stageLabels[s]}</div><div class="f-wrap"><div class="f-bar" style="width:${Math.round(ct/maxCount*100)}%;background:#2563EB"></div></div><div class="f-ct">${ct}</div></div>`;
+  }).join('');
+
+  const recentCands=_rcCandidates.slice(0,8);
+  const recentRows=recentCands.length
+    ?recentCands.map(c=>`<div class="cand-row" onclick="openCandidateDetail('${c.Id}')">
+        <div class="cand-avatar">${(c.name||'?').charAt(0).toUpperCase()}</div>
+        <div class="cand-body"><div class="cand-name">${esc(c.name||'Unknown')}</div><div class="cand-sub">${esc(c.role_applied||'—')} · ${esc(c.source||'—')}</div></div>
+        <span class="${rcCandStatusClass(c.status)}">${rcCandStatusLabel(c.status)}</span>
+      </div>`).join('')
+    :'<div class="empty-state"><div class="ei">👥</div>No candidates yet.</div>';
+
+  const upcoming=_rcCandidates.filter(c=>c.status==='interview_scheduled'&&(c.interview_date||'')>=TODAY).sort((a,b)=>(a.interview_date||'').localeCompare(b.interview_date||'')).slice(0,6);
+  const interviewRows=upcoming.length
+    ?upcoming.map(c=>`<div class="cand-row" onclick="openCandidateDetail('${c.Id}')">
+        <div class="cand-avatar">${(c.name||'?').charAt(0).toUpperCase()}</div>
+        <div class="cand-body"><div class="cand-name">${esc(c.name||'Unknown')}</div><div class="cand-sub">${esc(c.role_applied||'—')}</div></div>
+        <span style="font-family:var(--mono);font-size:11px;color:#2563EB;font-weight:700;white-space:nowrap">${fmtDate(c.interview_date)}</span>
+      </div>`).join('')
+    :'<div style="color:var(--muted);font-size:13px;padding:12px 16px">No upcoming interviews.</div>';
+
+  el.innerHTML=`
+    <div class="recruit-hero">
+      <div class="recruit-hero-title">💼 Recruitment &amp; Consultancy Hub</div>
+      <div class="recruit-hero-sub">Manage jobs, candidates, and placements from one place.</div>
+      <div class="recruit-stat-row">
+        <div class="recruit-stat"><div class="recruit-stat-val">${openJobs}</div><div class="recruit-stat-lbl">Open Jobs</div></div>
+        <div class="recruit-stat"><div class="recruit-stat-val">${activeCands}</div><div class="recruit-stat-lbl">Active Candidates</div></div>
+        <div class="recruit-stat"><div class="recruit-stat-val">${placed}</div><div class="recruit-stat-lbl">Placed</div></div>
+        <div class="recruit-stat"><div class="recruit-stat-val">${currency} ${paidRevenue.toLocaleString()}</div><div class="recruit-stat-lbl">Fees Collected</div></div>
+      </div>
+    </div>
+    <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr;margin-bottom:14px">
+      <div class="card"><div class="card-title">🔄 Candidate Funnel</div>${funnelRows||'<div style="color:var(--muted);font-size:13px">No candidates yet.</div>'}</div>
+      <div class="card"><div class="card-title">📅 Upcoming Interviews</div>${interviewRows}</div>
+    </div>
+    ${(()=>{
+      const screened=_rcCandidates.filter(c=>c.qualification_status);
+      const passed=screened.filter(c=>c.qualification_status==='pass').length;
+      const failed=screened.filter(c=>c.qualification_status==='fail').length;
+      const pending=_rcCandidates.filter(c=>c.job_id&&!c.qualification_status).length;
+      const passRate=screened.length?Math.round(passed/screened.length*100):0;
+      const jobBreakdown=_rcJobs.filter(j=>j.required_qualifications||j.min_age||j.min_experience).map(j=>{
+        const jCands=_rcCandidates.filter(c=>String(c.job_id)===String(j.Id)&&c.qualification_status);
+        const jPass=jCands.filter(c=>c.qualification_status==='pass').length;
+        const jFail=jCands.filter(c=>c.qualification_status==='fail').length;
+        return jCands.length?`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+          <div style="flex:1;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.title||'Untitled')}</div>
+          <span style="background:#DCFCE7;color:#166534;font-size:11px;font-weight:700;padding:3px 8px;border-radius:10px">✓ ${jPass}</span>
+          <span style="background:#FEE2E2;color:#991B1B;font-size:11px;font-weight:700;padding:3px 8px;border-radius:10px">✗ ${jFail}</span>
+        </div>`:null;
+      }).filter(Boolean);
+      if(!screened.length&&!pending)return'';
+      return`<div class="card" style="margin-bottom:14px">
+        <div class="card-title">🎯 Qualification Report</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+          <div style="background:#EFF6FF;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#1D4ED8;font-family:var(--disp)">${screened.length}</div>
+            <div style="font-size:11px;color:#3B82F6;font-weight:600;margin-top:2px">Screened</div>
+          </div>
+          <div style="background:#DCFCE7;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#166534;font-family:var(--disp)">${passed}</div>
+            <div style="font-size:11px;color:#16A34A;font-weight:600;margin-top:2px">Qualified</div>
+          </div>
+          <div style="background:#FEE2E2;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#991B1B;font-family:var(--disp)">${failed}</div>
+            <div style="font-size:11px;color:#DC2626;font-weight:600;margin-top:2px">Not Qualified</div>
+          </div>
+          <div style="background:#FEF3C7;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#92400E;font-family:var(--disp)">${pending}</div>
+            <div style="font-size:11px;color:#D97706;font-weight:600;margin-top:2px">Awaiting Screen</div>
+          </div>
+        </div>
+        ${screened.length?`<div style="display:flex;align-items:center;gap:10px;margin-bottom:${jobBreakdown.length?'14px':'0'}">
+          <div style="flex:1;background:#E5E7EB;border-radius:99px;height:10px;overflow:hidden">
+            <div style="background:linear-gradient(90deg,#16A34A,#22C55E);height:100%;width:${passRate}%;border-radius:99px;transition:width .4s"></div>
+          </div>
+          <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:#166534;flex-shrink:0">${passRate}% pass rate</span>
+        </div>`:''}
+        ${jobBreakdown.length?`<div><div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Per Job Breakdown</div>${jobBreakdown.join('')}</div>`:''}
+      </div>`;
+    })()}
+    <div class="card"><div class="card-title">👥 Recent Candidates <button class="btn btn-primary btn-sm" onclick="renderRcSubPage('candidates')" style="margin-left:auto">View All</button></div>${recentRows}</div>`;
+}
+
+/* ── RC: JOBS ── */
+function rcJobStatusClass(s){
+  const m={open:'job-status-open',filled:'job-status-filled',closed:'job-status-closed',on_hold:'job-status-on_hold'};
+  return'badge '+(m[s]||'badge-new');
+}
+
+function renderRcJobs(filter=''){
+  const el=$id('recruitContent');
+  const jobs=filter?_rcJobs.filter(j=>j.status===filter):_rcJobs;
+  el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">📋 Job Postings <span style="color:var(--muted);font-size:13px;font-weight:500">(${_rcJobs.length})</span></div>
+      <select class="form-input" id="rcJobFilter" style="max-width:140px;padding:8px 10px" onchange="renderRcJobs(this.value)">
+        <option value=""${!filter?' selected':''}>All Status</option>
+        <option value="open"${filter==='open'?' selected':''}>Open</option>
+        <option value="filled"${filter==='filled'?' selected':''}>Filled</option>
+        <option value="on_hold"${filter==='on_hold'?' selected':''}>On Hold</option>
+        <option value="closed"${filter==='closed'?' selected':''}>Closed</option>
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="openAddJob()">+ Add Job</button>
+    </div>
+    ${jobs.length?jobs.map(j=>`
+      <div class="job-card" onclick="openEditJob('${j.Id}')">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+          <div style="flex:1;min-width:0">
+            <div class="job-title">${esc(j.title||'Untitled')}</div>
+            <div class="job-company">${esc(j.company||'—')}${j.location?' · '+esc(j.location):''}</div>
+            <div class="job-meta">
+              <span class="job-type-badge">${esc(j.job_type||'fulltime')}</span>
+              <span class="${rcJobStatusClass(j.status)}">${esc(j.status||'open')}</span>
+              ${j.category?`<span class="badge badge-new">${esc(j.category)}</span>`:''}
+              ${(j.min_salary||j.max_salary)?`<span class="job-salary">${j.currency||'AED'} ${(j.min_salary||0).toLocaleString()}${j.max_salary?' – '+parseInt(j.max_salary).toLocaleString():''}</span>`:''}
+            </div>
+          </div>
+          <button class="btn-ghost" onclick="event.stopPropagation();deleteJob('${j.Id}')">🗑</button>
+        </div>
+        ${j.requirements?`<div style="margin-top:8px;font-size:12px;color:var(--muted);line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${esc(j.requirements)}</div>`:''}
+      </div>`).join('')
+    :'<div class="empty-state"><div class="ei">📋</div>No job postings yet. Add your first job opening.</div>'}`;
+}
+
+function openAddJob(){
+  _editJobId=null;
+  ['rcJobTitle','rcJobCompany','rcJobLocation','rcJobRequirements','rcJobDescription','rcJobNotes','rcJobQualifications','rcJobMinAge','rcJobMaxAge','rcJobMinExp'].forEach(id=>{const el=$id(id);if(el)el.value='';});
+  $id('rcJobType').value='fulltime';$id('rcJobCategory').value='Other';
+  $id('rcJobCurrency').value='AED';$id('rcJobMinSalary').value='';$id('rcJobMaxSalary').value='';$id('rcJobStatus').value='open';
+  $id('rcJobModalTitle').textContent='New Job Posting';$id('saveRcJobMsg').textContent='';
+  openModal('modalRcJob');
+}
+
+function openEditJob(id){
+  const j=_rcJobs.find(x=>String(x.Id)===String(id));if(!j)return;
+  _editJobId=id;
+  $id('rcJobTitle').value=j.title||'';$id('rcJobCompany').value=j.company||'';$id('rcJobLocation').value=j.location||'';
+  $id('rcJobType').value=j.job_type||'fulltime';$id('rcJobCategory').value=j.category||'Other';
+  $id('rcJobMinSalary').value=j.min_salary||'';$id('rcJobMaxSalary').value=j.max_salary||'';
+  $id('rcJobCurrency').value=j.currency||'AED';$id('rcJobStatus').value=j.status||'open';
+  $id('rcJobMinAge').value=j.min_age||'';$id('rcJobMaxAge').value=j.max_age||'';
+  $id('rcJobMinExp').value=j.min_experience||'';$id('rcJobQualifications').value=j.required_qualifications||'';
+  $id('rcJobRequirements').value=j.requirements||'';$id('rcJobDescription').value=j.description||'';$id('rcJobNotes').value=j.notes||'';
+  $id('rcJobModalTitle').textContent='Edit Job Posting';$id('saveRcJobMsg').textContent='';
+  openModal('modalRcJob');
+}
+
+async function saveRcJob(){
+  const btn=$id('saveRcJobBtn'),msg=$id('saveRcJobMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const body={title:$id('rcJobTitle').value.trim(),company:$id('rcJobCompany').value.trim(),location:$id('rcJobLocation').value.trim(),
+    job_type:$id('rcJobType').value,category:$id('rcJobCategory').value,
+    min_salary:parseFloat($id('rcJobMinSalary').value)||0,max_salary:parseFloat($id('rcJobMaxSalary').value)||0,
+    currency:$id('rcJobCurrency').value,status:$id('rcJobStatus').value,
+    min_age:parseInt($id('rcJobMinAge').value)||0,max_age:parseInt($id('rcJobMaxAge').value)||0,
+    min_experience:parseInt($id('rcJobMinExp').value)||0,required_qualifications:$id('rcJobQualifications').value.trim(),
+    requirements:$id('rcJobRequirements').value.trim(),description:$id('rcJobDescription').value.trim(),
+    notes:$id('rcJobNotes').value.trim(),created_at:new Date().toISOString().slice(0,10)};
+  if(!body.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editJobId)await rcUpdate('jobs',_editJobId,body);else await rcCreate('jobs',body);
+    msg.textContent='✓ Saved';_rcLoaded=false;
+    setTimeout(async()=>{closeModal('modalRcJob');await rcLoad();renderRcSubPage('jobs');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteJob(id){
+  if(!confirm('Delete this job posting?'))return;
+  await rcDelete('jobs',id);_rcLoaded=false;await rcLoad();renderRcSubPage('jobs');
+}
+
+/* ── RC: CANDIDATES ── */
+function rcCandStatusClass(s){
+  const m={new:'cand-status-new',screening:'cand-status-screening',interview_scheduled:'cand-status-interview_scheduled',
+    interview_done:'cand-status-interview_done',offer_sent:'cand-status-offer_sent',placed:'cand-status-placed',
+    rejected:'cand-status-rejected',withdrawn:'cand-status-withdrawn'};
+  return'badge '+(m[s]||'badge-new');
+}
+function rcCandStatusLabel(s){
+  const m={new:'New',screening:'Screening',interview_scheduled:'Interview Scheduled',interview_done:'Interviewed',offer_sent:'Offer Sent',placed:'Placed ✓',rejected:'Rejected',withdrawn:'Withdrawn'};
+  return m[s]||s;
+}
+
+function renderRcCandidates(){
+  const el=$id('recruitContent');
+  el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">👥 Candidates <span style="color:var(--muted);font-size:13px;font-weight:500">(${_rcCandidates.length})</span></div>
+      <input class="search-input" id="rcCandSearch" type="text" placeholder="Search name, role, skills…" oninput="filterRcCandidates()" style="flex:0 0 180px;min-width:140px;padding:8px 12px">
+      <select class="form-input" id="rcCandFilter" style="max-width:160px;padding:8px 10px" onchange="filterRcCandidates()">
+        <option value="">All Stages</option>
+        <option value="new">New</option><option value="screening">Screening</option>
+        <option value="interview_scheduled">Interview Scheduled</option><option value="interview_done">Interviewed</option>
+        <option value="offer_sent">Offer Sent</option><option value="placed">Placed</option>
+        <option value="rejected">Rejected</option><option value="withdrawn">Withdrawn</option>
+      </select>
+      <select class="form-input" id="rcCandOwnerFilter" style="max-width:130px;padding:8px 10px" onchange="filterRcCandidates()">
+        <option value="">All Owners</option>
+        ${getAgents().map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('')}
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="openAddCandidate()">+ Add Candidate</button>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden"><div id="rcCandList"></div></div>`;
+  renderRcCandList(_rcCandidates);
+}
+
+function filterRcCandidates(){
+  const q=($id('rcCandSearch')?.value||'').toLowerCase();
+  const sf=$id('rcCandFilter')?.value||'';
+  const of=$id('rcCandOwnerFilter')?.value||'';
+  const filtered=_rcCandidates.filter(c=>{
+    if(q&&!(c.name||'').toLowerCase().includes(q)&&!(c.role_applied||'').toLowerCase().includes(q)&&!(c.skills||'').toLowerCase().includes(q))return false;
+    if(sf&&c.status!==sf)return false;
+    if(of&&(c.owner||'')!==of)return false;
+    return true;
+  });
+  renderRcCandList(filtered);
+}
+
+function renderRcCandList(cands){
+  const el=$id('rcCandList');if(!el)return;
+  if(!cands.length){el.innerHTML='<div class="empty-state"><div class="ei">👥</div>No candidates match your filter.</div>';return;}
+  el.innerHTML=cands.map(c=>`<div class="cand-row" onclick="openCandidateDetail('${c.Id}')">
+    <div class="cand-avatar">${(c.name||'?').charAt(0).toUpperCase()}</div>
+    <div class="cand-body">
+      <div class="cand-name">${esc(c.name||'Unknown')}</div>
+      <div class="cand-sub">${esc(c.role_applied||'—')} · ${c.years_experience?c.years_experience+' yrs exp':'—'} · ${esc(c.source||'—')}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">
+      <span class="${rcCandStatusClass(c.status)}">${rcCandStatusLabel(c.status)}</span>
+      ${c.qualification_status==='pass'?`<span style="background:#DCFCE7;color:#166534;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✓ Qualified</span>`:c.qualification_status==='fail'?`<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✗ Failed</span>`:''}
+      ${c.owner?`<span style="font-size:10px;color:var(--muted)">${esc(c.owner)}</span>`:''}
+      ${c.expected_salary?`<span style="font-family:var(--mono);font-size:10px;color:#2563EB;font-weight:600">${c.currency||'AED'} ${parseInt(c.expected_salary).toLocaleString()}</span>`:''}
+    </div>
+  </div>`).join('');
+}
+
+let _currentCandId=null;
+function openCandidateDetail(id){
+  const c=_rcCandidates.find(x=>String(x.Id)===String(id));if(!c)return;
+  _currentCandId=id;
+  const skills=(c.skills||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const phone=(c.phone||'').replace(/[^0-9]/g,'');
+  $id('rcCandDetailName').textContent=c.name||'Unknown';
+  $id('rcCandDetailSub').textContent=(c.role_applied||'—')+(c.owner?' · '+c.owner:'');
+  $id('rcCandDetailBody').innerHTML=`
+    <div class="action-row">
+      ${phone?`<a class="action-btn" href="tel:+${phone}"><span class="ab-icon">📞</span>Call</a>
+               <a class="action-btn" href="https://wa.me/${phone}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>`:''}
+      <button class="action-btn" onclick="openEditCandidate('${c.Id}');closeModal('modalRcCandDetail')"><span class="ab-icon">✏️</span>Edit</button>
+      <button class="action-btn" onclick="deleteCandidate('${c.Id}')"><span class="ab-icon">🗑</span>Remove</button>
+    </div>
+    ${(()=>{
+      const qs=c.qualification_status||'';
+      const job=_rcJobs.find(j=>String(j.Id)===String(c.job_id));
+      const hasQualCriteria=job&&(job.required_qualifications||job.min_age||job.min_experience);
+      const qsBg={pass:'#DCFCE7',fail:'#FEE2E2',pending:'#FEF3C7'}[qs]||'#F1F5F9';
+      const qsColor={pass:'#166534',fail:'#991B1B',pending:'#92400E'}[qs]||'#475569';
+      const qsLabel={pass:'✓ Qualified',fail:'✗ Not Qualified',pending:'⏳ Pending Review'}[qs]||'Not Screened';
+      return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        ${qs?`<span style="background:${qsBg};color:${qsColor};font-weight:700;font-size:12px;padding:5px 12px;border-radius:20px;font-family:var(--disp)">${qsLabel}</span>`:''}
+        ${hasQualCriteria?`<button class="btn btn-primary btn-sm" id="aiScreenBtn_${c.Id}" onclick="aiScreenCandidate('${c.Id}')">🤖 AI Screen</button>`:''}
+        ${hasQualCriteria&&!qs?'<span style="font-size:11px;color:var(--muted)">Not yet screened against job criteria</span>':''}
+      </div>
+      ${c.screening_notes?`<div style="background:#F8FAFC;border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px;font-size:12.5px;line-height:1.6;color:var(--ink)"><div style="font-weight:600;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">AI Screening Notes</div>${esc(c.screening_notes).replace(/\n/g,'<br>')}</div>`:''}`;
+    })()}
+    <div class="profile-card">
+      <div class="pc-title">Candidate Profile</div>
+      <div class="pc-row"><span class="pc-key">Phone</span><span class="pc-val">${esc(c.phone||'—')}</span></div>
+      <div class="pc-row"><span class="pc-key">Email</span><span class="pc-val">${esc(c.email||'—')}</span></div>
+      <div class="pc-row"><span class="pc-key">Role Applied</span><span class="pc-val">${esc(c.role_applied||'—')}</span></div>
+      <div class="pc-row"><span class="pc-key">Age</span><span class="pc-val">${c.age?c.age+' years':'—'}</span></div>
+      <div class="pc-row"><span class="pc-key">Experience</span><span class="pc-val">${c.years_experience?c.years_experience+' years':'—'}</span></div>
+      <div class="pc-row"><span class="pc-key">Source</span><span class="pc-val">${esc(c.source||'—')}</span></div>
+      <div class="pc-row"><span class="pc-key">Current Salary</span><span class="pc-val">${c.current_salary?(c.currency||'AED')+' '+parseInt(c.current_salary).toLocaleString():'—'}</span></div>
+      <div class="pc-row"><span class="pc-key">Expected Salary</span><span class="pc-val">${c.expected_salary?(c.currency||'AED')+' '+parseInt(c.expected_salary).toLocaleString():'—'}</span></div>
+      ${c.job_id&&_rcJobs.find(j=>String(j.Id)===String(c.job_id))?`<div class="pc-row"><span class="pc-key">Job Applied</span><span class="pc-val">${esc((_rcJobs.find(j=>String(j.Id)===String(c.job_id))||{}).title||'—')}</span></div>`:''}
+    </div>
+    <div class="sec-hd">Stage</div>
+    <select class="form-input" style="max-width:240px" onchange="patchRcCandidate('${c.Id}','status',this.value)">
+      ${['new','screening','interview_scheduled','interview_done','offer_sent','placed','rejected','withdrawn'].map(s=>`<option value="${s}"${c.status===s?' selected':''}>${rcCandStatusLabel(s)}</option>`).join('')}
+    </select>
+    ${c.interview_date?`<div style="margin-top:10px"><span class="reminder-badge" style="background:#DBEAFE;border-color:#93C5FD;color:#1E40AF">📅 Interview: ${fmtDate(c.interview_date)}</span></div>`:''}
+    ${skills.length?`<div class="sec-hd">Skills</div><div class="tags-row">${skills.map(s=>`<span class="tag">${esc(s)}</span>`).join('')}</div>`:''}
+    ${c.resume_notes?`<div class="sec-hd">Resume Notes</div><div style="font-size:13px;line-height:1.6">${esc(c.resume_notes).replace(/\n/g,'<br>')}</div>`:''}
+    ${c.notes?`<div class="sec-hd">Notes</div><div style="font-size:13px;line-height:1.6">${esc(c.notes).replace(/\n/g,'<br>')}</div>`:''}`;
+  openModal('modalRcCandDetail');
+}
+
+async function patchRcCandidate(id,field,value){
+  const c=_rcCandidates.find(x=>String(x.Id)===String(id));
+  if(c)c[field]=value;
+  await rcUpdate('candidates',id,{[field]:value});
+}
+
+async function aiScreenCandidate(id){
+  const c=_rcCandidates.find(x=>String(x.Id)===String(id));if(!c)return;
+  const job=_rcJobs.find(j=>String(j.Id)===String(c.job_id));
+  if(!job){alert('No job linked. Edit the candidate and select the job they are applying for.');return;}
+  const key=clientRecord?.openrouter_key||'';
+  if(!key){alert('No OpenRouter API key set in settings. Please add it in Settings → Bot Config.');return;}
+  const btn=$id('aiScreenBtn_'+id);
+  if(btn){btn.disabled=true;btn.textContent='🤖 Screening…';}
+  const criteria=[];
+  if(job.min_age)criteria.push(`Minimum age: ${job.min_age}`);
+  if(job.max_age)criteria.push(`Maximum age: ${job.max_age}`);
+  if(job.min_experience)criteria.push(`Minimum experience: ${job.min_experience} years`);
+  if(job.required_qualifications)criteria.push(...job.required_qualifications.split('\n').map(l=>l.trim()).filter(Boolean));
+  const prompt=`You are a recruitment screening assistant. Evaluate the candidate against the job requirements and give a clear PASS or FAIL verdict.
+
+JOB: ${job.title||'Untitled'}${job.company?' at '+job.company:''}
+REQUIRED CRITERIA:
+${criteria.map((l,i)=>`${i+1}. ${l}`).join('\n')||'(No specific criteria defined)'}
+
+CANDIDATE PROFILE:
+- Name: ${c.name||'—'}
+- Age: ${c.age?c.age+' years':'Not provided'}
+- Experience: ${c.years_experience?c.years_experience+' years':'Not provided'}
+- Role Applied: ${c.role_applied||'—'}
+- Skills: ${c.skills||'—'}
+- Resume Notes: ${c.resume_notes||'—'}
+
+Respond in this exact JSON format:
+{"result":"pass","notes":"Brief bullet-point reasoning, one per criterion. State clearly which criteria are met, not met, or unknown due to missing info."}
+or
+{"result":"fail","notes":"Brief bullet-point reasoning..."}`;
+  try{
+    const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',
+      headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'},
+      body:JSON.stringify({model:clientRecord.model||'google/gemini-2.5-flash',temperature:0.1,
+        messages:[{role:'user',content:prompt}]})});
+    const data=await res.json();
+    const raw=data.choices?.[0]?.message?.content||'';
+    let result='pending',notes='Could not parse AI response.';
+    try{
+      const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+      if(m){const p=JSON.parse(m[0]);result=p.result==='pass'?'pass':'fail';notes=p.notes||'';}
+    }catch(e){}
+    const c2=_rcCandidates.find(x=>String(x.Id)===String(id));
+    if(c2){c2.qualification_status=result;c2.screening_notes=notes;}
+    await rcUpdate('candidates',id,{qualification_status:result,screening_notes:notes});
+    openCandidateDetail(id);
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent='🤖 AI Screen';}
+    alert('Screening failed: '+e.message);
+  }
+}
+
+function _rcPopulateJobDropdown(selectedId=''){
+  const el=$id('rcCandJobId');if(!el)return;
+  const openJobs=_rcJobs.filter(j=>j.status==='open'||j.status==='on_hold');
+  el.innerHTML='<option value="">— Select Job (for AI screening) —</option>'+openJobs.map(j=>`<option value="${j.Id}"${String(j.Id)===String(selectedId)?' selected':''}>${esc(j.title||'Untitled')}${j.company?' – '+esc(j.company):''}</option>`).join('');
+}
+
+function openAddCandidate(){
+  _editCandId=null;
+  ['rcCandName','rcCandPhone','rcCandEmail','rcCandRole','rcCandSkills','rcCandResumeNotes','rcCandNotes','rcCandInterviewDate'].forEach(id=>{const el=$id(id);if(el)el.value='';});
+  $id('rcCandYearsExp').value='';$id('rcCandAge').value='';$id('rcCandCurrentSalary').value='';$id('rcCandExpectedSalary').value='';
+  $id('rcCandCurrency').value='AED';$id('rcCandStatus').value='new';$id('rcCandSource').value='whatsapp';
+  $id('rcCandOwner').innerHTML='<option value="">Unassigned</option>'+getAgents().map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('');
+  _rcPopulateJobDropdown();
+  $id('rcCandModalTitle').textContent='New Candidate';$id('saveRcCandMsg').textContent='';
+  openModal('modalRcCand');
+}
+
+function openEditCandidate(id){
+  const c=_rcCandidates.find(x=>String(x.Id)===String(id));if(!c)return;
+  _editCandId=id;
+  $id('rcCandName').value=c.name||'';$id('rcCandPhone').value=c.phone||'';$id('rcCandEmail').value=c.email||'';
+  $id('rcCandRole').value=c.role_applied||'';$id('rcCandYearsExp').value=c.years_experience||'';
+  $id('rcCandAge').value=c.age||'';
+  $id('rcCandSkills').value=c.skills||'';$id('rcCandCurrentSalary').value=c.current_salary||'';
+  $id('rcCandExpectedSalary').value=c.expected_salary||'';$id('rcCandCurrency').value=c.currency||'AED';
+  $id('rcCandStatus').value=c.status||'new';$id('rcCandSource').value=c.source||'whatsapp';
+  $id('rcCandOwner').innerHTML='<option value="">Unassigned</option>'+getAgents().map(a=>`<option value="${esc(a)}"${a===c.owner?' selected':''}>${esc(a)}</option>`).join('');
+  $id('rcCandOwner').value=c.owner||'';$id('rcCandResumeNotes').value=c.resume_notes||'';
+  $id('rcCandNotes').value=c.notes||'';$id('rcCandInterviewDate').value=c.interview_date||'';
+  _rcPopulateJobDropdown(c.job_id||'');
+  $id('rcCandModalTitle').textContent='Edit Candidate';$id('saveRcCandMsg').textContent='';
+  openModal('modalRcCand');
+}
+
+async function saveRcCandidate(){
+  const btn=$id('saveRcCandBtn'),msg=$id('saveRcCandMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const body={name:$id('rcCandName').value.trim(),phone:$id('rcCandPhone').value.trim().replace(/[^0-9+]/g,''),
+    email:$id('rcCandEmail').value.trim(),role_applied:$id('rcCandRole').value.trim(),
+    years_experience:parseFloat($id('rcCandYearsExp').value)||0,age:parseInt($id('rcCandAge').value)||0,
+    job_id:$id('rcCandJobId').value||'',
+    skills:$id('rcCandSkills').value.trim(),
+    current_salary:parseFloat($id('rcCandCurrentSalary').value)||0,expected_salary:parseFloat($id('rcCandExpectedSalary').value)||0,
+    currency:$id('rcCandCurrency').value,status:$id('rcCandStatus').value,source:$id('rcCandSource').value,
+    owner:$id('rcCandOwner').value,resume_notes:$id('rcCandResumeNotes').value.trim(),notes:$id('rcCandNotes').value.trim(),
+    interview_date:$id('rcCandInterviewDate').value||null,created_at:new Date().toISOString().slice(0,10)};
+  if(!body.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editCandId)await rcUpdate('candidates',_editCandId,body);else await rcCreate('candidates',body);
+    msg.textContent='✓ Saved';_rcLoaded=false;
+    setTimeout(async()=>{closeModal('modalRcCand');await rcLoad();renderRcSubPage('candidates');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteCandidate(id){
+  if(!confirm('Remove this candidate?'))return;
+  closeModal('modalRcCandDetail');
+  await rcDelete('candidates',id);_rcLoaded=false;await rcLoad();renderRcSubPage('candidates');
+}
+
+/* ── RC: PLACEMENTS ── */
+function rcPlacementStatusClass(s){
+  const m={pending:'badge-warm',confirmed:'badge-active',invoiced:'badge-cold',paid:'badge-booked',cancelled:'badge-new'};
+  return'badge '+(m[s]||'badge-new');
+}
+
+function renderRcPlacements(){
+  const el=$id('recruitContent');
+  const paid=_rcPlacements.filter(p=>p.status==='paid').reduce((s,p)=>s+(parseFloat(p.fee_amount)||0),0);
+  const pending=_rcPlacements.filter(p=>p.status!=='paid'&&p.status!=='cancelled').reduce((s,p)=>s+(parseFloat(p.fee_amount)||0),0);
+  const currency=_rcPlacements.find(p=>p.currency)?.currency||'AED';
+  el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🏆 Placements &amp; Fees</div>
+      <button class="btn btn-primary btn-sm" onclick="openAddPlacement()">+ Add Placement</button>
+    </div>
+    <div class="row-grid g2" style="margin-bottom:14px">
+      <div class="stat" style="background:linear-gradient(135deg,#2563EB,#4F46E5)">
+        <div class="stat-lbl" style="color:rgba(255,255,255,.7)">Fees Collected</div>
+        <div class="stat-val" style="color:#fff;font-size:24px">${currency} ${paid.toLocaleString()}</div>
+        <div class="stat-sub" style="color:rgba(255,255,255,.6)">${_rcPlacements.filter(p=>p.status==='paid').length} paid placements</div>
+      </div>
+      <div class="stat">
+        <div class="stat-lbl">Pending Fees</div>
+        <div class="stat-val" style="font-size:24px">${currency} ${pending.toLocaleString()}</div>
+        <div class="stat-sub">${_rcPlacements.filter(p=>p.status!=='paid'&&p.status!=='cancelled').length} awaiting payment</div>
+      </div>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      ${_rcPlacements.length?_rcPlacements.map(p=>`
+        <div class="placement-row" onclick="openEditPlacement('${p.Id}')">
+          <div style="width:40px;height:40px;border-radius:10px;background:#EDE9FE;color:#6D28D9;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🏆</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.candidate_name||'—')}</div>
+            <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(p.job_title||'—')} · ${esc(p.client_company||'—')}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">
+            <span class="${rcPlacementStatusClass(p.status)}">${esc(p.status||'pending')}</span>
+            <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:#2563EB">${p.currency||'AED'} ${parseFloat(p.fee_amount||0).toLocaleString()}</span>
+            ${p.placement_date?`<span style="font-size:10px;color:var(--muted);font-family:var(--mono)">${fmtDate(p.placement_date)}</span>`:''}
+          </div>
+          <button class="btn-ghost" onclick="event.stopPropagation();deletePlacement('${p.Id}')">🗑</button>
+        </div>`).join('')
+      :'<div class="empty-state"><div class="ei">🏆</div>No placements yet. Add your first successful placement.</div>'}
+    </div>`;
+}
+
+function openAddPlacement(){
+  _editPlacementId=null;
+  ['rcPlacementCandName','rcPlacementCandPhone','rcPlacementJobTitle','rcPlacementCompany','rcPlacementNotes'].forEach(id=>{const el=$id(id);if(el)el.value='';});
+  $id('rcPlacementFee').value='';$id('rcPlacementPercentage').value='';
+  $id('rcPlacementCurrency').value='AED';$id('rcPlacementFeeType').value='fixed';
+  $id('rcPlacementStatus').value='pending';$id('rcPlacementDate').value=TODAY;
+  $id('rcPlacementModalTitle').textContent='New Placement';$id('saveRcPlacementMsg').textContent='';
+  openModal('modalRcPlacement');
+}
+
+function openEditPlacement(id){
+  const p=_rcPlacements.find(x=>String(x.Id)===String(id));if(!p)return;
+  _editPlacementId=id;
+  $id('rcPlacementCandName').value=p.candidate_name||'';$id('rcPlacementCandPhone').value=p.candidate_phone||'';
+  $id('rcPlacementJobTitle').value=p.job_title||'';$id('rcPlacementCompany').value=p.client_company||'';
+  $id('rcPlacementDate').value=p.placement_date||TODAY;$id('rcPlacementFee').value=p.fee_amount||'';
+  $id('rcPlacementCurrency').value=p.currency||'AED';$id('rcPlacementFeeType').value=p.fee_type||'fixed';
+  $id('rcPlacementPercentage').value=p.percentage||'';$id('rcPlacementStatus').value=p.status||'pending';
+  $id('rcPlacementNotes').value=p.notes||'';
+  $id('rcPlacementModalTitle').textContent='Edit Placement';$id('saveRcPlacementMsg').textContent='';
+  openModal('modalRcPlacement');
+}
+
+async function saveRcPlacement(){
+  const btn=$id('saveRcPlacementBtn'),msg=$id('saveRcPlacementMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const body={candidate_name:$id('rcPlacementCandName').value.trim(),candidate_phone:$id('rcPlacementCandPhone').value.trim(),
+    job_title:$id('rcPlacementJobTitle').value.trim(),client_company:$id('rcPlacementCompany').value.trim(),
+    placement_date:$id('rcPlacementDate').value,fee_amount:parseFloat($id('rcPlacementFee').value)||0,
+    currency:$id('rcPlacementCurrency').value,fee_type:$id('rcPlacementFeeType').value,
+    percentage:parseFloat($id('rcPlacementPercentage').value)||0,status:$id('rcPlacementStatus').value,
+    notes:$id('rcPlacementNotes').value.trim(),created_at:new Date().toISOString().slice(0,10)};
+  if(!body.candidate_name){msg.textContent='Candidate name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editPlacementId)await rcUpdate('placements',_editPlacementId,body);else await rcCreate('placements',body);
+    msg.textContent='✓ Saved';_rcLoaded=false;
+    setTimeout(async()=>{closeModal('modalRcPlacement');await rcLoad();renderRcSubPage('placements');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deletePlacement(id){
+  if(!confirm('Delete this placement?'))return;
+  await rcDelete('placements',id);_rcLoaded=false;await rcLoad();renderRcSubPage('placements');
+}
+
+/* ── RC: PIPELINE KANBAN ── */
+function renderRcPipeline(){
+  const el=$id('recruitContent');
+  const stages=['new','screening','interview_scheduled','interview_done','offer_sent','placed','rejected'];
+  const stageLabels={new:'New',screening:'Screening',interview_scheduled:'Interview',interview_done:'Interviewed',offer_sent:'Offer Sent',placed:'Placed ✓',rejected:'Rejected'};
+  const stageBorderColor={new:'#94A3B8',screening:'#3B82F6',interview_scheduled:'#8B5CF6',interview_done:'#F59E0B',offer_sent:'#10B981',placed:'#22C55E',rejected:'#EF4444'};
+  el.innerHTML=`
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700;margin-bottom:14px">🔄 Candidate Pipeline</div>
+    <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:16px;min-height:400px">
+      ${stages.map(s=>{
+        const cands=_rcCandidates.filter(c=>c.status===s);
+        return`<div class="rc-pipeline-col">
+          <div class="rc-pipeline-hd">${stageLabels[s]}<span class="rc-pipeline-ct">${cands.length}</span></div>
+          ${cands.map(c=>`<div class="rc-cand-card" onclick="openCandidateDetail('${c.Id}')" style="border-left-color:${stageBorderColor[s]||'#2563EB'}">
+            <div class="rc-cand-name">${esc(c.name||'Unknown')}</div>
+            <div class="rc-cand-role">${esc(c.role_applied||'—')}</div>
+            ${c.expected_salary?`<div style="font-family:var(--mono);font-size:10px;color:#2563EB;margin-top:4px">${c.currency||'AED'} ${parseInt(c.expected_salary).toLocaleString()}</div>`:''}
+            ${c.owner?`<div style="font-size:10px;color:var(--muted);margin-top:4px">${esc(c.owner)}</div>`:''}
+            ${c.interview_date&&s==='interview_scheduled'?`<div style="font-size:10px;color:#8B5CF6;font-weight:600;margin-top:4px">📅 ${fmtDate(c.interview_date)}</div>`:''}
+          </div>`).join('')}
+          ${!cands.length?`<div style="color:var(--muted);font-size:11px;text-align:center;padding:12px 8px;border:2px dashed var(--line);border-radius:var(--r-sm)">Empty</div>`:''}
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+/* ── RC: SETTINGS ── */
+function initRcSettings(){
+  $id('cfgRecruitEnabled').value=clientRecord.recruit_enabled||'No';
+  updateRecruitTabVisibility();
+}
+
+$id('saveRecruitEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveRecruitEnabled'),msg=$id('saveRecruitEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    for(const f of [{column_name:'recruit_enabled',title:'recruit_enabled',uidt:'SingleLineText'},{column_name:'recruit_table_ids',title:'recruit_table_ids',uidt:'LongText'}]){
+      if(!cols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
+    }
+    const val=$id('cfgRecruitEnabled').value;
+    clientRecord.recruit_enabled=val;
+    rcSaveLocal('recruit_enabled',val);
+    await patchClient({recruit_enabled:val}).catch(()=>{});
+    updateRecruitTabVisibility();
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
 
 /* ── BOOT ── */
 (function(){
