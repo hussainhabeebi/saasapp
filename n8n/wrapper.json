@@ -1,0 +1,309 @@
+{
+  "name": "Leadvyne · Wrapper (Industry Router)",
+  "nodes": [
+    {
+      "id": "exec-trigger",
+      "name": "When called by per-client webhook",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "code-filter",
+      "name": "Code · Filter & extract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst b = raw.body || raw;\n// Drop non-incoming and private messages early\nif (b.message_type && b.message_type !== 'incoming') return [];\nif (b.private) return [];\nconst client_id = String(raw.client_id || b.client_id || '');\nif (!client_id) return [];\n// Pass full raw payload through so engine can re-use it\nreturn [{ json: { ...raw, client_id } }];"
+      }
+    },
+    {
+      "id": "http-get-client",
+      "name": "HTTP · Get client",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records/{{ $json.client_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-token",
+              "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "code-industry",
+      "name": "Code · Read industry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const client = $input.first().json;\nconst raw    = $('Code · Filter & extract').first().json;\n// Drop inactive clients\nif (client.active === 'No') return [];\nconst ind = (client.industry || 'general').toLowerCase().trim();\n// Normalise to engine keys\nlet engine = 'general';\nif (ind === 'travel')                          engine = 'travel';\nelse if (ind === 'ecommerce' || ind === 'ecom') engine = 'ecom';\nelse if (ind === 'consulting' || ind === 'hr'\n      || ind === 'consulting-hr'\n      || ind === 'consulting & hr')            engine = 'consulting-hr';\nreturn [{ json: { ...raw, _client: client, _engine: engine } }];"
+      }
+    },
+    {
+      "id": "switch-industry",
+      "name": "Switch · Industry",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1120,
+        300
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "caseSensitive": false,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "t",
+                    "leftValue": "={{ $json._engine }}",
+                    "rightValue": "travel",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "travel"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "caseSensitive": false,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "e",
+                    "leftValue": "={{ $json._engine }}",
+                    "rightValue": "ecom",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ecom"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "caseSensitive": false,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "c",
+                    "leftValue": "={{ $json._engine }}",
+                    "rightValue": "consulting-hr",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "consulting-hr"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "exec-travel",
+      "name": "Execute · Travel Engine",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1340,
+        140
+      ],
+      "parameters": {
+        "workflowId": {
+          "cachedResultName": "Leadvyne · Engine · Travel",
+          "__rl": true,
+          "mode": "name"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "exec-ecom",
+      "name": "Execute · Ecom Engine",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1340,
+        300
+      ],
+      "parameters": {
+        "workflowId": {
+          "cachedResultName": "Leadvyne · Engine · Ecom",
+          "__rl": true,
+          "mode": "name"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "exec-consulting",
+      "name": "Execute · Consulting HR Engine",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1340,
+        460
+      ],
+      "parameters": {
+        "workflowId": {
+          "cachedResultName": "Leadvyne · Engine · Consulting & HR",
+          "__rl": true,
+          "mode": "name"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "exec-general",
+      "name": "Execute · General Engine",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1340,
+        620
+      ],
+      "parameters": {
+        "workflowId": {
+          "cachedResultName": "Leadvyne · Engine · General",
+          "__rl": true,
+          "mode": "name"
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "When called by per-client webhook": {
+      "main": [
+        [
+          {
+            "node": "Code · Filter & extract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Filter & extract": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Get client",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Get client": {
+      "main": [
+        [
+          {
+            "node": "Code · Read industry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Read industry": {
+      "main": [
+        [
+          {
+            "node": "Switch · Industry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch · Industry": {
+      "main": [
+        [
+          {
+            "node": "Execute · Travel Engine",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute · Ecom Engine",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute · Consulting HR Engine",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute · General Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
