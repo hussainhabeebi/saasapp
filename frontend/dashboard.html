@@ -47,6 +47,54 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .gbtn:disabled{opacity:.5;cursor:not-allowed}
 .gerr{color:#FCA5A5;font-size:12.5px;min-height:20px;margin-top:10px}
 .gsuccess{color:#6EE7B7;font-size:12.5px;min-height:20px;margin-top:10px}
+/* WIZARD */
+.wiz-steps{display:flex;align-items:center;gap:0;margin-bottom:24px}
+.wiz-dot{width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.12);color:rgba(255,255,255,.45);font-family:var(--disp);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;transition:background .2s,color .2s;flex-shrink:0}
+.wiz-dot.done{background:#0E7C5A;color:#fff}
+.wiz-dot.active{background:#4ECFA0;color:#071410}
+.wiz-line{flex:1;height:2px;background:rgba(255,255,255,.10)}
+.wiz-line.done{background:#0E7C5A}
+.wiz-label{font-size:11px;font-weight:600;color:rgba(255,255,255,.35);text-transform:uppercase;letter-spacing:.5px;margin-bottom:16px;font-family:var(--disp)}
+.ind-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px}
+.ind-card{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);border-radius:12px;padding:12px 10px;cursor:pointer;transition:border-color .15s,background .15s;text-align:center}
+.ind-card:hover{background:rgba(255,255,255,.11)}
+.ind-card.sel{border-color:#4ECFA0;background:rgba(78,207,160,.12)}
+.ind-icon{font-size:22px;margin-bottom:4px}
+.ind-name{font-size:11px;font-weight:600;color:rgba(255,255,255,.7);font-family:var(--disp)}
+.wiz-back{background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);color:rgba(255,255,255,.6);border-radius:14px;padding:14px;font-family:var(--disp);font-weight:600;font-size:14px;cursor:pointer;flex:0 0 80px;transition:background .15s}
+.wiz-back:hover{background:rgba(255,255,255,.13)}
+.wiz-row{display:flex;gap:10px;margin-top:8px}
+/* HOME COMMAND CENTER */
+.home-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px}
+.home-greeting{font-family:var(--disp);font-size:22px;font-weight:700;color:var(--ink);letter-spacing:-.3px}
+.home-sub{font-size:13px;color:var(--muted);margin-top:2px}
+.home-actions{display:flex;gap:8px;flex-wrap:wrap}
+.hact-btn{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-family:var(--disp);font-size:13px;font-weight:600;cursor:pointer;transition:opacity .15s;white-space:nowrap}
+.hact-btn:hover{opacity:.88}
+.hact-btn.sec{background:var(--card);color:var(--accent-ink);border:1.5px solid var(--line)}
+.hact-btn.sec:hover{background:var(--accent-soft)}
+.today-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:20px}
+.today-stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow)}
+.today-val{font-family:var(--disp);font-size:28px;font-weight:700;color:var(--accent-ink);line-height:1}
+.today-lbl{font-size:12px;color:var(--muted);margin-top:4px}
+.today-delta{font-size:11px;font-weight:600;margin-top:3px}
+.delta-up{color:#059669}.delta-dn{color:#DC2626}
+.activity-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;box-shadow:var(--shadow);margin-bottom:14px}
+.activity-title{font-family:var(--disp);font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}
+.act-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
+.act-row:last-child{border-bottom:none}
+.act-avatar{width:34px;height:34px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--disp);font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.act-name{font-size:13.5px;font-weight:600;color:var(--ink)}
+.act-meta{font-size:12px;color:var(--muted)}
+.act-time{font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap;font-family:var(--mono)}
+/* WEBHOOK BOX */
+.webhook-box{display:flex;align-items:center;gap:10px;background:var(--bg);border:1.5px solid var(--line);border-radius:10px;padding:11px 14px;margin-top:8px}
+.webhook-url{font-family:var(--mono);font-size:12px;color:var(--ink);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.webhook-copy{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12px;font-family:var(--disp);font-weight:600;cursor:pointer;flex-shrink:0;transition:opacity .15s}
+.webhook-copy:hover{opacity:.88}
+.webhook-steps{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.webhook-step{display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--muted)}
+.wh-num{width:20px;height:20px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
 .glabel{color:rgba(255,255,255,.45);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:-6px;font-family:var(--disp)}
 
 /* ── APP SHELL ── */
@@ -543,29 +591,64 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div class="gerr" id="gErr"></div>
     </div>
 
-    <!-- SIGNUP -->
+    <!-- SIGNUP WIZARD -->
     <div id="gPanelSignup" style="display:none">
-      <div class="gfld">
-        <input class="ginput" id="sgName" type="text" placeholder="Business name *" />
-        <select class="ginput" id="sgIndustry" style="color:rgba(255,255,255,.7)">
-          <option value="general">General Business</option>
-          <option value="travel">Travel & Tourism</option>
-          <option value="ecommerce">Ecommerce</option>
-          <option value="consultancy">Consulting / HR</option>
-          <option value="insurance">Insurance</option>
-          <option value="real_estate">Real Estate</option>
-          <option value="healthcare">Healthcare</option>
-          <option value="education">Education</option>
-          <option value="automotive">Automotive</option>
-        </select>
-        <input class="ginput" id="sgAccountId" type="text" placeholder="Chatwoot Account ID *" />
-        <input class="ginput" id="sgInboxId" type="text" placeholder="Chatwoot Inbox ID *" />
-        <input class="ginput" id="sgToken" type="text" placeholder="Chatwoot User Token *" />
-        <input class="ginput" id="sgPassword" type="password" placeholder="Set a dashboard password *" />
+      <div class="wiz-steps">
+        <div class="wiz-dot active" id="wdot1">1</div>
+        <div class="wiz-line" id="wline12"></div>
+        <div class="wiz-dot" id="wdot2">2</div>
+        <div class="wiz-line" id="wline23"></div>
+        <div class="wiz-dot" id="wdot3">3</div>
       </div>
-      <button class="gbtn" id="sgBtn" onclick="doSignup()">Create Account</button>
-      <div class="gerr" id="sgErr"></div>
-      <div class="gsuccess" id="sgOk"></div>
+
+      <!-- Step 1: Business -->
+      <div id="wStep1">
+        <div class="wiz-label">Step 1 of 3 · Your Business</div>
+        <div class="gfld">
+          <input class="ginput" id="sgName" type="text" placeholder="Business name *" autocomplete="organization" />
+        </div>
+        <div class="ind-grid" id="indGrid" style="margin-top:12px">
+          <div class="ind-card sel" data-val="general" onclick="pickInd(this)"><div class="ind-icon">🏢</div><div class="ind-name">General</div></div>
+          <div class="ind-card" data-val="travel" onclick="pickInd(this)"><div class="ind-icon">✈️</div><div class="ind-name">Travel</div></div>
+          <div class="ind-card" data-val="ecommerce" onclick="pickInd(this)"><div class="ind-icon">🛒</div><div class="ind-name">Ecommerce</div></div>
+          <div class="ind-card" data-val="consultancy" onclick="pickInd(this)"><div class="ind-icon">💼</div><div class="ind-name">Consulting / HR</div></div>
+          <div class="ind-card" data-val="insurance" onclick="pickInd(this)"><div class="ind-icon">🛡️</div><div class="ind-name">Insurance</div></div>
+          <div class="ind-card" data-val="real_estate" onclick="pickInd(this)"><div class="ind-icon">🏠</div><div class="ind-name">Real Estate</div></div>
+          <div class="ind-card" data-val="healthcare" onclick="pickInd(this)"><div class="ind-icon">🏥</div><div class="ind-name">Healthcare</div></div>
+          <div class="ind-card" data-val="education" onclick="pickInd(this)"><div class="ind-icon">🎓</div><div class="ind-name">Education</div></div>
+        </div>
+        <button class="gbtn" style="margin-top:16px" onclick="wizNext(2)">Next →</button>
+        <div class="gerr" id="sgErr1"></div>
+      </div>
+
+      <!-- Step 2: Chatwoot -->
+      <div id="wStep2" style="display:none">
+        <div class="wiz-label">Step 2 of 3 · Connect WhatsApp</div>
+        <div class="gfld">
+          <input class="ginput" id="sgAccountId" type="text" placeholder="Chatwoot Account ID *" />
+          <input class="ginput" id="sgInboxId" type="text" placeholder="Chatwoot Inbox ID *" />
+          <input class="ginput" id="sgToken" type="text" placeholder="Chatwoot User Token *" />
+        </div>
+        <div class="wiz-row">
+          <button class="wiz-back" onclick="wizNext(1)">← Back</button>
+          <button class="gbtn" onclick="wizNext(3)">Next →</button>
+        </div>
+        <div class="gerr" id="sgErr2"></div>
+      </div>
+
+      <!-- Step 3: Password -->
+      <div id="wStep3" style="display:none">
+        <div class="wiz-label">Step 3 of 3 · Set Password</div>
+        <div class="gfld">
+          <input class="ginput" id="sgPassword" type="password" placeholder="Create a dashboard password *" autocomplete="new-password" />
+        </div>
+        <div class="wiz-row">
+          <button class="wiz-back" onclick="wizNext(2)">← Back</button>
+          <button class="gbtn" id="sgBtn" onclick="doSignup()">Launch Dashboard 🚀</button>
+        </div>
+        <div class="gerr" id="sgErr"></div>
+        <div class="gsuccess" id="sgOk"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -608,72 +691,67 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- HOME -->
     <div class="page" id="pageHome">
       <div class="page-pad">
+        <!-- Command center header -->
+        <div class="home-header">
+          <div>
+            <div class="home-greeting" id="homeGreeting">Good morning</div>
+            <div class="home-sub" id="homeSubLine">Loading your workspace…</div>
+          </div>
+          <div class="home-actions">
+            <button class="hact-btn" onclick="openAddLead()">+ Add Lead</button>
+            <button class="hact-btn sec" onclick="navigate('pipeline')">📋 Pipeline</button>
+            <button class="hact-btn sec" onclick="window.open('broadcast.html','_blank')">📢 Broadcast</button>
+          </div>
+        </div>
+
+        <!-- Today's stats strip -->
+        <div class="today-strip" id="todayStrip">
+          <div class="today-stat"><div class="today-val" id="tsNew">—</div><div class="today-lbl">New Today</div></div>
+          <div class="today-stat"><div class="today-val" id="tsHot">—</div><div class="today-lbl">Hot Leads</div></div>
+          <div class="today-stat"><div class="today-val" id="tsConv">—</div><div class="today-lbl">Converted</div></div>
+          <div class="today-stat"><div class="today-val" id="tsTotal">—</div><div class="today-lbl">Total Leads</div></div>
+        </div>
+
+        <!-- Reminders / alerts -->
         <div id="remindersPanel" style="display:none;margin-bottom:14px"></div>
-        <div class="row-grid g4" id="statsGrid" style="margin-bottom:14px"></div>
-        <div style="display:grid;gap:14px;grid-template-columns:1fr" class="mb14">
-          <div class="card">
-            <div class="card-title">📈 Leads Over Time <span style="margin-left:auto;display:flex;gap:6px">
-              <button class="btn-ghost" id="chartWeek" onclick="setChartMode('week')">Weekly</button>
-              <button class="btn-ghost" id="chartMonth" onclick="setChartMode('month')">Monthly</button>
-            </span></div>
+
+        <!-- Recent activity -->
+        <div class="activity-card">
+          <div class="activity-title">
+            Recent Activity
+            <button class="btn-ghost" onclick="navigate('leads')" style="font-size:12px;text-transform:none;font-weight:500">View all →</button>
+          </div>
+          <div id="activityFeed"><div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div></div>
+        </div>
+
+        <!-- Chart row -->
+        <div style="display:grid;gap:14px;grid-template-columns:2fr 1fr">
+          <div class="activity-card" style="margin-bottom:0">
+            <div class="activity-title">Leads Over Time
+              <span style="display:flex;gap:6px">
+                <button class="btn-ghost" id="chartWeek" onclick="setChartMode('week')">Weekly</button>
+                <button class="btn-ghost" id="chartMonth" onclick="setChartMode('month')">Monthly</button>
+              </span>
+            </div>
             <div class="chart-wrap"><canvas id="leadsChart"></canvas></div>
           </div>
-        </div>
-        <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr" id="bottomGrid">
-          <div class="card">
-            <div class="card-title">🎯 Conversion Funnel</div>
+          <div class="activity-card" style="margin-bottom:0">
+            <div class="activity-title">Funnel</div>
             <div id="funnelChart"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
           </div>
-          <div class="card">
-            <div class="card-title">👤 Agent Performance</div>
-            <div id="agentTable"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
-          </div>
-        </div>
-        <!-- Conversion trend -->
-        <div class="card" style="margin-top:14px">
-          <div class="card-title">📈 Conversion Trend <span style="font-size:11px;color:var(--muted);margin-left:6px">Last 8 weeks</span></div>
-          <div style="height:160px"><canvas id="convTrendChart"></canvas></div>
         </div>
 
-        <!-- Hot moments banner -->
-        <div id="hotBanner" style="display:none"></div>
-
-        <!-- Advanced analytics row -->
-        <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr 1fr;margin-top:14px" id="advGrid">
-          <div class="mini-card">
-            <div class="mc-title">⚡ Stage Velocity (avg days)</div>
-            <div id="velocityChart"><div style="color:var(--muted);font-size:12px">Loading…</div></div>
-          </div>
-          <div class="mini-card">
-            <div class="mc-title">🕐 Best Time to Message</div>
-            <div id="bestTimeChart"><div style="color:var(--muted);font-size:12px">Loading…</div></div>
-          </div>
-          <div class="mini-card">
-            <div class="mc-title">📊 Cross-Client Benchmark</div>
-            <div id="benchmarkChart"><div style="color:var(--muted);font-size:12px">Loading…</div></div>
-          </div>
-        </div>
-
-        <!-- Predictive conversion + Stale alerts -->
-        <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr;margin-top:14px">
-          <div class="card">
-            <div class="card-title">🔮 Predictive Conversion</div>
-            <div id="predictList"><div style="color:var(--muted);font-size:12px">Loading…</div></div>
-          </div>
-          <div class="card">
-            <div class="card-title">⚠️ Stale Leads</div>
-            <div id="staleList"><div style="color:var(--muted);font-size:12px">Loading…</div></div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-top:14px">
-          <div class="card-title">Recent Leads</div>
-          <div class="tbl-wrap">
-            <table>
-              <thead><tr><th>Name</th><th>Stage</th><th>Score</th><th>Owner</th><th>Date</th></tr></thead>
-              <tbody id="recentBody"></tbody>
-            </table>
-          </div>
+        <!-- Hidden analytics preserved for JS compatibility -->
+        <div style="display:none">
+          <div id="bottomGrid"></div>
+          <canvas id="convTrendChart"></canvas>
+          <div id="hotBanner"></div>
+          <div id="advGrid"></div>
+          <div id="predictList"></div>
+          <div id="staleList"></div>
+          <div id="statsGrid"></div>
+          <div id="agentTable"></div>
+          <table><tbody id="recentBody"></tbody></table>
         </div>
       </div>
     </div>
@@ -799,6 +877,23 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- SETTINGS -->
     <div class="page hidden" id="pageSettings">
       <div class="page-pad">
+        <!-- CONNECTION INFO -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🔗 Chatwoot Webhook</div>
+            <div class="s-note">Paste this URL into your Chatwoot inbox webhook settings so your AI bot receives messages.</div>
+            <div class="webhook-box" id="webhookBox">
+              <span class="webhook-url" id="webhookUrlDisplay">Not configured yet</span>
+              <button class="webhook-copy" id="webhookCopyBtn" onclick="copyWebhookUrl()" style="display:none">Copy</button>
+            </div>
+            <div class="webhook-steps">
+              <div class="webhook-step"><div class="wh-num">1</div><span>In Chatwoot, go to <strong>Settings → Inboxes → [Your Inbox] → Configuration</strong></span></div>
+              <div class="webhook-step"><div class="wh-num">2</div><span>Scroll to <strong>Webhook URL</strong> and paste the URL above</span></div>
+              <div class="webhook-step"><div class="wh-num">3</div><span>Enable the <strong>Messages Created</strong> event and save</span></div>
+            </div>
+          </div>
+        </div>
+
         <div class="card" style="margin-bottom:14px">
 
           <div class="settings-section">
@@ -1712,6 +1807,39 @@ function gSwitchTab(tab){
   $id('gtabSignup').classList.toggle('active',!isLogin);
 }
 
+// Wizard state
+let _wizInd = 'general';
+function pickInd(el){
+  document.querySelectorAll('.ind-card').forEach(c=>c.classList.remove('sel'));
+  el.classList.add('sel');
+  _wizInd = el.dataset.val;
+}
+function wizNext(step){
+  // Validate current step before advancing
+  if(step===2){
+    if(!$id('sgName').value.trim()){$id('sgErr1').textContent='Enter your business name.';return;}
+    $id('sgErr1').textContent='';
+  }
+  if(step===3){
+    const a=$id('sgAccountId').value.trim(), b=$id('sgInboxId').value.trim(), c=$id('sgToken').value.trim();
+    if(!a||!b||!c){$id('sgErr2').textContent='All three Chatwoot fields are required.';return;}
+    $id('sgErr2').textContent='';
+  }
+  // Update dots
+  const steps=[1,2,3];
+  steps.forEach(s=>{
+    const dot=$id('wdot'+s);
+    dot.classList.remove('active','done');
+    if(s<step) dot.classList.add('done');
+    else if(s===step) dot.classList.add('active');
+  });
+  // Update lines
+  if($id('wline12')) $id('wline12').classList.toggle('done', step>1);
+  if($id('wline23')) $id('wline23').classList.toggle('done', step>2);
+  // Show step
+  [1,2,3].forEach(s=>$id('wStep'+s).style.display=s===step?'':'none');
+}
+
 async function doSignup(){
   const name=$id('sgName').value.trim();
   const accountId=$id('sgAccountId').value.trim();
@@ -1732,7 +1860,7 @@ async function doSignup(){
         chatwoot_inbox_id:inboxId,
         chatwoot_token:token,
         dashboard_password:password,
-        language:'en',industry:$id('sgIndustry').value||'general'
+        language:'en',industry:_wizInd||'general'
       })
     });
     const data=await res.json();
@@ -1896,6 +2024,7 @@ function renderHome(){
   renderPredictive();
   renderBenchmark();
   renderTasks();
+  populateCommandCenter(allLeads);
 }
 
 /* ── CHART ── */
@@ -2395,9 +2524,75 @@ async function triggerGsheetSync(){
   } catch(e){ msg.textContent='Sync failed. Is the workflow active?'; msg.className='save-msg err'; }
 }
 
+function showWebhookUrl(){
+  const url = clientRecord?.webhook_url || '';
+  const box = $id('webhookUrlDisplay');
+  const btn = $id('webhookCopyBtn');
+  if(!box) return;
+  if(url){ box.textContent=url; if(btn) btn.style.display=''; }
+  else { box.textContent='Not configured — complete onboarding first'; }
+}
+async function copyWebhookUrl(){
+  const url=clientRecord?.webhook_url||'';
+  if(!url) return;
+  try{ await navigator.clipboard.writeText(url); }catch(e){ }
+  const btn=$id('webhookCopyBtn');
+  if(btn){const orig=btn.textContent;btn.textContent='Copied ✓';setTimeout(()=>btn.textContent=orig,2000);}
+}
+
+function populateCommandCenter(leads){
+  // Greeting
+  const h=new Date().getHours();
+  const greet=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
+  $id('homeGreeting').textContent=greet+', '+((clientRecord?.client_name||'').split(' ')[0]||'there')+'';
+  $id('homeSubLine').textContent='Here\'s what\'s happening today';
+
+  // Today stats
+  const today=new Date().toISOString().slice(0,10);
+  const ind=getIndustry();
+  const newToday=leads.filter(l=>l.Date&&l.Date.slice(0,10)===today).length;
+  const hot=leads.filter(l=>l.Score==='Hot').length;
+  const conv=leads.filter(l=>l.Handover==='Yes'||l.Stage===ind.booked?.toLowerCase().replace(/\s/g,'_')).length;
+  $id('tsNew').textContent=newToday;
+  $id('tsHot').textContent=hot;
+  $id('tsConv').textContent=conv;
+  $id('tsTotal').textContent=leads.length;
+
+  // Activity feed — last 8 leads by LastMsgAt or Date
+  const sorted=[...leads].sort((a,b)=>(b.LastMsgAt||b.Date||'').localeCompare(a.LastMsgAt||a.Date||'')).slice(0,8);
+  const feed=$id('activityFeed');
+  if(!sorted.length){feed.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No leads yet — add your first one!</div>';return;}
+  feed.innerHTML=sorted.map(l=>{
+    const initials=(l.Name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+    const score=l.Score||'';
+    const scoreDot=score==='Hot'?'🔴':score==='Warm'?'🟡':'⚪';
+    const ts=l.LastMsgAt||l.Date||'';
+    const when=ts?timeAgo(ts):'';
+    return `<div class="act-row" onclick="openLeadDetail(${l.Id})" style="cursor:pointer">
+      <div class="act-avatar">${initials}</div>
+      <div style="flex:1;min-width:0">
+        <div class="act-name">${esc(l.Name||'Unknown')} ${scoreDot}</div>
+        <div class="act-meta">${esc(l.Stage||'new')} · ${esc(l.Phone||'')}</div>
+      </div>
+      <div class="act-time">${esc(when)}</div>
+    </div>`;
+  }).join('');
+}
+
+function timeAgo(iso){
+  const diff=Date.now()-new Date(iso).getTime();
+  const m=Math.floor(diff/60000);
+  if(m<1) return 'just now';
+  if(m<60) return m+'m ago';
+  const h=Math.floor(m/60);
+  if(h<24) return h+'h ago';
+  return Math.floor(h/24)+'d ago';
+}
+
 /* ── SETTINGS ── */
 function populateSettings(){
   if(!clientRecord)return;
+  showWebhookUrl();
   // gsheet
   if(clientRecord.gsheet_url) $id('cfgGsheetUrl').value=clientRecord.gsheet_url;
   if(clientRecord.gsheet_cols){
