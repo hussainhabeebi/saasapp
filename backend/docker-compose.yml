@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  leadvyne-nba:
+    build: .
+    image: leadvyne-nba:latest
+    restart: unless-stopped
+    environment:
+      NOCODB_BASE: ${NOCODB_BASE:-https://whizz.aiingo.com}
+      NOCODB_TOKEN: ${NOCODB_TOKEN}
+      CLIENTS_TABLE: ${CLIENTS_TABLE:-mxl33bg4wi70fqj}
+      TZ: ${TZ:-UTC}
+      RUN_NOW: ${RUN_NOW:-0}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
