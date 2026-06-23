@@ -5,9 +5,7 @@ import fetch from 'node-fetch';
 const NOCODB_BASE    = process.env.NOCODB_BASE    || 'https://whizz.aiingo.com';
 const NOCODB_TOKEN   = process.env.NOCODB_TOKEN   || '';
 const CLIENTS_TABLE  = process.env.CLIENTS_TABLE  || 'mxl33bg4wi70fqj';
-const LLM_CONCURRENT = 5;     // max parallel OpenRouter calls
-const LEAD_DAYS      = 90;    // only process leads active within N days
-const HOT_THRESHOLD  = 60;    // score >= this → LLM-generated NBA text
+const LEAD_DAYS      = 7;     // only process leads active within N days
 
 // ── NOCODB HELPERS ───────────────────────────────────────────────────────────
 const ncHdr = (token) => ({ 'xc-token': token, 'Content-Type': 'application/json' });
@@ -148,60 +146,6 @@ function ruleNba(scored) {
   return `Re-engage ${name} with a concrete offer or deadline to prompt a decision.`;
 }
 
-// ── LLM NBA TEXT ─────────────────────────────────────────────────────────────
-async function llmNba(scored, clientRecord) {
-  const { lead, score, silent } = scored;
-  const key   = clientRecord.openrouter_key;
-  const model = clientRecord.model || 'google/gemini-2.5-flash';
-  if (!key) return ruleNba(scored);
-
-  let qa = [];
-  try { qa = JSON.parse(lead.QualAnswers || '[]'); } catch {}
-
-  const prompt = `You are a sales advisor for a ${clientRecord.industry || 'general'} business.
-Lead: ${lead.Name || 'Unknown'}, Phone: ${lead.Phone || ''}
-Stage: ${lead.Stage || 'New'} | Score: ${lead.Score || 'Unknown'} | NBA Score: ${score}/100
-Days silent: ${silent}
-Qualification answers: ${qa.map(q => `${q.q}: ${q.a}`).join('; ') || 'none'}
-Conversation summary: ${lead.MemSummary || 'No summary'}
-Industry prompt context: ${(clientRecord.main_prompt || '').slice(0, 300)}
-
-In ONE concise sentence (max 20 words), state the single most impactful next action a human sales rep should take right now. Be specific, not generic. No bullet points.`;
-
-  try {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        temperature: 0.3,
-        max_tokens: 60,
-        messages: [{ role: 'user', content: prompt }]
-      })
-    });
-    if (!r.ok) throw new Error(r.status);
-    const d = await r.json();
-    return d.choices?.[0]?.message?.content?.trim() || ruleNba(scored);
-  } catch (e) {
-    console.warn(`    LLM call failed for lead ${lead.Id}: ${e.message}`);
-    return ruleNba(scored);
-  }
-}
-
-// ── PARALLEL POOL ─────────────────────────────────────────────────────────────
-async function pool(tasks, concurrency) {
-  const results = new Array(tasks.length);
-  let i = 0;
-  async function worker() {
-    while (i < tasks.length) {
-      const idx = i++;
-      results[idx] = await tasks[idx]();
-    }
-  }
-  await Promise.all(Array.from({ length: concurrency }, worker));
-  return results;
-}
-
 // ── BATCH PATCH ──────────────────────────────────────────────────────────────
 async function patchLeads(tableId, updates, token) {
   // NocoDB accepts array PATCH for bulk update
@@ -227,32 +171,16 @@ async function processClient(client) {
   if (!leads.length) return;
 
   const scored = scoreLeads(leads);
-  const hotScored   = scored.filter(s => s.score >= HOT_THRESHOLD);
-  const otherScored = scored.filter(s => s.score <  HOT_THRESHOLD);
-
-  console.log(`  ${hotScored.length} hot (LLM) · ${otherScored.length} rule-based`);
-
-  // LLM for hot leads, capped concurrency
-  const llmTasks = hotScored.map(s => () => llmNba(s, client));
-  const llmResults = await pool(llmTasks, LLM_CONCURRENT);
+  console.log(`  Scoring ${scored.length} leads (rule-based)`);
 
   const now = new Date().toISOString();
-  const updates = [
-    ...hotScored.map((s, idx) => ({
-      Id: s.lead.Id,
-      nba_action:   llmResults[idx],
-      nba_priority: s.priority,
-      nba_score:    s.score,
-      nba_at:       now,
-    })),
-    ...otherScored.map(s => ({
-      Id: s.lead.Id,
-      nba_action:   ruleNba(s),
-      nba_priority: s.priority,
-      nba_score:    s.score,
-      nba_at:       now,
-    })),
-  ];
+  const updates = scored.map(s => ({
+    Id: s.lead.Id,
+    nba_action:   ruleNba(s),
+    nba_priority: s.priority,
+    nba_score:    s.score,
+    nba_at:       now,
+  }));
 
   console.log(`  Patching ${updates.length} records…`);
   await patchLeads(tableId, updates, token);
