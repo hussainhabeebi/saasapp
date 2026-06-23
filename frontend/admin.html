@@ -247,6 +247,32 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 #save-status.success{background:#dcfce7;color:#166534}
 #save-status.error{background:#fee2e2;color:#991b1b}
 
+/* ── PROFESSIONAL POLISH ── */
+.client-card{transition:box-shadow .2s,border-color .2s,transform .15s}
+.client-card:hover{box-shadow:0 4px 20px rgba(14,124,90,.09);border-color:var(--accent);transform:translateY(-1px)}
+.btn-primary{transition:background .15s,transform .1s,box-shadow .15s;box-shadow:0 1px 3px rgba(14,124,90,.2)}
+.btn-primary:hover{box-shadow:0 3px 10px rgba(14,124,90,.25);transform:translateY(-1px)}
+.btn-primary:active{transform:none;box-shadow:none}
+.btn-edit{transition:all .15s}
+.btn-view{transition:background .15s,transform .1s}
+.btn-view:hover{transform:translateY(-1px)}
+.skel{background:linear-gradient(90deg,#e8edea 25%,#f2f6f4 50%,#e8edea 75%);background-size:200% 100%;animation:shimmer 1.6s infinite}
+.health-dot{transition:box-shadow .2s}
+.badge-active,.badge-suspended{border-radius:6px}
+#header{box-shadow:0 1px 0 var(--line),0 2px 8px rgba(0,0,0,.04)}
+.header-search{transition:border-color .15s,background .15s,box-shadow .15s}
+.header-search:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
+.edit-modal{box-shadow:0 16px 64px rgba(0,0,0,.2),0 4px 16px rgba(0,0,0,.1);animation:modalIn .2s cubic-bezier(.22,.61,.36,1)}
+@keyframes modalIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.login-card{animation:loginIn .35s cubic-bezier(.22,.61,.36,1);box-shadow:0 24px 80px rgba(0,0,0,.32)}
+@keyframes loginIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+.modal-form-group input:focus,.modal-form-group textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
+.btn-save{transition:background .15s,box-shadow .15s}
+.btn-save:hover{box-shadow:0 2px 8px rgba(14,124,90,.2)}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-thumb{background:#C2CEC9;border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:#9AADA8}
+
 /* EMPTY STATE */
 .empty-state{
   text-align:center;padding:4rem 2rem;
