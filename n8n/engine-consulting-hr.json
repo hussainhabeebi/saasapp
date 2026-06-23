@@ -16,7 +16,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const raw = $input.first().json;\nconst b = raw.body || raw;\nif (b.message_type && b.message_type !== 'incoming') return [];\nif (b.private) return [];\n\nconst conv = b.conversation || {};\nconst sender = conv?.meta?.sender || b.sender || {};\nlet phone = (sender.phone_number || sender.identifier || '').replace(/[^0-9+]/g,'').replace(/^\\+/,'');\nif (phone.startsWith('00')) phone = phone.slice(2);\n\nconst atts = b.attachments || b.message?.attachments || [];\nlet mediaType = 'text', mediaUrl = '';\nif (atts.length) {\n  const a = atts[0];\n  mediaUrl = a.data_url || a.file_url || '';\n  if ((a.file_type||'').includes('audio')) mediaType = 'voice';\n  else if ((a.file_type||'').includes('image')) mediaType = 'image';\n}\n\nconst text = (b.content || b.message?.content || '').trim();\nif (!phone) return [];\nif (mediaType === 'text' && !text) return [];\n\nreturn [{ json: {\n  client_id:  String(raw.client_id || b.client_id || ''),\n  account_id: String(b.account?.id || conv?.account_id || ''),\n  inbox_id:   String(b.inbox?.id || conv?.inbox_id || ''),\n  convId:     conv?.id || null,\n  phone, name: sender.name || '', text, mediaType, mediaUrl,\n  _startMs: Date.now()\n} }];"
+        "jsCode": "const raw = $input.first().json;\nconst b = raw.body || raw;\nif (b.message_type && b.message_type !== 'incoming') return [];\nif (b.private) return [];\n\nconst conv = b.conversation || {};\nconst sender = conv?.meta?.sender || b.sender || {};\nlet phone = (sender.phone_number || sender.identifier || '').replace(/[^0-9+]/g,'').replace(/^\\+/,'');\nif (phone.startsWith('00')) phone = phone.slice(2);\n\nconst atts = b.attachments || b.message?.attachments || [];\nlet mediaType = 'text', mediaUrl = '';\nif (atts.length) {\n  const a = atts[0];\n  mediaUrl = a.data_url || a.file_url || '';\n  if ((a.file_type||'').includes('audio')) mediaType = 'voice';\n  else if ((a.file_type||'').includes('image')) mediaType = 'image';\n}\n\nconst text = (b.content || b.message?.content || '').trim();\nif (!phone) return [];\nif (mediaType === 'text' && !text) return [];\n\nreturn [{ json: {\n  client_id:  String(raw.client_id || b.client_id || ''),\n  account_id: String(b.account?.id || conv?.account_id || ''),\n  inbox_id:   String(b.inbox?.id || conv?.inbox_id || ''),\n  convId:     conv?.id || null,\n  phone, name: sender.name || '', text, mediaType, mediaUrl,\n  _client: raw._client || null,\n  _startMs: Date.now()\n} }];"
       },
       "id": "parse",
       "name": "Code · Parse",
@@ -54,7 +54,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const msg = $('Code · Parse').first().json;\nconst raw = $input.first().json;\nconst t = raw.list ? raw.list[0] : raw;\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return [];\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nlet services = []; try { services = JSON.parse(t.services || '[]'); } catch(e) {}\nconst kb_summary = t.kb_summary || '';\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key || $env.OPENROUTER_KEY, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions, services, kb_summary,\n  industry: t.industry || 'general',\n  ta_table_ids: (() => { try { return JSON.parse(t.ta_table_ids || '{}'); } catch(e) { return {}; } })(),\n  ecom_table_ids: (() => { try { return JSON.parse(t.ecom_table_ids || '{}'); } catch(e) { return {}; } })(),\n  client_name: t.client_name || '',\n  sarvam_key: t.sarvam_key || $env.SARVAM_API_KEY || '',\n  cal_link: t.cal_link || '',\n  sarvam_lang: ({ml:'ml-IN',hi:'hi-IN',ta:'ta-IN',te:'te-IN',bn:'bn-IN',kn:'kn-IN',mr:'mr-IN',gu:'gu-IN'})[t.language||'ml'] || 'ml-IN',\n  test_mode: t.test_mode || 'No',\n  test_phone: t.test_phone || ''\n} }];"
+        "jsCode": "const msg = $('Code · Parse').first().json;\n\n// Use pre-fetched client from wrapper (Fix 1: skip duplicate NocoDB call)\nlet t;\nif (msg._client && msg._client.chatwoot_inbox_id) {\n  t = msg._client;\n} else {\n  const raw = $input.first().json;\n  t = raw.list ? raw.list[0] : raw;\n}\n\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return [];\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nlet services = []; try { services = JSON.parse(t.services || '[]'); } catch(e) {}\nconst kb_summary = t.kb_summary || '';\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key || $env.OPENROUTER_KEY, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions, services, kb_summary,\n  industry: t.industry || 'general',\n  ta_table_ids: (() => { try { return JSON.parse(t.ta_table_ids || '{}'); } catch(e) { return {}; } })(),\n  ecom_table_ids: (() => { try { return JSON.parse(t.ecom_table_ids || '{}'); } catch(e) { return {}; } })(),\n  client_name: t.client_name || '',\n  sarvam_key: t.sarvam_key || $env.SARVAM_API_KEY || '',\n  cal_link: t.cal_link || '',\n  sarvam_lang: ({ml:'ml-IN',hi:'hi-IN',ta:'ta-IN',te:'te-IN',bn:'bn-IN',kn:'kn-IN',mr:'mr-IN',gu:'gu-IN'})[t.language||'ml'] || 'ml-IN',\n  test_mode: t.test_mode || 'No',\n  test_phone: t.test_phone || ''\n} }];"
       },
       "id": "ctx",
       "name": "Code · Build ctx",
@@ -609,114 +609,6 @@
     },
     {
       "parameters": {
-        "method": "={{ $json._method }}",
-        "url": "=https://whizz.aiingo.com/api/v2/tables/mvg6rcw0ia5qqrx/records",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "xc-token",
-              "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify($json._body) }}",
-        "options": {}
-      },
-      "id": "upsert",
-      "name": "HTTP · Upsert lead",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2960,
-        460
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const c = $('Code · Prep lead').first().json;\nconst upsertResult = $input.first().json;\nconst isError = !!(upsertResult.error || upsertResult.msg);\nconst responseMs = Date.now() - (c._startMs || Date.now());\nreturn [{ json: {\n  ...c,\n  _analyticsBody: {\n    ClientId: String(c.client_id),\n    ClientName: c.client_name || '',\n    Phone: c.phone,\n    Intent: c.intent || '',\n    Route: c.route || '',\n    Stage: c.stage || '',\n    NextStage: c.next || '',\n    ResponseMs: responseMs,\n    IsError: isError,\n    ErrorMsg: isError ? JSON.stringify(upsertResult).substring(0, 200) : '',\n    Timestamp: new Date().toISOString()\n  }\n} }];"
-      },
-      "id": "prepanalytics",
-      "name": "Code · Prep analytics",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        3180,
-        460
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://whizz.aiingo.com/api/v2/tables/m2in19v8n7phitr/records",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "xc-token",
-              "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify($json._analyticsBody) }}",
-        "options": {}
-      },
-      "id": "loganalytics",
-      "name": "HTTP · Log analytics",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        3400,
-        460
-      ],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "method": "PATCH",
-        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "xc-token",
-              "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify({ Id: $('Code · Prep lead').first().json.client_id, last_seen: new Date().toISOString() }) }}",
-        "options": {}
-      },
-      "id": "updatelastseen",
-      "name": "HTTP · Update last seen",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        3620,
-        460
-      ],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
         "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\n\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\n\nif (c.taContextBlock && c.taContextBlock.trim()) {\n  sys += c.taContextBlock;\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\n\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
       },
       "id": "faqprep",
@@ -822,6 +714,59 @@
         560
       ],
       "onError": "continueRegularOutput"
+    },
+    {
+      "id": "if-prefetch",
+      "name": "IF · Prefetch",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        380,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "pre",
+              "leftValue": "={{ $json._client?.chatwoot_inbox_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "exec-analytics",
+      "name": "Execute · Analytics",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        3200,
+        800
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "Leadvyne · Engine · Analytics",
+          "mode": "name",
+          "cachedResultName": "Leadvyne · Engine · Analytics"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
     }
   ],
   "connections": {
@@ -840,7 +785,7 @@
       "main": [
         [
           {
-            "node": "NocoDB · Get tenant",
+            "node": "IF · Prefetch",
             "type": "main",
             "index": 0
           }
@@ -1099,40 +1044,7 @@
       "main": [
         [
           {
-            "node": "HTTP · Upsert lead",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP · Upsert lead": {
-      "main": [
-        [
-          {
-            "node": "Code · Prep analytics",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code · Prep analytics": {
-      "main": [
-        [
-          {
-            "node": "HTTP · Log analytics",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP · Log analytics": {
-      "main": [
-        [
-          {
-            "node": "HTTP · Update last seen",
+            "node": "Execute · Analytics",
             "type": "main",
             "index": 0
           }
@@ -1198,6 +1110,24 @@
         [
           {
             "node": "Code · FAQ reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF · Prefetch": {
+      "main": [
+        [
+          {
+            "node": "Code · Build ctx",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "NocoDB · Get tenant",
             "type": "main",
             "index": 0
           }
