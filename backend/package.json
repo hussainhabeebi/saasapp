@@ -1,0 +1,14 @@
+{
+  "name": "leadvyne-nba",
+  "version": "1.0.0",
+  "description": "Next-Best-Action nightly engine for Leadvyne CRM",
+  "main": "nba.js",
+  "type": "module",
+  "scripts": {
+    "start": "node nba.js"
+  },
+  "dependencies": {
+    "node-cron": "^3.0.3",
+    "node-fetch": "^3.3.2"
+  }
+}
