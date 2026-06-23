@@ -96,6 +96,61 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .webhook-step{display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--muted)}
 .wh-num{width:20px;height:20px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
 .glabel{color:rgba(255,255,255,.45);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:-6px;font-family:var(--disp)}
+/* CHATS TAB */
+#pageChats{display:flex;flex-direction:column;min-height:0;flex:1}
+.chats-layout{display:flex;flex:1;min-height:0;overflow:hidden}
+.chat-sidebar{width:300px;flex-shrink:0;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--card)}
+.chat-sidebar-hd{padding:14px 16px;border-bottom:1px solid var(--line);flex-shrink:0}
+.chat-search{width:100%;box-sizing:border-box;background:var(--bg);border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px;color:var(--ink);font-family:var(--body);outline:none;transition:border-color .15s}
+.chat-search:focus{border-color:var(--accent)}
+.chat-contact-list{flex:1;overflow-y:auto;min-height:0}
+.chat-contact-row{display:flex;align-items:center;gap:11px;padding:11px 16px;cursor:pointer;border-bottom:1px solid var(--line);transition:background .12s}
+.chat-contact-row:hover{background:var(--bg)}
+.chat-contact-row.active{background:var(--accent-soft)}
+.cc-avatar{width:36px;height:36px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--disp);font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.cc-info{flex:1;min-width:0}
+.cc-name{font-size:13.5px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cc-phone{font-size:11.5px;color:var(--muted);font-family:var(--mono)}
+.cc-preview{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-load-more{padding:12px 16px;text-align:center;border:none;background:none;font-size:12.5px;color:var(--accent-ink);font-family:var(--disp);font-weight:600;cursor:pointer;width:100%;transition:background .12s}
+.chat-load-more:hover{background:var(--bg)}
+.chat-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg)}
+.chat-main-hd{padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line);flex-shrink:0;display:flex;align-items:center;gap:12px}
+.chat-main-name{font-family:var(--disp);font-size:15px;font-weight:700;color:var(--ink)}
+.chat-main-phone{font-size:12px;color:var(--muted);font-family:var(--mono)}
+.chat-conv-list{flex:1;overflow-y:auto;min-height:0;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.chat-conv-card{background:var(--card);border:1.5px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .15s}
+.chat-conv-hd{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;user-select:none}
+.chat-conv-hd:hover{background:var(--bg)}
+.chat-conv-id{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--accent-ink)}
+.chat-conv-status{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;font-family:var(--disp)}
+.cs-open{background:#dcfce7;color:#166534}
+.cs-resolved{background:#f1f5f9;color:#64748b}
+.cs-pending{background:#fef9c3;color:#854d0e}
+.chat-conv-time{font-size:11px;color:var(--muted);font-family:var(--mono);margin-left:auto}
+.chat-conv-chevron{font-size:14px;color:var(--muted);transition:transform .2s;margin-left:6px}
+.chat-conv-body{display:none;padding:0 14px 14px}
+.chat-conv-body.open{display:block}
+.chat-messages{display:flex;flex-direction:column;gap:8px;margin-bottom:14px;max-height:320px;overflow-y:auto;padding:4px 0}
+.chat-bubble{max-width:80%;padding:9px 13px;border-radius:12px;font-size:13px;line-height:1.5;word-break:break-word}
+.bubble-bot{align-self:flex-start;background:#f1f5f9;color:#1e293b;border-bottom-left-radius:3px}
+.bubble-user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:3px}
+.bubble-activity{align-self:center;background:none;color:var(--muted);font-size:11.5px;font-style:italic;padding:2px 0}
+.bubble-time{font-size:10.5px;opacity:.6;margin-top:3px;font-family:var(--mono)}
+.chat-assign-row{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.chat-assign-sel{flex:1;min-width:0;background:var(--bg);border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px;color:var(--ink);font-family:var(--body);outline:none;cursor:pointer}
+.chat-assign-sel:focus{border-color:var(--accent)}
+.chat-assign-btn{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12.5px;font-family:var(--disp);font-weight:600;cursor:pointer;transition:opacity .15s;white-space:nowrap}
+.chat-assign-btn:hover{opacity:.88}
+.chat-reply-row{display:flex;gap:8px;align-items:flex-end}
+.chat-reply-input{flex:1;background:var(--bg);border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px;color:var(--ink);font-family:var(--body);resize:vertical;min-height:60px;outline:none;transition:border-color .15s}
+.chat-reply-input:focus{border-color:var(--accent)}
+.chat-reply-send{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-size:13px;font-family:var(--disp);font-weight:600;cursor:pointer;transition:opacity .15s;white-space:nowrap;align-self:flex-end}
+.chat-reply-send:hover{opacity:.88}
+.chat-msg-loading{text-align:center;padding:20px;color:var(--muted);font-size:13px}
+.chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--muted);text-align:center;gap:10px;padding:40px}
+.chat-empty-icon{font-size:42px;opacity:.4}
+@media(max-width:767px){.chat-sidebar{width:100%;border-right:none;border-bottom:1px solid var(--line);max-height:40vh}.chats-layout{flex-direction:column}}
 
 /* ── APP SHELL ── */
 #app{position:fixed;inset:0;display:none;flex-direction:column}
@@ -120,6 +175,8 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 /* pages */
 #pages{flex:1;overflow:hidden;position:relative;min-width:0}
 .page{position:absolute;inset:0;overflow-y:auto;padding-bottom:calc(var(--nav)+16px)}
+#pageChats{overflow:hidden;display:none;flex-direction:column}
+#pageChats:not(.hidden){display:flex}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
 #pageAgency:not(.hidden){display:flex;flex-direction:column}
@@ -680,6 +737,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')">🛒 Ecommerce</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
+    <button class="dnTab" data-page="chats">💬 Chats</button>
     <button class="dnTab" data-page="tasks">✅ Tasks</button>
     <button class="dnTab" data-page="broadcast">📢 Broadcast</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
@@ -852,6 +910,29 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
       <div class="page-pad" id="recruitContent">
         <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
+      </div>
+    </div>
+
+    <!-- CHATS -->
+    <div class="page hidden" id="pageChats">
+      <div class="chats-layout">
+        <!-- Left: contact list -->
+        <div class="chat-sidebar">
+          <div class="chat-sidebar-hd">
+            <input class="chat-search" id="chatSearch" type="text" placeholder="Search contacts…" oninput="chatSearchDebounce()" autocomplete="off" />
+          </div>
+          <div class="chat-contact-list" id="chatContactList">
+            <div class="chat-empty"><div class="chat-empty-icon">👤</div><div>Loading contacts…</div></div>
+          </div>
+          <button class="chat-load-more" id="chatLoadMore" style="display:none" onclick="chatLoadMore()">Load more contacts ↓</button>
+        </div>
+        <!-- Right: conversation panel -->
+        <div class="chat-main" id="chatMain">
+          <div class="chat-empty" style="flex:1;display:flex">
+            <div class="chat-empty-icon">💬</div>
+            <div>Select a contact to view their chats</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1130,6 +1211,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
     <button class="bnItem" data-page="agency" id="bnAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
     <button class="bnItem" data-page="recruit" id="bnRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
+    <button class="bnItem" data-page="chats"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
     <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
     <button class="bnItem" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
@@ -1933,6 +2015,7 @@ function navigate(page){
   if(page==='agency') renderAgency();
   if(page==='recruit') renderRecruit();
   if(page==='settings') populateSettings();
+  if(page==='chats') openChatsTab();
 }
 
 document.querySelectorAll('.bnItem,.dnTab').forEach(b=>{
@@ -5539,6 +5622,223 @@ $id('saveRecruitEnabled').addEventListener('click',async()=>{
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
+
+/* ── CHATS TAB ── */
+let _chatPage=1, _chatHasMore=false, _chatContact=null, _chatAgents=[], _chatAgentsLoaded=false;
+let _chatSearchTimer=null, _chatSearchAbort=null, _chatOpenConvId=null;
+
+function cwBase(){return (clientRecord?.chatwoot_base||'').replace(/\/$/,'');}
+function cwAccountId(){return clientRecord?.chatwoot_account_id||'';}
+function cwToken(){return clientRecord?.chatwoot_token||'';}
+function cwHeaders(){return {'api_access_token':cwToken(),'Content-Type':'application/json'};}
+
+async function openChatsTab(){
+  if(!cwBase()||!cwAccountId()||!cwToken()){
+    $id('chatContactList').innerHTML='<div class="chat-empty"><div class="chat-empty-icon">⚠️</div><div>Chatwoot credentials not configured.<br>Check Settings.</div></div>';
+    return;
+  }
+  _chatPage=1; _chatHasMore=false; _chatContact=null; _chatOpenConvId=null;
+  $id('chatSearch').value='';
+  renderChatEmpty();
+  await Promise.all([loadChatContacts(1, true), loadChatAgents()]);
+}
+
+async function loadChatAgents(){
+  if(_chatAgentsLoaded) return;
+  try{
+    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/agents`,{headers:cwHeaders()});
+    if(r.ok){_chatAgents=await r.json(); _chatAgentsLoaded=true;}
+  }catch(e){}
+}
+
+async function loadChatContacts(page=1, reset=false){
+  const list=$id('chatContactList');
+  if(reset) list.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div>';
+  try{
+    const q=($id('chatSearch').value||'').trim();
+    const url=q
+      ? `${cwBase()}/api/v1/accounts/${cwAccountId()}/contacts/search?q=${encodeURIComponent(q)}&page=${page}&include_contacts=true`
+      : `${cwBase()}/api/v1/accounts/${cwAccountId()}/contacts?page=${page}&sort=last_activity_at`;
+    const r=await fetch(url,{headers:cwHeaders(),signal:_chatSearchAbort?.signal});
+    if(!r.ok) throw new Error(r.status);
+    const data=await r.json();
+    const contacts=data.payload||data.contacts||[];
+    const meta=data.meta||{};
+    _chatHasMore=(meta.count>page*15)||(contacts.length===15);
+    if(reset) list.innerHTML='';
+    contacts.forEach(c=>list.insertAdjacentHTML('beforeend',renderContactRow(c)));
+    if(!contacts.length&&reset) list.innerHTML='<div class="chat-empty"><div class="chat-empty-icon">🔍</div><div>No contacts found</div></div>';
+    $id('chatLoadMore').style.display=_chatHasMore?'':'none';
+  }catch(e){
+    if(e.name==='AbortError') return;
+    if(reset) list.innerHTML='<div class="chat-empty"><div class="chat-empty-icon">⚠️</div><div>Failed to load contacts</div></div>';
+  }
+}
+
+function renderContactRow(c){
+  const name=esc(c.name||'Unknown');
+  const phone=esc(c.phone_number||'');
+  const initial=(c.name||'?')[0].toUpperCase();
+  const preview=esc(c.last_activity_at?timeAgo(c.last_activity_at*1000+''):'');
+  return `<div class="chat-contact-row" id="ccRow${c.id}" onclick="chatSelectContact(${c.id},'${name.replace(/'/g,"\\'")}','${phone.replace(/'/g,"\\'")}')">
+    <div class="cc-avatar">${initial}</div>
+    <div class="cc-info">
+      <div class="cc-name">${name}</div>
+      <div class="cc-phone">${phone}</div>
+      <div class="cc-preview">${preview}</div>
+    </div>
+  </div>`;
+}
+
+function chatSearchDebounce(){
+  clearTimeout(_chatSearchTimer);
+  if(_chatSearchAbort){_chatSearchAbort.abort();}
+  _chatSearchAbort=new AbortController();
+  _chatSearchTimer=setTimeout(()=>{_chatPage=1;loadChatContacts(1,true);},400);
+}
+
+async function chatLoadMore(){
+  _chatPage++;
+  await loadChatContacts(_chatPage, false);
+}
+
+async function chatSelectContact(id, name, phone){
+  document.querySelectorAll('.chat-contact-row').forEach(r=>r.classList.remove('active'));
+  const row=$id('ccRow'+id);
+  if(row) row.classList.add('active');
+  _chatContact={id,name,phone};
+  _chatOpenConvId=null;
+  const main=$id('chatMain');
+  main.innerHTML=`<div class="chat-main-hd">
+    <div class="cc-avatar" style="width:38px;height:38px;font-size:14px">${name[0].toUpperCase()}</div>
+    <div><div class="chat-main-name">${esc(name)}</div><div class="chat-main-phone">${esc(phone)}</div></div>
+  </div>
+  <div class="chat-conv-list" id="chatConvList"><div class="chat-msg-loading">Loading conversations…</div></div>`;
+  try{
+    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/contacts/${id}/conversations`,{headers:cwHeaders()});
+    if(!r.ok) throw new Error();
+    const data=await r.json();
+    const convs=(data.payload||[]).sort((a,b)=>b.id-a.id);
+    const list=$id('chatConvList');
+    if(!convs.length){list.innerHTML='<div class="chat-empty"><div class="chat-empty-icon">💬</div><div>No conversations yet</div></div>';return;}
+    list.innerHTML=convs.map(cv=>renderConvCard(cv)).join('');
+  }catch(e){
+    const list=$id('chatConvList');
+    if(list) list.innerHTML='<div class="chat-empty"><div class="chat-empty-icon">⚠️</div><div>Could not load conversations</div></div>';
+  }
+}
+
+function renderConvCard(cv){
+  const statusLabel={open:'Open',resolved:'Resolved',pending:'Pending'}[cv.status]||cv.status;
+  const statusCls={open:'cs-open',resolved:'cs-resolved',pending:'cs-pending'}[cv.status]||'cs-open';
+  const ts=cv.last_activity_at?timeAgo(cv.last_activity_at*1000+''):'';
+  const assigneeId=cv.meta?.assignee?.id||'';
+  return `<div class="chat-conv-card" id="convCard${cv.id}">
+    <div class="chat-conv-hd" onclick="chatToggleConv(${cv.id})">
+      <span class="chat-conv-id">#${cv.id}</span>
+      <span class="chat-conv-status ${statusCls}">${statusLabel}</span>
+      <span class="chat-conv-time">${ts}</span>
+      <span class="chat-conv-chevron" id="chevron${cv.id}">›</span>
+    </div>
+    <div class="chat-conv-body" id="convBody${cv.id}">
+      <div class="chat-messages" id="convMsgs${cv.id}"><div class="chat-msg-loading">Loading…</div></div>
+      <div class="chat-assign-row">
+        <select class="chat-assign-sel" id="assignSel${cv.id}">
+          <option value="">— Assign agent —</option>
+          ${_chatAgents.map(a=>`<option value="${a.id}"${a.id==assigneeId?' selected':''}>${esc(a.name)}</option>`).join('')}
+        </select>
+        <button class="chat-assign-btn" onclick="chatAssign(${cv.id})">Assign</button>
+      </div>
+      <div class="chat-reply-row">
+        <textarea class="chat-reply-input" id="replyInput${cv.id}" placeholder="Type a reply…" rows="2"></textarea>
+        <button class="chat-reply-send" onclick="chatSendReply(${cv.id})">Send ✈</button>
+      </div>
+      <div class="save-msg" id="convMsg${cv.id}" style="margin-top:6px;font-size:12px"></div>
+    </div>
+  </div>`;
+}
+
+async function chatToggleConv(id){
+  const body=$id('convBody'+id);
+  const chevron=$id('chevron'+id);
+  const alreadyOpen=body.classList.contains('open');
+  // Close all
+  document.querySelectorAll('.chat-conv-body').forEach(b=>b.classList.remove('open'));
+  document.querySelectorAll('.chat-conv-chevron').forEach(c=>{c.style.transform='';});
+  if(alreadyOpen){_chatOpenConvId=null;return;}
+  body.classList.add('open');
+  chevron.style.transform='rotate(90deg)';
+  _chatOpenConvId=id;
+  if($id('convMsgs'+id).querySelector('.chat-msg-loading')){
+    await loadConvMessages(id);
+  }
+}
+
+async function loadConvMessages(convId){
+  const box=$id('convMsgs'+convId);
+  try{
+    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{headers:cwHeaders()});
+    if(!r.ok) throw new Error();
+    const data=await r.json();
+    const msgs=(data.payload||[]).filter(m=>m.message_type!==2).sort((a,b)=>a.created_at-b.created_at);
+    if(!msgs.length){box.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:12px">No messages</div>';return;}
+    box.innerHTML=msgs.map(m=>{
+      const isBot=m.message_type===1; // outgoing
+      const cls=isBot?'bubble-bot':'bubble-user';
+      const ts=m.created_at?new Date(m.created_at*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
+      return `<div class="chat-bubble ${cls}">
+        ${esc(m.content||'')}
+        <div class="bubble-time">${ts}</div>
+      </div>`;
+    }).join('');
+    box.scrollTop=box.scrollHeight;
+  }catch(e){
+    box.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:12px">Failed to load messages</div>';
+  }
+}
+
+async function chatSendReply(convId){
+  const input=$id('replyInput'+convId);
+  const msg=$id('convMsg'+convId);
+  const text=(input.value||'').trim();
+  if(!text) return;
+  msg.textContent='Sending…'; msg.className='save-msg';
+  try{
+    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
+      method:'POST', headers:cwHeaders(),
+      body:JSON.stringify({content:text,message_type:'outgoing',private:false})
+    });
+    if(!r.ok) throw new Error();
+    input.value='';
+    msg.textContent='Sent ✓'; msg.className='save-msg';
+    await loadConvMessages(convId);
+    setTimeout(()=>msg.textContent='',2500);
+  }catch(e){msg.textContent='Failed to send'; msg.className='save-msg err';}
+}
+
+async function chatAssign(convId){
+  const sel=$id('assignSel'+convId);
+  const msg=$id('convMsg'+convId);
+  const agentId=parseInt(sel.value);
+  if(!agentId){msg.textContent='Select an agent first'; msg.className='save-msg err'; setTimeout(()=>msg.textContent='',2000); return;}
+  msg.textContent='Assigning…'; msg.className='save-msg';
+  try{
+    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/assignments`,{
+      method:'POST', headers:cwHeaders(),
+      body:JSON.stringify({assignee_id:agentId})
+    });
+    if(!r.ok) throw new Error();
+    msg.textContent='Assigned ✓'; msg.className='save-msg';
+    setTimeout(()=>msg.textContent='',2500);
+  }catch(e){msg.textContent='Assignment failed'; msg.className='save-msg err';}
+}
+
+function renderChatEmpty(){
+  $id('chatMain').innerHTML=`<div class="chat-empty">
+    <div class="chat-empty-icon">💬</div>
+    <div>Select a contact to view their chats</div>
+  </div>`;
+}
 
 /* ── BOOT ── */
 (function(){
