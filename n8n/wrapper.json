@@ -2,37 +2,16 @@
   "name": "Leadvyne · Wrapper (Industry Router)",
   "nodes": [
     {
-      "id": "webhook-trigger",
-      "name": "Chatwoot Webhook",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
+      "id": "exec-trigger",
+      "name": "When called by per-client webhook",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
       "position": [
         240,
         300
       ],
-      "webhookId": "leadvyne-chatwoot-router",
       "parameters": {
-        "httpMethod": "POST",
-        "path": "leadvyne-chatwoot",
-        "responseMode": "responseNode",
-        "options": {}
-      }
-    },
-    {
-      "id": "respond-ok",
-      "name": "Respond 200",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
-      "position": [
-        460,
-        160
-      ],
-      "parameters": {
-        "respondWith": "text",
-        "responseBody": "ok",
-        "options": {
-          "responseCode": 200
-        }
+        "inputSource": "passthrough"
       }
     },
     {
@@ -247,14 +226,9 @@
     }
   ],
   "connections": {
-    "Chatwoot Webhook": {
+    "When called by per-client webhook": {
       "main": [
         [
-          {
-            "node": "Respond 200",
-            "type": "main",
-            "index": 0
-          },
           {
             "node": "Code · Filter & extract",
             "type": "main",

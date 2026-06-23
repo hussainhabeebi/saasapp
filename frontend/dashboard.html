@@ -547,6 +547,17 @@ const TODAY = new Date().toISOString().slice(0,10);
     <div id="gPanelSignup" style="display:none">
       <div class="gfld">
         <input class="ginput" id="sgName" type="text" placeholder="Business name *" />
+        <select class="ginput" id="sgIndustry" style="color:rgba(255,255,255,.7)">
+          <option value="general">General Business</option>
+          <option value="travel">Travel & Tourism</option>
+          <option value="ecommerce">Ecommerce</option>
+          <option value="consultancy">Consulting / HR</option>
+          <option value="insurance">Insurance</option>
+          <option value="real_estate">Real Estate</option>
+          <option value="healthcare">Healthcare</option>
+          <option value="education">Education</option>
+          <option value="automotive">Automotive</option>
+        </select>
         <input class="ginput" id="sgAccountId" type="text" placeholder="Chatwoot Account ID *" />
         <input class="ginput" id="sgInboxId" type="text" placeholder="Chatwoot Inbox ID *" />
         <input class="ginput" id="sgToken" type="text" placeholder="Chatwoot User Token *" />
@@ -1721,7 +1732,7 @@ async function doSignup(){
         chatwoot_inbox_id:inboxId,
         chatwoot_token:token,
         dashboard_password:password,
-        language:'en',industry:'general'
+        language:'en',industry:$id('sgIndustry').value||'general'
       })
     });
     const data=await res.json();
