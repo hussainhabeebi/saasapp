@@ -152,9 +152,29 @@ textarea{resize:vertical;min-height:90px;line-height:1.6}
   .cat-grid{grid-template-columns:1fr}
 }
 
-::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+::-webkit-scrollbar-thumb{background:var(--ls);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+
+/* ── PROFESSIONAL POLISH ── */
+.card{border:1px solid var(--line);transition:box-shadow .2s}
+.card:hover{box-shadow:0 4px 20px rgba(0,0,0,.07)}
+.btn-primary{box-shadow:0 2px 6px rgba(14,124,90,.2);transition:opacity .15s,transform .12s,box-shadow .15s}
+.btn-primary:hover{opacity:1;box-shadow:0 4px 14px rgba(14,124,90,.3);transform:translateY(-1px)}
+.btn-primary:active{transform:none;box-shadow:none}
+.cat-card{transition:border-color .18s,background .18s,box-shadow .18s,transform .15s}
+.cat-card:hover{transform:translateY(-2px)}
+.tpl-card{transition:border-color .15s,background .15s,box-shadow .15s,transform .15s}
+.tpl-card:hover{transform:translateY(-1px)}
+.tpl-card.selected{transform:none}
+input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
+.tabs{border:1px solid var(--line)}
+.tab.active{box-shadow:0 2px 8px rgba(14,124,90,.2)}
+.gbox{animation:gateIn .4s cubic-bezier(.22,.61,.36,1)}
+@keyframes gateIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.gbtn{box-shadow:0 2px 8px rgba(14,124,90,.25);transition:opacity .15s,box-shadow .15s,transform .12s}
+.gbtn:hover{opacity:1;box-shadow:0 4px 16px rgba(14,124,90,.35);transform:translateY(-1px)}
 </style>
 </head>
 <body>
