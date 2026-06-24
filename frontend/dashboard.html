@@ -289,6 +289,11 @@ tr:hover td{background:#FAFCFB}
 
 /* ── LEADS LIST ── */
 .leads-toolbar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+/* leads table view */
+.leads-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.leads-tbl th{background:var(--bg);padding:10px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.04em;text-transform:uppercase;border-bottom:2px solid var(--line);white-space:nowrap}
+.leads-tbl td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis}
+.leads-tbl tr:hover td{background:var(--accent-soft);cursor:pointer}
 .search-input{flex:1;min-width:160px;padding:10px 14px;border:1.5px solid var(--line);border-radius:var(--r-sm);font-size:14px;background:var(--card);color:var(--ink);transition:border-color .15s;box-shadow:var(--shadow)}
 .search-input:focus{outline:none;border-color:var(--accent)}
 .btn{padding:10px 18px;border:none;border-radius:var(--r-sm);font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:background .15s,transform .1s}
@@ -316,14 +321,14 @@ tr:hover td{background:#FAFCFB}
 #overlay{position:fixed;inset:0;background:rgba(10,22,16,.55);z-index:100;display:none;backdrop-filter:blur(4px)}
 #overlay.show{display:block}
 .modal{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-radius:24px 24px 0 0;z-index:101;transform:translateY(100%);transition:transform .35s cubic-bezier(.32,.72,0,1);max-height:92vh;display:flex;flex-direction:column}
-@media(min-width:768px){.modal{top:50%;left:50%;right:auto;bottom:auto;width:540px;border-radius:var(--r);transform:translate(-50%,-42%);opacity:0;transition:transform .25s,opacity .25s;max-height:85vh}}
+@media(min-width:768px){.modal{top:50%;left:50%;right:auto;bottom:auto;width:540px;border-radius:var(--r);transform:translate(-50%,-42%);opacity:0;pointer-events:none;transition:transform .25s,opacity .25s;max-height:85vh}}
 .modal.open{transform:translateY(0)}
-@media(min-width:768px){.modal.open{transform:translate(-50%,-50%);opacity:1}}
+@media(min-width:768px){.modal.open{transform:translate(-50%,-50%);opacity:1;pointer-events:auto}}
 .modal-hd{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-shrink:0}
 .modal-drag{width:40px;height:5px;background:var(--line);border-radius:3px;margin:0 auto 14px;display:block}
 @media(min-width:768px){.modal-drag{display:none}}
 .modal-title{font-family:var(--disp);font-size:16px;font-weight:700;flex:1}
-.modal-body{overflow-y:auto;padding:18px 22px;flex:1}
+.modal-body{overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:18px 22px;flex:1}
 .modal-footer{padding:16px 22px;border-top:1px solid var(--line);display:flex;gap:10px;flex-shrink:0}
 
 /* form */
@@ -823,6 +828,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div id="wStep2" style="display:none">
         <div class="wiz-label">Step 2 of 3 · Connect WhatsApp</div>
         <div class="gfld">
+          <input class="ginput" id="sgCwBase" type="url" placeholder="Chatwoot URL (e.g. https://app.chatwoot.com) *" />
           <input class="ginput" id="sgAccountId" type="text" placeholder="Chatwoot Account ID *" />
           <input class="ginput" id="sgInboxId" type="text" placeholder="Chatwoot Inbox ID *" />
           <input class="ginput" id="sgToken" type="text" placeholder="Chatwoot User Token *" />
@@ -991,12 +997,14 @@ const TODAY = new Date().toISOString().slice(0,10);
             <option value="">All owners</option>
           </select>
           <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
+          <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
           <button class="btn btn-primary btn-sm" onclick="openAddLead()">+ Add Lead</button>
           <button class="btn btn-secondary btn-sm" onclick="exportCsv()">📥 CSV</button>
           <button class="btn btn-secondary btn-sm" onclick="openImport()">📤 Import</button>
         </div>
         <div class="card" style="padding:0;overflow:hidden">
           <div id="leadsList"></div>
+          <div id="leadsTable" style="display:none;overflow-x:auto"></div>
         </div>
       </div>
     </div>
@@ -1126,6 +1134,15 @@ const TODAY = new Date().toISOString().slice(0,10);
               <div class="webhook-step"><div class="wh-num">1</div><span>In Chatwoot, go to <strong>Settings → Inboxes → [Your Inbox] → Configuration</strong></span></div>
               <div class="webhook-step"><div class="wh-num">2</div><span>Scroll to <strong>Webhook URL</strong> and paste the URL above</span></div>
               <div class="webhook-step"><div class="wh-num">3</div><span>Enable the <strong>Messages Created</strong> event and save</span></div>
+            </div>
+            <div style="margin-top:14px">
+              <label class="form-label">Chatwoot Base URL</label>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <input class="form-input" id="cfgCwBase" type="url" placeholder="https://app.chatwoot.com" style="flex:1;min-width:220px" />
+                <button class="save-btn" onclick="saveCwBase()">Save</button>
+                <span class="save-msg" id="saveCwBaseMsg"></span>
+              </div>
+              <div style="font-size:11px;color:var(--muted);margin-top:5px">Required for the Chats tab to load contacts and conversations.</div>
             </div>
           </div>
         </div>
@@ -2062,8 +2079,8 @@ function wizNext(step){
     $id('sgErr1').textContent='';
   }
   if(step===3){
-    const a=$id('sgAccountId').value.trim(), b=$id('sgInboxId').value.trim(), c=$id('sgToken').value.trim();
-    if(!a||!b||!c){$id('sgErr2').textContent='All three Chatwoot fields are required.';return;}
+    const a=$id('sgAccountId').value.trim(), b=$id('sgInboxId').value.trim(), c=$id('sgToken').value.trim(), d=$id('sgCwBase').value.trim();
+    if(!a||!b||!c||!d){$id('sgErr2').textContent='All Chatwoot fields are required.';return;}
     $id('sgErr2').textContent='';
   }
   // Update dots
@@ -2083,13 +2100,14 @@ function wizNext(step){
 
 async function doSignup(){
   const name=$id('sgName').value.trim();
+  const cwBase=($id('sgCwBase').value.trim()).replace(/\/$/,'');
   const accountId=$id('sgAccountId').value.trim();
   const inboxId=$id('sgInboxId').value.trim();
   const token=$id('sgToken').value.trim();
   const password=$id('sgPassword').value.trim();
   const err=$id('sgErr'),ok=$id('sgOk'),btn=$id('sgBtn');
   err.textContent='';ok.textContent='';
-  if(!name||!accountId||!inboxId||!token||!password){err.textContent='All fields are required.';return;}
+  if(!name||!cwBase||!accountId||!inboxId||!token||!password){err.textContent='All fields are required.';return;}
   btn.disabled=true;btn.textContent='Creating account…';
   try{
     const res=await fetch('https://apps.leadvyne.com/webhook/leadvyne-onboard',{
@@ -2097,6 +2115,7 @@ async function doSignup(){
       body:JSON.stringify({
         passcode:'Bath*2026*ld',
         client_name:name,
+        chatwoot_base:cwBase,
         chatwoot_account_id:accountId,
         chatwoot_inbox_id:inboxId,
         chatwoot_token:token,
@@ -2170,7 +2189,7 @@ function navigate(page){
   $id('page'+cap(page)).classList.remove('hidden');
   document.querySelectorAll(`[data-page="${page}"]`).forEach(b=>b.classList.add('active'));
   if(page==='pipeline') renderKanban();
-  if(page==='leads') renderLeadsList();
+  if(page==='leads'){if(_leadsTableView)renderLeadsTable();else renderLeadsList();}
   if(page==='travel') renderTravel();
   if(page==='agency') renderAgency();
   if(page==='recruit') renderRecruit();
@@ -2470,7 +2489,62 @@ function renderLeadsList(){
   }
 }
 
-function filterLeads(){_leadsPage=1;renderLeadsList();}
+function filterLeads(){_leadsPage=1;if(_leadsTableView)renderLeadsTable();else renderLeadsList();}
+
+let _leadsTableView=false;
+function toggleLeadsView(){
+  _leadsTableView=!_leadsTableView;
+  const btn=$id('leadsViewBtn');
+  if(btn)btn.textContent=_leadsTableView?'☰':'⊞';
+  $id('leadsList').style.display=_leadsTableView?'none':'';
+  $id('leadsTable').style.display=_leadsTableView?'':'none';
+  if(_leadsTableView)renderLeadsTable();
+  else renderLeadsList();
+}
+
+function renderLeadsTable(){
+  const q=$id('leadSearch')?.value.toLowerCase()||'';
+  const sf=$id('leadStageFilter')?.value||'';
+  const of=$id('leadOwnerFilter')?.value||'';
+  const filtered=allLeads.filter(l=>{
+    if(q){const nm=(l.Name||'').toLowerCase().includes(q);const ph=(l.Phone||'').includes(q);if(!nm&&!ph)return false;}
+    if(sf&&l.Stage!==sf)return false;
+    if(of&&(l.Owner||'')!==of)return false;
+    return true;
+  });
+  const el=$id('leadsTable');
+  if(!filtered.length){el.innerHTML='<div class="empty-state" style="padding:24px">No leads match your filter.</div>';return;}
+  const QA_COLS=['age','profession','email','city','country','budget','language','source'];
+  const rows=filtered.slice(0,_leadsPage*LEADS_PGS);
+  const remaining=filtered.length-rows.length;
+  el.innerHTML=`<table class="leads-tbl"><thead><tr>
+    <th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Owner</th>
+    <th>Age</th><th>Profession</th><th>Email</th><th>City</th><th>Country</th><th>Budget</th><th>Language</th><th>Source</th>
+    <th>Date</th>
+  </tr></thead><tbody>${rows.map(l=>{
+    let qa={};try{qa=JSON.parse(l.QualAnswers||'{}');}catch(e){}
+    const qGet=k=>{const lk=k.toLowerCase();return Object.entries(qa).find(([key])=>key.toLowerCase()===lk)?.[1]||l[k]||l[k.charAt(0).toUpperCase()+k.slice(1)]||'';}
+    return `<tr onclick="openDetail(${l.Id})">
+      <td>${esc(l.Name||'Unknown')}</td>
+      <td>${esc(maskPhone(l.Phone))}</td>
+      <td>${esc(l.Stage||'new')}</td>
+      <td>${scoreBadge(l.Score)}</td>
+      <td>${esc(l.Owner||'—')}</td>
+      <td>${esc(qGet('age'))}</td>
+      <td>${esc(qGet('profession'))}</td>
+      <td>${esc(qGet('email'))}</td>
+      <td>${esc(qGet('city'))}</td>
+      <td>${esc(qGet('country'))}</td>
+      <td>${esc(qGet('budget')||l.Budget||'')}</td>
+      <td>${esc(l.Language||qGet('language'))}</td>
+      <td>${esc(l.Source||qGet('source'))}</td>
+      <td>${esc(fmtDateShort(l.Date))}</td>
+    </tr>`;
+  }).join('')}</tbody></table>`;
+  if(remaining>0){
+    el.innerHTML+=`<div style="text-align:center;padding:14px"><button class="btn btn-secondary btn-sm" onclick="_leadsPage++;renderLeadsTable()">Load more (${remaining} remaining)</button></div>`;
+  }
+}
 
 /* ── ADD / EDIT LEAD ── */
 function openAddLead(){
@@ -2545,7 +2619,7 @@ async function saveLead(){
   sessionStorage.removeItem(_CACHE_KEY()); // bust cache so fresh data loads
   closeModal('modalLead');
   await loadAll();
-  renderLeadsList();
+  if(_leadsTableView)renderLeadsTable();else renderLeadsList();
 }
 
 /* ── LEAD DETAIL ── */
@@ -2734,6 +2808,22 @@ function exportSingle(){
 function dlFile(href,name){const a=document.createElement('a');a.href=href;a.download=name;a.click();}
 
 /* ── GOOGLE SHEETS SYNC ── */
+function saveCwBase(){
+  const val=($id('cfgCwBase').value.trim()).replace(/\/$/,'');
+  const msg=$id('saveCwBaseMsg');
+  if(!val){msg.textContent='Enter a URL.';msg.className='save-msg err';return;}
+  msg.textContent='Saving…';msg.className='save-msg';
+  fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`,{
+    method:'PATCH',
+    headers:{'xc-token':NOCODB_TOKEN,'Content-Type':'application/json'},
+    body:JSON.stringify({Id:parseInt(clientId),chatwoot_base:val})
+  }).then(r=>{
+    if(!r.ok)throw new Error();
+    msg.textContent='✓ Saved';msg.className='save-msg';
+    clientRecord.chatwoot_base=val;
+  }).catch(()=>{msg.textContent='Save failed.';msg.className='save-msg err';});
+}
+
 function saveGsheetConfig(){
   const url = $id('cfgGsheetUrl').value.trim();
   const cols = [...document.querySelectorAll('#gsheetColPicker input:checked')].map(i=>i.value);
@@ -2838,6 +2928,8 @@ function timeAgo(iso){
 function populateSettings(){
   if(!clientRecord)return;
   showWebhookUrl();
+  // chatwoot base
+  $id('cfgCwBase').value=clientRecord.chatwoot_base||'';
   // gsheet
   if(clientRecord.gsheet_url) $id('cfgGsheetUrl').value=clientRecord.gsheet_url;
   if(clientRecord.gsheet_cols){
@@ -3619,7 +3711,7 @@ function toggleConvSearch(){
   btn.style.background=_convSearchActive?'var(--accent)':'';
   btn.style.color=_convSearchActive?'#fff':'';
   $id('leadSearch').placeholder=_convSearchActive?'Search name, phone or conversation…':'Search name or phone…';
-  renderLeadsList();
+  if(_leadsTableView)renderLeadsTable();else renderLeadsList();
 }
 
 /* ── PDF REPORT ── */
