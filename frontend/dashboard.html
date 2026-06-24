@@ -6071,223 +6071,156 @@ function renderNbaChip(lead){
 }
 
 /* ── CHATS TAB ── */
-let _chatPage=1, _chatHasMore=false, _chatContact=null, _chatAgents=[], _chatAgentsLoaded=false;
-let _chatSearchTimer=null, _chatSearchAbort=null, _chatOpenConvId=null;
+/* ── CHATS TAB (uses local allLeads + ConvHistory) ── */
+let _chatSearchTimer=null, _chatLeadId=null;
 
-function cwBase(){return (clientRecord?.chatwoot_base||'').replace(/\/$/,'');}
-function cwAccountId(){return clientRecord?.chatwoot_account_id||'';}
-function cwToken(){return clientRecord?.chatwoot_token||'';}
-function cwHeaders(){return {'api_access_token':cwToken(),'Content-Type':'application/json'};}
-
-async function openChatsTab(){
-  if(!cwAccountId()||!cwToken()){
-    $id('chatContactList').innerHTML='<div class="chat-empty"><div class="chat-empty-icon">⚠️</div><div>Chatwoot credentials not configured.<br><button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="navigate(\'settings\')">Open Settings →</button></div></div>';
-    return;
-  }
-  if(!cwBase()){
-    $id('chatContactList').innerHTML='<div class="chat-empty"><div class="chat-empty-icon">🔗</div><div>Chatwoot Base URL not set.<br>Go to Settings → Chatwoot Webhook and enter your Chatwoot URL (e.g. https://app.chatwoot.com).<br><button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="navigate(\'settings\')">Open Settings →</button></div></div>';
-    return;
-  }
-  _chatPage=1; _chatHasMore=false; _chatContact=null; _chatOpenConvId=null;
+function openChatsTab(){
+  _chatLeadId=null;
   $id('chatSearch').value='';
   renderChatEmpty();
-  await Promise.all([loadChatContacts(1, true), loadChatAgents()]);
+  renderChatContacts();
 }
 
-async function loadChatAgents(){
-  if(_chatAgentsLoaded) return;
-  try{
-    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/agents`,{headers:cwHeaders()});
-    if(r.ok){_chatAgents=await r.json(); _chatAgentsLoaded=true;}
-  }catch(e){}
-}
-
-async function loadChatContacts(page=1, reset=false){
+function renderChatContacts(){
+  const q=($id('chatSearch').value||'').trim().toLowerCase();
   const list=$id('chatContactList');
-  if(reset) list.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div>';
-  try{
-    const q=($id('chatSearch').value||'').trim();
-    const url=q
-      ? `${cwBase()}/api/v1/accounts/${cwAccountId()}/contacts/search?q=${encodeURIComponent(q)}&page=${page}&include_contacts=true`
-      : `${cwBase()}/api/v1/accounts/${cwAccountId()}/contacts?page=${page}&sort=last_activity_at`;
-    const r=await fetch(url,{headers:cwHeaders(),signal:_chatSearchAbort?.signal});
-    if(!r.ok) throw new Error(r.status);
-    const data=await r.json();
-    const contacts=data.payload||data.contacts||[];
-    const meta=data.meta||{};
-    _chatHasMore=(meta.count>page*15)||(contacts.length===15);
-    if(reset) list.innerHTML='';
-    contacts.forEach(c=>list.insertAdjacentHTML('beforeend',renderContactRow(c)));
-    if(!contacts.length&&reset) list.innerHTML='<div class="chat-empty"><div class="chat-empty-icon">🔍</div><div>No contacts found</div></div>';
-    $id('chatLoadMore').style.display=_chatHasMore?'':'none';
-  }catch(e){
-    if(e.name==='AbortError') return;
-    if(reset) list.innerHTML=`<div class="chat-empty"><div class="chat-empty-icon">⚠️</div><div>Failed to load contacts.<br><span style="font-size:11px;color:var(--muted)">Check your Chatwoot URL: ${esc(cwBase())}</span><br><button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="navigate('settings')">Settings →</button></div></div>`;
-  }
-}
+  // Only show leads that have conversation history
+  let leads=[...allLeads].filter(l=>{
+    if(!l.ConvHistory||l.ConvHistory==='[]') return false;
+    if(q){
+      const nm=(l.Name||'').toLowerCase().includes(q);
+      const ph=(l.Phone||'').includes(q);
+      let msgMatch=false;
+      try{msgMatch=JSON.parse(l.ConvHistory||'[]').some(m=>(m.content||'').toLowerCase().includes(q));}catch(e){}
+      return nm||ph||msgMatch;
+    }
+    return true;
+  }).sort((a,b)=>(b.LastMsgAt||b.Date||'').localeCompare(a.LastMsgAt||a.Date||''));
 
-function renderContactRow(c){
-  const name=esc(c.name||'Unknown');
-  const phone=esc(c.phone_number||'');
-  const initial=(c.name||'?')[0].toUpperCase();
-  const preview=esc(c.last_activity_at?timeAgo(c.last_activity_at*1000+''):'');
-  return `<div class="chat-contact-row" id="ccRow${c.id}" onclick="chatSelectContact(${c.id},'${name.replace(/'/g,"\\'")}','${phone.replace(/'/g,"\\'")}')">
-    <div class="cc-avatar">${initial}</div>
-    <div class="cc-info">
-      <div class="cc-name">${name}</div>
-      <div class="cc-phone">${phone}</div>
-      <div class="cc-preview">${preview}</div>
-    </div>
-  </div>`;
+  if(!leads.length){
+    list.innerHTML=`<div class="chat-empty"><div class="chat-empty-icon">${q?'🔍':'💬'}</div><div>${q?'No matches found':'No conversations yet'}</div></div>`;
+    $id('chatLoadMore').style.display='none';
+    return;
+  }
+
+  list.innerHTML=leads.map(l=>{
+    let lastMsg='';
+    try{
+      const h=JSON.parse(l.ConvHistory||'[]');
+      const last=h[h.length-1];
+      if(last) lastMsg=(last.content||'').slice(0,50);
+    }catch(e){}
+    const initial=(l.Name||l.Phone||'?')[0].toUpperCase();
+    const when=timeAgo(l.LastMsgAt||l.Date||'');
+    const scoreDot=l.Score==='Hot'?'🔴':l.Score==='Warm'?'🟡':'';
+    return `<div class="chat-contact-row${_chatLeadId===l.Id?' active':''}" id="ccRow${l.Id}" onclick="chatSelectLead(${l.Id})">
+      <div class="cc-avatar">${initial}</div>
+      <div class="cc-info">
+        <div class="cc-name">${esc(l.Name||'Unknown')} ${scoreDot}</div>
+        <div class="cc-phone">${esc(maskPhone(l.Phone))}</div>
+        <div class="cc-preview">${esc(lastMsg)}</div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);flex-shrink:0;text-align:right">
+        <div>${esc(when)}</div>
+        <div style="margin-top:3px">${esc(l.Stage||'')}</div>
+      </div>
+    </div>`;
+  }).join('');
+  $id('chatLoadMore').style.display='none';
 }
 
 function chatSearchDebounce(){
   clearTimeout(_chatSearchTimer);
-  if(_chatSearchAbort){_chatSearchAbort.abort();}
-  _chatSearchAbort=new AbortController();
-  _chatSearchTimer=setTimeout(()=>{_chatPage=1;loadChatContacts(1,true);},400);
+  _chatSearchTimer=setTimeout(()=>renderChatContacts(),300);
 }
 
-async function chatLoadMore(){
-  _chatPage++;
-  await loadChatContacts(_chatPage, false);
-}
+function chatLoadMore(){} // no-op, all loaded from memory
 
-async function chatSelectContact(id, name, phone){
+function chatSelectLead(leadId){
   document.querySelectorAll('.chat-contact-row').forEach(r=>r.classList.remove('active'));
-  const row=$id('ccRow'+id);
+  const row=$id('ccRow'+leadId);
   if(row) row.classList.add('active');
-  _chatContact={id,name,phone};
-  _chatOpenConvId=null;
+  _chatLeadId=leadId;
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead) return;
+
+  let history=[];
+  try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+
   const main=$id('chatMain');
-  main.innerHTML=`<div class="chat-main-hd">
-    <div class="cc-avatar" style="width:38px;height:38px;font-size:14px">${name[0].toUpperCase()}</div>
-    <div><div class="chat-main-name">${esc(name)}</div><div class="chat-main-phone">${esc(phone)}</div></div>
-  </div>
-  <div class="chat-conv-list" id="chatConvList"><div class="chat-msg-loading">Loading conversations…</div></div>`;
-  try{
-    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/contacts/${id}/conversations`,{headers:cwHeaders()});
-    if(!r.ok) throw new Error();
-    const data=await r.json();
-    const convs=(data.payload||[]).sort((a,b)=>b.id-a.id);
-    const list=$id('chatConvList');
-    if(!convs.length){list.innerHTML='<div class="chat-empty"><div class="chat-empty-icon">💬</div><div>No conversations yet</div></div>';return;}
-    list.innerHTML=convs.map(cv=>renderConvCard(cv)).join('');
-  }catch(e){
-    const list=$id('chatConvList');
-    if(list) list.innerHTML='<div class="chat-empty"><div class="chat-empty-icon">⚠️</div><div>Could not load conversations</div></div>';
-  }
-}
-
-function renderConvCard(cv){
-  const statusLabel={open:'Open',resolved:'Resolved',pending:'Pending'}[cv.status]||cv.status;
-  const statusCls={open:'cs-open',resolved:'cs-resolved',pending:'cs-pending'}[cv.status]||'cs-open';
-  const ts=cv.last_activity_at?timeAgo(cv.last_activity_at*1000+''):'';
-  const assigneeId=cv.meta?.assignee?.id||'';
-  return `<div class="chat-conv-card" id="convCard${cv.id}">
-    <div class="chat-conv-hd" onclick="chatToggleConv(${cv.id})">
-      <span class="chat-conv-id">#${cv.id}</span>
-      <span class="chat-conv-status ${statusCls}">${statusLabel}</span>
-      <span class="chat-conv-time">${ts}</span>
-      <span class="chat-conv-chevron" id="chevron${cv.id}">›</span>
-    </div>
-    <div class="chat-conv-body" id="convBody${cv.id}">
-      <div class="chat-messages" id="convMsgs${cv.id}"><div class="chat-msg-loading">Loading…</div></div>
-      <div class="chat-assign-row">
-        <select class="chat-assign-sel" id="assignSel${cv.id}">
-          <option value="">— Assign agent —</option>
-          ${_chatAgents.map(a=>`<option value="${a.id}"${a.id==assigneeId?' selected':''}>${esc(a.name)}</option>`).join('')}
-        </select>
-        <button class="chat-assign-btn" onclick="chatAssign(${cv.id})">Assign</button>
+  main.innerHTML=`
+    <div class="chat-main-hd">
+      <div class="cc-avatar" style="width:38px;height:38px;font-size:15px">${(lead.Name||'?')[0].toUpperCase()}</div>
+      <div style="flex:1;min-width:0">
+        <div class="chat-main-name">${esc(lead.Name||'Unknown')}</div>
+        <div class="chat-main-phone">${esc(lead.Phone||'')} · ${esc(lead.Stage||'new')}</div>
       </div>
-      <div class="chat-reply-row">
-        <textarea class="chat-reply-input" id="replyInput${cv.id}" placeholder="Type a reply…" rows="2"></textarea>
-        <button class="chat-reply-send" onclick="chatSendReply(${cv.id})">Send ✈</button>
-      </div>
-      <div class="save-msg" id="convMsg${cv.id}" style="margin-top:6px;font-size:12px"></div>
+      <button class="btn btn-secondary btn-sm" onclick="openDetail(${lead.Id})">View Lead →</button>
     </div>
-  </div>`;
+    <div class="chat-messages" id="chatMsgBox" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;max-height:none">
+      ${history.length?history.map(m=>{
+        const isBot=m.role==='assistant'||m.role==='bot';
+        return `<div style="display:flex;flex-direction:column;align-items:${isBot?'flex-end':'flex-start'}">
+          <div class="chat-bubble ${isBot?'bubble-bot':'bubble-user'}" style="max-width:75%">${esc(m.content||'').replace(/\n/g,'<br>')}
+            ${m.ts?`<div class="bubble-time">${new Date(m.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div>`:''}
+          </div>
+        </div>`;
+      }).join(''):'<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No conversation yet</div>'}
+    </div>
+    <div style="padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:flex-end;flex-shrink:0;background:var(--card)">
+      <textarea id="chatReplyBox" class="form-input" rows="2" style="flex:1;resize:none" placeholder="Type a WhatsApp reply…"></textarea>
+      <button class="btn btn-primary btn-sm" onclick="chatSendFromTab(${lead.Id})">Send ✈</button>
+      <span id="chatReplyMsg" class="save-msg" style="font-size:12px"></span>
+    </div>`;
+  // scroll to bottom
+  setTimeout(()=>{const b=$id('chatMsgBox');if(b)b.scrollTop=b.scrollHeight;},50);
 }
 
-async function chatToggleConv(id){
-  const body=$id('convBody'+id);
-  const chevron=$id('chevron'+id);
-  const alreadyOpen=body.classList.contains('open');
-  // Close all
-  document.querySelectorAll('.chat-conv-body').forEach(b=>b.classList.remove('open'));
-  document.querySelectorAll('.chat-conv-chevron').forEach(c=>{c.style.transform='';});
-  if(alreadyOpen){_chatOpenConvId=null;return;}
-  body.classList.add('open');
-  chevron.style.transform='rotate(90deg)';
-  _chatOpenConvId=id;
-  if($id('convMsgs'+id).querySelector('.chat-msg-loading')){
-    await loadConvMessages(id);
-  }
-}
-
-async function loadConvMessages(convId){
-  const box=$id('convMsgs'+convId);
-  try{
-    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{headers:cwHeaders()});
-    if(!r.ok) throw new Error();
-    const data=await r.json();
-    const msgs=(data.payload||[]).filter(m=>m.message_type!==2).sort((a,b)=>a.created_at-b.created_at);
-    if(!msgs.length){box.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:12px">No messages</div>';return;}
-    box.innerHTML=msgs.map(m=>{
-      const isBot=m.message_type===1; // outgoing
-      const cls=isBot?'bubble-bot':'bubble-user';
-      const ts=m.created_at?new Date(m.created_at*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
-      return `<div class="chat-bubble ${cls}">
-        ${esc(m.content||'')}
-        <div class="bubble-time">${ts}</div>
-      </div>`;
-    }).join('');
-    box.scrollTop=box.scrollHeight;
-  }catch(e){
-    box.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:12px">Failed to load messages</div>';
-  }
-}
-
-async function chatSendReply(convId){
-  const input=$id('replyInput'+convId);
-  const msg=$id('convMsg'+convId);
-  const text=(input.value||'').trim();
-  if(!text) return;
+async function chatSendFromTab(leadId){
+  const input=$id('chatReplyBox');
+  const msg=$id('chatReplyMsg');
+  const text=(input?.value||'').trim();
+  if(!text||!leadId) return;
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead){return;}
   msg.textContent='Sending…'; msg.className='save-msg';
+  // Use same WA reply mechanism as lead detail
+  const phone=(lead.Phone||'').replace(/\D/g,'');
   try{
-    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
-      method:'POST', headers:cwHeaders(),
-      body:JSON.stringify({content:text,message_type:'outgoing',private:false})
-    });
-    if(!r.ok) throw new Error();
+    const wh=clientRecord?.webhook_url||'';
+    // Send via Chatwoot if configured, else show instructions
+    if(cwBase()&&cwAccountId()&&cwToken()&&lead.chatwoot_conv_id){
+      const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${lead.chatwoot_conv_id}/messages`,{
+        method:'POST',
+        headers:{'api_access_token':cwToken(),'Content-Type':'application/json'},
+        body:JSON.stringify({content:text,message_type:'outgoing',private:false})
+      });
+      if(!r.ok) throw new Error();
+    } else {
+      // Append to ConvHistory locally
+      let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+      hist.push({role:'assistant',content:text,ts:new Date().toISOString()});
+      await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
+      lead.ConvHistory=JSON.stringify(hist);
+    }
     input.value='';
     msg.textContent='Sent ✓'; msg.className='save-msg';
-    await loadConvMessages(convId);
-    setTimeout(()=>msg.textContent='',2500);
-  }catch(e){msg.textContent='Failed to send'; msg.className='save-msg err';}
+    // Re-render the conversation
+    chatSelectLead(leadId);
+    setTimeout(()=>{if(msg)msg.textContent='';},2500);
+  }catch(e){
+    msg.textContent='Failed'; msg.className='save-msg err';
+  }
 }
 
-async function chatAssign(convId){
-  const sel=$id('assignSel'+convId);
-  const msg=$id('convMsg'+convId);
-  const agentId=parseInt(sel.value);
-  if(!agentId){msg.textContent='Select an agent first'; msg.className='save-msg err'; setTimeout(()=>msg.textContent='',2000); return;}
-  msg.textContent='Assigning…'; msg.className='save-msg';
-  try{
-    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/assignments`,{
-      method:'POST', headers:cwHeaders(),
-      body:JSON.stringify({assignee_id:agentId})
-    });
-    if(!r.ok) throw new Error();
-    msg.textContent='Assigned ✓'; msg.className='save-msg';
-    setTimeout(()=>msg.textContent='',2500);
-  }catch(e){msg.textContent='Assignment failed'; msg.className='save-msg err';}
-}
+function cwBase(){return (clientRecord?.chatwoot_base||'').replace(/\/$/,'');}
+function cwAccountId(){return clientRecord?.chatwoot_account_id||'';}
+function cwToken(){return clientRecord?.chatwoot_token||'';}
 
 function renderChatEmpty(){
-  $id('chatMain').innerHTML=`<div class="chat-empty">
+  $id('chatMain').innerHTML=`<div class="chat-empty" style="flex:1;display:flex">
     <div class="chat-empty-icon">💬</div>
-    <div>Select a contact to view their chats</div>
+    <div>Select a contact to view their conversation</div>
   </div>`;
 }
 
