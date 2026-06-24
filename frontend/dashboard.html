@@ -65,7 +65,8 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .wiz-back:hover{background:rgba(255,255,255,.13)}
 .wiz-row{display:flex;gap:10px;margin-top:8px}
 /* HOME COMMAND CENTER */
-#pageHome{overflow-y:auto;display:flex;flex-direction:column}
+#pageHome{overflow-y:auto}
+#pageHome.hidden{display:none!important}
 .home-hero{background:linear-gradient(135deg,#071410 0%,#0D2218 55%,#0a2e1c 100%);padding:26px 32px;position:relative;overflow:hidden;flex-shrink:0}
 .home-hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 80% 50%,rgba(14,124,90,.28) 0%,transparent 65%);pointer-events:none}
 .home-hero-inner{max-width:1800px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;position:relative;z-index:1}
