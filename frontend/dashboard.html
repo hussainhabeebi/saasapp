@@ -2368,34 +2368,33 @@ async function loadAll(silent=false){
 
 /* ── HOME ── */
 function renderHome(){
+  // Run KPI/greeting first so UI is never blank even if other renders fail
+  try{populateCommandCenter(allLeads);}catch(e){}
+  try{renderNbaStrip(allLeads);}catch(e){}
+
   const ind=getIndustry();
   const booked=allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
-  const human=allLeads.filter(l=>l.Stage==='human_handover');
   const active=allLeads.filter(l=>!TERMINAL.has(l.Stage));
-  const today=allLeads.filter(l=>(l.Date||'').slice(0,10)===TODAY);
   const rate=allLeads.length?Math.round(booked.length/allLeads.length*100)+'%':'0%';
-
-  $id('statsGrid').innerHTML=`
+  try{$id('statsGrid').innerHTML=`
     <div class="stat accent"><div class="stat-lbl">Total Leads</div><div class="stat-val">${allLeads.length}</div><div class="stat-sub">all time</div></div>
     <div class="stat"><div class="stat-lbl">Active</div><div class="stat-val">${active.length}</div><div class="stat-sub">in progress</div></div>
     <div class="stat"><div class="stat-lbl">${esc(ind.booked)}</div><div class="stat-val">${booked.length}</div><div class="stat-sub">${rate} conversion</div></div>
-    <div class="stat"><div class="stat-lbl">Today's Leads</div><div class="stat-val">${today.length}</div><div class="stat-sub">${new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</div></div>`;
+    <div class="stat"><div class="stat-lbl">Today's Leads</div><div class="stat-val">${allLeads.filter(l=>(l.Date||'').slice(0,10)===TODAY).length}</div><div class="stat-sub">${new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</div></div>`;}catch(e){}
 
-  checkReminders();
-  renderChart();
-  renderFunnel();
-  renderConvTrend();
-  renderAgentTable();
-  renderRecentTable();
-  renderHotBanner();
-  renderVelocity();
-  renderBestTime();
-  renderStaleLeads();
-  renderPredictive();
-  renderBenchmark();
-  renderTasks();
-  populateCommandCenter(allLeads);
-  renderNbaStrip(allLeads);
+  try{checkReminders();}catch(e){}
+  try{renderChart();}catch(e){}
+  try{renderFunnel();}catch(e){}
+  try{renderConvTrend();}catch(e){}
+  try{renderAgentTable();}catch(e){}
+  try{renderRecentTable();}catch(e){}
+  try{renderHotBanner();}catch(e){}
+  try{renderVelocity();}catch(e){}
+  try{renderBestTime();}catch(e){}
+  try{renderStaleLeads();}catch(e){}
+  try{renderPredictive();}catch(e){}
+  try{renderBenchmark();}catch(e){}
+  try{renderTasks();}catch(e){}
 }
 
 /* ── CHART ── */
@@ -6081,8 +6080,12 @@ function cwToken(){return clientRecord?.chatwoot_token||'';}
 function cwHeaders(){return {'api_access_token':cwToken(),'Content-Type':'application/json'};}
 
 async function openChatsTab(){
-  if(!cwBase()||!cwAccountId()||!cwToken()){
-    $id('chatContactList').innerHTML='<div class="chat-empty"><div class="chat-empty-icon">⚠️</div><div>Chatwoot credentials not configured.<br>Check Settings.</div></div>';
+  if(!cwAccountId()||!cwToken()){
+    $id('chatContactList').innerHTML='<div class="chat-empty"><div class="chat-empty-icon">⚠️</div><div>Chatwoot credentials not configured.<br><button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="navigate(\'settings\')">Open Settings →</button></div></div>';
+    return;
+  }
+  if(!cwBase()){
+    $id('chatContactList').innerHTML='<div class="chat-empty"><div class="chat-empty-icon">🔗</div><div>Chatwoot Base URL not set.<br>Go to Settings → Chatwoot Webhook and enter your Chatwoot URL (e.g. https://app.chatwoot.com).<br><button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="navigate(\'settings\')">Open Settings →</button></div></div>';
     return;
   }
   _chatPage=1; _chatHasMore=false; _chatContact=null; _chatOpenConvId=null;
@@ -6119,7 +6122,7 @@ async function loadChatContacts(page=1, reset=false){
     $id('chatLoadMore').style.display=_chatHasMore?'':'none';
   }catch(e){
     if(e.name==='AbortError') return;
-    if(reset) list.innerHTML='<div class="chat-empty"><div class="chat-empty-icon">⚠️</div><div>Failed to load contacts</div></div>';
+    if(reset) list.innerHTML=`<div class="chat-empty"><div class="chat-empty-icon">⚠️</div><div>Failed to load contacts.<br><span style="font-size:11px;color:var(--muted)">Check your Chatwoot URL: ${esc(cwBase())}</span><br><button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="navigate('settings')">Settings →</button></div></div>`;
   }
 }
 
