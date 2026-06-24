@@ -65,19 +65,62 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .wiz-back:hover{background:rgba(255,255,255,.13)}
 .wiz-row{display:flex;gap:10px;margin-top:8px}
 /* HOME COMMAND CENTER */
-.home-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px}
-.home-greeting{font-family:var(--disp);font-size:22px;font-weight:700;color:var(--ink);letter-spacing:-.3px}
-.home-sub{font-size:13px;color:var(--muted);margin-top:2px}
+#pageHome{overflow-y:auto;display:flex;flex-direction:column}
+.home-hero{background:linear-gradient(135deg,#071410 0%,#0D2218 55%,#0a2e1c 100%);padding:26px 32px;position:relative;overflow:hidden;flex-shrink:0}
+.home-hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 80% 50%,rgba(14,124,90,.28) 0%,transparent 65%);pointer-events:none}
+.home-hero-inner{max-width:1800px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;position:relative;z-index:1}
+.home-greeting{font-family:var(--disp);font-size:26px;font-weight:700;color:#fff;letter-spacing:-.4px}
+.home-sub{font-size:13px;color:rgba(255,255,255,.5);margin-top:4px}
 .home-actions{display:flex;gap:8px;flex-wrap:wrap}
-.hact-btn{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-family:var(--disp);font-size:13px;font-weight:600;cursor:pointer;transition:opacity .15s;white-space:nowrap}
-.hact-btn:hover{opacity:.88}
-.hact-btn.sec{background:var(--card);color:var(--accent-ink);border:1.5px solid var(--line)}
-.hact-btn.sec:hover{background:var(--accent-soft)}
-.today-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:20px}
-.today-stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow)}
-.today-val{font-family:var(--disp);font-size:28px;font-weight:700;color:var(--accent-ink);line-height:1}
-.today-lbl{font-size:12px;color:var(--muted);margin-top:4px}
-.today-delta{font-size:11px;font-weight:600;margin-top:3px}
+.hact-btn{background:rgba(255,255,255,.12);color:#fff;border:1.5px solid rgba(255,255,255,.18);border-radius:10px;padding:9px 18px;font-family:var(--disp);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap;backdrop-filter:blur(4px)}
+.hact-btn:hover{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.3)}
+.hact-btn.primary-act{background:linear-gradient(135deg,#0E7C5A,#0CB870);border-color:transparent}
+.hact-btn.primary-act:hover{opacity:.9;transform:translateY(-1px)}
+.home-body{padding:22px 28px;max-width:1800px;margin:0 auto;width:100%}
+/* KPI strip */
+.kpi-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:22px}
+@media(max-width:1200px){.kpi-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:600px){.kpi-grid{grid-template-columns:repeat(2,1fr)}}
+.kpi-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow);transition:box-shadow .2s,transform .2s}
+.kpi-card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
+.kpi-card.accent{background:linear-gradient(135deg,#0E7C5A,#0CB870);border-color:transparent}
+.kpi-card.accent .kpi-val,.kpi-card.accent .kpi-lbl,.kpi-card.accent .kpi-icon{color:#fff}
+.kpi-card.accent .kpi-lbl{color:rgba(255,255,255,.7)}
+.kpi-card.accent .kpi-icon{opacity:.6}
+.kpi-icon{font-size:20px;margin-bottom:10px;display:block;opacity:.45}
+.kpi-val{font-family:var(--disp);font-size:30px;font-weight:700;color:var(--accent-ink);line-height:1;letter-spacing:-.5px}
+.kpi-lbl{font-size:11.5px;color:var(--muted);margin-top:5px;font-weight:500}
+/* home grid */
+.home-grid{display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start}
+@media(max-width:1100px){.home-grid{grid-template-columns:1fr}}
+.home-col-main{display:flex;flex-direction:column;gap:20px}
+.home-col-side{display:flex;flex-direction:column;gap:16px}
+/* section cards */
+.section-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px 22px;box-shadow:var(--shadow)}
+.section-title{font-family:var(--disp);font-size:14px;font-weight:700;color:var(--ink);margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+/* sidebar list items */
+.follow-item{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
+.follow-item:last-child{border-bottom:none}
+.follow-item:hover{background:var(--accent-soft);margin:0 -8px;padding-left:8px;padding-right:8px;border-radius:8px}
+.fi-avatar{width:32px;height:32px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--disp);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.fi-body{flex:1;min-width:0}
+.fi-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fi-meta{font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fi-badge{font-size:10px;font-weight:700;padding:3px 8px;border-radius:8px;background:var(--warn-soft);color:var(--warn);flex-shrink:0;white-space:nowrap}
+.fi-badge.hot{background:#FEE2E2;color:#991B1B}
+/* quick actions */
+.qact-btn{width:100%;text-align:left;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 14px;font-family:var(--disp);font-size:13px;font-weight:600;cursor:pointer;color:var(--ink);transition:all .15s}
+.qact-btn:hover{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-ink);transform:translateX(3px)}
+/* agent leaderboard */
+.agent-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.agent-row:last-child{border-bottom:none}
+.agent-rank{font-family:var(--mono);font-size:11px;color:var(--muted);min-width:20px;font-weight:700}
+.agent-name{flex:1;font-size:13px;font-weight:600}
+.agent-bar-wrap{width:60px;background:var(--bg);border-radius:4px;height:5px;overflow:hidden}
+.agent-bar{height:100%;background:var(--accent);border-radius:4px;transition:width .5s}
+.agent-count{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:24px;text-align:right}
+/* legacy compat */
+.today-strip,.today-stat,.today-val,.today-lbl,.today-delta{display:none}
 .delta-up{color:#059669}.delta-dn{color:#DC2626}
 .activity-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;box-shadow:var(--shadow);margin-bottom:14px}
 .activity-title{font-family:var(--disp);font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}
@@ -642,8 +685,6 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .btn-primary:hover{box-shadow:0 2px 6px rgba(14,124,90,.25),0 6px 16px rgba(14,124,90,.2);transform:translateY(-1px)}
 .btn-primary:active{transform:translateY(0);box-shadow:none}
 .btn-secondary:hover{border-color:var(--accent);color:var(--accent-ink)}
-.hact-btn{border-radius:9px;font-size:13px;letter-spacing:-.01em;transition:all .15s}
-.hact-btn:hover{transform:translateY(-1px)}
 .hact-btn:active{transform:translateY(0)}
 
 /* Smoother modal transitions */
@@ -722,10 +763,6 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 /* Recruitment pipeline cards */
 .rc-cand-card{transition:box-shadow .15s,transform .15s}
 .rc-cand-card:hover{transform:translateY(-1px)}
-
-/* Home greeting */
-.home-greeting{font-size:24px;letter-spacing:-.4px}
-.today-val{font-size:30px}
 
 /* Better empty states */
 .empty-state{padding:60px 24px}
@@ -895,73 +932,143 @@ const TODAY = new Date().toISOString().slice(0,10);
 
     <!-- HOME -->
     <div class="page" id="pageHome">
-      <div class="page-pad">
-        <!-- Command center header -->
-        <div class="home-header">
+      <!-- Hero Banner -->
+      <div class="home-hero">
+        <div class="home-hero-inner">
           <div>
             <div class="home-greeting" id="homeGreeting">Good morning</div>
             <div class="home-sub" id="homeSubLine">Loading your workspace…</div>
           </div>
           <div class="home-actions">
-            <button class="hact-btn" onclick="openAddLead()">+ Add Lead</button>
-            <button class="hact-btn sec" onclick="navigate('pipeline')">📋 Pipeline</button>
-            <button class="hact-btn sec" onclick="window.open('broadcast.html','_blank')">📢 Broadcast</button>
+            <button class="hact-btn primary-act" onclick="openAddLead()">＋ Add Lead</button>
+            <button class="hact-btn" onclick="navigate('pipeline')">📋 Pipeline</button>
+            <button class="hact-btn" onclick="navigate('chats')">💬 Chats</button>
+            <button class="hact-btn" onclick="window.open('broadcast.html','_blank')">📢 Broadcast</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="home-body">
+        <!-- KPI Strip -->
+        <div class="kpi-grid">
+          <div class="kpi-card accent">
+            <div class="kpi-icon">💬</div>
+            <div class="kpi-val" id="tsNew">—</div>
+            <div class="kpi-lbl">New Today</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon">👥</div>
+            <div class="kpi-val" id="tsTotal">—</div>
+            <div class="kpi-lbl">Total Leads</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon">🔥</div>
+            <div class="kpi-val" id="tsHot">—</div>
+            <div class="kpi-lbl">Hot Leads</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon">✅</div>
+            <div class="kpi-val" id="tsConv">—</div>
+            <div class="kpi-lbl">Converted</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon">⏰</div>
+            <div class="kpi-val" id="tsReminders">—</div>
+            <div class="kpi-lbl">Follow-ups Due</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon">🤖</div>
+            <div class="kpi-val" id="tsBotRate">—</div>
+            <div class="kpi-lbl">Bot Engaged</div>
           </div>
         </div>
 
-        <!-- Today's stats strip -->
-        <div class="today-strip" id="todayStrip">
-          <div class="today-stat"><div class="today-val" id="tsNew">—</div><div class="today-lbl">New Today</div></div>
-          <div class="today-stat"><div class="today-val" id="tsHot">—</div><div class="today-lbl">Hot Leads</div></div>
-          <div class="today-stat"><div class="today-val" id="tsConv">—</div><div class="today-lbl">Converted</div></div>
-          <div class="today-stat"><div class="today-val" id="tsTotal">—</div><div class="today-lbl">Total Leads</div></div>
-        </div>
-
-        <!-- NBA priority strip -->
-        <div id="nbaPriorityStrip" style="display:none;margin-bottom:14px">
-          <div class="activity-card" style="margin-bottom:0;padding:14px 18px">
-            <div class="activity-title" style="margin-bottom:10px">⚡ Next-Best-Action — Today's Priorities</div>
+        <!-- NBA priority -->
+        <div id="nbaPriorityStrip" style="display:none;margin-bottom:18px">
+          <div class="section-card" style="padding:14px 18px;margin-bottom:0">
+            <div class="section-title" style="margin-bottom:10px">⚡ Next-Best-Action — Today's Priorities</div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
               <span id="nbaCritical" class="nba-badge critical" style="display:none"></span>
               <span id="nbaWarm"     class="nba-badge warm"     style="display:none"></span>
               <span id="nbaNurture"  class="nba-badge nurture"  style="display:none"></span>
               <span id="nbaCold"     class="nba-badge cold"     style="display:none"></span>
-              <button class="btn-ghost" onclick="navigate('leads')" style="font-size:12px;text-transform:none;font-weight:500;margin-left:auto">View leads →</button>
+              <button class="btn-ghost" onclick="navigate('leads')" style="font-size:12px;font-weight:500;margin-left:auto">View leads →</button>
             </div>
           </div>
         </div>
 
         <!-- Reminders / alerts -->
-        <div id="remindersPanel" style="display:none;margin-bottom:14px"></div>
+        <div id="remindersPanel" style="display:none;margin-bottom:18px"></div>
 
-        <!-- Recent activity -->
-        <div class="activity-card">
-          <div class="activity-title">
-            Recent Activity
-            <button class="btn-ghost" onclick="navigate('leads')" style="font-size:12px;text-transform:none;font-weight:500">View all →</button>
-          </div>
-          <div id="activityFeed"><div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div></div>
-        </div>
-
-        <!-- Chart row -->
-        <div style="display:grid;gap:14px;grid-template-columns:2fr 1fr">
-          <div class="activity-card" style="margin-bottom:0">
-            <div class="activity-title">Leads Over Time
-              <span style="display:flex;gap:6px">
-                <button class="btn-ghost" id="chartWeek" onclick="setChartMode('week')">Weekly</button>
-                <button class="btn-ghost" id="chartMonth" onclick="setChartMode('month')">Monthly</button>
-              </span>
+        <!-- Main grid -->
+        <div class="home-grid">
+          <!-- LEFT: main content -->
+          <div class="home-col-main">
+            <!-- Recent Activity -->
+            <div class="section-card">
+              <div class="section-title">🕐 Recent Activity
+                <button class="btn-ghost" onclick="navigate('leads')" style="font-size:12px;font-weight:500">View all →</button>
+              </div>
+              <div id="activityFeed"><div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div></div>
             </div>
-            <div class="chart-wrap"><canvas id="leadsChart"></canvas></div>
+
+            <!-- Leads Over Time Chart -->
+            <div class="section-card">
+              <div class="section-title">📈 Leads Over Time
+                <span style="display:flex;gap:6px">
+                  <button class="btn-ghost" id="chartWeek" onclick="setChartMode('week')">Weekly</button>
+                  <button class="btn-ghost" id="chartMonth" onclick="setChartMode('month')">Monthly</button>
+                </span>
+              </div>
+              <div class="chart-wrap"><canvas id="leadsChart"></canvas></div>
+            </div>
+
+            <!-- Pipeline Funnel -->
+            <div class="section-card">
+              <div class="section-title">📊 Pipeline Funnel</div>
+              <div id="funnelChart"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+            </div>
           </div>
-          <div class="activity-card" style="margin-bottom:0">
-            <div class="activity-title">Funnel</div>
-            <div id="funnelChart"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+
+          <!-- RIGHT: sidebar -->
+          <div class="home-col-side">
+            <!-- Follow-ups Due -->
+            <div class="section-card">
+              <div class="section-title">⏰ Follow-ups Due
+                <button class="btn-ghost" onclick="navigate('leads')" style="font-size:12px;font-weight:500">All →</button>
+              </div>
+              <div id="homeFollowUps"><div style="color:var(--muted);font-size:13px;padding:8px 0">Loading…</div></div>
+            </div>
+
+            <!-- Hot Moments -->
+            <div class="section-card">
+              <div class="section-title">🔥 Hot Moments</div>
+              <div id="homeHotLeads"><div style="color:var(--muted);font-size:13px;padding:8px 0">Loading…</div></div>
+            </div>
+
+            <!-- Agent Leaderboard -->
+            <div class="section-card" id="homeAgentCard">
+              <div class="section-title">🏆 Agent Leaderboard</div>
+              <div id="homeAgents"><div style="color:var(--muted);font-size:13px;padding:8px 0">Loading…</div></div>
+            </div>
+
+            <!-- Quick Actions -->
+            <div class="section-card">
+              <div class="section-title">⚡ Quick Actions</div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <button class="qact-btn" onclick="navigate('pipeline')">📋 View Pipeline</button>
+                <button class="qact-btn" onclick="navigate('leads')">💬 Manage Leads</button>
+                <button class="qact-btn" onclick="navigate('chats')">💬 Open Chats</button>
+                <button class="qact-btn" onclick="window.open('broadcast.html','_blank')">📢 Send Broadcast</button>
+                <button class="qact-btn" onclick="navigate('settings')">⚙️ Settings</button>
+              </div>
+            </div>
           </div>
         </div>
 
-        <!-- Hidden analytics preserved for JS compatibility -->
+        <!-- Hidden elements preserved for JS compatibility -->
         <div style="display:none">
+          <div id="todayStrip"></div>
           <div id="bottomGrid"></div>
           <canvas id="convTrendChart"></canvas>
           <div id="hotBanner"></div>
@@ -2892,6 +2999,18 @@ function populateCommandCenter(leads){
   $id('tsHot').textContent=hot;
   $id('tsConv').textContent=conv;
   $id('tsTotal').textContent=leads.length;
+  // New KPI: follow-ups due
+  const dueCount=leads.filter(l=>l.ReminderDate&&l.ReminderDate<=today).length;
+  const tsRem=$id('tsReminders');if(tsRem)tsRem.textContent=dueCount||'0';
+  // Bot engaged %
+  const botCount=leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]').length;
+  const tsBotEl=$id('tsBotRate');if(tsBotEl)tsBotEl.textContent=leads.length?Math.round(botCount/leads.length*100)+'%':'—';
+  // Sidebar: follow-ups
+  renderHomeFollowUps(leads,today);
+  // Sidebar: hot leads
+  renderHomeHotLeads(leads);
+  // Sidebar: agents
+  renderHomeAgents(leads);
 
   // Activity feed — last 8 leads by LastMsgAt or Date
   const sorted=[...leads].sort((a,b)=>(b.LastMsgAt||b.Date||'').localeCompare(a.LastMsgAt||a.Date||'')).slice(0,8);
@@ -2912,6 +3031,53 @@ function populateCommandCenter(leads){
       <div class="act-time">${esc(when)}</div>
     </div>`;
   }).join('');
+}
+
+function renderHomeFollowUps(leads,today){
+  const el=$id('homeFollowUps');if(!el)return;
+  const due=leads.filter(l=>l.ReminderDate&&l.ReminderDate<=today).sort((a,b)=>a.ReminderDate.localeCompare(b.ReminderDate)).slice(0,8);
+  if(!due.length){el.innerHTML='<div style="color:var(--muted);font-size:13px;padding:8px 0">No follow-ups due today 🎉</div>';return;}
+  el.innerHTML=due.map(l=>{
+    const overdue=l.ReminderDate<today;
+    return `<div class="follow-item" onclick="openDetail(${l.Id})">
+      <div class="fi-avatar">${(l.Name||'?')[0].toUpperCase()}</div>
+      <div class="fi-body">
+        <div class="fi-name">${esc(l.Name||'Unknown')}</div>
+        <div class="fi-meta">${esc(l.Stage||'new')} · ${l.ReminderDate}</div>
+      </div>
+      ${overdue?'<span class="fi-badge hot">Overdue</span>':'<span class="fi-badge">Due</span>'}
+    </div>`;
+  }).join('');
+}
+
+function renderHomeHotLeads(leads){
+  const el=$id('homeHotLeads');if(!el)return;
+  const hot=leads.filter(l=>l.HotMoment==='Yes'||l.Score==='Hot').slice(0,6);
+  if(!hot.length){el.innerHTML='<div style="color:var(--muted);font-size:13px;padding:8px 0">No hot leads right now</div>';return;}
+  el.innerHTML=hot.map(l=>`<div class="follow-item" onclick="openDetail(${l.Id})">
+    <div class="fi-avatar" style="background:#FEE2E2;color:#991B1B">${(l.Name||'?')[0].toUpperCase()}</div>
+    <div class="fi-body">
+      <div class="fi-name">${esc(l.Name||'Unknown')}</div>
+      <div class="fi-meta">${esc(l.Stage||'new')}${l.HotMomentText?' · '+esc((l.HotMomentText||'').slice(0,40)):''}</div>
+    </div>
+    <span class="fi-badge hot">🔥</span>
+  </div>`).join('');
+}
+
+function renderHomeAgents(leads){
+  const el=$id('homeAgents');const card=$id('homeAgentCard');if(!el||!card)return;
+  const counts={};
+  leads.forEach(l=>{if(l.Owner)counts[l.Owner]=(counts[l.Owner]||0)+1;});
+  const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  if(!sorted.length){card.style.display='none';return;}
+  card.style.display='';
+  const max=sorted[0][1];
+  el.innerHTML=sorted.map(([name,ct],i)=>`<div class="agent-row">
+    <div class="agent-rank">#${i+1}</div>
+    <div class="agent-name">${esc(name)}</div>
+    <div class="agent-bar-wrap"><div class="agent-bar" style="width:${Math.round(ct/max*100)}%"></div></div>
+    <div class="agent-count">${ct}</div>
+  </div>`).join('');
 }
 
 function timeAgo(iso){
