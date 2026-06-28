@@ -6,25 +6,17 @@
       "name": "When called by per-client webhook",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
-      "position": [
-        240,
-        300
-      ],
-      "parameters": {
-        "inputSource": "passthrough"
-      }
+      "position": [240, 300],
+      "parameters": { "inputSource": "passthrough" }
     },
     {
       "id": "code-filter",
       "name": "Code · Filter & extract",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        460,
-        300
-      ],
+      "position": [460, 300],
       "parameters": {
-        "jsCode": "const raw = $input.first().json;\nconst b = raw.body || raw;\n// Drop non-incoming and private messages early\nif (b.message_type && b.message_type !== 'incoming') return [];\nif (b.private) return [];\nconst client_id = String(raw.client_id || b.client_id || '');\nif (!client_id) return [];\n// Pass full raw payload through so engine can re-use it\nreturn [{ json: { ...raw, client_id } }];"
+        "jsCode": "const raw = $input.first().json;\nconst b = raw.body || raw;\nconst event = b.event || '';\nconst client_id = String(raw.client_id || b.client_id || '');\nif (!client_id) return [];\n// Tag conversation_created separately — handled by sequence branch\nif (event === 'conversation_created') {\n  const convId = String(b.id || b.conversation?.id || '');\n  return [{ json: { ...raw, client_id, _event: 'conversation_created', _conv_id: convId } }];\n}\n// Drop non-incoming and private messages\nif (b.message_type && b.message_type !== 'incoming') return [];\nif (b.private) return [];\nreturn [{ json: { ...raw, client_id, _event: 'message' } }];"
       }
     },
     {
@@ -32,36 +24,150 @@
       "name": "HTTP · Get client",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        680,
-        300
-      ],
+      "position": [680, 300],
       "parameters": {
         "method": "GET",
         "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records/{{ $json.client_id }}",
         "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "xc-token",
-              "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF"
-            }
-          ]
-        },
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
+        ] },
         "options": {}
       }
     },
+
+    {
+      "id": "switch-event",
+      "name": "Switch · Event type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [900, 300],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "version": 2, "caseSensitive": false, "typeValidation": "strict" },
+                "conditions": [{ "id": "ev", "leftValue": "={{ $('Code · Filter & extract').first().json._event }}", "rightValue": "conversation_created", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "new_contact"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      }
+    },
+
+    {
+      "id": "code-seq-check",
+      "name": "Code · Sequence check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 100],
+      "parameters": {
+        "jsCode": "const raw = $('Code · Filter & extract').first().json;\nconst client = $('HTTP · Get client').first().json;\nif ((client.seq_enabled || 'No') !== 'Yes') return [];\nconst introDelay = parseInt(client.seq_intro_delay) || 60;\nconst demoDelay  = parseInt(client.seq_demo_delay)  || 90;\nconst introMsg   = (client.seq_intro_msg || '').replace('{{business_name}}', client.client_name || '');\nconst demoUrl    = client.seq_demo_video_url || '';\nconst caption    = client.seq_demo_caption   || '';\nreturn [{ json: {\n  convId: raw._conv_id,\n  chatwoot_base: client.chatwoot_base,\n  chatwoot_account_id: String(client.chatwoot_account_id),\n  chatwoot_token: client.chatwoot_token,\n  introDelay, demoDelay, introMsg, demoUrl, caption\n} }];"
+      }
+    },
+    {
+      "id": "wait-intro",
+      "name": "Wait · Intro delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1340, 100],
+      "parameters": { "amount": "={{ $json.introDelay }}", "unit": "seconds" }
+    },
+    {
+      "id": "http-send-intro",
+      "name": "HTTP · Send intro message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 100],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.chatwoot_base }}/api/v1/accounts/{{ $json.chatwoot_account_id }}/conversations/{{ $json.convId }}/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "api_access_token", "value": "={{ $json.chatwoot_token }}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"content\": \"{{ $json.introMsg }}\", \"message_type\": \"outgoing\", \"private\": false }",
+        "options": {}
+      }
+    },
+    {
+      "id": "if-has-media",
+      "name": "If · Has demo media",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1780, 100],
+      "parameters": {
+        "conditions": {
+          "options": { "version": 2, "caseSensitive": false, "typeValidation": "strict" },
+          "conditions": [{ "id": "m", "leftValue": "={{ $('Code · Sequence check').first().json.demoUrl }}", "rightValue": "", "operator": { "type": "string", "operation": "notEquals" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "wait-demo",
+      "name": "Wait · Demo delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2000, 60],
+      "parameters": { "amount": "={{ $('Code · Sequence check').first().json.demoDelay }}", "unit": "seconds" }
+    },
+    {
+      "id": "http-fetch-media",
+      "name": "HTTP · Fetch media binary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2220, 60],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Code · Sequence check').first().json.demoUrl }}",
+        "options": { "response": { "response": { "responseFormat": "file" } } }
+      }
+    },
+    {
+      "id": "http-send-media",
+      "name": "HTTP · Send demo media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2440, 60],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Code · Sequence check').first().json.chatwoot_base }}/api/v1/accounts/={{ $('Code · Sequence check').first().json.chatwoot_account_id }}/conversations/={{ $('Code · Sequence check').first().json.convId }}/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "api_access_token", "value": "={{ $('Code · Sequence check').first().json.chatwoot_token }}" }
+        ] },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": { "parameters": [
+          { "name": "message_type", "value": "outgoing" },
+          { "name": "private", "value": "false" },
+          { "name": "content", "value": "={{ $('Code · Sequence check').first().json.caption }}" },
+          { "name": "attachments[]", "value": "={{ $binary.data }}", "parameterType": "formBinaryData", "inputDataFieldName": "data" }
+        ] },
+        "options": {}
+      }
+    },
+
     {
       "id": "code-industry",
       "name": "Code · Read industry",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        900,
-        300
-      ],
+      "position": [1120, 400],
       "parameters": {
-        "jsCode": "const client = $input.first().json;\nconst raw    = $('Code · Filter & extract').first().json;\n// Drop inactive clients\nif (client.active === 'No') return [];\nconst ind = (client.industry || 'general').toLowerCase().trim();\n// Normalise to engine keys\nlet engine = 'general';\nif (ind === 'travel')                          engine = 'travel';\nelse if (ind === 'ecommerce' || ind === 'ecom') engine = 'ecom';\nelse if (ind === 'consulting' || ind === 'hr'\n      || ind === 'consulting-hr'\n      || ind === 'consulting & hr')            engine = 'consulting-hr';\nreturn [{ json: { ...raw, _client: client, _engine: engine } }];"
+        "jsCode": "const client = $('HTTP · Get client').first().json;\nconst raw    = $('Code · Filter & extract').first().json;\n// Drop inactive clients\nif (client.active === 'No') return [];\nconst ind = (client.industry || 'general').toLowerCase().trim();\n// Normalise to engine keys\nlet engine = 'general';\nif (ind === 'travel')                          engine = 'travel';\nelse if (ind === 'ecommerce' || ind === 'ecom') engine = 'ecom';\nelse if (ind === 'consulting' || ind === 'hr'\n      || ind === 'consulting-hr'\n      || ind === 'consulting & hr')            engine = 'consulting-hr';\nreturn [{ json: { ...raw, _client: client, _engine: engine } }];"
       }
     },
     {
@@ -69,87 +175,37 @@
       "name": "Switch · Industry",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
-      "position": [
-        1120,
-        300
-      ],
+      "position": [1340, 400],
       "parameters": {
         "rules": {
           "values": [
             {
               "conditions": {
-                "options": {
-                  "version": 2,
-                  "caseSensitive": false,
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "id": "t",
-                    "leftValue": "={{ $json._engine }}",
-                    "rightValue": "travel",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
+                "options": { "version": 2, "caseSensitive": false, "typeValidation": "strict" },
+                "conditions": [{ "id": "t", "leftValue": "={{ $json._engine }}", "rightValue": "travel", "operator": { "type": "string", "operation": "equals" } }],
                 "combinator": "and"
               },
-              "renameOutput": true,
-              "outputKey": "travel"
+              "renameOutput": true, "outputKey": "travel"
             },
             {
               "conditions": {
-                "options": {
-                  "version": 2,
-                  "caseSensitive": false,
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "id": "e",
-                    "leftValue": "={{ $json._engine }}",
-                    "rightValue": "ecom",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
+                "options": { "version": 2, "caseSensitive": false, "typeValidation": "strict" },
+                "conditions": [{ "id": "e", "leftValue": "={{ $json._engine }}", "rightValue": "ecom", "operator": { "type": "string", "operation": "equals" } }],
                 "combinator": "and"
               },
-              "renameOutput": true,
-              "outputKey": "ecom"
+              "renameOutput": true, "outputKey": "ecom"
             },
             {
               "conditions": {
-                "options": {
-                  "version": 2,
-                  "caseSensitive": false,
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "id": "c",
-                    "leftValue": "={{ $json._engine }}",
-                    "rightValue": "consulting-hr",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
+                "options": { "version": 2, "caseSensitive": false, "typeValidation": "strict" },
+                "conditions": [{ "id": "c", "leftValue": "={{ $json._engine }}", "rightValue": "consulting-hr", "operator": { "type": "string", "operation": "equals" } }],
                 "combinator": "and"
               },
-              "renameOutput": true,
-              "outputKey": "consulting-hr"
+              "renameOutput": true, "outputKey": "consulting-hr"
             }
           ]
         },
-        "options": {
-          "fallbackOutput": "extra"
-        }
+        "options": { "fallbackOutput": "extra" }
       }
     },
     {
@@ -157,16 +213,9 @@
       "name": "Execute · Travel Engine",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [
-        1340,
-        140
-      ],
+      "position": [1560, 240],
       "parameters": {
-        "workflowId": {
-          "cachedResultName": "Leadvyne · Engine · Travel",
-          "__rl": true,
-          "mode": "name"
-        },
+        "workflowId": { "cachedResultName": "Leadvyne · Engine · Travel", "__rl": true, "mode": "name" },
         "options": {}
       }
     },
@@ -175,16 +224,9 @@
       "name": "Execute · Ecom Engine",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [
-        1340,
-        300
-      ],
+      "position": [1560, 400],
       "parameters": {
-        "workflowId": {
-          "cachedResultName": "Leadvyne · Engine · Ecom",
-          "__rl": true,
-          "mode": "name"
-        },
+        "workflowId": { "cachedResultName": "Leadvyne · Engine · Ecom", "__rl": true, "mode": "name" },
         "options": {}
       }
     },
@@ -193,16 +235,9 @@
       "name": "Execute · Consulting HR Engine",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [
-        1340,
-        460
-      ],
+      "position": [1560, 560],
       "parameters": {
-        "workflowId": {
-          "cachedResultName": "Leadvyne · Engine · Consulting & HR",
-          "__rl": true,
-          "mode": "name"
-        },
+        "workflowId": { "cachedResultName": "Leadvyne · Engine · Consulting & HR", "__rl": true, "mode": "name" },
         "options": {}
       }
     },
@@ -211,99 +246,65 @@
       "name": "Execute · General Engine",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [
-        1340,
-        620
-      ],
+      "position": [1560, 720],
       "parameters": {
-        "workflowId": {
-          "cachedResultName": "Leadvyne · Engine · General",
-          "__rl": true,
-          "mode": "name"
-        },
+        "workflowId": { "cachedResultName": "Leadvyne · Engine · General", "__rl": true, "mode": "name" },
         "options": {}
       }
     }
   ],
+
   "connections": {
     "When called by per-client webhook": {
-      "main": [
-        [
-          {
-            "node": "Code · Filter & extract",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Code · Filter & extract", "type": "main", "index": 0 }]]
     },
     "Code · Filter & extract": {
-      "main": [
-        [
-          {
-            "node": "HTTP · Get client",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "HTTP · Get client", "type": "main", "index": 0 }]]
     },
     "HTTP · Get client": {
+      "main": [[{ "node": "Switch · Event type", "type": "main", "index": 0 }]]
+    },
+    "Switch · Event type": {
       "main": [
-        [
-          {
-            "node": "Code · Read industry",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Code · Sequence check", "type": "main", "index": 0 }],
+        [{ "node": "Code · Read industry", "type": "main", "index": 0 }]
       ]
     },
-    "Code · Read industry": {
+    "Code · Sequence check": {
+      "main": [[{ "node": "Wait · Intro delay", "type": "main", "index": 0 }]]
+    },
+    "Wait · Intro delay": {
+      "main": [[{ "node": "HTTP · Send intro message", "type": "main", "index": 0 }]]
+    },
+    "HTTP · Send intro message": {
+      "main": [[{ "node": "If · Has demo media", "type": "main", "index": 0 }]]
+    },
+    "If · Has demo media": {
       "main": [
-        [
-          {
-            "node": "Switch · Industry",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Wait · Demo delay", "type": "main", "index": 0 }],
+        []
       ]
+    },
+    "Wait · Demo delay": {
+      "main": [[{ "node": "HTTP · Fetch media binary", "type": "main", "index": 0 }]]
+    },
+    "HTTP · Fetch media binary": {
+      "main": [[{ "node": "HTTP · Send demo media", "type": "main", "index": 0 }]]
+    },
+    "Code · Read industry": {
+      "main": [[{ "node": "Switch · Industry", "type": "main", "index": 0 }]]
     },
     "Switch · Industry": {
       "main": [
-        [
-          {
-            "node": "Execute · Travel Engine",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Execute · Ecom Engine",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Execute · Consulting HR Engine",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Execute · General Engine",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Execute · Travel Engine", "type": "main", "index": 0 }],
+        [{ "node": "Execute · Ecom Engine", "type": "main", "index": 0 }],
+        [{ "node": "Execute · Consulting HR Engine", "type": "main", "index": 0 }],
+        [{ "node": "Execute · General Engine", "type": "main", "index": 0 }]
       ]
     }
   },
-  "settings": {
-    "executionOrder": "v1"
-  }
+
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": []
 }
