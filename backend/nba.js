@@ -146,6 +146,32 @@ function ruleNba(scored) {
   return `Re-engage ${name} with a concrete offer or deadline to prompt a decision.`;
 }
 
+// ── META CAPI HOOK ───────────────────────────────────────────────────────────
+const CAPI_WEBHOOK = process.env.CAPI_WEBHOOK || 'https://apps.leadvyne.com/webhook/leadvyne-capi';
+
+async function fireCapiEvent(client, lead, score, priority) {
+  if ((client.capi_enabled || 'No') !== 'Yes') return;
+  if (!client.capi_pixel_id || !client.capi_token) return;
+  // Only fire for warm+ leads (avoids spamming Meta with cold signals)
+  if (priority === 'cold') return;
+  try {
+    await fetch(CAPI_WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id:  String(client.Id),
+        lead_id:    String(lead.Id),
+        phone:      lead.Phone || '',
+        name:       lead.Name  || '',
+        stage:      lead.Stage || '',
+        nba_score:  score,
+      }),
+    });
+  } catch (e) {
+    console.warn(`  CAPI fire failed for lead ${lead.Id}: ${e.message}`);
+  }
+}
+
 // ── BATCH PATCH ──────────────────────────────────────────────────────────────
 async function patchLeads(tableId, updates, token) {
   // NocoDB accepts array PATCH for bulk update
@@ -172,6 +198,13 @@ async function processClient(client) {
 
   const scored = scoreLeads(leads);
   console.log(`  Scoring ${scored.length} leads (rule-based)`);
+
+  // Fire Meta CAPI events for warm/critical leads
+  for (const s of scored) {
+    if (s.priority === 'critical' || s.priority === 'warm') {
+      await fireCapiEvent(client, s.lead, s.score, s.priority);
+    }
+  }
 
   const now = new Date().toISOString();
   const updates = scored.map(s => ({

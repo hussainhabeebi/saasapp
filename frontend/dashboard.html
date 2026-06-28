@@ -525,6 +525,14 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .coach-card{background:#EEF2FF;border-radius:var(--r-sm);padding:14px;margin-top:10px;font-size:13px;line-height:1.6}
 .coach-card .cc-head{font-family:var(--disp);font-size:12px;font-weight:700;color:#1E3A8A;margin-bottom:8px}
 
+/* conversions module */
+.capi-rule-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.capi-rule-row:last-child{border-bottom:none}
+.capi-rule-left{flex:1}
+.capi-rule-label{font-size:13px;font-weight:600;color:var(--ink)}
+.capi-rule-sub{font-size:11px;color:var(--muted);margin-top:2px}
+.capi-rule-right{flex-shrink:0}
+
 /* sequence module */
 .seq-step-card{position:relative;padding:18px}
 .seq-step-num{font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
@@ -932,6 +940,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <div id="desktopNav">
     <button class="dnTab active" data-page="home">🏠 Home</button>
     <button class="dnTab" data-page="sequence">🎯 Sequence</button>
+    <button class="dnTab" data-page="conversions">📡 Conversions</button>
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
     <button class="dnTab" data-page="leads">💬 Leads</button>
     <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
@@ -1215,6 +1224,160 @@ const TODAY = new Date().toISOString().slice(0,10);
             </div>
           </div>
           <div style="font-size:11px;color:var(--muted);text-align:right" id="seqLastSent"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- META CONVERSIONS API -->
+    <div class="page hidden" id="pageConversions">
+      <div class="page-pad">
+
+        <!-- Header -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px">
+          <div>
+            <div class="card-title" style="margin-bottom:2px">📡 Meta Conversions API</div>
+            <div style="font-size:13px;color:var(--muted)">Report good and bad leads back to Meta automatically — improve ad targeting and reduce wasted spend.</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:13px;font-weight:600">CAPI</span>
+            <label class="seq-toggle">
+              <input type="checkbox" id="capiToggle" onchange="capiToggleChange()">
+              <span class="seq-slider"></span>
+            </label>
+            <span id="capiStatusBadge" style="font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px;background:var(--line);color:var(--muted)">Off</span>
+          </div>
+        </div>
+
+        <!-- Credentials card -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head">Meta Pixel Credentials</div>
+          <div class="s-note">Get these from Meta Events Manager → your Pixel → Settings → Conversions API.</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+            <div>
+              <label class="form-label">Pixel ID</label>
+              <input class="form-input" id="capiPixelId" type="text" placeholder="1234567890123456">
+            </div>
+            <div>
+              <label class="form-label">CAPI Access Token</label>
+              <input class="form-input" id="capiToken" type="password" placeholder="EAAxxxxx…">
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <button class="save-btn" id="capiSaveCreds">Save Credentials</button>
+            <span class="save-msg" id="capiSaveCredsMsg"></span>
+          </div>
+        </div>
+
+        <!-- What gets reported -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head">What Gets Reported</div>
+          <div class="s-note">Choose which lead signals to send to Meta. All phone numbers are hashed with SHA-256 before sending — Meta never sees raw data.</div>
+
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
+
+            <div class="capi-rule-row">
+              <div class="capi-rule-left">
+                <div class="capi-rule-label">Lead Created</div>
+                <div class="capi-rule-sub">When bot creates a new lead (any new contact)</div>
+              </div>
+              <div class="capi-rule-right">
+                <select class="form-input capi-rule-select" id="capiRuleNew" style="max-width:140px">
+                  <option value="off">Don't report</option>
+                  <option value="Lead">Report as Lead</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="capi-rule-row">
+              <div class="capi-rule-left">
+                <div class="capi-rule-label">Lead Qualified</div>
+                <div class="capi-rule-sub">When lead score crosses threshold (set below)</div>
+              </div>
+              <div class="capi-rule-right">
+                <select class="form-input capi-rule-select" id="capiRuleQual" style="max-width:140px">
+                  <option value="off">Don't report</option>
+                  <option value="Lead" selected>Report as Lead</option>
+                  <option value="ViewContent">Report as ViewContent</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="capi-rule-row">
+              <div class="capi-rule-left">
+                <div class="capi-rule-label">Booking / Converted</div>
+                <div class="capi-rule-sub">When stage reaches booked, converted, or consultation_booked</div>
+              </div>
+              <div class="capi-rule-right">
+                <select class="form-input capi-rule-select" id="capiRuleConv" style="max-width:140px">
+                  <option value="off">Don't report</option>
+                  <option value="Purchase" selected>Report as Purchase</option>
+                  <option value="CompleteRegistration">Report as Registration</option>
+                  <option value="Lead">Report as Lead</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="capi-rule-row">
+              <div class="capi-rule-left">
+                <div class="capi-rule-label">Not Interested / Opt Out</div>
+                <div class="capi-rule-sub">When lead says not interested or opts out</div>
+              </div>
+              <div class="capi-rule-right">
+                <select class="form-input capi-rule-select" id="capiRuleBad" style="max-width:140px">
+                  <option value="off" selected>Don't report (recommended)</option>
+                  <option value="negative">Send as negative signal</option>
+                </select>
+              </div>
+            </div>
+
+          </div>
+
+          <div style="margin-bottom:14px">
+            <label class="form-label">Minimum qual score to report as Lead event (NBA score 0–100)</label>
+            <div style="display:flex;align-items:center;gap:12px">
+              <input type="range" id="capiScoreThreshold" min="0" max="100" value="50" style="flex:1" oninput="$id('capiThreshVal').textContent=this.value">
+              <span id="capiThreshVal" style="font-size:14px;font-weight:700;color:var(--accent);min-width:28px">50</span>
+            </div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px">Only leads scored ≥ this value by the NBA engine will fire a Lead event to Meta.</div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:10px">
+            <button class="save-btn" id="capiSaveRules">Save Rules</button>
+            <span class="save-msg" id="capiSaveRulesMsg"></span>
+          </div>
+        </div>
+
+        <!-- Test event -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head">Test Event</div>
+          <div class="s-note">Send a test Lead event to Meta to verify your Pixel ID and token are correct. Check Meta Events Manager → Test Events to confirm it arrives.</div>
+          <button class="save-btn" id="capiTestBtn" style="background:linear-gradient(135deg,#1877f2,#0e5fd8)">Send Test Event to Meta</button>
+          <span class="save-msg" id="capiTestMsg" style="margin-left:12px"></span>
+        </div>
+
+        <!-- Live stats -->
+        <div class="card">
+          <div class="s-head" style="margin-bottom:12px">Live Stats</div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px">
+            <div style="text-align:center;padding:14px 8px;background:var(--bg);border-radius:var(--r-sm)">
+              <div style="font-size:22px;font-weight:800;color:var(--accent)" id="capiStatTotal">—</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px;font-weight:600">Events Sent</div>
+            </div>
+            <div style="text-align:center;padding:14px 8px;background:var(--bg);border-radius:var(--r-sm)">
+              <div style="font-size:22px;font-weight:800;color:#16a34a" id="capiStatGood">—</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px;font-weight:600">Good Lead Events</div>
+            </div>
+            <div style="text-align:center;padding:14px 8px;background:var(--bg);border-radius:var(--r-sm)">
+              <div style="font-size:22px;font-weight:800;color:var(--accent)" id="capiStatConv">—</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px;font-weight:600">Purchase Events</div>
+            </div>
+            <div style="text-align:center;padding:14px 8px;background:var(--bg);border-radius:var(--r-sm)">
+              <div style="font-size:22px;font-weight:800;color:#ef4444" id="capiStatFail">—</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px;font-weight:600">Failed</div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--muted);text-align:right" id="capiLastEvent"></div>
         </div>
 
       </div>
@@ -1636,6 +1799,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem" data-page="agency" id="bnAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
     <button class="bnItem" data-page="recruit" id="bnRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
     <button class="bnItem" data-page="sequence"><span class="bnIcon">🎯</span><span class="bnLabel">Sequence</span></button>
+    <button class="bnItem" data-page="conversions"><span class="bnIcon">📡</span><span class="bnLabel">Conversions</span></button>
     <button class="bnItem" data-page="chats"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
     <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
@@ -2448,6 +2612,7 @@ function navigate(page){
   if(page==='recruit') renderRecruit();
   if(page==='settings') populateSettings();
   if(page==='sequence') seqInit();
+  if(page==='conversions') capiInit();
   if(page==='chats') openChatsTab();
 }
 
@@ -3533,6 +3698,91 @@ $id('saveSeqAll').addEventListener('click',async()=>{
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
+
+// ── META CONVERSIONS API MODULE ──────────────────────────────────
+function capiInit(){
+  if(!clientRecord) return;
+  // credentials
+  $id('capiPixelId').value = clientRecord.capi_pixel_id || '';
+  $id('capiToken').value   = clientRecord.capi_token    || '';
+  // toggle
+  const on = (clientRecord.capi_enabled || 'No') === 'Yes';
+  $id('capiToggle').checked = on;
+  capiUpdateBadge(on);
+  // rules
+  $id('capiRuleNew').value  = clientRecord.capi_rule_new  || 'off';
+  $id('capiRuleQual').value = clientRecord.capi_rule_qual || 'Lead';
+  $id('capiRuleConv').value = clientRecord.capi_rule_conv || 'Purchase';
+  $id('capiRuleBad').value  = clientRecord.capi_rule_bad  || 'off';
+  // threshold
+  const thresh = clientRecord.capi_score_threshold || 50;
+  $id('capiScoreThreshold').value = thresh;
+  $id('capiThreshVal').textContent = thresh;
+  // stats
+  $id('capiStatTotal').textContent = clientRecord.capi_stat_total || '0';
+  $id('capiStatGood').textContent  = clientRecord.capi_stat_good  || '0';
+  $id('capiStatConv').textContent  = clientRecord.capi_stat_conv  || '0';
+  $id('capiStatFail').textContent  = clientRecord.capi_stat_fail  || '0';
+  const last = clientRecord.capi_last_event;
+  $id('capiLastEvent').textContent = last ? 'Last event: ' + new Date(last).toLocaleString() : '';
+}
+
+function capiUpdateBadge(on){
+  const b = $id('capiStatusBadge');
+  if(on){ b.textContent='Active'; b.style.background='#D8EEE4'; b.style.color='#0E7C5A'; }
+  else  { b.textContent='Off';    b.style.background='var(--line)'; b.style.color='var(--muted)'; }
+}
+
+async function capiToggleChange(){
+  const on = $id('capiToggle').checked;
+  capiUpdateBadge(on);
+  await patchClient({ capi_enabled: on ? 'Yes' : 'No' });
+}
+
+$id('capiSaveCreds').addEventListener('click', async () => {
+  const btn = $id('capiSaveCreds'), msg = $id('capiSaveCredsMsg');
+  btn.disabled = true; msg.textContent = ''; msg.className = 'save-msg';
+  try {
+    await patchClient({
+      capi_pixel_id: $id('capiPixelId').value.trim(),
+      capi_token:    $id('capiToken').value.trim(),
+    });
+    msg.textContent = '✓ Saved';
+  } catch(e){ msg.textContent = 'Error: ' + e.message; msg.className = 'save-msg err'; }
+  finally { btn.disabled = false; setTimeout(() => msg.textContent = '', 3000); }
+});
+
+$id('capiSaveRules').addEventListener('click', async () => {
+  await saveField('capiSaveRules', 'capiSaveRulesMsg', {
+    capi_rule_new:        $id('capiRuleNew').value,
+    capi_rule_qual:       $id('capiRuleQual').value,
+    capi_rule_conv:       $id('capiRuleConv').value,
+    capi_rule_bad:        $id('capiRuleBad').value,
+    capi_score_threshold: parseInt($id('capiScoreThreshold').value) || 50,
+  });
+});
+
+$id('capiTestBtn').addEventListener('click', async () => {
+  const btn = $id('capiTestBtn'), msg = $id('capiTestMsg');
+  btn.disabled = true; msg.textContent = 'Sending…'; msg.className = 'save-msg';
+  try {
+    const res = await fetch('https://apps.leadvyne.com/webhook/leadvyne-capi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id:  clientId,
+        event_name: 'Lead',
+        test_event: true,
+        phone:      clientRecord.test_phone || '',
+        lead_id:    'test-' + Date.now(),
+      }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    msg.textContent = '✓ Test event sent — check Meta Events Manager → Test Events';
+    msg.className = 'save-msg';
+  } catch(e){ msg.textContent = 'Error: ' + e.message; msg.className = 'save-msg err'; }
+  finally { btn.disabled = false; }
+});
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
 
 $id('saveFlow').addEventListener('click',async()=>{

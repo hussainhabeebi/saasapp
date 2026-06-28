@@ -1,0 +1,129 @@
+{
+  "name": "Leadvyne · Meta CAPI",
+  "nodes": [
+
+    {
+      "id": "webhook",
+      "name": "Webhook · CAPI trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leadvyne-capi",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "respond",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [220, -120],
+      "parameters": { "respondWith": "text", "responseBody": "ok", "options": {} }
+    },
+
+    {
+      "id": "get-client",
+      "name": "HTTP · Get client",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records/{{ $json.body.client_id }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
+        ] },
+        "options": {}
+      }
+    },
+
+    {
+      "id": "code-prep",
+      "name": "Code · Prep CAPI event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "jsCode": "const client = $input.first().json;\nconst req    = $('Webhook · CAPI trigger').first().json.body || {};\n\n// Guard: CAPI must be enabled (skip for test events)\nif (!req.test_event && (client.capi_enabled || 'No') !== 'Yes') return [];\n\nconst pixelId    = client.capi_pixel_id || '';\nconst capiToken  = client.capi_token    || '';\nif (!pixelId || !capiToken) return [];\n\n// Determine event name from request or rules\nlet eventName = req.event_name || 'Lead';\nconst stage   = (req.stage || '').toLowerCase();\nconst score   = parseInt(req.nba_score) || 0;\nconst threshold = parseInt(client.capi_score_threshold) || 50;\n\nif (!req.event_name) {\n  const BOOKED = ['consultation_booked','appt_booked','visit_booked','converted','booked'];\n  const BAD    = ['not_interested','opt_out','lost'];\n  if (BOOKED.some(s => stage.includes(s)))     eventName = client.capi_rule_conv || 'Purchase';\n  else if (BAD.some(s => stage.includes(s)))   eventName = client.capi_rule_bad  || 'off';\n  else if (score >= threshold)                 eventName = client.capi_rule_qual || 'Lead';\n  else if (req.is_new_lead)                    eventName = client.capi_rule_new  || 'off';\n  else                                         eventName = 'off';\n}\n\nif (eventName === 'off' || eventName === 'negative') return [];\n\n// SHA-256 hash helper (Web Crypto via n8n global crypto)\nasync function sha256(str) {\n  if (!str) return '';\n  const clean = str.trim().toLowerCase();\n  const buf   = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(clean));\n  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');\n}\n\nconst phone = (req.phone || '').replace(/[^0-9]/g, '');\nconst name  = (req.name  || '').trim().toLowerCase();\n\nconst hashedPhone = phone ? await sha256(phone) : '';\nconst nameParts   = name.split(' ');\nconst fn = nameParts[0]  ? await sha256(nameParts[0]) : '';\nconst ln = nameParts[1]  ? await sha256(nameParts[nameParts.length-1]) : '';\n\nconst eventId = `lv-${req.lead_id || req.client_id}-${Date.now()}`;\n\nconst userData = {};\nif (hashedPhone) userData.ph   = [hashedPhone];\nif (fn)          userData.fn   = [fn];\nif (ln)          userData.ln   = [ln];\nif (req.external_id || req.lead_id) userData.external_id = [String(req.lead_id || req.external_id)];\n\nconst payload = {\n  data: [{\n    event_name: eventName,\n    event_time: Math.floor(Date.now() / 1000),\n    event_id:   eventId,\n    action_source: 'other',\n    user_data: userData,\n    custom_data: {\n      lead_stage: req.stage || '',\n      nba_score:  req.nba_score || 0,\n      client_id:  String(req.client_id || ''),\n    }\n  }]\n};\n\nif (req.test_event) payload.test_event_code = 'TEST12345';\n\nreturn [{ json: { pixelId, capiToken, payload, eventName, clientId: String(req.client_id), statKey: req.test_event ? null : eventName } }];"
+      }
+    },
+
+    {
+      "id": "http-capi",
+      "name": "HTTP · Send to Meta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 0],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $json.pixelId }}/events?access_token={{ $json.capiToken }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ JSON.stringify($json.payload) }}",
+        "options": { "retryOnFail": true, "maxTries": 2, "waitBetweenTries": 2000 }
+      }
+    },
+
+    {
+      "id": "code-stat",
+      "name": "Code · Prep stat update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0],
+      "parameters": {
+        "jsCode": "const prep   = $('Code · Prep CAPI event').first().json;\nconst result = $input.first().json;\nif (!prep.statKey) return [];\nconst success = !result.error && (result.events_received || result.fbtrace_id);\nconst client  = $('HTTP · Get client').first().json;\nconst total   = parseInt(client.capi_stat_total || 0) + 1;\nconst fail    = parseInt(client.capi_stat_fail  || 0) + (success ? 0 : 1);\nlet   good    = parseInt(client.capi_stat_good  || 0);\nlet   conv    = parseInt(client.capi_stat_conv  || 0);\nif (success) {\n  if (prep.eventName === 'Purchase' || prep.eventName === 'CompleteRegistration') conv++;\n  else good++;\n}\nreturn [{ json: { clientId: prep.clientId, total, good, conv, fail, now: new Date().toISOString() } }];"
+      }
+    },
+
+    {
+      "id": "http-stat",
+      "name": "HTTP · Update stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 0],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records/{{ $json.clientId }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={ \"capi_stat_total\": {{ $json.total }}, \"capi_stat_good\": {{ $json.good }}, \"capi_stat_conv\": {{ $json.conv }}, \"capi_stat_fail\": {{ $json.fail }}, \"capi_last_event\": \"{{ $json.now }}\" }",
+        "options": {}
+      }
+    }
+
+  ],
+
+  "connections": {
+    "Webhook · CAPI trigger": {
+      "main": [[
+        { "node": "Respond 200", "type": "main", "index": 0 },
+        { "node": "HTTP · Get client", "type": "main", "index": 0 }
+      ]]
+    },
+    "HTTP · Get client":        { "main": [[{ "node": "Code · Prep CAPI event", "type": "main", "index": 0 }]] },
+    "Code · Prep CAPI event":   { "main": [[{ "node": "HTTP · Send to Meta",    "type": "main", "index": 0 }]] },
+    "HTTP · Send to Meta":      { "main": [[{ "node": "Code · Prep stat update","type": "main", "index": 0 }]] },
+    "Code · Prep stat update":  { "main": [[{ "node": "HTTP · Update stats",    "type": "main", "index": 0 }]] }
+  },
+
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": []
+}
