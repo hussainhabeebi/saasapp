@@ -1,0 +1,220 @@
+{
+  "name": "Leadvyne · New Contact Sequence",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leadvyne-new-contact",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook · Chatwoot new conversation",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0]
+    },
+
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "ok",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Respond immediately",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [220, -120]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Extract fields from Chatwoot conversation_created webhook\nconst body = $input.first().json.body || $input.first().json;\nconst event = body.event || '';\n\n// Only handle new conversations (not message events)\nif (event !== 'conversation_created' && event !== '') {\n  return [];\n}\n\nconst conv = body.conversation || body;\nconst convId = String(conv.id || conv.conversation_id || '');\nconst accountId = String(body.account?.id || conv.account_id || conv.meta?.sender?.account_id || '');\n\n// Derive client_id from the n8n webhook URL query param OR inbox mapping\n// The wrapper workflow should POST to this webhook with ?client_id=xxx\nconst clientId = String($input.first().json.query?.client_id || body.client_id || '');\n\nif (!convId || !clientId) return [];\n\nreturn [{ json: { convId, accountId, clientId } }];"
+      },
+      "id": "parseWebhook",
+      "name": "Code · Parse webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records/{{$json.clientId}}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
+        ] },
+        "options": {}
+      },
+      "id": "getClient",
+      "name": "HTTP · Get client config",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const client = $input.first().json;\nconst prev = $('Code · Parse webhook').first().json;\n\n// Abort if sequence is disabled\nif ((client.seq_enabled || 'No') !== 'Yes') return [];\n\nreturn [{ json: {\n  convId: prev.convId,\n  accountId: prev.accountId,\n  clientId: prev.clientId,\n  chatwoot_base: client.chatwoot_base || '',\n  chatwoot_account_id: String(client.chatwoot_account_id || ''),\n  chatwoot_token: client.chatwoot_token || '',\n  seq_intro_delay: parseInt(client.seq_intro_delay) || 60,\n  seq_demo_delay: parseInt(client.seq_demo_delay) || 90,\n  seq_intro_msg: (client.seq_intro_msg || '').replace('{{business_name}}', client.client_name || ''),\n  seq_demo_video_url: client.seq_demo_video_url || '',\n} }];"
+      },
+      "id": "prepSequence",
+      "name": "Code · Prep sequence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    },
+
+    {
+      "parameters": {
+        "amount": "={{$json.seq_intro_delay}}",
+        "unit": "seconds"
+      },
+      "id": "waitIntro",
+      "name": "Wait · Intro delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [880, 0]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.chatwoot_base}}/api/v1/accounts/{{$json.chatwoot_account_id}}/conversations/{{$json.convId}}/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "api_access_token", "value": "={{$json.chatwoot_token}}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"content\": \"{{$json.seq_intro_msg}}\", \"message_type\": \"outgoing\", \"private\": false }",
+        "options": {}
+      },
+      "id": "sendIntro",
+      "name": "HTTP · Send intro message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 0],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "amount": "={{$('Code · Prep sequence').first().json.seq_demo_delay}}",
+        "unit": "seconds"
+      },
+      "id": "waitDemo",
+      "name": "Wait · Demo delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1320, 0]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$('Code · Prep sequence').first().json.seq_demo_video_url}}",
+        "options": { "response": { "response": { "responseFormat": "file" } } }
+      },
+      "id": "fetchVideo",
+      "name": "HTTP · Fetch video binary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, 0],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$('Code · Prep sequence').first().json.chatwoot_base}}/api/v1/accounts/={{$('Code · Prep sequence').first().json.chatwoot_account_id}}/conversations/={{$('Code · Prep sequence').first().json.convId}}/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "api_access_token", "value": "={{$('Code · Prep sequence').first().json.chatwoot_token}}" }
+        ] },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": { "parameters": [
+          { "name": "message_type", "value": "outgoing" },
+          { "name": "private", "value": "false" },
+          { "name": "content", "value": "" },
+          { "name": "attachments[]", "value": "={{ $binary.data }}", "parameterType": "formBinaryData", "inputDataFieldName": "data" }
+        ] },
+        "options": {}
+      },
+      "id": "sendVideo",
+      "name": "HTTP · Send demo video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 0],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records/{{$('Code · Prep sequence').first().json.clientId}}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" },
+          { "name": "Content-Type", "value": "application/json" }
+        ] },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={ \"seq_last_triggered\": \"{{new Date().toISOString()}}\" }",
+        "options": {}
+      },
+      "id": "logTrigger",
+      "name": "HTTP · Log sequence run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 0],
+      "onError": "continueRegularOutput"
+    }
+
+  ],
+
+  "connections": {
+    "Webhook · Chatwoot new conversation": {
+      "main": [
+        [
+          { "node": "Respond immediately", "type": "main", "index": 0 },
+          { "node": "Code · Parse webhook", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Code · Parse webhook": {
+      "main": [[{ "node": "HTTP · Get client config", "type": "main", "index": 0 }]]
+    },
+    "HTTP · Get client config": {
+      "main": [[{ "node": "Code · Prep sequence", "type": "main", "index": 0 }]]
+    },
+    "Code · Prep sequence": {
+      "main": [[{ "node": "Wait · Intro delay", "type": "main", "index": 0 }]]
+    },
+    "Wait · Intro delay": {
+      "main": [[{ "node": "HTTP · Send intro message", "type": "main", "index": 0 }]]
+    },
+    "HTTP · Send intro message": {
+      "main": [[{ "node": "Wait · Demo delay", "type": "main", "index": 0 }]]
+    },
+    "Wait · Demo delay": {
+      "main": [[{ "node": "HTTP · Fetch video binary", "type": "main", "index": 0 }]]
+    },
+    "HTTP · Fetch video binary": {
+      "main": [[{ "node": "HTTP · Send demo video", "type": "main", "index": 0 }]]
+    },
+    "HTTP · Send demo video": {
+      "main": [[{ "node": "HTTP · Log sequence run", "type": "main", "index": 0 }]]
+    }
+  },
+
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": []
+}
