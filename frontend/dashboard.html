@@ -1779,6 +1779,56 @@ const TODAY = new Date().toISOString().slice(0,10);
             </div>
           </div>
 
+          <hr class="div">
+
+          <!-- ── STRIPE BILLING ── -->
+          <div class="settings-section" id="stripeBillingSection">
+            <div class="s-head">💳 Billing &amp; Subscription</div>
+            <div class="s-note">Your 14-day free trial. After the trial, you will receive a payment link every 30 days. No auto-charge without your approval.</div>
+
+            <!-- Trial status bar -->
+            <div id="trialStatusBar" style="margin-bottom:16px;padding:12px 16px;border-radius:10px;background:var(--accent-soft);border:1px solid var(--accent);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+              <div>
+                <div style="font-size:13px;font-weight:700;color:var(--accent-ink)" id="trialStatusLabel">Trial Active</div>
+                <div style="font-size:12px;color:var(--muted);margin-top:2px" id="trialStatusSub">Loading…</div>
+              </div>
+              <div id="trialDaysBadge" style="font-family:var(--disp);font-size:22px;font-weight:800;color:var(--accent)"></div>
+            </div>
+
+            <!-- Payment status -->
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
+              <div style="padding:10px;border:1px solid var(--line);border-radius:8px;text-align:center">
+                <div style="font-size:18px;font-weight:800;font-family:var(--disp);color:var(--ink)" id="billingPlanName">—</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Plan</div>
+              </div>
+              <div style="padding:10px;border:1px solid var(--line);border-radius:8px;text-align:center">
+                <div style="font-size:18px;font-weight:800;font-family:var(--disp);color:var(--ink)" id="billingStatus">—</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Status</div>
+              </div>
+              <div style="padding:10px;border:1px solid var(--line);border-radius:8px;text-align:center">
+                <div style="font-size:18px;font-weight:800;font-family:var(--disp);color:var(--ink)" id="billingNextDate">—</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Next Payment</div>
+              </div>
+            </div>
+
+            <!-- Stripe keys (admin-set, shown read-only to client) -->
+            <div id="stripeKeysSection" style="display:none">
+              <label class="form-label">Stripe Publishable Key</label>
+              <input class="form-input" id="cfgStripePk" type="text" placeholder="pk_live_..." style="margin-bottom:8px;font-family:monospace;font-size:12px" />
+              <label class="form-label">Stripe Secret Key</label>
+              <input class="form-input" id="cfgStripeSk" type="password" placeholder="sk_live_..." style="margin-bottom:8px;font-family:monospace;font-size:12px" />
+              <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+                <button class="save-btn" onclick="saveStripeKeys()">Save Keys</button>
+                <span class="save-msg" id="saveStripeMsg"></span>
+              </div>
+            </div>
+
+            <!-- Payment link (if payment_link set by admin) -->
+            <div id="paymentLinkBox" style="display:none;margin-top:12px">
+              <a id="paymentLinkBtn" href="#" target="_blank" style="display:inline-block;padding:11px 22px;background:var(--accent);color:#fff;border-radius:9px;font-family:var(--disp);font-weight:700;font-size:14px;text-decoration:none">💳 Pay Now →</a>
+            </div>
+          </div>
+
         </div>
         <div id="summaryWrap" style="padding:0 16px 16px;display:none">
           <button id="summaryBtn" style="padding:7px 16px;background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--disp)">✨ Generate AI Summary</button>
@@ -3226,6 +3276,72 @@ function exportSingle(){
 function dlFile(href,name){const a=document.createElement('a');a.href=href;a.download=name;a.click();}
 
 /* ── GOOGLE SHEETS SYNC ── */
+// ── BILLING / STRIPE ────────────────────────────────────────────
+function billingInit() {
+  if (!clientRecord) return;
+  const trialStart = clientRecord.trial_start ? new Date(clientRecord.trial_start) : null;
+  const isTrial = (clientRecord.is_trial || 'Yes') === 'Yes';
+  const payStatus = clientRecord.payment_status || (isTrial ? 'trial' : 'unpaid');
+  const labelEl = $id('trialStatusLabel');
+  const subEl   = $id('trialStatusSub');
+  const badgeEl = $id('trialDaysBadge');
+  const barEl   = $id('trialStatusBar');
+
+  if (trialStart) {
+    const elapsed = Math.floor((Date.now() - trialStart.getTime()) / 86400000);
+    const left    = Math.max(0, 14 - elapsed);
+    if (isTrial && left > 0) {
+      labelEl.textContent = 'Free Trial Active';
+      subEl.textContent   = `Trial started ${trialStart.toLocaleDateString('en-GB', {day:'numeric',month:'short'})} · ${left} day${left!==1?'s':''} remaining`;
+      badgeEl.textContent = left + 'd left';
+      barEl.style.background = left <= 3 ? '#FFF3CD' : '';
+      barEl.style.borderColor = left <= 3 ? '#FFC107' : '';
+    } else if (isTrial && left === 0) {
+      labelEl.textContent = 'Trial Expired';
+      subEl.textContent   = 'Please pay to continue using Leadvyne';
+      badgeEl.textContent = 'Expired';
+      barEl.style.background = '#FEE2E2';
+      barEl.style.borderColor = '#EF4444';
+      labelEl.style.color = '#991B1B';
+    } else {
+      labelEl.textContent = 'Active Subscription';
+      subEl.textContent   = clientRecord.plan_name || 'Monthly Plan';
+      badgeEl.textContent = '';
+      barEl.style.background = '';
+    }
+  } else {
+    subEl.textContent = 'No trial start date set. Contact support.';
+  }
+
+  $id('billingPlanName').textContent  = clientRecord.plan_name  || (isTrial ? 'Trial' : 'Monthly');
+  $id('billingStatus').textContent    = payStatus.charAt(0).toUpperCase() + payStatus.slice(1);
+  $id('billingNextDate').textContent  = clientRecord.next_payment_date || '—';
+
+  // Show Stripe keys section only if admin credentials saved
+  if (clientRecord.stripe_pk || clientRecord.stripe_sk) {
+    $id('stripeKeysSection').style.display = 'block';
+    $id('cfgStripePk').value = clientRecord.stripe_pk || '';
+    $id('cfgStripeSk').value = clientRecord.stripe_sk ? '••••••••' : '';
+  }
+
+  // Payment link
+  if (clientRecord.payment_link) {
+    $id('paymentLinkBox').style.display = 'block';
+    $id('paymentLinkBtn').href = clientRecord.payment_link;
+  }
+}
+
+async function saveStripeKeys() {
+  const pk  = ($id('cfgStripePk').value || '').trim();
+  const sk  = ($id('cfgStripeSk').value || '').trim();
+  const msg = $id('saveStripeMsg');
+  if (!pk || !sk || sk === '••••••••') { msg.textContent = 'Enter both keys.'; msg.className = 'save-msg err'; return; }
+  msg.textContent = 'Saving…'; msg.className = 'save-msg';
+  await patchClient({ stripe_pk: pk, stripe_sk: sk });
+  clientRecord.stripe_pk = pk; clientRecord.stripe_sk = sk;
+  msg.textContent = 'Saved ✓'; msg.className = 'save-msg ok';
+}
+
 function saveCwBase(){
   const val=($id('cfgCwBase').value.trim()).replace(/\/$/,'');
   const msg=$id('saveCwBaseMsg');
@@ -3447,6 +3563,8 @@ function populateSettings(){
   initTaSettings();
   // recruitment
   initRcSettings();
+  // billing
+  billingInit();
 }
 
 /* ── SERVICES ── */

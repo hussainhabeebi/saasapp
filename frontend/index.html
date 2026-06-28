@@ -195,6 +195,11 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
 ::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+
+/* ── INDUSTRY CHIPS ── */
+.ind-chip{padding:9px 6px;border:1.5px solid var(--line);border-radius:10px;font-size:12px;font-weight:600;text-align:center;cursor:pointer;background:var(--bg);color:var(--ink);transition:all .14s;line-height:1.4}
+.ind-chip:hover{border-color:var(--green);background:var(--green-soft)}
+.ind-chip.selected{border-color:var(--green);background:var(--green-soft);color:var(--green)}
 </style>
 </head>
 <body>
@@ -275,22 +280,52 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
       <span class="ml-tag">സ്മാർട്ട് AI സംഭാഷണം</span>
     </div>
     <div class="feat">
-      <div class="feat-icon">✈️</div>
-      <h3>Travel CRM Integration</h3>
-      <p>Automatically shows your packages, Umrah groups, car rentals, and itineraries from your database. Always up to date.</p>
-      <span class="ml-tag">ട്രാവൽ പാക്കേജ് ഓട്ടോ-ഷെയർ</span>
+      <div class="feat-icon">🎯</div>
+      <h3>New Contact Sequence</h3>
+      <p>AI-personalised intro message + demo video sent automatically to every new WhatsApp contact. Gemini crafts a unique greeting per person.</p>
+      <span class="ml-tag">ഓട്ടോ ഇൻട്രോ & ഡെമോ സീക്വൻസ്</span>
     </div>
     <div class="feat">
-      <div class="feat-icon">🎯</div>
-      <h3>Lead Qualification</h3>
-      <p>Asks the right questions, collects budget and preferences, and scores leads before your sales team even sees them.</p>
-      <span class="ml-tag">ലീഡ് യോഗ്യത നിർണ്ണയം</span>
+      <div class="feat-icon">📡</div>
+      <h3>Meta Conversions API</h3>
+      <p>Automatically report good and bad leads back to Facebook/Meta — reduces ad cost, improves audience quality, and tracks real conversions.</p>
+      <span class="ml-tag">Facebook CAPI ഓട്ടോ-റിപ്പോർട്ടിങ്</span>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">🧠</div>
+      <h3>NBA Lead Scoring</h3>
+      <p>Every lead is scored 0–100 nightly and tagged Critical / Warm / Nurture / Cold. Next Best Action tells you exactly what to do with each lead.</p>
+      <span class="ml-tag">ലീഡ് സ്കോറിങ് & നെക്സ്റ്റ് ആക്ഷൻ</span>
     </div>
     <div class="feat">
       <div class="feat-icon">🔄</div>
       <h3>Automated Follow-ups</h3>
       <p>Never let a lead go cold. Sends timed nudges at 2h, 12h, and 24h after silence — automatically.</p>
       <span class="ml-tag">ഓട്ടോ ഫോളോ-അപ്പ്</span>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">✈️</div>
+      <h3>Multi-Industry Modules</h3>
+      <p>Dedicated dashboards for Travel, Real Estate, Ecommerce, Healthcare, Recruitment, Insurance, and more — each with industry-specific flows.</p>
+      <span class="ml-tag">ട്രാവൽ · റിയൽ എസ്റ്റേറ്റ് · ഇ-കോം</span>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">📢</div>
+      <h3>Broadcast Campaigns</h3>
+      <p>Send bulk WhatsApp messages to filtered lead segments — by stage, score, or tag. Schedule campaigns or send instantly.</p>
+      <span class="ml-tag">ബൾക്ക് WhatsApp ക്യാമ്പെയ്ൻ</span>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">📂</div>
+      <h3>Knowledge Base</h3>
+      <p>Upload PDFs, Word docs, or paste text. The bot reads your content and answers customer questions accurately from it.</p>
+      <span class="ml-tag">നോളജ് ബേസ് AI</span>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">🎯</div>
+      <h3>Lead Qualification</h3>
+      <p>Asks the right questions, collects budget and preferences, and scores leads before your sales team even sees them.</p>
+      <span class="ml-tag">ലീഡ് യോഗ്യത നിർണ്ണയം</span>
     </div>
     <div class="feat">
       <div class="feat-icon">👤</div>
@@ -306,15 +341,15 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
     </div>
     <div class="feat">
       <div class="feat-icon">📊</div>
-      <h3>Live Analytics</h3>
-      <p>Track every conversation, lead status, and conversion from your dashboard in real time.</p>
+      <h3>Live Analytics & Google Sheets</h3>
+      <p>Track every conversation, lead status, and conversion in real time. Auto-sync your lead data to Google Sheets.</p>
       <span class="ml-tag">തത്സമയ അനലിറ്റിക്സ്</span>
     </div>
     <div class="feat">
-      <div class="feat-icon">⚡</div>
-      <h3>Instant Setup</h3>
-      <p>Enter your company name and number. Your bot is live on WhatsApp within 24 hours — no coding required.</p>
-      <span class="ml-tag">24 മണിക്കൂറിൽ തയ്യാർ</span>
+      <div class="feat-icon">🛒</div>
+      <h3>Ecommerce Suite</h3>
+      <p>Product catalogue, order tracking, cart recovery, and return handling — all through WhatsApp. No app needed.</p>
+      <span class="ml-tag">WhatsApp ഷോപ്പ്</span>
     </div>
     <div class="feat">
       <div class="feat-icon">🔒</div>
@@ -472,39 +507,41 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
     <div class="section-tag" style="text-align:center">Get Started</div>
     <h2>Start your free trial</h2>
     <div class="signup-ml">ഇന്നുതന്നെ ആരംഭിക്കൂ</div>
-    <p>Enter your details and get instant access to your dashboard on our shared trial number. No credit card needed.</p>
+    <p>14 days free. No credit card. No technical setup needed.</p>
 
     <div class="signup-card">
       <div id="signupForm">
         <div class="field">
-          <label>Company / Business Name <span class="ml">കമ്പനി / ബിസിനസ്സ് പേര്</span></label>
+          <label>Business Name <span class="ml">ബിസിനസ്സ് പേര്</span></label>
           <input id="companyName" type="text" placeholder="e.g. Moulavi Travels" autocomplete="organization" />
         </div>
         <div class="field">
-          <label>WhatsApp / Mobile Number <span class="ml">വാട്ട്‌സ്ആപ്പ് / മൊബൈൽ നമ്പർ</span></label>
+          <label>WhatsApp Number <span class="ml">വാട്ട്‌സ്ആപ്പ് നമ്പർ</span></label>
           <input id="mobileNumber" type="tel" placeholder="+91 98765 43210" autocomplete="tel" />
         </div>
         <div class="field">
-          <label>Business Type <span class="ml">ബിസിനസ്സ് തരം</span></label>
-          <input id="businessType" type="text" placeholder="e.g. Travel Agency, Real Estate, Clinic…" />
+          <label>Industry <span class="ml">ബിസിനസ്സ് തരം</span></label>
+          <div id="industryGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px">
+            <div class="ind-chip" data-val="Travel &amp; Tourism" onclick="pickInd(this)">✈️ Travel</div>
+            <div class="ind-chip" data-val="Real Estate" onclick="pickInd(this)">🏠 Real Estate</div>
+            <div class="ind-chip" data-val="Ecommerce" onclick="pickInd(this)">🛒 Ecommerce</div>
+            <div class="ind-chip" data-val="Healthcare" onclick="pickInd(this)">🏥 Healthcare</div>
+            <div class="ind-chip" data-val="Recruitment" onclick="pickInd(this)">💼 Recruitment</div>
+            <div class="ind-chip" data-val="Insurance" onclick="pickInd(this)">🛡️ Insurance</div>
+            <div class="ind-chip" data-val="Education" onclick="pickInd(this)">🎓 Education</div>
+            <div class="ind-chip" data-val="Finance" onclick="pickInd(this)">💰 Finance</div>
+            <div class="ind-chip" data-val="General" onclick="pickInd(this)">⚡ General</div>
+          </div>
         </div>
         <div class="field">
-          <label>Chatwoot Account ID <span class="ml">ചാറ്റ്‌വൂട്ട് അക്കൗണ്ട് ID</span></label>
-          <input id="chatwootAccountId" type="text" placeholder="e.g. 12" />
-        </div>
-        <div class="field">
-          <label>Chatwoot Inbox ID <span class="ml">ഇൻബോക്സ് ID</span></label>
-          <input id="chatwootInboxId" type="text" placeholder="e.g. 5" />
-        </div>
-        <div class="field">
-          <label>Chatwoot User Token <span class="ml">യൂസർ ടോക്കൺ</span></label>
-          <input id="chatwootToken" type="text" placeholder="Paste your Chatwoot access token" />
+          <label>Password <span class="ml">പാസ്‌വേഡ്</span></label>
+          <input id="signupPassword" type="password" placeholder="Min 6 characters" autocomplete="new-password" />
         </div>
         <button class="signup-btn" id="signupBtn" onclick="submitSignup()">Create My Dashboard →</button>
         <div class="form-msg" id="signupMsg"></div>
         <p class="signup-note">
-          You'll be redirected to your dashboard instantly.
-          <span class="ml">ഉടനെ നിങ്ങളുടെ ഡാഷ്‌ബോർഡിലേക്ക് redirect ആകും.</span>
+          14-day free trial · No credit card · Redirect to dashboard instantly
+          <span class="ml">14 ദിവസം സൗജന്യ ട്രയൽ · ക്രെഡിറ്റ് കാർഡ് ആവശ്യമില്ല</span>
         </p>
       </div>
 
@@ -530,83 +567,75 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
 <a href="admin.html" class="admin-link">admin ↗</a>
 
 <script>
-// ── TRIAL CONFIG — fill these before going live ──────────────────
-const TRIAL = {
-  onboard_endpoint:     'https://apps.leadvyne.com/webhook/leadvyne-onboard',
-  passcode:             'Bath*2026*ld',
-  chatwoot_base:        'https://app.aiingo.com',
-  language:             'ml',
-  model:                'google/gemini-2.5-flash',
-};
-// ─────────────────────────────────────────────────────────────────
+// ── CONFIG ─────────────────────────────────────────────────────
+const NOCODB_BASE   = 'https://whizz.aiingo.com';
+const NOCODB_TOKEN  = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';
+const CLIENTS_TABLE = 'mxl33bg4wi70fqj';
+// ──────────────────────────────────────────────────────────────
+
+let _selectedIndustry = '';
+
+function pickInd(el) {
+  document.querySelectorAll('.ind-chip').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  _selectedIndustry = el.dataset.val;
+}
 
 const DEFAULT_PROMPT = (company, biz) =>
 `You are a friendly AI assistant for ${company}. Business type: ${biz || 'general'}.
-Never reveal you are an AI. Keep replies short and warm (3–4 lines max, one question per reply).
+Never reveal you are an AI. Keep replies short and warm (3-4 lines max, one question per reply).
 Answer questions about the business, products, and services.
 For anything you cannot answer, politely say you will connect them with an advisor.
 Always respond in the same language the customer uses.`;
 
 async function submitSignup() {
-  const company   = document.getElementById('companyName').value.trim();
-  const mobile    = document.getElementById('mobileNumber').value.trim();
-  const bizType   = document.getElementById('businessType').value.trim();
-  const accountId = document.getElementById('chatwootAccountId').value.trim();
-  const inboxId   = document.getElementById('chatwootInboxId').value.trim();
-  const token     = document.getElementById('chatwootToken').value.trim();
-  const msg       = document.getElementById('signupMsg');
-  const btn       = document.getElementById('signupBtn');
+  const company  = document.getElementById('companyName').value.trim();
+  const mobile   = document.getElementById('mobileNumber').value.trim();
+  const password = document.getElementById('signupPassword').value.trim();
+  const msg      = document.getElementById('signupMsg');
+  const btn      = document.getElementById('signupBtn');
 
-  msg.textContent = '';
-  msg.className = 'form-msg';
+  msg.textContent = ''; msg.className = 'form-msg';
 
-  if (!company)   { msg.textContent = 'Please enter your company name.'; msg.className = 'form-msg err'; return; }
-  if (!mobile)    { msg.textContent = 'Please enter your mobile number.'; msg.className = 'form-msg err'; return; }
-  if (!accountId) { msg.textContent = 'Please enter your Chatwoot Account ID.'; msg.className = 'form-msg err'; return; }
-  if (!inboxId)   { msg.textContent = 'Please enter your Chatwoot Inbox ID.'; msg.className = 'form-msg err'; return; }
-  if (!token)     { msg.textContent = 'Please enter your Chatwoot User Token.'; msg.className = 'form-msg err'; return; }
+  if (!company)            { msg.textContent = 'Please enter your business name.';       msg.className = 'form-msg err'; return; }
+  if (!mobile)             { msg.textContent = 'Please enter your WhatsApp number.';      msg.className = 'form-msg err'; return; }
+  if (!_selectedIndustry)  { msg.textContent = 'Please select your industry.';            msg.className = 'form-msg err'; return; }
+  if (password.length < 6) { msg.textContent = 'Password must be at least 6 characters.'; msg.className = 'form-msg err'; return; }
 
   btn.disabled = true;
-  btn.textContent = 'Setting up your dashboard…';
+  btn.textContent = 'Creating your dashboard...';
 
   try {
-    const payload = {
-      passcode:             TRIAL.passcode,
-      client_name:          company,
-      phone:                mobile,
-      business_type:        bizType,
-      chatwoot_base:        TRIAL.chatwoot_base,
-      chatwoot_account_id:  accountId,
-      chatwoot_inbox_id:    inboxId,
-      chatwoot_token:       token,
-      language:             TRIAL.language,
-      model:                TRIAL.model,
-      main_prompt:          DEFAULT_PROMPT(company, bizType),
-      source:               'trial_signup',
-      flow_json:            JSON.stringify({ stages: { new: { '*': { next: 'new', msg: 'fallback' } } }, messages: { fallback: `Hi! I'm the AI assistant for ${company}. How can I help you today? 😊` }, variables: {} }),
-      qual_questions:       [],
-      bot_config:           { qual_enabled: false, handover_enabled: true, memory_enabled: true, antiloop_enabled: true },
-      followup_count:       2,
-      followup_hours:       '4, 24',
-      followup_messages:    `Hi 😊 Just checking in — happy to help anytime!\nA quick reminder — I'm here if you have any questions 🙏`,
-      is_trial:             true,
+    const record = {
+      client_name:       company,
+      phone:             mobile,
+      industry:          _selectedIndustry,
+      password:          password,
+      active:            'Yes',
+      is_trial:          'Yes',
+      trial_start:       new Date().toISOString().slice(0, 10),
+      language:          'ml',
+      model:             'google/gemini-2.5-flash',
+      chatwoot_base:     'https://app.aiingo.com',
+      main_prompt:       DEFAULT_PROMPT(company, _selectedIndustry),
+      followup_count:    2,
+      followup_hours:    '4, 24',
+      followup_messages: 'Hi Just checking in - happy to help anytime!\nA quick reminder - here if you have any questions',
     };
 
-    const res = await fetch(TRIAL.onboard_endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+    const res = await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`, {
+      method:  'POST',
+      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+      body:    JSON.stringify(record),
     });
 
     const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || 'Failed to create account');
 
-    if (!res.ok) throw new Error(data.message || 'Provisioning failed');
-
-    // Show success then redirect to dashboard
+    const clientId = data.Id || data.id;
     document.getElementById('signupForm').style.display = 'none';
     document.getElementById('successBox').classList.add('show');
 
-    const clientId = data.client_id;
     if (clientId) {
       setTimeout(() => {
         window.location.href = 'https://app.leadvyne.com/dashboard.html?client=' + clientId;
@@ -617,14 +646,11 @@ async function submitSignup() {
     msg.textContent = 'Could not create dashboard. Please try again or contact us on WhatsApp.';
     msg.className = 'form-msg err';
     btn.disabled = false;
-    btn.textContent = 'Create My Dashboard →';
+    btn.textContent = 'Create My Dashboard ->';
   }
 }
 
 // ── ENROLL OWN NUMBER ──────────────────────────────────────────
-const NOCODB_BASE    = 'https://whizz.aiingo.com';
-const NOCODB_TOKEN   = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';
-const CLIENTS_TABLE  = 'mxl33bg4wi70fqj';
 
 async function submitEnroll() {
   const clientId       = document.getElementById('enrollClientId').value.trim();

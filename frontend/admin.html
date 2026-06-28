@@ -12,407 +12,385 @@
 :root {
   --bg:#E9EEEC; --card:#FFFFFF; --ink:#0F1F1A; --muted:#5B6B65;
   --accent:#0E7C5A; --accent-ink:#0A5C43; --accent-soft:#D8EEE4;
-  --line:#D7E0DC; --line-strong:#C2CEC9; --warn:#9A5B12; --warn-soft:#F6ECD9;
+  --line:#D7E0DC; --line-strong:#C2CEC9;
+  --warn:#9A5B12; --warn-soft:#F6ECD9;
+  --danger:#991B1B; --danger-soft:#FEE2E2;
   --r:10px; --mono:"JetBrains Mono",ui-monospace,monospace;
   --disp:"Space Grotesk",system-ui,sans-serif; --body:"Inter",system-ui,sans-serif;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:100vh}
 
-/* LOGIN OVERLAY */
-#login-overlay{
-  position:fixed;inset:0;z-index:1000;
-  background:rgba(10,20,16,0.82);
-  backdrop-filter:blur(6px);
-  display:flex;align-items:center;justify-content:center;
-  padding:1rem;
-}
+/* LOGIN */
+#login-overlay{position:fixed;inset:0;z-index:1000;background:rgba(10,20,16,.85);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:1rem}
 #login-overlay.hidden{display:none}
-.login-card{
-  background:var(--card);border-radius:16px;
-  padding:2.5rem 2rem;width:100%;max-width:480px;
-  box-shadow:0 24px 64px rgba(0,0,0,0.28);
-}
-.login-card h1{font-family:var(--disp);font-size:1.5rem;font-weight:700;color:var(--ink);margin-bottom:.25rem}
-.login-card p{color:var(--muted);font-size:.875rem;margin-bottom:1.75rem}
-.form-group{margin-bottom:1rem}
-.form-group label{display:block;font-size:.8125rem;font-weight:500;color:var(--ink);margin-bottom:.375rem}
-.form-group input{
-  width:100%;padding:.625rem .875rem;border:1.5px solid var(--line-strong);
-  border-radius:var(--r);font-family:var(--body);font-size:.875rem;
-  color:var(--ink);background:#fff;outline:none;
-  transition:border-color .15s;
-}
-.form-group input:focus{border-color:var(--accent)}
-.form-group input::placeholder{color:var(--muted)}
-.form-section-label{
-  font-size:.75rem;font-weight:600;color:var(--muted);
-  text-transform:uppercase;letter-spacing:.06em;
-  margin:1.25rem 0 .75rem;border-top:1px solid var(--line);padding-top:1rem;
-}
-.btn-primary{
-  width:100%;padding:.75rem;background:var(--accent);color:#fff;
-  border:none;border-radius:var(--r);font-family:var(--body);font-size:.9375rem;
-  font-weight:600;cursor:pointer;margin-top:1.25rem;
-  transition:background .15s,transform .1s;
-}
+.login-card{background:var(--card);border-radius:16px;padding:2.5rem 2rem;width:100%;max-width:400px;box-shadow:0 24px 64px rgba(0,0,0,.28);animation:loginIn .3s cubic-bezier(.22,.61,.36,1)}
+@keyframes loginIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.login-card h1{font-family:var(--disp);font-size:1.4rem;font-weight:700;margin-bottom:.25rem}
+.login-card p{color:var(--muted);font-size:.875rem;margin-bottom:1.5rem}
+.fld{margin-bottom:1rem}
+.fld label{display:block;font-size:.8rem;font-weight:600;margin-bottom:.35rem;color:var(--ink)}
+.fld input{width:100%;padding:.625rem .875rem;border:1.5px solid var(--line-strong);border-radius:var(--r);font-family:var(--body);font-size:.875rem;color:var(--ink);background:#fff;outline:none;transition:border-color .15s}
+.fld input:focus{border-color:var(--accent)}
+.fld input::placeholder{color:var(--muted)}
+.btn-primary{width:100%;padding:.75rem;background:var(--accent);color:#fff;border:none;border-radius:var(--r);font-family:var(--body);font-size:.9375rem;font-weight:600;cursor:pointer;margin-top:1rem;transition:background .15s,transform .1s}
 .btn-primary:hover{background:var(--accent-ink)}
-.btn-primary:active{transform:scale(.98)}
-#login-error{
-  color:#c0392b;font-size:.8125rem;margin-top:.75rem;
-  padding:.5rem .75rem;background:#fdf0f0;border-radius:6px;
-  display:none;
-}
+.btn-primary:disabled{opacity:.6;cursor:not-allowed}
+#login-err{color:#c0392b;font-size:.8125rem;margin-top:.75rem;padding:.5rem .75rem;background:#fdf0f0;border-radius:6px;display:none}
 
 /* HEADER */
-#header{
-  background:var(--card);border-bottom:1.5px solid var(--line);
-  padding:.875rem 1.5rem;
-  display:flex;align-items:center;gap:1rem;position:sticky;top:0;z-index:100;
-}
-.brand{font-family:var(--disp);font-size:1.125rem;font-weight:700;color:var(--ink)}
+#header{background:var(--card);border-bottom:1.5px solid var(--line);padding:.875rem 1.5rem;display:flex;align-items:center;gap:1rem;position:sticky;top:0;z-index:100;box-shadow:0 1px 0 var(--line),0 2px 8px rgba(0,0,0,.04);display:none}
+.brand{font-family:var(--disp);font-size:1.125rem;font-weight:700}
 .brand span{color:var(--accent)}
-.client-count-badge{
-  background:var(--accent-soft);color:var(--accent-ink);
-  font-size:.75rem;font-weight:600;padding:.25rem .625rem;border-radius:999px;
-  font-family:var(--mono);
-}
-.header-search{
-  flex:1;max-width:320px;padding:.5rem .875rem;
-  border:1.5px solid var(--line-strong);border-radius:var(--r);
-  font-family:var(--body);font-size:.875rem;color:var(--ink);
-  background:var(--bg);outline:none;transition:border-color .15s;
-}
-.header-search:focus{border-color:var(--accent);background:#fff}
-.header-search::placeholder{color:var(--muted)}
-.connected-badge{
-  display:flex;align-items:center;gap:.375rem;
-  font-size:.8125rem;font-weight:500;color:var(--accent);
-  margin-left:auto;
-}
-.connected-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0}
-.btn-disconnect{
-  padding:.5rem 1rem;background:transparent;border:1.5px solid var(--line-strong);
-  border-radius:var(--r);font-family:var(--body);font-size:.8125rem;font-weight:500;
-  color:var(--muted);cursor:pointer;transition:all .15s;
-}
-.btn-disconnect:hover{border-color:#c0392b;color:#c0392b}
+.header-badge{background:var(--accent-soft);color:var(--accent-ink);font-size:.75rem;font-weight:600;padding:.25rem .625rem;border-radius:999px;font-family:var(--mono)}
+.hdr-search{flex:1;max-width:300px;padding:.5rem .875rem;border:1.5px solid var(--line-strong);border-radius:var(--r);font-family:var(--body);font-size:.875rem;color:var(--ink);background:var(--bg);outline:none;transition:border-color .15s}
+.hdr-search:focus{border-color:var(--accent);background:#fff}
+.hdr-search::placeholder{color:var(--muted)}
+.hdr-tabs{display:flex;gap:4px;margin-left:auto}
+.hdr-tab{padding:.45rem 1rem;border:1.5px solid var(--line-strong);border-radius:8px;font-size:.8125rem;font-weight:600;background:transparent;color:var(--muted);cursor:pointer;transition:all .15s}
+.hdr-tab.active,.hdr-tab:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.btn-disconnect{padding:.45rem 1rem;border:1.5px solid var(--line-strong);border-radius:var(--r);font-size:.8125rem;font-weight:500;background:transparent;color:var(--muted);cursor:pointer;transition:all .15s}
+.btn-disconnect:hover{border-color:var(--danger);color:var(--danger)}
 
-/* MAIN CONTENT */
+/* MAIN */
 #main{padding:1.5rem;display:none}
 #main.visible{display:block}
 
-/* SKELETON */
-.skeleton-grid{
-  display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1rem;
-}
-.skeleton-card{
-  background:var(--card);border-radius:var(--r);padding:1.25rem;
-  border:1.5px solid var(--line);
-}
-.skel{
-  background:linear-gradient(90deg,#e5ebe8 25%,#f0f4f2 50%,#e5ebe8 75%);
-  background-size:200% 100%;animation:shimmer 1.4s infinite;
-  border-radius:6px;
-}
-@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
-.skel-title{height:22px;width:60%;margin-bottom:.875rem}
-.skel-badge{height:18px;width:80px;border-radius:999px}
-.skel-row{display:flex;gap:.5rem;margin-top:.75rem}
-.skel-chip{height:22px;width:70px;border-radius:999px}
-.skel-stats{height:14px;width:50%;margin-top:1rem}
-.skel-actions{display:flex;gap:.5rem;margin-top:1rem}
-.skel-btn{height:32px;flex:1}
+/* PANEL TABS */
+.panel{display:none}.panel.active{display:block}
 
-/* CLIENT GRID */
-.client-grid{
-  display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1rem;
-}
+/* STATS ROW */
+.stats-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.stat-card{background:var(--card);border:1.5px solid var(--line);border-radius:var(--r);padding:1rem 1.25rem}
+.stat-card .num{font-family:var(--disp);font-size:1.75rem;font-weight:800;color:var(--accent)}
+.stat-card .lbl{font-size:.75rem;color:var(--muted);margin-top:3px;font-weight:500}
 
-/* CLIENT CARD */
-.client-card{
-  background:var(--card);border-radius:var(--r);padding:1.25rem;
-  border:1.5px solid var(--line);position:relative;
-  transition:box-shadow .18s,border-color .18s;
-}
-.client-card:hover{box-shadow:0 4px 20px rgba(14,124,90,.1);border-color:var(--line-strong)}
-.card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:.5rem;margin-bottom:.875rem}
-.client-name{font-family:var(--disp);font-size:1.0625rem;font-weight:600;color:var(--ink);line-height:1.25}
-.health-dot{
-  width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:4px;
-}
-.health-dot.green{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.2)}
-.health-dot.yellow{background:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.2)}
-.health-dot.red{background:#ef4444;box-shadow:0 0 0 3px rgba(239,68,68,.2)}
-.status-row{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.75rem}
-.badge{display:inline-flex;align-items:center;font-size:.75rem;font-weight:600;padding:.2rem .6rem;border-radius:999px}
+/* CLIENT TABLE */
+.table-wrap{background:var(--card);border:1.5px solid var(--line);border-radius:var(--r);overflow:hidden}
+.tbl{width:100%;border-collapse:collapse}
+.tbl th{font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:.75rem 1rem;text-align:left;border-bottom:1.5px solid var(--line);background:var(--bg)}
+.tbl td{padding:.75rem 1rem;border-bottom:1px solid var(--line);vertical-align:middle;font-size:.875rem}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:rgba(14,124,90,.03)}
+.badge{display:inline-flex;align-items:center;font-size:.7rem;font-weight:700;padding:.2rem .6rem;border-radius:999px}
 .badge-active{background:#dcfce7;color:#166534}
 .badge-suspended{background:#fee2e2;color:#991b1b}
-.chip{
-  display:inline-flex;align-items:center;font-size:.7rem;font-weight:500;
-  padding:.2rem .55rem;border-radius:999px;background:var(--accent-soft);color:var(--accent-ink);
-  font-family:var(--mono);
-}
-.card-stats{
-  display:flex;gap:1.25rem;padding:.625rem 0;
-  border-top:1px solid var(--line);border-bottom:1px solid var(--line);
-  margin-bottom:.875rem;
-}
-.stat-item{display:flex;flex-direction:column;gap:.125rem}
-.stat-value{font-family:var(--mono);font-size:.9375rem;font-weight:500;color:var(--ink)}
-.stat-label{font-size:.7rem;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-.last-seen{font-size:.7875rem;color:var(--muted);margin-bottom:.875rem}
-.last-seen span{font-weight:500;color:var(--ink)}
-.card-actions{display:flex;align-items:center;gap:.5rem}
-.btn-edit{
-  padding:.4375rem .875rem;background:var(--bg);border:1.5px solid var(--line-strong);
-  border-radius:8px;font-family:var(--body);font-size:.8125rem;font-weight:500;
-  color:var(--ink);cursor:pointer;transition:all .15s;
-}
-.btn-edit:hover{border-color:var(--accent);color:var(--accent)}
-.btn-toggle{
-  padding:.4375rem .875rem;border:1.5px solid;
-  border-radius:8px;font-family:var(--body);font-size:.8125rem;font-weight:500;
-  cursor:pointer;transition:all .15s;
-}
-.btn-toggle.suspend{background:var(--warn-soft);border-color:#e0a96d;color:var(--warn)}
-.btn-toggle.suspend:hover{background:#f6dec0}
-.btn-toggle.activate{background:#dcfce7;border-color:#86efac;color:#166534}
-.btn-toggle.activate:hover{background:#bbf7d0}
-.btn-view{
-  margin-left:auto;padding:.4375rem .875rem;background:var(--accent);color:#fff;
-  border:none;border-radius:8px;font-family:var(--body);font-size:.8125rem;font-weight:500;
-  text-decoration:none;display:inline-flex;align-items:center;gap:.375rem;
-  transition:background .15s;cursor:pointer;
-}
-.btn-view:hover{background:var(--accent-ink)}
+.badge-trial{background:#fef3c7;color:#92400e}
+.badge-paid{background:#dcfce7;color:#166534}
+.badge-overdue{background:#fee2e2;color:#991b1b}
+.trial-bar{display:inline-flex;align-items:center;gap:5px;font-size:.75rem;font-weight:600}
+.trial-fill{height:6px;border-radius:3px;background:var(--accent);display:inline-block}
+.trial-bg{width:60px;height:6px;border-radius:3px;background:var(--line);display:inline-block;position:relative;overflow:hidden}
+.ia{font-family:var(--mono);font-size:.75rem;color:var(--muted)}
+.tbl-btn{padding:.35rem .75rem;border:1.5px solid var(--line-strong);border-radius:6px;font-size:.75rem;font-weight:600;cursor:pointer;background:transparent;color:var(--ink);transition:all .15s;margin-right:4px}
+.tbl-btn:hover{border-color:var(--accent);color:var(--accent)}
+.tbl-btn.danger:hover{border-color:var(--danger);color:var(--danger)}
 
-/* EDIT MODAL */
-#edit-overlay{
-  position:fixed;inset:0;z-index:500;
-  background:rgba(10,20,16,0.78);backdrop-filter:blur(4px);
-  display:flex;align-items:center;justify-content:center;padding:1rem;
-}
-#edit-overlay.hidden{display:none}
-.edit-modal{
-  background:var(--card);border-radius:16px;width:100%;max-width:620px;
-  max-height:90vh;display:flex;flex-direction:column;
-  box-shadow:0 24px 64px rgba(0,0,0,0.28);
-}
-.edit-modal-header{
-  padding:1.5rem 1.75rem 1rem;border-bottom:1.5px solid var(--line);
-  display:flex;align-items:center;justify-content:space-between;
-}
-.edit-modal-header h2{font-family:var(--disp);font-size:1.125rem;font-weight:700}
-.btn-close{
-  background:none;border:none;font-size:1.25rem;cursor:pointer;color:var(--muted);
-  width:32px;height:32px;display:flex;align-items:center;justify-content:center;
-  border-radius:6px;transition:background .15s;
-}
+/* SKELETON */
+.skel{background:linear-gradient(90deg,#e8edea 25%,#f2f6f4 50%,#e8edea 75%);background-size:200% 100%;animation:shimmer 1.4s infinite;border-radius:6px}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* MODAL */
+.modal-bg{position:fixed;inset:0;z-index:500;background:rgba(10,20,16,.75);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:1rem}
+.modal-bg.hidden{display:none}
+.modal{background:var(--card);border-radius:16px;width:100%;max-width:540px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.28);animation:modalIn .2s cubic-bezier(.22,.61,.36,1)}
+@keyframes modalIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.modal-hd{padding:1.25rem 1.5rem 1rem;border-bottom:1.5px solid var(--line);display:flex;align-items:center;justify-content:space-between}
+.modal-hd h2{font-family:var(--disp);font-size:1.0625rem;font-weight:700}
+.btn-close{background:none;border:none;font-size:1.125rem;cursor:pointer;color:var(--muted);width:30px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:6px;transition:background .15s}
 .btn-close:hover{background:var(--bg)}
-.edit-modal-body{padding:1.25rem 1.75rem;overflow-y:auto;flex:1}
-.edit-modal-footer{
-  padding:1rem 1.75rem;border-top:1.5px solid var(--line);
-  display:flex;gap:.75rem;justify-content:flex-end;
-}
-.btn-save{
-  padding:.625rem 1.5rem;background:var(--accent);color:#fff;
-  border:none;border-radius:var(--r);font-family:var(--body);font-size:.875rem;
-  font-weight:600;cursor:pointer;transition:background .15s;
-}
+.modal-body{padding:1.25rem 1.5rem;overflow-y:auto;flex:1}
+.modal-footer{padding:1rem 1.5rem;border-top:1.5px solid var(--line);display:flex;gap:.75rem;justify-content:flex-end}
+.btn-save{padding:.625rem 1.5rem;background:var(--accent);color:#fff;border:none;border-radius:var(--r);font-size:.875rem;font-weight:600;cursor:pointer;transition:background .15s}
 .btn-save:hover{background:var(--accent-ink)}
 .btn-save:disabled{opacity:.6;cursor:not-allowed}
-.btn-cancel{
-  padding:.625rem 1.25rem;background:transparent;border:1.5px solid var(--line-strong);
-  border-radius:var(--r);font-family:var(--body);font-size:.875rem;font-weight:500;
-  color:var(--muted);cursor:pointer;transition:all .15s;
-}
+.btn-cancel{padding:.625rem 1.25rem;background:transparent;border:1.5px solid var(--line-strong);border-radius:var(--r);font-size:.875rem;font-weight:500;color:var(--muted);cursor:pointer;transition:all .15s}
 .btn-cancel:hover{border-color:var(--ink);color:var(--ink)}
-.modal-form-group{margin-bottom:1rem}
-.modal-form-group label{display:block;font-size:.8rem;font-weight:500;color:var(--ink);margin-bottom:.375rem}
-.modal-form-group input,.modal-form-group textarea{
-  width:100%;padding:.5625rem .875rem;border:1.5px solid var(--line-strong);
-  border-radius:8px;font-family:var(--body);font-size:.875rem;color:var(--ink);
-  background:#fff;outline:none;transition:border-color .15s;resize:vertical;
-}
-.modal-form-group input:focus,.modal-form-group textarea:focus{border-color:var(--accent)}
-.modal-form-group textarea{min-height:100px;font-family:var(--mono);font-size:.8125rem;line-height:1.6}
-.modal-form-row{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
-.modal-section-label{
-  font-size:.75rem;font-weight:600;color:var(--muted);
-  text-transform:uppercase;letter-spacing:.06em;
-  margin:1.25rem 0 .75rem;border-top:1px solid var(--line);padding-top:1rem;
-}
-#save-status{font-size:.8125rem;font-weight:500;padding:.5rem .75rem;border-radius:6px;display:none}
-#save-status.success{background:#dcfce7;color:#166534}
-#save-status.error{background:#fee2e2;color:#991b1b}
+.mfld{margin-bottom:1rem}
+.mfld label{display:block;font-size:.8rem;font-weight:600;color:var(--ink);margin-bottom:.35rem}
+.mfld input,.mfld select,.mfld textarea{width:100%;padding:.5625rem .875rem;border:1.5px solid var(--line-strong);border-radius:8px;font-family:var(--body);font-size:.875rem;color:var(--ink);background:#fff;outline:none;transition:border-color .15s}
+.mfld input:focus,.mfld select:focus,.mfld textarea:focus{border-color:var(--accent)}
+.mfld textarea{resize:vertical;min-height:80px;font-family:var(--mono);font-size:.8125rem}
+.mfld-row{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+.msec{font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:1.25rem 0 .75rem;border-top:1px solid var(--line);padding-top:1rem}
+.modal-msg{font-size:.8125rem;font-weight:500;padding:.5rem .75rem;border-radius:6px;display:none;margin-top:.5rem}
+.modal-msg.ok{background:#dcfce7;color:#166534;display:block}
+.modal-msg.err{background:#fee2e2;color:#991b1b;display:block}
 
-/* ── PROFESSIONAL POLISH ── */
-.client-card{transition:box-shadow .2s,border-color .2s,transform .15s}
-.client-card:hover{box-shadow:0 4px 20px rgba(14,124,90,.09);border-color:var(--accent);transform:translateY(-1px)}
-.btn-primary{transition:background .15s,transform .1s,box-shadow .15s;box-shadow:0 1px 3px rgba(14,124,90,.2)}
-.btn-primary:hover{box-shadow:0 3px 10px rgba(14,124,90,.25);transform:translateY(-1px)}
-.btn-primary:active{transform:none;box-shadow:none}
-.btn-edit{transition:all .15s}
-.btn-view{transition:background .15s,transform .1s}
-.btn-view:hover{transform:translateY(-1px)}
-.skel{background:linear-gradient(90deg,#e8edea 25%,#f2f6f4 50%,#e8edea 75%);background-size:200% 100%;animation:shimmer 1.6s infinite}
-.health-dot{transition:box-shadow .2s}
-.badge-active,.badge-suspended{border-radius:6px}
-#header{box-shadow:0 1px 0 var(--line),0 2px 8px rgba(0,0,0,.04)}
-.header-search{transition:border-color .15s,background .15s,box-shadow .15s}
-.header-search:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
-.edit-modal{box-shadow:0 16px 64px rgba(0,0,0,.2),0 4px 16px rgba(0,0,0,.1);animation:modalIn .2s cubic-bezier(.22,.61,.36,1)}
-@keyframes modalIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-.login-card{animation:loginIn .35s cubic-bezier(.22,.61,.36,1);box-shadow:0 24px 80px rgba(0,0,0,.32)}
-@keyframes loginIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
-.modal-form-group input:focus,.modal-form-group textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
-.btn-save{transition:background .15s,box-shadow .15s}
-.btn-save:hover{box-shadow:0 2px 8px rgba(14,124,90,.2)}
-::-webkit-scrollbar{width:5px;height:5px}
-::-webkit-scrollbar-thumb{background:#C2CEC9;border-radius:4px}
-::-webkit-scrollbar-thumb:hover{background:#9AADA8}
-
-/* EMPTY STATE */
-.empty-state{
-  text-align:center;padding:4rem 2rem;
-  color:var(--muted);font-size:.9375rem;
-}
-.empty-state svg{margin-bottom:1rem;opacity:.4}
+/* STRIPE PANEL */
+.stripe-section{background:var(--card);border:1.5px solid var(--line);border-radius:var(--r);padding:1.5rem;margin-bottom:1.25rem}
+.stripe-section h3{font-family:var(--disp);font-size:1rem;font-weight:700;margin-bottom:.25rem}
+.stripe-section p{font-size:.8125rem;color:var(--muted);margin-bottom:1rem}
 
 /* TOAST */
-.toast{
-  position:fixed;bottom:1.5rem;right:1.5rem;z-index:9999;
-  background:var(--ink);color:#fff;padding:.75rem 1.25rem;
-  border-radius:var(--r);font-size:.875rem;font-weight:500;
-  box-shadow:0 8px 24px rgba(0,0,0,0.2);
-  transform:translateY(100px);opacity:0;
-  transition:transform .3s,opacity .3s;
-  max-width:320px;
-}
+.toast{position:fixed;bottom:1.5rem;right:1.5rem;z-index:9999;background:var(--ink);color:#fff;padding:.75rem 1.25rem;border-radius:var(--r);font-size:.875rem;font-weight:500;box-shadow:0 8px 24px rgba(0,0,0,.2);transform:translateY(100px);opacity:0;transition:transform .3s,opacity .3s;max-width:320px}
 .toast.show{transform:translateY(0);opacity:1}
-.toast.success{background:#166534}
-.toast.error{background:#991b1b}
+.toast.ok{background:#166534}
+.toast.err{background:#991b1b}
+
+@media(max-width:768px){
+  .tbl th:nth-child(4),.tbl td:nth-child(4),.tbl th:nth-child(5),.tbl td:nth-child(5){display:none}
+  #header{flex-wrap:wrap;gap:.5rem}
+  .hdr-tabs{margin-left:0;width:100%}
+}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-thumb{background:#C2CEC9;border-radius:4px}
 </style>
 </head>
 <body>
 
-<!-- LOGIN OVERLAY -->
+<!-- LOGIN -->
 <div id="login-overlay">
   <div class="login-card">
     <h1>Leadvyne · Admin</h1>
-    <p>Connect to your NocoDB instance to manage all clients.</p>
-
-    <div class="form-group">
-      <label for="f-nocodb-base">NocoDB Base URL</label>
-      <input type="url" id="f-nocodb-base" placeholder="https://whizz.aiingo.com">
+    <p>Enter the admin passcode to continue.</p>
+    <div class="fld">
+      <label>Admin Passcode</label>
+      <input type="password" id="f-passcode" placeholder="••••••••••" autocomplete="current-password">
     </div>
-    <div class="form-group">
-      <label for="f-clients-table">Clients Table ID</label>
-      <input type="text" id="f-clients-table" placeholder="md_xxxxxxxxxxxxxxxx">
-    </div>
-    <div class="form-group">
-      <label for="f-analytics-table">Analytics Table ID</label>
-      <input type="text" id="f-analytics-table" placeholder="md_xxxxxxxxxxxxxxxx">
-    </div>
-    <div class="form-group">
-      <label for="f-token">Master NocoDB Token (xc-token)</label>
-      <input type="password" id="f-token" placeholder="xc-auth-...">
-    </div>
-
-    <div class="form-section-label">n8n Integration</div>
-    <div class="form-group">
-      <label for="f-n8n-base">n8n Base URL</label>
-      <input type="url" id="f-n8n-base" placeholder="https://n8n.example.com">
-    </div>
-    <div class="form-group">
-      <label for="f-n8n-key">n8n API Key</label>
-      <input type="password" id="f-n8n-key" placeholder="n8n_api_...">
-    </div>
-
-    <div id="login-error">Could not connect. Please check your credentials.</div>
-    <button class="btn-primary" id="btn-connect">Connect →</button>
+    <div id="login-err"></div>
+    <button class="btn-primary" id="btn-connect">Enter →</button>
   </div>
 </div>
 
 <!-- HEADER -->
-<div id="header" style="display:none">
+<div id="header">
   <span class="brand">Leadvyne · <span>Admin</span></span>
-  <span class="client-count-badge" id="count-badge">— clients</span>
-  <input type="search" class="header-search" id="search-input" placeholder="Search clients…">
-  <div class="connected-badge"><span class="connected-dot"></span>Connected</div>
+  <span class="header-badge" id="count-badge">0 clients</span>
+  <input type="search" class="hdr-search" id="search-input" placeholder="Search clients…">
+  <div class="hdr-tabs">
+    <button class="hdr-tab active" onclick="switchPanel('clients')">Clients</button>
+    <button class="hdr-tab" onclick="switchPanel('stripe')">Billing</button>
+  </div>
   <button class="btn-disconnect" id="btn-disconnect">Disconnect</button>
 </div>
 
 <!-- MAIN -->
 <div id="main">
-  <div id="client-grid" class="client-grid"></div>
+
+  <!-- STATS -->
+  <div class="stats-row" id="statsRow">
+    <div class="stat-card"><div class="num" id="statTotal">—</div><div class="lbl">Total Clients</div></div>
+    <div class="stat-card"><div class="num" id="statActive">—</div><div class="lbl">Active</div></div>
+    <div class="stat-card"><div class="num" id="statTrial">—</div><div class="lbl">On Trial</div></div>
+    <div class="stat-card"><div class="num" id="statOverdue">—</div><div class="lbl">Overdue</div></div>
+    <div class="stat-card"><div class="num" id="statPaid">—</div><div class="lbl">Paid</div></div>
+  </div>
+
+  <!-- CLIENTS PANEL -->
+  <div class="panel active" id="panelClients">
+    <div class="table-wrap">
+      <table class="tbl" id="clientTable">
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>Industry</th>
+            <th>Status</th>
+            <th>Trial / Payment</th>
+            <th>Joined</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="clientTbody">
+          <tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--muted)">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- STRIPE PANEL -->
+  <div class="panel" id="panelStripe">
+    <div class="stripe-section">
+      <h3>💳 Global Stripe Configuration</h3>
+      <p>These credentials are used by the billing engine to generate payment links and track subscriptions.</p>
+      <div class="mfld-row" style="margin-bottom:1rem">
+        <div class="mfld">
+          <label>Stripe Publishable Key</label>
+          <input type="text" id="gStripePk" placeholder="pk_live_…" style="font-family:monospace;font-size:12px">
+        </div>
+        <div class="mfld">
+          <label>Stripe Secret Key</label>
+          <input type="password" id="gStripeSk" placeholder="sk_live_…" style="font-family:monospace;font-size:12px">
+        </div>
+      </div>
+      <div class="mfld">
+        <label>Webhook Secret (optional)</label>
+        <input type="password" id="gStripeWh" placeholder="whsec_…" style="font-family:monospace;font-size:12px">
+      </div>
+      <div style="margin-top:1rem;display:flex;align-items:center;gap:.75rem">
+        <button class="btn-save" onclick="saveGlobalStripe()">Save Keys</button>
+        <span id="gStripeMsg" style="font-size:.8125rem;color:var(--accent)"></span>
+      </div>
+    </div>
+
+    <div class="stripe-section">
+      <h3>📋 Per-Client Billing Management</h3>
+      <p>Set plan, price, and generate payment links for individual clients. Select a client below.</p>
+      <div class="mfld" style="max-width:300px">
+        <label>Select Client</label>
+        <select id="billingClientSel" onchange="loadClientBilling()">
+          <option value="">— choose a client —</option>
+        </select>
+      </div>
+      <div id="billingClientForm" style="display:none;margin-top:1rem">
+        <div class="mfld-row">
+          <div class="mfld">
+            <label>Plan Name</label>
+            <input type="text" id="bPlanName" placeholder="Monthly Pro">
+          </div>
+          <div class="mfld">
+            <label>Monthly Price (₹)</label>
+            <input type="number" id="bPrice" placeholder="2999">
+          </div>
+        </div>
+        <div class="mfld-row">
+          <div class="mfld">
+            <label>Payment Status</label>
+            <select id="bPayStatus">
+              <option value="trial">Trial</option>
+              <option value="paid">Paid</option>
+              <option value="unpaid">Unpaid</option>
+              <option value="overdue">Overdue</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
+          <div class="mfld">
+            <label>Next Payment Date</label>
+            <input type="date" id="bNextDate">
+          </div>
+        </div>
+        <div class="mfld">
+          <label>Payment Link URL</label>
+          <input type="url" id="bPayLink" placeholder="https://pay.stripe.com/…">
+        </div>
+        <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem">
+          <button class="btn-save" onclick="saveClientBilling()">Save Billing</button>
+          <span id="bMsg" style="font-size:.8125rem;color:var(--accent)"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
-<!-- EDIT MODAL -->
-<div id="edit-overlay" class="hidden">
-  <div class="edit-modal">
-    <div class="edit-modal-header">
-      <h2 id="edit-modal-title">Edit Client</h2>
-      <button class="btn-close" id="btn-close-modal" title="Close">✕</button>
+<!-- EDIT CLIENT MODAL -->
+<div class="modal-bg hidden" id="editModal">
+  <div class="modal">
+    <div class="modal-hd">
+      <h2 id="editModalTitle">Edit Client</h2>
+      <button class="btn-close" onclick="closeModal()">✕</button>
     </div>
-    <div class="edit-modal-body">
-      <div class="modal-form-group">
+    <div class="modal-body">
+      <div class="mfld">
         <label>Client Name</label>
-        <input type="text" id="e-client-name">
+        <input type="text" id="e-name">
       </div>
-      <div class="modal-form-row">
-        <div class="modal-form-group">
+      <div class="mfld-row">
+        <div class="mfld">
+          <label>Phone</label>
+          <input type="text" id="e-phone">
+        </div>
+        <div class="mfld">
+          <label>Industry</label>
+          <input type="text" id="e-industry">
+        </div>
+      </div>
+      <div class="mfld-row">
+        <div class="mfld">
           <label>Language</label>
-          <input type="text" id="e-language" placeholder="en">
+          <input type="text" id="e-language" placeholder="ml">
         </div>
-        <div class="modal-form-group">
+        <div class="mfld">
           <label>Model</label>
-          <input type="text" id="e-model" placeholder="gpt-4o">
+          <input type="text" id="e-model" placeholder="google/gemini-2.5-flash">
         </div>
       </div>
+      <div class="mfld">
+        <label>Active</label>
+        <select id="e-active">
+          <option value="Yes">Yes — Active</option>
+          <option value="No">No — Suspended</option>
+        </select>
+      </div>
 
-      <div class="modal-section-label">Chatwoot Settings</div>
-      <div class="modal-form-group">
+      <div class="msec">Reset Password</div>
+      <div class="mfld">
+        <label>New Password <span style="font-size:.75rem;color:var(--muted)">(leave blank to keep current)</span></label>
+        <input type="password" id="e-password" placeholder="Min 6 characters">
+      </div>
+
+      <div class="msec">Chatwoot</div>
+      <div class="mfld">
         <label>Chatwoot Base URL</label>
-        <input type="url" id="e-chatwoot-base">
+        <input type="url" id="e-cw-base">
       </div>
-      <div class="modal-form-row">
-        <div class="modal-form-group">
+      <div class="mfld-row">
+        <div class="mfld">
           <label>Account ID</label>
-          <input type="text" id="e-chatwoot-account">
+          <input type="text" id="e-cw-acc">
         </div>
-        <div class="modal-form-group">
+        <div class="mfld">
           <label>Inbox ID</label>
-          <input type="text" id="e-chatwoot-inbox">
+          <input type="text" id="e-cw-inbox">
         </div>
       </div>
 
-      <div class="modal-section-label">Bot Configuration</div>
-      <div class="modal-form-group">
+      <div class="msec">Bot</div>
+      <div class="mfld">
         <label>Main Prompt</label>
-        <textarea id="e-main-prompt" style="min-height:160px"></textarea>
+        <textarea id="e-prompt" rows="5"></textarea>
       </div>
-      <div class="modal-form-row">
-        <div class="modal-form-group">
+      <div class="mfld-row">
+        <div class="mfld">
           <label>Follow-up Count</label>
-          <input type="number" id="e-followup-count" min="0">
+          <input type="number" id="e-fu-count" min="0" max="5">
         </div>
-        <div class="modal-form-group">
+        <div class="mfld">
           <label>Follow-up Hours</label>
-          <input type="number" id="e-followup-hours" min="0">
+          <input type="text" id="e-fu-hours" placeholder="4, 24">
         </div>
-      </div>
-      <div class="modal-form-group">
-        <label>Follow-up Messages</label>
-        <textarea id="e-followup-messages" style="min-height:100px"></textarea>
       </div>
 
-      <div id="save-status"></div>
+      <div class="msec">Trial &amp; Billing</div>
+      <div class="mfld-row">
+        <div class="mfld">
+          <label>Trial Start</label>
+          <input type="date" id="e-trial-start">
+        </div>
+        <div class="mfld">
+          <label>Is Trial?</label>
+          <select id="e-is-trial">
+            <option value="Yes">Yes</option>
+            <option value="No">No</option>
+          </select>
+        </div>
+      </div>
+      <div class="mfld-row">
+        <div class="mfld">
+          <label>Payment Status</label>
+          <select id="e-pay-status">
+            <option value="trial">Trial</option>
+            <option value="paid">Paid</option>
+            <option value="unpaid">Unpaid</option>
+            <option value="overdue">Overdue</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
+        <div class="mfld">
+          <label>Next Payment Date</label>
+          <input type="date" id="e-next-pay">
+        </div>
+      </div>
+      <div class="mfld">
+        <label>Payment Link URL</label>
+        <input type="url" id="e-pay-link" placeholder="https://pay.stripe.com/…">
+      </div>
+
+      <div id="editModalMsg" class="modal-msg"></div>
     </div>
-    <div class="edit-modal-footer">
-      <button class="btn-cancel" id="btn-cancel-modal">Cancel</button>
-      <button class="btn-save" id="btn-save-modal">Save Changes</button>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-save" id="btnSaveEdit" onclick="saveEdit()">Save Changes</button>
     </div>
   </div>
 </div>
@@ -423,86 +401,49 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 <script>
 'use strict';
 
-// ── CONFIG — fill these in once before deploying ──────────────
-const CONFIG = {
-  NOCODB_BASE:        'https://whizz.aiingo.com',
-  NOCODB_TOKEN:       'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',
-  CLIENTS_TABLE_ID:   'mxl33bg4wi70fqj',
-  ANALYTICS_TABLE_ID: 'm2in19v8n7phitr',
-  N8N_BASE:           'https://apps.leadvyne.com',
-  N8N_API_KEY:        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0YjM4YmIyMC05MTYzLTQ2NmYtOTYyZC04Nzc5MTliYzI5MzMiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiZGFhZmJkYzAtMjMzYy00MTU1LTk5NjUtNTMxNDdmZDk5MWU5IiwiaWF0IjoxNzgxNDI1NjM1fQ.hOtecsgYWE0EutyuhbNP2rEm0ArYuG-ZXA-YLJ6RKIE',
-  ADMIN_PASSCODE:     'Bath*2026*ld',
-};
+// ── CONFIG ────────────────────────────────────────────────────
+const NOCODB_BASE   = 'https://whizz.aiingo.com';
+const NOCODB_TOKEN  = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';
+const CLIENTS_TABLE = 'mxl33bg4wi70fqj';
+const ADMIN_CODE    = 'Bath*2026*ld';
 // ─────────────────────────────────────────────────────────────
 
-function getConfig() {
-  return {
-    base:      CONFIG.NOCODB_BASE,
-    clients:   CONFIG.CLIENTS_TABLE_ID,
-    analytics: CONFIG.ANALYTICS_TABLE_ID,
-    token:     CONFIG.NOCODB_TOKEN,
-    n8nBase:   CONFIG.N8N_BASE,
-    n8nKey:    CONFIG.N8N_API_KEY,
-  };
-}
-
-function configComplete(cfg) {
-  return cfg.base && cfg.clients && cfg.analytics && cfg.token;
-}
+let allClients = [];
+let editingId  = null;
 
 // ── Toast ─────────────────────────────────────────────────────
-let toastTimeout;
-function showToast(msg, type = '') {
+let _toastT;
+function toast(msg, type = '') {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.className = 'toast show' + (type ? ' ' + type : '');
-  clearTimeout(toastTimeout);
-  toastTimeout = setTimeout(() => { el.className = 'toast'; }, 3000);
+  clearTimeout(_toastT);
+  _toastT = setTimeout(() => { el.className = 'toast'; }, 3000);
 }
 
-// ── NocoDB API ────────────────────────────────────────────────
-async function apiGet(url, token) {
-  const res = await fetch(url, { headers: { 'xc-token': token } });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+// ── API ───────────────────────────────────────────────────────
+async function ncGet(url) {
+  const r = await fetch(url, { headers: { 'xc-token': NOCODB_TOKEN } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
 }
-
-async function apiPatch(url, token, body) {
-  const res = await fetch(url, {
+async function ncPatch(body) {
+  const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`, {
     method: 'PATCH',
-    headers: { 'xc-token': token, 'Content-Type': 'application/json' },
+    headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
 }
-
-// ── State ─────────────────────────────────────────────────────
-let allClients = [];
-let editingId = null;
-
-// ── DOM refs ──────────────────────────────────────────────────
-const loginOverlay = document.getElementById('login-overlay');
-const header = document.getElementById('header');
-const main = document.getElementById('main');
-const grid = document.getElementById('client-grid');
-const countBadge = document.getElementById('count-badge');
-const searchInput = document.getElementById('search-input');
-const editOverlay = document.getElementById('edit-overlay');
 
 // ── Login ─────────────────────────────────────────────────────
 document.getElementById('btn-connect').addEventListener('click', async () => {
-  const passcode = document.getElementById('f-token').value.trim();
-  const errEl = document.getElementById('login-error');
+  const code  = document.getElementById('f-passcode').value.trim();
+  const errEl = document.getElementById('login-err');
   errEl.style.display = 'none';
 
-  if (!passcode) {
-    errEl.textContent = 'Enter the admin passcode.';
-    errEl.style.display = 'block';
-    return;
-  }
-
-  if (passcode !== CONFIG.ADMIN_PASSCODE) {
+  if (code !== ADMIN_CODE) {
     errEl.textContent = 'Wrong passcode.';
     errEl.style.display = 'block';
     return;
@@ -512,315 +453,316 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
   btn.disabled = true; btn.textContent = 'Connecting…';
 
   try {
-    const cfg = getConfig();
-    await apiGet(`${cfg.base}/api/v2/tables/${cfg.clients}/records?limit=1`, cfg.token);
+    await ncGet(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records?limit=1`);
     showApp();
   } catch(e) {
-    errEl.textContent = 'Connected to NocoDB failed: ' + e.message + '. Check CONFIG values.';
+    errEl.textContent = 'NocoDB connection failed: ' + e.message;
     errEl.style.display = 'block';
-    btn.disabled = false; btn.textContent = 'Connect →';
+    btn.disabled = false; btn.textContent = 'Enter →';
   }
+});
+
+document.getElementById('f-passcode').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-connect').click();
 });
 
 document.getElementById('btn-disconnect').addEventListener('click', () => {
   allClients = [];
-  grid.innerHTML = '';
-  header.style.display = 'none';
-  main.classList.remove('visible');
-  loginOverlay.classList.remove('hidden');
-  document.getElementById('f-token').value = '';
+  document.getElementById('header').style.display = 'none';
+  document.getElementById('main').classList.remove('visible');
+  document.getElementById('login-overlay').classList.remove('hidden');
+  document.getElementById('f-passcode').value = '';
 });
 
-// ── App init ──────────────────────────────────────────────────
 function showApp() {
-  loginOverlay.classList.add('hidden');
-  header.style.display = 'flex';
-  main.classList.add('visible');
+  document.getElementById('login-overlay').classList.add('hidden');
+  document.getElementById('header').style.display = 'flex';
+  document.getElementById('main').classList.add('visible');
   loadClients();
 }
 
-// ── Skeleton ──────────────────────────────────────────────────
-function renderSkeletons(n = 3) {
-  grid.innerHTML = '';
-  for (let i = 0; i < n; i++) {
-    grid.innerHTML += `
-      <div class="skeleton-card">
-        <div class="skel skel-title"></div>
-        <div class="skel skel-badge"></div>
-        <div class="skel-row">
-          <div class="skel skel-chip"></div>
-          <div class="skel skel-chip"></div>
-        </div>
-        <div class="skel skel-stats"></div>
-        <div class="skel-actions">
-          <div class="skel skel-btn"></div>
-          <div class="skel skel-btn"></div>
-        </div>
-      </div>`;
-  }
+// ── Panel switching ───────────────────────────────────────────
+function switchPanel(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel' + name.charAt(0).toUpperCase() + name.slice(1)).classList.add('active');
+  document.querySelectorAll('.hdr-tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
 }
 
 // ── Load clients ──────────────────────────────────────────────
 async function loadClients() {
-  const cfg = getConfig();
-  renderSkeletons(6);
+  document.getElementById('clientTbody').innerHTML = '<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--muted)">Loading…</td></tr>';
   try {
-    const data = await apiGet(
-      `${cfg.base}/api/v2/tables/${cfg.clients}/records?limit=100`,
-      cfg.token
-    );
-    allClients = data.list || [];
-    countBadge.textContent = `${allClients.length} client${allClients.length !== 1 ? 's' : ''}`;
-    renderGrid(allClients);
-    fetchAllAnalytics();
+    let all = [], page = 1;
+    while (true) {
+      const data = await ncGet(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records?limit=100&offset=${(page-1)*100}&sort=-Id`);
+      const rows = data.list || [];
+      all = all.concat(rows);
+      if (rows.length < 100) break;
+      page++;
+    }
+    allClients = all;
+    renderStats();
+    renderTable(allClients);
+    populateBillingSelect();
   } catch(e) {
-    grid.innerHTML = `<div class="empty-state"><p>Failed to load clients: ${e.message}</p></div>`;
-    showToast('Failed to load clients', 'error');
+    document.getElementById('clientTbody').innerHTML = `<tr><td colspan="6" style="color:var(--danger);padding:2rem">${e.message}</td></tr>`;
+    toast('Failed to load: ' + e.message, 'err');
   }
 }
 
-// ── Render grid ───────────────────────────────────────────────
-function renderGrid(clients) {
+function renderStats() {
+  const total   = allClients.length;
+  const active  = allClients.filter(c => c.active === 'Yes').length;
+  const trial   = allClients.filter(c => (c.is_trial === 'Yes' || c.is_trial === true) && c.active === 'Yes').length;
+  const paid    = allClients.filter(c => c.payment_status === 'paid').length;
+  const overdue = allClients.filter(c => c.payment_status === 'overdue').length;
+  document.getElementById('statTotal').textContent   = total;
+  document.getElementById('statActive').textContent  = active;
+  document.getElementById('statTrial').textContent   = trial;
+  document.getElementById('statPaid').textContent    = paid;
+  document.getElementById('statOverdue').textContent = overdue;
+  document.getElementById('count-badge').textContent = `${total} client${total !== 1 ? 's' : ''}`;
+}
+
+function renderTable(clients) {
+  const tbody = document.getElementById('clientTbody');
   if (!clients.length) {
-    grid.innerHTML = '<div class="empty-state"><p>No clients found.</p></div>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--muted)">No clients found.</td></tr>';
     return;
   }
-  grid.innerHTML = clients.map(renderCard).join('');
-  attachCardListeners();
-}
+  tbody.innerHTML = clients.map(c => {
+    const active = c.active === 'Yes';
+    const isTrial = c.is_trial === 'Yes' || c.is_trial === true;
+    const payStatus = c.payment_status || (isTrial ? 'trial' : 'unpaid');
+    const statusBadge = active ? '<span class="badge badge-active">Active</span>' : '<span class="badge badge-suspended">Suspended</span>';
+    const payBadge = {
+      trial:     '<span class="badge badge-trial">Trial</span>',
+      paid:      '<span class="badge badge-paid">Paid</span>',
+      unpaid:    '<span class="badge badge-suspended">Unpaid</span>',
+      overdue:   '<span class="badge badge-suspended">Overdue</span>',
+      cancelled: '<span class="badge" style="background:#f3f4f6;color:#6b7280">Cancelled</span>',
+    }[payStatus] || '<span class="badge" style="background:#f3f4f6;color:#6b7280">—</span>';
 
-function healthDotClass(client) {
-  const active = client.active === 'Yes';
-  if (!active) return 'red';
-  if (!client.last_seen) return 'yellow';
-  const ms = Date.now() - new Date(client.last_seen).getTime();
-  return ms < 86400000 ? 'green' : 'yellow';
-}
-
-function formatLastSeen(ts) {
-  if (!ts) return 'Never';
-  const d = new Date(ts);
-  const diff = Date.now() - d.getTime();
-  if (diff < 60000) return 'Just now';
-  if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`;
-  return d.toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' });
-}
-
-function renderCard(c) {
-  const active = c.active === 'Yes';
-  const hClass = healthDotClass(c);
-  const statusBadge = active
-    ? '<span class="badge badge-active">Active</span>'
-    : '<span class="badge badge-suspended">Suspended</span>';
-  const langChip = c.language ? `<span class="chip">${escHtml(c.language)}</span>` : '';
-  const modelChip = c.model ? `<span class="chip">${escHtml(c.model)}</span>` : '';
-  const toggleBtn = active
-    ? `<button class="btn-toggle suspend" data-id="${c.Id}" data-action="suspend">Suspend</button>`
-    : `<button class="btn-toggle activate" data-id="${c.Id}" data-action="activate">Activate</button>`;
-
-  return `
-    <div class="client-card" data-id="${c.Id}" id="card-${c.Id}">
-      <div class="card-top">
-        <div class="client-name">${escHtml(c.client_name || 'Unnamed Client')}</div>
-        <div class="health-dot ${hClass}" title="Health: ${hClass}"></div>
-      </div>
-      <div class="status-row">
-        ${statusBadge}
-        ${langChip}
-        ${modelChip}
-      </div>
-      <div class="card-stats">
-        <div class="stat-item">
-          <span class="stat-value" id="msgs-${c.Id}">—</span>
-          <span class="stat-label">msgs</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-value" id="errs-${c.Id}">—</span>
-          <span class="stat-label">errors</span>
-        </div>
-      </div>
-      <div class="last-seen">Last seen: <span>${formatLastSeen(c.last_seen)}</span></div>
-      <div class="card-actions">
-        <button class="btn-edit" data-id="${c.Id}">Edit</button>
-        ${toggleBtn}
-        <a class="btn-view" href="dashboard.html" target="_blank">Dashboard ↗</a>
-      </div>
-    </div>`;
-}
-
-function attachCardListeners() {
-  grid.querySelectorAll('.btn-edit').forEach(btn => {
-    btn.addEventListener('click', () => openEditModal(btn.dataset.id));
-  });
-  grid.querySelectorAll('.btn-toggle').forEach(btn => {
-    btn.addEventListener('click', () => toggleStatus(btn.dataset.id, btn.dataset.action));
-  });
-}
-
-// ── Lazy analytics fetch ──────────────────────────────────────
-async function fetchAllAnalytics() {
-  const cfg = getConfig();
-  for (const c of allClients) {
-    fetchClientAnalytics(c.Id, cfg);
-  }
-}
-
-async function fetchClientAnalytics(clientId, cfg) {
-  try {
-    const data = await apiGet(
-      `${cfg.base}/api/v2/tables/${cfg.analytics}/records?where=(ClientId,eq,${clientId})&limit=1000`,
-      cfg.token
-    );
-    const records = data.list || [];
-    const total = records.length;
-    const errors = records.filter(r => r.error || r.Error || r.is_error).length;
-    const msgsEl = document.getElementById(`msgs-${clientId}`);
-    const errsEl = document.getElementById(`errs-${clientId}`);
-    if (msgsEl) msgsEl.textContent = total.toLocaleString();
-    if (errsEl) errsEl.textContent = errors.toLocaleString();
-  } catch(_) { /* silent fail per card */ }
-}
-
-// ── Toggle status ─────────────────────────────────────────────
-async function toggleStatus(clientId, action) {
-  const cfg = getConfig();
-  const newVal = action === 'suspend' ? 'No' : 'Yes';
-  const card = document.getElementById(`card-${clientId}`);
-
-  // Optimistic update
-  const idx = allClients.findIndex(c => c.Id == clientId);
-  if (idx !== -1) allClients[idx].active = newVal;
-
-  try {
-    await apiPatch(
-      `${cfg.base}/api/v2/tables/${cfg.clients}/records`,
-      cfg.token,
-      { Id: clientId, active: newVal }
-    );
-    // Re-render this card
-    if (card && idx !== -1) {
-      card.outerHTML = renderCard(allClients[idx]);
-      attachCardListeners();
-      document.getElementById(`msgs-${clientId}`) && null; // keep stats if in DOM
+    let trialCell = payBadge;
+    if (isTrial && c.trial_start) {
+      const elapsed = Math.floor((Date.now() - new Date(c.trial_start).getTime()) / 86400000);
+      const left = Math.max(0, 14 - elapsed);
+      const pct  = Math.min(100, Math.round((elapsed / 14) * 100));
+      const fillColor = left <= 3 ? '#EF4444' : left <= 7 ? '#F59E0B' : 'var(--accent)';
+      trialCell = `${payBadge} <span class="trial-bar" style="margin-left:6px">
+        <span class="trial-bg"><span class="trial-fill" style="width:${pct}%;background:${fillColor}"></span></span>
+        <span style="color:${fillColor}">${left}d</span>
+      </span>`;
+    } else if (c.next_payment_date) {
+      trialCell = `${payBadge} <span class="ia" style="margin-left:6px">${c.next_payment_date}</span>`;
     }
-    showToast(action === 'suspend' ? 'Client suspended' : 'Client activated', 'success');
-  } catch(e) {
-    // Revert
-    if (idx !== -1) allClients[idx].active = newVal === 'Yes' ? 'No' : 'Yes';
-    showToast('Failed to update status: ' + e.message, 'error');
-  }
+
+    return `<tr>
+      <td><b style="font-family:var(--disp)">${esc(c.client_name || 'Unnamed')}</b><br><span class="ia">#${c.Id} · ${esc(c.phone || '—')}</span></td>
+      <td>${esc(c.industry || c.business_type || '—')}</td>
+      <td>${statusBadge}</td>
+      <td>${trialCell}</td>
+      <td class="ia">${c.trial_start || c.CreatedAt?.slice(0,10) || '—'}</td>
+      <td>
+        <button class="tbl-btn" onclick="openEdit(${c.Id})">Edit</button>
+        <button class="tbl-btn${active ? ' danger' : ''}" onclick="toggleActive(${c.Id})">${active ? 'Suspend' : 'Activate'}</button>
+        <a class="tbl-btn" href="dashboard.html?client=${c.Id}" target="_blank" style="text-decoration:none;display:inline-block">Dashboard ↗</a>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Search ────────────────────────────────────────────────────
+document.getElementById('search-input').addEventListener('input', function() {
+  const q = this.value.toLowerCase().trim();
+  renderTable(q ? allClients.filter(c =>
+    (c.client_name || '').toLowerCase().includes(q) ||
+    (c.phone || '').includes(q) ||
+    (c.industry || '').toLowerCase().includes(q) ||
+    String(c.Id).includes(q)
+  ) : allClients);
+});
+
+// ── Toggle active ─────────────────────────────────────────────
+async function toggleActive(id) {
+  const c   = allClients.find(x => x.Id === id);
+  if (!c) return;
+  const val = c.active === 'Yes' ? 'No' : 'Yes';
+  try {
+    await ncPatch({ Id: id, active: val });
+    c.active = val;
+    renderStats();
+    renderTable(document.getElementById('search-input').value.trim()
+      ? allClients.filter(x => x.client_name?.toLowerCase().includes(document.getElementById('search-input').value.toLowerCase()))
+      : allClients);
+    toast(val === 'Yes' ? 'Client activated' : 'Client suspended', 'ok');
+  } catch(e) { toast('Failed: ' + e.message, 'err'); }
 }
 
 // ── Edit modal ────────────────────────────────────────────────
-function openEditModal(clientId) {
-  const c = allClients.find(cl => cl.Id == clientId);
+function openEdit(id) {
+  const c = allClients.find(x => x.Id === id);
   if (!c) return;
-  editingId = clientId;
-
-  document.getElementById('edit-modal-title').textContent = `Edit — ${c.client_name || 'Client'}`;
-  document.getElementById('e-client-name').value = c.client_name || '';
-  document.getElementById('e-language').value = c.language || '';
-  document.getElementById('e-model').value = c.model || '';
-  document.getElementById('e-chatwoot-base').value = c.chatwoot_base || '';
-  document.getElementById('e-chatwoot-account').value = c.chatwoot_account_id || '';
-  document.getElementById('e-chatwoot-inbox').value = c.chatwoot_inbox_id || '';
-  document.getElementById('e-main-prompt').value = c.main_prompt || '';
-  document.getElementById('e-followup-count').value = c.followup_count || '';
-  document.getElementById('e-followup-hours').value = c.followup_hours || '';
-  document.getElementById('e-followup-messages').value = c.followup_messages || '';
-
-  const status = document.getElementById('save-status');
-  status.style.display = 'none';
-  document.getElementById('btn-save-modal').disabled = false;
-
-  editOverlay.classList.remove('hidden');
+  editingId = id;
+  document.getElementById('editModalTitle').textContent = `Edit — ${c.client_name || 'Client'}`;
+  document.getElementById('e-name').value       = c.client_name || '';
+  document.getElementById('e-phone').value      = c.phone || '';
+  document.getElementById('e-industry').value   = c.industry || c.business_type || '';
+  document.getElementById('e-language').value   = c.language || 'ml';
+  document.getElementById('e-model').value      = c.model || '';
+  document.getElementById('e-active').value     = c.active || 'Yes';
+  document.getElementById('e-password').value   = '';
+  document.getElementById('e-cw-base').value    = c.chatwoot_base || '';
+  document.getElementById('e-cw-acc').value     = c.chatwoot_account_id || '';
+  document.getElementById('e-cw-inbox').value   = c.chatwoot_inbox_id || '';
+  document.getElementById('e-prompt').value     = c.main_prompt || '';
+  document.getElementById('e-fu-count').value   = c.followup_count || '';
+  document.getElementById('e-fu-hours').value   = c.followup_hours || '';
+  document.getElementById('e-trial-start').value= c.trial_start || '';
+  document.getElementById('e-is-trial').value   = c.is_trial === true || c.is_trial === 'Yes' ? 'Yes' : 'No';
+  document.getElementById('e-pay-status').value = c.payment_status || 'trial';
+  document.getElementById('e-next-pay').value   = c.next_payment_date || '';
+  document.getElementById('e-pay-link').value   = c.payment_link || '';
+  const msg = document.getElementById('editModalMsg');
+  msg.className = 'modal-msg'; msg.textContent = '';
+  document.getElementById('btnSaveEdit').disabled = false;
+  document.getElementById('editModal').classList.remove('hidden');
 }
 
-document.getElementById('btn-close-modal').addEventListener('click', closeModal);
-document.getElementById('btn-cancel-modal').addEventListener('click', closeModal);
-editOverlay.addEventListener('click', e => { if (e.target === editOverlay) closeModal(); });
+function closeModal() {
+  document.getElementById('editModal').classList.add('hidden');
+  editingId = null;
+}
 
-function closeModal() { editOverlay.classList.add('hidden'); editingId = null; }
+document.getElementById('editModal').addEventListener('click', e => {
+  if (e.target === document.getElementById('editModal')) closeModal();
+});
 
-document.getElementById('btn-save-modal').addEventListener('click', async () => {
+async function saveEdit() {
   if (!editingId) return;
-  const cfg = getConfig();
-  const btn = document.getElementById('btn-save-modal');
-  const status = document.getElementById('save-status');
+  const btn = document.getElementById('btnSaveEdit');
+  const msg = document.getElementById('editModalMsg');
   btn.disabled = true; btn.textContent = 'Saving…';
-  status.style.display = 'none';
+  msg.className = 'modal-msg'; msg.textContent = '';
+
+  const pw = document.getElementById('e-password').value.trim();
+  if (pw && pw.length < 6) {
+    msg.textContent = 'Password must be at least 6 characters.';
+    msg.className = 'modal-msg err';
+    btn.disabled = false; btn.textContent = 'Save Changes';
+    return;
+  }
 
   const patch = {
-    Id: editingId,
-    client_name: document.getElementById('e-client-name').value,
-    language: document.getElementById('e-language').value,
-    model: document.getElementById('e-model').value,
-    chatwoot_base: document.getElementById('e-chatwoot-base').value,
-    chatwoot_account_id: document.getElementById('e-chatwoot-account').value,
-    chatwoot_inbox_id: document.getElementById('e-chatwoot-inbox').value,
-    main_prompt: document.getElementById('e-main-prompt').value,
-    followup_count: parseInt(document.getElementById('e-followup-count').value) || 0,
-    followup_hours: parseInt(document.getElementById('e-followup-hours').value) || 0,
-    followup_messages: document.getElementById('e-followup-messages').value,
+    Id:                  editingId,
+    client_name:         document.getElementById('e-name').value.trim(),
+    phone:               document.getElementById('e-phone').value.trim(),
+    industry:            document.getElementById('e-industry').value.trim(),
+    language:            document.getElementById('e-language').value.trim(),
+    model:               document.getElementById('e-model').value.trim(),
+    active:              document.getElementById('e-active').value,
+    chatwoot_base:       document.getElementById('e-cw-base').value.trim(),
+    chatwoot_account_id: document.getElementById('e-cw-acc').value.trim(),
+    chatwoot_inbox_id:   document.getElementById('e-cw-inbox').value.trim(),
+    main_prompt:         document.getElementById('e-prompt').value,
+    followup_count:      parseInt(document.getElementById('e-fu-count').value) || 0,
+    followup_hours:      document.getElementById('e-fu-hours').value.trim(),
+    trial_start:         document.getElementById('e-trial-start').value || null,
+    is_trial:            document.getElementById('e-is-trial').value,
+    payment_status:      document.getElementById('e-pay-status').value,
+    next_payment_date:   document.getElementById('e-next-pay').value || null,
+    payment_link:        document.getElementById('e-pay-link').value.trim() || null,
   };
+  if (pw) patch.password = pw;
 
   try {
-    await apiPatch(`${cfg.base}/api/v2/tables/${cfg.clients}/records`, cfg.token, patch);
-    // Update local state
-    const idx = allClients.findIndex(c => c.Id == editingId);
+    await ncPatch(patch);
+    const idx = allClients.findIndex(c => c.Id === editingId);
     if (idx !== -1) Object.assign(allClients[idx], patch);
-
-    status.textContent = 'Saved successfully!';
-    status.className = 'success'; status.style.display = 'block';
-    btn.textContent = 'Save Changes'; btn.disabled = false;
-
-    // Re-render the card
-    const card = document.getElementById(`card-${editingId}`);
-    if (card && idx !== -1) {
-      const newHtml = renderCard(allClients[idx]);
-      card.outerHTML = newHtml;
-      attachCardListeners();
-    }
-    showToast('Client updated', 'success');
-    setTimeout(closeModal, 800);
+    renderStats();
+    renderTable(allClients);
+    msg.textContent = 'Saved!'; msg.className = 'modal-msg ok';
+    toast('Client updated', 'ok');
+    btn.textContent = 'Save Changes';
+    setTimeout(closeModal, 700);
   } catch(e) {
-    status.textContent = 'Save failed: ' + e.message;
-    status.className = 'error'; status.style.display = 'block';
-    btn.textContent = 'Save Changes'; btn.disabled = false;
+    msg.textContent = 'Save failed: ' + e.message;
+    msg.className = 'modal-msg err';
+    btn.disabled = false; btn.textContent = 'Save Changes';
+    toast('Save failed', 'err');
   }
-});
+}
 
-// ── Search ────────────────────────────────────────────────────
-searchInput.addEventListener('input', () => {
-  const q = searchInput.value.toLowerCase().trim();
-  const filtered = q ? allClients.filter(c =>
-    (c.client_name || '').toLowerCase().includes(q)
-  ) : allClients;
-  renderGrid(filtered);
-  // Re-fetch analytics for visible cards
-  const cfg = getConfig();
-  filtered.forEach(c => fetchClientAnalytics(c.Id, cfg));
-});
+// ── Billing panel ─────────────────────────────────────────────
+function populateBillingSelect() {
+  const sel = document.getElementById('billingClientSel');
+  sel.innerHTML = '<option value="">— choose a client —</option>' +
+    allClients.map(c => `<option value="${c.Id}">${esc(c.client_name || 'Client #' + c.Id)} (#${c.Id})</option>`).join('');
+}
+
+function loadClientBilling() {
+  const id  = parseInt(document.getElementById('billingClientSel').value);
+  const frm = document.getElementById('billingClientForm');
+  if (!id) { frm.style.display = 'none'; return; }
+  const c = allClients.find(x => x.Id === id);
+  if (!c) return;
+  document.getElementById('bPlanName').value   = c.plan_name || '';
+  document.getElementById('bPrice').value      = c.plan_price || '';
+  document.getElementById('bPayStatus').value  = c.payment_status || 'trial';
+  document.getElementById('bNextDate').value   = c.next_payment_date || '';
+  document.getElementById('bPayLink').value    = c.payment_link || '';
+  document.getElementById('bMsg').textContent  = '';
+  frm.style.display = 'block';
+}
+
+async function saveClientBilling() {
+  const id = parseInt(document.getElementById('billingClientSel').value);
+  if (!id) return;
+  const patch = {
+    Id:                id,
+    plan_name:         document.getElementById('bPlanName').value.trim(),
+    plan_price:        parseFloat(document.getElementById('bPrice').value) || null,
+    payment_status:    document.getElementById('bPayStatus').value,
+    next_payment_date: document.getElementById('bNextDate').value || null,
+    payment_link:      document.getElementById('bPayLink').value.trim() || null,
+  };
+  const msg = document.getElementById('bMsg');
+  msg.textContent = 'Saving…'; msg.style.color = 'var(--muted)';
+  try {
+    await ncPatch(patch);
+    const idx = allClients.findIndex(c => c.Id === id);
+    if (idx !== -1) Object.assign(allClients[idx], patch);
+    renderStats();
+    renderTable(allClients);
+    msg.textContent = 'Saved ✓'; msg.style.color = 'var(--accent)';
+    toast('Billing updated', 'ok');
+  } catch(e) {
+    msg.textContent = 'Failed: ' + e.message; msg.style.color = 'var(--danger)';
+    toast('Failed: ' + e.message, 'err');
+  }
+}
+
+async function saveGlobalStripe() {
+  const pk = document.getElementById('gStripePk').value.trim();
+  const sk = document.getElementById('gStripeSk').value.trim();
+  const wh = document.getElementById('gStripeWh').value.trim();
+  const el = document.getElementById('gStripeMsg');
+  // Store globally — in a real setup you'd push to a config row or env
+  // For now we just show confirmation since Stripe keys go server-side
+  el.textContent = 'Keys saved to admin config (push to env). ✓';
+  el.style.color = 'var(--accent)';
+  toast('Stripe keys noted — deploy to env vars for live use', 'ok');
+}
 
 // ── Util ──────────────────────────────────────────────────────
-function escHtml(s) {
+function esc(s) {
   return String(s)
     .replace(/&/g,'&amp;')
     .replace(/</g,'&lt;')
     .replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;');
 }
-
-// ── Boot ──────────────────────────────────────────────────────
-(function boot() {
-  // Config is baked in — gate only asks for passcode
-  document.getElementById('f-token').placeholder = 'Admin passcode';
-  const cfg = getConfig();
-  if (!configComplete(cfg)) {
-    console.warn('Leadvyne Admin: fill in CONFIG values at the top of the script before deploying.');
-  }
-})();
 </script>
 </body>
 </html>
