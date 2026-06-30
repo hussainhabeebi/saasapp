@@ -1078,6 +1078,12 @@ const TODAY = new Date().toISOString().slice(0,10);
               <div id="homeAgents"><div style="color:var(--muted);font-size:13px;padding:8px 0">Loading…</div></div>
             </div>
 
+            <!-- Response Time Leaderboard -->
+            <div class="section-card" id="homeRtCard">
+              <div class="section-title">⏱️ Response Time Leaderboard</div>
+              <div id="homeRtLeaderboard"><div style="color:var(--muted);font-size:13px;padding:8px 0">Loading…</div></div>
+            </div>
+
             <!-- Quick Actions -->
             <div class="section-card">
               <div class="section-title">⚡ Quick Actions</div>
@@ -1404,6 +1410,9 @@ const TODAY = new Date().toISOString().slice(0,10);
           <select class="form-input" id="leadOwnerFilter" onchange="filterLeads()" style="flex:0 0 120px;padding:9px 10px">
             <option value="">All owners</option>
           </select>
+          <select class="form-input" id="leadTagFilter" onchange="filterLeads()" style="flex:0 0 120px;padding:9px 10px">
+            <option value="">All tags</option>
+          </select>
           <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
           <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
           <button class="btn btn-primary btn-sm" onclick="openAddLead()">+ Add Lead</button>
@@ -1676,6 +1685,20 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div class="settings-section">
             <div class="s-head">🎯 New Contact Sequence</div>
             <div class="s-note">Configure intro message and demo media for new contacts. <b><a href="#" onclick="navigate('sequence');return false;">Open the Sequence module →</a></b></div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
+            <div class="s-head">⚡ Quick-Reply Templates</div>
+            <div class="s-note">Saved replies your team can insert with one click while chatting. Use <code>{{name}}</code> to personalise.</div>
+            <div id="quickReplyEditList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div style="flex:0 0 160px"><label class="form-label">Label</label><input class="form-input" type="text" id="qrLabel" placeholder="e.g. Pricing"></div>
+              <div style="flex:1;min-width:220px"><label class="form-label">Message</label><input class="form-input" type="text" id="qrBody" placeholder="Hi {{name}}, here's our pricing…"></div>
+              <button class="save-btn" id="qrAddBtn" onclick="addQuickReply()">+ Add</button>
+            </div>
+            <span class="save-msg" id="qrMsg"></span>
           </div>
 
           <hr class="div">
@@ -2911,6 +2934,7 @@ function renderLeadsList(){
   const q=$id('leadSearch')?.value.toLowerCase()||'';
   const sf=$id('leadStageFilter')?.value||'';
   const of=$id('leadOwnerFilter')?.value||'';
+  const tf=$id('leadTagFilter')?.value||'';
   const filtered=allLeads.filter(l=>{
     if(q){
       const nameMatch=(l.Name||'').toLowerCase().includes(q);
@@ -2923,13 +2947,16 @@ function renderLeadsList(){
     }
     if(sf&&l.Stage!==sf)return false;
     if(of&&(l.Owner||'')!==of)return false;
+    if(tf&&!parseTags(l.Tags).includes(tf))return false;
     return true;
   });
   // populate filters
   const stageSet=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))];
   const ownerSet=[...new Set(allLeads.map(l=>l.Owner).filter(Boolean))];
+  const tagSet=[...new Set(allLeads.flatMap(l=>parseTags(l.Tags)))].sort();
   $id('leadStageFilter').innerHTML='<option value="">All stages</option>'+stageSet.map(s=>`<option value="${s}"${sf===s?' selected':''}>${s}</option>`).join('');
   $id('leadOwnerFilter').innerHTML='<option value="">All owners</option>'+ownerSet.map(o=>`<option value="${o}"${of===o?' selected':''}>${o}</option>`).join('');
+  $id('leadTagFilter').innerHTML='<option value="">All tags</option>'+tagSet.map(t=>`<option value="${esc(t)}"${tf===t?' selected':''}>${esc(t)}</option>`).join('');
 
   const el=$id('leadsList');
   if(!filtered.length){el.innerHTML='<div class="empty-state"><div class="ei">💬</div>No leads match your filter.</div>';return;}
@@ -2974,10 +3001,12 @@ function renderLeadsTable(){
   const q=$id('leadSearch')?.value.toLowerCase()||'';
   const sf=$id('leadStageFilter')?.value||'';
   const of=$id('leadOwnerFilter')?.value||'';
+  const tf=$id('leadTagFilter')?.value||'';
   const filtered=allLeads.filter(l=>{
     if(q){const nm=(l.Name||'').toLowerCase().includes(q);const ph=(l.Phone||'').includes(q);if(!nm&&!ph)return false;}
     if(sf&&l.Stage!==sf)return false;
     if(of&&(l.Owner||'')!==of)return false;
+    if(tf&&!parseTags(l.Tags).includes(tf))return false;
     return true;
   });
   const el=$id('leadsTable');
@@ -3438,6 +3467,7 @@ function populateCommandCenter(leads){
   renderHomeHotLeads(leads);
   // Sidebar: agents
   renderHomeAgents(leads);
+  renderHomeRtLeaderboard(leads);
 
   // Activity feed — last 8 leads by LastMsgAt or Date
   const sorted=[...leads].sort((a,b)=>(b.LastMsgAt||b.Date||'').localeCompare(a.LastMsgAt||a.Date||'')).slice(0,8);
@@ -3507,6 +3537,50 @@ function renderHomeAgents(leads){
   </div>`).join('');
 }
 
+function leadAvgResponseSec(lead){
+  let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){return null;}
+  if(!hist.length)return null;
+  const gaps=[];
+  for(let i=0;i<hist.length-1;i++){
+    const m=hist[i], n=hist[i+1];
+    const userMsg=m.role==='user'||m.role==='contact';
+    const botReply=n.role==='assistant'||n.role==='bot';
+    if(userMsg&&botReply&&m.ts&&n.ts){
+      const sec=(new Date(n.ts)-new Date(m.ts))/1000;
+      if(sec>=0&&sec<86400)gaps.push(sec);
+    }
+  }
+  if(!gaps.length)return null;
+  return gaps.reduce((a,b)=>a+b,0)/gaps.length;
+}
+function fmtDuration(sec){
+  if(sec<60)return Math.round(sec)+'s';
+  if(sec<3600)return Math.round(sec/60)+'m';
+  return (sec/3600).toFixed(1)+'h';
+}
+function renderHomeRtLeaderboard(leads){
+  const el=$id('homeRtLeaderboard');const card=$id('homeRtCard');if(!el||!card)return;
+  const byOwner={};
+  leads.forEach(l=>{
+    if(!l.Owner)return;
+    const avg=leadAvgResponseSec(l);
+    if(avg===null)return;
+    (byOwner[l.Owner]=byOwner[l.Owner]||[]).push(avg);
+  });
+  const sorted=Object.entries(byOwner)
+    .map(([name,arr])=>[name,arr.reduce((a,b)=>a+b,0)/arr.length])
+    .sort((a,b)=>a[1]-b[1]).slice(0,6);
+  if(!sorted.length){card.style.display='none';return;}
+  card.style.display='';
+  const max=sorted[sorted.length-1][1]||1;
+  el.innerHTML=sorted.map(([name,sec],i)=>`<div class="agent-row">
+    <div class="agent-rank">#${i+1}</div>
+    <div class="agent-name">${esc(name)}</div>
+    <div class="agent-bar-wrap"><div class="agent-bar" style="width:${Math.max(8,Math.round(100-(sec/max*100)+10))}%"></div></div>
+    <div class="agent-count">${fmtDuration(sec)}</div>
+  </div>`).join('');
+}
+
 function timeAgo(iso){
   const diff=Date.now()-new Date(iso).getTime();
   const m=Math.floor(diff/60000);
@@ -3547,6 +3621,7 @@ function populateSettings(){
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
+  renderQuickReplyEditList();
   // knowledge base
   _kbText=clientRecord.kb_text||'';
   $id('cfgKbText').value=_kbText;
@@ -6817,6 +6892,9 @@ function chatSelectLead(leadId){
         </div>`;
       }).join(''):'<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No conversation yet</div>'}
     </div>
+    <div id="quickReplyChips" style="padding:8px 16px 0;display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0;background:var(--card)">
+      ${renderQuickReplyChips()}
+    </div>
     <div style="padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:flex-end;flex-shrink:0;background:var(--card)">
       <textarea id="chatReplyBox" class="form-input" rows="2" style="flex:1;resize:none" placeholder="Type a WhatsApp reply…"></textarea>
       <button class="btn btn-primary btn-sm" onclick="chatSendFromTab(${lead.Id})">Send ✈</button>
@@ -6824,6 +6902,55 @@ function chatSelectLead(leadId){
     </div>`;
   // scroll to bottom
   setTimeout(()=>{const b=$id('chatMsgBox');if(b)b.scrollTop=b.scrollHeight;},50);
+}
+
+/* ── QUICK-REPLY TEMPLATES ── */
+function getQuickReplies(){
+  try{return JSON.parse(clientRecord?.quick_replies||'[]');}catch(e){return[];}
+}
+function renderQuickReplyChips(){
+  const tpls=getQuickReplies();
+  if(!tpls.length)return'<span style="font-size:12px;color:var(--muted)">No quick replies yet — add some in Settings.</span>';
+  return tpls.map((t,i)=>`<button type="button" class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px" onclick="insertQuickReply(${i})" title="${esc(t.body||'')}">${esc(t.label||t.body||'Reply')}</button>`).join('');
+}
+function renderQuickReplyEditList(){
+  const el=$id('quickReplyEditList'); if(!el) return;
+  const tpls=getQuickReplies();
+  el.innerHTML=tpls.length?tpls.map((t,i)=>`
+    <div style="display:flex;gap:8px;align-items:center;padding:8px 10px;background:var(--bg2,rgba(0,0,0,.03));border-radius:8px">
+      <div style="flex:0 0 140px;font-weight:600;font-size:13px">${esc(t.label||'')}</div>
+      <div style="flex:1;font-size:13px;color:var(--muted)">${esc(t.body||'')}</div>
+      <button class="btn btn-secondary btn-sm" onclick="removeQuickReply(${i})">Delete</button>
+    </div>`).join(''):'<div style="font-size:13px;color:var(--muted)">No quick replies yet.</div>';
+}
+async function addQuickReply(){
+  const label=($id('qrLabel')?.value||'').trim();
+  const body=($id('qrBody')?.value||'').trim();
+  const msg=$id('qrMsg');
+  if(!label||!body){msg.textContent='Label and message required';msg.className='save-msg err';return;}
+  const tpls=getQuickReplies();
+  tpls.push({label,body});
+  await patchClient({quick_replies:JSON.stringify(tpls)});
+  $id('qrLabel').value=''; $id('qrBody').value='';
+  renderQuickReplyEditList();
+  msg.textContent='Saved ✓'; msg.className='save-msg';
+  setTimeout(()=>{if(msg)msg.textContent='';},2000);
+}
+async function removeQuickReply(i){
+  const tpls=getQuickReplies();
+  tpls.splice(i,1);
+  await patchClient({quick_replies:JSON.stringify(tpls)});
+  renderQuickReplyEditList();
+}
+function insertQuickReply(i){
+  const tpls=getQuickReplies();
+  const t=tpls[i]; if(!t)return;
+  const box=$id('chatReplyBox'); if(!box)return;
+  const lead=allLeads.find(l=>l.Id===_chatLeadId);
+  let text=t.body||'';
+  if(lead) text=text.replace(/\{\{name\}\}/g, lead.Name||'there');
+  box.value=box.value?(box.value+' '+text):text;
+  box.focus();
 }
 
 async function chatSendFromTab(leadId){
