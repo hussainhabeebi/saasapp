@@ -119,6 +119,49 @@
         "body": "={{ JSON.stringify({ Id: $('When called by engine').first().json.client_id, last_seen: new Date().toISOString() }) }}",
         "options": {}
       }
+    },
+    {
+      "id": "capi_prep",
+      "name": "Code · CAPI payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const c = $('When called by engine').first().json;\nconst body = c._body || {};\nconst upsertResult = $('HTTP · Upsert lead').first().json;\nconst leadId = c.leadId || upsertResult.Id || upsertResult.id || '';\nreturn [{ json: {\n  client_id: String(c.client_id || ''),\n  phone: c.phone || '',\n  name: c.name || '',\n  stage: body.Stage || c.stage || '',\n  nba_score: (body.QualScore || 0) * 10,\n  lead_id: String(leadId),\n  is_new_lead: c._method === 'POST'\n} }];"
+      }
+    },
+    {
+      "id": "capi_send",
+      "name": "HTTP · CAPI trigger",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "https://apps.leadvyne.com/webhook/leadvyne-capi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 5000
+        }
+      }
     }
   ],
   "connections": {
@@ -160,6 +203,28 @@
         [
           {
             "node": "HTTP · Update last seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Update last seen": {
+      "main": [
+        [
+          {
+            "node": "Code · CAPI payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · CAPI payload": {
+      "main": [
+        [
+          {
+            "node": "HTTP · CAPI trigger",
             "type": "main",
             "index": 0
           }
