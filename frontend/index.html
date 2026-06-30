@@ -109,30 +109,6 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .chip .flag{font-size:18px}
 .chip.active{background:var(--green-soft);border-color:var(--green);color:var(--green)}
 
-/* ── OWN NUMBER ── */
-.own-number{background:#fff;padding:80px 24px;border-top:1px solid var(--line)}
-.own-inner{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:start}
-@media(max-width:780px){.own-inner{grid-template-columns:1fr;gap:40px}}
-.own-left .section-tag{margin-bottom:10px}
-.own-left h2{font-family:var(--disp);font-weight:800;font-size:clamp(26px,3.5vw,40px);letter-spacing:-.025em;line-height:1.12;margin-bottom:12px}
-.own-left h2 span{color:var(--green)}
-.own-sub{font-size:15px;color:var(--muted);line-height:1.65;margin-bottom:6px}
-.own-sub-ml{font-family:var(--ml);font-size:13px;color:var(--green);font-weight:600;margin-bottom:28px}
-.own-steps{display:flex;flex-direction:column;gap:20px}
-.own-step{display:flex;gap:16px;align-items:flex-start}
-.own-step-num{width:32px;height:32px;background:var(--green-soft);border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--disp);font-weight:700;font-size:14px;color:var(--green);flex:none}
-.own-step strong{font-size:14px;font-weight:600;display:block;margin-bottom:3px}
-.own-step span{font-size:13px;color:var(--muted);line-height:1.5}
-.own-step a{color:var(--green);font-weight:600;text-decoration:none}
-.own-step a:hover{text-decoration:underline}
-
-.enroll-card{background:var(--bg);border:1.5px solid var(--line);border-radius:20px;padding:28px}
-.enroll-head{margin-bottom:20px}
-.enroll-tag{font-family:var(--disp);font-weight:700;font-size:16px;display:block}
-.enroll-tag-ml{font-family:var(--ml);font-size:12px;color:var(--muted);margin-top:3px;display:block}
-.mono-in{font-family:"JetBrains Mono",monospace!important;font-size:13px!important}
-.chatwoot-link{display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;font-weight:600;color:var(--green);text-decoration:none;background:var(--green-soft);padding:7px 12px;border-radius:8px}
-.chatwoot-link:hover{background:#c4e6d8}
 
 /* ── SIGNUP ── */
 .signup{padding:80px 24px;background:var(--bg)}
@@ -196,10 +172,8 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
 .signup-card input:focus{box-shadow:0 0 0 4px var(--green-glow);background:#fff}
 .signup-btn{transition:background .15s,transform .12s,box-shadow .15s}
 .signup-btn:hover{box-shadow:0 4px 16px rgba(14,124,90,.3)}
-.own-step-num{transition:background .15s,box-shadow .15s}
 .chip{transition:border-color .15s,background .15s}
 .chip:hover{border-color:var(--green)}
-.enroll-card{box-shadow:0 4px 20px rgba(0,0,0,.07);transition:box-shadow .2s}
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
 ::-webkit-scrollbar-thumb:hover{background:var(--muted)}
@@ -216,7 +190,6 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
 <nav>
   <div class="brand">Leadvyne<span>.</span></div>
   <div style="display:flex;gap:10px;align-items:center">
-    <a href="#own-number" style="font-size:13px;font-weight:600;color:rgba(255,255,255,.6);text-decoration:none;padding:8px 14px">Use My Number</a>
     <a href="admin.html" style="font-size:13px;font-weight:600;color:rgba(255,255,255,.6);text-decoration:none;padding:8px 14px">Admin</a>
     <a href="#signup" class="nav-cta">Start Free Trial</a>
   </div>
@@ -423,93 +396,6 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
   </div>
 </div>
 
-<!-- OWN NUMBER -->
-<div class="own-number" id="own-number">
-  <div class="own-inner">
-    <div class="own-left">
-      <div class="section-tag">Upgrade</div>
-      <h2>Use Your Own<br><span>WhatsApp Number</span></h2>
-      <p class="own-sub">Already on the trial? Connect your Meta Business WhatsApp number — we'll set up everything automatically in seconds.</p>
-      <div class="own-sub-ml">നിങ്ങളുടെ സ്വന്തം WhatsApp നമ്പർ ഉപയോഗിക്കൂ</div>
-      <div class="own-steps">
-        <div class="own-step">
-          <div class="own-step-num">1</div>
-          <div>
-            <strong>Enter your Meta credentials</strong><br>
-            <span>Get your Access Token, Phone Number ID, and WABA ID from <a href="https://business.facebook.com" target="_blank">Meta Business Manager</a></span>
-          </div>
-        </div>
-        <div class="own-step">
-          <div class="own-step-num">2</div>
-          <div>
-            <strong>We create everything for you</strong><br>
-            <span>Your Chatwoot account and WhatsApp inbox are created automatically — no manual steps</span>
-          </div>
-        </div>
-        <div class="own-step">
-          <div class="own-step-num">3</div>
-          <div>
-            <strong>Bot goes live instantly</strong><br>
-            <span>Your AI sales bot starts replying from your own WhatsApp number right away</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="own-right">
-      <div class="enroll-card">
-        <div class="enroll-head">
-          <span class="enroll-tag">Connect Your Number</span>
-          <span class="enroll-tag-ml">നിങ്ങളുടെ നമ്പർ ചേർക്കൂ</span>
-        </div>
-        <div id="enrollForm">
-          <div class="field">
-            <label>Your Leadvyne Client ID <span class="ml">Client ID</span></label>
-            <input id="enrollClientId" type="text" placeholder="e.g. 12 (from your dashboard URL)" class="mono-in" />
-          </div>
-          <div class="field">
-            <label>Business Email</label>
-            <input id="enrollEmail" type="email" placeholder="your@business.com" />
-          </div>
-          <div class="field">
-            <label>Choose a Password <span style="font-size:11px;color:var(--muted)">(for your Chatwoot account)</span></label>
-            <input id="enrollPassword" type="password" placeholder="Min 6 characters" />
-          </div>
-          <div class="field">
-            <label>WhatsApp Phone Number</label>
-            <input id="enrollPhone" type="tel" placeholder="+91 98765 43210" class="mono-in" />
-          </div>
-          <div class="field">
-            <label>Meta Access Token <span style="font-size:11px;color:var(--muted)">(from Meta Business Manager)</span></label>
-            <input id="enrollMetaToken" type="password" placeholder="EAAxxxxxxx..." class="mono-in" />
-          </div>
-          <div class="field">
-            <label>Phone Number ID</label>
-            <input id="enrollPhoneNumberId" type="text" placeholder="123456789012345" class="mono-in" />
-          </div>
-          <div class="field">
-            <label>WhatsApp Business Account ID (WABA ID)</label>
-            <input id="enrollWabaId" type="text" placeholder="987654321098765" class="mono-in" />
-          </div>
-          <button class="signup-btn" id="enrollBtn" onclick="submitEnroll()" style="margin-top:16px">Create Account &amp; Connect →</button>
-          <div class="form-msg" id="enrollMsg"></div>
-        </div>
-        <div class="success-box" id="enrollSuccess">
-          <div class="success-icon">✅</div>
-          <h3>Number connected!</h3>
-          <p>Your Chatwoot account is live and your bot is now replying from your own WhatsApp number.</p>
-          <div id="enrollWebhookBox" style="margin-top:14px;background:var(--green-soft);border-radius:10px;padding:14px">
-            <div style="font-size:12px;font-weight:600;color:var(--green);margin-bottom:6px">Add this webhook to Meta Dashboard:</div>
-            <code id="enrollWebhookUrl" style="font-size:11px;word-break:break-all;color:var(--ink)"></code>
-          </div>
-          <span class="ml" style="display:block;margin-top:12px">നിങ്ങളുടെ WhatsApp നമ്പർ ബോട്ടിൽ ചേർത്തു 🎉</span>
-          <a id="enrollDashLink" href="https://app.leadvyne.com/dashboard.html" class="btn-primary" style="display:inline-block;margin-top:18px;font-size:14px">Go to Dashboard →</a>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
 <!-- SIGNUP -->
 <div class="signup" id="signup">
   <div class="signup-inner">
@@ -656,119 +542,6 @@ async function submitSignup() {
     msg.className = 'form-msg err';
     btn.disabled = false;
     btn.textContent = 'Create My Dashboard ->';
-  }
-}
-
-// ── ENROLL OWN NUMBER ──────────────────────────────────────────
-
-async function submitEnroll() {
-  const clientId       = document.getElementById('enrollClientId').value.trim();
-  const email          = document.getElementById('enrollEmail').value.trim();
-  const password       = document.getElementById('enrollPassword').value.trim();
-  const phone          = document.getElementById('enrollPhone').value.trim();
-  const metaToken      = document.getElementById('enrollMetaToken').value.trim();
-  const phoneNumberId  = document.getElementById('enrollPhoneNumberId').value.trim();
-  const wabaId         = document.getElementById('enrollWabaId').value.trim();
-  const msg            = document.getElementById('enrollMsg');
-  const btn            = document.getElementById('enrollBtn');
-
-  msg.textContent = ''; msg.className = 'form-msg';
-
-  if (!clientId)      { msg.textContent = 'Enter your Leadvyne Client ID.'; msg.className = 'form-msg err'; return; }
-  if (!email)         { msg.textContent = 'Enter your business email.'; msg.className = 'form-msg err'; return; }
-  if (!password || password.length < 6) { msg.textContent = 'Password must be at least 6 characters.'; msg.className = 'form-msg err'; return; }
-  if (!phone)         { msg.textContent = 'Enter your WhatsApp phone number.'; msg.className = 'form-msg err'; return; }
-  if (!metaToken)     { msg.textContent = 'Enter your Meta Access Token.'; msg.className = 'form-msg err'; return; }
-  if (!phoneNumberId) { msg.textContent = 'Enter your Phone Number ID.'; msg.className = 'form-msg err'; return; }
-  if (!wabaId)        { msg.textContent = 'Enter your WhatsApp Business Account ID.'; msg.className = 'form-msg err'; return; }
-
-  btn.disabled = true; btn.textContent = 'Creating account…';
-
-  const CHATWOOT = 'https://app.aiingo.com';
-
-  try {
-    // Step 1: Create Chatwoot account
-    msg.textContent = 'Creating your Chatwoot account…'; msg.className = 'form-msg';
-    const signupRes = await fetch(`${CHATWOOT}/auth/sign_up`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        account_name: email.split('@')[0],
-        email,
-        password,
-        password_confirmation: password
-      })
-    });
-
-    if (!signupRes.ok) {
-      const err = await signupRes.json().catch(() => ({}));
-      throw new Error(err.message || err.errors?.join(', ') || `Sign-up failed (${signupRes.status})`);
-    }
-
-    const signupData = await signupRes.json();
-    const accountId  = signupData.data?.account_id || signupData.account?.id;
-    const userToken  = signupData.data?.access_token || signupData.data?.token;
-
-    if (!accountId || !userToken) throw new Error('Sign-up succeeded but account details missing. Please contact support.');
-
-    // Step 2: Create WhatsApp Cloud API inbox
-    msg.textContent = 'Setting up WhatsApp inbox…'; msg.className = 'form-msg';
-    const inboxRes = await fetch(`${CHATWOOT}/api/v1/accounts/${accountId}/inboxes`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'api_access_token': userToken },
-      body: JSON.stringify({
-        name: 'WhatsApp',
-        channel: {
-          type: 'whatsapp',
-          provider: 'whatsapp_cloud',
-          provider_config: {
-            api_key:            metaToken,
-            phone_number_id:    phoneNumberId,
-            business_account_id: wabaId,
-            phone_number:       phone
-          }
-        }
-      })
-    });
-
-    if (!inboxRes.ok) {
-      const err = await inboxRes.json().catch(() => ({}));
-      throw new Error(err.message || `Inbox creation failed (${inboxRes.status})`);
-    }
-
-    const inboxData = await inboxRes.json();
-    const inboxId   = inboxData.id;
-
-    if (!inboxId) throw new Error('Inbox created but inbox ID missing.');
-
-    // Step 3: Save credentials to NocoDB
-    msg.textContent = 'Saving your configuration…'; msg.className = 'form-msg';
-    const patchRes = await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`, {
-      method: 'PATCH',
-      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        Id:                  parseInt(clientId),
-        chatwoot_base:       CHATWOOT,
-        chatwoot_account_id: String(accountId),
-        chatwoot_inbox_id:   String(inboxId),
-        chatwoot_token:      userToken,
-        own_number:          'Yes'
-      })
-    });
-
-    if (!patchRes.ok) throw new Error('Account created but config save failed — contact support with your Client ID.');
-
-    // Success
-    document.getElementById('enrollForm').style.display = 'none';
-    const webhookUrl = `${CHATWOOT}/webhooks/whatsapp/${phoneNumberId}`;
-    document.getElementById('enrollWebhookUrl').textContent = webhookUrl;
-    document.getElementById('enrollDashLink').href = 'https://app.leadvyne.com/dashboard.html?client=' + clientId;
-    document.getElementById('enrollSuccess').classList.add('show');
-
-  } catch(e) {
-    msg.textContent = e.message || 'Something went wrong. Please try again.';
-    msg.className = 'form-msg err';
-    btn.disabled = false; btn.textContent = 'Create Account & Connect →';
   }
 }
 
