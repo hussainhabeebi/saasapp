@@ -33,8 +33,13 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .hero-badge{display:inline-flex;align-items:center;gap:8px;background:rgba(95,214,164,.12);border:1px solid rgba(95,214,164,.25);border-radius:99px;padding:7px 16px;font-size:12px;font-weight:600;color:#5FD6A4;letter-spacing:.06em;text-transform:uppercase;margin-bottom:32px}
 .hero-badge .dot{width:7px;height:7px;background:#5FD6A4;border-radius:50%;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
+.hero::after{content:"";position:absolute;inset:0;background:radial-gradient(circle 420px at 18% 85%,rgba(95,214,164,.16) 0%,transparent 70%);animation:driftGlow 9s ease-in-out infinite;pointer-events:none}
+@keyframes driftGlow{0%,100%{transform:translate(0,0)}50%{transform:translate(60px,-40px)}}
 .hero h1{font-family:var(--disp);font-weight:800;font-size:clamp(36px,6vw,72px);color:#fff;line-height:1.08;letter-spacing:-.03em;max-width:900px;margin-bottom:16px}
 .hero h1 .accent{color:#5FD6A4}
+.rotator{color:#5FD6A4;display:inline-block;transition:opacity .35s ease,transform .35s ease}
+.rotator.swap{opacity:0;transform:translateY(.25em)}
+.badge-rotator{font-weight:700}
 .hero-ml{font-family:var(--ml);font-size:clamp(18px,3vw,26px);color:rgba(255,255,255,.55);margin-bottom:28px;font-weight:600}
 .hero-sub{font-size:clamp(15px,2vw,18px);color:rgba(255,255,255,.6);max-width:560px;line-height:1.65;margin-bottom:48px}
 .hero-actions{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
@@ -69,6 +74,9 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 
 /* ── FEATURES ── */
 .features-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:20px}
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .6s ease,transform .6s ease}
+.reveal.in{opacity:1;transform:none}
+.stat .num{transition:opacity .3s}
 .feat{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:28px;transition:border-color .15s,box-shadow .15s;position:relative;overflow:hidden}
 .feat::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--green),#5FD6A4);opacity:0;transition:opacity .2s}
 .feat:hover{border-color:var(--green);box-shadow:0 8px 32px var(--green-glow)}
@@ -216,8 +224,8 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
 
 <!-- HERO -->
 <section class="hero">
-  <div class="hero-badge"><span class="dot"></span>WhatsApp AI Bot · Live in 24 Hours</div>
-  <h1>Your Sales Team<br>Never <span class="accent">Sleeps</span> Again</h1>
+  <div class="hero-badge"><span class="dot"></span>WhatsApp AI Bot for <span class="rotator badge-rotator" id="badgeRotator">Travel Agencies</span></div>
+  <h1>Your Sales Team<br>Never <span class="accent rotator" id="heroRotator">Sleeps</span> Again</h1>
   <div class="hero-ml">നിങ്ങളുടെ ബിസിനസ്സ് 24/7 ജോലി ചെയ്യുന്നു</div>
   <p class="hero-sub">Leadvyne automates your WhatsApp leads — qualifies, follows up, and hands over to humans at the right moment. In Malayalam, English, Hindi and more.</p>
   <div class="hero-actions">
@@ -768,6 +776,61 @@ async function submitEnroll() {
 document.querySelectorAll('.signup-card input').forEach(inp => {
   inp.addEventListener('keydown', e => { if (e.key === 'Enter') submitSignup(); });
 });
+
+// ── ROTATING TEXTS ───────────────────────────────────────────────
+function startRotator(elId, words, intervalMs) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  let i = 0;
+  setInterval(() => {
+    el.classList.add('swap');
+    setTimeout(() => {
+      i = (i + 1) % words.length;
+      el.textContent = words[i];
+      el.classList.remove('swap');
+    }, 350);
+  }, intervalMs);
+}
+startRotator('heroRotator', ['Sleeps', 'Stops', 'Quits', 'Forgets'], 2600);
+startRotator('badgeRotator', ['Travel Agencies', 'Real Estate', 'Clinics', 'Recruiters', 'Ecommerce', 'Education'], 2400);
+
+// ── SCROLL-REVEAL ────────────────────────────────────────────────
+document.querySelectorAll('.section, .feat, .stat').forEach(el => el.classList.add('reveal'));
+const revealObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('in');
+      revealObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.15 });
+document.querySelectorAll('.reveal').forEach(el => revealObserver.observe(el));
+
+// ── ANIMATED STAT COUNTERS ───────────────────────────────────────
+function animateStatNum(el) {
+  const raw = el.textContent.trim();
+  const match = raw.match(/^(\d+)(.*)$/);
+  if (!match) return;
+  const target = parseInt(match[1]);
+  const suffix = match[2];
+  let cur = 0;
+  const step = Math.max(1, Math.ceil(target / 30));
+  el.textContent = '0' + suffix;
+  const t = setInterval(() => {
+    cur += step;
+    if (cur >= target) { cur = target; clearInterval(t); }
+    el.textContent = cur + suffix;
+  }, 35);
+}
+const statObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      animateStatNum(entry.target);
+      statObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.5 });
+document.querySelectorAll('.stat .num').forEach(el => statObserver.observe(el));
 </script>
 </body>
 </html>
