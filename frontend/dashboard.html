@@ -1690,6 +1690,17 @@ const TODAY = new Date().toISOString().slice(0,10);
           <hr class="div">
 
           <div class="settings-section">
+            <div class="s-head">📄 Auto Proposal (PDF Quotation)</div>
+            <div class="s-note">When your AI bot states a price in chat and the customer keeps engaging, automatically generates and sends an official PDF quotation as a reply. Stand-alone — does not change the AI reply engine.</div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <label class="seq-toggle"><input type="checkbox" id="proposalToggle" onchange="proposalToggleChange()"><span class="seq-slider"></span></label>
+              <span id="proposalToggleLabel" style="font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px;background:var(--line);color:var(--muted)">Off</span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
             <div class="s-head">⚡ Quick-Reply Templates</div>
             <div class="s-note">Saved replies your team can insert with one click while chatting. Use <code>{{name}}</code> to personalise.</div>
             <div id="quickReplyEditList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>
@@ -3622,6 +3633,9 @@ function populateSettings(){
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   renderQuickReplyEditList();
+  const propOn=(clientRecord.proposal_enabled||'No')==='Yes';
+  $id('proposalToggle').checked=propOn;
+  proposalUpdateBadge(propOn);
   // knowledge base
   _kbText=clientRecord.kb_text||'';
   $id('cfgKbText').value=_kbText;
@@ -3793,6 +3807,18 @@ async function seqToggleChange(){
   const on=$id('seqToggle').checked;
   seqUpdateBadge(on);
   await patchClient({seq_enabled:on?'Yes':'No'});
+}
+
+function proposalUpdateBadge(on){
+  const b=$id('proposalToggleLabel');
+  if(!b)return;
+  if(on){b.textContent='Active';b.style.background='#D8EEE4';b.style.color='#0E7C5A';}
+  else{b.textContent='Off';b.style.background='var(--line)';b.style.color='var(--muted)';}
+}
+async function proposalToggleChange(){
+  const on=$id('proposalToggle').checked;
+  proposalUpdateBadge(on);
+  await patchClient({proposal_enabled:on?'Yes':'No'});
 }
 
 function seqRenderMediaPreview(url){
