@@ -3420,9 +3420,39 @@ function seqInit(){
   $id('seqStatConv').textContent=clientRecord.seq_stat_conv||'0';
   const lastT=clientRecord.seq_last_triggered;
   $id('seqLastSent').textContent=lastT?'Last sent: '+new Date(lastT).toLocaleString():'';
-  // live preview on typing
-  $id('seqIntroMsg').oninput=seqUpdatePreview;
-  $id('seqDemoCaption').oninput=seqUpdatePreview;
+  // live preview + autosave on typing
+  $id('seqIntroDelay').oninput=()=>seqScheduleSave('intro');
+  $id('seqIntroMsg').oninput=()=>{seqUpdatePreview();seqScheduleSave('intro');};
+  $id('seqDemoDelay').oninput=()=>seqScheduleSave('demo');
+  $id('seqDemoCaption').oninput=()=>{seqUpdatePreview();seqScheduleSave('demo');};
+}
+
+const _seqSaveTimers={};
+function seqScheduleSave(group){
+  const statusEl=$id(group==='intro'?'seqIntroStatus':'seqDemoStatus');
+  statusEl.textContent='Saving…';
+  statusEl.style.color='var(--muted)';
+  clearTimeout(_seqSaveTimers[group]);
+  _seqSaveTimers[group]=setTimeout(async()=>{
+    try{
+      if(group==='intro'){
+        await patchClient({
+          seq_intro_delay:parseInt($id('seqIntroDelay').value)||60,
+          seq_intro_msg:$id('seqIntroMsg').value.trim(),
+        });
+      } else {
+        await patchClient({
+          seq_demo_delay:parseInt($id('seqDemoDelay').value)||90,
+          seq_demo_caption:$id('seqDemoCaption').value.trim(),
+        });
+      }
+      statusEl.textContent='✓ Saved';
+      setTimeout(()=>{if(statusEl.textContent==='✓ Saved')statusEl.textContent='';},2500);
+    }catch(e){
+      statusEl.textContent='Error saving: '+e.message;
+      statusEl.style.color='#ef4444';
+    }
+  },800);
 }
 
 function seqUpdateBadge(on){
