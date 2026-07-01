@@ -525,21 +525,6 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .coach-card{background:#EEF2FF;border-radius:var(--r-sm);padding:14px;margin-top:10px;font-size:13px;line-height:1.6}
 .coach-card .cc-head{font-family:var(--disp);font-size:12px;font-weight:700;color:#1E3A8A;margin-bottom:8px}
 
-/* sequence module */
-.seq-step-card{position:relative;padding:18px}
-.seq-step-num{font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
-.seq-step-title{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:4px}
-.seq-step-note{font-size:12px;color:var(--muted);line-height:1.5}
-.seq-step-status{font-size:11px;margin-top:10px;min-height:16px;color:var(--muted)}
-.seq-drop-zone{border:2px dashed var(--line);border-radius:var(--r-sm);padding:22px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;margin-bottom:6px}
-.seq-drop-zone:hover,.seq-drop-zone.drag-over{border-color:var(--accent);background:var(--accent-soft)}
-.seq-toggle{position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0}
-.seq-toggle input{opacity:0;width:0;height:0}
-.seq-slider{position:absolute;cursor:pointer;inset:0;background:#ccc;border-radius:24px;transition:.3s}
-.seq-slider:before{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s}
-input:checked+.seq-slider{background:var(--accent)}
-input:checked+.seq-slider:before{transform:translateX(20px)}
-
 /* knowledge base */
 .kb-drop{border:2px dashed var(--line);border-radius:var(--r-sm);padding:28px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;margin-bottom:10px}
 .kb-drop:hover,.kb-drop.drag-over{border-color:var(--accent);background:var(--accent-soft)}
@@ -931,7 +916,6 @@ const TODAY = new Date().toISOString().slice(0,10);
   <!-- Desktop nav -->
   <div id="desktopNav">
     <button class="dnTab active" data-page="home">🏠 Home</button>
-    <button class="dnTab" data-page="sequence">🎯 Sequence</button>
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
     <button class="dnTab" data-page="leads">💬 Leads</button>
     <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
@@ -1096,127 +1080,6 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div id="agentTable"></div>
           <table><tbody id="recentBody"></tbody></table>
         </div>
-      </div>
-    </div>
-
-    <!-- SEQUENCE -->
-    <div class="page hidden" id="pageSequence">
-      <div class="page-pad">
-
-        <!-- Header row -->
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px">
-          <div>
-            <div class="card-title" style="margin-bottom:2px">🎯 New Contact Sequence</div>
-            <div style="font-size:13px;color:var(--muted)">Automatically greet every new WhatsApp contact with an intro message and demo media.</div>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:13px;font-weight:600">Sequence</span>
-            <label class="seq-toggle" id="seqToggleWrap">
-              <input type="checkbox" id="seqToggle" onchange="seqToggleChange()">
-              <span class="seq-slider"></span>
-            </label>
-            <span id="seqStatusBadge" style="font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px;background:var(--line);color:var(--muted)">Off</span>
-          </div>
-        </div>
-
-        <!-- Step cards -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px" id="seqStepGrid">
-
-          <!-- Step 1: Intro Message -->
-          <div class="card seq-step-card" id="seqCard1">
-            <div class="seq-step-num">Step 1</div>
-            <div class="seq-step-title">💬 Intro Message</div>
-            <div class="seq-step-note">Sent automatically after a new conversation starts.</div>
-            <div style="margin-top:12px">
-              <label class="form-label">Delay before sending</label>
-              <div style="display:flex;gap:8px;align-items:center">
-                <input class="form-input" type="number" id="seqIntroDelay" min="5" max="300" style="width:80px" placeholder="60">
-                <span style="font-size:13px;color:var(--muted)">seconds</span>
-              </div>
-            </div>
-            <div style="margin-top:12px">
-              <label class="form-label">Message text</label>
-              <textarea class="form-input" id="seqIntroMsg" rows="4" placeholder="Hi! Welcome to {{business_name}}. I'm your AI assistant — here to help you. How can I help you today?"></textarea>
-              <div style="font-size:11px;color:var(--muted);margin-top:4px">Use <code>{{business_name}}</code> to insert your business name.</div>
-            </div>
-            <div class="seq-step-status" id="seqIntroStatus"></div>
-          </div>
-
-          <!-- Step 2: Demo Media -->
-          <div class="card seq-step-card" id="seqCard2">
-            <div class="seq-step-num">Step 2</div>
-            <div class="seq-step-title">🎬 Demo Video / Image</div>
-            <div class="seq-step-note">Sent as a WhatsApp attachment after the intro message.</div>
-            <div style="margin-top:12px">
-              <label class="form-label">Delay after intro</label>
-              <div style="display:flex;gap:8px;align-items:center">
-                <input class="form-input" type="number" id="seqDemoDelay" min="5" max="600" style="width:80px" placeholder="90">
-                <span style="font-size:13px;color:var(--muted)">seconds</span>
-              </div>
-            </div>
-            <div style="margin-top:12px">
-              <label class="form-label">Upload video or image</label>
-              <div class="seq-drop-zone" id="seqDropZone" onclick="$id('seqMediaInput').click()" ondragover="seqDragOver(event)" ondragleave="seqDragLeave(event)" ondrop="seqDropFile(event)">
-                <div id="seqDropInner">
-                  <div style="font-size:28px;margin-bottom:6px">📁</div>
-                  <div style="font-size:13px;font-weight:600">Click to upload or drag &amp; drop</div>
-                  <div style="font-size:11px;color:var(--muted);margin-top:4px">MP4 · 3GPP · JPG · PNG — max 10 MB</div>
-                </div>
-              </div>
-              <input type="file" id="seqMediaInput" accept="video/mp4,video/3gpp,image/jpeg,image/png,image/webp" style="display:none" onchange="seqHandleFile(this.files[0])">
-              <div class="kb-progress" id="seqUploadProgress" style="display:none"><div class="kb-progress-bar" id="seqUploadBar"></div></div>
-              <div id="seqUploadStatus" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
-              <!-- current media preview -->
-              <div id="seqMediaPreview" style="margin-top:10px"></div>
-            </div>
-            <div class="seq-step-status" id="seqDemoStatus"></div>
-          </div>
-
-        </div>
-
-        <!-- Caption for Step 2 -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="s-head" style="margin-bottom:6px">Step 2 Caption (optional)</div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Text sent alongside the video/image. Leave blank to send media only.</div>
-          <textarea class="form-input" id="seqDemoCaption" rows="2" placeholder="Here's a quick demo of how Leadvyne works for your business…"></textarea>
-        </div>
-
-        <!-- Save + preview row -->
-        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:24px">
-          <button class="save-btn" style="padding:10px 28px;font-size:14px" id="saveSeqAll">Save Sequence</button>
-          <span class="save-msg" id="saveSeqAllMsg"></span>
-        </div>
-
-        <!-- Live preview panel -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="s-head" style="margin-bottom:8px">Preview — how it looks on WhatsApp</div>
-          <div id="seqPreviewChat" style="background:#e5ddd5;border-radius:10px;padding:14px;min-height:80px;display:flex;flex-direction:column;gap:8px">
-            <div style="font-size:12px;color:#666;text-align:center;margin-bottom:4px">WhatsApp preview</div>
-            <div id="seqPreviewBubble1" style="display:none;background:#fff;border-radius:8px 8px 8px 0;padding:10px 14px;max-width:80%;font-size:13px;box-shadow:0 1px 2px rgba(0,0,0,.15)"></div>
-            <div id="seqPreviewBubble2" style="display:none;background:#fff;border-radius:8px 8px 8px 0;padding:10px 14px;max-width:80%;font-size:13px;box-shadow:0 1px 2px rgba(0,0,0,.15)"></div>
-          </div>
-        </div>
-
-        <!-- Stats row -->
-        <div class="card" style="margin-bottom:0">
-          <div class="s-head" style="margin-bottom:12px">Live Stats</div>
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:10px">
-            <div style="text-align:center;padding:14px 8px;background:var(--bg);border-radius:var(--r-sm)">
-              <div style="font-size:26px;font-weight:800;color:var(--accent)" id="seqStatSent">—</div>
-              <div style="font-size:11px;color:var(--muted);margin-top:4px;font-weight:600">Intros Sent</div>
-            </div>
-            <div style="text-align:center;padding:14px 8px;background:var(--bg);border-radius:var(--r-sm)">
-              <div style="font-size:26px;font-weight:800;color:var(--accent)" id="seqStatDemo">—</div>
-              <div style="font-size:11px;color:var(--muted);margin-top:4px;font-weight:600">Demo Videos Sent</div>
-            </div>
-            <div style="text-align:center;padding:14px 8px;background:var(--bg);border-radius:var(--r-sm)">
-              <div style="font-size:26px;font-weight:800;color:var(--accent)" id="seqStatConv">—</div>
-              <div style="font-size:11px;color:var(--muted);margin-top:4px;font-weight:600">Converted to Lead</div>
-            </div>
-          </div>
-          <div style="font-size:11px;color:var(--muted);text-align:right" id="seqLastSent"></div>
-        </div>
-
       </div>
     </div>
 
@@ -1511,13 +1374,6 @@ const TODAY = new Date().toISOString().slice(0,10);
           <hr class="div">
 
           <div class="settings-section">
-            <div class="s-head">🎯 New Contact Sequence</div>
-            <div class="s-note">Configure intro message and demo media for new contacts. <b><a href="#" onclick="navigate('sequence');return false;">Open the Sequence module →</a></b></div>
-          </div>
-
-          <hr class="div">
-
-          <div class="settings-section">
             <div class="s-head">🧪 Test Mode</div>
             <div class="s-note">Bot only responds to your number when enabled.</div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
@@ -1635,7 +1491,6 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
     <button class="bnItem" data-page="agency" id="bnAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
     <button class="bnItem" data-page="recruit" id="bnRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
-    <button class="bnItem" data-page="sequence"><span class="bnIcon">🎯</span><span class="bnLabel">Sequence</span></button>
     <button class="bnItem" data-page="chats"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
     <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
@@ -2447,7 +2302,6 @@ function navigate(page){
   if(page==='agency') renderAgency();
   if(page==='recruit') renderRecruit();
   if(page==='settings') populateSettings();
-  if(page==='sequence') seqInit();
   if(page==='chats') openChatsTab();
 }
 
@@ -3397,171 +3251,6 @@ $id('savePrompt').addEventListener('click',async()=>{
 });
 $id('saveFu').addEventListener('click',async()=>saveField('saveFu','saveFuMsg',{followup_count:parseInt($id('cfgFuCount').value)||0,followup_hours:$id('cfgFuHours').value,followup_messages:$id('cfgFuMsgs').value}));
 
-// ── SEQUENCE MODULE ─────────────────────────────────────────────
-function seqInit(){
-  if(!clientRecord) return;
-  // toggle
-  const enabled=(clientRecord.seq_enabled||'No')==='Yes';
-  $id('seqToggle').checked=enabled;
-  seqUpdateBadge(enabled);
-  // step 1
-  $id('seqIntroDelay').value=clientRecord.seq_intro_delay||'60';
-  $id('seqIntroMsg').value=clientRecord.seq_intro_msg||'';
-  // step 2
-  $id('seqDemoDelay').value=clientRecord.seq_demo_delay||'90';
-  $id('seqDemoCaption').value=clientRecord.seq_demo_caption||'';
-  // media preview
-  seqRenderMediaPreview(clientRecord.seq_demo_video_url||'');
-  // live preview
-  seqUpdatePreview();
-  // live stats
-  $id('seqStatSent').textContent=clientRecord.seq_stat_sent||'0';
-  $id('seqStatDemo').textContent=clientRecord.seq_stat_demo||'0';
-  $id('seqStatConv').textContent=clientRecord.seq_stat_conv||'0';
-  const lastT=clientRecord.seq_last_triggered;
-  $id('seqLastSent').textContent=lastT?'Last sent: '+new Date(lastT).toLocaleString():'';
-  // live preview + autosave on typing
-  $id('seqIntroDelay').oninput=()=>seqScheduleSave('intro');
-  $id('seqIntroMsg').oninput=()=>{seqUpdatePreview();seqScheduleSave('intro');};
-  $id('seqDemoDelay').oninput=()=>seqScheduleSave('demo');
-  $id('seqDemoCaption').oninput=()=>{seqUpdatePreview();seqScheduleSave('demo');};
-}
-
-const _seqSaveTimers={};
-function seqScheduleSave(group){
-  const statusEl=$id(group==='intro'?'seqIntroStatus':'seqDemoStatus');
-  statusEl.textContent='Saving…';
-  statusEl.style.color='var(--muted)';
-  clearTimeout(_seqSaveTimers[group]);
-  _seqSaveTimers[group]=setTimeout(async()=>{
-    try{
-      if(group==='intro'){
-        await patchClient({
-          seq_intro_delay:parseInt($id('seqIntroDelay').value)||60,
-          seq_intro_msg:$id('seqIntroMsg').value.trim(),
-        });
-      } else {
-        await patchClient({
-          seq_demo_delay:parseInt($id('seqDemoDelay').value)||90,
-          seq_demo_caption:$id('seqDemoCaption').value.trim(),
-        });
-      }
-      statusEl.textContent='✓ Saved';
-      setTimeout(()=>{if(statusEl.textContent==='✓ Saved')statusEl.textContent='';},2500);
-    }catch(e){
-      statusEl.textContent='Error saving: '+e.message;
-      statusEl.style.color='#ef4444';
-    }
-  },800);
-}
-
-function seqUpdateBadge(on){
-  const b=$id('seqStatusBadge');
-  if(on){b.textContent='Active';b.style.background='#D8EEE4';b.style.color='#0E7C5A';}
-  else{b.textContent='Off';b.style.background='var(--line)';b.style.color='var(--muted)';}
-}
-
-async function seqToggleChange(){
-  const on=$id('seqToggle').checked;
-  seqUpdateBadge(on);
-  await patchClient({seq_enabled:on?'Yes':'No'});
-}
-
-function seqRenderMediaPreview(url){
-  const wrap=$id('seqMediaPreview');
-  const status=$id('seqUploadStatus');
-  if(!url){wrap.innerHTML='';status.textContent='No media uploaded yet.';return;}
-  const isVideo=/\.(mp4|3gpp|3gp|mov)$/i.test(url);
-  if(isVideo){
-    wrap.innerHTML=`<video src="${url}" controls style="max-width:100%;max-height:140px;border-radius:8px"></video>
-      <div style="margin-top:6px"><button class="save-btn" style="padding:5px 14px;font-size:12px;background:#ef4444" onclick="seqRemoveMedia()">Remove</button></div>`;
-  } else {
-    wrap.innerHTML=`<img src="${url}" style="max-width:100%;max-height:140px;border-radius:8px;object-fit:cover">
-      <div style="margin-top:6px"><button class="save-btn" style="padding:5px 14px;font-size:12px;background:#ef4444" onclick="seqRemoveMedia()">Remove</button></div>`;
-  }
-  status.textContent='Current: '+url.split('/').pop();
-  seqUpdatePreview();
-}
-
-async function seqRemoveMedia(){
-  if(!confirm('Remove the current media?')) return;
-  await patchClient({seq_demo_video_url:''});
-  seqRenderMediaPreview('');
-  seqUpdatePreview();
-}
-
-function seqDragOver(e){e.preventDefault();$id('seqDropZone').classList.add('drag-over');}
-function seqDragLeave(e){$id('seqDropZone').classList.remove('drag-over');}
-function seqDropFile(e){e.preventDefault();$id('seqDropZone').classList.remove('drag-over');const f=e.dataTransfer.files[0];if(f)seqHandleFile(f);}
-
-async function seqHandleFile(file){
-  const status=$id('seqUploadStatus');
-  const bar=$id('seqUploadBar');
-  const prog=$id('seqUploadProgress');
-  if(!file) return;
-  const allowed=['video/mp4','video/3gpp','image/jpeg','image/png','image/webp'];
-  if(!allowed.includes(file.type)){status.textContent='Unsupported file type. Use MP4, JPG, or PNG.';return;}
-  if(file.size>10*1024*1024){status.textContent='File must be under 10 MB.';return;}
-  prog.style.display='block';bar.style.width='0%';status.textContent='Uploading…';
-  try{
-    const fd=new FormData();
-    fd.append('file',file);
-    fd.append('client_id',clientId);
-    // Simulate progress (fetch doesn't expose upload progress)
-    let pct=0;
-    const ticker=setInterval(()=>{pct=Math.min(pct+8,85);bar.style.width=pct+'%';},200);
-    const res=await fetch('https://apps.leadvyne.com/webhook/leadvyne-upload-media',{method:'POST',body:fd});
-    clearInterval(ticker);
-    if(!res.ok) throw new Error('Upload failed ('+res.status+')');
-    const data=await res.json();
-    const url=data.url||data.video_url||data.media_url||'';
-    if(!url) throw new Error('No URL returned from server');
-    bar.style.width='100%';
-    await patchClient({seq_demo_video_url:url});
-    setTimeout(()=>{prog.style.display='none';},600);
-    seqRenderMediaPreview(url);
-  } catch(e){
-    prog.style.display='none';
-    status.textContent='Error: '+e.message;
-  }
-}
-
-function seqUpdatePreview(){
-  const msg=($id('seqIntroMsg')?.value||'').trim();
-  const caption=($id('seqDemoCaption')?.value||'').trim();
-  const mediaUrl=clientRecord?.seq_demo_video_url||'';
-  const b1=$id('seqPreviewBubble1');
-  const b2=$id('seqPreviewBubble2');
-  if(msg){b1.style.display='block';b1.textContent=msg.replace('{{business_name}}',clientRecord?.client_name||'Your Business');}
-  else{b1.style.display='none';}
-  if(mediaUrl||caption){
-    b2.style.display='block';
-    const isVideo=/\.(mp4|3gpp|3gp|mov)$/i.test(mediaUrl);
-    let inner='';
-    if(mediaUrl){
-      if(isVideo) inner+=`<div style="background:#000;border-radius:6px;padding:10px;text-align:center;color:#fff;font-size:12px;margin-bottom:6px">▶ Demo Video</div>`;
-      else inner+=`<img src="${mediaUrl}" style="max-width:100%;border-radius:6px;margin-bottom:6px;display:block">`;
-    }
-    if(caption) inner+=`<div style="font-size:13px">${esc(caption)}</div>`;
-    b2.innerHTML=inner;
-  } else {b2.style.display='none';}
-}
-
-$id('saveSeqAll').addEventListener('click',async()=>{
-  const btn=$id('saveSeqAll'),msg=$id('saveSeqAllMsg');
-  btn.disabled=true;msg.textContent='';msg.className='save-msg';
-  try{
-    await patchClient({
-      seq_enabled:$id('seqToggle').checked?'Yes':'No',
-      seq_intro_delay:parseInt($id('seqIntroDelay').value)||60,
-      seq_intro_msg:$id('seqIntroMsg').value.trim(),
-      seq_demo_delay:parseInt($id('seqDemoDelay').value)||90,
-      seq_demo_caption:$id('seqDemoCaption').value.trim(),
-    });
-    msg.textContent='✓ Saved';
-  } catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
-  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
-});
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
 
