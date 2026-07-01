@@ -3141,15 +3141,7 @@ function openDetail(id){
   // actions
   const waLink=`https://wa.me/${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
   const callLink=`tel:+${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
-  $id('detailActions').innerHTML=`
-    <a class="action-btn" href="${callLink}"><span class="ab-icon">📞</span>Call</a>
-    <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>
-    <button class="action-btn" onclick="openEditLead(currentLead)"><span class="ab-icon">✏️</span>Edit</button>
-    <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
-    ${TERMINAL.has(lead.Stage)?`<button class="action-btn" onclick="reopenLead()"><span class="ab-icon">🔄</span>Re-open</button>`:''}
-    ${lead.IsDuplicate==='Yes'?`<button class="action-btn" onclick="openMerge()"><span class="ab-icon">🔀</span>Merge</button>`:''}
-    ${lead.OptOut==='Yes'?`<span style="background:#FEE2E2;color:#991B1B;padding:4px 10px;border-radius:8px;font-size:11px;font-weight:600">🚫 Opted out</span>`:''}
-  `;
+  renderDetailActions(lead);
 
   // tags
   renderDetailTags(lead);
@@ -3190,9 +3182,56 @@ function openDetail(id){
   renderLeadProfile(lead);
   renderWaReply(lead);
   openModal('modalDetail');
+  // Async: fetch proposal_sent_at from Chatwoot and refresh only the action row
+  if(cwBase()&&cwAccountId()&&cwToken()&&lead.chatwoot_conv_id){
+    fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${lead.chatwoot_conv_id}`,{
+      headers:{api_access_token:cwToken()}
+    }).then(r=>r.ok?r.json():null).then(data=>{
+      if(!data||currentLead?.Id!==lead.Id)return;
+      lead._proposal_sent_at=data.custom_attributes?.proposal_sent_at||'';
+      renderDetailActions(lead);
+    }).catch(()=>{});
+  }
 }
 
 function editCurrentLead(){ if(currentLead){closeModal('modalDetail');openEditLead(currentLead);} }
+
+function renderDetailActions(lead){
+  const el=$id('detailActions'); if(!el)return;
+  const waLink=`https://wa.me/${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
+  const callLink=`tel:+${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
+  const proposalSent=lead._proposal_sent_at||'';
+  el.innerHTML=`
+    <a class="action-btn" href="${callLink}"><span class="ab-icon">📞</span>Call</a>
+    <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>
+    <button class="action-btn" onclick="openEditLead(currentLead)"><span class="ab-icon">✏️</span>Edit</button>
+    <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
+    ${TERMINAL.has(lead.Stage)?`<button class="action-btn" onclick="reopenLead()"><span class="ab-icon">🔄</span>Re-open</button>`:''}
+    ${lead.IsDuplicate==='Yes'?`<button class="action-btn" onclick="openMerge()"><span class="ab-icon">🔀</span>Merge</button>`:''}
+    ${lead.OptOut==='Yes'?`<span style="background:#FEE2E2;color:#991B1B;padding:4px 10px;border-radius:8px;font-size:11px;font-weight:600">🚫 Opted out</span>`:''}
+    ${proposalSent
+      ?`<span style="background:#D8EEE4;color:#0E7C5A;padding:4px 10px;border-radius:8px;font-size:11px;font-weight:600" title="Sent ${esc(fmtDateShort(proposalSent))}">📄 Quote Sent</span>
+        <button class="action-btn" onclick="resetProposal()" title="Clear sent flag so proposal module can re-send for this conversation"><span class="ab-icon">🔁</span>Reset Quote</button>`
+      :`<span style="background:var(--line);color:var(--muted);padding:4px 10px;border-radius:8px;font-size:11px">📄 No Quote Yet</span>`}
+  `;
+}
+
+async function resetProposal(){
+  const lead=currentLead; if(!lead)return;
+  if(!cwBase()||!cwAccountId()||!cwToken()||!lead.chatwoot_conv_id){
+    alert('Chatwoot not configured or no conversation linked to this lead.');return;
+  }
+  if(!confirm('Clear the sent flag? The proposal module will re-send a quote the next time it detects pricing in this conversation.'))return;
+  try{
+    await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${lead.chatwoot_conv_id}/custom_attributes`,{
+      method:'POST',
+      headers:{api_access_token:cwToken(),'Content-Type':'application/json'},
+      body:JSON.stringify({custom_attributes:{proposal_sent_at:null}})
+    });
+    lead._proposal_sent_at='';
+    renderDetailActions(lead);
+  }catch(e){alert('Reset failed: '+e.message);}
+}
 
 function renderDetailTags(lead){
   const tags=parseTags(lead.Tags);

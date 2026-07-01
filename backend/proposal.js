@@ -202,6 +202,20 @@ function buildQuotePdf(client, contactName, quote, convId) {
   });
 }
 
+// ── IN-PROCESS LOCK — prevents same conv being processed in overlapping polls ──
+const _sending = new Set();
+
+async function findLeadByConvId(client, convId) {
+  if (!client.leads_table_id) return null;
+  try {
+    const url = `${NOCODB_BASE}/api/v2/tables/${client.leads_table_id}/records?where=(chatwoot_conv_id,eq,${convId})&limit=1`;
+    const data = await ncGet(url);
+    return (data.list || [])[0] || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // ── PER-CLIENT PASS ──────────────────────────────────────────────────────────
 async function processClient(client) {
   const cutoff = new Date(Date.now() - POLL_LOOKBACK_MIN * 60 * 1000);
@@ -219,8 +233,13 @@ async function processClient(client) {
     const lastActivity = new Date((conv.last_activity_at || conv.timestamp || 0) * 1000);
     if (lastActivity < cutoff) continue;
 
+    // First-pass check from conversation list cache
     const attrs = conv.custom_attributes || {};
     if (attrs.proposal_sent_at) continue;
+
+    // In-process lock — skip if another poll cycle is mid-send for this conv
+    const lockKey = `${client.Id}:${conv.id}`;
+    if (_sending.has(lockKey)) continue;
 
     let history;
     try {
@@ -238,9 +257,18 @@ async function processClient(client) {
 
     const lastBotMsg = lastOutgoing(history);
     if (!lastBotMsg || !PRICE_HINT_RE.test(lastBotMsg.content || '')) continue;
-    if (!lastIncomingAfter(history, lastBotMsg.ts)) continue; // customer closed out, don't quote
+    if (!lastIncomingAfter(history, lastBotMsg.ts)) continue;
 
+    _sending.add(lockKey);
     try {
+      // Fresh fetch of conversation to re-verify proposal_sent_at hasn't been set
+      // by a concurrent cycle or a manual reset between now and the list call above
+      const freshConv = await cwGet(client, `/api/v1/accounts/${client.chatwoot_account_id}/conversations/${conv.id}`);
+      if (freshConv.custom_attributes?.proposal_sent_at) {
+        console.log(`  [${client.client_name}] conv ${conv.id} already quoted (fresh check), skipping`);
+        continue;
+      }
+
       const quote = await extractQuoteFromText(client, lastBotMsg.content);
       if (!quote) continue;
 
@@ -250,13 +278,28 @@ async function processClient(client) {
       const filename = `quotation-${conv.id}.pdf`;
 
       await cwSendPdf(client, conv.id, pdfBuf, filename, 'Here is your official quotation 📄');
-      await cwSetCustomAttrs(client, conv.id, { proposal_sent_at: new Date().toISOString() });
+
+      // Mark sent — this is the single authoritative flag; nothing re-sends while this exists
+      const sentAt = new Date().toISOString();
+      await cwSetCustomAttrs(client, conv.id, { proposal_sent_at: sentAt });
+
+      // Bump lead stage to Quoted
+      const lead = await findLeadByConvId(client, conv.id);
+      if (lead) {
+        await ncPatch(`${NOCODB_BASE}/api/v2/tables/${client.leads_table_id}/records`, {
+          Id: lead.Id,
+          Stage: 'Quoted',
+        });
+      }
+
       await ncPatch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records/${client.Id}`, {
         proposal_stat_sent: (parseInt(client.proposal_stat_sent || 0) + 1),
       });
-      console.log(`  [${client.client_name}] sent PDF quotation → conv ${conv.id}`);
+      console.log(`  [${client.client_name}] sent PDF quotation → conv ${conv.id}${lead ? ` (lead ${lead.Id} → Quoted)` : ''}`);
     } catch (e) {
       console.warn(`  [${client.client_name}] conv ${conv.id} failed: ${e.message}`);
+    } finally {
+      _sending.delete(lockKey);
     }
   }
 }
