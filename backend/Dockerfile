@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json .
 RUN npm install --omit=dev
 
-COPY nba.js .
+COPY nba.js recovery.js ./
 
 ENV NOCODB_BASE=https://whizz.aiingo.com
 ENV NOCODB_TOKEN=
@@ -15,4 +15,5 @@ ENV RUN_NOW=0
 # Timezone for cron (override with -e TZ=Asia/Dubai etc.)
 ENV TZ=UTC
 
+# leadvyne-recovery overrides this command via docker-compose to run recovery.js instead
 CMD ["node", "nba.js"]

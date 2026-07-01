@@ -15,3 +15,22 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  leadvyne-recovery:
+    build: .
+    image: leadvyne-nba:latest
+    command: ["node", "recovery.js"]
+    restart: unless-stopped
+    environment:
+      NOCODB_BASE: ${NOCODB_BASE:-https://whizz.aiingo.com}
+      NOCODB_TOKEN: ${NOCODB_TOKEN}
+      CLIENTS_TABLE: ${CLIENTS_TABLE:-mxl33bg4wi70fqj}
+      RECOVERY_LOOKBACK_DAYS: ${RECOVERY_LOOKBACK_DAYS:-60}
+      RECOVERY_SEND_DELAY_MS: ${RECOVERY_SEND_DELAY_MS:-600}
+      TZ: ${TZ:-UTC}
+      RUN_NOW: ${RUN_NOW:-0}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

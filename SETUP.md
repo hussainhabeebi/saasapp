@@ -85,3 +85,29 @@ into the client's Chatwoot inbox (**Configuration → Webhooks**, event **Messag
   for your STT if needed.
 - Confirm the n8n API response shape for the created workflow id (`id` vs `data.id`) — the
   activate node handles both.
+
+## Recovery / win-back engine (backend/recovery.js)
+A standalone scheduled service (does not touch `engine.json` or `nba.js`) that nudges silent
+leads with an escalating 3-step drip: soft check-in → nurture → last-chance win-back. Runs
+hourly, reads the clients table read-only, and only writes to new `recovery_*` fields on the
+leads table (auto-created on first run) — it never writes `Stage`, `ConvHistory`, or `LastMsgAt`.
+
+- If a client has the classic `followup_count` sequence configured (followup-template.json),
+  this engine waits until that sequence is exhausted before starting its own ladder, so a lead
+  is never double-messaged by both systems.
+- Skips leads that are terminal (`Converted`/`Lost`/`Closed`/`Opt Out`), opted out, or currently
+  `Handover`'d to a human agent.
+- Escalation timing and copy are configurable per client (all optional — sane defaults apply if
+  left blank) via new columns on the **CLIENTS** table:
+
+  | Field | Type | Meaning |
+  |---|---|---|
+  | recovery_enabled | Single line ("Yes"/"No") | Set "No" to disable the ladder for this client |
+  | recovery_gaps_hours | Single line, e.g. `6,48,168` | Hours-since-previous-step before each of the 3 stages fires |
+  | recovery_messages | Long text, 3 lines | One message template per stage; `{name}` is replaced with the lead's name |
+  | recovery_templates | Long text, up to 3 lines | Optional: approved WhatsApp template name per stage, for use once the 24h session window has closed (leave blank to send plain text) |
+  | recovery_template_lang | Single line | Template language code (defaults to the client's `language`) |
+
+- Deploy as its own container: `docker compose up -d leadvyne-recovery` (see
+  `backend/docker-compose.yml`). Test a single run with `RUN_NOW=1`.
+- Uses the same `NOCODB_TOKEN`/`CLIENTS_TABLE` as `nba.js`; no new credentials needed.
