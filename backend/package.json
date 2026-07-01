@@ -5,7 +5,8 @@
   "main": "nba.js",
   "type": "module",
   "scripts": {
-    "start": "node nba.js"
+    "start": "node nba.js",
+    "recovery": "node recovery.js"
   },
   "dependencies": {
     "node-cron": "^3.0.3",
