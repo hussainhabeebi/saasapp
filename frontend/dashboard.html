@@ -153,6 +153,11 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .nba-chip-priority.warm{background:#fef9c3;color:#854d0e}
 .nba-chip-priority.nurture{background:#dbeafe;color:#1e40af}
 .nba-chip-priority.cold{background:#f1f5f9;color:#475569}
+/* Recovery / win-back */
+.recovery-badge{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:3px 8px;border-radius:10px;background:#EDE9FE;color:#5B21B6;white-space:nowrap}
+.recovery-chip{background:#F5F3FF;border:1.5px solid var(--line);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--ink);line-height:1.5}
+.recovery-chip-label{font-family:var(--disp);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:4px}
+.recovery-chip-stage{display:inline-block;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;font-family:var(--disp);margin-bottom:6px;background:#EDE9FE;color:#5B21B6}
 .glabel{color:rgba(255,255,255,.45);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:-6px;font-family:var(--disp)}
 /* CHATS TAB */
 #pageChats{display:flex;flex-direction:column;min-height:0;flex:1}
@@ -1914,6 +1919,10 @@ const TODAY = new Date().toISOString().slice(0,10);
     <div id="nbaChipWrap" style="display:none;margin-top:12px">
       <div class="nba-chip" id="nbaChip"></div>
     </div>
+    <!-- Recovery chip -->
+    <div id="recoveryChipWrap" style="display:none;margin-top:12px">
+      <div class="recovery-chip" id="recoveryChip"></div>
+    </div>
     <!-- AI summary -->
     <div style="margin-top:12px">
       <button class="btn btn-secondary btn-sm" onclick="generateSummary()">✨ AI Summary</button>
@@ -2588,6 +2597,7 @@ function renderLeadsList(){
         ${scoreBadge(l.Score)}
         <span class="li-date">${fmtDateShort(l.Date)}</span>
         ${l.ReminderDate?`<span class="reminder-badge" title="${l.ReminderDate}">⏰</span>`:''}
+        ${recoveryBadgeHtml(l)}
       </div>
     </div>`;
   }).join('');
@@ -2786,6 +2796,7 @@ function openDetail(id){
   $id('detailSummary').style.display='none';
   $id('dealCoachCard').style.display='none';
   renderNbaChip(lead);
+  renderRecoveryChip(lead);
   renderLeadProfile(lead);
   renderWaReply(lead);
   openModal('modalDetail');
@@ -6068,6 +6079,37 @@ function renderNbaChip(lead){
   chip.innerHTML=`<div class="nba-chip-label">🎯 Next Best Action</div>
     <span class="nba-chip-priority ${lead.nba_priority}">${lead.nba_priority.toUpperCase()}</span>
     <div>${esc(lead.nba_action)}</div>${updated}`;
+  wrap.style.display='';
+}
+
+/* ── RECOVERY / WIN-BACK STATUS ── */
+const RECOVERY_STEP_LABELS=['Abandoned check-in','Nurture nudge','Win-back (final)'];
+function recoveryTotalStages(){
+  const raw=(clientRecord&&clientRecord.recovery_gaps_hours)||'6,48,168';
+  const n=raw.split(',').map(s=>s.trim()).filter(Boolean).length;
+  return n||3;
+}
+function recoveryBadgeHtml(lead){
+  const stage=parseInt(lead.recovery_stage||0);
+  if(!stage) return '';
+  const total=recoveryTotalStages();
+  const done=lead.recovery_done==='Yes';
+  const label=done?'Recovered/Done':`Step ${Math.min(stage,total)}/${total}`;
+  return `<span class="recovery-badge" title="${esc(lead.recovery_last_message||'')}">🔁 ${label}</span>`;
+}
+function renderRecoveryChip(lead){
+  const wrap=$id('recoveryChipWrap');
+  const chip=$id('recoveryChip');
+  const stage=parseInt(lead.recovery_stage||0);
+  if(!stage){wrap.style.display='none';return;}
+  const total=recoveryTotalStages();
+  const done=lead.recovery_done==='Yes';
+  const stepLabel=RECOVERY_STEP_LABELS[Math.min(stage,total)-1]||('Step '+stage);
+  const sentAt=lead.recovery_last_sent_at?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Sent: ${fmtDate(lead.recovery_last_sent_at.slice(0,10))}</div>`:'';
+  const lastMsg=lead.recovery_last_message?`: ${esc(lead.recovery_last_message)}`:'';
+  chip.innerHTML=`<div class="recovery-chip-label">🔁 Recovery Ladder</div>
+    <span class="recovery-chip-stage">${done?'COMPLETE':`STEP ${stage} / ${total}`}</span>
+    <div>${esc(stepLabel)}${lastMsg}</div>${sentAt}`;
   wrap.style.display='';
 }
 
