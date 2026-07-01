@@ -101,7 +101,7 @@ textarea{resize:vertical;min-height:90px;line-height:1.6}
 .img-drop-label{font-size:13px;color:var(--muted);line-height:1.5}
 .img-drop-label b{color:var(--ink)}
 #imgPreview{display:none;margin-top:12px;position:relative}
-#imgPreview img{max-width:200px;max-height:150px;border-radius:10px;object-fit:cover;border:1px solid var(--line)}
+#imgPreview img,#imgPreview video{max-width:200px;max-height:150px;border-radius:10px;object-fit:cover;border:1px solid var(--line)}
 .img-clear{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;border:none;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;line-height:1}
 
 /* TEMPLATES GRID */
@@ -236,18 +236,19 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       </div>
 
       <div class="form-field">
-        <label>Image Attachment <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+        <label>Image / Video Attachment <span style="color:var(--muted);font-weight:400">(optional)</span></label>
         <div class="img-drop" id="imgDrop" onclick="document.getElementById('imgFile').click()"
           ondragover="event.preventDefault();this.classList.add('drag-over')"
           ondragleave="this.classList.remove('drag-over')"
           ondrop="event.preventDefault();this.classList.remove('drag-over');handleImgDrop(event.dataTransfer.files[0])">
           <div class="img-drop-icon">🖼️</div>
-          <div class="img-drop-label"><b>Click to upload</b> or drag &amp; drop<br>JPG, PNG, GIF, WebP — max 5 MB</div>
+          <div class="img-drop-label"><b>Click to upload</b> or drag &amp; drop<br>JPG, PNG, GIF, WebP — max 5 MB · MP4, MOV — max 16 MB</div>
         </div>
-        <input type="file" id="imgFile" accept="image/*" style="display:none" onchange="handleImgFile(this.files[0])">
+        <input type="file" id="imgFile" accept="image/*,video/*" style="display:none" onchange="handleImgFile(this.files[0])">
         <div id="imgPreview">
           <img id="imgThumb" src="" alt="Preview">
-          <button class="img-clear" onclick="clearImage()" title="Remove image">✕</button>
+          <video id="vidThumb" src="" controls style="display:none"></video>
+          <button class="img-clear" onclick="clearImage()" title="Remove attachment">✕</button>
           <div style="font-size:11px;color:var(--muted);margin-top:6px;font-family:var(--mono)" id="imgName"></div>
         </div>
       </div>
@@ -712,21 +713,28 @@ function selectAllMeta(){ metaFilteredLeads.forEach(l=>metaSelectedIds.add(Strin
 function selectNoneMeta(){ metaSelectedIds.clear(); renderMetaLeads(); }
 function updateMetaSelBar(){ const n=metaSelectedIds.size; $id('metaSelBar').classList.toggle('hidden',n===0); $id('metaSelCount').textContent=n+' selected'; }
 
-// ── IMAGE HANDLING ──
+// ── IMAGE / VIDEO HANDLING ──
 function handleImgFile(file){
   if(!file) return;
-  if(file.size>5*1024*1024){ alert('Image must be under 5 MB.'); return; }
+  const isVideo=file.type.startsWith('video/');
+  const isImage=file.type.startsWith('image/');
+  if(!isVideo&&!isImage){ alert('Please attach an image or video file.'); return; }
+  const maxSize=isVideo?16*1024*1024:5*1024*1024;
+  if(file.size>maxSize){ alert(isVideo?'Video must be under 16 MB.':'Image must be under 5 MB.'); return; }
   imgFile=file;
   const url=URL.createObjectURL(file);
-  $id('imgThumb').src=url;
+  $id('imgThumb').style.display=isVideo?'none':'';
+  $id('vidThumb').style.display=isVideo?'':'none';
+  if(isVideo){ $id('vidThumb').src=url; } else { $id('imgThumb').src=url; }
   $id('imgName').textContent=file.name+' ('+Math.round(file.size/1024)+' KB)';
-  $id('imgPreview').style.display='';
+  $id('imgPreview').style.display='block';
   $id('imgDrop').style.display='none';
 }
-function handleImgDrop(file){ if(file&&file.type.startsWith('image/')) handleImgFile(file); }
+function handleImgDrop(file){ if(file&&(file.type.startsWith('image/')||file.type.startsWith('video/'))) handleImgFile(file); else if(file) alert('Please attach an image or video file.'); }
 function clearImage(){
   imgFile=null;
   $id('imgThumb').src='';
+  $id('vidThumb').src='';
   $id('imgPreview').style.display='none';
   $id('imgDrop').style.display='';
   document.getElementById('imgFile').value='';
@@ -742,7 +750,7 @@ function updateDmPreview(){
 // ── SEND DIRECT MESSAGES ──
 async function sendDm(){
   const text=($id('dmText').value||'').trim();
-  if(!text&&!imgFile){ alert('Enter a message or attach an image.'); return; }
+  if(!text&&!imgFile){ alert('Enter a message or attach an image/video.'); return; }
   if(!dmSelectedIds.size){ alert('Select at least one recipient.'); return; }
 
   const leads=allLeads.filter(l=>dmSelectedIds.has(String(l.Id)));
@@ -779,7 +787,7 @@ async function sendDm(){
         headers:{'api_access_token':token},
         body:fd
       });
-      if(!r.ok){ const err=await r.text(); throw new Error(`${r.status}: ${err.slice(0,80)}`); }
+      if(!r.ok){ const err=await r.text(); throw new Error(`${r.status}: ${err.slice(0,300)}`); }
       sent++;
       appendLog('dm',`✅ ${lead.Name||lead.Phone} — sent`);
     }catch(e){
