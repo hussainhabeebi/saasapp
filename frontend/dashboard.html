@@ -11,6 +11,8 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 <style>
 :root{
   --bg:#F2F5F3;--card:#FFFFFF;--ink:#0C1E16;--muted:#637870;
@@ -1098,12 +1100,35 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div style="font-size:13px;color:var(--muted)">Send an official price quotation straight into a lead's WhatsApp chat — built from your price list and a fixed template.</div>
         </div>
 
-        <!-- Template settings -->
+        <!-- Quote-ready stage(s) -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head" style="margin-bottom:6px">Quote-Ready Stage(s)</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Only leads sitting in these pipeline stages show up below — pick whichever stage(s) mean "we already gave them a price."</div>
+          <div id="quoteStagePicker" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>
+          <button class="save-btn" id="saveQuoteStages">Save</button>
+          <span class="save-msg" id="saveQuoteStagesMsg"></span>
+        </div>
+
+        <!-- Template + branding -->
         <div class="card" style="margin-bottom:14px">
           <div class="s-head" style="margin-bottom:8px">Proposal Template</div>
           <textarea class="form-input" id="quoteTemplate" rows="6" placeholder="Hi {{lead_name}}, thank you for your interest in {{business_name}}!"></textarea>
-          <div style="font-size:11px;color:var(--muted);margin-top:4px">Placeholders: <code>{{lead_name}}</code>, <code>{{business_name}}</code>, <code>{{items}}</code>, <code>{{total}}</code>, <code>{{validity_days}}</code></div>
-          <div style="display:flex;gap:12px;align-items:flex-end;margin-top:10px;flex-wrap:wrap">
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">Placeholders: <code>{{lead_name}}</code>, <code>{{business_name}}</code>, <code>{{items}}</code>, <code>{{total}}</code>, <code>{{validity_days}}</code>. Sent as the WhatsApp caption alongside the PDF.</div>
+
+          <div style="margin-top:14px">
+            <label class="form-label">Logo (shown on the PDF)</label>
+            <div class="kb-drop" id="quoteLogoDropZone" onclick="$id('quoteLogoInput').click()" ondragover="quoteLogoDragOver(event)" ondragleave="quoteLogoDragLeave(event)" ondrop="quoteLogoDropFile(event)">
+              <div id="quoteLogoDropInner">
+                <div class="kb-drop-icon">🖼️</div>
+                <div class="kb-drop-label"><b>Click to upload</b> or drag &amp; drop<br>PNG or JPG — max 500 KB</div>
+              </div>
+            </div>
+            <input type="file" id="quoteLogoInput" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="quoteHandleLogoFile(this.files[0])">
+            <div id="quoteLogoStatus" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+            <div id="quoteLogoPreview" style="margin-top:8px"></div>
+          </div>
+
+          <div style="display:flex;gap:12px;align-items:flex-end;margin-top:14px;flex-wrap:wrap">
             <div>
               <label class="form-label">Valid for (days)</label>
               <input class="form-input" type="number" id="quoteValidityDays" min="1" max="90" style="width:90px">
@@ -1118,7 +1143,8 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div class="s-head" style="margin-bottom:8px">Send Quotation</div>
           <label class="form-label">Lead</label>
           <input class="form-input" type="text" id="quoteLeadSearch" placeholder="Search name or phone…" oninput="quoteFilterLeads()" style="margin-bottom:6px">
-          <select class="form-input" id="quoteLeadSelect" onchange="quoteSelectLead()" style="margin-bottom:14px"><option value="">Select a lead…</option></select>
+          <select class="form-input" id="quoteLeadSelect" onchange="quoteSelectLead()" style="margin-bottom:6px"><option value="">Select a lead…</option></select>
+          <div id="quoteLeadHint" style="font-size:11px;color:var(--muted);margin-bottom:14px"></div>
 
           <label class="form-label">Items</label>
           <div id="quoteItemList" style="margin-bottom:6px"></div>
@@ -1130,12 +1156,15 @@ const TODAY = new Date().toISOString().slice(0,10);
 
         <!-- Preview + send -->
         <div class="card" style="margin-bottom:0">
-          <div class="s-head" style="margin-bottom:8px">Preview — how it looks on WhatsApp</div>
-          <div style="background:#e5ddd5;border-radius:10px;padding:14px;min-height:60px;margin-bottom:14px">
+          <div class="s-head" style="margin-bottom:8px">Preview</div>
+          <div style="background:#e5ddd5;border-radius:10px;padding:14px;min-height:60px;margin-bottom:10px">
             <div id="quotePreviewBubble" style="background:#fff;border-radius:8px 8px 8px 0;padding:10px 14px;max-width:100%;font-size:13px;white-space:pre-wrap;box-shadow:0 1px 2px rgba(0,0,0,.15)">Select a lead and at least one item to preview.</div>
           </div>
-          <button class="save-btn" id="sendQuoteBtn" onclick="quoteSend()">📤 Send Quotation</button>
-          <span class="save-msg" id="sendQuoteMsg"></span>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-secondary btn-sm" id="previewQuotePdfBtn" onclick="quotePreviewPdf()">📄 Preview PDF</button>
+            <button class="save-btn" id="sendQuoteBtn" onclick="quoteSend()">📤 Send Quotation (PDF)</button>
+            <span class="save-msg" id="sendQuoteMsg"></span>
+          </div>
         </div>
 
       </div>
@@ -3318,15 +3347,17 @@ $id('savePrompt').addEventListener('click',async()=>{
 $id('saveFu').addEventListener('click',async()=>saveField('saveFu','saveFuMsg',{followup_count:parseInt($id('cfgFuCount').value)||0,followup_hours:$id('cfgFuHours').value,followup_messages:$id('cfgFuMsgs').value}));
 
 // ── QUOTATION MODULE ─────────────────────────────────────────────
-const QUOTE_DEFAULT_TEMPLATE=`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Here's our official quotation:
-
-{{items}}
+const QUOTE_DEFAULT_TEMPLATE=`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Please find our official quotation attached.
 
 Total: {{total}}
-
-This quotation is valid for {{validity_days}} days. Let us know if you'd like to proceed.`;
+Valid for {{validity_days}} days. Let us know if you'd like to proceed.`;
 
 let _quoteServices=[], _quoteSelectedLead=null, _quoteSelectedItems={};
+
+function quoteFlowStages(){
+  const flow=getFlow();
+  return Object.keys(flow.stages||{}).filter(k=>k!=='new');
+}
 
 function quoteInit(){
   if(!clientRecord) return;
@@ -3335,11 +3366,30 @@ function quoteInit(){
   try{_quoteServices=JSON.parse(clientRecord.services||'[]');}catch(e){_quoteServices=[];}
   _quoteSelectedLead=null;
   _quoteSelectedItems={};
+  renderQuoteStagePicker();
   renderQuoteItems();
+  quoteRenderLogoPreview(clientRecord.quote_logo_url||'');
   $id('quoteLeadSearch').value='';
   quoteFilterLeads();
   quoteUpdatePreview();
 }
+
+function renderQuoteStagePicker(){
+  const wrap=$id('quoteStagePicker');
+  const stages=quoteFlowStages();
+  const selected=new Set((clientRecord.quote_stages||'').split(',').map(s=>s.trim()).filter(Boolean));
+  if(!stages.length){wrap.innerHTML='<div style="font-size:12px;color:var(--muted)">Build your pipeline stages in Settings → Conversation Flow first.</div>';return;}
+  wrap.innerHTML=stages.map(s=>`
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;background:var(--bg);border:1.5px solid var(--line);border-radius:20px;padding:6px 12px;cursor:pointer">
+      <input type="checkbox" value="${esc(s)}" ${selected.has(s)?'checked':''}> ${esc(s)}
+    </label>`).join('');
+}
+
+$id('saveQuoteStages').addEventListener('click',async()=>{
+  const checked=[...document.querySelectorAll('#quoteStagePicker input:checked')].map(i=>i.value);
+  await saveField('saveQuoteStages','saveQuoteStagesMsg',{quote_stages:checked.join(',')});
+  quoteFilterLeads();
+});
 
 $id('saveQuoteTemplate').addEventListener('click',async()=>{
   await saveField('saveQuoteTemplate','saveQuoteTemplateMsg',{
@@ -3348,13 +3398,28 @@ $id('saveQuoteTemplate').addEventListener('click',async()=>{
   });
 });
 
+function quoteEligibleLeads(){
+  const stages=(clientRecord.quote_stages||'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(!stages.length) return [];
+  return allLeads.filter(l=>stages.includes(l.Stage));
+}
+
 function quoteFilterLeads(){
   const q=($id('quoteLeadSearch').value||'').toLowerCase();
   const sel=$id('quoteLeadSelect');
+  const hint=$id('quoteLeadHint');
   const prev=sel.value;
-  const leads=allLeads.filter(l=>!q||(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)).slice(0,100);
-  sel.innerHTML='<option value="">Select a lead…</option>'+leads.map(l=>`<option value="${l.Id}">${esc(l.Name||l.Phone||'Unknown')} · ${esc(maskPhone(l.Phone))}</option>`).join('');
+  const configuredStages=(clientRecord.quote_stages||'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(!configuredStages.length){
+    sel.innerHTML='<option value="">Select a lead…</option>';
+    hint.textContent='No leads shown yet — pick a "Quote-Ready Stage" above first.';
+    return;
+  }
+  const eligible=quoteEligibleLeads();
+  const leads=eligible.filter(l=>!q||(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)).slice(0,100);
+  sel.innerHTML='<option value="">Select a lead…</option>'+leads.map(l=>`<option value="${l.Id}">${esc(l.Name||l.Phone||'Unknown')} · ${esc(maskPhone(l.Phone))} · ${esc(l.Stage||'')}</option>`).join('');
   if(leads.some(l=>String(l.Id)===prev)) sel.value=prev;
+  hint.textContent=eligible.length?`${eligible.length} lead(s) at a quote-ready stage.`:'No leads are currently in the configured stage(s).';
 }
 
 function quoteSelectLead(){
@@ -3385,19 +3450,21 @@ function quoteToggleItem(i,checked){
   quoteUpdatePreview();
 }
 
+// Builds the variable item section — one row per currently selected item.
 function quoteBuildItemLines(){
   let total=0,currency='AED';
-  const lines=Object.keys(_quoteSelectedItems).map(i=>{
+  const items=Object.keys(_quoteSelectedItems).map(i=>{
     const s=_quoteServices[i];
     const qty=parseInt($id('qItemQty'+i)?.value)||1;
     _quoteSelectedItems[i]=qty;
-    const price=parseFloat(s.price)||0;
-    const lineTotal=price*qty;
+    const unitPrice=parseFloat(s.price)||0;
+    const lineTotal=unitPrice*qty;
     total+=lineTotal;
     currency=s.currency||currency;
-    return `• ${s.name} x${qty} — ${s.currency||'AED'} ${lineTotal.toLocaleString()}`;
+    return{name:s.name||'Item',qty,unitPrice,lineTotal,currency:s.currency||currency};
   });
-  return{lines,total,currency};
+  const lines=items.map(it=>`• ${it.name} x${it.qty} — ${it.currency} ${it.lineTotal.toLocaleString()}`);
+  return{items,lines,total,currency};
 }
 
 function quoteRenderTemplate(tpl,lead,lines,total,currency){
@@ -3421,25 +3488,129 @@ function quoteUpdatePreview(){
   bubble.textContent=quoteRenderTemplate(tpl,_quoteSelectedLead,lines,total,currency);
 }
 
+/* ── Logo upload (stored as a base64 data URI on the client record) ── */
+function quoteLogoDragOver(e){e.preventDefault();$id('quoteLogoDropZone').classList.add('drag-over');}
+function quoteLogoDragLeave(e){$id('quoteLogoDropZone').classList.remove('drag-over');}
+function quoteLogoDropFile(e){e.preventDefault();$id('quoteLogoDropZone').classList.remove('drag-over');const f=e.dataTransfer.files[0];if(f)quoteHandleLogoFile(f);}
+
+async function quoteHandleLogoFile(file){
+  const status=$id('quoteLogoStatus');
+  if(!file) return;
+  const allowed=['image/png','image/jpeg','image/webp'];
+  if(!allowed.includes(file.type)){status.textContent='Unsupported file type. Use PNG, JPG, or WEBP.';return;}
+  if(file.size>500*1024){status.textContent='Logo must be under 500 KB.';return;}
+  status.textContent='Uploading…';
+  try{
+    const dataUrl=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result);
+      reader.onerror=reject;
+      reader.readAsDataURL(file);
+    });
+    await patchClient({quote_logo_url:dataUrl});
+    quoteRenderLogoPreview(dataUrl);
+    status.textContent='';
+  }catch(e){
+    status.textContent='Error: '+e.message;
+  }
+}
+
+function quoteRenderLogoPreview(dataUrl){
+  const wrap=$id('quoteLogoPreview');
+  if(!dataUrl){wrap.innerHTML='';return;}
+  wrap.innerHTML=`<img src="${dataUrl}" style="max-height:60px;max-width:200px;border-radius:6px;border:1px solid var(--line);display:block">
+    <button class="save-btn" style="padding:5px 14px;font-size:12px;background:#ef4444;margin-top:6px" onclick="quoteRemoveLogo()">Remove</button>`;
+}
+
+async function quoteRemoveLogo(){
+  if(!confirm('Remove the logo?')) return;
+  await patchClient({quote_logo_url:''});
+  quoteRenderLogoPreview('');
+}
+
+/* ── PDF generation — the item table is built from whatever is selected ── */
+function quoteBuildPdfDoc(lead,items,total,currency){
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({unit:'pt',format:'a4'});
+  const marginX=40;
+  let y=50;
+
+  if(clientRecord.quote_logo_url){
+    try{
+      const mime=/data:image\/(png|jpe?g|webp)/.exec(clientRecord.quote_logo_url);
+      const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
+      doc.addImage(clientRecord.quote_logo_url,fmt,marginX,y,90,45,undefined,'FAST');
+    }catch(e){}
+  }
+
+  doc.setFont('helvetica','bold');doc.setFontSize(18);
+  doc.text(clientRecord.client_name||'Quotation',marginX+110,y+20);
+  doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(100);
+  doc.text('Official Quotation',marginX+110,y+38);
+  doc.setTextColor(0);
+  y+=80;
+
+  doc.setFontSize(11);
+  doc.text(`Prepared for: ${lead.Name||lead.Phone||'Customer'}`,marginX,y);
+  doc.text(`Date: ${new Date().toLocaleDateString()}`,400,y);
+  y+=16;
+  doc.text(`Valid for: ${$id('quoteValidityDays').value||clientRecord.quote_validity_days||7} days`,marginX,y);
+  y+=20;
+
+  doc.autoTable({
+    startY:y,
+    margin:{left:marginX,right:marginX},
+    head:[['Item','Qty','Unit Price','Line Total']],
+    body:items.map(it=>[it.name,String(it.qty),`${it.currency} ${it.unitPrice.toLocaleString()}`,`${it.currency} ${it.lineTotal.toLocaleString()}`]),
+    foot:[['','','Total',`${currency} ${total.toLocaleString()}`]],
+    theme:'grid',
+    headStyles:{fillColor:[14,124,90]},
+    footStyles:{fillColor:[240,240,240],textColor:0,fontStyle:'bold'},
+    styles:{fontSize:10},
+  });
+
+  const finalY=(doc.lastAutoTable&&doc.lastAutoTable.finalY)||y+40;
+  doc.setFontSize(9);doc.setTextColor(120);
+  doc.text('This quotation is generated for reference and is subject to confirmation.',marginX,finalY+30);
+  return doc;
+}
+
+function quotePreviewPdf(){
+  const msg=$id('sendQuoteMsg');
+  if(!_quoteSelectedLead){msg.textContent='Select a lead first.';msg.className='save-msg err';return;}
+  const {items,total,currency}=quoteBuildItemLines();
+  if(!items.length){msg.textContent='Select at least one item.';msg.className='save-msg err';return;}
+  msg.textContent='';
+  const doc=quoteBuildPdfDoc(_quoteSelectedLead,items,total,currency);
+  window.open(doc.output('bloburl'),'_blank');
+}
+
 async function quoteSend(){
   const btn=$id('sendQuoteBtn'),msg=$id('sendQuoteMsg');
   if(!_quoteSelectedLead){msg.textContent='Select a lead first.';msg.className='save-msg err';return;}
-  const {lines,total,currency}=quoteBuildItemLines();
-  if(!lines.length){msg.textContent='Select at least one item.';msg.className='save-msg err';return;}
+  const {items,lines,total,currency}=quoteBuildItemLines();
+  if(!items.length){msg.textContent='Select at least one item.';msg.className='save-msg err';return;}
   const lead=_quoteSelectedLead;
   if(!lead.chatwoot_conv_id){msg.textContent='No Chatwoot conversation linked to this lead.';msg.className='save-msg err';return;}
   if(!cwBase()||!cwAccountId()||!cwToken()){msg.textContent='Chatwoot is not configured for this account.';msg.className='save-msg err';return;}
   const tpl=$id('quoteTemplate').value||QUOTE_DEFAULT_TEMPLATE;
-  const text=quoteRenderTemplate(tpl,lead,lines,total,currency);
-  btn.disabled=true;msg.textContent='Sending…';msg.className='save-msg';
+  const caption=quoteRenderTemplate(tpl,lead,lines,total,currency);
+  btn.disabled=true;msg.textContent='Generating PDF…';msg.className='save-msg';
   try{
+    const doc=quoteBuildPdfDoc(lead,items,total,currency);
+    const pdfBlob=doc.output('blob');
+    msg.textContent='Sending…';
+    const fd=new FormData();
+    fd.append('message_type','outgoing');
+    fd.append('private','false');
+    fd.append('content',caption);
+    fd.append('attachments[]',pdfBlob,`Quotation-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
     const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${lead.chatwoot_conv_id}/messages`,{
-      method:'POST',headers:{'api_access_token':cwToken(),'Content-Type':'application/json'},
-      body:JSON.stringify({content:text,message_type:'outgoing',private:false})
+      method:'POST',headers:{'api_access_token':cwToken()},body:fd
     });
     if(!r.ok) throw new Error('Send failed (HTTP '+r.status+')');
     let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
-    hist.push({role:'assistant',content:text,ts:new Date().toISOString()});
+    hist.push({role:'assistant',content:caption+`\n[Quotation PDF — ${items.length} item(s), total ${currency} ${total.toLocaleString()}]`,ts:new Date().toISOString()});
     const tags=parseTags(lead.Tags);
     if(!tags.includes('Quotation Sent')) tags.push('Quotation Sent');
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(',')});
