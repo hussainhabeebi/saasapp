@@ -3450,6 +3450,7 @@ $id('saveQuoteTemplate').addEventListener('click',async()=>{
 
 function quoteEligibleLeads(){
   return allLeads
+    .filter(l=>!parseTags(l.Tags).includes('Quotation Sent'))
     .map(l=>({lead:l,mention:quoteFindPriceMention(l)}))
     .filter(x=>x.mention)
     .sort((a,b)=>(b.mention.ts||'').localeCompare(a.mention.ts||''));
@@ -3464,7 +3465,7 @@ function quoteFilterLeads(){
   const rows=_quoteEligible.filter(x=>!q||(x.lead.Name||'').toLowerCase().includes(q)||(x.lead.Phone||'').includes(q)).slice(0,100);
   sel.innerHTML='<option value="">Select a lead…</option>'+rows.map(x=>`<option value="${x.lead.Id}">${esc(x.lead.Name||x.lead.Phone||'Unknown')} · ${esc(maskPhone(x.lead.Phone))} · last price: ${esc(x.mention.snippet)}</option>`).join('');
   if(rows.some(x=>String(x.lead.Id)===prev)) sel.value=prev;
-  hint.textContent=_quoteEligible.length?`${_quoteEligible.length} lead(s) with a price mentioned in chat.`:'No leads yet have a bot-mentioned price in their chat history.';
+  hint.textContent=_quoteEligible.length?`${_quoteEligible.length} lead(s) with a price mentioned in chat and no quotation sent yet.`:'No leads awaiting a quotation right now.';
 }
 
 function quoteSelectLead(){
@@ -3727,17 +3728,20 @@ async function quoteSend(){
     return;
   }
 
+  // Tag locally right away so this lead drops out of the sendable dropdown immediately,
+  // even if the NocoDB logging patch below hiccups — the message has already gone out.
+  const tags=parseTags(lead.Tags);
+  if(!tags.includes('Quotation Sent')) tags.push('Quotation Sent');
+  lead.Tags=tags.join(',');
+
   // Logging the send (ConvHistory/Tags/QuoteSentAt) is best-effort — a hiccup here must
   // never be shown as a send failure, since the WhatsApp message already went out.
   const sentAt=new Date().toISOString();
   try{
     let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
     hist.push({role:'assistant',content:caption+`\n[Quotation PDF — ${items.length} item(s), total ${currency} ${total.toLocaleString()}]`,ts:sentAt});
-    const tags=parseTags(lead.Tags);
-    if(!tags.includes('Quotation Sent')) tags.push('Quotation Sent');
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(','),QuoteSentAt:sentAt,QuoteSentTotal:`${currency} ${total.toLocaleString()}`});
     lead.ConvHistory=JSON.stringify(hist);
-    lead.Tags=tags.join(',');
     lead.QuoteSentAt=sentAt;
     lead.QuoteSentTotal=`${currency} ${total.toLocaleString()}`;
     msg.textContent='✓ Sent';msg.className='save-msg';
@@ -3745,6 +3749,11 @@ async function quoteSend(){
     msg.textContent='✓ Sent (log not saved — will still show as sent in Chatwoot)';msg.className='save-msg';
   }finally{
     btn.disabled=false;
+    _quoteSelectedLead=null;
+    _quoteSelectedItems={};
+    renderQuoteItems();
+    quoteFilterLeads();
+    quoteUpdatePreview();
     renderQuoteSentLog();
     setTimeout(()=>{const m=$id('sendQuoteMsg');if(m&&sent)m.textContent='';},4000);
   }
