@@ -200,7 +200,8 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
   <!-- Top bar -->
   <div class="top-bar">
     <div style="display:flex;align-items:center;gap:12px">
-      <div class="top-brand">Leadvyne<span>.</span></div>
+      <img id="topLogo" style="display:none;height:24px;max-width:120px;border-radius:4px;object-fit:contain" alt="logo">
+      <div class="top-brand" id="topBrandText">Leadvyne<span>.</span></div>
       <span style="color:var(--muted);font-size:13px;font-weight:500">Broadcast</span>
     </div>
     <div style="display:flex;align-items:center;gap:10px">
@@ -596,6 +597,9 @@ async function initApp(){
   $id('gate').classList.add('hidden');
   $id('main').classList.remove('hidden');
   $id('clientChip').textContent=clientRecord.client_name||('Client #'+clientId);
+  const logoUrl=clientRecord.quote_logo_url||'';
+  const topLogo=$id('topLogo'),topBrandText=$id('topBrandText');
+  if(logoUrl){topLogo.src=logoUrl;topLogo.style.display='inline-block';topBrandText.style.display='none';}
   await Promise.all([loadLeads(), loadTemplates()]);
 }
 

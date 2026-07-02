@@ -906,7 +906,8 @@ const TODAY = new Date().toISOString().slice(0,10);
 <div id="app">
   <!-- Header -->
   <div id="hdr">
-    <span class="hbrand">Leadvyne<span>.</span></span>
+    <img id="hLogo" style="display:none;height:26px;max-width:130px;border-radius:4px;object-fit:contain;vertical-align:middle" alt="logo">
+    <span class="hbrand" id="hBrandText">Leadvyne<span>.</span></span>
     <span class="hchip" id="hChip">—</span>
     <div id="notifBell" style="position:relative;cursor:pointer;display:none" onclick="toggleNotifDropdown()">
       🔔<span id="notifBadge" style="display:none;position:absolute;top:-4px;right:-4px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center"></span>
@@ -2431,6 +2432,7 @@ function showApp(){
   $id('gate').classList.add('hidden');
   $id('app').classList.add('show');
   $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
+  applyHeaderLogo();
   taMergeLocal();
   rcMergeLocal();
   applyTheme(clientRecord.industry||'general');
@@ -3575,6 +3577,7 @@ async function quoteHandleLogoFile(file){
     });
     await patchClient({quote_logo_url:dataUrl});
     quoteRenderLogoPreview(dataUrl);
+    applyHeaderLogo();
     status.textContent='';
   }catch(e){
     status.textContent='Error: '+e.message;
@@ -3593,6 +3596,16 @@ async function quoteRemoveLogo(){
   if(!confirm('Remove the logo?')) return;
   await patchClient({quote_logo_url:''});
   quoteRenderLogoPreview('');
+  applyHeaderLogo();
+}
+
+// Reuses the same uploaded logo (Quotation module) to brand the top nav bar app-wide.
+function applyHeaderLogo(){
+  const img=$id('hLogo'),text=$id('hBrandText');
+  if(!img||!text) return;
+  const url=clientRecord?.quote_logo_url||'';
+  if(url){img.src=url;img.style.display='inline-block';text.style.display='none';}
+  else{img.style.display='none';text.style.display='';}
 }
 
 /* ── PDF generation — the item table is built from whatever is selected ── */
@@ -3842,7 +3855,13 @@ async function ncPost(url,body){
 async function patchClient(fields){
   const res=await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId),...fields});
   if(Array.isArray(res)&&res.length===0) throw new Error('Save did not match the client record');
-  Object.assign(clientRecord,fields);
+  // NocoDB's bulk PATCH only echoes back the Id, not the saved fields, so a field that
+  // silently no-ops (e.g. the column doesn't exist yet) looks identical to a real save.
+  // Re-fetch and compare so that case surfaces as a clear error instead of "looks saved".
+  const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${Number(clientId)}`);
+  const stuck=Object.keys(fields).filter(k=>String(fresh[k]??'')!==String(fields[k]??''));
+  if(stuck.length) throw new Error(`Save didn't take effect for: ${stuck.join(', ')} — check these columns exist in NocoDB (see SETUP.md)`);
+  Object.assign(clientRecord,fresh);
 }
 
 /* ── HELPERS ── */
