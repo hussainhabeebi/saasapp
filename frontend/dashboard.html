@@ -6788,10 +6788,19 @@ async function chatSendFromTab(leadId){
   msg.textContent='Sending…'; msg.className='save-msg';
   let delivered=false;
   try{
+    // Use multipart/form-data (like the Quotation module's send) instead of a JSON body.
+    // multipart/form-data is a CORS-safelisted Content-Type, so the browser doesn't need
+    // to list it in the preflight request headers; an explicit 'Content-Type: application/json'
+    // header does, and if Chatwoot's CORS config doesn't allow that header the preflight
+    // fails silently and the message never leaves the browser — which is what was happening here.
+    const fd=new FormData();
+    fd.append('content',text);
+    fd.append('message_type','outgoing');
+    fd.append('private','false');
     const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
       method:'POST',
-      headers:{'api_access_token':cwToken(),'Content-Type':'application/json'},
-      body:JSON.stringify({content:text,message_type:'outgoing',private:false})
+      headers:{'api_access_token':cwToken()},
+      body:fd
     });
     if(!r.ok) throw new Error('HTTP '+r.status);
     delivered=true;
