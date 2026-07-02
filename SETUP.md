@@ -39,6 +39,8 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | active | Single line |
 | quote_template | Long text |
 | quote_validity_days | Number |
+| quote_stages | Long text (comma-separated flow stage ids) |
+| quote_logo_url | Long text (base64 data URI of the uploaded logo) |
 
 ## 2. Create the n8n API key + credential
 1. In n8n: **Settings → n8n API → Create API key**. Copy it.
