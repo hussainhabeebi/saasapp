@@ -1146,7 +1146,16 @@ const TODAY = new Date().toISOString().slice(0,10);
           <label class="form-label">Lead</label>
           <input class="form-input" type="text" id="quoteLeadSearch" placeholder="Search name or phone…" oninput="quoteFilterLeads()" style="margin-bottom:6px">
           <select class="form-input" id="quoteLeadSelect" onchange="quoteSelectLead()" style="margin-bottom:6px"><option value="">Select a lead…</option></select>
-          <div id="quoteLeadHint" style="font-size:11px;color:var(--muted);margin-bottom:14px"></div>
+          <div id="quoteLeadHint" style="font-size:11px;color:var(--muted);margin-bottom:6px"></div>
+
+          <div id="quoteLinkConvWrap" style="display:none;background:#FEF3C7;border-radius:8px;padding:10px 12px;margin-bottom:14px">
+            <div style="font-size:12px;color:#92400E;margin-bottom:6px">This lead isn't linked to a Chatwoot conversation yet — paste the conversation ID from its Chatwoot URL (the number after <code>/conversations/</code>) to connect it.</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <input class="form-input" type="text" id="quoteManualConvId" placeholder="e.g. 1234" style="max-width:140px">
+              <button class="btn btn-secondary btn-sm" onclick="quoteLinkConvId()">Link chat</button>
+            </div>
+            <div id="quoteLinkConvMsg" class="save-msg" style="margin-top:4px"></div>
+          </div>
 
           <label class="form-label">Items</label>
           <div id="quoteItemList" style="margin-bottom:6px"></div>
@@ -3395,6 +3404,7 @@ function quoteInit(){
   renderQuoteItems();
   quoteRenderLogoPreview(clientRecord.quote_logo_url||'');
   $id('quoteLeadSearch').value='';
+  $id('quoteLinkConvWrap').style.display='none';
   quoteFilterLeads();
   quoteUpdatePreview();
 }
@@ -3429,7 +3439,27 @@ function quoteFilterLeads(){
 function quoteSelectLead(){
   const id=parseInt($id('quoteLeadSelect').value);
   _quoteSelectedLead=allLeads.find(l=>l.Id===id)||null;
+  const linkWrap=$id('quoteLinkConvWrap');
+  linkWrap.style.display=(_quoteSelectedLead&&!leadConvId(_quoteSelectedLead))?'block':'none';
+  $id('quoteManualConvId').value='';
+  $id('quoteLinkConvMsg').textContent='';
   quoteUpdatePreview();
+}
+
+async function quoteLinkConvId(){
+  const msg=$id('quoteLinkConvMsg');
+  const convId=($id('quoteManualConvId').value||'').trim();
+  if(!_quoteSelectedLead){return;}
+  if(!convId){msg.textContent='Enter a conversation ID.';msg.className='save-msg err';return;}
+  msg.textContent='Linking…';msg.className='save-msg';
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:_quoteSelectedLead.Id,ConversationID:convId});
+    _quoteSelectedLead.ConversationID=convId;
+    $id('quoteLinkConvWrap').style.display='none';
+    msg.textContent='';
+  }catch(e){
+    msg.textContent='Error: '+e.message;msg.className='save-msg err';
+  }
 }
 
 function renderQuoteItems(){
@@ -3639,7 +3669,8 @@ async function quoteSend(){
   const {items,lines,total,currency}=quoteBuildItemLines();
   if(!items.length){msg.textContent='Select at least one item.';msg.className='save-msg err';return;}
   const lead=_quoteSelectedLead;
-  if(!lead.chatwoot_conv_id){msg.textContent='No Chatwoot conversation linked to this lead.';msg.className='save-msg err';return;}
+  const convId=leadConvId(lead);
+  if(!convId){msg.textContent='No Chatwoot conversation linked — paste a conversation ID above first.';msg.className='save-msg err';return;}
   if(!cwBase()||!cwAccountId()||!cwToken()){msg.textContent='Chatwoot is not configured for this account.';msg.className='save-msg err';return;}
   const tpl=$id('quoteTemplate').value||QUOTE_DEFAULT_TEMPLATE;
   const caption=quoteRenderTemplate(tpl,lead,lines,total,currency);
@@ -3653,7 +3684,7 @@ async function quoteSend(){
     fd.append('private','false');
     fd.append('content',caption);
     fd.append('attachments[]',pdfBlob,`Quotation-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
-    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${lead.chatwoot_conv_id}/messages`,{
+    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
       method:'POST',headers:{'api_access_token':cwToken()},body:fd
     });
     if(!r.ok) throw new Error('Send failed (HTTP '+r.status+')');
@@ -3765,6 +3796,9 @@ function cap(s){return s.charAt(0).toUpperCase()+s.slice(1);}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function maskPhone(p){if(!p)return'—';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}
 function parseTags(t){if(!t)return[];return String(t).split(',').map(s=>s.trim()).filter(Boolean);}
+// The bot writes the linked Chatwoot conversation id as "ConversationID" — read that,
+// with older/alternate field-name fallbacks for leads written by other paths.
+function leadConvId(lead){return lead&&(lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id||'');}
 function tagClass(t){
   const l=t.toLowerCase();
   if(l.includes('hot')||l.includes('urgent'))return'tag-hot';
@@ -6644,8 +6678,9 @@ async function chatSendFromTab(leadId){
   try{
     const wh=clientRecord?.webhook_url||'';
     // Send via Chatwoot if configured, else show instructions
-    if(cwBase()&&cwAccountId()&&cwToken()&&lead.chatwoot_conv_id){
-      const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${lead.chatwoot_conv_id}/messages`,{
+    const convId=leadConvId(lead);
+    if(cwBase()&&cwAccountId()&&cwToken()&&convId){
+      const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
         method:'POST',
         headers:{'api_access_token':cwToken(),'Content-Type':'application/json'},
         body:JSON.stringify({content:text,message_type:'outgoing',private:false})
