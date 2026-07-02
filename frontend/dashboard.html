@@ -3710,7 +3710,9 @@ function quotePreviewPdf(){
 
 // Confirms with Chatwoot whether a message actually landed, for when the send fetch()
 // itself errors client-side (mobile "Load failed") but the server already processed it.
-async function quoteCheckDelivered(convId){
+// Set requireAttachment for attachment sends (e.g. the Quotation PDF) to avoid matching
+// an unrelated plain-text message that happened to land in the same window.
+async function chatwootMessageDelivered(convId,{requireAttachment=false}={}){
   try{
     const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
       headers:{'api_access_token':cwToken()}
@@ -3722,8 +3724,9 @@ async function quoteCheckDelivered(convId){
     return msgs.some(m=>{
       const isOutgoing=m.message_type===1||m.message_type==='outgoing';
       const recent=(m.created_at||0)>=cutoff;
-      const hasAttachment=Array.isArray(m.attachments)&&m.attachments.length>0;
-      return isOutgoing&&recent&&hasAttachment;
+      if(!isOutgoing||!recent) return false;
+      if(requireAttachment) return Array.isArray(m.attachments)&&m.attachments.length>0;
+      return true;
     });
   }catch(e){
     return false;
@@ -3762,7 +3765,7 @@ async function quoteSend(){
     // the app backgrounding mid-upload) even though Chatwoot already received and sent
     // the message. Before reporting a failure, check Chatwoot directly for the message.
     msg.textContent='Connection dropped — checking if it still went through…';msg.className='save-msg';
-    const delivered=await quoteCheckDelivered(convId);
+    const delivered=await chatwootMessageDelivered(convId,{requireAttachment:true});
     if(delivered){
       sent=true;
     }else{
@@ -6777,35 +6780,41 @@ async function chatSendFromTab(leadId){
   if(!text||!leadId) return;
   const lead=allLeads.find(l=>l.Id===leadId);
   if(!lead){return;}
+  const convId=leadConvId(lead);
+  // Require a real Chatwoot conversation — silently writing to ConvHistory only and
+  // reporting "Sent" when there's nowhere to actually deliver it is worse than an error.
+  if(!cwBase()||!cwAccountId()||!cwToken()){msg.textContent='Chatwoot is not configured for this account.';msg.className='save-msg err';return;}
+  if(!convId){msg.textContent='No Chatwoot conversation linked to this lead — reply cannot reach WhatsApp.';msg.className='save-msg err';return;}
   msg.textContent='Sending…'; msg.className='save-msg';
-  // Use same WA reply mechanism as lead detail
-  const phone=(lead.Phone||'').replace(/\D/g,'');
+  let delivered=false;
   try{
-    const wh=clientRecord?.webhook_url||'';
-    // Send via Chatwoot if configured, else show instructions
-    const convId=leadConvId(lead);
-    if(cwBase()&&cwAccountId()&&cwToken()&&convId){
-      const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
-        method:'POST',
-        headers:{'api_access_token':cwToken(),'Content-Type':'application/json'},
-        body:JSON.stringify({content:text,message_type:'outgoing',private:false})
-      });
-      if(!r.ok) throw new Error();
-    } else {
-      // Append to ConvHistory locally
-      let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
-      hist.push({role:'assistant',content:text,ts:new Date().toISOString()});
-      await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
-      lead.ConvHistory=JSON.stringify(hist);
-    }
-    input.value='';
-    msg.textContent='Sent ✓'; msg.className='save-msg';
-    // Re-render the conversation
-    chatSelectLead(leadId);
-    setTimeout(()=>{if(msg)msg.textContent='';},2500);
+    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
+      method:'POST',
+      headers:{'api_access_token':cwToken(),'Content-Type':'application/json'},
+      body:JSON.stringify({content:text,message_type:'outgoing',private:false})
+    });
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    delivered=true;
   }catch(e){
-    msg.textContent='Failed'; msg.className='save-msg err';
+    // fetch() can fail client-side (dropped mobile connection) even though Chatwoot
+    // already received and sent the message — confirm before reporting a failure.
+    msg.textContent='Connection dropped — checking if it still went through…';msg.className='save-msg';
+    delivered=await chatwootMessageDelivered(convId,{requireAttachment:false});
   }
+  if(!delivered){
+    msg.textContent='Failed — message did not reach Chatwoot.'; msg.className='save-msg err';
+    return;
+  }
+  let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+  hist.push({role:'assistant',content:text,ts:new Date().toISOString()});
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
+  }catch(e){/* best-effort — the WhatsApp message already went out */}
+  lead.ConvHistory=JSON.stringify(hist);
+  input.value='';
+  msg.textContent='Sent ✓'; msg.className='save-msg';
+  chatSelectLead(leadId);
+  setTimeout(()=>{if(msg)msg.textContent='';},2500);
 }
 
 function cwBase(){return (clientRecord?.chatwoot_base||'').replace(/\/$/,'');}
