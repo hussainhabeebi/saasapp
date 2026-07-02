@@ -921,6 +921,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <!-- Desktop nav -->
   <div id="desktopNav">
     <button class="dnTab active" data-page="home">🏠 Home</button>
+    <button class="dnTab" data-page="quotation">🧾 Quotation</button>
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
     <button class="dnTab" data-page="leads">💬 Leads</button>
     <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
@@ -1085,6 +1086,58 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div id="agentTable"></div>
           <table><tbody id="recentBody"></tbody></table>
         </div>
+      </div>
+    </div>
+
+    <!-- QUOTATION -->
+    <div class="page hidden" id="pageQuotation">
+      <div class="page-pad">
+
+        <div style="margin-bottom:18px">
+          <div class="card-title" style="margin-bottom:2px">🧾 Quotation / Proposal</div>
+          <div style="font-size:13px;color:var(--muted)">Send an official price quotation straight into a lead's WhatsApp chat — built from your price list and a fixed template.</div>
+        </div>
+
+        <!-- Template settings -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head" style="margin-bottom:8px">Proposal Template</div>
+          <textarea class="form-input" id="quoteTemplate" rows="6" placeholder="Hi {{lead_name}}, thank you for your interest in {{business_name}}!"></textarea>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">Placeholders: <code>{{lead_name}}</code>, <code>{{business_name}}</code>, <code>{{items}}</code>, <code>{{total}}</code>, <code>{{validity_days}}</code></div>
+          <div style="display:flex;gap:12px;align-items:flex-end;margin-top:10px;flex-wrap:wrap">
+            <div>
+              <label class="form-label">Valid for (days)</label>
+              <input class="form-input" type="number" id="quoteValidityDays" min="1" max="90" style="width:90px">
+            </div>
+            <button class="save-btn" id="saveQuoteTemplate">Save Template</button>
+            <span class="save-msg" id="saveQuoteTemplateMsg"></span>
+          </div>
+        </div>
+
+        <!-- Compose -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head" style="margin-bottom:8px">Send Quotation</div>
+          <label class="form-label">Lead</label>
+          <input class="form-input" type="text" id="quoteLeadSearch" placeholder="Search name or phone…" oninput="quoteFilterLeads()" style="margin-bottom:6px">
+          <select class="form-input" id="quoteLeadSelect" onchange="quoteSelectLead()" style="margin-bottom:14px"><option value="">Select a lead…</option></select>
+
+          <label class="form-label">Items</label>
+          <div id="quoteItemList" style="margin-bottom:6px"></div>
+
+          <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;padding:8px 0;border-top:1px solid var(--line)">
+            <span>Total</span><span id="quoteTotalDisplay">—</span>
+          </div>
+        </div>
+
+        <!-- Preview + send -->
+        <div class="card" style="margin-bottom:0">
+          <div class="s-head" style="margin-bottom:8px">Preview — how it looks on WhatsApp</div>
+          <div style="background:#e5ddd5;border-radius:10px;padding:14px;min-height:60px;margin-bottom:14px">
+            <div id="quotePreviewBubble" style="background:#fff;border-radius:8px 8px 8px 0;padding:10px 14px;max-width:100%;font-size:13px;white-space:pre-wrap;box-shadow:0 1px 2px rgba(0,0,0,.15)">Select a lead and at least one item to preview.</div>
+          </div>
+          <button class="save-btn" id="sendQuoteBtn" onclick="quoteSend()">📤 Send Quotation</button>
+          <span class="save-msg" id="sendQuoteMsg"></span>
+        </div>
+
       </div>
     </div>
 
@@ -1490,6 +1543,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <!-- Bottom nav -->
   <div id="bottomNav">
     <button class="bnItem active" data-page="home"><span class="bnIcon">🏠</span><span class="bnLabel">Home</span></button>
+    <button class="bnItem" data-page="quotation"><span class="bnIcon">🧾</span><span class="bnLabel">Quotation</span></button>
     <button class="bnItem" data-page="pipeline"><span class="bnIcon">📋</span><span class="bnLabel">Pipeline</span></button>
     <button class="bnItem" data-page="leads"><span class="bnIcon">💬</span><span class="bnLabel">Leads</span></button>
     <button class="bnItem industry-tab" data-page="travel" data-industry="travel" style="display:none"><span class="bnIcon">✈️</span><span class="bnLabel">Travel</span></button>
@@ -2305,6 +2359,7 @@ function navigate(page){
   document.querySelectorAll('.bnItem,.dnTab').forEach(b=>b.classList.remove('active'));
   $id('page'+cap(page)).classList.remove('hidden');
   document.querySelectorAll(`[data-page="${page}"]`).forEach(b=>b.classList.add('active'));
+  if(page==='quotation') quoteInit();
   if(page==='pipeline') renderKanban();
   if(page==='leads'){if(_leadsTableView)renderLeadsTable();else renderLeadsList();}
   if(page==='travel') renderTravel();
@@ -3262,6 +3317,143 @@ $id('savePrompt').addEventListener('click',async()=>{
 });
 $id('saveFu').addEventListener('click',async()=>saveField('saveFu','saveFuMsg',{followup_count:parseInt($id('cfgFuCount').value)||0,followup_hours:$id('cfgFuHours').value,followup_messages:$id('cfgFuMsgs').value}));
 
+// ── QUOTATION MODULE ─────────────────────────────────────────────
+const QUOTE_DEFAULT_TEMPLATE=`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Here's our official quotation:
+
+{{items}}
+
+Total: {{total}}
+
+This quotation is valid for {{validity_days}} days. Let us know if you'd like to proceed.`;
+
+let _quoteServices=[], _quoteSelectedLead=null, _quoteSelectedItems={};
+
+function quoteInit(){
+  if(!clientRecord) return;
+  $id('quoteTemplate').value=clientRecord.quote_template||QUOTE_DEFAULT_TEMPLATE;
+  $id('quoteValidityDays').value=clientRecord.quote_validity_days||7;
+  try{_quoteServices=JSON.parse(clientRecord.services||'[]');}catch(e){_quoteServices=[];}
+  _quoteSelectedLead=null;
+  _quoteSelectedItems={};
+  renderQuoteItems();
+  $id('quoteLeadSearch').value='';
+  quoteFilterLeads();
+  quoteUpdatePreview();
+}
+
+$id('saveQuoteTemplate').addEventListener('click',async()=>{
+  await saveField('saveQuoteTemplate','saveQuoteTemplateMsg',{
+    quote_template:$id('quoteTemplate').value,
+    quote_validity_days:parseInt($id('quoteValidityDays').value)||7,
+  });
+});
+
+function quoteFilterLeads(){
+  const q=($id('quoteLeadSearch').value||'').toLowerCase();
+  const sel=$id('quoteLeadSelect');
+  const prev=sel.value;
+  const leads=allLeads.filter(l=>!q||(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)).slice(0,100);
+  sel.innerHTML='<option value="">Select a lead…</option>'+leads.map(l=>`<option value="${l.Id}">${esc(l.Name||l.Phone||'Unknown')} · ${esc(maskPhone(l.Phone))}</option>`).join('');
+  if(leads.some(l=>String(l.Id)===prev)) sel.value=prev;
+}
+
+function quoteSelectLead(){
+  const id=parseInt($id('quoteLeadSelect').value);
+  _quoteSelectedLead=allLeads.find(l=>l.Id===id)||null;
+  quoteUpdatePreview();
+}
+
+function renderQuoteItems(){
+  const wrap=$id('quoteItemList');
+  if(!_quoteServices.length){wrap.innerHTML='<div style="font-size:12px;color:var(--muted)">No priced items yet — add services with a price in Settings.</div>';return;}
+  wrap.innerHTML=_quoteServices.map((s,i)=>`
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+      <input type="checkbox" id="qItemChk${i}" onchange="quoteToggleItem(${i},this.checked)">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px">${esc(s.name||'Unnamed')}</div>
+        <div style="font-size:11px;color:var(--muted)">${esc(s.currency||'AED')} ${esc(String(s.price||0))}${s.per?'/'+esc(s.per):''}</div>
+      </div>
+      <input type="number" min="1" value="1" id="qItemQty${i}" style="width:56px;padding:6px;border:1.5px solid var(--line);border-radius:8px;font-size:12px" disabled onchange="quoteUpdatePreview()">
+    </div>`).join('');
+}
+
+function quoteToggleItem(i,checked){
+  const qtyInput=$id('qItemQty'+i);
+  qtyInput.disabled=!checked;
+  if(checked) _quoteSelectedItems[i]=parseInt(qtyInput.value)||1;
+  else delete _quoteSelectedItems[i];
+  quoteUpdatePreview();
+}
+
+function quoteBuildItemLines(){
+  let total=0,currency='AED';
+  const lines=Object.keys(_quoteSelectedItems).map(i=>{
+    const s=_quoteServices[i];
+    const qty=parseInt($id('qItemQty'+i)?.value)||1;
+    _quoteSelectedItems[i]=qty;
+    const price=parseFloat(s.price)||0;
+    const lineTotal=price*qty;
+    total+=lineTotal;
+    currency=s.currency||currency;
+    return `• ${s.name} x${qty} — ${s.currency||'AED'} ${lineTotal.toLocaleString()}`;
+  });
+  return{lines,total,currency};
+}
+
+function quoteRenderTemplate(tpl,lead,lines,total,currency){
+  return tpl
+    .replace(/\{\{lead_name\}\}/g,lead.Name||'there')
+    .replace(/\{\{business_name\}\}/g,clientRecord.client_name||'Your Business')
+    .replace(/\{\{items\}\}/g,lines.join('\n'))
+    .replace(/\{\{total\}\}/g,`${currency} ${total.toLocaleString()}`)
+    .replace(/\{\{validity_days\}\}/g,$id('quoteValidityDays').value||clientRecord.quote_validity_days||'7');
+}
+
+function quoteUpdatePreview(){
+  const bubble=$id('quotePreviewBubble');
+  const {lines,total,currency}=quoteBuildItemLines();
+  $id('quoteTotalDisplay').textContent=lines.length?`${currency} ${total.toLocaleString()}`:'—';
+  if(!_quoteSelectedLead||!lines.length){
+    bubble.textContent='Select a lead and at least one item to preview.';
+    return;
+  }
+  const tpl=$id('quoteTemplate').value||QUOTE_DEFAULT_TEMPLATE;
+  bubble.textContent=quoteRenderTemplate(tpl,_quoteSelectedLead,lines,total,currency);
+}
+
+async function quoteSend(){
+  const btn=$id('sendQuoteBtn'),msg=$id('sendQuoteMsg');
+  if(!_quoteSelectedLead){msg.textContent='Select a lead first.';msg.className='save-msg err';return;}
+  const {lines,total,currency}=quoteBuildItemLines();
+  if(!lines.length){msg.textContent='Select at least one item.';msg.className='save-msg err';return;}
+  const lead=_quoteSelectedLead;
+  if(!lead.chatwoot_conv_id){msg.textContent='No Chatwoot conversation linked to this lead.';msg.className='save-msg err';return;}
+  if(!cwBase()||!cwAccountId()||!cwToken()){msg.textContent='Chatwoot is not configured for this account.';msg.className='save-msg err';return;}
+  const tpl=$id('quoteTemplate').value||QUOTE_DEFAULT_TEMPLATE;
+  const text=quoteRenderTemplate(tpl,lead,lines,total,currency);
+  btn.disabled=true;msg.textContent='Sending…';msg.className='save-msg';
+  try{
+    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${lead.chatwoot_conv_id}/messages`,{
+      method:'POST',headers:{'api_access_token':cwToken(),'Content-Type':'application/json'},
+      body:JSON.stringify({content:text,message_type:'outgoing',private:false})
+    });
+    if(!r.ok) throw new Error('Send failed (HTTP '+r.status+')');
+    let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    hist.push({role:'assistant',content:text,ts:new Date().toISOString()});
+    const tags=parseTags(lead.Tags);
+    if(!tags.includes('Quotation Sent')) tags.push('Quotation Sent');
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(',')});
+    lead.ConvHistory=JSON.stringify(hist);
+    lead.Tags=tags.join(',');
+    msg.textContent='✓ Sent';msg.className='save-msg';
+  }catch(e){
+    msg.textContent='Error: '+e.message;msg.className='save-msg err';
+  }finally{
+    btn.disabled=false;
+    setTimeout(()=>{const m=$id('sendQuoteMsg');if(m&&m.textContent==='✓ Sent')m.textContent='';},3000);
+  }
+}
+
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
 
@@ -3343,7 +3535,8 @@ async function ncPost(url,body){
   return r.json();
 }
 async function patchClient(fields){
-  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:clientId,...fields});
+  const res=await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId),...fields});
+  if(Array.isArray(res)&&res.length===0) throw new Error('Save did not match the client record');
   Object.assign(clientRecord,fields);
 }
 
