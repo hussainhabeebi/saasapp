@@ -37,6 +37,8 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | followup_hours | Single line |
 | followup_messages | Long text |
 | active | Single line |
+| quote_template | Long text |
+| quote_validity_days | Number |
 
 ## 2. Create the n8n API key + credential
 1. In n8n: **Settings → n8n API → Create API key**. Copy it.
