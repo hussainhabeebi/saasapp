@@ -3708,6 +3708,28 @@ function quotePreviewPdf(){
   window.open(doc.output('bloburl'),'_blank');
 }
 
+// Confirms with Chatwoot whether a message actually landed, for when the send fetch()
+// itself errors client-side (mobile "Load failed") but the server already processed it.
+async function quoteCheckDelivered(convId){
+  try{
+    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
+      headers:{'api_access_token':cwToken()}
+    });
+    if(!r.ok) return false;
+    const data=await r.json();
+    const msgs=data.payload||data.data?.payload||(Array.isArray(data)?data:[]);
+    const cutoff=Date.now()/1000-90; // sent within the last 90s
+    return msgs.some(m=>{
+      const isOutgoing=m.message_type===1||m.message_type==='outgoing';
+      const recent=(m.created_at||0)>=cutoff;
+      const hasAttachment=Array.isArray(m.attachments)&&m.attachments.length>0;
+      return isOutgoing&&recent&&hasAttachment;
+    });
+  }catch(e){
+    return false;
+  }
+}
+
 async function quoteSend(){
   const btn=$id('sendQuoteBtn'),msg=$id('sendQuoteMsg');
   if(!_quoteSelectedLead){msg.textContent='Select a lead first.';msg.className='save-msg err';return;}
@@ -3736,9 +3758,18 @@ async function quoteSend(){
     if(!r.ok) throw new Error('Send failed (HTTP '+r.status+')');
     sent=true; // WhatsApp delivery succeeded — everything after this is best-effort bookkeeping
   }catch(e){
-    msg.textContent='Error: '+e.message;msg.className='save-msg err';
-    btn.disabled=false;
-    return;
+    // fetch() can fail client-side (e.g. "Load failed" on a flaky mobile connection, or
+    // the app backgrounding mid-upload) even though Chatwoot already received and sent
+    // the message. Before reporting a failure, check Chatwoot directly for the message.
+    msg.textContent='Connection dropped — checking if it still went through…';msg.className='save-msg';
+    const delivered=await quoteCheckDelivered(convId);
+    if(delivered){
+      sent=true;
+    }else{
+      msg.textContent='Error: '+e.message;msg.className='save-msg err';
+      btn.disabled=false;
+      return;
+    }
   }
 
   // Tag locally right away so this lead drops out of the sendable dropdown immediately,
