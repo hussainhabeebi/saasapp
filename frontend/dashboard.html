@@ -1100,13 +1100,10 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div style="font-size:13px;color:var(--muted)">Send an official price quotation straight into a lead's WhatsApp chat — built from your price list and a fixed template.</div>
         </div>
 
-        <!-- Quote-ready stage(s) -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="s-head" style="margin-bottom:6px">Quote-Ready Stage(s)</div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Only leads sitting in these pipeline stages show up below — pick whichever stage(s) mean "we already gave them a price."</div>
-          <div id="quoteStagePicker" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>
-          <button class="save-btn" id="saveQuoteStages">Save</button>
-          <span class="save-msg" id="saveQuoteStagesMsg"></span>
+        <!-- Auto-detection note -->
+        <div class="card" style="margin-bottom:14px;background:var(--accent-soft)">
+          <div class="s-head" style="margin-bottom:4px">🔍 Auto-detected</div>
+          <div style="font-size:12px;color:var(--ink)">The lead list below only shows leads whose chat history contains a price or cost mentioned by the bot — detected automatically from the conversation, no setup needed.</div>
         </div>
 
         <!-- Template + branding -->
@@ -3352,11 +3349,21 @@ const QUOTE_DEFAULT_TEMPLATE=`Hi {{lead_name}}, thank you for your interest in {
 Total: {{total}}
 Valid for {{validity_days}} days. Let us know if you'd like to proceed.`;
 
-let _quoteServices=[], _quoteSelectedLead=null, _quoteSelectedItems={};
+let _quoteServices=[], _quoteSelectedLead=null, _quoteSelectedItems={}, _quoteEligible=[];
 
-function quoteFlowStages(){
-  const flow=getFlow();
-  return Object.keys(flow.stages||{}).filter(k=>k!=='new');
+// Matches a currency symbol/code near a number, e.g. "AED 500", "$1,200", "500 dirhams", "Rs. 2500"
+const QUOTE_PRICE_REGEX=/[\$€£₹]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:AED|USD|EUR|GBP|INR|SAR|QAR|KWD|OMR|BHD|dhs?|dirhams?|dollars?|rs\.?|rupees?)\b/i;
+
+function quoteFindPriceMention(lead){
+  let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){return null;}
+  for(let i=hist.length-1;i>=0;i--){
+    const m=hist[i];
+    if(m.role!=='assistant'&&m.role!=='bot') continue;
+    const text=String(m.content||'');
+    const match=QUOTE_PRICE_REGEX.exec(text);
+    if(match) return{snippet:match[0].trim(),ts:m.ts||''};
+  }
+  return null;
 }
 
 function quoteInit(){
@@ -3366,30 +3373,12 @@ function quoteInit(){
   try{_quoteServices=JSON.parse(clientRecord.services||'[]');}catch(e){_quoteServices=[];}
   _quoteSelectedLead=null;
   _quoteSelectedItems={};
-  renderQuoteStagePicker();
   renderQuoteItems();
   quoteRenderLogoPreview(clientRecord.quote_logo_url||'');
   $id('quoteLeadSearch').value='';
   quoteFilterLeads();
   quoteUpdatePreview();
 }
-
-function renderQuoteStagePicker(){
-  const wrap=$id('quoteStagePicker');
-  const stages=quoteFlowStages();
-  const selected=new Set((clientRecord.quote_stages||'').split(',').map(s=>s.trim()).filter(Boolean));
-  if(!stages.length){wrap.innerHTML='<div style="font-size:12px;color:var(--muted)">Build your pipeline stages in Settings → Conversation Flow first.</div>';return;}
-  wrap.innerHTML=stages.map(s=>`
-    <label style="display:flex;align-items:center;gap:6px;font-size:12px;background:var(--bg);border:1.5px solid var(--line);border-radius:20px;padding:6px 12px;cursor:pointer">
-      <input type="checkbox" value="${esc(s)}" ${selected.has(s)?'checked':''}> ${esc(s)}
-    </label>`).join('');
-}
-
-$id('saveQuoteStages').addEventListener('click',async()=>{
-  const checked=[...document.querySelectorAll('#quoteStagePicker input:checked')].map(i=>i.value);
-  await saveField('saveQuoteStages','saveQuoteStagesMsg',{quote_stages:checked.join(',')});
-  quoteFilterLeads();
-});
 
 $id('saveQuoteTemplate').addEventListener('click',async()=>{
   await saveField('saveQuoteTemplate','saveQuoteTemplateMsg',{
@@ -3399,9 +3388,10 @@ $id('saveQuoteTemplate').addEventListener('click',async()=>{
 });
 
 function quoteEligibleLeads(){
-  const stages=(clientRecord.quote_stages||'').split(',').map(s=>s.trim()).filter(Boolean);
-  if(!stages.length) return [];
-  return allLeads.filter(l=>stages.includes(l.Stage));
+  return allLeads
+    .map(l=>({lead:l,mention:quoteFindPriceMention(l)}))
+    .filter(x=>x.mention)
+    .sort((a,b)=>(b.mention.ts||'').localeCompare(a.mention.ts||''));
 }
 
 function quoteFilterLeads(){
@@ -3409,17 +3399,11 @@ function quoteFilterLeads(){
   const sel=$id('quoteLeadSelect');
   const hint=$id('quoteLeadHint');
   const prev=sel.value;
-  const configuredStages=(clientRecord.quote_stages||'').split(',').map(s=>s.trim()).filter(Boolean);
-  if(!configuredStages.length){
-    sel.innerHTML='<option value="">Select a lead…</option>';
-    hint.textContent='No leads shown yet — pick a "Quote-Ready Stage" above first.';
-    return;
-  }
-  const eligible=quoteEligibleLeads();
-  const leads=eligible.filter(l=>!q||(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)).slice(0,100);
-  sel.innerHTML='<option value="">Select a lead…</option>'+leads.map(l=>`<option value="${l.Id}">${esc(l.Name||l.Phone||'Unknown')} · ${esc(maskPhone(l.Phone))} · ${esc(l.Stage||'')}</option>`).join('');
-  if(leads.some(l=>String(l.Id)===prev)) sel.value=prev;
-  hint.textContent=eligible.length?`${eligible.length} lead(s) at a quote-ready stage.`:'No leads are currently in the configured stage(s).';
+  _quoteEligible=quoteEligibleLeads();
+  const rows=_quoteEligible.filter(x=>!q||(x.lead.Name||'').toLowerCase().includes(q)||(x.lead.Phone||'').includes(q)).slice(0,100);
+  sel.innerHTML='<option value="">Select a lead…</option>'+rows.map(x=>`<option value="${x.lead.Id}">${esc(x.lead.Name||x.lead.Phone||'Unknown')} · ${esc(maskPhone(x.lead.Phone))} · last price: ${esc(x.mention.snippet)}</option>`).join('');
+  if(rows.some(x=>String(x.lead.Id)===prev)) sel.value=prev;
+  hint.textContent=_quoteEligible.length?`${_quoteEligible.length} lead(s) with a price mentioned in chat.`:'No leads yet have a bot-mentioned price in their chat history.';
 }
 
 function quoteSelectLead(){
