@@ -42,6 +42,15 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | quote_validity_days | Number |
 | quote_logo_url | Long text (base64 data URI of the uploaded logo) |
 
+### LEADS table additions (for the Quotation module's sent log)
+Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
+Quotation tab's "Sent Quotations" report:
+
+| Field | Type |
+|---|---|
+| QuoteSentAt | Single line (ISO datetime) |
+| QuoteSentTotal | Single line |
+
 ## 2. Create the n8n API key + credential
 1. In n8n: **Settings → n8n API → Create API key**. Copy it.
 2. **Credentials → New → Header Auth**, name it **n8n API**, header name `X-N8N-API-KEY`,

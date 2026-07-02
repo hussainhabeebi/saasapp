@@ -1178,6 +1178,12 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
+        <!-- Sent log / report -->
+        <div class="card" style="margin-top:14px;margin-bottom:0">
+          <div class="s-head" style="margin-bottom:8px">📋 Sent Quotations</div>
+          <div id="quoteSentLog"><div style="font-size:12px;color:var(--muted)">No quotations sent yet.</div></div>
+        </div>
+
       </div>
     </div>
 
@@ -3407,6 +3413,31 @@ function quoteInit(){
   $id('quoteLinkConvWrap').style.display='none';
   quoteFilterLeads();
   quoteUpdatePreview();
+  renderQuoteSentLog();
+}
+
+function renderQuoteSentLog(){
+  const wrap=$id('quoteSentLog');
+  if(!wrap) return;
+  const sentLeads=allLeads
+    .filter(l=>parseTags(l.Tags).includes('Quotation Sent'))
+    .sort((a,b)=>(b.QuoteSentAt||'').localeCompare(a.QuoteSentAt||''));
+  if(!sentLeads.length){wrap.innerHTML='<div style="font-size:12px;color:var(--muted)">No quotations sent yet.</div>';return;}
+  wrap.innerHTML=`
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${sentLeads.length} lead(s) sent a quotation.</div>
+    <div style="max-height:280px;overflow-y:auto">
+      ${sentLeads.map(l=>`
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+          <div style="min-width:0">
+            <div style="font-weight:600;font-size:13px">${esc(l.Name||l.Phone||'Unknown')}</div>
+            <div style="font-size:11px;color:var(--muted)">${esc(maskPhone(l.Phone))} · ${esc(l.Stage||'')}</div>
+          </div>
+          <div style="text-align:right;flex-shrink:0">
+            <div style="font-size:12px;font-weight:600">${esc(l.QuoteSentTotal||'')}</div>
+            <div style="font-size:11px;color:var(--muted)">${l.QuoteSentAt?fmtDateShort(l.QuoteSentAt):'—'}</div>
+          </div>
+        </div>`).join('')}
+    </div>`;
 }
 
 $id('saveQuoteTemplate').addEventListener('click',async()=>{
@@ -3675,6 +3706,7 @@ async function quoteSend(){
   const tpl=$id('quoteTemplate').value||QUOTE_DEFAULT_TEMPLATE;
   const caption=quoteRenderTemplate(tpl,lead,lines,total,currency);
   btn.disabled=true;msg.textContent='Generating PDF…';msg.className='save-msg';
+  let sent=false;
   try{
     const doc=quoteBuildPdfDoc(lead,items,total,currency);
     const pdfBlob=doc.output('blob');
@@ -3688,19 +3720,33 @@ async function quoteSend(){
       method:'POST',headers:{'api_access_token':cwToken()},body:fd
     });
     if(!r.ok) throw new Error('Send failed (HTTP '+r.status+')');
-    let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
-    hist.push({role:'assistant',content:caption+`\n[Quotation PDF — ${items.length} item(s), total ${currency} ${total.toLocaleString()}]`,ts:new Date().toISOString()});
-    const tags=parseTags(lead.Tags);
-    if(!tags.includes('Quotation Sent')) tags.push('Quotation Sent');
-    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(',')});
-    lead.ConvHistory=JSON.stringify(hist);
-    lead.Tags=tags.join(',');
-    msg.textContent='✓ Sent';msg.className='save-msg';
+    sent=true; // WhatsApp delivery succeeded — everything after this is best-effort bookkeeping
   }catch(e){
     msg.textContent='Error: '+e.message;msg.className='save-msg err';
+    btn.disabled=false;
+    return;
+  }
+
+  // Logging the send (ConvHistory/Tags/QuoteSentAt) is best-effort — a hiccup here must
+  // never be shown as a send failure, since the WhatsApp message already went out.
+  const sentAt=new Date().toISOString();
+  try{
+    let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    hist.push({role:'assistant',content:caption+`\n[Quotation PDF — ${items.length} item(s), total ${currency} ${total.toLocaleString()}]`,ts:sentAt});
+    const tags=parseTags(lead.Tags);
+    if(!tags.includes('Quotation Sent')) tags.push('Quotation Sent');
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(','),QuoteSentAt:sentAt,QuoteSentTotal:`${currency} ${total.toLocaleString()}`});
+    lead.ConvHistory=JSON.stringify(hist);
+    lead.Tags=tags.join(',');
+    lead.QuoteSentAt=sentAt;
+    lead.QuoteSentTotal=`${currency} ${total.toLocaleString()}`;
+    msg.textContent='✓ Sent';msg.className='save-msg';
+  }catch(e){
+    msg.textContent='✓ Sent (log not saved — will still show as sent in Chatwoot)';msg.className='save-msg';
   }finally{
     btn.disabled=false;
-    setTimeout(()=>{const m=$id('sendQuoteMsg');if(m&&m.textContent==='✓ Sent')m.textContent='';},3000);
+    renderQuoteSentLog();
+    setTimeout(()=>{const m=$id('sendQuoteMsg');if(m&&sent)m.textContent='';},4000);
   }
 }
 
