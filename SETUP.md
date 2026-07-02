@@ -38,6 +38,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | followup_messages | Long text |
 | active | Single line |
 | quote_template | Long text |
+| quote_terms | Long text |
 | quote_validity_days | Number |
 | quote_logo_url | Long text (base64 data URI of the uploaded logo) |
 

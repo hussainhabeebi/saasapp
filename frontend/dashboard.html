@@ -1125,6 +1125,11 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div id="quoteLogoPreview" style="margin-top:8px"></div>
           </div>
 
+          <div style="margin-top:14px">
+            <label class="form-label">Terms &amp; Conditions (printed on the PDF)</label>
+            <textarea class="form-input" id="quoteTerms" rows="5"></textarea>
+          </div>
+
           <div style="display:flex;gap:12px;align-items:flex-end;margin-top:14px;flex-wrap:wrap">
             <div>
               <label class="form-label">Valid for (days)</label>
@@ -3349,7 +3354,20 @@ const QUOTE_DEFAULT_TEMPLATE=`Hi {{lead_name}}, thank you for your interest in {
 Total: {{total}}
 Valid for {{validity_days}} days. Let us know if you'd like to proceed.`;
 
-let _quoteServices=[], _quoteSelectedLead=null, _quoteSelectedItems={}, _quoteEligible=[];
+const QUOTE_DEFAULT_TERMS=`• This quotation is valid for the period stated above; prices may change after it expires.
+• All prices are exclusive of taxes unless stated otherwise.
+• Payment terms and delivery/service timelines will be confirmed upon order confirmation.
+• This document does not constitute a binding contract until formally accepted by both parties.`;
+
+let _quoteServices=[], _quoteSelectedLead=null, _quoteSelectedItems={}, _quoteEligible=[], _quoteLogoDims=null;
+
+function quoteLoadLogoDims(url){
+  if(!url){_quoteLogoDims=null;return;}
+  const img=new Image();
+  img.onload=()=>{_quoteLogoDims={w:img.naturalWidth,h:img.naturalHeight};};
+  img.onerror=()=>{_quoteLogoDims=null;};
+  img.src=url;
+}
 
 // Matches a currency symbol/code near a number, e.g. "AED 500", "$1,200", "500 dirhams", "Rs. 2500"
 const QUOTE_PRICE_REGEX=/[\$€£₹]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:AED|USD|EUR|GBP|INR|SAR|QAR|KWD|OMR|BHD|dhs?|dirhams?|dollars?|rs\.?|rupees?)\b/i;
@@ -3369,6 +3387,7 @@ function quoteFindPriceMention(lead){
 function quoteInit(){
   if(!clientRecord) return;
   $id('quoteTemplate').value=clientRecord.quote_template||QUOTE_DEFAULT_TEMPLATE;
+  $id('quoteTerms').value=clientRecord.quote_terms||QUOTE_DEFAULT_TERMS;
   $id('quoteValidityDays').value=clientRecord.quote_validity_days||7;
   try{_quoteServices=JSON.parse(clientRecord.services||'[]');}catch(e){_quoteServices=[];}
   _quoteSelectedLead=null;
@@ -3383,6 +3402,7 @@ function quoteInit(){
 $id('saveQuoteTemplate').addEventListener('click',async()=>{
   await saveField('saveQuoteTemplate','saveQuoteTemplateMsg',{
     quote_template:$id('quoteTemplate').value,
+    quote_terms:$id('quoteTerms').value,
     quote_validity_days:parseInt($id('quoteValidityDays').value)||7,
   });
 });
@@ -3445,7 +3465,7 @@ function quoteBuildItemLines(){
     const lineTotal=unitPrice*qty;
     total+=lineTotal;
     currency=s.currency||currency;
-    return{name:s.name||'Item',qty,unitPrice,lineTotal,currency:s.currency||currency};
+    return{name:s.name||'Item',description:s.description||'',qty,unitPrice,lineTotal,currency:s.currency||currency};
   });
   const lines=items.map(it=>`• ${it.name} x${it.qty} — ${it.currency} ${it.lineTotal.toLocaleString()}`);
   return{items,lines,total,currency};
@@ -3501,6 +3521,7 @@ async function quoteHandleLogoFile(file){
 
 function quoteRenderLogoPreview(dataUrl){
   const wrap=$id('quoteLogoPreview');
+  quoteLoadLogoDims(dataUrl);
   if(!dataUrl){wrap.innerHTML='';return;}
   wrap.innerHTML=`<img src="${dataUrl}" style="max-height:60px;max-width:200px;border-radius:6px;border:1px solid var(--line);display:block">
     <button class="save-btn" style="padding:5px 14px;font-size:12px;background:#ef4444;margin-top:6px" onclick="quoteRemoveLogo()">Remove</button>`;
@@ -3517,13 +3538,23 @@ function quoteBuildPdfDoc(lead,items,total,currency){
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
   const marginX=40;
+  const pageW=doc.internal.pageSize.getWidth();
+  const pageH=doc.internal.pageSize.getHeight();
   let y=50;
 
   if(clientRecord.quote_logo_url){
     try{
       const mime=/data:image\/(png|jpe?g|webp)/.exec(clientRecord.quote_logo_url);
       const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
-      doc.addImage(clientRecord.quote_logo_url,fmt,marginX,y,90,45,undefined,'FAST');
+      // Fit within a 90x45 box without distorting the aspect ratio
+      const maxW=90,maxH=45;
+      let w=maxW,h=maxH;
+      if(_quoteLogoDims&&_quoteLogoDims.w&&_quoteLogoDims.h){
+        const ratio=Math.min(maxW/_quoteLogoDims.w,maxH/_quoteLogoDims.h);
+        w=_quoteLogoDims.w*ratio;
+        h=_quoteLogoDims.h*ratio;
+      }
+      doc.addImage(clientRecord.quote_logo_url,fmt,marginX,y,w,h,undefined,'FAST');
     }catch(e){}
   }
 
@@ -3553,9 +3584,42 @@ function quoteBuildPdfDoc(lead,items,total,currency){
     styles:{fontSize:10},
   });
 
-  const finalY=(doc.lastAutoTable&&doc.lastAutoTable.finalY)||y+40;
-  doc.setFontSize(9);doc.setTextColor(120);
-  doc.text('This quotation is generated for reference and is subject to confirmation.',marginX,finalY+30);
+  y=((doc.lastAutoTable&&doc.lastAutoTable.finalY)||y+40)+26;
+
+  // "What's Included" — variable section, one entry per currently selected item that has a description
+  const featured=items.filter(it=>it.description&&it.description.trim());
+  if(featured.length){
+    if(y>pageH-100){doc.addPage();y=50;}
+    doc.setFont('helvetica','bold');doc.setFontSize(12);doc.setTextColor(0);
+    doc.text("What's Included",marginX,y);
+    y+=16;
+    doc.setFont('helvetica','normal');doc.setFontSize(10);
+    featured.forEach(it=>{
+      if(y>pageH-60){doc.addPage();y=50;}
+      const wrapped=doc.splitTextToSize(`${it.name}: ${it.description}`,pageW-marginX*2-14);
+      doc.text('•',marginX,y);
+      doc.text(wrapped,marginX+14,y);
+      y+=wrapped.length*13+6;
+    });
+    y+=10;
+  }
+
+  // Terms & Conditions — common boilerplate, editable per client
+  const terms=(clientRecord.quote_terms||QUOTE_DEFAULT_TERMS).trim();
+  if(terms){
+    if(y>pageH-100){doc.addPage();y=50;}
+    doc.setFont('helvetica','bold');doc.setFontSize(12);doc.setTextColor(0);
+    doc.text('Terms & Conditions',marginX,y);
+    y+=16;
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
+    doc.splitTextToSize(terms,pageW-marginX*2).forEach(line=>{
+      if(y>pageH-40){doc.addPage();y=50;}
+      doc.text(line,marginX,y);
+      y+=12;
+    });
+    doc.setTextColor(0);
+  }
+
   return doc;
 }
 
