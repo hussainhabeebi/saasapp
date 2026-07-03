@@ -1,0 +1,385 @@
+{
+  "name": "Leadvyne · Prospects Import",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leadvyne-prospects-import",
+        "responseMode": "responseNode",
+        "options": { "allowedOrigins": "*" }
+      },
+      "id": "pi-wh",
+      "name": "Webhook · Prospects Import",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1600, 300],
+      "webhookId": "leadvyne-prospects-import"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fixed batch size — never trust a client-supplied value above this.\nconst MAX_BATCH_SIZE = 50;\nconst body = $input.first().json.body || $input.first().json;\nconst { client_id, gsheet_url, template_name, template_lang } = body;\n\nif (!client_id) throw new Error('client_id required');\nif (!gsheet_url) throw new Error('gsheet_url required');\nif (!template_name) throw new Error('template_name required — choose an approved WhatsApp template');\n\nconst match = gsheet_url.match(/\\/spreadsheets\\/d\\/([a-zA-Z0-9-_]+)/);\nif (!match) throw new Error('Invalid Google Sheet URL');\n\nreturn [{\n  json: {\n    client_id,\n    spreadsheetId: match[1],\n    template_name,\n    template_lang: template_lang || 'en_US',\n    batch_size: Math.min(Number(body.batch_size) || MAX_BATCH_SIZE, MAX_BATCH_SIZE)\n  }\n}];"
+      },
+      "id": "pi-validate",
+      "name": "Code · Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1380, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records/{{ $json.client_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "pi-get-tenant",
+      "name": "NocoDB · Get tenant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1160, 300],
+      "credentials": { "httpHeaderAuth": { "id": "nocodb-api", "name": "NocoDB API" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const tenant = $input.first().json;\nconst prev = $('Code · Validate').first().json;\n\nif (!tenant || !tenant.Id) throw new Error('Tenant not found for client_id: ' + prev.client_id);\n\nreturn [{\n  json: {\n    ...prev,\n    chatwoot_base: tenant.chatwoot_base,\n    chatwoot_account_id: tenant.chatwoot_account_id,\n    chatwoot_token: tenant.chatwoot_token,\n    chatwoot_inbox_id: tenant.chatwoot_inbox_id,\n    leads_table_id: tenant.leads_table_id || 'mvg6rcw0ia5qqrx'\n  }\n}];"
+      },
+      "id": "pi-merge-config",
+      "name": "Code · Merge config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-940, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "read",
+        "documentId": "={{ $json.spreadsheetId }}",
+        "sheetName": "Sheet1",
+        "options": {}
+      },
+      "id": "pi-read-sheet",
+      "name": "GSheet · Read rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [-720, 300],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "REPLACE_GSHEET_CRED", "name": "Google Sheets" } }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Code · Merge config').first().json.leads_table_id }}/records?where=(ClientId,eq,{{ $('Code · Merge config').first().json.client_id }})&fields=Phone&limit=5000",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "pi-fetch-existing",
+      "name": "NocoDB · Fetch existing leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-500, 300],
+      "credentials": { "httpHeaderAuth": { "id": "nocodb-api", "name": "NocoDB API" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const sheetRows = $('GSheet · Read rows').all().map(i => i.json);\nconst cfg = $('Code · Merge config').first().json;\nconst existingResp = $input.first().json;\n\nconst existingSet = new Set(\n  (existingResp.list || [])\n    .map(l => String(l.Phone || '').replace(/[^0-9]/g, ''))\n    .filter(Boolean)\n);\n\nconst seen = new Set();\nconst candidates = [];\nfor (const row of sheetRows) {\n  const name = (row.Name || row.name || '').toString().trim();\n  const rawPhone = (row.Phone || row.phone || '').toString().trim();\n  const phone = rawPhone.replace(/[^0-9]/g, '');\n  if (!phone) continue;\n  if (existingSet.has(phone)) continue;\n  if (seen.has(phone)) continue;\n  seen.add(phone);\n  candidates.push({ name, phone });\n}\n\nconst batch = candidates.slice(0, cfg.batch_size);\nconst skippedDuplicate = sheetRows.length - candidates.length;\n\nreturn [{ json: { ...cfg, batch, skippedDuplicate, batchCount: batch.length } }];"
+      },
+      "id": "pi-dedupe",
+      "name": "Code · Dedupe & cap",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-280, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            { "leftValue": "={{ $json.batchCount }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "pi-if-any",
+      "name": "IF · Any new prospects?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-60, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ imported: 0, sent: 0, failed: 0, skipped_duplicate: $json.skippedDuplicate, message: 'No new prospects to import.' }) }}",
+        "options": {}
+      },
+      "id": "pi-respond-empty",
+      "name": "Respond · Nothing to import",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [160, 460]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $input.first().json;\nconst today = new Date().toISOString();\nconst leadPayload = cfg.batch.map(p => ({\n  ClientId: String(cfg.client_id),\n  Name: p.name || '',\n  Phone: p.phone,\n  Stage: 'prospect',\n  Tags: 'Prospect',\n  Date: today\n}));\nreturn [{ json: { ...cfg, leadPayload } }];"
+      },
+      "id": "pi-build-lead-payload",
+      "name": "Code · Build lead payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [160, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Code · Merge config').first().json.leads_table_id }}/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.leadPayload) }}",
+        "options": {}
+      },
+      "id": "pi-create-leads",
+      "name": "NocoDB · Bulk create leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [380, 220],
+      "credentials": { "httpHeaderAuth": { "id": "nocodb-api", "name": "NocoDB API" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const createResp = $input.first().json;\nconst cfg = $('Code · Build lead payload').first().json;\nconst created = Array.isArray(createResp) ? createResp : (createResp.list || []);\n\nreturn cfg.batch.map((p, i) => ({\n  json: {\n    lead_id: created[i]?.Id,\n    name: p.name,\n    phone: p.phone,\n    chatwoot_base: cfg.chatwoot_base,\n    chatwoot_account_id: cfg.chatwoot_account_id,\n    chatwoot_token: cfg.chatwoot_token,\n    chatwoot_inbox_id: cfg.chatwoot_inbox_id,\n    template_name: cfg.template_name,\n    template_lang: cfg.template_lang,\n    leads_table_id: cfg.leads_table_id\n  }\n}));"
+      },
+      "id": "pi-prep-items",
+      "name": "Code · Prep items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 220]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": { "reset": false }
+      },
+      "id": "pi-split",
+      "name": "Split · Prospects",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [820, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.chatwoot_base }}/api/v1/accounts/{{ $json.chatwoot_account_id }}/contacts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "inbox_id", "value": "={{ $json.chatwoot_inbox_id }}" },
+            { "name": "name", "value": "={{ $json.name || $json.phone }}" },
+            { "name": "phone_number", "value": "=+{{ $json.phone }}" }
+          ]
+        },
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "pi-create-contact",
+      "name": "Chatwoot · Create contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1040, 100],
+      "credentials": { "httpHeaderAuth": { "id": "chatwoot-api", "name": "Chatwoot API" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Code · Prep items').first().json.chatwoot_base }}/api/v1/accounts/{{ $('Code · Prep items').first().json.chatwoot_account_id }}/conversations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "inbox_id", "value": "={{ $('Split · Prospects').first().json.chatwoot_inbox_id }}" },
+            { "name": "contact_id", "value": "={{ $json.payload?.contact?.id || $json.id }}" },
+            { "name": "source_id", "value": "={{ $json.payload?.contact_inbox?.source_id || $json.contact_inbox?.source_id }}" }
+          ]
+        },
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "pi-create-conversation",
+      "name": "Chatwoot · Create conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1260, 100],
+      "credentials": { "httpHeaderAuth": { "id": "chatwoot-api", "name": "Chatwoot API" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Code · Prep items').first().json.leads_table_id }}/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ Id: $('Split · Prospects').first().json.lead_id, ConversationID: $json.id }) }}",
+        "options": {}
+      },
+      "id": "pi-patch-lead-conv",
+      "name": "NocoDB · Link conversation to lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1480, 100],
+      "credentials": { "httpHeaderAuth": { "id": "nocodb-api", "name": "NocoDB API" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Code · Prep items').first().json.chatwoot_base }}/api/v1/accounts/{{ $('Code · Prep items').first().json.chatwoot_account_id }}/conversations/{{ $('Chatwoot · Create conversation').first().json.id }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "message_type", "value": "outgoing" },
+            { "name": "content_type", "value": "text" },
+            { "name": "content", "value": "={{ $('Code · Prep items').first().json.template_name }}" },
+            { "name": "private", "value": "false" },
+            {
+              "name": "template_params",
+              "value": "={{ JSON.stringify({ name: $('Code · Prep items').first().json.template_name, category: 'MARKETING', language: $('Code · Prep items').first().json.template_lang, processed_params: [] }) }}"
+            }
+          ]
+        },
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "pi-send-template",
+      "name": "Chatwoot · Send template",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1700, 100],
+      "credentials": { "httpHeaderAuth": { "id": "chatwoot-api", "name": "Chatwoot API" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": { "amount": 1, "unit": "seconds" },
+      "id": "pi-wait",
+      "name": "Wait · Rate limit",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1920, 100],
+      "webhookId": "pi-wait-hook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $('Split · Prospects').first().json;\nreturn [{ json: { lead_id: lead.lead_id, name: lead.name, phone: lead.phone, status: 'sent' } }];"
+      },
+      "id": "pi-ok",
+      "name": "Code · Mark sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2140, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $('Split · Prospects').first().json;\nconst err = $input.first().json;\nreturn [{ json: { lead_id: lead.lead_id, name: lead.name, phone: lead.phone, status: 'failed', error: err.message || JSON.stringify(err) } }];"
+      },
+      "id": "pi-err",
+      "name": "Code · Mark failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2140, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = $input.all().map(i => i.json);\nconst cfg = $('Code · Dedupe & cap').first().json;\nconst sent = results.filter(r => r.status === 'sent').length;\nconst failed = results.filter(r => r.status === 'failed').length;\nreturn [{ json: { imported: cfg.batchCount, sent, failed, skipped_duplicate: cfg.skippedDuplicate, results } }];"
+      },
+      "id": "pi-aggregate",
+      "name": "Code · Aggregate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2360, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "pi-respond",
+      "name": "Respond · Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2580, 220]
+    }
+  ],
+  "connections": {
+    "Webhook · Prospects Import": { "main": [[{ "node": "Code · Validate", "type": "main", "index": 0 }]] },
+    "Code · Validate": { "main": [[{ "node": "NocoDB · Get tenant", "type": "main", "index": 0 }]] },
+    "NocoDB · Get tenant": { "main": [[{ "node": "Code · Merge config", "type": "main", "index": 0 }]] },
+    "Code · Merge config": { "main": [[{ "node": "GSheet · Read rows", "type": "main", "index": 0 }]] },
+    "GSheet · Read rows": { "main": [[{ "node": "NocoDB · Fetch existing leads", "type": "main", "index": 0 }]] },
+    "NocoDB · Fetch existing leads": { "main": [[{ "node": "Code · Dedupe & cap", "type": "main", "index": 0 }]] },
+    "Code · Dedupe & cap": { "main": [[{ "node": "IF · Any new prospects?", "type": "main", "index": 0 }]] },
+    "IF · Any new prospects?": {
+      "main": [
+        [{ "node": "Code · Build lead payload", "type": "main", "index": 0 }],
+        [{ "node": "Respond · Nothing to import", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code · Build lead payload": { "main": [[{ "node": "NocoDB · Bulk create leads", "type": "main", "index": 0 }]] },
+    "NocoDB · Bulk create leads": { "main": [[{ "node": "Code · Prep items", "type": "main", "index": 0 }]] },
+    "Code · Prep items": { "main": [[{ "node": "Split · Prospects", "type": "main", "index": 0 }]] },
+    "Split · Prospects": {
+      "main": [
+        [{ "node": "Chatwoot · Create contact", "type": "main", "index": 0 }],
+        [{ "node": "Code · Aggregate", "type": "main", "index": 0 }]
+      ]
+    },
+    "Chatwoot · Create contact": {
+      "main": [
+        [{ "node": "Chatwoot · Create conversation", "type": "main", "index": 0 }],
+        [{ "node": "Code · Mark failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Chatwoot · Create conversation": {
+      "main": [
+        [{ "node": "NocoDB · Link conversation to lead", "type": "main", "index": 0 }],
+        [{ "node": "Code · Mark failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "NocoDB · Link conversation to lead": {
+      "main": [
+        [{ "node": "Chatwoot · Send template", "type": "main", "index": 0 }],
+        [{ "node": "Chatwoot · Send template", "type": "main", "index": 0 }]
+      ]
+    },
+    "Chatwoot · Send template": {
+      "main": [
+        [{ "node": "Wait · Rate limit", "type": "main", "index": 0 }],
+        [{ "node": "Code · Mark failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Wait · Rate limit": { "main": [[{ "node": "Code · Mark sent", "type": "main", "index": 0 }]] },
+    "Code · Mark sent": { "main": [[{ "node": "Split · Prospects", "type": "main", "index": 0 }]] },
+    "Code · Mark failed": { "main": [[{ "node": "Split · Prospects", "type": "main", "index": 0 }]] },
+    "Code · Aggregate": { "main": [[{ "node": "Respond · Result", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "meta": { "templateId": "leadvyne-prospects-import-v1" },
+  "pinData": {},
+  "versionId": "pi-v1",
+  "triggerCount": 0,
+  "tags": [{ "name": "leadvyne" }]
+}

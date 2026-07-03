@@ -925,6 +925,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <div id="desktopNav">
     <button class="dnTab active" data-page="home">🏠 Home</button>
     <button class="dnTab" data-page="quotation">🧾 Quotation</button>
+    <button class="dnTab" data-page="prospects">🎯 Prospects</button>
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
     <button class="dnTab" data-page="leads">💬 Leads</button>
     <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
@@ -1183,6 +1184,77 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div class="card" style="margin-top:14px;margin-bottom:0">
           <div class="s-head" style="margin-bottom:8px">📋 Sent Quotations</div>
           <div id="quoteSentLog"><div style="font-size:12px;color:var(--muted)">No quotations sent yet.</div></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- PROSPECTS -->
+    <div class="page hidden" id="pageProspects">
+      <div class="page-pad">
+
+        <div style="margin-bottom:18px">
+          <div class="card-title" style="margin-bottom:2px">🎯 Prospects</div>
+          <div style="font-size:13px;color:var(--muted)">Import a list of new contacts from a Google Sheet and send them a first-touch WhatsApp template message — 50 at a time.</div>
+        </div>
+
+        <!-- WhatsApp Template -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head" style="margin-bottom:8px">WhatsApp Template</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">First-touch messages to people who've never messaged you must use a Meta-approved template — plain text won't be delivered to a new contact.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+            <select class="form-input" id="prospectTemplateSelect" style="flex:1;min-width:200px"><option value="">Click "Load Templates" →</option></select>
+            <button class="btn btn-secondary btn-sm" onclick="loadWaTemplates()">🔄 Load Templates</button>
+          </div>
+          <div class="save-msg" id="waTemplateMsg" style="margin-bottom:8px"></div>
+          <button class="btn btn-secondary btn-sm" onclick="toggleCreateTemplateForm()">+ Create New Template</button>
+
+          <div id="createTemplateBox" style="display:none;margin-top:12px;background:var(--accent-soft);border-radius:8px;padding:12px">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+              <input class="form-input" type="text" id="newTplName" placeholder="template_name (lowercase_underscores)" style="flex:1;min-width:160px">
+              <select class="form-input" id="newTplCategory" style="width:140px">
+                <option value="MARKETING">Marketing</option>
+                <option value="UTILITY">Utility</option>
+              </select>
+              <select class="form-input" id="newTplLang" style="width:100px">
+                <option value="en_US">en_US</option>
+                <option value="en">en</option>
+                <option value="ar">ar</option>
+                <option value="hi">hi</option>
+              </select>
+            </div>
+            <textarea class="form-input" id="newTplBody" rows="3" placeholder="Hi {{1}}, thanks for your interest — we'd love to help you out. Reply here anytime!"></textarea>
+            <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+              <button class="save-btn" onclick="createWaTemplate()">Submit for Approval</button>
+              <span class="save-msg" id="createTemplateMsg"></span>
+            </div>
+            <div style="font-size:11px;color:var(--muted);margin-top:6px">New templates take Meta a few minutes to a day to approve before they can be used.</div>
+          </div>
+        </div>
+
+        <!-- Google Sheet source -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head" style="margin-bottom:8px">Prospect List (Google Sheet)</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Sheet must have <code>Name</code> and <code>Phone</code> columns, and be shared with our sync account.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input class="form-input" type="text" id="prospectSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/…" style="flex:1;min-width:220px">
+            <button class="btn btn-secondary btn-sm" onclick="saveProspectSheetUrl()">Save Link</button>
+          </div>
+          <div class="save-msg" id="prospectSheetMsg"></div>
+        </div>
+
+        <!-- Import -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head" style="margin-bottom:8px">Import &amp; Send</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Each click imports the next batch of up to <b>50</b> new prospects (already-imported numbers are skipped automatically) and sends them the selected template. New prospects are added to Leads with stage <b>Prospect</b>.</div>
+          <button class="save-btn" id="prospectImportBtn" onclick="prospectImportBatch()">📤 Import Next 50 &amp; Send</button>
+          <span class="save-msg" id="prospectImportMsg"></span>
+        </div>
+
+        <!-- Log -->
+        <div class="card" style="margin-top:14px;margin-bottom:0">
+          <div class="s-head" style="margin-bottom:8px">📋 Import Runs</div>
+          <div id="prospectLogList"><div style="font-size:12px;color:var(--muted)">No import runs yet.</div></div>
         </div>
 
       </div>
@@ -1591,6 +1663,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <div id="bottomNav">
     <button class="bnItem active" data-page="home"><span class="bnIcon">🏠</span><span class="bnLabel">Home</span></button>
     <button class="bnItem" data-page="quotation"><span class="bnIcon">🧾</span><span class="bnLabel">Quotation</span></button>
+    <button class="bnItem" data-page="prospects"><span class="bnIcon">🎯</span><span class="bnLabel">Prospects</span></button>
     <button class="bnItem" data-page="pipeline"><span class="bnIcon">📋</span><span class="bnLabel">Pipeline</span></button>
     <button class="bnItem" data-page="leads"><span class="bnIcon">💬</span><span class="bnLabel">Leads</span></button>
     <button class="bnItem industry-tab" data-page="travel" data-industry="travel" style="display:none"><span class="bnIcon">✈️</span><span class="bnLabel">Travel</span></button>
@@ -2407,6 +2480,7 @@ function navigate(page){
   $id('page'+cap(page)).classList.remove('hidden');
   document.querySelectorAll(`[data-page="${page}"]`).forEach(b=>b.classList.add('active'));
   if(page==='quotation') quoteInit();
+  if(page==='prospects') prospectInit();
   if(page==='pipeline') renderKanban();
   if(page==='leads'){if(_leadsTableView)renderLeadsTable();else renderLeadsList();}
   if(page==='travel') renderTravel();
@@ -3804,6 +3878,115 @@ async function quoteSend(){
     renderQuoteSentLog();
     setTimeout(()=>{const m=$id('sendQuoteMsg');if(m&&sent)m.textContent='';},4000);
   }
+}
+
+/* ── PROSPECTS MODULE ── */
+const PROSPECT_BATCH_SIZE=50;
+let _prospectLog=[];
+
+function prospectN8nBase(){return (clientRecord?.n8n_base||'https://apps.leadvyne.com').replace(/\/$/,'');}
+
+function prospectInit(){
+  if(!clientRecord) return;
+  $id('prospectSheetUrl').value=clientRecord.prospect_gsheet_url||'';
+  renderProspectLog();
+}
+
+async function saveProspectSheetUrl(){
+  const url=$id('prospectSheetUrl').value.trim();
+  const msg=$id('prospectSheetMsg');
+  if(!url){msg.textContent='Paste a Google Sheet link first.';msg.className='save-msg err';return;}
+  msg.textContent='Saving…';msg.className='save-msg';
+  try{await patchClient({prospect_gsheet_url:url});msg.textContent='✓ Saved';}
+  catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{setTimeout(()=>{if(msg)msg.textContent='';},3000);}
+}
+
+/* WhatsApp template management — direct Meta Graph API calls, same pattern as sendWaReply() */
+async function loadWaTemplates(){
+  const sel=$id('prospectTemplateSelect'); const msg=$id('waTemplateMsg');
+  if(!clientRecord?.waba_id||!clientRecord?.wa_token){msg.textContent='Add your WhatsApp Business Account ID and Meta token in Settings first.';msg.className='save-msg err';return;}
+  msg.textContent='Loading templates…';msg.className='save-msg';
+  try{
+    const r=await fetch(`https://graph.facebook.com/v18.0/${clientRecord.waba_id}/message_templates?fields=name,status,language,category&limit=200&access_token=${encodeURIComponent(clientRecord.wa_token)}`);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data=await r.json();
+    const templates=(data.data||[]).filter(t=>t.status==='APPROVED');
+    if(!templates.length){
+      sel.innerHTML='<option value="">No approved templates yet</option>';
+      msg.textContent='No approved templates found — create one below.';msg.className='save-msg';
+      return;
+    }
+    sel.innerHTML='<option value="">Select a template…</option>'+templates.map(t=>`<option value="${esc(t.name)}" data-lang="${esc(t.language)}">${esc(t.name)} (${esc(t.language)})</option>`).join('');
+    msg.textContent=`✓ ${templates.length} approved template(s) loaded`;msg.className='save-msg';
+  }catch(e){msg.textContent='Error loading templates: '+e.message;msg.className='save-msg err';}
+}
+
+function toggleCreateTemplateForm(){
+  const box=$id('createTemplateBox');
+  box.style.display=box.style.display==='none'?'':'none';
+}
+
+async function createWaTemplate(){
+  const msg=$id('createTemplateMsg');
+  if(!clientRecord?.waba_id||!clientRecord?.wa_token){msg.textContent='Add your WhatsApp Business Account ID and Meta token in Settings first.';msg.className='save-msg err';return;}
+  const name=$id('newTplName').value.trim().toLowerCase().replace(/[^a-z0-9_]+/g,'_');
+  const category=$id('newTplCategory').value;
+  const language=$id('newTplLang').value;
+  const body=$id('newTplBody').value.trim();
+  if(!name||!body){msg.textContent='Enter a name and body text.';msg.className='save-msg err';return;}
+  msg.textContent='Submitting to Meta for approval…';msg.className='save-msg';
+  try{
+    const r=await fetch(`https://graph.facebook.com/v18.0/${clientRecord.waba_id}/message_templates`,{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+clientRecord.wa_token,'Content-Type':'application/json'},
+      body:JSON.stringify({name,category,language,components:[{type:'BODY',text:body}]})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data?.error?.message||'HTTP '+r.status);
+    msg.textContent='✓ Submitted — templates usually take a few minutes to a day for Meta to approve. Click "Load Templates" once approved.';msg.className='save-msg';
+    $id('newTplName').value='';$id('newTplBody').value='';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+}
+
+/* Batch import from Sheet + first-touch template send, via n8n (server-side — avoids exposing
+   the Google Sheets sync credential and keeps the WhatsApp/Chatwoot conversation-creation calls
+   off the browser). One click = up to PROSPECT_BATCH_SIZE new (not-yet-imported) rows. */
+async function prospectImportBatch(){
+  const btn=$id('prospectImportBtn'), msg=$id('prospectImportMsg');
+  const gsheetUrl=$id('prospectSheetUrl').value.trim();
+  const sel=$id('prospectTemplateSelect');
+  const templateName=sel.value;
+  const templateLang=sel.selectedOptions[0]?.dataset.lang||'en_US';
+  if(!gsheetUrl){msg.textContent='Paste a Google Sheet link first.';msg.className='save-msg err';return;}
+  if(!templateName){msg.textContent='Choose an approved WhatsApp template first.';msg.className='save-msg err';return;}
+  btn.disabled=true; msg.textContent=`Importing next batch of ${PROSPECT_BATCH_SIZE}…`; msg.className='save-msg';
+  try{
+    const r=await fetch(`${prospectN8nBase()}/webhook/leadvyne-prospects-import`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({client_id:clientId,gsheet_url:gsheetUrl,template_name:templateName,template_lang:templateLang,batch_size:PROSPECT_BATCH_SIZE})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data?.error||('HTTP '+r.status));
+    const imported=data.imported||0, sent=data.sent||0, failed=data.failed||0, skipped=data.skipped_duplicate||0;
+    msg.textContent=imported?`✓ Imported ${imported} — ${sent} sent, ${failed} failed. ${skipped} already-known number(s) skipped.`:'No new prospects found in the sheet — everything already imported.';
+    msg.className='save-msg';
+    _prospectLog.unshift({ts:new Date().toISOString(),imported,sent,failed,skipped});
+    _prospectLog=_prospectLog.slice(0,10);
+    renderProspectLog();
+    loadAll(true);
+  }catch(e){
+    msg.textContent='Import failed: '+e.message+' — is the workflow active?';msg.className='save-msg err';
+  }finally{btn.disabled=false;}
+}
+
+function renderProspectLog(){
+  const box=$id('prospectLogList'); if(!box) return;
+  if(!_prospectLog.length){box.innerHTML='<div style="font-size:12px;color:var(--muted)">No import runs yet.</div>';return;}
+  box.innerHTML=_prospectLog.map(l=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 0;border-bottom:1px solid var(--line)">
+    <span>${new Date(l.ts).toLocaleString()}</span>
+    <span>${l.imported} imported · ${l.sent} sent · ${l.failed} failed · ${l.skipped} skipped</span>
+  </div>`).join('');
 }
 
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));

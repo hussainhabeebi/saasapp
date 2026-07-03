@@ -41,6 +41,8 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | quote_terms | Long text |
 | quote_validity_days | Number |
 | quote_logo_url | Long text (base64 data URI of the uploaded logo) |
+| waba_id | Single line (WhatsApp Business Account ID — for template list/create, separate from wa_phone_id) |
+| prospect_gsheet_url | Single line (last-used Prospects import sheet link, remembered across logins) |
 
 ### LEADS table additions (for the Quotation module's sent log)
 Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
@@ -50,6 +52,28 @@ Quotation tab's "Sent Quotations" report:
 |---|---|
 | QuoteSentAt | Single line (ISO datetime) |
 | QuoteSentTotal | Single line |
+
+### Prospects module
+Uses existing LEADS columns only — no new schema. Imported contacts are created with
+`Stage: "prospect"` and `Tags: "Prospect"`, and get promoted like any other lead once they
+reply and progress through your normal pipeline stages.
+
+Requires two things already used elsewhere in this repo:
+- `wa_token` / `waba_id` on the CLIENTS row — a Meta System User token with
+  `whatsapp_business_management` permission, used **directly from the browser** (same pattern
+  as the existing WhatsApp reply feature) to list/create WhatsApp message templates via
+  `https://graph.facebook.com/v18.0/{waba_id}/message_templates`. New templates need Meta's
+  approval (minutes to a day) before they're usable.
+- The same Google Sheets service-account credential already used by the GSheet Sync workflow
+  (`REPLACE_GSHEET_CRED`) — the client's prospect sheet must be shared with that service
+  account's email, and have `Name` and `Phone` header columns.
+
+Import **n8n/prospects-import.json** (webhook path `leadvyne-prospects-import`) alongside your
+other workflows — same NocoDB/Chatwoot credentials as `broadcast.json`. Each webhook call
+imports up to 50 new (not-yet-seen) phone numbers from the sheet, creates them as `prospect`
+leads, and sends each one the chosen approved template via a freshly created Chatwoot
+conversation — so first-touch outbound still goes through the Chatwoot channel, and the
+conversation is fully visible in your Chatwoot inbox and linked to the lead from message one.
 
 ## 2. Create the n8n API key + credential
 1. In n8n: **Settings → n8n API → Create API key**. Copy it.
