@@ -147,14 +147,18 @@ beyond the Application/Provider setup above:
 2. That's it on the Authentik side — a new user can now click "Sign up" there, set an email/
    password, and get redirected back to `dashboard.html`.
 
-**What happens on first login for a brand-new signup:**
+**What happens on first login for a brand-new signup — fully automatic, no form:**
 The Worker's `/session/exchange` won't find a matching CLIENTS row (nobody's created one yet)
-— instead of a dead-end error, `dashboard.html` shows a 2-step wizard (business name/industry,
-then Chatwoot connection details) with the verified Authentik email displayed read-only. On
-submit, it calls the existing onboard workflow with `authentik_email` included, which now
-stores it directly on the new CLIENTS row — then immediately retries `/session/exchange` with
-the same (still-valid) Authentik access token and logs them straight in. No admin step, no
-second Authentik trip.
+— instead of a dead-end error, `dashboard.html` immediately calls the onboard workflow itself
+with a business name guessed from the email's local part (e.g. `jane.doe@x.com` → "Jane Doe"),
+`industry: 'general'`, and `authentik_email` set — then retries `/session/exchange` with the
+same (still-valid) Authentik access token and logs them straight into a fresh dashboard. No
+form, no admin step, no second Authentik trip.
+
+Chatwoot isn't connected yet at this point (Authentik has no way to collect that). The new
+client fills it in themselves from **Settings → Chatwoot Webhook**, which now has all four
+fields (`chatwoot_base`, `chatwoot_account_id`, `chatwoot_inbox_id`, `chatwoot_token`) —
+previously only the base URL was editable there, everything else was signup-wizard-only.
 
 Admin-created clients (the old path — create the CLIENTS row yourself, then create their
 Authentik user manually and set `authentik_email`) still works fine alongside this; both paths
