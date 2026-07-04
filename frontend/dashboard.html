@@ -787,14 +787,20 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 <body>
 
 <script>
+// WORKER_BASE is the Cloudflare Worker proxy (cloudflare-worker/worker.js) — it holds the
+// master NocoDB token and each client's Chatwoot/Meta tokens server-side; the browser never
+// sees them. REPLACE with your deployed Worker URL (e.g. https://leadvyne-api-proxy.<sub>.workers.dev).
+const WORKER_BASE = 'https://REPLACE_WITH_WORKER_URL';
 const CONFIG = {
-  NOCODB_BASE:      'https://whizz.aiingo.com',
-  NOCODB_TOKEN:     'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',
+  NOCODB_BASE:      WORKER_BASE+'/nocodb',
   CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj',
   LEADS_TABLE_ID:   'mvg6rcw0ia5qqrx',
+  WORKER_BASE,
   // Login is delegated to Authentik (OIDC, Authorization Code + PKCE — this is a public
   // SPA client with nowhere safe to store a secret). Each Leadvyne client (business) needs
   // a matching Authentik user whose email is set in that client's `authentik_email` field.
+  // The Worker verifies the Authentik token once at login and issues its own session token —
+  // see startAuthentikLogin()/handleAuthentikCallback() below.
   AUTHENTIK_BASE:        'https://secure.leadvyne.com',
   AUTHENTIK_CLIENT_ID:   'G6pEIZKDGdtLCZ57WYHrOfNMRpJPzfnItmtPTLWw',
   AUTHENTIK_REDIRECT_URI:'https://app.leadvyne.com/dashboard.html',
@@ -2337,6 +2343,7 @@ const TODAY = new Date().toISOString().slice(0,10);
 
 /* ── STATE ── */
 let clientId = null, clientRecord = null, refreshTimer = null;
+let sessionToken = sessionStorage.getItem('lv_session') || '';
 let allLeads = [], currentLead = null, chartMode = 'week', leadsChart = null;
 let _stages = [], _convSearchActive = false;
 let _leadsPage=1; const LEADS_PGS=50;
@@ -2415,28 +2422,21 @@ async function doSignup(){
     });
     const data=await res.json();
     if(!res.ok||data.ok===false)throw new Error(data.error||'Onboarding failed');
-    ok.textContent='✓ Account created! Signing you in…';
-    // Bootstrap this one session directly from the onboard response (we already trust this
-    // browser — it just created the account). Future logins go through Authentik, so an
-    // admin still needs to create a matching Authentik user (authentik_email on this row)
-    // before this client can log back in after the session ends.
-    setTimeout(async()=>{
-      try{
-        const rec=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${data.client_id}`);
-        clientId=String(data.client_id); clientRecord=rec;
-        sessionStorage.setItem('lv_cid',clientId);
-        showApp();
-      }catch(e){ err.textContent='Account created, but auto sign-in failed — ask your admin to set up Authentik access.'; }
-    },1200);
+    // Login now goes entirely through Authentik + the Worker proxy, so there's no session
+    // to bootstrap directly from this response anymore — an admin has to create a matching
+    // Authentik user (email = this client's authentik_email) before anyone can sign in.
+    ok.textContent=`✓ Account created (Client #${data.client_id}). Ask your admin to set up your Authentik login, then use "Sign in with Authentik" above.`;
+    setTimeout(()=>gSwitchTab('login'),2500);
   }catch(e){err.textContent=e.message||'Something went wrong. Please try again.';}
   finally{btn.disabled=false;btn.textContent='Create Account';}
 }
 
 /* ── AUTHENTIK LOGIN (OIDC, Authorization Code + PKCE) ──
    Public SPA client — no client secret, PKCE proves possession of the original
-   request instead. After Authentik verifies the person, we still need to know
-   *which* Leadvyne client (business) they belong to: their ID token's email is
-   looked up against that client's `authentik_email` field on the CLIENTS table. */
+   request instead. The resulting access_token is handed to the Worker proxy,
+   which verifies it against Authentik's userinfo endpoint and maps the email
+   to a Leadvyne client (authentik_email on the CLIENTS table) — see
+   handleAuthentikCallback() and cloudflare-worker/worker.js. */
 function b64url(bytes){
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
@@ -2447,10 +2447,6 @@ function randomToken(){
 async function pkceChallenge(verifier){
   const hash=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
   return b64url(new Uint8Array(hash));
-}
-function decodeJwtPayload(jwt){
-  const json=atob(jwt.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'));
-  return JSON.parse(decodeURIComponent(escape(json)));
 }
 
 async function startAuthentikLogin(){
@@ -2493,15 +2489,20 @@ async function handleAuthentikCallback(){
       })
     });
     const tok=await r.json();
-    if(!r.ok||!tok.id_token) throw new Error(tok.error_description||'Login failed');
-    const claims=decodeJwtPayload(tok.id_token);
-    const email=(claims.email||claims.preferred_username||'').toLowerCase();
-    if(!email) throw new Error('Your Authentik account has no email set.');
-    const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records?where=(authentik_email,eq,${encodeURIComponent(email)})&limit=1`);
-    const rec=data?.list?.[0];
-    if(!rec||!rec.Id) throw new Error(`No Leadvyne account is linked to ${email} yet — ask your admin to set it up.`);
-    clientId=String(rec.Id); clientRecord=rec;
+    if(!r.ok||!tok.access_token) throw new Error(tok.error_description||'Login failed');
+    // Hand the Authentik access token to the Worker — it verifies it against Authentik's
+    // userinfo endpoint, looks up the matching CLIENTS row by authentik_email, and issues
+    // its own session token (Authentik's access tokens are short-lived; this avoids needing
+    // token-refresh logic in the browser for the rest of the session).
+    const sr=await fetch(`${CONFIG.WORKER_BASE}/session/exchange`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({access_token:tok.access_token})
+    });
+    const session=await sr.json().catch(()=>({}));
+    if(!sr.ok||!session.session_token) throw new Error(session.error||'Login failed');
+    clientId=session.client_id; clientRecord=session.client; sessionToken=session.session_token;
     sessionStorage.setItem('lv_cid',clientId);
+    sessionStorage.setItem('lv_session',sessionToken);
     showApp();
   }catch(e){
     $id('gErr').textContent=e.message||'Login failed.';
@@ -2510,18 +2511,21 @@ async function handleAuthentikCallback(){
 }
 
 async function resumeSession(id){
+  if(!sessionToken){ sessionStorage.removeItem('lv_cid'); return; }
   try{
-    const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${id}`);
-    if(!data||!data.Id) throw new Error();
-    clientId=String(data.Id); clientRecord=data;
+    const r=await fetch(`${CONFIG.WORKER_BASE}/session/me`,{headers:{'Authorization':'Bearer '+sessionToken}});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok||!data.client_id) throw new Error();
+    clientId=data.client_id; clientRecord=data.client;
     showApp();
-  }catch(e){ sessionStorage.removeItem('lv_cid'); }
+  }catch(e){ sessionStorage.removeItem('lv_cid'); sessionStorage.removeItem('lv_session'); sessionToken=''; }
 }
 
 $id('hLogout').addEventListener('click',()=>{
   sessionStorage.removeItem('lv_cid');
+  sessionStorage.removeItem('lv_session');
   if(clientId) sessionStorage.removeItem(_CACHE_KEY());
-  clientId=null; clientRecord=null; allLeads=[];
+  clientId=null; clientRecord=null; sessionToken=''; allLeads=[];
   clearInterval(refreshTimer);
   clearInterval(_notifTimer);
   clearInterval(_reminderTimer);
@@ -3131,8 +3135,9 @@ async function generateSummary(){
     let history=[]; try{history=JSON.parse(currentLead.ConvHistory||'[]');}catch(e){}
     let qa={}; try{qa=JSON.parse(currentLead.QualAnswers||'{}');}catch(e){}
     const prompt=`Summarise this WhatsApp sales conversation for the sales team.\nLead: ${currentLead.Name||'Unknown'} | Stage: ${currentLead.Stage} | Score: ${currentLead.Score||'Cold'}\nQual Answers: ${JSON.stringify(qa)}\n\nConversation:\n${history.map(m=>(m.role==='user'?'Customer: ':'Bot: ')+m.content).join('\n')}\n\nReturn ONLY valid JSON: {name,interest_level,key_points,recommended_action,booking_time}`;
-    const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',headers:{'Authorization':'Bearer '+clientRecord.openrouter_key,'Content-Type':'application/json'},body:JSON.stringify({model:clientRecord.model||'google/gemini-2.5-flash',temperature:.2,messages:[{role:'user',content:prompt}]})});
+    const res=await fetch(`${CONFIG.WORKER_BASE}/ai/complete`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({temperature:.2,messages:[{role:'user',content:prompt}]})});
     const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'AI request failed');
     const raw=data.choices?.[0]?.message?.content||'';
     const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
     if(!m)throw new Error('No JSON');
@@ -3165,38 +3170,28 @@ function exportSingle(){
 function dlFile(href,name){const a=document.createElement('a');a.href=href;a.download=name;a.click();}
 
 /* ── GOOGLE SHEETS SYNC ── */
-function saveCwBase(){
+async function saveCwBase(){
   const val=($id('cfgCwBase').value.trim()).replace(/\/$/,'');
   const msg=$id('saveCwBaseMsg');
   if(!val){msg.textContent='Enter a URL.';msg.className='save-msg err';return;}
   msg.textContent='Saving…';msg.className='save-msg';
-  fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`,{
-    method:'PATCH',
-    headers:{'xc-token':NOCODB_TOKEN,'Content-Type':'application/json'},
-    body:JSON.stringify({Id:parseInt(clientId),chatwoot_base:val})
-  }).then(r=>{
-    if(!r.ok)throw new Error();
+  try{
+    await patchClient({chatwoot_base:val});
     msg.textContent='✓ Saved';msg.className='save-msg';
-    clientRecord.chatwoot_base=val;
-  }).catch(()=>{msg.textContent='Save failed.';msg.className='save-msg err';});
+  }catch(e){msg.textContent='Save failed.';msg.className='save-msg err';}
 }
 
-function saveGsheetConfig(){
+async function saveGsheetConfig(){
   const url = $id('cfgGsheetUrl').value.trim();
   const cols = [...document.querySelectorAll('#gsheetColPicker input:checked')].map(i=>i.value);
   const msg = $id('gsheetMsg');
   if(!url){ msg.textContent='Paste a Google Sheet URL first.'; msg.className='save-msg err'; return; }
   if(!cols.length){ msg.textContent='Select at least one column.'; msg.className='save-msg err'; return; }
   msg.textContent='Saving…'; msg.className='save-msg';
-  fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`,{
-    method:'PATCH',
-    headers:{'xc-token':NOCODB_TOKEN,'Content-Type':'application/json'},
-    body:JSON.stringify({ Id:parseInt(clientId), gsheet_url:url, gsheet_cols:JSON.stringify(cols) })
-  }).then(r=>{
-    if(!r.ok)throw new Error();
+  try{
+    await patchClient({gsheet_url:url,gsheet_cols:JSON.stringify(cols)});
     msg.textContent='✓ Saved'; msg.className='save-msg';
-    clientRecord.gsheet_url=url; clientRecord.gsheet_cols=JSON.stringify(cols);
-  }).catch(()=>{ msg.textContent='Save failed.'; msg.className='save-msg err'; });
+  }catch(e){ msg.textContent='Save failed.'; msg.className='save-msg err'; }
 }
 
 async function triggerGsheetSync(){
@@ -3844,31 +3839,6 @@ function quotePreviewPdf(){
   window.open(doc.output('bloburl'),'_blank');
 }
 
-// Confirms with Chatwoot whether a message actually landed, for when the send fetch()
-// itself errors client-side (mobile "Load failed") but the server already processed it.
-// Set requireAttachment for attachment sends (e.g. the Quotation PDF) to avoid matching
-// an unrelated plain-text message that happened to land in the same window.
-async function chatwootMessageDelivered(convId,{requireAttachment=false}={}){
-  try{
-    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
-      headers:{'api_access_token':cwToken()}
-    });
-    if(!r.ok) return false;
-    const data=await r.json();
-    const msgs=data.payload||data.data?.payload||(Array.isArray(data)?data:[]);
-    const cutoff=Date.now()/1000-90; // sent within the last 90s
-    return msgs.some(m=>{
-      const isOutgoing=m.message_type===1||m.message_type==='outgoing';
-      const recent=(m.created_at||0)>=cutoff;
-      if(!isOutgoing||!recent) return false;
-      if(requireAttachment) return Array.isArray(m.attachments)&&m.attachments.length>0;
-      return true;
-    });
-  }catch(e){
-    return false;
-  }
-}
-
 async function quoteSend(){
   const btn=$id('sendQuoteBtn'),msg=$id('sendQuoteMsg');
   if(!_quoteSelectedLead){msg.textContent='Select a lead first.';msg.className='save-msg err';return;}
@@ -3877,7 +3847,6 @@ async function quoteSend(){
   const lead=_quoteSelectedLead;
   const convId=leadConvId(lead);
   if(!convId){msg.textContent='No Chatwoot conversation linked — paste a conversation ID above first.';msg.className='save-msg err';return;}
-  if(!cwBase()||!cwAccountId()||!cwToken()){msg.textContent='Chatwoot is not configured for this account.';msg.className='save-msg err';return;}
   const tpl=$id('quoteTemplate').value||QUOTE_DEFAULT_TEMPLATE;
   const caption=quoteRenderTemplate(tpl,lead,lines,total,currency);
   btn.disabled=true;msg.textContent='Generating PDF…';msg.className='save-msg';
@@ -3886,29 +3855,22 @@ async function quoteSend(){
     const doc=quoteBuildPdfDoc(lead,items,total,currency);
     const pdfBlob=doc.output('blob');
     msg.textContent='Sending…';
+    // Sent via the Worker proxy — it holds the Chatwoot token server-side and forwards
+    // the attachment itself.
     const fd=new FormData();
-    fd.append('message_type','outgoing');
-    fd.append('private','false');
-    fd.append('content',caption);
-    fd.append('attachments[]',pdfBlob,`Quotation-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
-    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
-      method:'POST',headers:{'api_access_token':cwToken()},body:fd
+    fd.append('conv_id',convId);
+    fd.append('caption',caption);
+    fd.append('file',pdfBlob,`Quotation-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
+    const r=await fetch(`${CONFIG.WORKER_BASE}/quote/send`,{
+      method:'POST',headers:ncAuthHeaders(),body:fd
     });
-    if(!r.ok) throw new Error('Send failed (HTTP '+r.status+')');
-    sent=true; // WhatsApp delivery succeeded — everything after this is best-effort bookkeeping
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'Send failed (HTTP '+r.status+')');
+    sent=true;
   }catch(e){
-    // fetch() can fail client-side (e.g. "Load failed" on a flaky mobile connection, or
-    // the app backgrounding mid-upload) even though Chatwoot already received and sent
-    // the message. Before reporting a failure, check Chatwoot directly for the message.
-    msg.textContent='Connection dropped — checking if it still went through…';msg.className='save-msg';
-    const delivered=await chatwootMessageDelivered(convId,{requireAttachment:true});
-    if(delivered){
-      sent=true;
-    }else{
-      msg.textContent='Error: '+e.message;msg.className='save-msg err';
-      btn.disabled=false;
-      return;
-    }
+    msg.textContent='Error: '+e.message;msg.className='save-msg err';
+    btn.disabled=false;
+    return;
   }
 
   // Tag locally right away so this lead drops out of the sendable dropdown immediately,
@@ -3964,15 +3926,15 @@ async function saveProspectSheetUrl(){
   finally{setTimeout(()=>{if(msg)msg.textContent='';},3000);}
 }
 
-/* WhatsApp template management — direct Meta Graph API calls, same pattern as sendWaReply() */
+/* WhatsApp template management — routed through the Worker proxy, which holds
+   waba_id/wa_token server-side and calls Meta's Graph API itself. */
 async function loadWaTemplates(){
   const sel=$id('prospectTemplateSelect'); const msg=$id('waTemplateMsg');
-  if(!clientRecord?.waba_id||!clientRecord?.wa_token){msg.textContent='Add your WhatsApp Business Account ID and Meta token in Settings first.';msg.className='save-msg err';return;}
   msg.textContent='Loading templates…';msg.className='save-msg';
   try{
-    const r=await fetch(`https://graph.facebook.com/v18.0/${clientRecord.waba_id}/message_templates?fields=name,status,language,category&limit=200&access_token=${encodeURIComponent(clientRecord.wa_token)}`);
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const data=await r.json();
+    const r=await fetch(`${CONFIG.WORKER_BASE}/wa/templates`,{headers:ncAuthHeaders()});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     const templates=(data.data||[]).filter(t=>t.status==='APPROVED');
     if(!templates.length){
       sel.innerHTML='<option value="">No approved templates yet</option>';
@@ -3991,7 +3953,6 @@ function toggleCreateTemplateForm(){
 
 async function createWaTemplate(){
   const msg=$id('createTemplateMsg');
-  if(!clientRecord?.waba_id||!clientRecord?.wa_token){msg.textContent='Add your WhatsApp Business Account ID and Meta token in Settings first.';msg.className='save-msg err';return;}
   const name=$id('newTplName').value.trim().toLowerCase().replace(/[^a-z0-9_]+/g,'_');
   const category=$id('newTplCategory').value;
   const language=$id('newTplLang').value;
@@ -3999,13 +3960,13 @@ async function createWaTemplate(){
   if(!name||!body){msg.textContent='Enter a name and body text.';msg.className='save-msg err';return;}
   msg.textContent='Submitting to Meta for approval…';msg.className='save-msg';
   try{
-    const r=await fetch(`https://graph.facebook.com/v18.0/${clientRecord.waba_id}/message_templates`,{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/wa/templates`,{
       method:'POST',
-      headers:{'Authorization':'Bearer '+clientRecord.wa_token,'Content-Type':'application/json'},
-      body:JSON.stringify({name,category,language,components:[{type:'BODY',text:body}]})
+      headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({name,category,language,body})
     });
     const data=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data?.error?.message||'HTTP '+r.status);
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     msg.textContent='✓ Submitted — templates usually take a few minutes to a day for Meta to approve. Click "Load Templates" once approved.';msg.className='save-msg';
     $id('newTplName').value='';$id('newTplBody').value='';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
@@ -4115,21 +4076,27 @@ function closeAllModals(){
   $id('overlay').classList.remove('show');
 }
 
-/* ── NOCODB API ── */
+/* ── NOCODB API (via the Cloudflare Worker proxy — see cloudflare-worker/worker.js) ── */
+function ncAuthHeaders(extra){return {'Authorization':'Bearer '+sessionToken, ...extra};}
 async function ncGet(url){
-  const r=await fetch(url,{headers:{'xc-token':CONFIG.NOCODB_TOKEN}});
+  const r=await fetch(url,{headers:ncAuthHeaders()});
   if(!r.ok)throw new Error('HTTP '+r.status);
   return r.json();
 }
 async function ncPatch(url,body){
-  const r=await fetch(url,{method:'PATCH',headers:{'xc-token':CONFIG.NOCODB_TOKEN,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
   if(!r.ok)throw new Error('HTTP '+r.status);
   return r.json();
 }
 async function ncPost(url,body){
-  const r=await fetch(url,{method:'POST',headers:{'xc-token':CONFIG.NOCODB_TOKEN,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const r=await fetch(url,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
   if(!r.ok)throw new Error('HTTP '+r.status);
   return r.json();
+}
+async function ncDelete(url,body){
+  const r=await fetch(url,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  return r.json().catch(()=>({}));
 }
 async function patchClient(fields){
   const res=await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId),...fields});
@@ -4515,8 +4482,6 @@ async function generateDealCoach(){
   const card=$id('dealCoachCard');
   btn.disabled=true;btn.textContent='Analyzing…';
   try{
-    const key=clientRecord?.openrouter_key||'';
-    const model=clientRecord?.model||'google/gemini-2.5-flash';
     let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
     let qa={};try{qa=JSON.parse(lead.QualAnswers||'{}');}catch(e){}
     let services=[];try{services=JSON.parse(clientRecord?.services||'[]');}catch(e){}
@@ -4527,15 +4492,16 @@ async function generateDealCoach(){
     const carsText=_taCars.filter(c=>c.status!=='inactive').length?'\nAvailable Cars:\n'+_taCars.filter(c=>c.status!=='inactive').slice(0,6).map(c=>`- ${c.name} | ${cap(c.category||'car')} | ${c.seats||'?'} seats | ${c.currency||'AED'} ${c.daily_rate||0}/day`).join('\n'):'';
     const qaText=Object.keys(qa).length?'\nQual answers: '+JSON.stringify(qa):'';
     const histText=hist.slice(-8).map(m=>m.role+': '+m.content).join('\n');
-    const resp=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+    const resp=await fetch(`${CONFIG.WORKER_BASE}/ai/complete`,{
       method:'POST',
-      headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'},
-      body:JSON.stringify({model,max_tokens:400,messages:[
+      headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({max_tokens:400,messages:[
         {role:'system',content:'You are a travel agency sales coach. Analyse the lead and give 3 concise, actionable recommendations to close the deal. If relevant packages or itineraries are listed, suggest specific ones by name. Format as: 1. [action] 2. [action] 3. [action]. Be specific and practical.'},
         {role:'user',content:`Lead: ${lead.Name||'Unknown'}\nStage: ${lead.Stage||'new'}\nScore: ${lead.Score||'Cold'}\nQual Score: ${lead.QualScore||'N/A'}\nHot moment: ${lead.HotMoment==='Yes'?lead.HotMomentText:'No'}${qaText}${svcText}${pkgText}${itinText}${umrahText}${carsText}\nRecent conversation:\n${histText}`}
       ]})
     });
     const data=await resp.json();
+    if(!resp.ok) throw new Error(data.error||'AI request failed');
     const text=data?.choices?.[0]?.message?.content?.trim()||'No recommendations available.';
     card.style.display='block';
     card.innerHTML=`<div class="cc-head">🤖 Deal Coach Recommendations</div>${esc(text).replace(/\n/g,'<br>')}`;
@@ -4892,7 +4858,7 @@ async function doMerge(dupId){
   await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:currentLead.Id,NotesList:mergedNotes,CallLog:mergedCalls,Tags:mergedTags});
 
   // Delete duplicate
-  await fetch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{method:'DELETE',headers:{'xc-token':CONFIG.NOCODB_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({Id:dupId})});
+  await ncDelete(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:dupId});
 
   $id('mergeStatus').textContent='✓ Merged';
   setTimeout(()=>{closeModal('modalMerge');closeModal('modalDetail');loadAll();},800);
@@ -4929,7 +4895,7 @@ async function taUpdate(key,rowId,record){
 }
 async function taDeleteRow(key,rowId){
   const id=taTableIds()[key];
-  await fetch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{method:'DELETE',headers:{'xc-token':CONFIG.NOCODB_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({Id:rowId})});
+  await ncDelete(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{Id:rowId});
 }
 
 async function taLoad(){
@@ -6062,12 +6028,13 @@ async function sendWaReply(){
   if(!phone){msg.textContent='No phone number';msg.className='save-msg err';return;}
   msg.textContent='Sending…';msg.className='save-msg';
   try{
-    const resp=await fetch(`https://graph.facebook.com/v18.0/${clientRecord.wa_phone_id}/messages`,{
+    const resp=await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{
       method:'POST',
-      headers:{'Authorization':'Bearer '+clientRecord.wa_token,'Content-Type':'application/json'},
-      body:JSON.stringify({messaging_product:'whatsapp',to:phone,type:'text',text:{body:text}})
+      headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({phone,text})
     });
-    if(!resp.ok){const e=await resp.json();throw new Error(e?.error?.message||resp.status);}
+    const respData=await resp.json().catch(()=>({}));
+    if(!resp.ok) throw new Error(respData.error||'HTTP '+resp.status);
     let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
     hist.push({role:'assistant',content:text,ts:new Date().toISOString(),direction:'out'});
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
@@ -6117,12 +6084,13 @@ async function sendItinViaWa(id){
   });
   if(it.notes)body+=`_${it.notes}_`;
   try{
-    const resp=await fetch(`https://graph.facebook.com/v18.0/${clientRecord.wa_phone_id}/messages`,{
+    const resp=await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{
       method:'POST',
-      headers:{'Authorization':'Bearer '+clientRecord.wa_token,'Content-Type':'application/json'},
-      body:JSON.stringify({messaging_product:'whatsapp',to:phone.replace(/[^0-9]/g,''),type:'text',text:{body,preview_url:false}})
+      headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({phone:phone.replace(/[^0-9]/g,''),text:body})
     });
-    if(!resp.ok){const e=await resp.json();throw new Error(e?.error?.message||resp.status);}
+    const respData=await resp.json().catch(()=>({}));
+    if(!resp.ok) throw new Error(respData.error||'HTTP '+resp.status);
     alert('✓ Itinerary sent via WhatsApp');
   }catch(e){alert('Error: '+e.message);}
 }
@@ -6184,8 +6152,7 @@ async function rcLoad(){
 async function rcCreate(key,body){return ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId(key)}/records`,body);}
 async function rcUpdate(key,id,body){return ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId(key)}/records`,{Id:id,...body});}
 async function rcDelete(key,id){
-  const r=await fetch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId(key)}/records`,{method:'DELETE',headers:{'xc-token':CONFIG.NOCODB_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({Id:id})});
-  if(!r.ok)throw new Error('HTTP '+r.status);
+  await ncDelete(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId(key)}/records`,{Id:id});
 }
 
 function renderRcSubPage(page){
@@ -6604,8 +6571,6 @@ async function aiScreenCandidate(id){
   const c=_rcCandidates.find(x=>String(x.Id)===String(id));if(!c)return;
   const job=_rcJobs.find(j=>String(j.Id)===String(c.job_id));
   if(!job){alert('No job linked. Edit the candidate and select the job they are applying for.');return;}
-  const key=clientRecord?.openrouter_key||'';
-  if(!key){alert('No OpenRouter API key set in settings. Please add it in Settings → Bot Config.');return;}
   const btn=$id('aiScreenBtn_'+id);
   if(btn){btn.disabled=true;btn.textContent='🤖 Screening…';}
   const criteria=[];
@@ -6632,11 +6597,12 @@ Respond in this exact JSON format:
 or
 {"result":"fail","notes":"Brief bullet-point reasoning..."}`;
   try{
-    const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',
-      headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'},
-      body:JSON.stringify({model:clientRecord.model||'google/gemini-2.5-flash',temperature:0.1,
+    const res=await fetch(`${CONFIG.WORKER_BASE}/ai/complete`,{method:'POST',
+      headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({temperature:0.1,
         messages:[{role:'user',content:prompt}]})});
     const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'AI request failed');
     const raw=data.choices?.[0]?.message?.content||'';
     let result='pending',notes='Could not parse AI response.';
     try{
@@ -7031,32 +6997,23 @@ async function chatSendFromTab(leadId){
   const convId=leadConvId(lead);
   // Require a real Chatwoot conversation — silently writing to ConvHistory only and
   // reporting "Sent" when there's nowhere to actually deliver it is worse than an error.
-  if(!cwBase()||!cwAccountId()||!cwToken()){msg.textContent='Chatwoot is not configured for this account.';msg.className='save-msg err';return;}
   if(!convId){msg.textContent='No Chatwoot conversation linked to this lead — reply cannot reach WhatsApp.';msg.className='save-msg err';return;}
   msg.textContent='Sending…'; msg.className='save-msg';
   let delivered=false;
   try{
-    // Use multipart/form-data (like the Quotation module's send) instead of a JSON body.
-    // multipart/form-data is a CORS-safelisted Content-Type, so the browser doesn't need
-    // to list it in the preflight request headers; an explicit 'Content-Type: application/json'
-    // header does, and if Chatwoot's CORS config doesn't allow that header the preflight
-    // fails silently and the message never leaves the browser — which is what was happening here.
-    const fd=new FormData();
-    fd.append('content',text);
-    fd.append('message_type','outgoing');
-    fd.append('private','false');
-    const r=await fetch(`${cwBase()}/api/v1/accounts/${cwAccountId()}/conversations/${convId}/messages`,{
+    // Sent via the Worker proxy (cloudflare-worker/worker.js), which holds the Chatwoot
+    // token server-side and makes the actual Chatwoot call itself.
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat/send`,{
       method:'POST',
-      headers:{'api_access_token':cwToken()},
-      body:fd
+      headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({conv_id:convId,text})
     });
-    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     delivered=true;
   }catch(e){
-    // fetch() can fail client-side (dropped mobile connection) even though Chatwoot
-    // already received and sent the message — confirm before reporting a failure.
-    msg.textContent='Connection dropped — checking if it still went through…';msg.className='save-msg';
-    delivered=await chatwootMessageDelivered(convId,{requireAttachment:false});
+    msg.textContent='Failed — message did not reach Chatwoot: '+e.message; msg.className='save-msg err';
+    return;
   }
   if(!delivered){
     msg.textContent='Failed — message did not reach Chatwoot.'; msg.className='save-msg err';
@@ -7073,10 +7030,6 @@ async function chatSendFromTab(leadId){
   chatSelectLead(leadId);
   setTimeout(()=>{if(msg)msg.textContent='';},2500);
 }
-
-function cwBase(){return (clientRecord?.chatwoot_base||'').replace(/\/$/,'');}
-function cwAccountId(){return clientRecord?.chatwoot_account_id||'';}
-function cwToken(){return clientRecord?.chatwoot_token||'';}
 
 function renderChatEmpty(){
   $id('chatMain').innerHTML=`<div class="chat-empty" style="flex:1;display:flex">

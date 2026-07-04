@@ -1,0 +1,14 @@
+name = "leadvyne-api-proxy"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
+# if you ever run a staging Worker alongside production.
+[vars]
+NOCODB_BASE = "https://whizz.aiingo.com"
+AUTHENTIK_BASE = "https://secure.leadvyne.com"
+ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com"
+
+# Secrets (NOT stored here — set via `wrangler secret put <NAME>`):
+#   NOCODB_TOKEN        the master NocoDB token (nc_pat_...)
+#   SESSION_SIGNING_KEY  a long random string, e.g. `openssl rand -hex 32`
