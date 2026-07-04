@@ -105,7 +105,12 @@ async function handleSessionExchange(request, env){
   const email=(claims.email||claims.preferred_username||'').toLowerCase();
   if(!email) return json({error:'Your Authentik account has no email set.'}, 400);
   const rec=await getClientByAuthentikEmail(env, email);
-  if(!rec||!rec.Id) return json({error:`No Leadvyne account is linked to ${email} yet — ask your admin to set it up.`}, 403);
+  if(!rec||!rec.Id){
+    // Not an error condition by itself — this is also what a brand-new signup looks like on
+    // first login. Return the verified email so the frontend can offer to finish provisioning
+    // this account instead of just showing a dead-end error.
+    return json({error:'no_account', email}, 403);
+  }
   const session_token=await signSession(env, rec.Id);
   return json({session_token, client_id:String(rec.Id), client:safeClient(rec)});
 }

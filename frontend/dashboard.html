@@ -836,30 +836,29 @@ const TODAY = new Date().toISOString().slice(0,10);
   <div class="gbox">
     <div class="gbrand">Leadvyne<span>.</span></div>
     <p class="gsub">WhatsApp CRM &amp; AI Bot Platform</p>
-    <div class="gtabs">
-      <button class="gtab active" id="gtabLogin" onclick="gSwitchTab('login')">Sign In</button>
-      <button class="gtab" id="gtabSignup" onclick="gSwitchTab('signup')">Get Started</button>
-    </div>
 
-    <!-- LOGIN -->
+    <!-- ENTRY: single Authentik flow — its own hosted page offers both "log in" and
+         "sign up" (once an enrollment flow is linked there), so this app doesn't need
+         separate tabs for the two anymore. -->
     <div id="gPanelLogin">
-      <button class="gbtn" id="gBtn" onclick="startAuthentikLogin()">Sign in with Authentik</button>
+      <button class="gbtn" id="gBtn" onclick="startAuthentikLogin()">Continue with Authentik</button>
       <div class="gerr" id="gErr"></div>
     </div>
 
-    <!-- SIGNUP WIZARD -->
+    <!-- FINISH SIGNUP WIZARD — shown only after Authentik verifies a brand-new identity
+         with no matching CLIENTS row yet (see handleAuthentikCallback()). Collects the
+         business-specific info Authentik has no way to ask for. -->
     <div id="gPanelSignup" style="display:none">
       <div class="wiz-steps">
         <div class="wiz-dot active" id="wdot1">1</div>
         <div class="wiz-line" id="wline12"></div>
         <div class="wiz-dot" id="wdot2">2</div>
-        <div class="wiz-line" id="wline23"></div>
-        <div class="wiz-dot" id="wdot3">3</div>
       </div>
+      <div class="gerr" id="sgEmailNote" style="color:var(--muted,#888);background:none;padding:0 0 10px"></div>
 
       <!-- Step 1: Business -->
       <div id="wStep1">
-        <div class="wiz-label">Step 1 of 3 · Your Business</div>
+        <div class="wiz-label">Step 1 of 2 · Your Business</div>
         <div class="gfld">
           <input class="ginput" id="sgName" type="text" placeholder="Business name *" autocomplete="organization" />
         </div>
@@ -879,7 +878,7 @@ const TODAY = new Date().toISOString().slice(0,10);
 
       <!-- Step 2: Chatwoot -->
       <div id="wStep2" style="display:none">
-        <div class="wiz-label">Step 2 of 3 · Connect WhatsApp</div>
+        <div class="wiz-label">Step 2 of 2 · Connect WhatsApp</div>
         <div class="gfld">
           <input class="ginput" id="sgCwBase" type="url" placeholder="Chatwoot URL (e.g. https://app.chatwoot.com) *" />
           <input class="ginput" id="sgAccountId" type="text" placeholder="Chatwoot Account ID *" />
@@ -888,19 +887,6 @@ const TODAY = new Date().toISOString().slice(0,10);
         </div>
         <div class="wiz-row">
           <button class="wiz-back" onclick="wizNext(1)">← Back</button>
-          <button class="gbtn" onclick="wizNext(3)">Next →</button>
-        </div>
-        <div class="gerr" id="sgErr2"></div>
-      </div>
-
-      <!-- Step 3: Password -->
-      <div id="wStep3" style="display:none">
-        <div class="wiz-label">Step 3 of 3 · Set Password</div>
-        <div class="gfld">
-          <input class="ginput" id="sgPassword" type="password" placeholder="Create a dashboard password *" autocomplete="new-password" />
-        </div>
-        <div class="wiz-row">
-          <button class="wiz-back" onclick="wizNext(2)">← Back</button>
           <button class="gbtn" id="sgBtn" onclick="doSignup()">Launch Dashboard 🚀</button>
         </div>
         <div class="gerr" id="sgErr"></div>
@@ -2354,14 +2340,6 @@ function getIndustry(){ return INDUSTRIES[clientRecord?.industry] || INDUSTRIES.
 function getAgents(){ try{ return JSON.parse(clientRecord?.agents||'[]'); }catch(e){ return (clientRecord?.agents||'').split('\n').map(s=>s.trim()).filter(Boolean); } }
 
 
-function gSwitchTab(tab){
-  const isLogin=tab==='login';
-  $id('gPanelLogin').style.display=isLogin?'':'none';
-  $id('gPanelSignup').style.display=isLogin?'none':'';
-  $id('gtabLogin').classList.toggle('active',isLogin);
-  $id('gtabSignup').classList.toggle('active',!isLogin);
-}
-
 // Wizard state
 let _wizInd = 'general';
 function pickInd(el){
@@ -2375,24 +2353,28 @@ function wizNext(step){
     if(!$id('sgName').value.trim()){$id('sgErr1').textContent='Enter your business name.';return;}
     $id('sgErr1').textContent='';
   }
-  if(step===3){
-    const a=$id('sgAccountId').value.trim(), b=$id('sgInboxId').value.trim(), c=$id('sgToken').value.trim(), d=$id('sgCwBase').value.trim();
-    if(!a||!b||!c||!d){$id('sgErr2').textContent='All Chatwoot fields are required.';return;}
-    $id('sgErr2').textContent='';
-  }
   // Update dots
-  const steps=[1,2,3];
-  steps.forEach(s=>{
+  [1,2].forEach(s=>{
     const dot=$id('wdot'+s);
     dot.classList.remove('active','done');
     if(s<step) dot.classList.add('done');
     else if(s===step) dot.classList.add('active');
   });
-  // Update lines
   if($id('wline12')) $id('wline12').classList.toggle('done', step>1);
-  if($id('wline23')) $id('wline23').classList.toggle('done', step>2);
   // Show step
-  [1,2,3].forEach(s=>$id('wStep'+s).style.display=s===step?'':'none');
+  [1,2].forEach(s=>$id('wStep'+s).style.display=s===step?'':'none');
+}
+
+// Set by handleAuthentikCallback() when Authentik verifies a new identity with no
+// matching CLIENTS row yet — kept in memory only, just long enough to finish signup.
+let _pendingAuthentikEmail = '';
+let _pendingAuthentikAccessToken = '';
+
+function showSignupWizard(email){
+  $id('gPanelLogin').style.display='none';
+  $id('gPanelSignup').style.display='';
+  $id('sgEmailNote').textContent=`Setting up your business — signed in as ${email}`;
+  wizNext(1);
 }
 
 async function doSignup(){
@@ -2401,10 +2383,10 @@ async function doSignup(){
   const accountId=$id('sgAccountId').value.trim();
   const inboxId=$id('sgInboxId').value.trim();
   const token=$id('sgToken').value.trim();
-  const password=$id('sgPassword').value.trim();
   const err=$id('sgErr'),ok=$id('sgOk'),btn=$id('sgBtn');
   err.textContent='';ok.textContent='';
-  if(!name||!cwBase||!accountId||!inboxId||!token||!password){err.textContent='All fields are required.';return;}
+  if(!name||!cwBase||!accountId||!inboxId||!token){err.textContent='All fields are required.';return;}
+  if(!_pendingAuthentikEmail){err.textContent='Your Authentik session expired — click "Continue with Authentik" again.';return;}
   btn.disabled=true;btn.textContent='Creating account…';
   try{
     const res=await fetch('https://apps.leadvyne.com/webhook/leadvyne-onboard',{
@@ -2416,19 +2398,33 @@ async function doSignup(){
         chatwoot_account_id:accountId,
         chatwoot_inbox_id:inboxId,
         chatwoot_token:token,
-        dashboard_password:password,
+        authentik_email:_pendingAuthentikEmail,
         language:'en',industry:_wizInd||'general'
       })
     });
     const data=await res.json();
     if(!res.ok||data.ok===false)throw new Error(data.error||'Onboarding failed');
-    // Login now goes entirely through Authentik + the Worker proxy, so there's no session
-    // to bootstrap directly from this response anymore — an admin has to create a matching
-    // Authentik user (email = this client's authentik_email) before anyone can sign in.
-    ok.textContent=`✓ Account created (Client #${data.client_id}). Ask your admin to set up your Authentik login, then use "Sign in with Authentik" above.`;
-    setTimeout(()=>gSwitchTab('login'),2500);
+    // The CLIENTS row now has authentik_email set, matching the Authentik identity we
+    // already verified moments ago — finish logging in immediately with the same
+    // access_token instead of making them go through Authentik a second time.
+    ok.textContent='✓ Account created — signing you in…';
+    const sr=await fetch(`${CONFIG.WORKER_BASE}/session/exchange`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({access_token:_pendingAuthentikAccessToken})
+    });
+    const session=await sr.json().catch(()=>({}));
+    if(!sr.ok||!session.session_token){
+      ok.textContent='';
+      err.textContent='Account created, but your Authentik session expired while setting up — click "Continue with Authentik" again to sign in.';
+      return;
+    }
+    clientId=session.client_id; clientRecord=session.client; sessionToken=session.session_token;
+    sessionStorage.setItem('lv_cid',clientId);
+    sessionStorage.setItem('lv_session',sessionToken);
+    _pendingAuthentikEmail=''; _pendingAuthentikAccessToken='';
+    showApp();
   }catch(e){err.textContent=e.message||'Something went wrong. Please try again.';}
-  finally{btn.disabled=false;btn.textContent='Create Account';}
+  finally{btn.disabled=false;btn.textContent='Launch Dashboard 🚀';}
 }
 
 /* ── AUTHENTIK LOGIN (OIDC, Authorization Code + PKCE) ──
@@ -2499,7 +2495,18 @@ async function handleAuthentikCallback(){
       body:JSON.stringify({access_token:tok.access_token})
     });
     const session=await sr.json().catch(()=>({}));
-    if(!sr.ok||!session.session_token) throw new Error(session.error||'Login failed');
+    if(!sr.ok||!session.session_token){
+      // A verified Authentik identity with no matching CLIENTS row isn't an error —
+      // it's what a brand-new signup looks like on first login. Finish provisioning
+      // instead of dead-ending on an error message.
+      if(session.error==='no_account'&&session.email){
+        _pendingAuthentikEmail=session.email;
+        _pendingAuthentikAccessToken=tok.access_token;
+        showSignupWizard(session.email);
+        return true;
+      }
+      throw new Error(session.error||'Login failed');
+    }
     clientId=session.client_id; clientRecord=session.client; sessionToken=session.session_token;
     sessionStorage.setItem('lv_cid',clientId);
     sessionStorage.setItem('lv_session',sessionToken);

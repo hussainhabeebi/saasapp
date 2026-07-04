@@ -128,23 +128,37 @@ with nowhere safe to store one).
 3. Copy the generated **Client ID** into `dashboard.html`'s `CONFIG.AUTHENTIK_BASE` /
    `AUTHENTIK_CLIENT_ID` / `AUTHENTIK_REDIRECT_URI`.
 
-**Per-client mapping — this is the part that needs doing for every client:**
+**Per-client mapping:**
 Authentik only proves *who* logged in (their email); it has no concept of "Leadvyne clients."
 After a successful login, the **Worker proxy** (see below — not the browser, since the browser
 no longer has a way to query NocoDB directly) looks up the CLIENTS row whose `authentik_email`
-field matches Authentik's verified email. So onboarding a new client now means two separate steps:
-1. Create their CLIENTS row (as before — onboarding workflow or manually).
-2. In Authentik → **Directory → Users → Create**, make a user with that client's email, and
-   set that same email in the `authentik_email` field on their CLIENTS row.
-   No matching Authentik user + `authentik_email` = they can't log in, even with a valid
-   Authentik account.
+field matches Authentik's verified email.
 
-**Known gap**: the self-serve "Get Started" signup wizard in `dashboard.html` still collects a
-`dashboard_password` and creates the CLIENTS row via the onboard workflow, but that password is
-never used anywhere — the wizard just tells the new client to ask an admin to set up their
-Authentik login (can no longer bootstrap a session directly, since the browser has no standing
-NocoDB access at all now). Automating Authentik user creation via its own API on signup is a
-reasonable follow-up, not done here.
+**Self-service signup (customer creates their own Authentik account, no admin step):**
+The gate screen is a single **"Continue with Authentik"** button — the same flow serves both
+login and signup, because Authentik's own hosted page offers a "Sign up" option once an
+enrollment flow is linked to it. This requires one more piece of Authentik configuration
+beyond the Application/Provider setup above:
+
+1. **Flows & Stages → Stages** → find the **Identification stage** used by your login flow
+   (`default-authentication-identification` or similar) → edit it → set **Enrollment flow**
+   to Authentik's built-in `default-enrollment-flow` (or a custom one you've built). This is
+   what makes a "Sign up" link appear on Authentik's login page.
+2. That's it on the Authentik side — a new user can now click "Sign up" there, set an email/
+   password, and get redirected back to `dashboard.html`.
+
+**What happens on first login for a brand-new signup:**
+The Worker's `/session/exchange` won't find a matching CLIENTS row (nobody's created one yet)
+— instead of a dead-end error, `dashboard.html` shows a 2-step wizard (business name/industry,
+then Chatwoot connection details) with the verified Authentik email displayed read-only. On
+submit, it calls the existing onboard workflow with `authentik_email` included, which now
+stores it directly on the new CLIENTS row — then immediately retries `/session/exchange` with
+the same (still-valid) Authentik access token and logs them straight in. No admin step, no
+second Authentik trip.
+
+Admin-created clients (the old path — create the CLIENTS row yourself, then create their
+Authentik user manually and set `authentik_email`) still works fine alongside this; both paths
+converge on the same `authentik_email` matching logic.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
