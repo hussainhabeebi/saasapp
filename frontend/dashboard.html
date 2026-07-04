@@ -4549,7 +4549,10 @@ function applyTheme(industryKey){
   const t=ind.theme||INDUSTRIES.general.theme;
   // Remove all theme classes
   document.documentElement.classList.remove(...Object.keys(INDUSTRIES).map(k=>'theme-'+k));
-  if(industryKey&&industryKey!=='general') document.documentElement.classList.add('theme-'+industryKey);
+  // Only add a theme class for a recognized industry key — a client's `industry` field can
+  // contain free text (e.g. "Marketing Agency") that isn't a valid CSS class token and would
+  // otherwise throw here, which previously surfaced as a false "login failed" error.
+  if(industryKey&&industryKey!=='general'&&INDUSTRIES[industryKey]) document.documentElement.classList.add('theme-'+industryKey);
   // Show/hide industry-specific tabs
   document.querySelectorAll('.industry-tab').forEach(el=>{
     const target=el.dataset.industry;
