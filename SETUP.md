@@ -43,6 +43,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | quote_logo_url | Long text (base64 data URI of the uploaded logo) |
 | waba_id | Single line (WhatsApp Business Account ID — for template list/create, separate from wa_phone_id) |
 | prospect_gsheet_url | Single line (last-used Prospects import sheet link, remembered across logins) |
+| authentik_email | Single line (email of the Authentik user allowed to log into this client's dashboard) |
 
 ### LEADS table additions (for the Quotation module's sent log)
 Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
@@ -108,6 +109,42 @@ into the client's Chatwoot inbox (**Configuration → Webhooks**, event **Messag
 - Tokens entered in the form are sent to your onboard webhook over HTTPS and stored in your
   NocoDB. The n8n API key never touches the browser.
 - Set the onboard webhook CORS (already `*` in the JSON) to your page origin once it's hosted.
+
+## Dashboard login (Authentik, OIDC)
+Login is delegated to a self-hosted Authentik instance instead of the old client-side
+`client_name`/`dashboard_password` comparison — that comparison ran entirely in the browser
+against a record fetched with a shared token, so any visitor could read every client's row
+(passwords, Chatwoot/Meta tokens, everything) via devtools. Authentik replaces that with a
+real Authorization Code + PKCE OIDC flow (no client secret — `dashboard.html` is a public SPA
+with nowhere safe to store one).
+
+**One-time Authentik setup** (already done for this deploy, keep for reference / new environments):
+1. Deploy Authentik via Coolify's one-click service (needs its own Postgres + Redis).
+2. Create an **Application** → **OAuth2/OpenID Provider**:
+   - Client type: **Public**
+   - Redirect URI: the dashboard's own URL (e.g. `https://app.leadvyne.com/dashboard.html`)
+   - Authorization flow: `default-provider-authorization-implicit-consent` (skips the "this app
+     wants access" consent screen — this is a first-party app, not a third-party integration)
+3. Copy the generated **Client ID** into `dashboard.html`'s `CONFIG.AUTHENTIK_BASE` /
+   `AUTHENTIK_CLIENT_ID` / `AUTHENTIK_REDIRECT_URI`.
+
+**Per-client mapping — this is the part that needs doing for every client:**
+Authentik only proves *who* logged in (their email); it has no concept of "Leadvyne clients."
+After a successful login, the dashboard looks up the CLIENTS row whose `authentik_email`
+field matches the email in Authentik's ID token. So onboarding a new client now means two
+separate steps:
+1. Create their CLIENTS row (as before — onboarding workflow or manually).
+2. In Authentik → **Directory → Users → Create**, make a user with that client's email, and
+   set that same email in the `authentik_email` field on their CLIENTS row.
+   No matching Authentik user + `authentik_email` = they can't log in, even with a valid
+   Authentik account.
+
+**Known gap**: the self-serve "Get Started" signup wizard in `dashboard.html` still collects a
+`dashboard_password` and creates the CLIENTS row via the onboard workflow, but that password is
+no longer used for login — the wizard auto-signs the user in for that one browser session using
+the onboard response directly. For them to log back in later, an admin still has to manually
+create their Authentik user and set `authentik_email`, same as any other client. Automating that
+(via Authentik's own API) is a reasonable follow-up, not done here.
 
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
