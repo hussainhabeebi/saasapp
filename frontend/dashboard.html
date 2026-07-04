@@ -790,7 +790,7 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 // WORKER_BASE is the Cloudflare Worker proxy (cloudflare-worker/worker.js) — it holds the
 // master NocoDB token and each client's Chatwoot/Meta tokens server-side; the browser never
 // sees them. REPLACE with your deployed Worker URL (e.g. https://leadvyne-api-proxy.<sub>.workers.dev).
-const WORKER_BASE = 'https://REPLACE_WITH_WORKER_URL';
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const CONFIG = {
   NOCODB_BASE:      WORKER_BASE+'/nocodb',
   CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj',
