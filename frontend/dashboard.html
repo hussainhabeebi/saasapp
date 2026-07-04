@@ -792,6 +792,12 @@ const CONFIG = {
   NOCODB_TOKEN:     'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',
   CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj',
   LEADS_TABLE_ID:   'mvg6rcw0ia5qqrx',
+  // Login is delegated to Authentik (OIDC, Authorization Code + PKCE — this is a public
+  // SPA client with nowhere safe to store a secret). Each Leadvyne client (business) needs
+  // a matching Authentik user whose email is set in that client's `authentik_email` field.
+  AUTHENTIK_BASE:        'https://secure.leadvyne.com',
+  AUTHENTIK_CLIENT_ID:   'G6pEIZKDGdtLCZ57WYHrOfNMRpJPzfnItmtPTLWw',
+  AUTHENTIK_REDIRECT_URI:'https://app.leadvyne.com/dashboard.html',
 };
 
 const INDUSTRIES = {
@@ -831,11 +837,7 @@ const TODAY = new Date().toISOString().slice(0,10);
 
     <!-- LOGIN -->
     <div id="gPanelLogin">
-      <div class="gfld">
-        <input class="ginput" id="gUser" type="text" placeholder="Business name" autocomplete="username" />
-        <input class="ginput" id="gPass" type="password" placeholder="Password" autocomplete="current-password" />
-      </div>
-      <button class="gbtn" id="gBtn">Sign In</button>
+      <button class="gbtn" id="gBtn" onclick="startAuthentikLogin()">Sign in with Authentik</button>
       <div class="gerr" id="gErr"></div>
     </div>
 
@@ -2344,9 +2346,6 @@ let _reminderTimer=null;
 function getIndustry(){ return INDUSTRIES[clientRecord?.industry] || INDUSTRIES.general; }
 function getAgents(){ try{ return JSON.parse(clientRecord?.agents||'[]'); }catch(e){ return (clientRecord?.agents||'').split('\n').map(s=>s.trim()).filter(Boolean); } }
 
-/* ── AUTH ── */
-$id('gBtn').addEventListener('click', connect);
-[$id('gUser'),$id('gPass')].forEach(el=>el.addEventListener('keydown',e=>{if(e.key==='Enter')connect();}));
 
 function gSwitchTab(tab){
   const isLogin=tab==='login';
@@ -2417,33 +2416,97 @@ async function doSignup(){
     const data=await res.json();
     if(!res.ok||data.ok===false)throw new Error(data.error||'Onboarding failed');
     ok.textContent='✓ Account created! Signing you in…';
-    // Auto-login with new credentials
+    // Bootstrap this one session directly from the onboard response (we already trust this
+    // browser — it just created the account). Future logins go through Authentik, so an
+    // admin still needs to create a matching Authentik user (authentik_email on this row)
+    // before this client can log back in after the session ends.
     setTimeout(async()=>{
-      $id('gUser').value=name;$id('gPass').value=password;
-      gSwitchTab('login');
-      await connect();
+      try{
+        const rec=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${data.client_id}`);
+        clientId=String(data.client_id); clientRecord=rec;
+        sessionStorage.setItem('lv_cid',clientId);
+        showApp();
+      }catch(e){ err.textContent='Account created, but auto sign-in failed — ask your admin to set up Authentik access.'; }
     },1200);
   }catch(e){err.textContent=e.message||'Something went wrong. Please try again.';}
   finally{btn.disabled=false;btn.textContent='Create Account';}
 }
 
-async function connect(){
-  const user=$id('gUser').value.trim(), pass=$id('gPass').value;
-  if(!user){$id('gErr').textContent='Enter username.';return;}
-  if(!pass){$id('gErr').textContent='Enter password.';return;}
-  $id('gErr').textContent=''; $id('gBtn').disabled=true; $id('gBtn').textContent='Signing in…';
+/* ── AUTHENTIK LOGIN (OIDC, Authorization Code + PKCE) ──
+   Public SPA client — no client secret, PKCE proves possession of the original
+   request instead. After Authentik verifies the person, we still need to know
+   *which* Leadvyne client (business) they belong to: their ID token's email is
+   looked up against that client's `authentik_email` field on the CLIENTS table. */
+function b64url(bytes){
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function randomToken(){
+  const arr=new Uint8Array(32); crypto.getRandomValues(arr);
+  return b64url(arr);
+}
+async function pkceChallenge(verifier){
+  const hash=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return b64url(new Uint8Array(hash));
+}
+function decodeJwtPayload(jwt){
+  const json=atob(jwt.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'));
+  return JSON.parse(decodeURIComponent(escape(json)));
+}
+
+async function startAuthentikLogin(){
+  const verifier=randomToken(), state=randomToken();
+  sessionStorage.setItem('lv_pkce_verifier',verifier);
+  sessionStorage.setItem('lv_oidc_state',state);
+  const params=new URLSearchParams({
+    client_id:CONFIG.AUTHENTIK_CLIENT_ID,
+    redirect_uri:CONFIG.AUTHENTIK_REDIRECT_URI,
+    response_type:'code',
+    scope:'openid email profile',
+    state,
+    code_challenge:await pkceChallenge(verifier),
+    code_challenge_method:'S256'
+  });
+  window.location.href=`${CONFIG.AUTHENTIK_BASE}/application/o/authorize/?${params.toString()}`;
+}
+
+// Returns true if this page load is an Authentik redirect-back (so boot can skip resumeSession).
+async function handleAuthentikCallback(){
+  const url=new URL(window.location.href);
+  const code=url.searchParams.get('code');
+  const state=url.searchParams.get('state');
+  if(!code) return false;
+  const savedState=sessionStorage.getItem('lv_oidc_state');
+  const verifier=sessionStorage.getItem('lv_pkce_verifier');
+  sessionStorage.removeItem('lv_oidc_state'); sessionStorage.removeItem('lv_pkce_verifier');
+  window.history.replaceState({},'',window.location.pathname); // strip ?code=&state= either way
+  if(!verifier||!state||state!==savedState){$id('gErr').textContent='Login session expired — try again.';return true;}
+  $id('gErr').textContent='';
   try{
-    const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records?where=(client_name,eq,${encodeURIComponent(user)})&limit=1`);
+    const r=await fetch(`${CONFIG.AUTHENTIK_BASE}/application/o/token/`,{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({
+        grant_type:'authorization_code',
+        client_id:CONFIG.AUTHENTIK_CLIENT_ID,
+        redirect_uri:CONFIG.AUTHENTIK_REDIRECT_URI,
+        code, code_verifier:verifier
+      })
+    });
+    const tok=await r.json();
+    if(!r.ok||!tok.id_token) throw new Error(tok.error_description||'Login failed');
+    const claims=decodeJwtPayload(tok.id_token);
+    const email=(claims.email||claims.preferred_username||'').toLowerCase();
+    if(!email) throw new Error('Your Authentik account has no email set.');
+    const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records?where=(authentik_email,eq,${encodeURIComponent(email)})&limit=1`);
     const rec=data?.list?.[0];
-    if(!rec||!rec.Id) throw new Error('not found');
-    if(!rec.dashboard_password||rec.dashboard_password!==pass) throw new Error('wrong password');
+    if(!rec||!rec.Id) throw new Error(`No Leadvyne account is linked to ${email} yet — ask your admin to set it up.`);
     clientId=String(rec.Id); clientRecord=rec;
     sessionStorage.setItem('lv_cid',clientId);
     showApp();
   }catch(e){
-    $id('gErr').textContent='Incorrect username or password.';
-    $id('gBtn').disabled=false; $id('gBtn').textContent='Sign In';
+    $id('gErr').textContent=e.message||'Login failed.';
   }
+  return true;
 }
 
 async function resumeSession(id){
@@ -2466,8 +2529,7 @@ $id('hLogout').addEventListener('click',()=>{
   const notifBell=$id('notifBell');if(notifBell)notifBell.style.display='none';
   $id('app').classList.remove('show');
   $id('gate').classList.remove('hidden');
-  $id('gUser').value=''; $id('gPass').value='';
-  $id('gBtn').disabled=false; $id('gBtn').textContent='Sign In';
+  $id('gBtn').disabled=false; $id('gBtn').textContent='Sign in with Authentik';
 });
 
 $id('hRefresh').addEventListener('click',()=>loadAll());
@@ -7021,11 +7083,15 @@ function renderChatEmpty(){
 }
 
 /* ── BOOT ── */
-(function(){
+(async function(){
   // Register service worker for HTML/asset caching
   if('serviceWorker' in navigator){
     navigator.serviceWorker.register('/sw.js').catch(()=>{});
   }
+  // Authentik redirects back here with ?code=&state= — handle that before falling
+  // back to any existing session, since a fresh login always takes priority.
+  const wasCallback=await handleAuthentikCallback();
+  if(wasCallback) return;
   const saved=sessionStorage.getItem('lv_cid');
   if(saved)resumeSession(saved);
 })();
