@@ -130,9 +130,9 @@ with nowhere safe to store one).
 
 **Per-client mapping — this is the part that needs doing for every client:**
 Authentik only proves *who* logged in (their email); it has no concept of "Leadvyne clients."
-After a successful login, the dashboard looks up the CLIENTS row whose `authentik_email`
-field matches the email in Authentik's ID token. So onboarding a new client now means two
-separate steps:
+After a successful login, the **Worker proxy** (see below — not the browser, since the browser
+no longer has a way to query NocoDB directly) looks up the CLIENTS row whose `authentik_email`
+field matches Authentik's verified email. So onboarding a new client now means two separate steps:
 1. Create their CLIENTS row (as before — onboarding workflow or manually).
 2. In Authentik → **Directory → Users → Create**, make a user with that client's email, and
    set that same email in the `authentik_email` field on their CLIENTS row.
@@ -141,10 +141,52 @@ separate steps:
 
 **Known gap**: the self-serve "Get Started" signup wizard in `dashboard.html` still collects a
 `dashboard_password` and creates the CLIENTS row via the onboard workflow, but that password is
-no longer used for login — the wizard auto-signs the user in for that one browser session using
-the onboard response directly. For them to log back in later, an admin still has to manually
-create their Authentik user and set `authentik_email`, same as any other client. Automating that
-(via Authentik's own API) is a reasonable follow-up, not done here.
+never used anywhere — the wizard just tells the new client to ask an admin to set up their
+Authentik login (can no longer bootstrap a session directly, since the browser has no standing
+NocoDB access at all now). Automating Authentik user creation via its own API on signup is a
+reasonable follow-up, not done here.
+
+## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
+`dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
+write every client's row in every table via devtools — not just their own), plus each logged-in
+client's own `chatwoot_token`/`wa_token`/`openrouter_key` sat in browser memory. This Worker
+closes both: it holds the master NocoDB token and looks up each client's Chatwoot/Meta/
+OpenRouter tokens server-side, per request — none of that ever reaches the browser anymore.
+
+**Why Cloudflare Workers and not a self-hosted container**: an earlier attempt used a Node
+service on the same Coolify host as the rest of this stack, but frontend and backend are
+separate Coolify resources with no shared Docker network, so the browser couldn't reach it
+without extra domain/DNS setup. A Worker is just a URL — no networking config, and the free
+tier (100K requests/day) covers this comfortably.
+
+**How login threads through it**: the browser still does the Authentik OIDC/PKCE exchange
+itself (public client, no secret) and gets a short-lived Authentik `access_token`. It hands
+that to the Worker's `/session/exchange`, which verifies it against Authentik's `/userinfo`
+endpoint, looks up the CLIENTS row by `authentik_email`, and issues its **own** signed session
+token (HMAC, `SESSION_SIGNING_KEY` secret) valid for 24h — this avoids needing OAuth
+refresh-token logic in the browser, since Authentik's access tokens are only valid a few
+minutes. Every subsequent call sends that session token as `Authorization: Bearer …`.
+
+**Routes**: `/session/exchange`, `/session/me` (resume on page reload), `/nocodb/*` (generic
+passthrough — every existing `ncGet`/`ncPatch`/`ncPost`/`ncDelete` call site in `dashboard.html`
+is unchanged, only `CONFIG.NOCODB_BASE` and the auth header moved), `/chat/send`, `/quote/send`,
+`/wa/templates` (GET list / POST create), `/wa/send`, `/ai/complete` (OpenRouter).
+
+**Deploy**:
+```
+npm install -g wrangler          # if not already installed
+cd cloudflare-worker
+wrangler secret put NOCODB_TOKEN         # the master NocoDB token (nc_pat_...)
+wrangler secret put SESSION_SIGNING_KEY  # a long random string, e.g. `openssl rand -hex 32`
+wrangler deploy
+```
+Copy the resulting `https://leadvyne-api-proxy.<your-subdomain>.workers.dev` URL into
+`dashboard.html`'s `WORKER_BASE` constant (replacing `REPLACE_WITH_WORKER_URL`), and redeploy
+the frontend.
+
+**Known gap**: `index.html`, `broadcast.html`, and `ecom.html` still embed the master NocoDB
+token directly and are **not yet migrated** to this Worker — same exposure as before on those
+three pages specifically. `dashboard.html` (the primary, most-used surface) is fully migrated.
 
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
