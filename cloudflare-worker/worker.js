@@ -579,11 +579,15 @@ async function handleBillingWebhook(request, env){
   if(event.type==='customer.subscription.created' || event.type==='customer.subscription.updated'){
     const clientId=obj.metadata?.client_id;
     if(clientId){
-      const price=obj.items?.data?.[0]?.price;
+      const item=obj.items?.data?.[0];
+      const price=item?.price;
+      // API versions 2025-03-31+ moved current_period_end off the Subscription object and onto
+      // each SubscriptionItem — obj.current_period_end kept as a fallback for older-pinned accounts.
+      const periodEnd=item?.current_period_end||obj.current_period_end;
       await patchClientFields(env, clientId, {
         stripe_subscription_id:obj.id,
         plan_status:obj.status,
-        plan_renews_at:obj.current_period_end?new Date(obj.current_period_end*1000).toISOString():'',
+        plan_renews_at:periodEnd?new Date(periodEnd*1000).toISOString():'',
         plan_name:price?.nickname||price?.id||'',
         plan_message_limit:Number(price?.metadata?.message_limit||0)||undefined
       });
