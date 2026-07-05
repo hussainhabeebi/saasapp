@@ -1629,16 +1629,28 @@ const TODAY = new Date().toISOString().slice(0,10);
         </div>
 
         <!-- STEP 3: Other inboxes -->
-        <div class="card" id="chOtherSection" style="display:none">
+        <!-- Live status — read straight from Chatwoot, so this never offers to re-create
+             something that's already connected. -->
+        <div class="card" id="chConnectedSection" style="margin-bottom:14px;display:none">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">Connected Channels</div>
+            <div id="chConnectedList" class="s-note">Loading…</div>
+          </div>
+        </div>
+
+        <div class="card" id="chOtherSection" style="margin-bottom:14px;display:none">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">3. Add Another Inbox</div>
-            <div class="s-note">Add a Website widget, Email, or API inbox to the same Chatwoot account for your team to use.</div>
+            <div class="s-note">Add a Website widget, Email, SMS, Telegram, LINE, or API inbox to the same Chatwoot account — same channel types Chatwoot's own "Add Inbox" offers.</div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
               <div>
                 <label class="form-label">Type</label>
                 <select class="form-input" id="chNewType" onchange="renderChannelInboxForm()" style="max-width:200px">
                   <option value="web_widget">Website widget</option>
                   <option value="email">Email</option>
+                  <option value="sms">SMS (Twilio)</option>
+                  <option value="telegram">Telegram</option>
+                  <option value="line">LINE</option>
                   <option value="api">API</option>
                 </select>
               </div>
@@ -1655,6 +1667,26 @@ const TODAY = new Date().toISOString().slice(0,10);
               <label class="form-label">Email Address</label>
               <input class="form-input" id="chEmailAddr" type="email" placeholder="support@example.com" style="margin-bottom:8px">
             </div>
+            <div id="chInboxFormSms" style="display:none">
+              <label class="form-label">Phone Number</label>
+              <input class="form-input" id="chSmsPhone" type="text" placeholder="+14155551234" style="margin-bottom:8px">
+              <label class="form-label">Twilio Account SID</label>
+              <input class="form-input" id="chSmsSid" type="text" placeholder="ACxxxxxxxx" style="margin-bottom:8px">
+              <label class="form-label">Twilio Auth Token</label>
+              <input class="form-input" id="chSmsToken" type="text" placeholder="Auth token" style="margin-bottom:8px">
+            </div>
+            <div id="chInboxFormTelegram" style="display:none">
+              <label class="form-label">Bot Token</label>
+              <input class="form-input" id="chTgBotToken" type="text" placeholder="123456:ABC-DEF..." style="margin-bottom:8px">
+            </div>
+            <div id="chInboxFormLine" style="display:none">
+              <label class="form-label">Channel ID</label>
+              <input class="form-input" id="chLineChannelId" type="text" style="margin-bottom:8px">
+              <label class="form-label">Channel Secret</label>
+              <input class="form-input" id="chLineChannelSecret" type="text" style="margin-bottom:8px">
+              <label class="form-label">Channel Token</label>
+              <input class="form-input" id="chLineChannelToken" type="text" style="margin-bottom:8px">
+            </div>
             <div id="chInboxFormApi" style="display:none">
               <label class="form-label">Inbox Name</label>
               <input class="form-input" id="chApiName" type="text" placeholder="API Channel" style="margin-bottom:8px">
@@ -1663,6 +1695,18 @@ const TODAY = new Date().toISOString().slice(0,10);
               <button class="save-btn" onclick="addChannelInbox()">Create Inbox</button>
               <span class="save-msg" id="chAddInboxMsg"></span>
             </div>
+          </div>
+        </div>
+
+        <!-- Shopify: an OAuth integration that lives on Chatwoot's own Settings -> Integrations
+             page (its client secret is configured on the Chatwoot instance, not here) — this
+             just gets the client into Chatwoot already logged in via a one-time SSO link. -->
+        <div class="card" id="chShopifySection" style="display:none">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🛍️ Shopify</div>
+            <div class="s-note">Connect your Shopify store to see orders in the conversation sidebar. This opens your Chatwoot account (already signed in) on the Integrations page — click Shopify → Connect there.</div>
+            <button class="save-btn" onclick="connectShopify()">Connect Shopify</button>
+            <span class="save-msg" id="chShopifyMsg"></span>
           </div>
         </div>
       </div>
@@ -4129,26 +4173,52 @@ function _maybeFinishWaSignup(){
   }
 }
 
+let _channelsStatus=null; // last response from /channels/status — the source of truth for what's already connected
+
+const CHANNEL_ICONS={'Channel::WebWidget':'🌐','Channel::Whatsapp':'💬','Channel::Email':'✉️','Channel::Api':'🔌','Channel::Sms':'📱','Channel::Telegram':'✈️','Channel::Line':'💚'};
+
+async function loadChannelsStatus(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/status`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    _channelsStatus=data;
+  }catch(e){ _channelsStatus={ok:false, inboxes:[], has_whatsapp:!!(clientRecord.chatwoot_inbox_id&&clientRecord.wa_phone_id)}; }
+  renderChannelsPage();
+}
+
 function renderChannelsPage(){
   const hasAccount=!!(clientRecord.chatwoot_account_id && clientRecord.chatwoot_token);
-  const hasWa=!!(clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id);
+  const status=_channelsStatus||{inboxes:[], has_whatsapp:false};
+  const hasWa=!!(clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id) || !!status.has_whatsapp;
+
   $id('chAccountPending').style.display=hasAccount?'none':'block';
   $id('chAccountDone').style.display=hasAccount?'block':'none';
   if(hasAccount){
     $id('chAccountIdDisplay').textContent=clientRecord.chatwoot_account_id;
     $id('chAccountBaseDisplay').textContent=clientRecord.chatwoot_base;
   }
+
   $id('chWaSection').style.display=hasAccount?'block':'none';
   $id('chWaPending').style.display=hasWa?'none':'block';
   $id('chWaDone').style.display=hasWa?'block':'none';
-  if(hasWa) $id('chWaPhoneDisplay').textContent=clientRecord.wa_phone_id;
+  if(hasWa) $id('chWaPhoneDisplay').textContent=clientRecord.wa_phone_id||'';
+
   $id('chOtherSection').style.display=hasAccount?'block':'none';
+  $id('chShopifySection').style.display=hasAccount?'block':'none';
+
+  $id('chConnectedSection').style.display=hasAccount?'block':'none';
+  const list=status.inboxes||[];
+  $id('chConnectedList').innerHTML=list.length
+    ? list.map(ib=>`<div style="padding:4px 0">${CHANNEL_ICONS[ib.channel_type]||'📥'} ${esc(ib.name)} <span style="color:var(--muted)">(${esc((ib.channel_type||'').replace('Channel::',''))})</span></div>`).join('')
+    : '<div style="color:var(--muted)">No inboxes yet.</div>';
 }
 
 function channelsInit(){
   _loadFbSdk();
   renderChannelInboxForm();
   renderChannelsPage();
+  loadChannelsStatus();
 }
 
 async function createChatwootAccount(){
@@ -4160,11 +4230,15 @@ async function createChatwootAccount(){
     Object.assign(clientRecord,{chatwoot_base:data.chatwoot_base, chatwoot_account_id:data.chatwoot_account_id});
     msg.textContent='';
     renderChannelsPage();
+    loadChannelsStatus();
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
 function connectWhatsApp(){
   const msg=$id('chConnectWaMsg');
+  if(_channelsStatus?.has_whatsapp || (clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id)){
+    msg.textContent='WhatsApp is already connected for this client.'; return;
+  }
   if(!window.FB){ msg.textContent='Facebook SDK still loading — try again in a moment.'; return; }
   msg.textContent='';
   FB.login((response)=>{
@@ -4186,6 +4260,7 @@ async function completeWaConnect(code, waba_id, phone_number_id){
     Object.assign(clientRecord,{chatwoot_inbox_id:data.chatwoot_inbox_id, waba_id:data.waba_id, wa_phone_id:data.wa_phone_id});
     msg.textContent='';
     renderChannelsPage();
+    loadChannelsStatus();
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
@@ -4193,6 +4268,9 @@ function renderChannelInboxForm(){
   const type=$id('chNewType').value;
   $id('chInboxFormWebWidget').style.display=type==='web_widget'?'block':'none';
   $id('chInboxFormEmail').style.display=type==='email'?'block':'none';
+  $id('chInboxFormSms').style.display=type==='sms'?'block':'none';
+  $id('chInboxFormTelegram').style.display=type==='telegram'?'block':'none';
+  $id('chInboxFormLine').style.display=type==='line'?'block':'none';
   $id('chInboxFormApi').style.display=type==='api'?'block':'none';
 }
 
@@ -4208,6 +4286,19 @@ async function addChannelInbox(){
   }else if(type==='email'){
     body.email=$id('chEmailAddr').value.trim();
     if(!body.email){ msg.textContent='Email is required.'; return; }
+  }else if(type==='sms'){
+    body.phone_number=$id('chSmsPhone').value.trim();
+    body.account_sid=$id('chSmsSid').value.trim();
+    body.auth_token=$id('chSmsToken').value.trim();
+    if(!body.phone_number||!body.account_sid||!body.auth_token){ msg.textContent='Phone number, Account SID and Auth Token are all required.'; return; }
+  }else if(type==='telegram'){
+    body.bot_token=$id('chTgBotToken').value.trim();
+    if(!body.bot_token){ msg.textContent='Bot token is required.'; return; }
+  }else if(type==='line'){
+    body.line_channel_id=$id('chLineChannelId').value.trim();
+    body.line_channel_secret=$id('chLineChannelSecret').value.trim();
+    body.line_channel_token=$id('chLineChannelToken').value.trim();
+    if(!body.line_channel_id||!body.line_channel_secret||!body.line_channel_token){ msg.textContent='Channel ID, Secret and Token are all required.'; return; }
   }else{
     body.name=$id('chApiName').value.trim();
   }
@@ -4217,6 +4308,18 @@ async function addChannelInbox(){
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     msg.innerHTML=`Created "${esc(data.name)}". <a href="${esc(data.chatwoot_settings_url)}" target="_blank" rel="noopener">Open in Chatwoot →</a>`;
+    loadChannelsStatus();
+  }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+async function connectShopify(){
+  const msg=$id('chShopifyMsg'); msg.textContent='Opening Chatwoot…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/chatwoot-sso`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    window.open(data.url, '_blank', 'noopener');
+    msg.textContent='Opened — go to Settings → Integrations → Shopify → Connect.';
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 

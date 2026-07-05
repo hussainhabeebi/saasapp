@@ -44,6 +44,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | waba_id | Single line (WhatsApp Business Account ID — for template list/create, separate from wa_phone_id) |
 | prospect_gsheet_url | Single line (last-used Prospects import sheet link, remembered across logins) |
 | authentik_email | Single line (email of the Authentik user allowed to log into this client's dashboard) |
+| chatwoot_user_id | Single line (Chatwoot user id created by the Channels module — used for the Shopify SSO login link) |
 
 ### LEADS table additions (for the Quotation module's sent log)
 Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
@@ -240,15 +241,36 @@ Cloud onboarding — you don't need a second Meta app).
    creates the WhatsApp Cloud inbox in Chatwoot (`provider_config: {business_account_id,
    phone_number_id, api_key}`), best-effort wires the inbox's webhook to the client's existing
    `webhook_url` (the n8n wrapper from onboarding), and writes `chatwoot_inbox_id`/`waba_id`/
-   `wa_token`/`wa_phone_id`.
-3. **Add Another Inbox** — `POST /channels/inbox` creates a Website widget, Email, or API inbox
-   on the same Chatwoot account. These aren't written back to CLIENTS (nothing in the bot engine
-   references them) — the response links straight to that inbox's settings page in Chatwoot for
-   any manual finishing touches (widget styling, IMAP for email, etc).
+   `wa_token`/`wa_phone_id`. Blocked (400) if this client already has WhatsApp connected, and
+   blocked (409) if the same `waba_id`/`phone_number_id` is already on a *different* CLIENTS row
+   — a WhatsApp number can only ever belong to one client's row, since the schema has a single
+   `waba_id`/`wa_phone_id`/`chatwoot_inbox_id` slot.
+3. **Add Another Inbox** — `POST /channels/inbox` creates a Website widget, Email, SMS (Twilio),
+   Telegram, LINE, or API inbox on the same Chatwoot account — the same channel types Chatwoot's
+   own generic inbox API supports (`allowed_channel_types` minus `whatsapp`, which has its own
+   OAuth route above). Multiple of these are allowed per account (unlike WhatsApp). They aren't
+   written back to CLIENTS (nothing in the bot engine references them) — the response links
+   straight to that inbox's settings page in Chatwoot for any manual finishing touches (widget
+   styling, IMAP for email, etc).
+4. **Shopify** — Chatwoot's Shopify integration is itself an OAuth app configured at the
+   *Chatwoot instance* level (`SHOPIFY_CLIENT_ID`/`SHOPIFY_CLIENT_SECRET` env vars on that
+   install, redirect URL `{chatwoot_base}/shopify/callback`) — that OAuth hop runs on Chatwoot's
+   own domain and can't be done from this Worker. `GET /channels/chatwoot-sso` calls the Platform
+   API's one-time login link (`/platform/api/v1/users/{chatwoot_user_id}/login`) so the client
+   lands in Chatwoot already signed in (they were never shown the random password step 1
+   generated), then they click Settings → Integrations → Shopify → Connect themselves.
 
-**Not yet verified against a live instance**: the exact WhatsApp `provider_config` field names
-and the webhook-create payload are taken from Chatwoot's `develop` branch source, not a live
-test — worth a smoke test on your instance before relying on it for production onboarding.
+**Status view**: `GET /channels/status` reads the client's real inbox list straight from
+Chatwoot (`GET /api/v1/accounts/{id}/inboxes`), not just the local CLIENTS columns — the
+Channels page uses this to show what's already connected and never offers to recreate it.
+
+**New CLIENTS column**: `chatwoot_user_id` (Single line) — the Chatwoot user id created in step
+1, needed for the Shopify SSO link. Add it alongside the other Channels-module fields.
+
+**Not yet verified against a live instance**: the exact WhatsApp/SMS/Telegram/LINE
+`provider_config`/field names and the webhook-create payload are taken from Chatwoot's
+`develop` branch source, not a live test — worth a smoke test on your instance before relying
+on it for production onboarding.
 
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.

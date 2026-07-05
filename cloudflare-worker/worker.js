@@ -73,6 +73,13 @@ async function patchClientFields(env, clientId, fields){
   if(!r.ok) throw new Error('Failed to save client record: HTTP '+r.status);
   return r.json().catch(()=>({}));
 }
+async function findOtherClientByField(env, field, value, excludeId){
+  if(!value) return null;
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(${field},eq,${encodeURIComponent(value)})&limit=5`);
+  if(!r.ok) return null;
+  const data=await r.json().catch(()=>({}));
+  return (data?.list||[]).find(row=>String(row.Id)!==String(excludeId))||null;
+}
 function safeClient(rec){
   const {dashboard_password, ...safe}=rec;
   return safe;
@@ -280,7 +287,7 @@ async function handleChannelsCreateAccount(request, env){
   const linkR=await chatwootPlatformFetch(env, `/platform/api/v1/accounts/${acct.id}/account_users`, {method:'POST', body:{user_id:user.id, role:'administrator'}});
   if(!linkR.ok) return json({error:'Failed to link the Chatwoot user to the account: HTTP '+linkR.status}, 502);
 
-  await patchClientFields(env, payload.cid, {chatwoot_base:env.CHATWOOT_INSTANCE_BASE, chatwoot_account_id:String(acct.id), chatwoot_token:user.access_token});
+  await patchClientFields(env, payload.cid, {chatwoot_base:env.CHATWOOT_INSTANCE_BASE, chatwoot_account_id:String(acct.id), chatwoot_token:user.access_token, chatwoot_user_id:String(user.id)});
   return json({ok:true, chatwoot_base:env.CHATWOOT_INSTANCE_BASE, chatwoot_account_id:String(acct.id)});
 }
 
@@ -292,6 +299,10 @@ async function handleChannelsWhatsappConnect(request, env){
   if(!code||!waba_id||!phone_number_id) return json({error:'code, waba_id and phone_number_id are required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
+  if(c.chatwoot_inbox_id && c.wa_phone_id) return json({error:'WhatsApp is already connected for this client.'}, 400);
+
+  const collision=await findOtherClientByField(env, 'waba_id', waba_id, payload.cid) || await findOtherClientByField(env, 'wa_phone_id', phone_number_id, payload.cid);
+  if(collision) return json({error:'This WhatsApp Business Account / number is already connected to a different client.'}, 409);
 
   const tokenR=await fetch(`https://graph.facebook.com/v18.0/oauth/access_token?client_id=${env.META_APP_ID}&client_secret=${env.META_APP_SECRET}&code=${encodeURIComponent(code)}`);
   const tokenData=await tokenR.json().catch(()=>({}));
@@ -333,7 +344,9 @@ async function handleChannelsInboxCreate(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
   const {type}=body;
-  if(!['web_widget','email','api'].includes(type)) return json({error:'Unsupported channel type.'}, 400);
+  // Matches Chatwoot's own generic inbox API exactly (app/controllers/api/v1/accounts/inboxes_controller.rb
+  // allowed_channel_types) minus 'whatsapp', which has its own OAuth-driven route above.
+  if(!['web_widget','email','api','sms','telegram','line'].includes(type)) return json({error:'Unsupported channel type.'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
 
@@ -348,6 +361,21 @@ async function handleChannelsInboxCreate(request, env){
     if(!email) return json({error:'email is required'}, 400);
     name=`Email - ${email}`;
     channel={type:'email', email};
+  }else if(type==='sms'){
+    const {phone_number, account_sid, auth_token}=body;
+    if(!phone_number||!account_sid||!auth_token) return json({error:'phone_number, account_sid and auth_token are required'}, 400);
+    name=`SMS - ${phone_number}`;
+    channel={type:'sms', phone_number, provider:'twilio', provider_config:{account_sid, auth_token}};
+  }else if(type==='telegram'){
+    const {bot_token}=body;
+    if(!bot_token) return json({error:'bot_token is required'}, 400);
+    name='Telegram';
+    channel={type:'telegram', bot_token};
+  }else if(type==='line'){
+    const {line_channel_id, line_channel_secret, line_channel_token}=body;
+    if(!line_channel_id||!line_channel_secret||!line_channel_token) return json({error:'line_channel_id, line_channel_secret and line_channel_token are required'}, 400);
+    name='LINE';
+    channel={type:'line', line_channel_id, line_channel_secret, line_channel_token};
   }else{
     name=body.name||'API Channel';
     channel={type:'api', webhook_url:body.webhook_url||''};
@@ -360,6 +388,42 @@ async function handleChannelsInboxCreate(request, env){
   const inbox=await inboxR.json().catch(()=>({}));
   if(!inboxR.ok||!inbox?.id) return json({error:'Chatwoot inbox creation failed: '+(inbox?.message||('HTTP '+inboxR.status))}, 502);
   return json({ok:true, inbox_id:inbox.id, name:inbox.name||name, chatwoot_settings_url:`${c.chatwoot_base}/app/accounts/${c.chatwoot_account_id}/settings/inboxes/${inbox.id}`});
+}
+
+// Live status, read straight from Chatwoot — not just the local CLIENTS columns — so the
+// Channels page always reflects what's actually connected and never offers to re-create
+// something that already exists there.
+async function handleChannelsStatus(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const hasAccount=!!(c.chatwoot_account_id && c.chatwoot_token);
+  if(!hasAccount) return json({ok:true, account:null, inboxes:[], has_whatsapp:false});
+
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {headers:{api_access_token:c.chatwoot_token}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:'Failed to load inboxes from Chatwoot: HTTP '+r.status}, 502);
+  const inboxes=(data?.payload||data?.data?.payload||[]).map(ib=>({id:ib.id, name:ib.name, channel_type:ib.channel_type}));
+  const has_whatsapp=inboxes.some(ib=>ib.channel_type==='Channel::Whatsapp');
+  return json({ok:true, account:{chatwoot_base:c.chatwoot_base, chatwoot_account_id:c.chatwoot_account_id}, inboxes, has_whatsapp});
+}
+
+// Shopify (and any other Chatwoot-native OAuth integration) is configured at the Chatwoot
+// instance level (SHOPIFY_CLIENT_ID/SECRET) and connected per-account via Chatwoot's own
+// Settings -> Integrations page — that OAuth hop has to run on Chatwoot's own domain/callback,
+// it can't be done from this Worker. This route just gets the client into Chatwoot already
+// logged in (via the Platform API's one-time SSO link) so they land on that page with zero
+// credential friction, instead of hitting a login wall for a password they were never shown.
+async function handleChannelsChatwootSso(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_user_id) return json({error:'Connect a Chatwoot account first.'}, 400);
+  const r=await chatwootPlatformFetch(env, `/platform/api/v1/users/${c.chatwoot_user_id}/login`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||!data?.url) return json({error:'Failed to generate a Chatwoot login link: '+(data?.message||('HTTP '+r.status))}, 502);
+  return json({ok:true, url:data.url});
 }
 
 export default {
@@ -385,6 +449,8 @@ export default {
       else if(url.pathname==='/channels/create-account' && request.method==='POST'){ res=await handleChannelsCreateAccount(request, env); }
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
+      else if(url.pathname==='/channels/status' && request.method==='GET'){ res=await handleChannelsStatus(request, env); }
+      else if(url.pathname==='/channels/chatwoot-sso' && request.method==='GET'){ res=await handleChannelsChatwootSso(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);
