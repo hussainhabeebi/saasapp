@@ -8,7 +8,12 @@ compatibility_date = "2026-01-01"
 NOCODB_BASE = "https://whizz.aiingo.com"
 AUTHENTIK_BASE = "https://secure.leadvyne.com"
 ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com"
+# Channels module — base URL of the Chatwoot install new client accounts are provisioned on.
+CHATWOOT_INSTANCE_BASE = "https://REPLACE_WITH_YOUR_CHATWOOT_URL"
 
 # Secrets (NOT stored here — set via `wrangler secret put <NAME>`):
-#   NOCODB_TOKEN        the master NocoDB token (nc_pat_...)
-#   SESSION_SIGNING_KEY  a long random string, e.g. `openssl rand -hex 32`
+#   NOCODB_TOKEN            the master NocoDB token (nc_pat_...)
+#   SESSION_SIGNING_KEY     a long random string, e.g. `openssl rand -hex 32`
+#   CHATWOOT_PLATFORM_TOKEN Chatwoot Platform API token — see SETUP.md "Channels module"
+#   META_APP_ID             Meta Tech Provider app id (Embedded Signup token exchange)
+#   META_APP_SECRET         Meta Tech Provider app secret (Embedded Signup token exchange)

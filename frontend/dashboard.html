@@ -781,6 +781,11 @@ const CONFIG = {
   AUTHENTIK_BASE:        'https://secure.leadvyne.com',
   AUTHENTIK_CLIENT_ID:   'G6pEIZKDGdtLCZ57WYHrOfNMRpJPzfnItmtPTLWw',
   AUTHENTIK_REDIRECT_URI:'https://app.leadvyne.com/dashboard.html',
+  // Both are public identifiers used only in browser-side Meta JS SDK calls (never secrets —
+  // the App Secret used for the server-side token exchange lives only in the Worker). Get
+  // these from Meta Developer Portal → your Tech Provider app → WhatsApp → Embedded Signup.
+  META_APP_ID:              'REPLACE_META_APP_ID',
+  META_WHATSAPP_CONFIG_ID:  'REPLACE_META_WHATSAPP_CONFIG_ID',
 };
 
 const INDUSTRIES = {
@@ -859,6 +864,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="chats">💬 Chats</button>
     <button class="dnTab" data-page="tasks">✅ Tasks</button>
     <button class="dnTab" data-page="broadcast">📢 Broadcast</button>
+    <button class="dnTab" data-page="channels">🔌 Channels</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
 
@@ -1587,6 +1593,81 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
+    <!-- CHANNELS -->
+    <div class="page hidden" id="pageChannels">
+      <div class="page-pad">
+        <div class="card-title" style="margin-bottom:14px">🔌 Channels</div>
+
+        <!-- STEP 1: Chatwoot account -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">1. Chatwoot Account</div>
+            <div id="chAccountPending">
+              <div class="s-note">Create your dedicated Chatwoot account — this provisions it automatically, no manual signup needed.</div>
+              <button class="save-btn" onclick="createChatwootAccount()">Create Chatwoot Account</button>
+              <span class="save-msg" id="chCreateAcctMsg"></span>
+            </div>
+            <div id="chAccountDone" style="display:none">
+              <div class="s-note">✅ Connected — Account #<span id="chAccountIdDisplay"></span> on <span id="chAccountBaseDisplay"></span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- STEP 2: WhatsApp embedded signup -->
+        <div class="card" id="chWaSection" style="margin-bottom:14px;display:none">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">2. Connect WhatsApp</div>
+            <div id="chWaPending">
+              <div class="s-note">Connect your WhatsApp Business number via Meta — no manual token copying, this uses Embedded Signup.</div>
+              <button class="save-btn" onclick="connectWhatsApp()">Connect WhatsApp</button>
+              <span class="save-msg" id="chConnectWaMsg"></span>
+            </div>
+            <div id="chWaDone" style="display:none">
+              <div class="s-note">✅ WhatsApp connected — phone number ID <span id="chWaPhoneDisplay"></span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- STEP 3: Other inboxes -->
+        <div class="card" id="chOtherSection" style="display:none">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">3. Add Another Inbox</div>
+            <div class="s-note">Add a Website widget, Email, or API inbox to the same Chatwoot account for your team to use.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+              <div>
+                <label class="form-label">Type</label>
+                <select class="form-input" id="chNewType" onchange="renderChannelInboxForm()" style="max-width:200px">
+                  <option value="web_widget">Website widget</option>
+                  <option value="email">Email</option>
+                  <option value="api">API</option>
+                </select>
+              </div>
+            </div>
+            <div id="chInboxFormWebWidget">
+              <label class="form-label">Website URL</label>
+              <input class="form-input" id="chWebsiteUrl" type="url" placeholder="https://example.com" style="margin-bottom:8px">
+              <label class="form-label">Welcome Title</label>
+              <input class="form-input" id="chWelcomeTitle" type="text" placeholder="Hi there 👋" style="margin-bottom:8px">
+              <label class="form-label">Welcome Tagline</label>
+              <input class="form-input" id="chWelcomeTagline" type="text" placeholder="Ask us anything" style="margin-bottom:8px">
+            </div>
+            <div id="chInboxFormEmail" style="display:none">
+              <label class="form-label">Email Address</label>
+              <input class="form-input" id="chEmailAddr" type="email" placeholder="support@example.com" style="margin-bottom:8px">
+            </div>
+            <div id="chInboxFormApi" style="display:none">
+              <label class="form-label">Inbox Name</label>
+              <input class="form-input" id="chApiName" type="text" placeholder="API Channel" style="margin-bottom:8px">
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button class="save-btn" onclick="addChannelInbox()">Create Inbox</button>
+              <span class="save-msg" id="chAddInboxMsg"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /pages -->
 
   <!-- Bottom nav -->
@@ -1603,6 +1684,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem" data-page="chats"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
     <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
+    <button class="bnItem" data-page="channels"><span class="bnIcon">🔌</span><span class="bnLabel">Channels</span></button>
     <button class="bnItem" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
   </div>
 
@@ -2449,6 +2531,7 @@ function navigate(page){
   if(page==='recruit') renderRecruit();
   if(page==='settings') populateSettings();
   if(page==='chats') openChatsTab();
+  if(page==='channels') channelsInit();
 }
 
 document.querySelectorAll('.bnItem,.dnTab').forEach(b=>{
@@ -4009,6 +4092,132 @@ async function patchClient(fields){
   const stuck=Object.keys(fields).filter(k=>String(fresh[k]??'')!==String(fields[k]??''));
   if(stuck.length) throw new Error(`Save didn't take effect for: ${stuck.join(', ')} — check these columns exist in NocoDB (see SETUP.md)`);
   Object.assign(clientRecord,fresh);
+}
+
+/* ── CHANNELS MODULE (Chatwoot account signup, WhatsApp Embedded Signup, other inboxes) ── */
+let _fbSdkLoading=false;
+let _waSignupData={};
+
+function _loadFbSdk(){
+  if(window.FB||_fbSdkLoading) return;
+  _fbSdkLoading=true;
+  window.fbAsyncInit=function(){
+    FB.init({appId:CONFIG.META_APP_ID, autoLogAppEvents:true, xfbml:true, version:'v18.0'});
+  };
+  const s=document.createElement('script');
+  s.src='https://connect.facebook.net/en_US/sdk.js';
+  s.async=true; s.defer=true;
+  document.body.appendChild(s);
+}
+
+window.addEventListener('message', (event)=>{
+  if(typeof event.origin!=='string'||!event.origin.endsWith('facebook.com')) return;
+  let data;
+  try{ data=JSON.parse(event.data); }catch(e){ return; }
+  if(data?.type==='WA_EMBEDDED_SIGNUP' && data.event==='FINISH'){
+    _waSignupData.waba_id=data.data?.waba_id;
+    _waSignupData.phone_number_id=data.data?.phone_number_id;
+    _maybeFinishWaSignup();
+  }
+});
+
+function _maybeFinishWaSignup(){
+  if(_waSignupData.code && _waSignupData.waba_id && _waSignupData.phone_number_id){
+    const {code, waba_id, phone_number_id}=_waSignupData;
+    _waSignupData={};
+    completeWaConnect(code, waba_id, phone_number_id);
+  }
+}
+
+function renderChannelsPage(){
+  const hasAccount=!!(clientRecord.chatwoot_account_id && clientRecord.chatwoot_token);
+  const hasWa=!!(clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id);
+  $id('chAccountPending').style.display=hasAccount?'none':'block';
+  $id('chAccountDone').style.display=hasAccount?'block':'none';
+  if(hasAccount){
+    $id('chAccountIdDisplay').textContent=clientRecord.chatwoot_account_id;
+    $id('chAccountBaseDisplay').textContent=clientRecord.chatwoot_base;
+  }
+  $id('chWaSection').style.display=hasAccount?'block':'none';
+  $id('chWaPending').style.display=hasWa?'none':'block';
+  $id('chWaDone').style.display=hasWa?'block':'none';
+  if(hasWa) $id('chWaPhoneDisplay').textContent=clientRecord.wa_phone_id;
+  $id('chOtherSection').style.display=hasAccount?'block':'none';
+}
+
+function channelsInit(){
+  _loadFbSdk();
+  renderChannelInboxForm();
+  renderChannelsPage();
+}
+
+async function createChatwootAccount(){
+  const msg=$id('chCreateAcctMsg'); msg.textContent='Creating Chatwoot account…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/create-account`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    Object.assign(clientRecord,{chatwoot_base:data.chatwoot_base, chatwoot_account_id:data.chatwoot_account_id});
+    msg.textContent='';
+    renderChannelsPage();
+  }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+function connectWhatsApp(){
+  const msg=$id('chConnectWaMsg');
+  if(!window.FB){ msg.textContent='Facebook SDK still loading — try again in a moment.'; return; }
+  msg.textContent='';
+  FB.login((response)=>{
+    if(response.authResponse && response.authResponse.code){
+      _waSignupData.code=response.authResponse.code;
+      _maybeFinishWaSignup();
+    }else{
+      msg.textContent='WhatsApp connection was cancelled or did not complete.';
+    }
+  }, {config_id:CONFIG.META_WHATSAPP_CONFIG_ID, response_type:'code', override_default_response_type:true, extras:{setup:{}, featureType:'', sessionInfoVersion:'3'}});
+}
+
+async function completeWaConnect(code, waba_id, phone_number_id){
+  const msg=$id('chConnectWaMsg'); msg.textContent='Connecting WhatsApp…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/connect`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({code, waba_id, phone_number_id})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    Object.assign(clientRecord,{chatwoot_inbox_id:data.chatwoot_inbox_id, waba_id:data.waba_id, wa_phone_id:data.wa_phone_id});
+    msg.textContent='';
+    renderChannelsPage();
+  }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+function renderChannelInboxForm(){
+  const type=$id('chNewType').value;
+  $id('chInboxFormWebWidget').style.display=type==='web_widget'?'block':'none';
+  $id('chInboxFormEmail').style.display=type==='email'?'block':'none';
+  $id('chInboxFormApi').style.display=type==='api'?'block':'none';
+}
+
+async function addChannelInbox(){
+  const msg=$id('chAddInboxMsg');
+  const type=$id('chNewType').value;
+  const body={type};
+  if(type==='web_widget'){
+    body.website_url=$id('chWebsiteUrl').value.trim();
+    body.welcome_title=$id('chWelcomeTitle').value.trim();
+    body.welcome_tagline=$id('chWelcomeTagline').value.trim();
+    if(!body.website_url){ msg.textContent='Website URL is required.'; return; }
+  }else if(type==='email'){
+    body.email=$id('chEmailAddr').value.trim();
+    if(!body.email){ msg.textContent='Email is required.'; return; }
+  }else{
+    body.name=$id('chApiName').value.trim();
+  }
+  msg.textContent='Creating inbox…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/inbox`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    msg.innerHTML=`Created "${esc(data.name)}". <a href="${esc(data.chatwoot_settings_url)}" target="_blank" rel="noopener">Open in Chatwoot →</a>`;
+  }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
 /* ── HELPERS ── */

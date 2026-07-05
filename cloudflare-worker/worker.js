@@ -46,6 +46,17 @@ async function ncFetch(env, path, {method='GET', body}={}){
   });
   return r;
 }
+
+/* ── Chatwoot Platform API (master token, server-side only) — provisions a new
+   Chatwoot Account + User per client. Only reaches accounts/users it created
+   itself (Chatwoot restricts Platform tokens to their own objects). ── */
+async function chatwootPlatformFetch(env, path, {method='GET', body}={}){
+  return fetch(`${env.CHATWOOT_INSTANCE_BASE}${path}`, {
+    method,
+    headers:{api_access_token:env.CHATWOOT_PLATFORM_TOKEN, 'Content-Type':'application/json'},
+    body: body?JSON.stringify(body):undefined
+  });
+}
 async function getClientById(env, clientId){
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`);
   if(!r.ok) return null;
@@ -56,6 +67,11 @@ async function getClientByAuthentikEmail(env, email){
   if(!r.ok) return null;
   const data=await r.json();
   return data?.list?.[0]||null;
+}
+async function patchClientFields(env, clientId, fields){
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), ...fields}});
+  if(!r.ok) throw new Error('Failed to save client record: HTTP '+r.status);
+  return r.json().catch(()=>({}));
 }
 function safeClient(rec){
   const {dashboard_password, ...safe}=rec;
@@ -239,6 +255,113 @@ async function handleAiComplete(request, env){
   return json(data);
 }
 
+/* ── Channels module ──────────────────────────────────────────────────────
+   Automates what SETUP.md used to require by hand: creating the client's
+   Chatwoot account, connecting WhatsApp via Meta Embedded Signup, and adding
+   other inbox types — all driven from the dashboard's Channels page. ── */
+async function handleChannelsCreateAccount(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.CHATWOOT_PLATFORM_TOKEN||!env.CHATWOOT_INSTANCE_BASE) return json({error:'Chatwoot platform credentials are not configured on the server.'}, 500);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(c.chatwoot_account_id && c.chatwoot_token) return json({error:'A Chatwoot account is already connected for this client.'}, 400);
+
+  const acctR=await chatwootPlatformFetch(env, '/platform/api/v1/accounts', {method:'POST', body:{name:c.client_name||`Leadvyne client ${c.Id}`}});
+  const acct=await acctR.json().catch(()=>({}));
+  if(!acctR.ok||!acct?.id) return json({error:'Chatwoot account creation failed: '+(acct?.message||('HTTP '+acctR.status))}, 502);
+
+  const email=c.authentik_email||`client-${c.Id}@leadvyne.local`;
+  const password=crypto.randomUUID()+'Aa1!'; // random — never shown to the client, only the returned access_token is used
+  const userR=await chatwootPlatformFetch(env, '/platform/api/v1/users', {method:'POST', body:{name:c.client_name||`Client ${c.Id}`, email, password}});
+  const user=await userR.json().catch(()=>({}));
+  if(!userR.ok||!user?.id||!user?.access_token) return json({error:'Chatwoot user creation failed: '+(user?.message||('HTTP '+userR.status))}, 502);
+
+  const linkR=await chatwootPlatformFetch(env, `/platform/api/v1/accounts/${acct.id}/account_users`, {method:'POST', body:{user_id:user.id, role:'administrator'}});
+  if(!linkR.ok) return json({error:'Failed to link the Chatwoot user to the account: HTTP '+linkR.status}, 502);
+
+  await patchClientFields(env, payload.cid, {chatwoot_base:env.CHATWOOT_INSTANCE_BASE, chatwoot_account_id:String(acct.id), chatwoot_token:user.access_token});
+  return json({ok:true, chatwoot_base:env.CHATWOOT_INSTANCE_BASE, chatwoot_account_id:String(acct.id)});
+}
+
+async function handleChannelsWhatsappConnect(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.META_APP_ID||!env.META_APP_SECRET) return json({error:'Meta app credentials are not configured on the server.'}, 500);
+  const {code, waba_id, phone_number_id}=await request.json().catch(()=>({}));
+  if(!code||!waba_id||!phone_number_id) return json({error:'code, waba_id and phone_number_id are required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
+
+  const tokenR=await fetch(`https://graph.facebook.com/v18.0/oauth/access_token?client_id=${env.META_APP_ID}&client_secret=${env.META_APP_SECRET}&code=${encodeURIComponent(code)}`);
+  const tokenData=await tokenR.json().catch(()=>({}));
+  if(!tokenR.ok||!tokenData.access_token) return json({error:'Meta token exchange failed: '+(tokenData?.error?.message||('HTTP '+tokenR.status))}, 502);
+  const wa_token=tokenData.access_token;
+
+  // Best-effort — a failure here shouldn't block the connection; it can be re-subscribed from Meta Business Manager.
+  await fetch(`https://graph.facebook.com/v18.0/${waba_id}/subscribed_apps`, {method:'POST', headers:{Authorization:`Bearer ${wa_token}`}}).catch(()=>{});
+
+  const phoneR=await fetch(`https://graph.facebook.com/v18.0/${phone_number_id}?fields=display_phone_number`, {headers:{Authorization:`Bearer ${wa_token}`}});
+  const phoneData=await phoneR.json().catch(()=>({}));
+  const phone_number=phoneData?.display_phone_number||'';
+
+  const inboxR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({
+      name:`WhatsApp${phone_number?' - '+phone_number:''}`,
+      channel:{type:'whatsapp', phone_number, provider:'whatsapp_cloud', provider_config:{business_account_id:waba_id, phone_number_id, api_key:wa_token}}
+    })
+  });
+  const inbox=await inboxR.json().catch(()=>({}));
+  if(!inboxR.ok||!inbox?.id) return json({error:'Chatwoot inbox creation failed: '+(inbox?.message||('HTTP '+inboxR.status))}, 502);
+
+  if(c.webhook_url){
+    // Best-effort — wires the bot's n8n webhook onto the new inbox so no manual paste-in-Chatwoot
+    // step is needed. If this fails, the client can still add it from Chatwoot's own UI.
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
+      method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+      body:JSON.stringify({inbox_id:inbox.id, url:c.webhook_url, subscriptions:['message_created']})
+    }).catch(()=>{});
+  }
+
+  await patchClientFields(env, payload.cid, {chatwoot_inbox_id:String(inbox.id), waba_id, wa_token, wa_phone_id:phone_number_id});
+  return json({ok:true, chatwoot_inbox_id:String(inbox.id), waba_id, wa_phone_id:phone_number_id});
+}
+
+async function handleChannelsInboxCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const {type}=body;
+  if(!['web_widget','email','api'].includes(type)) return json({error:'Unsupported channel type.'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
+
+  let channel, name;
+  if(type==='web_widget'){
+    const {website_url, welcome_title, welcome_tagline}=body;
+    if(!website_url) return json({error:'website_url is required'}, 400);
+    name=`Website - ${website_url}`;
+    channel={type:'web_widget', website_url, welcome_title:welcome_title||'', welcome_tagline:welcome_tagline||''};
+  }else if(type==='email'){
+    const {email}=body;
+    if(!email) return json({error:'email is required'}, 400);
+    name=`Email - ${email}`;
+    channel={type:'email', email};
+  }else{
+    name=body.name||'API Channel';
+    channel={type:'api', webhook_url:body.webhook_url||''};
+  }
+
+  const inboxR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({name, channel})
+  });
+  const inbox=await inboxR.json().catch(()=>({}));
+  if(!inboxR.ok||!inbox?.id) return json({error:'Chatwoot inbox creation failed: '+(inbox?.message||('HTTP '+inboxR.status))}, 502);
+  return json({ok:true, inbox_id:inbox.id, name:inbox.name||name, chatwoot_settings_url:`${c.chatwoot_base}/app/accounts/${c.chatwoot_account_id}/settings/inboxes/${inbox.id}`});
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -259,6 +382,9 @@ export default {
       else if(url.pathname==='/wa/templates' && request.method==='POST'){ res=await handleWaTemplatesCreate(request, env); }
       else if(url.pathname==='/wa/send' && request.method==='POST'){ res=await handleWaSend(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
+      else if(url.pathname==='/channels/create-account' && request.method==='POST'){ res=await handleChannelsCreateAccount(request, env); }
+      else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
+      else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

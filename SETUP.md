@@ -196,8 +196,13 @@ npm install -g wrangler          # if not already installed
 cd cloudflare-worker
 wrangler secret put NOCODB_TOKEN         # the master NocoDB token (nc_pat_...)
 wrangler secret put SESSION_SIGNING_KEY  # a long random string, e.g. `openssl rand -hex 32`
+wrangler secret put CHATWOOT_PLATFORM_TOKEN  # Channels module — see "Channels module" section below
+wrangler secret put META_APP_ID              # Channels module — Meta Tech Provider app id
+wrangler secret put META_APP_SECRET          # Channels module — Meta Tech Provider app secret
 wrangler deploy
 ```
+Also set `CHATWOOT_INSTANCE_BASE` as a plain (non-secret) var in `wrangler.toml`'s `[vars]` —
+it's the base URL of the Chatwoot install the Channels module provisions new accounts on.
 Copy the resulting `https://leadvyne-api-proxy.<your-subdomain>.workers.dev` URL into
 `dashboard.html`'s `WORKER_BASE` constant (replacing `REPLACE_WITH_WORKER_URL`), and redeploy
 the frontend.
@@ -205,6 +210,45 @@ the frontend.
 **Known gap**: `index.html`, `broadcast.html`, and `ecom.html` still embed the master NocoDB
 token directly and are **not yet migrated** to this Worker — same exposure as before on those
 three pages specifically. `dashboard.html` (the primary, most-used surface) is fully migrated.
+
+## Channels module (self-service Chatwoot + WhatsApp connection)
+The old flow required an admin to manually create a Chatwoot account, create a WhatsApp Cloud
+inbox by hand, and paste four Chatwoot fields plus `waba_id`/`wa_token`/`wa_phone_id` into
+Settings. The **Channels** page (new sidebar tab, `dashboard.html`) automates all three steps
+using two credentials that are separate from everything else in this repo — neither ever
+reaches the browser:
+
+| Secret (Worker) | What it is | Where to get it |
+|---|---|---|
+| `CHATWOOT_PLATFORM_TOKEN` | Chatwoot **Platform API** access token — creates Accounts/Users. Platform tokens can only see objects they created themselves, never accounts made through the normal UI. | Chatwoot Super Admin console → Platform Apps → create one → copy its access token |
+| `CHATWOOT_INSTANCE_BASE` (plain var, not secret) | The base URL of the Chatwoot install these new accounts are created on | e.g. `https://app.yourchatwoot.com` |
+| `META_APP_ID` / `META_APP_SECRET` | Your Meta Tech Provider app — `META_APP_SECRET` does the Embedded Signup code→token exchange server-side | Meta Developer Portal → your Tech Provider app |
+
+`dashboard.html`'s `CONFIG.META_APP_ID` / `CONFIG.META_WHATSAPP_CONFIG_ID` are **public** identifiers
+(safe in browser JS — only `META_APP_SECRET` is a secret) used to launch Meta's Embedded Signup
+popup. Get the Config ID from Meta Developer Portal → your app → WhatsApp → **Embedded Signup**
+(this is the same Tech Provider/Embedded Signup approval used by Chatwoot's own native WhatsApp
+Cloud onboarding — you don't need a second Meta app).
+
+**Flow** (3 steps, each gated on the previous):
+1. **Create Chatwoot Account** — `POST /channels/create-account`. Creates a Chatwoot Account +
+   User via the Platform API, links the user as `administrator`, and writes
+   `chatwoot_base`/`chatwoot_account_id`/`chatwoot_token` onto the CLIENTS row.
+2. **Connect WhatsApp** — Embedded Signup popup returns a `code` (FB.login callback) plus
+   `waba_id`/`phone_number_id` (posted via `window.message` by Meta's SDK). `POST
+   /channels/whatsapp/connect` exchanges the code for a token, subscribes the app to the WABA,
+   creates the WhatsApp Cloud inbox in Chatwoot (`provider_config: {business_account_id,
+   phone_number_id, api_key}`), best-effort wires the inbox's webhook to the client's existing
+   `webhook_url` (the n8n wrapper from onboarding), and writes `chatwoot_inbox_id`/`waba_id`/
+   `wa_token`/`wa_phone_id`.
+3. **Add Another Inbox** — `POST /channels/inbox` creates a Website widget, Email, or API inbox
+   on the same Chatwoot account. These aren't written back to CLIENTS (nothing in the bot engine
+   references them) — the response links straight to that inbox's settings page in Chatwoot for
+   any manual finishing touches (widget styling, IMAP for email, etc).
+
+**Not yet verified against a live instance**: the exact WhatsApp `provider_config` field names
+and the webhook-create payload are taken from Chatwoot's `develop` branch source, not a live
+test — worth a smoke test on your instance before relying on it for production onboarding.
 
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
