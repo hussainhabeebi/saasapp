@@ -9,7 +9,7 @@ NOCODB_BASE = "https://whizz.aiingo.com"
 AUTHENTIK_BASE = "https://secure.leadvyne.com"
 ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com"
 # Channels module — base URL of the Chatwoot install new client accounts are provisioned on.
-CHATWOOT_INSTANCE_BASE = "https://REPLACE_WITH_YOUR_CHATWOOT_URL"
+CHATWOOT_INSTANCE_BASE = "https://app.aiingo.com"
 # Billing module — see SETUP.md "Billing module"
 APP_BASE_URL = "https://app.leadvyne.com/dashboard.html"
 # Starter and Pro (INR, AED) are live; Growth still needs a Product/Price created in Stripe.
