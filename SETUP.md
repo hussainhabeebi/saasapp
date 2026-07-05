@@ -309,12 +309,22 @@ That's why this implementation is split the way it is:
 This is architectural guidance based on Stripe's public documentation, not legal advice —
 confirm the current threshold and any newer RBI circulars before relying on it for a real launch.
 
+### Multi-currency plans/add-ons
+If you sell in more than one currency (e.g. INR + AED), create a **separate Price object per
+currency** under the same Product (Stripe's `currency_options` on a single Price is a different
+mechanism — auto-detected, no manual toggle — and isn't what's implemented here). The Billing
+page shows an explicit currency toggle and picks the matching Price ID per plan/add-on:
+`CONFIG.BILLING_PLANS`/`CONFIG.BILLING_ADDONS` in `dashboard.html` are keyed
+`{id, name, prices:{INR:{price_id,display}, AED:{price_id,display}, …}}` — add a `prices` entry
+per currency you support, and list every one of those Price IDs in the two Worker allow-lists
+below (they're a flat list across all currencies, not per-currency).
+
 ### Stripe Dashboard setup
-1. **Products/Prices for plans** (recurring) — one Price per tier. Set the Price's **nickname**
-   to the human-readable plan name (e.g. "Growth") — the webhook reads this into `plan_name`.
-   Optionally set metadata `message_limit` (e.g. `1000`) if you want a quota shown in the usage
-   dashboard later.
-2. **Products/Prices for add-ons** (one-time) — one Price per add-on. Set metadata on each Price:
+1. **Products/Prices for plans** (recurring) — one Price per tier **per currency**. Set the
+   Price's **nickname** to the human-readable plan name (e.g. "Growth") — the webhook reads this
+   into `plan_name`. Optionally set metadata `message_limit` (e.g. `1000`) if you want a quota
+   shown in the usage dashboard later.
+2. **Products/Prices for add-ons** (one-time) — one Price per add-on **per currency**. Set metadata on each Price:
    - WhatsApp credits pack: `fulfillment_type=wa_credits`, `wa_credits_amount=<number>` (added to
      `wa_credits_balance` on purchase).
    - Voice add-on: `fulfillment_type=voice_addon` (sets `voice_addon_active=Yes` on purchase).
