@@ -80,6 +80,52 @@ async function findOtherClientByField(env, field, value, excludeId){
   const data=await r.json().catch(()=>({}));
   return (data?.list||[]).find(row=>String(row.Id)!==String(excludeId))||null;
 }
+/* ── Stripe REST client (fetch-based, no SDK — this Worker ships as a single
+   file with no npm build step). Params are flattened to Stripe's bracket
+   notation for its form-encoded API, e.g. {line_items:[{price:'x'}]} ->
+   'line_items[0][price]=x'. ── */
+function stripeParams(obj, prefix){
+  const out=[];
+  for(const [k,v] of Object.entries(obj)){
+    if(v===undefined||v===null) continue;
+    const key=prefix?`${prefix}[${k}]`:k;
+    if(Array.isArray(v)) v.forEach((item,i)=>{
+      const ik=`${key}[${i}]`;
+      if(item && typeof item==='object') out.push(...stripeParams(item, ik));
+      else out.push([ik, String(item)]);
+    });
+    else if(v && typeof v==='object') out.push(...stripeParams(v, key));
+    else out.push([key, String(v)]);
+  }
+  return out;
+}
+async function stripeFetch(env, method, path, params){
+  const isGet=method==='GET';
+  const qs=new URLSearchParams(params?stripeParams(params):[]).toString();
+  const r=await fetch(`https://api.stripe.com/v1/${path}${isGet&&qs?'?'+qs:''}`, {
+    method,
+    headers:{Authorization:`Bearer ${env.STRIPE_SECRET_KEY}`, ...(isGet?{}:{'Content-Type':'application/x-www-form-urlencoded'})},
+    body: isGet?undefined:qs
+  });
+  const data=await r.json().catch(()=>({}));
+  return {ok:r.ok, status:r.status, data};
+}
+function hex(buffer){ return [...new Uint8Array(buffer)].map(b=>b.toString(16).padStart(2,'0')).join(''); }
+async function verifyStripeSignature(env, rawBody, sigHeader){
+  if(!sigHeader) return false;
+  const parts=Object.fromEntries(sigHeader.split(',').map(p=>p.split('=')));
+  const timestamp=parts.t, v1=parts.v1;
+  if(!timestamp||!v1) return false;
+  if(Math.abs(Date.now()/1000 - Number(timestamp)) > 300) return false; // reject signatures older than 5 minutes (replay protection)
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(env.STRIPE_WEBHOOK_SECRET), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${timestamp}.${rawBody}`));
+  const expected=hex(sig);
+  if(expected.length!==v1.length) return false;
+  let diff=0;
+  for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^v1.charCodeAt(i);
+  return diff===0;
+}
+
 function safeClient(rec){
   const {dashboard_password, ...safe}=rec;
   return safe;
@@ -426,6 +472,130 @@ async function handleChannelsChatwootSso(request, env){
   return json({ok:true, url:data.url});
 }
 
+/* ── Billing module (Stripe) ──────────────────────────────────────────────
+   Plan subscriptions use Stripe Checkout (mode=subscription) + the Stripe
+   Customer Portal for everything after signup (upgrade/downgrade/cancel/
+   invoices/renewal date) — that's the supported integration path for RBI's
+   e-mandate rules on India-issued cards (raw PaymentIntents/SetupIntents
+   don't get e-mandate support). Add-ons (WhatsApp credit packs, voice) are
+   one-time Checkout payments (mode=payment) instead of recurring items —
+   that sidesteps the recurring-mandate rules entirely for these purchases.
+   Fulfillment (credits granted, voice enabled) is driven by metadata set on
+   the Stripe Price/Product in the Dashboard, not hardcoded here. ── */
+async function ensureStripeCustomer(env, c, clientId){
+  if(c.stripe_customer_id) return c.stripe_customer_id;
+  const {ok, data}=await stripeFetch(env, 'POST', 'customers', {email:c.authentik_email||undefined, name:c.client_name||undefined, metadata:{client_id:String(clientId)}});
+  if(!ok||!data?.id) throw new Error('Failed to create Stripe customer: '+(data?.error?.message||'unknown error'));
+  await patchClientFields(env, clientId, {stripe_customer_id:data.id});
+  return data.id;
+}
+
+async function handleBillingCheckoutSubscription(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
+  const {price_id}=await request.json().catch(()=>({}));
+  const allowed=(env.STRIPE_PLAN_PRICE_IDS||'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(!price_id||!allowed.includes(price_id)) return json({error:'Unknown plan.'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(c.stripe_subscription_id) return json({error:'Already subscribed — manage your plan from the Billing Portal instead.'}, 400);
+
+  const customerId=await ensureStripeCustomer(env, c, payload.cid);
+  const {ok, data}=await stripeFetch(env, 'POST', 'checkout/sessions', {
+    mode:'subscription',
+    customer:customerId,
+    line_items:[{price:price_id, quantity:1}],
+    success_url:`${env.APP_BASE_URL}?billing=success`,
+    cancel_url:`${env.APP_BASE_URL}?billing=cancel`,
+    metadata:{client_id:String(payload.cid)},
+    subscription_data:{metadata:{client_id:String(payload.cid)}}
+  });
+  if(!ok||!data?.url) return json({error:'Failed to start checkout: '+(data?.error?.message||'unknown error')}, 502);
+  return json({ok:true, url:data.url});
+}
+
+async function handleBillingPortal(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.stripe_customer_id) return json({error:'No billing account yet — subscribe to a plan first.'}, 400);
+  const {ok, data}=await stripeFetch(env, 'POST', 'billing_portal/sessions', {customer:c.stripe_customer_id, return_url:env.APP_BASE_URL});
+  if(!ok||!data?.url) return json({error:'Failed to open billing portal: '+(data?.error?.message||'unknown error')}, 502);
+  return json({ok:true, url:data.url});
+}
+
+async function handleBillingCheckoutAddon(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
+  const {price_id}=await request.json().catch(()=>({}));
+  const allowed=(env.STRIPE_ADDON_PRICE_IDS||'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(!price_id||!allowed.includes(price_id)) return json({error:'Unknown add-on.'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+
+  const customerId=await ensureStripeCustomer(env, c, payload.cid);
+  const {ok, data}=await stripeFetch(env, 'POST', 'checkout/sessions', {
+    mode:'payment',
+    customer:customerId,
+    line_items:[{price:price_id, quantity:1}],
+    success_url:`${env.APP_BASE_URL}?billing=success`,
+    cancel_url:`${env.APP_BASE_URL}?billing=cancel`,
+    metadata:{client_id:String(payload.cid), price_id}
+  });
+  if(!ok||!data?.url) return json({error:'Failed to start checkout: '+(data?.error?.message||'unknown error')}, 502);
+  return json({ok:true, url:data.url});
+}
+
+async function fulfillAddon(env, clientId, priceId){
+  const {ok, data}=await stripeFetch(env, 'GET', `prices/${priceId}`, {expand:['product']});
+  if(!ok) return;
+  // Price metadata wins over Product metadata, so a one-off Price can override the Product default.
+  const meta={...(data?.product?.metadata||{}), ...(data?.metadata||{})};
+  const c=await getClientById(env, clientId);
+  if(!c) return;
+  if(meta.fulfillment_type==='wa_credits'){
+    const amount=Number(meta.wa_credits_amount||0);
+    await patchClientFields(env, clientId, {wa_credits_balance:(Number(c.wa_credits_balance)||0)+amount});
+  }else if(meta.fulfillment_type==='voice_addon'){
+    await patchClientFields(env, clientId, {voice_addon_active:'Yes'});
+  }
+}
+
+async function handleBillingWebhook(request, env){
+  if(!env.STRIPE_WEBHOOK_SECRET) return json({error:'Webhook not configured'}, 500);
+  const rawBody=await request.text();
+  const valid=await verifyStripeSignature(env, rawBody, request.headers.get('Stripe-Signature'));
+  if(!valid) return json({error:'Invalid signature'}, 400);
+  const event=JSON.parse(rawBody);
+  const obj=event.data?.object||{};
+
+  if(event.type==='checkout.session.completed' && obj.mode==='payment'){
+    const clientId=obj.metadata?.client_id, priceId=obj.metadata?.price_id;
+    if(clientId && priceId) await fulfillAddon(env, clientId, priceId);
+  }
+  if(event.type==='customer.subscription.created' || event.type==='customer.subscription.updated'){
+    const clientId=obj.metadata?.client_id;
+    if(clientId){
+      const price=obj.items?.data?.[0]?.price;
+      await patchClientFields(env, clientId, {
+        stripe_subscription_id:obj.id,
+        plan_status:obj.status,
+        plan_renews_at:obj.current_period_end?new Date(obj.current_period_end*1000).toISOString():'',
+        plan_name:price?.nickname||price?.id||'',
+        plan_message_limit:Number(price?.metadata?.message_limit||0)||undefined
+      });
+    }
+  }
+  if(event.type==='customer.subscription.deleted'){
+    const clientId=obj.metadata?.client_id;
+    if(clientId) await patchClientFields(env, clientId, {plan_status:'canceled'});
+  }
+  return json({received:true});
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -451,6 +621,10 @@ export default {
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
       else if(url.pathname==='/channels/status' && request.method==='GET'){ res=await handleChannelsStatus(request, env); }
       else if(url.pathname==='/channels/chatwoot-sso' && request.method==='GET'){ res=await handleChannelsChatwootSso(request, env); }
+      else if(url.pathname==='/billing/checkout-subscription' && request.method==='POST'){ res=await handleBillingCheckoutSubscription(request, env); }
+      else if(url.pathname==='/billing/portal' && request.method==='GET'){ res=await handleBillingPortal(request, env); }
+      else if(url.pathname==='/billing/checkout-addon' && request.method==='POST'){ res=await handleBillingCheckoutAddon(request, env); }
+      else if(url.pathname==='/billing/webhook' && request.method==='POST'){ res=await handleBillingWebhook(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

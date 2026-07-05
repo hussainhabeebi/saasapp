@@ -10,6 +10,10 @@ AUTHENTIK_BASE = "https://secure.leadvyne.com"
 ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com"
 # Channels module — base URL of the Chatwoot install new client accounts are provisioned on.
 CHATWOOT_INSTANCE_BASE = "https://REPLACE_WITH_YOUR_CHATWOOT_URL"
+# Billing module — see SETUP.md "Billing module"
+APP_BASE_URL = "https://app.leadvyne.com/dashboard.html"
+STRIPE_PLAN_PRICE_IDS = "REPLACE_STRIPE_PRICE_STARTER,REPLACE_STRIPE_PRICE_GROWTH,REPLACE_STRIPE_PRICE_PRO"
+STRIPE_ADDON_PRICE_IDS = "REPLACE_STRIPE_PRICE_WA_CREDITS,REPLACE_STRIPE_PRICE_VOICE_ADDON"
 
 # Secrets (NOT stored here — set via `wrangler secret put <NAME>`):
 #   NOCODB_TOKEN            the master NocoDB token (nc_pat_...)
@@ -17,3 +21,5 @@ CHATWOOT_INSTANCE_BASE = "https://REPLACE_WITH_YOUR_CHATWOOT_URL"
 #   CHATWOOT_PLATFORM_TOKEN Chatwoot Platform API token — see SETUP.md "Channels module"
 #   META_APP_ID             Meta Tech Provider app id (Embedded Signup token exchange)
 #   META_APP_SECRET         Meta Tech Provider app secret (Embedded Signup token exchange)
+#   STRIPE_SECRET_KEY       Stripe secret key — see SETUP.md "Billing module"
+#   STRIPE_WEBHOOK_SECRET   Stripe webhook signing secret for /billing/webhook

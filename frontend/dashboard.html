@@ -786,6 +786,20 @@ const CONFIG = {
   // these from Meta Developer Portal → your Tech Provider app → WhatsApp → Embedded Signup.
   META_APP_ID:              'REPLACE_META_APP_ID',
   META_WHATSAPP_CONFIG_ID:  'REPLACE_META_WHATSAPP_CONFIG_ID',
+  // Billing (Stripe) — Price IDs from your Stripe Dashboard. Plans are recurring Prices
+  // (Checkout mode=subscription, then managed via the Customer Portal). Add-ons are
+  // one-time Prices (Checkout mode=payment) — set fulfillment_type/wa_credits_amount
+  // metadata on each add-on Price in Stripe so the Worker knows what to grant. See
+  // SETUP.md "Billing module" for the RBI e-mandate reasoning behind this split.
+  BILLING_PLANS: [
+    {price_id:'REPLACE_STRIPE_PRICE_STARTER', name:'Starter', display:'₹—/mo'},
+    {price_id:'REPLACE_STRIPE_PRICE_GROWTH',  name:'Growth',  display:'₹—/mo'},
+    {price_id:'REPLACE_STRIPE_PRICE_PRO',     name:'Pro',     display:'₹—/mo'},
+  ],
+  BILLING_ADDONS: [
+    {price_id:'REPLACE_STRIPE_PRICE_WA_CREDITS', name:'WhatsApp Credits Pack', display:'₹— one-time'},
+    {price_id:'REPLACE_STRIPE_PRICE_VOICE_ADDON', name:'Voice Add-on', display:'₹— one-time'},
+  ],
 };
 
 const INDUSTRIES = {
@@ -865,6 +879,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="tasks">✅ Tasks</button>
     <button class="dnTab" data-page="broadcast">📢 Broadcast</button>
     <button class="dnTab" data-page="channels">🔌 Channels</button>
+    <button class="dnTab" data-page="billing">💳 Billing</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
 
@@ -1712,6 +1727,59 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
+    <!-- BILLING -->
+    <div class="page hidden" id="pageBilling">
+      <div class="page-pad">
+        <div class="card-title" style="margin-bottom:14px">💳 Billing</div>
+
+        <div id="billingBanner" style="display:none;margin-bottom:14px"></div>
+
+        <!-- Current plan / Customer Portal -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">Your Plan</div>
+            <div id="billingNoPlan">
+              <div class="s-note">Choose a plan to get started.</div>
+              <div id="billingPlanPicker" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px"></div>
+              <span class="save-msg" id="billingPlanMsg"></span>
+            </div>
+            <div id="billingHasPlan" style="display:none">
+              <div class="s-note">
+                Plan: <strong id="billingPlanName"></strong> ·
+                Status: <strong id="billingPlanStatus"></strong> ·
+                Renews: <strong id="billingPlanRenews"></strong>
+              </div>
+              <button class="save-btn" onclick="openBillingPortal()">Manage Billing (invoices, upgrade/downgrade, payment method)</button>
+              <span class="save-msg" id="billingPortalMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Add-ons -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">Add-ons</div>
+            <div class="s-note">One-time purchases — not auto-renewing, so buying these never requires re-authorizing a recurring mandate.</div>
+            <div class="s-note">WhatsApp credits balance: <strong id="billingWaCredits">0</strong> · Voice add-on: <strong id="billingVoiceStatus">Not active</strong></div>
+            <div id="billingAddonList" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px"></div>
+            <span class="save-msg" id="billingAddonMsg"></span>
+          </div>
+        </div>
+
+        <!-- Usage dashboard -->
+        <div class="card">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📊 Usage This Month</div>
+            <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px">
+              <div class="stat"><div class="stat-lbl">Messages Sent</div><div class="stat-val" id="billingUsageMessages">0</div></div>
+              <div class="stat"><div class="stat-lbl">Leads Captured</div><div class="stat-val" id="billingUsageLeads">0</div></div>
+              <div class="stat"><div class="stat-lbl">Conversion Rate</div><div class="stat-val" id="billingUsageConv">0%</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /pages -->
 
   <!-- Bottom nav -->
@@ -1729,6 +1797,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
     <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
     <button class="bnItem" data-page="channels"><span class="bnIcon">🔌</span><span class="bnLabel">Channels</span></button>
+    <button class="bnItem" data-page="billing"><span class="bnIcon">💳</span><span class="bnLabel">Billing</span></button>
     <button class="bnItem" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
   </div>
 
@@ -2576,6 +2645,7 @@ function navigate(page){
   if(page==='settings') populateSettings();
   if(page==='chats') openChatsTab();
   if(page==='channels') channelsInit();
+  if(page==='billing') billingInit();
 }
 
 document.querySelectorAll('.bnItem,.dnTab').forEach(b=>{
@@ -2609,6 +2679,8 @@ function showApp(){
   setTimeout(checkReminders,3000);
   clearInterval(_reminderTimer);
   _reminderTimer=setInterval(checkReminders,6*3600*1000);
+  // Land back on Billing after a Stripe Checkout/Portal redirect instead of the default Home tab.
+  if(new URLSearchParams(location.search).has('billing')) navigate('billing');
 }
 
 const _CACHE_KEY=()=>`lv_leads_${clientId}`;
@@ -4320,6 +4392,110 @@ async function connectShopify(){
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     window.open(data.url, '_blank', 'noopener');
     msg.textContent='Opened — go to Settings → Integrations → Shopify → Connect.';
+  }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+/* ── BILLING MODULE (Stripe) ──────────────────────────────────────────────
+   Plan subscribe/upgrade/downgrade/invoices all happen via Stripe Checkout +
+   the Stripe Customer Portal (redirects away and back) — this page just
+   launches those and reflects clientRecord's Stripe-synced fields plus a
+   usage summary computed from the leads already loaded client-side. ── */
+async function refreshClientRecord(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/session/me`,{headers:{'Authorization':'Bearer '+sessionToken}});
+    const data=await r.json();
+    if(r.ok && data.client) Object.assign(clientRecord, data.client);
+  }catch(e){}
+}
+
+function computeBillingUsage(){
+  const monthPrefix=(typeof TODAY!=='undefined'?TODAY:new Date().toISOString().slice(0,10)).slice(0,7);
+  const leadsThisMonth=(allLeads||[]).filter(l=>(l.Date||'').slice(0,7)===monthPrefix);
+  let messages=0;
+  (allLeads||[]).forEach(l=>{
+    if(!l.ConvHistory) return;
+    let hist=[]; try{hist=JSON.parse(l.ConvHistory);}catch(e){return;}
+    messages+=hist.filter(m=>m.role==='assistant' && String(m.ts||'').slice(0,7)===monthPrefix).length;
+  });
+  const convertedThisMonth=leadsThisMonth.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+  const convRate=leadsThisMonth.length?Math.round(convertedThisMonth/leadsThisMonth.length*100):0;
+  return {messages, leads:leadsThisMonth.length, convRate};
+}
+
+function renderBillingPlanPicker(){
+  $id('billingPlanPicker').innerHTML=CONFIG.BILLING_PLANS.map(p=>
+    `<button class="save-btn" onclick="subscribeToPlan('${esc(p.price_id)}')">${esc(p.name)} — ${esc(p.display)}</button>`
+  ).join('');
+}
+function renderBillingAddonList(){
+  $id('billingAddonList').innerHTML=CONFIG.BILLING_ADDONS.map(a=>
+    `<button class="save-btn" onclick="buyAddon('${esc(a.price_id)}')">${esc(a.name)} — ${esc(a.display)}</button>`
+  ).join('');
+}
+
+function renderBillingPage(){
+  const hasPlan=!!clientRecord.stripe_subscription_id;
+  $id('billingNoPlan').style.display=hasPlan?'none':'block';
+  $id('billingHasPlan').style.display=hasPlan?'block':'none';
+  if(hasPlan){
+    $id('billingPlanName').textContent=clientRecord.plan_name||'—';
+    $id('billingPlanStatus').textContent=clientRecord.plan_status||'—';
+    $id('billingPlanRenews').textContent=clientRecord.plan_renews_at?new Date(clientRecord.plan_renews_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'—';
+  }
+  $id('billingWaCredits').textContent=clientRecord.wa_credits_balance||0;
+  $id('billingVoiceStatus').textContent=clientRecord.voice_addon_active==='Yes'?'Active':'Not active';
+
+  const usage=computeBillingUsage();
+  $id('billingUsageMessages').textContent=usage.messages;
+  $id('billingUsageLeads').textContent=usage.leads;
+  $id('billingUsageConv').textContent=usage.convRate+'%';
+}
+
+async function billingInit(){
+  const params=new URLSearchParams(location.search);
+  const billingResult=params.get('billing');
+  if(billingResult){
+    const banner=$id('billingBanner');
+    banner.style.display='block';
+    banner.innerHTML=billingResult==='success'
+      ? '<div class="s-note" style="color:var(--accent-ink)">✅ Payment received — this may take a few seconds to reflect below.</div>'
+      : '<div class="s-note">Checkout was cancelled.</div>';
+    params.delete('billing');
+    history.replaceState({}, '', location.pathname+(params.toString()?'?'+params.toString():''));
+    await refreshClientRecord();
+  }
+  renderBillingPlanPicker();
+  renderBillingAddonList();
+  renderBillingPage();
+}
+
+async function subscribeToPlan(price_id){
+  const msg=$id('billingPlanMsg'); msg.textContent='Opening checkout…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/checkout-subscription`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({price_id})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    window.location.href=data.url;
+  }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+async function openBillingPortal(){
+  const msg=$id('billingPortalMsg'); msg.textContent='Opening billing portal…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/portal`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    window.location.href=data.url;
+  }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+async function buyAddon(price_id){
+  const msg=$id('billingAddonMsg'); msg.textContent='Opening checkout…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/checkout-addon`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({price_id})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    window.location.href=data.url;
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 

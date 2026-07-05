@@ -45,6 +45,14 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | prospect_gsheet_url | Single line (last-used Prospects import sheet link, remembered across logins) |
 | authentik_email | Single line (email of the Authentik user allowed to log into this client's dashboard) |
 | chatwoot_user_id | Single line (Chatwoot user id created by the Channels module — used for the Shopify SSO login link) |
+| stripe_customer_id | Single line (created on first checkout) |
+| stripe_subscription_id | Single line |
+| plan_name | Single line (synced from the subscribed Price's `nickname`) |
+| plan_status | Single line (Stripe subscription status: active/trialing/past_due/canceled/…) |
+| plan_renews_at | Single line (ISO datetime — current_period_end) |
+| plan_message_limit | Number (optional, from the Price's `message_limit` metadata) |
+| wa_credits_balance | Number (running balance from WhatsApp-credit add-on purchases) |
+| voice_addon_active | Single line ("Yes"/"No") |
 
 ### LEADS table additions (for the Quotation module's sent log)
 Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
@@ -271,6 +279,83 @@ Channels page uses this to show what's already connected and never offers to rec
 `provider_config`/field names and the webhook-create payload are taken from Chatwoot's
 `develop` branch source, not a live test — worth a smoke test on your instance before relying
 on it for production onboarding.
+
+## Billing module (Stripe — self-serve portal, add-on purchases, usage dashboard)
+Implements: a self-serve billing portal (invoices, upgrade/downgrade, renewal date), in-app
+add-on purchases (WhatsApp credits, voice add-on), and a client-facing usage dashboard
+(messages sent, leads captured, conversion rate this month).
+
+### Why the plan/add-on split is what it is (India RBI compliance)
+RBI's e-mandate regulation covers **any recurring/auto-debit charge on an India-issued card**,
+in any currency, regardless of where the merchant's Stripe account is registered:
+- The cardholder's bank must notify them **at least 24h before** every recurring charge.
+- Recurring charges **above ₹15,000** (or the mandate's registered cap) require the cardholder
+  to re-authenticate (3DS/AFA) **each time** — this breaks silent auto-renewal above that amount.
+- Stripe's supported path for this is **Subscriptions/Billing** (Checkout `mode=subscription` +
+  the Customer Portal) — raw PaymentIntents/SetupIntents do **not** get e-mandate support.
+
+That's why this implementation is split the way it is:
+- **Plan subscriptions** → Stripe Checkout (`mode=subscription`) + Stripe Customer Portal for
+  everything after (upgrade/downgrade/cancel/invoices/renewal date). Stripe handles e-mandate
+  registration and coordinates the pre-debit notice automatically for India-issued cards.
+  **Keep each plan's recurring price at or under ~₹15,000-equivalent** (check Stripe's current
+  published threshold before launch) if you want renewals to stay silent for Indian customers —
+  above that, every renewal will bounce the customer through a re-authentication step.
+- **Add-ons** (WhatsApp credit packs, voice add-on) → one-time Checkout (`mode=payment`), not
+  recurring line items. A one-time charge isn't an auto-debit, so it's outside the e-mandate
+  rules entirely — no mandate, no 24h notice, no ₹15,000 cap. This was a deliberate choice
+  (confirmed with you) over making add-ons recurring subscription items.
+
+This is architectural guidance based on Stripe's public documentation, not legal advice —
+confirm the current threshold and any newer RBI circulars before relying on it for a real launch.
+
+### Stripe Dashboard setup
+1. **Products/Prices for plans** (recurring) — one Price per tier. Set the Price's **nickname**
+   to the human-readable plan name (e.g. "Growth") — the webhook reads this into `plan_name`.
+   Optionally set metadata `message_limit` (e.g. `1000`) if you want a quota shown in the usage
+   dashboard later.
+2. **Products/Prices for add-ons** (one-time) — one Price per add-on. Set metadata on each Price:
+   - WhatsApp credits pack: `fulfillment_type=wa_credits`, `wa_credits_amount=<number>` (added to
+     `wa_credits_balance` on purchase).
+   - Voice add-on: `fulfillment_type=voice_addon` (sets `voice_addon_active=Yes` on purchase).
+3. **Customer Portal** (Settings → Billing → Customer Portal) — enable "Customers can switch
+   plans" and list your plan Prices there; this is what makes upgrade/downgrade self-serve
+   without any custom UI.
+4. **Webhook endpoint** — add `{WORKER_BASE}/billing/webhook`, subscribe to `checkout.session.completed`,
+   `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`.
+   Copy the signing secret into `STRIPE_WEBHOOK_SECRET`.
+
+### Worker config
+| Secret/var | What it is |
+|---|---|
+| `STRIPE_SECRET_KEY` (secret) | Your Stripe secret key |
+| `STRIPE_WEBHOOK_SECRET` (secret) | Signing secret for the `/billing/webhook` endpoint |
+| `STRIPE_PLAN_PRICE_IDS` (var, comma list) | Allow-list of subscribable plan Price IDs |
+| `STRIPE_ADDON_PRICE_IDS` (var, comma list) | Allow-list of one-time add-on Price IDs |
+| `APP_BASE_URL` (var) | Dashboard URL Stripe redirects back to after Checkout/Portal (e.g. `https://app.leadvyne.com/dashboard.html`) |
+
+`dashboard.html`'s `CONFIG.BILLING_PLANS` / `CONFIG.BILLING_ADDONS` are the same Price IDs, used
+to render the plan-picker/add-on buttons — keep them in sync with the two allow-lists above.
+
+### Flow
+1. **Subscribe** — `POST /billing/checkout-subscription` creates the Stripe Customer (once,
+   cached as `stripe_customer_id`) and a Checkout Session, redirecting the browser there.
+2. **Manage** — `GET /billing/portal` opens the Stripe Customer Portal for that customer —
+   invoices, plan switch, payment method, cancellation, all Stripe-hosted.
+3. **Buy an add-on** — `POST /billing/checkout-addon` (allow-listed Price IDs only) creates a
+   one-time Checkout Session.
+4. **Webhook** (`POST /billing/webhook`, signature-verified manually via Web Crypto — no Stripe
+   SDK, this Worker ships as a single dependency-free file) syncs `plan_name`/`plan_status`/
+   `plan_renews_at` on subscription events, and fulfills add-ons (credits/voice) by reading the
+   purchased Price's metadata — nothing about specific plans or add-on amounts is hardcoded in
+   the Worker.
+5. **Usage dashboard** — computed client-side from leads already loaded into the dashboard
+   (`ConvHistory` entries with `role:'assistant'` this calendar month = messages sent, lead count
+   this month = leads captured, terminal-stage ratio = conversion rate). No new tracking needed.
+
+**Not yet verified against a live Stripe account**: the Checkout/Portal/webhook request shapes
+follow Stripe's public API docs, but this hasn't been smoke-tested end-to-end — test the full
+subscribe → webhook → portal → add-on loop with Stripe test-mode keys before going live.
 
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
