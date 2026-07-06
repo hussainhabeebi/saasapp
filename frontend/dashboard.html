@@ -2634,12 +2634,21 @@ window.addEventListener('message', (event)=>{
   }
 });
 
+function isMobileBrowser(){
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+}
+
 async function startAuthentikLogin(){
   $id('gErr').textContent='';
+  // Popups are unreliable on mobile browsers — many don't share sessionStorage with the new
+  // window/tab the way desktop browsers do, so the PKCE verifier/state saved just below is
+  // missing when Authentik redirects back, failing with "Login session expired" every time.
+  // Skip the popup on mobile entirely and use the plain full-page redirect instead.
+  const useMobileRedirect=isMobileBrowser();
   // Open the popup instantly, synchronously on the click, before any of the async PKCE work below —
   // a blank window appears immediately instead of the user waiting on a crypto.subtle.digest call
   // first. It's navigated to the real authorize URL once that's ready.
-  _authPopup=window.open('','lv_auth','width=480,height=680');
+  if(!useMobileRedirect) _authPopup=window.open('','lv_auth','width=480,height=680');
 
   const verifier=randomToken(), state=randomToken();
   sessionStorage.setItem('lv_pkce_verifier',verifier);
@@ -2654,8 +2663,8 @@ async function startAuthentikLogin(){
     code_challenge_method:'S256'
   });
   const authorizeUrl=`${CONFIG.AUTHENTIK_BASE}/application/o/authorize/?${params.toString()}`;
-  if(!_authPopup){
-    // Popup blocked by the browser — fall back to the old full-page redirect so login still works.
+  if(useMobileRedirect || !_authPopup){
+    // Mobile, or popup blocked by the desktop browser — full-page redirect so login still works.
     window.location.href=authorizeUrl;
     return;
   }
