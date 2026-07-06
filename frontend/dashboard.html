@@ -36,8 +36,9 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 #gate{position:fixed;inset:0;z-index:200;background:linear-gradient(160deg,#071410 0%,#0D2218 60%,#0A1A13 100%);display:flex;align-items:center;justify-content:center;padding:24px}
 #gate.hidden{display:none}
 .gbox{width:100%;max-width:380px}
-.gbrand{font-family:var(--disp);font-size:28px;font-weight:700;color:#fff;margin-bottom:6px;letter-spacing:-.3px}
+.gbrand{font-family:var(--disp);font-size:28px;font-weight:700;color:#fff;margin-bottom:6px;letter-spacing:-.3px;display:flex;align-items:center;justify-content:center;gap:10px}
 .gbrand span{color:#4ECFA0}
+.gbrand img{height:32px;width:32px;object-fit:contain}
 .gsub{color:#6FA898;font-size:13.5px;margin-bottom:20px;line-height:1.5}
 .gfld{display:flex;flex-direction:column;gap:12px;margin-bottom:8px}
 .ginput{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);border-radius:14px;padding:14px 18px;color:#fff;font-family:var(--body);font-size:15px;transition:border-color .2s,background .2s}
@@ -211,8 +212,9 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 
 /* header */
 #hdr{height:var(--hdr);background:var(--card);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 18px;gap:10px;flex-shrink:0;z-index:50;box-shadow:0 1px 0 var(--line)}
-.hbrand{font-family:var(--disp);font-size:17px;font-weight:700;letter-spacing:-.2px}
+.hbrand{font-family:var(--disp);font-size:17px;font-weight:700;letter-spacing:-.2px;display:inline-flex;align-items:center;gap:6px}
 .hbrand span{color:var(--accent)}
+.hbrand img{height:20px;width:20px;object-fit:contain}
 .hchip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:4px 12px;border-radius:20px;font-family:var(--disp)}
 .hright{margin-left:auto;display:flex;align-items:center;gap:6px}
 #hUpdated{font-family:var(--mono);font-size:10px;color:var(--muted)}
@@ -845,7 +847,7 @@ const TODAY = new Date().toISOString().slice(0,10);
 <!-- GATE -->
 <div id="gate">
   <div class="gbox">
-    <div class="gbrand">Leadvyne<span>.</span></div>
+    <div class="gbrand"><img src="assets/leadvyne-logo-128.png" alt="">Leadvyne<span>.</span></div>
     <p class="gsub">WhatsApp CRM &amp; AI Bot Platform</p>
 
     <!-- ENTRY: single Authentik flow — its own hosted page offers both "log in" and
@@ -865,7 +867,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <!-- Header -->
   <div id="hdr">
     <img id="hLogo" style="display:none;height:26px;max-width:130px;border-radius:4px;object-fit:contain;vertical-align:middle" alt="logo">
-    <span class="hbrand" id="hBrandText">Leadvyne<span>.</span></span>
+    <span class="hbrand" id="hBrandText"><img src="assets/leadvyne-logo-128.png" alt="">Leadvyne<span>.</span></span>
     <span class="hchip" id="hChip">—</span>
     <div id="notifBell" style="position:relative;cursor:pointer;display:none" onclick="toggleNotifDropdown()">
       🔔<span id="notifBadge" style="display:none;position:absolute;top:-4px;right:-4px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center"></span>
