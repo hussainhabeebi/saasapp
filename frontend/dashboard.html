@@ -43,10 +43,15 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .ginput{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);border-radius:14px;padding:14px 18px;color:#fff;font-family:var(--body);font-size:15px;transition:border-color .2s,background .2s}
 .ginput::placeholder{color:rgba(255,255,255,.3)}
 .ginput:focus{outline:none;border-color:#4ECFA0;background:rgba(255,255,255,.10);box-shadow:0 0 0 4px rgba(78,207,160,.12)}
-.gbtn{margin-top:8px;width:100%;background:linear-gradient(135deg,#0E7C5A,#0CB870);color:#fff;border:none;border-radius:14px;padding:15px;font-family:var(--disp);font-weight:700;font-size:15px;cursor:pointer;transition:opacity .15s,transform .1s;letter-spacing:.01em}
+.gbtn{margin-top:8px;width:100%;background:linear-gradient(135deg,#0E7C5A,#0CB870);color:#fff;border:none;border-radius:14px;padding:15px;font-family:var(--disp);font-weight:700;font-size:15px;cursor:pointer;transition:opacity .15s,transform .1s;letter-spacing:.01em;display:flex;align-items:center;justify-content:center;gap:10px}
 .gbtn:hover{opacity:.92}
 .gbtn:active{transform:scale(.98)}
 .gbtn:disabled{opacity:.5;cursor:not-allowed}
+.gbtn.loading{cursor:wait}
+.gbtn.loading:active{transform:none}
+.gbtn-spinner{width:16px;height:16px;flex:none;border-radius:50%;border:2.5px solid rgba(255,255,255,.35);border-top-color:#fff;animation:gbtn-spin .7s linear infinite}
+@keyframes gbtn-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.gbtn-spinner{animation:none}}
 .gerr{color:#FCA5A5;font-size:12.5px;min-height:20px;margin-top:10px}
 .gsuccess{color:#6EE7B7;font-size:12.5px;min-height:20px;margin-top:10px}
 /* HOME COMMAND CENTER */
@@ -2574,7 +2579,7 @@ async function autoProvisionAndLogin(email, accessToken){
     completeLoginResult(session);
   }catch(e){
     completeLoginError(e.message||'Account setup failed — try again.');
-    $id('gBtn').disabled=false;
+    setGBtnState(false);
   }
 }
 
@@ -2619,7 +2624,7 @@ function completeLoginError(message){
     return;
   }
   $id('gErr').textContent=message;
-  $id('gBtn').disabled=false;
+  setGBtnState(false);
 }
 
 window.addEventListener('message', (event)=>{
@@ -2629,7 +2634,7 @@ window.addEventListener('message', (event)=>{
     completeLoginResult(event.data);
   }else if(event.data?.type==='lv_auth_error'){
     clearInterval(_authPopupTimer);
-    $id('gBtn').disabled=false; $id('gBtn').textContent='Continue with Authentik';
+    setGBtnState(false);
     $id('gErr').textContent=event.data.message||'Login failed.';
   }
 });
@@ -2638,8 +2643,20 @@ function isMobileBrowser(){
   return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 }
 
+// Centralizes the login button's loading/idle visuals so every reset path (popup closed, error,
+// logout, mobile redirect) shows the same spinner+state instead of duplicating markup everywhere.
+function setGBtnState(loading, text){
+  const btn=$id('gBtn');
+  if(!btn) return;
+  btn.disabled=loading;
+  btn.classList.toggle('loading', loading);
+  btn.innerHTML=loading ? `<span class="gbtn-spinner"></span>${esc(text||'Connecting…')}` : esc(text||'Continue with Authentik');
+}
+
 async function startAuthentikLogin(){
   $id('gErr').textContent='';
+  // Immediate visual feedback on the very first click, before any async work starts.
+  setGBtnState(true, 'Connecting…');
   // Popups are unreliable on mobile browsers — many don't share sessionStorage with the new
   // window/tab the way desktop browsers do, so the PKCE verifier/state saved just below is
   // missing when Authentik redirects back, failing with "Login session expired" every time.
@@ -2665,16 +2682,17 @@ async function startAuthentikLogin(){
   const authorizeUrl=`${CONFIG.AUTHENTIK_BASE}/application/o/authorize/?${params.toString()}`;
   if(useMobileRedirect || !_authPopup){
     // Mobile, or popup blocked by the desktop browser — full-page redirect so login still works.
+    // Leave the button in its loading state; the page is about to navigate away anyway.
     window.location.href=authorizeUrl;
     return;
   }
   _authPopup.location.href=authorizeUrl;
-  $id('gBtn').disabled=true; $id('gBtn').textContent='Waiting for Authentik…';
+  setGBtnState(true, 'Waiting for Authentik…');
   clearInterval(_authPopupTimer);
   _authPopupTimer=setInterval(()=>{
     if(_authPopup.closed){
       clearInterval(_authPopupTimer);
-      $id('gBtn').disabled=false; $id('gBtn').textContent='Continue with Authentik';
+      setGBtnState(false);
     }
   },500);
 }
@@ -2754,7 +2772,7 @@ $id('hLogout').addEventListener('click',()=>{
   const notifBell=$id('notifBell');if(notifBell)notifBell.style.display='none';
   $id('app').classList.remove('show');
   $id('gate').classList.remove('hidden');
-  $id('gBtn').disabled=false; $id('gBtn').textContent='Sign in with Authentik';
+  setGBtnState(false, 'Sign in with Authentik');
 });
 
 $id('hRefresh').addEventListener('click',()=>loadAll());
