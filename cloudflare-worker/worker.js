@@ -66,7 +66,20 @@ async function getClientByAuthentikEmail(env, email){
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(authentik_email,eq,${encodeURIComponent(email)})&limit=1`);
   if(!r.ok) return null;
   const data=await r.json();
-  return data?.list?.[0]||null;
+  if(data?.list?.[0]) return data.list[0];
+
+  // Multi-user support: team_emails is a comma-separated list of additional Authentik emails
+  // that log into the same CLIENTS row with full access (no separate invite flow — the owner
+  // just adds an email, and the moment that person signs in via Authentik they land here
+  // instead of getting auto-provisioned a brand-new account). NocoDB's LIKE can't safely confirm
+  // an exact match within a comma list on its own, so it's used only as a prefilter here — the
+  // real match is an exact, case-insensitive comparison done in JS below.
+  const whereClause=`(team_emails,like,%${email}%)`;
+  const r2=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=${encodeURIComponent(whereClause)}&limit=25`);
+  if(!r2.ok) return null;
+  const data2=await r2.json().catch(()=>({}));
+  const wanted=email.toLowerCase();
+  return (data2?.list||[]).find(row=>(row.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).includes(wanted))||null;
 }
 async function patchClientFields(env, clientId, fields){
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), ...fields}});

@@ -1365,6 +1365,19 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
           </div>
         </div>
+        <!-- TEAM MEMBERS -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">👥 Team Members</div>
+            <div class="s-note">Anyone added here can sign in with their own Authentik account and gets full access to this dashboard — same as you.</div>
+            <div id="teamMembersList" style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <input class="form-input" id="teamNewEmail" type="email" placeholder="teammate@company.com" style="max-width:260px">
+              <button class="save-btn" onclick="addTeamMember()">Add</button>
+            </div>
+            <span class="save-msg" id="teamMembersMsg"></span>
+          </div>
+        </div>
         <!-- CONNECTION INFO -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -3540,8 +3553,48 @@ function timeAgo(iso){
 }
 
 /* ── SETTINGS ── */
+// Multi-user: team_emails is a plain comma-separated CLIENTS field, no dedicated Worker route
+// needed — it's just another field on the existing per-client record, saved via patchClient()
+// the same way every other Settings field is. The Worker's getClientByAuthentikEmail is what
+// actually makes a listed email log into this same account (see cloudflare-worker/worker.js).
+function renderTeamMembers(){
+  const emails=(clientRecord.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
+  $id('teamMembersList').innerHTML=emails.length
+    ? emails.map(e=>`<span style="background:var(--accent-soft);border-radius:99px;padding:6px 10px;font-size:12px;display:inline-flex;align-items:center;gap:6px">${esc(e)}<a href="#" onclick="removeTeamMember('${esc(e)}');return false" style="color:var(--muted);text-decoration:none;font-weight:700">✕</a></span>`).join('')
+    : '<div style="color:var(--muted);font-size:13px">No teammates added yet.</div>';
+}
+
+async function addTeamMember(){
+  const msg=$id('teamMembersMsg');
+  const email=$id('teamNewEmail').value.trim().toLowerCase();
+  if(!email||!email.includes('@')){ msg.textContent='Enter a valid email.'; return; }
+  if(email===String(clientRecord.authentik_email||'').toLowerCase()){ msg.textContent='That\'s already your primary account email.'; return; }
+  const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
+  if(current.includes(email)){ msg.textContent='Already added.'; return; }
+  current.push(email);
+  msg.textContent='Saving…';
+  try{
+    await patchClient({team_emails:current.join(',')});
+    $id('teamNewEmail').value='';
+    msg.textContent='Added.';
+    renderTeamMembers();
+  }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+async function removeTeamMember(email){
+  const msg=$id('teamMembersMsg');
+  const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean).filter(e=>e.toLowerCase()!==email.toLowerCase());
+  msg.textContent='Removing…';
+  try{
+    await patchClient({team_emails:current.join(',')});
+    msg.textContent='Removed.';
+    renderTeamMembers();
+  }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
 function populateSettings(){
   if(!clientRecord)return;
+  renderTeamMembers();
   showWebhookUrl();
   // chatwoot config
   $id('cfgCwBase').value=clientRecord.chatwoot_base||'';

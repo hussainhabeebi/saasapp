@@ -55,6 +55,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | voice_addon_active | Single line ("Yes"/"No") |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
+| team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
 
 ### LEADS table additions (for the Quotation module's sent log)
 Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
@@ -174,6 +175,17 @@ previously only the base URL was editable there, everything else was signup-wiza
 Admin-created clients (the old path — create the CLIENTS row yourself, then create their
 Authentik user manually and set `authentik_email`) still works fine alongside this; both paths
 converge on the same `authentik_email` matching logic.
+
+**Multi-user support (team_emails):** one CLIENTS row is still one tenant/account, but more than
+one Authentik login can access it. `getClientByAuthentikEmail` in the Worker first tries an exact
+`authentik_email` match (the primary owner); if that misses, it falls back to `team_emails` — a
+plain comma-separated list on the same CLIENTS row — matched exactly (case-insensitive) in code
+rather than trusting NocoDB's `LIKE` alone, since a naive substring match could false-positive on
+similar addresses. There's no separate invite email: the owner adds a teammate's address from
+**Settings → Team Members**, and the moment that person signs in via Authentik (existing account
+or brand new), they land straight in the same dashboard with full access — same as the owner,
+no role restrictions, no seat limit. If you want restricted roles or plan-tied seat limits later,
+that logic would live in this same matching function plus per-action permission checks in the UI.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
