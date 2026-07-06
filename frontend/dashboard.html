@@ -36,8 +36,9 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 #gate{position:fixed;inset:0;z-index:200;background:linear-gradient(160deg,#071410 0%,#0D2218 60%,#0A1A13 100%);display:flex;align-items:center;justify-content:center;padding:24px}
 #gate.hidden{display:none}
 .gbox{width:100%;max-width:380px}
-.gbrand{font-family:var(--disp);font-size:28px;font-weight:700;color:#fff;margin-bottom:6px;letter-spacing:-.3px}
+.gbrand{font-family:var(--disp);font-size:28px;font-weight:700;color:#fff;margin-bottom:6px;letter-spacing:-.3px;display:flex;align-items:center;justify-content:center;gap:10px}
 .gbrand span{color:#4ECFA0}
+.gbrand img{height:32px;width:32px;object-fit:contain}
 .gsub{color:#6FA898;font-size:13.5px;margin-bottom:20px;line-height:1.5}
 .gfld{display:flex;flex-direction:column;gap:12px;margin-bottom:8px}
 .ginput{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);border-radius:14px;padding:14px 18px;color:#fff;font-family:var(--body);font-size:15px;transition:border-color .2s,background .2s}
@@ -211,8 +212,9 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 
 /* header */
 #hdr{height:var(--hdr);background:var(--card);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 18px;gap:10px;flex-shrink:0;z-index:50;box-shadow:0 1px 0 var(--line)}
-.hbrand{font-family:var(--disp);font-size:17px;font-weight:700;letter-spacing:-.2px}
+.hbrand{font-family:var(--disp);font-size:17px;font-weight:700;letter-spacing:-.2px;display:inline-flex;align-items:center;gap:6px}
 .hbrand span{color:var(--accent)}
+.hbrand img{height:20px;width:20px;object-fit:contain}
 .hchip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:4px 12px;border-radius:20px;font-family:var(--disp)}
 .hright{margin-left:auto;display:flex;align-items:center;gap:6px}
 #hUpdated{font-family:var(--mono);font-size:10px;color:var(--muted)}
@@ -794,14 +796,13 @@ const CONFIG = {
   // these from Meta Developer Portal → your Tech Provider app → WhatsApp → Embedded Signup.
   META_APP_ID:              '958889290317772',
   META_WHATSAPP_CONFIG_ID:  '1628996898332605',
-  // Billing (Stripe). Plans are shown via a Stripe Pricing Table (Dashboard-managed — add/edit
-  // plans and copy there, no code change needed) which creates its own Checkout Session
-  // client-side using just the publishable key below; the Worker never sees that request.
-  // Add-ons stay as our own one-time Checkout (mode=payment) — Pricing Tables are subscription
-  // only — with fulfillment_type/wa_credits_amount metadata on each add-on Price telling the
-  // Worker what to grant. See SETUP.md "Billing module" for the RBI e-mandate reasoning.
-  STRIPE_PRICING_TABLE_ID: 'prctbl_1TOrBjJWa5B2ayZgibTilpxV',
-  STRIPE_PUBLISHABLE_KEY:  'pk_live_51R1PadJWa5B2ayZg4ytt9Q9hI0b8j3Br1jXy7o1FVsiwBgPt6QGx4wYeWuonnkUyH82xRDNHB54xg95dK7wJkpG900cPYq5DuQ',
+  // Billing (Stripe). Plans are rendered here from /billing/plans (reads STRIPE_PLAN_PRICE_IDS
+  // from the Worker's own Stripe account, no publishable key or Stripe.js needed in the browser)
+  // and subscribing posts to /billing/checkout-subscription — the Worker creates the Checkout
+  // Session and hands back a redirect url, so it sees and can gate every subscription request.
+  // Add-ons stay as our own one-time Checkout (mode=payment) with fulfillment_type/
+  // wa_credits_amount metadata on each add-on Price telling the Worker what to grant.
+  // See SETUP.md "Billing module" for the RBI e-mandate reasoning.
   // Add-ons can list more than one currency (separate Stripe Price objects, not Stripe's
   // currency_options on one Price) — the Billing page's currency toggle picks which one to
   // check out. Omit a currency key for an add-on that only exists in one currency.
@@ -846,7 +847,7 @@ const TODAY = new Date().toISOString().slice(0,10);
 <!-- GATE -->
 <div id="gate">
   <div class="gbox">
-    <div class="gbrand">Leadvyne<span>.</span></div>
+    <div class="gbrand"><img src="assets/leadvyne-logo-128.png" alt="">Leadvyne<span>.</span></div>
     <p class="gsub">WhatsApp CRM &amp; AI Bot Platform</p>
 
     <!-- ENTRY: single Authentik flow — its own hosted page offers both "log in" and
@@ -866,7 +867,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <!-- Header -->
   <div id="hdr">
     <img id="hLogo" style="display:none;height:26px;max-width:130px;border-radius:4px;object-fit:contain;vertical-align:middle" alt="logo">
-    <span class="hbrand" id="hBrandText">Leadvyne<span>.</span></span>
+    <span class="hbrand" id="hBrandText"><img src="assets/leadvyne-logo-128.png" alt="">Leadvyne<span>.</span></span>
     <span class="hchip" id="hChip">—</span>
     <div id="notifBell" style="position:relative;cursor:pointer;display:none" onclick="toggleNotifDropdown()">
       🔔<span id="notifBadge" style="display:none;position:absolute;top:-4px;right:-4px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center"></span>
@@ -2657,19 +2658,22 @@ async function startAuthentikLogin(){
   $id('gErr').textContent='';
   // Immediate visual feedback on the very first click, before any async work starts.
   setGBtnState(true, 'Connecting…');
-  // Popups are unreliable on mobile browsers — many don't share sessionStorage with the new
-  // window/tab the way desktop browsers do, so the PKCE verifier/state saved just below is
-  // missing when Authentik redirects back, failing with "Login session expired" every time.
-  // Skip the popup on mobile entirely and use the plain full-page redirect instead.
+  // Mobile browsers are unreliable about giving a script-opened window/tab any sessionStorage
+  // at all, so the verifier/state below would never be visible to it regardless of timing —
+  // skip the popup on mobile entirely and use a plain full-page redirect instead.
   const useMobileRedirect=isMobileBrowser();
-  // Open the popup instantly, synchronously on the click, before any of the async PKCE work below —
-  // a blank window appears immediately instead of the user waiting on a crypto.subtle.digest call
-  // first. It's navigated to the real authorize URL once that's ready.
-  if(!useMobileRedirect) _authPopup=window.open('','lv_auth','width=480,height=680');
-
+  // On desktop, a same-origin popup's sessionStorage is cloned from the opener at the exact
+  // moment window.open() runs, then never re-syncs afterward. The verifier/state MUST be written
+  // before opening the popup, not after — get this order wrong (as it was before) and the
+  // popup's clone never contains them, so every desktop login fails with "Login session expired"
+  // the moment Authentik redirects back into it. Both writes are synchronous and effectively
+  // instant, so the popup still appears immediately on click either way — only the
+  // crypto.subtle.digest() call below is actually async.
   const verifier=randomToken(), state=randomToken();
   sessionStorage.setItem('lv_pkce_verifier',verifier);
   sessionStorage.setItem('lv_oidc_state',state);
+  if(!useMobileRedirect) _authPopup=window.open('','lv_auth','width=480,height=680');
+
   const params=new URLSearchParams({
     client_id:CONFIG.AUTHENTIK_CLIENT_ID,
     redirect_uri:CONFIG.AUTHENTIK_REDIRECT_URI,
@@ -4633,6 +4637,7 @@ function setBillingCurrency(cur){
   try{localStorage.setItem('lv_billing_currency',cur);}catch(e){}
   renderBillingCurrencyToggle();
   renderBillingAddonList();
+  if(!clientRecord.stripe_subscription_id) renderBillingPlanList();
 }
 
 // price_id lookups always fall back to whatever currency an item actually has, so an add-on
@@ -4641,32 +4646,44 @@ function billingPriceFor(item){
   return item.prices[_billingCurrency]||Object.values(item.prices)[0];
 }
 
-// Stripe's Pricing Table is a Dashboard-managed plan picker — it creates its own Checkout
-// Session client-side using just the publishable key, so subscribing never touches our Worker
-// at all. client-reference-id is what the webhook later reads (checkout.session.completed) to
-// know which CLIENTS row this belongs to — see handleBillingWebhook in cloudflare-worker/worker.js.
-let _stripePricingTableScriptLoaded=false;
-function _loadStripePricingTableScript(){
-  if(_stripePricingTableScriptLoaded||document.querySelector('script[src*="pricing-table.js"]')) return;
-  _stripePricingTableScriptLoaded=true;
-  const s=document.createElement('script');
-  s.src='https://js.stripe.com/v3/pricing-table.js';
-  s.async=true;
-  document.body.appendChild(s);
-}
-function renderBillingPricingTable(){
-  _loadStripePricingTableScript();
+// Plan picker — fetched from the Worker (/billing/plans), which reads the live catalog straight
+// from Stripe, so plan names/prices never drift out of sync with what Checkout will actually
+// charge. Cached client-side so switching the currency toggle re-renders instantly instead of
+// re-hitting Stripe on every click.
+let _billingPlansCache=null;
+async function loadBillingPlans(){
+  if(_billingPlansCache){ renderBillingPlanList(); return; }
   const wrap=$id('billingPricingTableWrap');
-  if(wrap.querySelector('stripe-pricing-table')) return; // already rendered, nothing to do
-  const el=document.createElement('stripe-pricing-table');
-  el.setAttribute('pricing-table-id', CONFIG.STRIPE_PRICING_TABLE_ID);
-  el.setAttribute('publishable-key', CONFIG.STRIPE_PUBLISHABLE_KEY);
-  el.setAttribute('client-reference-id', String(clientId));
-  // Prefill (not enforce) the checkout email so it matches the LeadVyne account by default —
-  // reduces accidental email/name mismatches between Stripe and the CLIENTS row.
-  if(clientRecord?.authentik_email) el.setAttribute('customer-email', clientRecord.authentik_email);
-  wrap.innerHTML='';
-  wrap.appendChild(el);
+  wrap.innerHTML='<div class="s-note">Loading plans…</div>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/plans`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    _billingPlansCache=data.plans||[];
+    renderBillingPlanList();
+  }catch(e){ wrap.innerHTML=`<div class="s-note">Error loading plans: ${esc(e.message)}</div>`; }
+}
+function renderBillingPlanList(){
+  const wrap=$id('billingPricingTableWrap');
+  const plans=(_billingPlansCache||[]).filter(p=>(p.currency||'').toUpperCase()===_billingCurrency);
+  if(!plans.length){ wrap.innerHTML=`<div class="s-note">No plans available in ${esc(_billingCurrency)} right now.</div>`; return; }
+  wrap.innerHTML=plans.map(p=>{
+    const amount=((p.unit_amount||0)/100).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const period=p.interval?`/${p.interval_count>1?p.interval_count+' ':''}${p.interval}`:'';
+    return `<div class="card" style="padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px">
+      <div><strong>${esc(p.name)}</strong><div class="s-note">${esc((p.currency||'').toUpperCase())} ${amount}${esc(period)}</div></div>
+      <button class="save-btn" onclick="subscribeToPlan('${esc(p.price_id)}')">Subscribe</button>
+    </div>`;
+  }).join('');
+}
+async function subscribeToPlan(price_id){
+  const wrap=$id('billingPricingTableWrap');
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/checkout-subscription`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({price_id})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    window.location.href=data.url;
+  }catch(e){ wrap.insertAdjacentHTML('beforeend', `<div class="s-note">Error: ${esc(e.message)}</div>`); }
 }
 
 function renderBillingAddonList(){
@@ -4713,7 +4730,7 @@ function renderBillingPage(){
     $id('billingPastDueBanner').style.display=pastDueCopy?'block':'none';
     if(pastDueCopy) $id('billingPastDueText').textContent=pastDueCopy;
   }else{
-    renderBillingPricingTable();
+    loadBillingPlans();
   }
   $id('billingWaCredits').textContent=clientRecord.wa_credits_balance||0;
   $id('billingVoiceStatus').textContent=clientRecord.voice_addon_active==='Yes'?'Active':'Not active';

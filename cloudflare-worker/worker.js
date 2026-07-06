@@ -241,6 +241,7 @@ async function handleAdminClientsBilling(request, env){
     client_name:c.client_name||'',
     authentik_email:c.authentik_email||'',
     stripe_customer_id:c.stripe_customer_id||'',
+    stripe_subscription_id:c.stripe_subscription_id||'',
     plan_name:c.plan_name||'',
     plan_status:c.plan_status||'',
     plan_renews_at:c.plan_renews_at||'',
@@ -603,6 +604,31 @@ async function handleBillingCompanyProfile(request, env){
   return json({ok:true});
 }
 
+// Feeds dashboard.html's own plan-picker UI (replaces the Stripe-hosted Pricing Table so the
+// Worker sees and controls the checkout call instead of the browser talking to Stripe directly).
+// STRIPE_PLAN_PRICE_IDS may contain not-yet-created placeholder entries (e.g. "REPLACE_..." —
+// see wrangler.toml) which are skipped here rather than surfaced as broken plan cards.
+async function handleBillingPlans(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
+  const ids=(env.STRIPE_PLAN_PRICE_IDS||'').split(',').map(s=>s.trim()).filter(id=>id && !id.startsWith('REPLACE_'));
+  const plans=[];
+  for(const price_id of ids){
+    const {ok, data}=await stripeFetch(env, 'GET', `prices/${price_id}`, {expand:['product']});
+    if(!ok||!data?.id||data.active===false) continue;
+    plans.push({
+      price_id:data.id,
+      name:data.nickname||data.product?.name||data.id,
+      unit_amount:data.unit_amount,
+      currency:data.currency,
+      interval:data.recurring?.interval||'',
+      interval_count:data.recurring?.interval_count||1
+    });
+  }
+  return json({ok:true, plans});
+}
+
 async function handleBillingCheckoutSubscription(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -619,7 +645,10 @@ async function handleBillingCheckoutSubscription(request, env){
     mode:'subscription',
     customer:customerId,
     line_items:[{price:price_id, quantity:1}],
-    success_url:`${env.APP_BASE_URL}?billing=success`,
+    // {CHECKOUT_SESSION_ID} is a Stripe-substituted placeholder — it's what lets billingInit() in
+    // dashboard.html call /billing/confirm-session with a real session_id on return, instead of
+    // relying solely on the webhook (or the manual "Sync Subscription Now" button) to land in time.
+    success_url:`${env.APP_BASE_URL}?billing=success&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url:`${env.APP_BASE_URL}?billing=cancel`,
     metadata:{client_id:String(payload.cid)},
     subscription_data:{metadata:{client_id:String(payload.cid)}}
@@ -709,6 +738,27 @@ async function handleAdminBillingRefresh(request, env){
   return runBillingSync(env, client_id);
 }
 
+// Admin-only: resets a client's billing cycle to start now instead of waiting for the current
+// period to end. Stripe's Subscription Update only accepts 'now'/'unchanged' here (not an
+// arbitrary date) — an exact custom renewal date would need a Subscription Schedule instead.
+// prorate controls whether the customer is charged/credited for the shortened/lengthened period.
+async function handleAdminBillingResetAnchor(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
+  const {client_id, prorate}=await request.json().catch(()=>({}));
+  if(!client_id) return json({error:'client_id required'}, 400);
+  const c=await getClientById(env, client_id);
+  if(!c?.stripe_subscription_id) return json({error:'This client has no active subscription.'}, 400);
+
+  const {ok, data}=await stripeFetch(env, 'POST', `subscriptions/${c.stripe_subscription_id}`, {
+    billing_cycle_anchor:'now',
+    proration_behavior: prorate?'create_prorations':'none'
+  });
+  if(!ok||!data?.id) return json({error:'Failed to reset billing cycle: '+(data?.error?.message||'unknown error')}, 502);
+  await syncSubscriptionFields(env, client_id, data);
+  return json({ok:true, plan_renews_at:data.items?.data?.[0]?.current_period_end||data.current_period_end});
+}
+
 async function handleBillingCheckoutAddon(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -732,19 +782,31 @@ async function handleBillingCheckoutAddon(request, env){
   return json({ok:true, url:data.url});
 }
 
-async function fulfillAddon(env, clientId, priceId){
+// idempotencyKey is the Checkout Session id — Stripe redelivers webhooks on retry (e.g. a slow
+// or briefly-failing response), and this event otherwise grants credits/enables the add-on again
+// on replay. fulfilled_addon_events is a capped, comma-separated list of session ids already
+// applied to this client, stored on the same row so the check-and-set stays a single NocoDB patch.
+async function fulfillAddon(env, clientId, priceId, idempotencyKey){
+  const c=await getClientById(env, clientId);
+  if(!c) return;
+  const applied=(c.fulfilled_addon_events||'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(idempotencyKey && applied.includes(idempotencyKey)) return;
+
   const {ok, data}=await stripeFetch(env, 'GET', `prices/${priceId}`, {expand:['product']});
   if(!ok) return;
   // Price metadata wins over Product metadata, so a one-off Price can override the Product default.
   const meta={...(data?.product?.metadata||{}), ...(data?.metadata||{})};
-  const c=await getClientById(env, clientId);
-  if(!c) return;
+  const patch={};
   if(meta.fulfillment_type==='wa_credits'){
     const amount=Number(meta.wa_credits_amount||0);
-    await patchClientFields(env, clientId, {wa_credits_balance:(Number(c.wa_credits_balance)||0)+amount});
+    patch.wa_credits_balance=(Number(c.wa_credits_balance)||0)+amount;
   }else if(meta.fulfillment_type==='voice_addon'){
-    await patchClientFields(env, clientId, {voice_addon_active:'Yes'});
+    patch.voice_addon_active='Yes';
+  }else{
+    return; // unrecognized fulfillment_type — nothing to apply, nothing to record
   }
+  if(idempotencyKey) patch.fulfilled_addon_events=[...applied, idempotencyKey].slice(-20).join(',');
+  await patchClientFields(env, clientId, patch);
 }
 
 // Shared by both the checkout.session.completed direct-fetch path and the customer.subscription.*
@@ -789,7 +851,7 @@ async function handleBillingWebhook(request, env){
 
   if(event.type==='checkout.session.completed' && obj.mode==='payment'){
     const clientId=obj.metadata?.client_id, priceId=obj.metadata?.price_id;
-    if(clientId && priceId) await fulfillAddon(env, clientId, priceId);
+    if(clientId && priceId) await fulfillAddon(env, clientId, priceId, obj.id);
   }
   if(event.type==='checkout.session.completed' && obj.mode==='subscription'){
     // Pricing Table checkouts (and our own custom checkout) both set client_reference_id here —
@@ -852,6 +914,7 @@ export default {
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
       else if(url.pathname==='/channels/status' && request.method==='GET'){ res=await handleChannelsStatus(request, env); }
       else if(url.pathname==='/channels/chatwoot-sso' && request.method==='GET'){ res=await handleChannelsChatwootSso(request, env); }
+      else if(url.pathname==='/billing/plans' && request.method==='GET'){ res=await handleBillingPlans(request, env); }
       else if(url.pathname==='/billing/checkout-subscription' && request.method==='POST'){ res=await handleBillingCheckoutSubscription(request, env); }
       else if(url.pathname==='/billing/portal' && request.method==='GET'){ res=await handleBillingPortal(request, env); }
       else if(url.pathname==='/billing/confirm-session' && request.method==='GET'){ res=await handleBillingConfirmSession(request, env); }
@@ -864,6 +927,7 @@ export default {
       else if(url.pathname==='/admin/clients-billing' && request.method==='GET'){ res=await handleAdminClientsBilling(request, env); }
       else if(url.pathname==='/admin/billing-refresh' && request.method==='POST'){ res=await handleAdminBillingRefresh(request, env); }
       else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }
+      else if(url.pathname==='/admin/billing-reset-anchor' && request.method==='POST'){ res=await handleAdminBillingResetAnchor(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

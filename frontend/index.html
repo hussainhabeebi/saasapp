@@ -21,8 +21,9 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);-webkit-font-
 
 /* ── NAV ── */
 nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;background:rgba(10,26,20,.92);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,.07)}
-.brand{font-family:var(--disp);font-weight:800;font-size:22px;color:#fff;letter-spacing:-.02em}
+.brand{font-family:var(--disp);font-weight:800;font-size:22px;color:#fff;letter-spacing:-.02em;display:flex;align-items:center;gap:8px}
 .brand span{color:#5FD6A4}
+.brand img{height:26px;width:26px;object-fit:contain}
 .nav-cta{background:var(--green);color:#fff;border:none;border-radius:9px;padding:10px 20px;font-family:var(--disp);font-weight:600;font-size:14px;cursor:pointer;transition:background .15s;text-decoration:none;display:inline-block}
 .nav-cta:hover{background:var(--green-light)}
 
@@ -119,8 +120,9 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 
 /* ── FOOTER ── */
 footer{background:var(--dark);padding:40px 24px;text-align:center;border-top:1px solid rgba(255,255,255,.06)}
-.foot-brand{font-family:var(--disp);font-weight:800;font-size:20px;color:#fff;margin-bottom:8px}
+.foot-brand{font-family:var(--disp);font-weight:800;font-size:20px;color:#fff;margin-bottom:8px;display:flex;align-items:center;justify-content:center;gap:8px}
 .foot-brand span{color:#5FD6A4}
+.foot-brand img{height:24px;width:24px;object-fit:contain}
 footer p{font-size:13px;color:rgba(255,255,255,.35)}
 
 /* ── ADMIN LINK ── */
@@ -155,7 +157,7 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
 
 <!-- NAV -->
 <nav>
-  <div class="brand">Leadvyne<span>.</span></div>
+  <div class="brand"><img src="assets/leadvyne-logo-128.png" alt="">Leadvyne<span>.</span></div>
   <div style="display:flex;gap:10px;align-items:center">
     <a href="#features" style="font-size:13px;font-weight:600;color:rgba(255,255,255,.6);text-decoration:none;padding:8px 14px">Features</a>
     <a href="https://app.leadvyne.com/dashboard.html?signup=1" class="nav-cta">Sign Up Free</a>
@@ -348,7 +350,7 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
 
 <!-- FOOTER -->
 <footer>
-  <div class="foot-brand">Leadvyne<span>.</span></div>
+  <div class="foot-brand"><img src="assets/leadvyne-logo-128.png" alt="">Leadvyne<span>.</span></div>
   <p>The AI-Powered Lead Conversion Platform · Built for Kerala Businesses</p>
   <p style="margin-top:16px">© 2026 Leadvyne · Powered by Aiingo</p>
 </footer>
