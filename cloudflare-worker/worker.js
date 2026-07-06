@@ -491,10 +491,36 @@ async function handleChannelsChatwootSso(request, env){
    the Stripe Price/Product in the Dashboard, not hardcoded here. ── */
 async function ensureStripeCustomer(env, c, clientId){
   if(c.stripe_customer_id) return c.stripe_customer_id;
-  const {ok, data}=await stripeFetch(env, 'POST', 'customers', {email:c.authentik_email||undefined, name:c.client_name||undefined, metadata:{client_id:String(clientId)}});
+  const {ok, data}=await stripeFetch(env, 'POST', 'customers', {
+    email:c.authentik_email||undefined,
+    name:c.client_name||undefined,
+    address:c.company_address?{line1:c.company_address}:undefined,
+    metadata:{client_id:String(clientId)}
+  });
   if(!ok||!data?.id) throw new Error('Failed to create Stripe customer: '+(data?.error?.message||'unknown error'));
   await patchClientFields(env, clientId, {stripe_customer_id:data.id});
   return data.id;
+}
+
+async function handleBillingCompanyProfile(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {client_name, company_address}=await request.json().catch(()=>({}));
+  if(!client_name) return json({error:'Company name is required.'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+
+  await patchClientFields(env, payload.cid, {client_name, company_address:company_address||''});
+
+  // Best-effort — keeps Stripe's own invoices/receipts showing the right name+address for
+  // customers who update this after they already have a Stripe Customer record.
+  if(c.stripe_customer_id){
+    await stripeFetch(env, 'POST', `customers/${c.stripe_customer_id}`, {
+      name:client_name,
+      address:company_address?{line1:company_address}:undefined
+    }).catch(()=>{});
+  }
+  return json({ok:true});
 }
 
 async function handleBillingCheckoutSubscription(request, env){
@@ -585,7 +611,10 @@ async function syncSubscriptionFields(env, clientId, sub){
     plan_status:sub.status,
     plan_renews_at:periodEnd?new Date(periodEnd*1000).toISOString():'',
     plan_name:price?.nickname||price?.id||'',
-    plan_message_limit:Number(price?.metadata?.message_limit||0)||undefined
+    plan_message_limit:Number(price?.metadata?.message_limit||0)||undefined,
+    // Set when the customer cancels from the Portal but keeps access until the period ends —
+    // the Billing page uses this to show "won't renew" instead of a normal renewal date.
+    plan_cancel_at_period_end:sub.cancel_at_period_end?'Yes':'No'
   });
 }
 
@@ -667,6 +696,7 @@ export default {
       else if(url.pathname==='/billing/portal' && request.method==='GET'){ res=await handleBillingPortal(request, env); }
       else if(url.pathname==='/billing/checkout-addon' && request.method==='POST'){ res=await handleBillingCheckoutAddon(request, env); }
       else if(url.pathname==='/billing/webhook' && request.method==='POST'){ res=await handleBillingWebhook(request, env); }
+      else if(url.pathname==='/billing/company-profile' && request.method==='POST'){ res=await handleBillingCompanyProfile(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

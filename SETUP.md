@@ -53,6 +53,8 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_message_limit | Number (optional, from the Price's `message_limit` metadata) |
 | wa_credits_balance | Number (running balance from WhatsApp-credit add-on purchases) |
 | voice_addon_active | Single line ("Yes"/"No") |
+| plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
+| company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 
 ### LEADS table additions (for the Quotation module's sent log)
 Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
@@ -398,7 +400,17 @@ custom (non-Pricing-Table) subscribe flow.
    in sync via the same `customer.subscription.updated` event Stripe fires on every retry/status
    change (Stripe's own Smart Retries drive these transitions — nothing to build for the retry
    logic itself).
-6. **Usage dashboard** — computed client-side from leads already loaded into the dashboard
+6. **Billing period / expiry tracking** — the Billing page's "Customer Portal" card computes
+   days-remaining client-side from `plan_renews_at` (no cron/scheduler needed — it's just
+   `renews_at - now`, recomputed on every page load). If the customer cancels from the Stripe
+   Portal, the subscription stays `active` with `cancel_at_period_end:true` until the period
+   actually ends — the webhook now captures that into `plan_cancel_at_period_end`, and the
+   Billing page swaps the "Renews in N days" line for "Ends in N days — won't renew" plus a
+   dedicated banner, instead of silently showing a normal-looking renewal date.
+7. **Company profile** — `POST /billing/company-profile` saves `client_name`/`company_address`
+   to the CLIENTS row and, if a `stripe_customer_id` already exists, best-effort pushes the same
+   name/address to the Stripe Customer so it shows correctly on future invoices/receipts.
+8. **Usage dashboard** — computed client-side from leads already loaded into the dashboard
    (`ConvHistory` entries with `role:'assistant'` this calendar month = messages sent, lead count
    this month = leads captured, terminal-stage ratio = conversion rate). No new tracking needed.
 

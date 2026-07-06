@@ -1762,10 +1762,24 @@ const TODAY = new Date().toISOString().slice(0,10);
 
         <div id="billingBanner" style="display:none;margin-bottom:14px"></div>
 
-        <!-- Current plan -->
+        <!-- Company Profile -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">Your Plan</div>
+            <div class="s-head">🏢 Company Profile</div>
+            <div class="s-note">Used on your Stripe invoices/receipts and as your account name.</div>
+            <label class="form-label">Company Name</label>
+            <input class="form-input" id="cfgCompanyName" type="text" placeholder="Your company name" style="margin-bottom:8px">
+            <label class="form-label">Billing Address</label>
+            <textarea class="form-input" id="cfgCompanyAddress" rows="2" placeholder="Street, city, state, PIN/postal code, country" style="margin-bottom:8px"></textarea>
+            <button class="save-btn" onclick="saveCompanyProfile()">Save</button>
+            <span class="save-msg" id="companyProfileMsg"></span>
+          </div>
+        </div>
+
+        <!-- Customer Portal -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🧾 Customer Portal</div>
             <div id="billingNoPlan">
               <div class="s-note">Choose a plan to get started.</div>
               <div id="billingPricingTableWrap" style="margin-top:8px"></div>
@@ -1774,12 +1788,15 @@ const TODAY = new Date().toISOString().slice(0,10);
               <div id="billingPastDueBanner" style="display:none;background:#FDECEA;border:1px solid #F3B4AC;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;color:#B23A2E">
                 ⚠️ <strong>Payment issue with your subscription</strong> — <span id="billingPastDueText"></span> Update your payment method to avoid losing access.
               </div>
+              <div id="billingCancelBanner" style="display:none;background:#FFF6E5;border:1px solid #F0D89B;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;color:#8A6416">
+                ℹ️ Your plan is set to <strong>not renew</strong> — you'll keep access until <strong id="billingCancelDate"></strong>. Resubscribe anytime before then to keep it going.
+              </div>
               <div class="s-note">
                 Plan: <strong id="billingPlanName"></strong> ·
-                Status: <strong id="billingPlanStatus"></strong> ·
-                Renews: <strong id="billingPlanRenews"></strong>
+                Status: <strong id="billingPlanStatus"></strong>
               </div>
-              <button class="save-btn" onclick="openBillingPortal()">Manage Billing (invoices, upgrade/downgrade, payment method)</button>
+              <div class="s-note" id="billingRenewalLine"></div>
+              <button class="save-btn" onclick="openBillingPortal()" style="margin-top:8px">Open Customer Portal (invoices, upgrade/downgrade, payment method, cancel)</button>
               <span class="save-msg" id="billingPortalMsg"></span>
             </div>
           </div>
@@ -4571,6 +4588,13 @@ const BILLING_PAST_DUE_COPY={
   incomplete_expired:'Your first payment was not completed in time and the subscription was canceled.'
 };
 
+// Days remaining until an ISO date, rounded up so "today" reads as 0 rather than a negative sliver.
+function daysUntil(isoDate){
+  if(!isoDate) return null;
+  const ms=new Date(isoDate).getTime()-Date.now();
+  return Math.max(0, Math.ceil(ms/86400000));
+}
+
 function renderBillingPage(){
   const hasPlan=!!clientRecord.stripe_subscription_id;
   $id('billingNoPlan').style.display=hasPlan?'none':'block';
@@ -4578,7 +4602,18 @@ function renderBillingPage(){
   if(hasPlan){
     $id('billingPlanName').textContent=clientRecord.plan_name||'—';
     $id('billingPlanStatus').textContent=clientRecord.plan_status||'—';
-    $id('billingPlanRenews').textContent=clientRecord.plan_renews_at?new Date(clientRecord.plan_renews_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'—';
+
+    const renewsDate=clientRecord.plan_renews_at?new Date(clientRecord.plan_renews_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'—';
+    const days=daysUntil(clientRecord.plan_renews_at);
+    const willNotRenew=clientRecord.plan_cancel_at_period_end==='Yes';
+    $id('billingCancelBanner').style.display=willNotRenew?'block':'none';
+    if(willNotRenew){
+      $id('billingCancelDate').textContent=renewsDate;
+      $id('billingRenewalLine').textContent=days!==null?`Ends in ${days} day${days===1?'':'s'} (${renewsDate}).`:'';
+    }else{
+      $id('billingRenewalLine').textContent=days!==null?`Renews in ${days} day${days===1?'':'s'} (${renewsDate}).`:'';
+    }
+
     const pastDueCopy=BILLING_PAST_DUE_COPY[clientRecord.plan_status];
     $id('billingPastDueBanner').style.display=pastDueCopy?'block':'none';
     if(pastDueCopy) $id('billingPastDueText').textContent=pastDueCopy;
@@ -4607,9 +4642,26 @@ async function billingInit(){
     history.replaceState({}, '', location.pathname+(params.toString()?'?'+params.toString():''));
     await refreshClientRecord();
   }
+  $id('cfgCompanyName').value=clientRecord.client_name||'';
+  $id('cfgCompanyAddress').value=clientRecord.company_address||'';
   renderBillingCurrencyToggle();
   renderBillingAddonList();
   renderBillingPage();
+}
+
+async function saveCompanyProfile(){
+  const msg=$id('companyProfileMsg');
+  const client_name=$id('cfgCompanyName').value.trim();
+  const company_address=$id('cfgCompanyAddress').value.trim();
+  if(!client_name){ msg.textContent='Company name is required.'; return; }
+  msg.textContent='Saving…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/company-profile`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({client_name, company_address})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    Object.assign(clientRecord,{client_name, company_address});
+    msg.textContent='Saved.';
+  }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
 async function openBillingPortal(){
