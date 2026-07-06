@@ -184,6 +184,73 @@ async function requireSession(request, env){
   return payload; // { cid, exp }
 }
 
+/* ── Admin session: same HMAC scheme as the per-client session token above, reusing
+   SESSION_SIGNING_KEY, but with a distinct payload shape ({role:'admin'}, no cid) so the two
+   token types can never be confused for each other. Replaces admin.html's old design of
+   comparing a typed passcode against a hardcoded JS constant and then using a master NocoDB
+   token straight from the browser — both are gone; the passcode check and every credential now
+   live only in the Worker. ── */
+async function hmacSignB64(env, body){
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(env.SESSION_SIGNING_KEY), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
+  return btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+async function signAdminSession(env){
+  const payload={role:'admin', exp:Math.floor(Date.now()/1000)+SESSION_TTL_SECONDS};
+  const body=btoa(JSON.stringify(payload));
+  return `${body}.${await hmacSignB64(env, body)}`;
+}
+async function requireAdminSession(request, env){
+  const auth=request.headers.get('Authorization')||'';
+  const token=auth.startsWith('Bearer ')?auth.slice(7):'';
+  const [body, sig]=token.split('.');
+  if(!body||!sig) return false;
+  if(await hmacSignB64(env, body)!==sig) return false;
+  let payload;
+  try{ payload=JSON.parse(atob(body)); }catch(e){ return false; }
+  return payload.role==='admin' && !!payload.exp && payload.exp>=Math.floor(Date.now()/1000);
+}
+async function handleAdminLogin(request, env){
+  if(!env.ADMIN_PASSCODE) return json({error:'Admin login is not configured on the server.'}, 500);
+  const {passcode}=await request.json().catch(()=>({}));
+  if(!passcode||passcode!==env.ADMIN_PASSCODE) return json({error:'Wrong passcode.'}, 401);
+  return json({session_token:await signAdminSession(env)});
+}
+async function handleAdminNocodbPassthrough(request, env, upstreamPath){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  const url=new URL(request.url);
+  const qs=url.search.slice(1);
+  const method=request.method;
+  const hasBody=!['GET','HEAD'].includes(method);
+  const body=hasBody?await request.text():undefined;
+  const r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
+    method,
+    headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'},
+    body
+  });
+  const data=await r.text();
+  return new Response(data, {status:r.status, headers:{'Content-Type':'application/json'}});
+}
+async function handleAdminClientsBilling(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200`);
+  if(!r.ok) return json({error:'Failed to load clients: HTTP '+r.status}, 502);
+  const data=await r.json().catch(()=>({}));
+  const clients=(data?.list||[]).map(c=>({
+    Id:c.Id,
+    client_name:c.client_name||'',
+    authentik_email:c.authentik_email||'',
+    stripe_customer_id:c.stripe_customer_id||'',
+    plan_name:c.plan_name||'',
+    plan_status:c.plan_status||'',
+    plan_renews_at:c.plan_renews_at||'',
+    plan_cancel_at_period_end:c.plan_cancel_at_period_end||'',
+    wa_credits_balance:c.wa_credits_balance||0,
+    voice_addon_active:c.voice_addon_active||'No'
+  }));
+  return json({ok:true, clients});
+}
+
 /* ── ROUTES ── */
 async function handleSessionExchange(request, env){
   const {access_token}=await request.json().catch(()=>({}));
@@ -561,15 +628,27 @@ async function handleBillingCheckoutSubscription(request, env){
   return json({ok:true, url:data.url});
 }
 
+// Shared by the customer's own "Manage Billing" button and the admin's "Open Stripe Portal" —
+// the only difference is which clientId the caller is allowed to act on.
+async function runBillingPortalLink(env, clientId){
+  const c=await getClientById(env, clientId);
+  if(!c?.stripe_customer_id) return json({error:'No billing account yet for this client.'}, 400);
+  const {ok, data}=await stripeFetch(env, 'POST', 'billing_portal/sessions', {customer:c.stripe_customer_id, return_url:env.APP_BASE_URL});
+  if(!ok||!data?.url) return json({error:'Failed to open billing portal: '+(data?.error?.message||'unknown error')}, 502);
+  return json({ok:true, url:data.url});
+}
 async function handleBillingPortal(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
-  const c=await getClientById(env, payload.cid);
-  if(!c?.stripe_customer_id) return json({error:'No billing account yet — subscribe to a plan first.'}, 400);
-  const {ok, data}=await stripeFetch(env, 'POST', 'billing_portal/sessions', {customer:c.stripe_customer_id, return_url:env.APP_BASE_URL});
-  if(!ok||!data?.url) return json({error:'Failed to open billing portal: '+(data?.error?.message||'unknown error')}, 502);
-  return json({ok:true, url:data.url});
+  return runBillingPortalLink(env, payload.cid);
+}
+async function handleAdminBillingPortalLink(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
+  const {client_id}=await request.json().catch(()=>({}));
+  if(!client_id) return json({error:'client_id required'}, 400);
+  return runBillingPortalLink(env, client_id);
 }
 
 // Pull-based sync, independent of the webhook entirely — the authenticated session already tells
@@ -594,11 +673,10 @@ async function handleBillingConfirmSession(request, env){
   return json({ok:true});
 }
 
-async function handleBillingSyncNow(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
-  const c=await getClientById(env, payload.cid);
+// Shared by the customer's own "Sync Subscription Now" button and the admin's per-client
+// "Refresh from Stripe" — the only difference is which clientId the caller is allowed to act on.
+async function runBillingSync(env, clientId){
+  const c=await getClientById(env, clientId);
   if(!c) return json({error:'Client not found'}, 404);
 
   let customerId=c.stripe_customer_id;
@@ -609,13 +687,26 @@ async function handleBillingSyncNow(request, env){
       if(ok && data?.data?.length){ customerId=data.data[0].id; break; }
     }
     if(!customerId) return json({error:'No Stripe customer found yet for this account\'s email(s). Make sure the checkout used one of them.'}, 404);
-    await patchClientFields(env, payload.cid, {stripe_customer_id:customerId});
+    await patchClientFields(env, clientId, {stripe_customer_id:customerId});
   }
 
   const {ok, data}=await stripeFetch(env, 'GET', 'subscriptions', {customer:customerId, status:'all', limit:1});
   if(!ok||!data?.data?.length) return json({error:'No subscription found yet for this Stripe customer.'}, 404);
-  await syncSubscriptionFields(env, payload.cid, data.data[0]);
+  await syncSubscriptionFields(env, clientId, data.data[0]);
   return json({ok:true, plan_status:data.data[0].status});
+}
+async function handleBillingSyncNow(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
+  return runBillingSync(env, payload.cid);
+}
+async function handleAdminBillingRefresh(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
+  const {client_id}=await request.json().catch(()=>({}));
+  if(!client_id) return json({error:'client_id required'}, 400);
+  return runBillingSync(env, client_id);
 }
 
 async function handleBillingCheckoutAddon(request, env){
@@ -768,6 +859,11 @@ export default {
       else if(url.pathname==='/billing/checkout-addon' && request.method==='POST'){ res=await handleBillingCheckoutAddon(request, env); }
       else if(url.pathname==='/billing/webhook' && request.method==='POST'){ res=await handleBillingWebhook(request, env); }
       else if(url.pathname==='/billing/company-profile' && request.method==='POST'){ res=await handleBillingCompanyProfile(request, env); }
+      else if(url.pathname==='/admin/login' && request.method==='POST'){ res=await handleAdminLogin(request, env); }
+      else if(url.pathname.startsWith('/admin/nocodb/')){ res=await handleAdminNocodbPassthrough(request, env, url.pathname.slice('/admin/nocodb/'.length)); }
+      else if(url.pathname==='/admin/clients-billing' && request.method==='GET'){ res=await handleAdminClientsBilling(request, env); }
+      else if(url.pathname==='/admin/billing-refresh' && request.method==='POST'){ res=await handleAdminBillingRefresh(request, env); }
+      else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

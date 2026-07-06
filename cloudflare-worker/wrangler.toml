@@ -24,3 +24,4 @@ STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZgh
 #   META_APP_SECRET         Meta Tech Provider app secret (Embedded Signup token exchange)
 #   STRIPE_SECRET_KEY       Stripe secret key — see SETUP.md "Billing module"
 #   STRIPE_WEBHOOK_SECRET   Stripe webhook signing secret for /billing/webhook
+#   ADMIN_PASSCODE          admin.html login passcode — see SETUP.md "Admin panel"

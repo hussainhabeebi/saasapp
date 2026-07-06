@@ -230,9 +230,40 @@ Copy the resulting `https://leadvyne-api-proxy.<your-subdomain>.workers.dev` URL
 `dashboard.html`'s `WORKER_BASE` constant (replacing `REPLACE_WITH_WORKER_URL`), and redeploy
 the frontend.
 
-**Known gap**: `index.html`, `broadcast.html`, and `ecom.html` still embed the master NocoDB
-token directly and are **not yet migrated** to this Worker — same exposure as before on those
-three pages specifically. `dashboard.html` (the primary, most-used surface) is fully migrated.
+**Known gap**: `broadcast.html` and `ecom.html` still embed the master NocoDB token directly and
+are **not yet migrated** to this Worker — same exposure as before on those two pages
+specifically. `dashboard.html`, `index.html`, and `admin.html` are fully migrated.
+
+## Admin panel (admin.html)
+`admin.html` used to hold **three** master credentials in plaintext, extractable via view-source
+regardless of its passcode login screen: the master NocoDB token, a full n8n API key, and the
+admin passcode itself (used only to gate the UI — the token below it made that gate cosmetic).
+It's now on the same Worker-session pattern as `dashboard.html`:
+
+- `POST /admin/login` checks the passcode against `ADMIN_PASSCODE` (a new Worker secret) and
+  returns a signed admin session token (same HMAC scheme as per-client sessions, reusing
+  `SESSION_SIGNING_KEY`, but with a `{role:'admin'}` payload so the two token types can never be
+  confused for each other).
+- `/admin/nocodb/*` is a generic passthrough for everything the admin panel already did (client
+  grid, edit modal, suspend/activate) — same shape as `/nocodb/*` but admin-authenticated instead
+  of scoped to one client, and with no per-row ownership check (admin needs every row).
+- The n8n API key fields were unused dead config (never actually called anywhere) — removed
+  rather than re-wired. Re-add via a proper Worker-side proxy if you want that functionality back.
+
+**New Worker secret**: `ADMIN_PASSCODE` — set via `wrangler secret put ADMIN_PASSCODE`, or
+Cloudflare Dashboard → your Worker → Variables and Secrets (encrypt it).
+
+**Billing Overview tab**: separate from the per-client self-service Billing page — this is the
+admin's own oversight tool, since a logged-in customer's Billing page only ever shows *their own*
+account.
+- `GET /admin/clients-billing` lists every client's `plan_name`/`plan_status`/`plan_renews_at`/
+  `wa_credits_balance`/`voice_addon_active` straight from NocoDB (fast, no per-row Stripe calls).
+- `POST /admin/billing-refresh` (body `{client_id}`) — same live Stripe pull as the customer's
+  own "Sync Subscription Now", just admin-triggered for an arbitrary client. Shares its core logic
+  (`runBillingSync`) with the customer-facing route rather than duplicating it.
+- `POST /admin/billing-portal-link` (body `{client_id}`) — opens that specific customer's Stripe
+  Customer Portal for the admin to inspect, again sharing core logic (`runBillingPortalLink`)
+  with the customer-facing `/billing/portal` route.
 
 ## Channels module (self-service Chatwoot + WhatsApp connection)
 The old flow required an admin to manually create a Chatwoot account, create a WhatsApp Cloud

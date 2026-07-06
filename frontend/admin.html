@@ -97,10 +97,32 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
   color:var(--muted);cursor:pointer;transition:all .15s;
 }
 .btn-disconnect:hover{border-color:#c0392b;color:#c0392b}
+.tab-btn{
+  padding:.5rem 1rem;background:transparent;border:1.5px solid transparent;
+  border-radius:var(--r);font-family:var(--body);font-size:.875rem;font-weight:600;
+  color:var(--muted);cursor:pointer;transition:all .15s;
+}
+.tab-btn:hover{color:var(--ink)}
+.tab-btn.active{background:var(--accent-soft);color:var(--accent-ink)}
 
 /* MAIN CONTENT */
 #main{padding:1.5rem;display:none}
 #main.visible{display:block}
+
+/* BILLING OVERVIEW */
+#billing-panel{padding:1.5rem}
+#billing-panel.hidden{display:none}
+.billing-table{width:100%;border-collapse:collapse;background:var(--card);border-radius:var(--r);overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.billing-table th{text-align:left;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:.75rem 1rem;border-bottom:1.5px solid var(--line)}
+.billing-table td{padding:.75rem 1rem;font-size:.875rem;border-bottom:1px solid var(--line);vertical-align:middle}
+.billing-table tr:last-child td{border-bottom:none}
+.plan-status-badge{font-size:.75rem;font-weight:600;padding:.2rem .55rem;border-radius:999px}
+.plan-status-badge.active{background:var(--accent-soft);color:var(--accent-ink)}
+.plan-status-badge.past_due,.plan-status-badge.unpaid,.plan-status-badge.incomplete,.plan-status-badge.incomplete_expired{background:var(--warn-soft);color:var(--warn)}
+.plan-status-badge.canceled,.plan-status-badge.none{background:var(--bg);color:var(--muted)}
+.btn-mini{padding:.35rem .7rem;font-size:.75rem;font-weight:600;border-radius:8px;border:1.5px solid var(--line-strong);background:#fff;color:var(--ink);cursor:pointer;transition:all .15s;margin-right:.35rem}
+.btn-mini:hover{border-color:var(--accent);color:var(--accent-ink)}
+.btn-mini:disabled{opacity:.5;cursor:default}
 
 /* SKELETON */
 .skeleton-grid{
@@ -301,33 +323,11 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 <div id="login-overlay">
   <div class="login-card">
     <h1>Leadvyne · Admin</h1>
-    <p>Connect to your NocoDB instance to manage all clients.</p>
+    <p>Enter the admin passcode to manage all clients.</p>
 
     <div class="form-group">
-      <label for="f-nocodb-base">NocoDB Base URL</label>
-      <input type="url" id="f-nocodb-base" placeholder="https://whizz.aiingo.com">
-    </div>
-    <div class="form-group">
-      <label for="f-clients-table">Clients Table ID</label>
-      <input type="text" id="f-clients-table" placeholder="md_xxxxxxxxxxxxxxxx">
-    </div>
-    <div class="form-group">
-      <label for="f-analytics-table">Analytics Table ID</label>
-      <input type="text" id="f-analytics-table" placeholder="md_xxxxxxxxxxxxxxxx">
-    </div>
-    <div class="form-group">
-      <label for="f-token">Master NocoDB Token (xc-token)</label>
-      <input type="password" id="f-token" placeholder="xc-auth-...">
-    </div>
-
-    <div class="form-section-label">n8n Integration</div>
-    <div class="form-group">
-      <label for="f-n8n-base">n8n Base URL</label>
-      <input type="url" id="f-n8n-base" placeholder="https://n8n.example.com">
-    </div>
-    <div class="form-group">
-      <label for="f-n8n-key">n8n API Key</label>
-      <input type="password" id="f-n8n-key" placeholder="n8n_api_...">
+      <label for="f-token">Admin Passcode</label>
+      <input type="password" id="f-token" placeholder="Admin passcode">
     </div>
 
     <div id="login-error">Could not connect. Please check your credentials.</div>
@@ -338,6 +338,8 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 <!-- HEADER -->
 <div id="header" style="display:none">
   <span class="brand">Leadvyne · <span>Admin</span></span>
+  <button class="tab-btn active" id="tab-clients" onclick="switchTab('clients')">Clients</button>
+  <button class="tab-btn" id="tab-billing" onclick="switchTab('billing')">Billing</button>
   <span class="client-count-badge" id="count-badge">— clients</span>
   <input type="search" class="header-search" id="search-input" placeholder="Search clients…">
   <div class="connected-badge"><span class="connected-dot"></span>Connected</div>
@@ -347,6 +349,19 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 <!-- MAIN -->
 <div id="main">
   <div id="client-grid" class="client-grid"></div>
+</div>
+
+<!-- BILLING OVERVIEW -->
+<div id="billing-panel" class="hidden">
+  <table class="billing-table">
+    <thead>
+      <tr>
+        <th>Client</th><th>Plan</th><th>Status</th><th>Renews / Ends</th>
+        <th>WA Credits</th><th>Voice</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="billing-tbody"></tbody>
+  </table>
 </div>
 
 <!-- EDIT MODAL -->
@@ -423,31 +438,29 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 <script>
 'use strict';
 
-// ── CONFIG — fill these in once before deploying ──────────────
+// ── CONFIG — no secrets here anymore. The Worker holds the master NocoDB token, the admin
+// passcode, and the Stripe key server-side; this page only ever sends/receives a short-lived
+// signed session token, the same way dashboard.html does for per-client logins. ──
 const CONFIG = {
-  NOCODB_BASE:        'https://whizz.aiingo.com',
-  NOCODB_TOKEN:       'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',
+  WORKER_BASE:        'https://leadvyne-api-proxy.leadvyne.workers.dev',
   CLIENTS_TABLE_ID:   'mxl33bg4wi70fqj',
   ANALYTICS_TABLE_ID: 'm2in19v8n7phitr',
-  N8N_BASE:           'https://apps.leadvyne.com',
-  N8N_API_KEY:        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0YjM4YmIyMC05MTYzLTQ2NmYtOTYyZC04Nzc5MTliYzI5MzMiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiZGFhZmJkYzAtMjMzYy00MTU1LTk5NjUtNTMxNDdmZDk5MWU5IiwiaWF0IjoxNzgxNDI1NjM1fQ.hOtecsgYWE0EutyuhbNP2rEm0ArYuG-ZXA-YLJ6RKIE',
-  ADMIN_PASSCODE:     'Bath*2026*ld',
 };
 // ─────────────────────────────────────────────────────────────
 
+let adminSessionToken = sessionStorage.getItem('lv_admin_session') || '';
+
+// base points at the Worker's admin-authenticated NocoDB passthrough, not NocoDB directly —
+// every existing call site below (loadClients, fetchClientAnalytics, toggleStatus, the edit
+// modal save) is unchanged, since `${cfg.base}/api/v2/tables/...` still resolves correctly,
+// just through the Worker instead of straight to NocoDB.
 function getConfig() {
   return {
-    base:      CONFIG.NOCODB_BASE,
+    base:      CONFIG.WORKER_BASE + '/admin/nocodb',
     clients:   CONFIG.CLIENTS_TABLE_ID,
     analytics: CONFIG.ANALYTICS_TABLE_ID,
-    token:     CONFIG.NOCODB_TOKEN,
-    n8nBase:   CONFIG.N8N_BASE,
-    n8nKey:    CONFIG.N8N_API_KEY,
+    token:     adminSessionToken,
   };
-}
-
-function configComplete(cfg) {
-  return cfg.base && cfg.clients && cfg.analytics && cfg.token;
 }
 
 // ── Toast ─────────────────────────────────────────────────────
@@ -460,9 +473,9 @@ function showToast(msg, type = '') {
   toastTimeout = setTimeout(() => { el.className = 'toast'; }, 3000);
 }
 
-// ── NocoDB API ────────────────────────────────────────────────
+// ── NocoDB API (via the Worker's admin-authenticated passthrough) ──────────────
 async function apiGet(url, token) {
-  const res = await fetch(url, { headers: { 'xc-token': token } });
+  const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -470,7 +483,7 @@ async function apiGet(url, token) {
 async function apiPatch(url, token, body) {
   const res = await fetch(url, {
     method: 'PATCH',
-    headers: { 'xc-token': token, 'Content-Type': 'application/json' },
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -489,6 +502,8 @@ const grid = document.getElementById('client-grid');
 const countBadge = document.getElementById('count-badge');
 const searchInput = document.getElementById('search-input');
 const editOverlay = document.getElementById('edit-overlay');
+const billingPanel = document.getElementById('billing-panel');
+const billingTbody = document.getElementById('billing-tbody');
 
 // ── Login ─────────────────────────────────────────────────────
 document.getElementById('btn-connect').addEventListener('click', async () => {
@@ -502,21 +517,25 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     return;
   }
 
-  if (passcode !== CONFIG.ADMIN_PASSCODE) {
-    errEl.textContent = 'Wrong passcode.';
-    errEl.style.display = 'block';
-    return;
-  }
-
   const btn = document.getElementById('btn-connect');
   btn.disabled = true; btn.textContent = 'Connecting…';
 
   try {
-    const cfg = getConfig();
-    await apiGet(`${cfg.base}/api/v2/tables/${cfg.clients}/records?limit=1`, cfg.token);
+    // The passcode is checked server-side against a Worker secret — it's never compared or
+    // stored in this page. A short-lived signed session token is all that's kept, the same
+    // pattern dashboard.html uses for per-client logins.
+    const res = await fetch(`${CONFIG.WORKER_BASE}/admin/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.session_token) throw new Error(data.error || `HTTP ${res.status}`);
+    adminSessionToken = data.session_token;
+    sessionStorage.setItem('lv_admin_session', adminSessionToken);
+    document.getElementById('f-token').value = '';
     showApp();
   } catch(e) {
-    errEl.textContent = 'Connected to NocoDB failed: ' + e.message + '. Check CONFIG values.';
+    errEl.textContent = e.message || 'Login failed.';
     errEl.style.display = 'block';
     btn.disabled = false; btn.textContent = 'Connect →';
   }
@@ -524,6 +543,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
 
 document.getElementById('btn-disconnect').addEventListener('click', () => {
   allClients = [];
+  adminSessionToken = '';
+  sessionStorage.removeItem('lv_admin_session');
   grid.innerHTML = '';
   header.style.display = 'none';
   main.classList.remove('visible');
@@ -574,6 +595,17 @@ async function loadClients() {
     renderGrid(allClients);
     fetchAllAnalytics();
   } catch(e) {
+    if (e.message.includes('401')) {
+      // Session expired — send back to the login screen instead of an error the user can't act on.
+      adminSessionToken = '';
+      sessionStorage.removeItem('lv_admin_session');
+      header.style.display = 'none';
+      main.classList.remove('visible');
+      loginOverlay.classList.remove('hidden');
+      document.getElementById('login-error').textContent = 'Session expired — please log in again.';
+      document.getElementById('login-error').style.display = 'block';
+      return;
+    }
     grid.innerHTML = `<div class="empty-state"><p>Failed to load clients: ${e.message}</p></div>`;
     showToast('Failed to load clients', 'error');
   }
@@ -791,6 +823,97 @@ document.getElementById('btn-save-modal').addEventListener('click', async () => 
   }
 });
 
+// ── Billing Overview ────────────────────────────────────────────
+// Independent of the client grid — reads live from NocoDB (the same plan_name/plan_status/
+// plan_renews_at fields the customer's own Billing page and webhook keep in sync) plus lets the
+// admin force a live pull from Stripe or jump into a customer's Stripe Portal, without ever
+// needing the Stripe secret key or the master NocoDB token in this page.
+function switchTab(tab) {
+  document.getElementById('tab-clients').classList.toggle('active', tab === 'clients');
+  document.getElementById('tab-billing').classList.toggle('active', tab === 'billing');
+  main.classList.toggle('visible', tab === 'clients');
+  billingPanel.classList.toggle('hidden', tab !== 'billing');
+  if (tab === 'billing') loadBillingOverview();
+}
+
+function formatRenewDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+async function loadBillingOverview() {
+  billingTbody.innerHTML = `<tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr>`;
+  try {
+    const res = await fetch(`${CONFIG.WORKER_BASE}/admin/clients-billing`, {
+      headers: { 'Authorization': 'Bearer ' + adminSessionToken },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    renderBillingTable(data.clients || []);
+  } catch(e) {
+    billingTbody.innerHTML = `<tr><td colspan="7" style="color:#c0392b">Failed to load: ${escHtml(e.message)}</td></tr>`;
+  }
+}
+
+function renderBillingTable(clients) {
+  if (!clients.length) {
+    billingTbody.innerHTML = `<tr><td colspan="7" style="color:var(--muted)">No clients found.</td></tr>`;
+    return;
+  }
+  billingTbody.innerHTML = clients.map(c => {
+    const status = c.plan_status || 'none';
+    const renewLabel = c.plan_cancel_at_period_end === 'Yes' ? 'Ends' : 'Renews';
+    return `
+    <tr id="billing-row-${c.Id}">
+      <td><strong>${escHtml(c.client_name || 'Unnamed')}</strong><br><span style="color:var(--muted);font-size:.75rem">${escHtml(c.authentik_email || '')}</span></td>
+      <td>${escHtml(c.plan_name || '—')}</td>
+      <td><span class="plan-status-badge ${escHtml(status)}">${escHtml(status)}</span></td>
+      <td>${c.plan_renews_at ? renewLabel + ': ' + formatRenewDate(c.plan_renews_at) : '—'}</td>
+      <td>${Number(c.wa_credits_balance || 0).toLocaleString()}</td>
+      <td>${c.voice_addon_active === 'Yes' ? '✅' : '—'}</td>
+      <td id="billing-actions-${c.Id}">
+        <button class="btn-mini" onclick="refreshClientBilling(${c.Id})">🔄 Refresh</button>
+        <button class="btn-mini" onclick="openClientPortal(${c.Id})" ${c.stripe_customer_id ? '' : 'disabled title="No Stripe customer yet"'}>Portal ↗</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function refreshClientBilling(clientId) {
+  const cell = document.getElementById(`billing-actions-${clientId}`);
+  const prevHtml = cell.innerHTML;
+  cell.innerHTML = 'Syncing…';
+  try {
+    const res = await fetch(`${CONFIG.WORKER_BASE}/admin/billing-refresh`, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + adminSessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    showToast('Synced — plan status: ' + (data.plan_status || '—'), 'success');
+    loadBillingOverview();
+  } catch(e) {
+    cell.innerHTML = prevHtml;
+    showToast('Sync failed: ' + e.message, 'error');
+  }
+}
+
+async function openClientPortal(clientId) {
+  try {
+    const res = await fetch(`${CONFIG.WORKER_BASE}/admin/billing-portal-link`, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + adminSessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.url) throw new Error(data.error || `HTTP ${res.status}`);
+    window.open(data.url, '_blank', 'noopener');
+  } catch(e) {
+    showToast('Could not open portal: ' + e.message, 'error');
+  }
+}
+
 // ── Search ────────────────────────────────────────────────────
 searchInput.addEventListener('input', () => {
   const q = searchInput.value.toLowerCase().trim();
@@ -814,11 +937,10 @@ function escHtml(s) {
 
 // ── Boot ──────────────────────────────────────────────────────
 (function boot() {
-  // Config is baked in — gate only asks for passcode
-  document.getElementById('f-token').placeholder = 'Admin passcode';
-  const cfg = getConfig();
-  if (!configComplete(cfg)) {
-    console.warn('Leadvyne Admin: fill in CONFIG values at the top of the script before deploying.');
+  // Resume an existing admin session (survives a page refresh) — if the stored token has since
+  // expired, the first API call below fails with 401 and falls back to the login screen.
+  if (adminSessionToken) {
+    showApp();
   }
 })();
 </script>
