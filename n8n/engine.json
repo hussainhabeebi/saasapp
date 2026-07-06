@@ -241,41 +241,7 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $('Code · Merge text').first().json.openrouter_key }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify({ model: $('Code · Merge text').first().json.model || 'google/gemini-2.5-flash', max_tokens: 120, messages: [ { role: 'system', content: 'Classify the latest WhatsApp message from a sales lead, using the recent conversation for context. Return ONLY compact JSON with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going). No prose, no markdown, no code fences.' }, { role: 'user', content: 'Recent conversation:\\n' + ($('Code · Merge text').first().json.activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\\n') + '\\n\\nLatest message: ' + $('Code · Merge text').first().json.userText } ] }) }}",
-        "options": {
-          "timeout": 6000
-        }
-      },
-      "id": "aiclassifyhttp",
-      "name": "HTTP · AI Classify",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1120,
-        220
-      ],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "jsCode": "const merged = $('Code · Merge text').first().json;\nconst msg = (merged.userText || '').trim();\nconst low = msg.toLowerCase();\n\nlet aiResult = null;\ntry {\n  const r = $input.first().json;\n  const raw = r.choices?.[0]?.message?.content || '';\n  const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/);\n  if (m) aiResult = JSON.parse(m[0]);\n} catch(e) {}\n\nconst VALID_INTENTS = new Set(['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL']);\nconst VALID_SENTIMENT = new Set(['Positive','Neutral','Negative','Frustrated']);\nconst VALID_OBJECTION = new Set(['none','price','competitor','timing','trust']);\n\nlet intent = null, intentData = {};\n\n// Deterministic fast-paths always win over the AI call — instant, free, and\n// safety-critical (a lead must always be able to reach a human on demand).\nif (/\\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\\b/.test(low)) intent = 'WANTS_HUMAN';\nif (!intent) {\n  const bookMatch = low.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\\d{1,2}[:\\/\\-]\\d{1,2}|\\d{1,2}\\s*(am|pm)|morning|afternoon|evening|tonight|next week)\\b/);\n  if (bookMatch) { intent = 'BOOKING'; intentData = { booking_time: msg }; }\n}\n\n// AI classification (semantic, handles paraphrasing/sarcasm the regex below can't)\nif (!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence === undefined || aiResult.confidence >= 0.5)) {\n  intent = aiResult.intent;\n  if (intent === 'BOOKING') intentData = { booking_time: msg };\n}\n\n// Regex fallback ladder — unchanged from before, used when the AI call fails,\n// times out, or returns low confidence.\nif (!intent && /\\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\\b/.test(low)) intent = 'WATCHED';\nif (!intent && /\\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\\b/.test(low)) intent = 'FORM_DONE';\nif (!intent && /\\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\\b/.test(low)) intent = 'DELAY';\nif (!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\\.!]*$/.test(low)) intent = 'SHORT_NEUTRAL';\nif (!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\\.!]*$/.test(low)) intent = 'AFFIRMATIVE';\nif (!intent) { intent = 'QUESTION'; intentData = { question: msg }; }\n\nconst sentiment = (aiResult && VALID_SENTIMENT.has(aiResult.sentiment)) ? aiResult.sentiment : 'Neutral';\nconst objectionCategory = (aiResult && VALID_OBJECTION.has(aiResult.objection)) ? aiResult.objection : 'none';\nconst wpRaw = Number(aiResult?.win_probability);\nconst aiWinProbability = Number.isFinite(wpRaw) ? Math.max(0, Math.min(100, Math.round(wpRaw))) : null;\n\nreturn [{ json: { output: JSON.stringify({ intent, data: intentData }), sentiment, objectionCategory, aiWinProbability } }];"
+        "jsCode": "const merged = $('Code · Merge text').first().json;\nconst msg = (merged.userText || '').trim();\nconst low = msg.toLowerCase();\n\nlet aiResult = null;\ntry {\n  const r = $input.first().json;\n  const raw = r.output || r.text || '';\n  const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/);\n  if (m) aiResult = JSON.parse(m[0]);\n} catch(e) {}\n\nconst VALID_INTENTS = new Set(['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL']);\nconst VALID_SENTIMENT = new Set(['Positive','Neutral','Negative','Frustrated']);\nconst VALID_OBJECTION = new Set(['none','price','competitor','timing','trust']);\n\nlet intent = null, intentData = {};\n\n// Deterministic fast-paths always win over the AI agent — instant, free, and\n// safety-critical (a lead must always be able to reach a human on demand).\nif (/\\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\\b/.test(low)) intent = 'WANTS_HUMAN';\nif (!intent) {\n  const bookMatch = low.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\\d{1,2}[:\\/\\-]\\d{1,2}|\\d{1,2}\\s*(am|pm)|morning|afternoon|evening|tonight|next week)\\b/);\n  if (bookMatch) { intent = 'BOOKING'; intentData = { booking_time: msg }; }\n}\n\n// AI classification (Gemini via the AI Agent node above) — semantic understanding\n// the regex below can't do (paraphrasing, sarcasm, non-keyword phrasing)\nif (!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence === undefined || aiResult.confidence >= 0.5)) {\n  intent = aiResult.intent;\n  if (intent === 'BOOKING') intentData = { booking_time: msg };\n}\n\n// Regex fallback ladder — used when the agent call fails, times out, or returns low confidence\nif (!intent && /\\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\\b/.test(low)) intent = 'WATCHED';\nif (!intent && /\\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\\b/.test(low)) intent = 'FORM_DONE';\nif (!intent && /\\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\\b/.test(low)) intent = 'DELAY';\nif (!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\\.!]*$/.test(low)) intent = 'SHORT_NEUTRAL';\nif (!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\\.!]*$/.test(low)) intent = 'AFFIRMATIVE';\nif (!intent) { intent = 'QUESTION'; intentData = { question: msg }; }\n\nconst sentiment = (aiResult && VALID_SENTIMENT.has(aiResult.sentiment)) ? aiResult.sentiment : 'Neutral';\nconst objectionCategory = (aiResult && VALID_OBJECTION.has(aiResult.objection)) ? aiResult.objection : 'none';\nconst wpRaw = Number(aiResult?.win_probability);\nconst aiWinProbability = Number.isFinite(wpRaw) ? Math.max(0, Math.min(100, Math.round(wpRaw))) : null;\n\nreturn [{ json: { output: JSON.stringify({ intent, data: intentData }), sentiment, objectionCategory, aiWinProbability } }];"
       },
       "id": "aiagent",
       "name": "Code · Intent classify",
@@ -869,6 +835,44 @@
     },
     {
       "parameters": {
+        "promptType": "define",
+        "text": "=Recent conversation:\n{{ ($('Code · Merge text').first().json.activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\\n') }}\n\nLatest message: {{ $('Code · Merge text').first().json.userText }}",
+        "options": {
+          "systemMessage": "You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going)."
+        }
+      },
+      "id": "aiAgentClassify",
+      "name": "AI Agent · Sentiment & Intent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1120,
+        400
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.0-flash",
+        "options": {}
+      },
+      "id": "geminiChatModel",
+      "name": "Google Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        580
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "REPLACE_GEMINI_CRED",
+          "name": "Google Gemini API"
+        }
+      }
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "sendHeaders": true,
@@ -901,7 +905,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\n\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\n\nif (c.taContextBlock && c.taContextBlock.trim()) {\n  sys += c.taContextBlock;\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\n\nsys += \"\\n\\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer \\u2014 do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).\";\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. If specific details are not available, politely say you will connect them with an advisor.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
+        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\n\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\n\nif (c.taContextBlock && c.taContextBlock.trim()) {\n  sys += c.taContextBlock;\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\n\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. If specific details are not available, politely say you will connect them with an advisor.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
       },
       "id": "travelfaqprep",
       "name": "Code · Travel FAQ prep",
@@ -969,7 +973,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'INR'} ${s.price} per ${s.per||'item'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\n\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\n\nif (c.ecomContextBlock && c.ecomContextBlock.trim()) {\n  sys += c.ecomContextBlock;\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\n\nsys += \"\\n\\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer \\u2014 do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).\";\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above. If specific details are not available, politely say you will connect them with support.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
+        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'INR'} ${s.price} per ${s.per||'item'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\n\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\n\nif (c.ecomContextBlock && c.ecomContextBlock.trim()) {\n  sys += c.ecomContextBlock;\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\n\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above. If specific details are not available, politely say you will connect them with support.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
       },
       "id": "ecomfaqprep",
       "name": "Code · Ecom FAQ prep",
@@ -1450,7 +1454,7 @@
       "main": [
         [
           {
-            "node": "HTTP · AI Classify",
+            "node": "AI Agent · Sentiment & Intent",
             "type": "main",
             "index": 0
           }
@@ -1556,17 +1560,6 @@
         ]
       ]
     },
-    "HTTP · AI Classify": {
-      "main": [
-        [
-          {
-            "node": "Code · Intent classify",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Code · Objection prep": {
       "main": [
         [
@@ -1595,6 +1588,28 @@
           {
             "node": "HTTP · Send reply",
             "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent · Sentiment & Intent": {
+      "main": [
+        [
+          {
+            "node": "Code · Intent classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent · Sentiment & Intent",
+            "type": "ai_languageModel",
             "index": 0
           }
         ]

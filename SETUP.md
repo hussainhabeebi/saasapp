@@ -599,15 +599,30 @@ workflow that actually needs it.
 Four additions on top of the original regex-only engine, aimed at closing the gap between
 "scripted chatbot" and "AI sales rep":
 
-**1. AI intent + sentiment classification** — `HTTP · AI Classify` (a new OpenRouter call inserted
-before `Code · Intent classify`) reads the latest message plus the last few turns and returns
-`{intent, sentiment, objection, confidence}`. The old regex ladder is kept as both a fast-path
-(a literal "talk to a human" always wins instantly, free, with no AI round-trip) and a fallback
-(if the AI call fails, times out, or returns low confidence, regex still classifies the message —
-the bot never goes silent because of an LLM outage). This means the engine now understands
-paraphrased, sarcastic, or non-keyword phrasing the old pure-regex classifier couldn't. A
-`Sentiment` of `Frustrated` force-escalates to human handover regardless of what stage the
-conversation is in — a safety net the regex-only version had no way to express.
+**1. AI intent + sentiment classification** — `AI Agent · Sentiment & Intent` (a real
+`@n8n/n8n-nodes-langchain.agent` node, not a raw HTTP call) sits between `Code · Intent prep` and
+`Code · Intent classify`, backed by a `Google Gemini Chat Model` node
+(`@n8n/n8n-nodes-langchain.lmChatGoogleGemini`, model `models/gemini-2.0-flash`) wired to it via the
+`ai_languageModel` connection. It reads the latest message plus the last 4 turns and returns
+`{intent, sentiment, confidence}`. The old regex ladder is kept as both a fast-path (a literal
+"talk to a human" always wins instantly, free, with no LLM round-trip) and a fallback (if the agent
+call fails, times out, or returns low confidence, regex still classifies the message — the bot
+never goes silent because of an LLM outage). This means the engine now understands paraphrased,
+sarcastic, or non-keyword phrasing the old pure-regex classifier couldn't. A `Sentiment` of
+`Frustrated` force-escalates to human handover regardless of what stage the conversation is in — a
+safety net the regex-only version had no way to express.
+
+**Setup**: add a **Google Gemini(PaLM) Api** credential in n8n (Credentials → New → search
+"Gemini") named **Google Gemini API** — just needs a Gemini API key from
+[Google AI Studio](https://aistudio.google.com/apikey). Attach it to the `Google Gemini Chat Model`
+node (replacing the `REPLACE_GEMINI_CRED` placeholder). No OpenRouter key needed for this
+particular call — the rest of the engine's `openrouter_key`/`model` config is unaffected.
+
+The same agent call also asks for `objection` (one of `none`/`price`/`competitor`/`timing`/`trust`)
+and `win_probability` (0-100) in the same JSON response — one Gemini call covers intent, sentiment,
+objection detection, and win-probability estimation together, feeding the objection-handling route
+and the AI-driven win-probability logic described below (both already built to consume these exact
+field names from whatever populates them).
 
 **2. Objection handling** — when the classifier detects an objection (`price`/`competitor`/
 `timing`/`trust`) on a message that would otherwise just get a generic FAQ answer, the engine
