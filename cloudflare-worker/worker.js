@@ -660,7 +660,17 @@ async function handleBillingWebhook(request, env){
     // a CLIENTS row. Fetching the subscription directly (rather than waiting on a separate
     // customer.subscription.created event) avoids a race where that event arrives first and
     // can't yet resolve which client it belongs to.
-    const clientId=obj.client_reference_id;
+    let clientId=obj.client_reference_id;
+    if(!clientId){
+      // Fallback if client_reference_id didn't come through (e.g. the table was opened via a
+      // direct Stripe preview link rather than through dashboard.html) — match by whatever email
+      // was actually used at checkout against this account's known emails (owner + teammates).
+      const checkoutEmail=(obj.customer_details?.email||obj.customer_email||'').trim();
+      if(checkoutEmail){
+        const c=await getClientByAuthentikEmail(env, checkoutEmail);
+        clientId=c?.Id||null;
+      }
+    }
     if(clientId && obj.customer){
       await patchClientFields(env, clientId, {stripe_customer_id:obj.customer});
       if(obj.subscription){
