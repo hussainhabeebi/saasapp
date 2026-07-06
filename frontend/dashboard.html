@@ -1469,6 +1469,46 @@ const TODAY = new Date().toISOString().slice(0,10);
             </div>
           </div>
 
+          <div class="settings-section">
+            <div class="s-head">🚨 SLA &amp; Slack Alerts</div>
+            <div class="s-note">Also post hot-lead, handover, and SLA-breach alerts to Slack (in addition to email). SLA minutes controls how long a lead can sit waiting for a human reply before it's flagged.</div>
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:10px">
+              <div><label class="form-label">Slack Webhook URL</label><input class="form-input" id="cfgSlackWebhook" type="url" placeholder="https://hooks.slack.com/services/…"></div>
+              <div><label class="form-label">SLA (minutes)</label><input class="form-input" type="number" min="1" id="cfgSlaMinutes" placeholder="15"></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveSlaSlack">Save</button>
+              <span class="save-msg" id="saveSlaSlackMsg"></span>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="s-head">🧠 Objection Playbook</div>
+            <div class="s-note">Approved response strategy per objection type — the bot follows this instead of a generic FAQ answer when it detects the objection. Leave any blank to fall back to a sensible default.</div>
+            <label class="form-label">Price objection ("too expensive", "cheaper elsewhere"…)</label>
+            <textarea class="form-input" id="cfgObjPrice" rows="2" style="margin-bottom:8px"></textarea>
+            <label class="form-label">Competitor objection ("using X instead"…)</label>
+            <textarea class="form-input" id="cfgObjCompetitor" rows="2" style="margin-bottom:8px"></textarea>
+            <label class="form-label">Timing objection ("not right now", "maybe later"…)</label>
+            <textarea class="form-input" id="cfgObjTiming" rows="2" style="margin-bottom:8px"></textarea>
+            <label class="form-label">Trust objection ("is this legit", "never heard of you"…)</label>
+            <textarea class="form-input" id="cfgObjTrust" rows="2"></textarea>
+            <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveObjPlaybook">Save Playbook</button>
+              <span class="save-msg" id="saveObjPlaybookMsg"></span>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="s-head">💰 Deal Currency</div>
+            <div class="s-note">Default currency stamped on each new lead's deal value (editable per lead in its detail view).</div>
+            <input class="form-input" id="cfgDealCurrency" placeholder="AED" maxlength="6" style="max-width:160px">
+            <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveDealCurrency">Save</button>
+              <span class="save-msg" id="saveDealCurrencyMsg"></span>
+            </div>
+          </div>
+
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:24px">
             <button class="save-btn" id="saveGeneral">Save</button>
             <span class="save-msg" id="saveGeneralMsg"></span>
@@ -2283,6 +2323,14 @@ const TODAY = new Date().toISOString().slice(0,10);
         <option value="Cold">Cold</option><option value="Warm">Warm</option><option value="Hot">Hot</option>
       </select>
     </div>
+    <!-- deal value / forecast -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+      <div><label class="form-label">Deal Value</label><input class="form-input" type="number" min="0" id="detailDealValue" onchange="patchDealValue(this.value)" placeholder="0" /></div>
+      <div><label class="form-label">Currency</label><input class="form-input" id="detailDealCurrency" onchange="patchDetailField('DealCurrency',this.value)" placeholder="AED" maxlength="6" /></div>
+      <div><label class="form-label">Win %</label><input class="form-input" type="number" min="0" max="100" id="detailWinProb" onchange="patchWinProbability(this.value)" placeholder="0" /></div>
+    </div>
+    <!-- sentiment / objection / SLA signals -->
+    <div id="detailSignals" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
     <!-- notes -->
     <div class="sec-hd">📝 Notes</div>
     <div id="detailNotes"></div>
@@ -3043,12 +3091,15 @@ function renderKanban(){
 }
 
 function kbCard(l){
+  const sentimentIcon=l.Sentiment==='Frustrated'?'😠':(l.Sentiment==='Negative'?'🙁':'');
+  const slaLimit=parseInt(clientRecord?.sla_minutes)||15;
+  const overdue=l.Stage==='human_handover' && l.HandoverAt && (Date.now()-new Date(l.HandoverAt).getTime())/60000>=slaLimit;
   return `<div class="kb-card ${scoreCardClass(l.Score)}" draggable="true" id="kbc${l.Id}"
     ondragstart="kbStart(event,${l.Id})" ondragend="kbEnd(event)"
     onclick="openDetail(${l.Id})">
-    <div class="kb-name">${esc(l.Name||l.Phone||'Unknown')}</div>
+    <div class="kb-name">${esc(l.Name||l.Phone||'Unknown')}${sentimentIcon?` <span title="${esc(l.Sentiment)}">${sentimentIcon}</span>`:''}${overdue?' <span title="SLA breached">⏱️</span>':''}</div>
     <div class="kb-phone">${maskPhone(l.Phone)}</div>
-    <div class="kb-meta">${scoreBadge(l.Score)}${l.Owner?`<span style="font-size:10px;color:var(--muted)">${esc(l.Owner)}</span>`:''}</div>
+    <div class="kb-meta">${scoreBadge(l.Score)}${dealHealthChip(l)}${l.DealValue?`<span style="font-size:10px;color:var(--accent-ink);font-weight:600">${esc(l.DealCurrency||'')} ${Number(l.DealValue).toLocaleString()}</span>`:''}${l.Owner?`<span style="font-size:10px;color:var(--muted)">${esc(l.Owner)}</span>`:''}</div>
   </div>`;
 }
 
@@ -3109,6 +3160,7 @@ function renderLeadsList(){
       </div>
       <div class="li-right">
         ${scoreBadge(l.Score)}
+        ${dealHealthChip(l)}
         <span class="li-date">${fmtDateShort(l.Date)}</span>
         ${l.ReminderDate?`<span class="reminder-badge" title="${l.ReminderDate}">⏰</span>`:''}
         ${recoveryBadgeHtml(l)}
@@ -3283,6 +3335,10 @@ function openDetail(id){
   $id('detailOwner').value=lead.Owner||'';
   $id('detailScore').value=lead.Score||'Cold';
   $id('detailReminder').value=lead.ReminderDate||'';
+  $id('detailDealValue').value=lead.DealValue||'';
+  $id('detailDealCurrency').value=lead.DealCurrency||clientRecord?.deal_currency||'';
+  $id('detailWinProb').value=(lead.WinProbability===undefined||lead.WinProbability===null||lead.WinProbability==='')?'':lead.WinProbability;
+  renderDetailSignals(lead);
 
   // reminder badge
   if(lead.ReminderDate){
@@ -3393,6 +3449,43 @@ async function patchDetailField(field,val){
   const idx=allLeads.findIndex(l=>l.Id===currentLead.Id);
   if(idx>=0)allLeads[idx][field]=val;
   await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:currentLead.Id,[field]:val});
+}
+
+async function patchDealValue(val){
+  const num=val===''?null:Number(val);
+  await patchDetailField('DealValue',num);
+}
+
+// Editing Win % here marks it manual so the engine's own per-turn auto-suggestion
+// (based on stage progress + score) stops overwriting the rep's judgement call.
+async function patchWinProbability(val){
+  if(!currentLead)return;
+  const num=val===''?null:Math.max(0,Math.min(100,Number(val)));
+  currentLead.WinProbability=num;
+  currentLead.WinProbabilityManual='Yes';
+  const idx=allLeads.findIndex(l=>l.Id===currentLead.Id);
+  if(idx>=0){allLeads[idx].WinProbability=num;allLeads[idx].WinProbabilityManual='Yes';}
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:currentLead.Id,WinProbability:num,WinProbabilityManual:'Yes'});
+}
+
+function renderDetailSignals(lead){
+  const chips=[];
+  const health=dealHealth(lead);
+  if(health)chips.push(`<span class="tag" style="background:${health.bg};color:${health.fg}">● ${health.label}</span>`);
+  if(lead.Sentiment && lead.Sentiment!=='Neutral'){
+    const neg=lead.Sentiment==='Negative'||lead.Sentiment==='Frustrated';
+    chips.push(`<span class="tag" style="background:${neg?'#FEE2E2':'#DCFCE7'};color:${neg?'#991B1B':'#166534'}">${lead.Sentiment==='Frustrated'?'😠':neg?'🙁':'🙂'} ${esc(lead.Sentiment)}</span>`);
+  }
+  if(lead.LastObjectionCategory){
+    chips.push(`<span class="tag" style="background:#FEF3C7;color:#92400E">⚠️ ${esc(lead.LastObjectionCategory)} objection</span>`);
+  }
+  if(lead.Stage==='human_handover' && lead.HandoverAt){
+    const mins=Math.max(0,Math.round((Date.now()-new Date(lead.HandoverAt).getTime())/60000));
+    const slaLimit=parseInt(clientRecord?.sla_minutes)||15;
+    const overdue=mins>=slaLimit;
+    chips.push(`<span class="tag" style="background:${overdue?'#FEE2E2':'#F1F5F9'};color:${overdue?'#991B1B':'var(--muted)'}">⏱ waiting ${mins}m${overdue?' — SLA breached':''}</span>`);
+  }
+  $id('detailSignals').innerHTML=chips.join('');
 }
 
 /* ── AI SUMMARY ── */
@@ -3682,6 +3775,10 @@ function populateSettings(){
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
+  $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
+  $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
+  $id('cfgDealCurrency').value=clientRecord.deal_currency||'AED';
+  populateObjectionPlaybook();
   // knowledge base
   _kbText=clientRecord.kb_text||'';
   $id('cfgKbText').value=_kbText;
@@ -4331,6 +4428,27 @@ function renderProspectLog(){
 
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
+$id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
+$id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
+
+function populateObjectionPlaybook(){
+  let playbook=[]; try{playbook=JSON.parse(clientRecord?.objection_playbook||'[]');}catch(e){}
+  const get=cat=>playbook.find(o=>(o.category||'').toLowerCase()===cat)?.approved_response||'';
+  $id('cfgObjPrice').value=get('price');
+  $id('cfgObjCompetitor').value=get('competitor');
+  $id('cfgObjTiming').value=get('timing');
+  $id('cfgObjTrust').value=get('trust');
+}
+
+$id('saveObjPlaybook').addEventListener('click',async()=>{
+  const entries=[
+    {category:'price',approved_response:$id('cfgObjPrice').value.trim()},
+    {category:'competitor',approved_response:$id('cfgObjCompetitor').value.trim()},
+    {category:'timing',approved_response:$id('cfgObjTiming').value.trim()},
+    {category:'trust',approved_response:$id('cfgObjTrust').value.trim()}
+  ].filter(e=>e.approved_response);
+  await saveField('saveObjPlaybook','saveObjPlaybookMsg',{objection_playbook:JSON.stringify(entries)});
+});
 
 $id('saveFlow').addEventListener('click',async()=>{
   const err=$id('flowErr');
@@ -4860,6 +4978,30 @@ function scoreBadge(s){if(!s)return'';const cl=s==='Hot'?'badge-score-hot':s==='
 // Mirrors scoreBadge()'s exact Hot/Warm/else-cold fallback so the card's left-edge color strip
 // always agrees with the badge text shown on it.
 function scoreCardClass(s){if(!s)return'';return s==='Hot'?'kb-hot':s==='Warm'?'kb-warm':'kb-cold';}
+
+// Deal Health: one glance signal combining what's already tracked (WinProbability, Sentiment,
+// an unresolved objection, and days of silence) instead of reading each field separately.
+function dealHealth(l){
+  if(TERMINAL.has(l.Stage))return null; // decided already — no health score needed
+  const lastMsg=l.LastMsgAt||l.Date;
+  const silentDays=lastMsg?(Date.now()-new Date(lastMsg).getTime())/86400000:999;
+  const wpNum=Number(l.WinProbability);
+  const hasWp=l.WinProbability!==undefined&&l.WinProbability!==null&&l.WinProbability!==''&&!isNaN(wpNum);
+  let score=hasWp?wpNum:40;
+  if(l.Sentiment==='Frustrated')score-=40;
+  else if(l.Sentiment==='Negative')score-=20;
+  if(l.LastObjectionCategory)score-=10;
+  if(silentDays>7)score-=25;
+  else if(silentDays>3)score-=10;
+  if(score>=60)return{level:'green',label:'Healthy',bg:'#DCFCE7',fg:'#166534'};
+  if(score>=35)return{level:'yellow',label:'At risk',bg:'#FEF3C7',fg:'#92400E'};
+  return{level:'red',label:'Stalling',bg:'#FEE2E2',fg:'#991B1B'};
+}
+function dealHealthChip(l){
+  const h=dealHealth(l);
+  if(!h)return'';
+  return`<span class="tag" title="Deal health" style="background:${h.bg};color:${h.fg}">● ${h.label}</span>`;
+}
 function stageBadge(s){
   const cl=TERMINAL.has(s)?(s==='human_handover'?'badge-human':'badge-booked'):s==='new'?'badge-new':'badge-active';
   return`<span class="badge ${cl}">${esc(s||'—')}</span>`;
@@ -5410,6 +5552,15 @@ function generateReport(){
   const hotLeads=allLeads.filter(l=>l.Score==='Hot'||l.HotMoment==='Yes').slice(0,10);
   const hotRows=hotLeads.map(l=>`<tr><td>${l.Name||'—'}</td><td>${l.Phone||'—'}</td><td>${l.Stage||'new'}</td><td>${l.Score||'Cold'}</td><td>${fmtDate(l.LastMsgAt||l.Date)}</td></tr>`).join('');
 
+  // Pipeline value & weighted forecast (deal size × win probability), active leads only
+  const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
+  const pipelineValue=active.reduce((s,l)=>s+(Number(l.DealValue)||0),0);
+  const weightedForecast=active.reduce((s,l)=>s+((Number(l.DealValue)||0)*(Number(l.WinProbability)||0)/100),0);
+  const stageValue={};
+  active.forEach(l=>{const s=l.Stage||'new';if(!stageValue[s])stageValue[s]={count:0,value:0,forecast:0};stageValue[s].count++;stageValue[s].value+=(Number(l.DealValue)||0);stageValue[s].forecast+=((Number(l.DealValue)||0)*(Number(l.WinProbability)||0)/100);});
+  const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
+  const forecastRows=Object.entries(stageValue).sort((a,b)=>b[1].value-a[1].value).map(([s,d])=>`<tr><td>${s}</td><td>${d.count}</td><td>${fmtMoney(d.value)}</td><td>${fmtMoney(d.forecast)}</td></tr>`).join('');
+
   const w=window.open('','_blank');
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Leadvyne Report — ${clientRecord?.client_name||''}</title>
 <style>
@@ -5434,8 +5585,14 @@ td{padding:8px 10px;border-bottom:1px solid #EEF2F0;font-size:12px}
   <div class="stat-box"><div class="stat-val">${booked.length}</div><div class="stat-lbl">${ind.booked}</div></div>
   <div class="stat-box"><div class="stat-val">${rate}%</div><div class="stat-lbl">Conversion Rate</div></div>
 </div>
+<div class="grid" style="grid-template-columns:repeat(2,1fr)">
+  <div class="stat-box"><div class="stat-val">${fmtMoney(pipelineValue)}</div><div class="stat-lbl">Pipeline Value (active)</div></div>
+  <div class="stat-box"><div class="stat-val">${fmtMoney(weightedForecast)}</div><div class="stat-lbl">Weighted Forecast</div></div>
+</div>
 <h2>Pipeline by Stage</h2>
 <table><thead><tr><th>Stage</th><th>Count</th><th>Share</th></tr></thead><tbody>${stageRows}</tbody></table>
+<h2>Pipeline Value &amp; Forecast by Stage</h2>
+<table><thead><tr><th>Stage</th><th>Count</th><th>Deal Value</th><th>Weighted Forecast</th></tr></thead><tbody>${forecastRows||'<tr><td colspan="4" style="color:#999">No deal values recorded yet</td></tr>'}</tbody></table>
 <h2>Agent Performance</h2>
 <table><thead><tr><th>Agent</th><th>Leads</th><th>Converted</th><th>Rate</th></tr></thead><tbody>${agentRows}</tbody></table>
 <h2>Hot Leads</h2>

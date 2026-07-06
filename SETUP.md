@@ -58,6 +58,11 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
 | fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 | last_renewal_notice_sent | Single line (ISO datetime — set by `n8n/rbi-renewal-notice.json` so each renewal only gets one backup reminder email even though the workflow runs daily; see "RBI pre-debit notification" below) |
+| notification_email | Single line (email address `n8n/notifications.json` sends hot-lead/handover/SLA alerts to) |
+| slack_webhook_url | Single line (optional — Slack incoming-webhook URL; `n8n/notifications.json` posts the same hot-lead/handover/SLA alerts here in addition to email, if set) |
+| sla_minutes | Number (optional, default 15 — minutes a lead can sit in `human_handover` before `n8n/notifications.json` fires an SLA-breach alert; see "AI sales rep" section below) |
+| objection_playbook | Long text (optional — JSON array of `{category, approved_response}`, category one of `price`/`competitor`/`timing`/`trust`; grounds the engine's objection-handling response — falls back to a generic acknowledge-and-propose-next-step strategy if blank or the category isn't covered) |
+| deal_currency | Single line (default `AED` — seeds `DealCurrency` on newly created leads) |
 
 ### LEADS table additions (for the Quotation module's sent log)
 Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
@@ -67,6 +72,29 @@ Quotation tab's "Sent Quotations" report:
 |---|---|
 | QuoteSentAt | Single line (ISO datetime) |
 | QuoteSentTotal | Single line |
+
+### LEADS table additions (AI sales rep: sentiment, objections, deal forecast, SLA)
+More columns on the **LEADS** table, written by `engine.json` and read/edited by `dashboard.html`:
+
+| Field | Type |
+|---|---|
+| Sentiment | Single line (`Positive`/`Neutral`/`Negative`/`Frustrated` — set from the engine's AI intent+sentiment classification on every inbound message; a `Frustrated` reading force-escalates to human handover regardless of stage) |
+| LastObjectionCategory | Single line (`price`/`competitor`/`timing`/`trust` — set whenever the AI classifier detects an objection; drives the objection-handling response, see `objection_playbook` above) |
+| DealValue | Number (manual — the dashboard's only input into deal size; the engine never sets this, since it has no way to know it) |
+| DealCurrency | Single line (defaults from the client's `deal_currency` on lead creation; editable per lead) |
+| WinProbability | Number, 0-100 (auto-suggested by the engine from stage progress + lead score on every turn; stops auto-updating once `WinProbabilityManual` is set to "Yes" so a rep's manual call is never silently overwritten) |
+| WinProbabilityManual | Single line ("Yes"/"No" — set by the dashboard when a rep manually edits `WinProbability`) |
+| HandoverAt | Single line (ISO datetime — stamped the moment a lead first enters `human_handover`; powers the SLA-breach alert and an in-dashboard "waiting Xm" badge) |
+| SlaAlerted | Single line ("Yes"/"No" — dedupe flag so `n8n/notifications.json` only fires one SLA-breach alert per handover, reset by the engine each time a lead re-enters `human_handover`) |
+
+**Known limitation**: SLA tracking only knows a lead *entered* `human_handover` — the bot stops
+writing to the lead entirely once handed over (by design, so it can never talk over a live agent),
+so there's no reliable signal in NocoDB for "an agent already replied in Chatwoot." The SLA alert
+is therefore a **time-in-stage** proxy (has this lead sat in `human_handover` longer than
+`sla_minutes`), not a true first-response-time metric — it clears once the stage changes away from
+`human_handover` (e.g. a rep manually moves the lead in the dashboard), not on the agent's first
+Chatwoot reply. A tighter version would need to poll Chatwoot's own conversation/message API for an
+agent-authored message timestamp, which isn't implemented here.
 
 ### Prospects module
 Uses existing LEADS columns only — no new schema. Imported contacts are created with
@@ -527,6 +555,127 @@ we already know which CLIENTS row this is):
 **Not yet verified against a live Stripe account**: the Checkout/Portal/webhook request shapes
 follow Stripe's public API docs, but this hasn't been smoke-tested end-to-end — test the full
 subscribe → webhook → portal → add-on loop with Stripe test-mode keys before going live.
+
+### Payment status check & reconciliation (n8n/billing-reconcile.json)
+A standalone n8n workflow, separate from both the Worker's webhook and `n8n/notifications.json`,
+that runs every 6 hours and re-derives each billing-enabled client's status straight from Stripe
+rather than trusting whatever the webhook last wrote. This exists because the webhook is the
+**only** thing keeping NocoDB in sync today — if a delivery is delayed, dropped, or arrives out of
+order (Stripe doesn't guarantee ordering), nothing currently notices or corrects it. This job is
+that second line of defense.
+
+Per client (skips anyone with no `stripe_customer_id` — i.e. anyone who's never started billing):
+1. **Subscription drift** — pulls the customer's live Subscriptions from Stripe and corrects
+   `plan_status`/`plan_renews_at`/`plan_cancel_at_period_end`/`plan_name`/`stripe_subscription_id`
+   in NocoDB if they've drifted from what Stripe actually shows. If Stripe shows no subscription
+   at all for a customer NocoDB still thinks is active, it's marked `canceled` — the most common
+   real cause is a missed `customer.subscription.deleted` webhook.
+2. **Billing email drift** — the Stripe Customer's email is always supposed to mirror the account's
+   billing profile (`authentik_email`); this is treated as the single source of truth precisely
+   *because* Stripe Checkout locks the email field once the Customer object already has one set
+   (see `ensureStripeCustomer` in `worker.js`) — so a customer genuinely **cannot** change their
+   billing email at payment time. If this job finds the two out of sync anyway, that only happens
+   from an out-of-band edit (Stripe Dashboard, direct API call, or a legacy customer created before
+   `authentik_email` existed) — it restores the Customer's email back to the billing profile rather
+   than accepting the drift.
+3. Whatever it corrects (if anything) is reported via the same `notification_email`/
+   `slack_webhook_url` CLIENTS fields `n8n/notifications.json` already uses — no separate alerting
+   config needed.
+
+**Setup**: add a Header Auth credential named **Stripe secret key** (header `Authorization`, value
+`Bearer sk_live_...`) — the Stripe secret key is deliberately *not* hardcoded inline in the JSON the
+way the NocoDB master token is elsewhere in this repo, since a leaked Stripe secret key has a much
+larger blast radius than a leaked self-hosted NocoDB token. Reuses the existing **SMTP Account**
+credential from `notifications.json`. See the workflow's own README sticky note for more.
+
+**Why this is a separate workflow and not folded into `notifications.json` or the Worker**: it has
+a different trigger cadence (6h vs. 15min), a different failure domain (Stripe API, not
+NocoDB/Chatwoot), and a different credential (Stripe secret key — a much higher-blast-radius secret
+than anything else this repo's n8n workflows hold) — keeping it isolated means a bug in one
+workflow's JS can't touch the other, and the credential only needs to be granted to the one
+workflow that actually needs it.
+
+## AI sales rep: sentiment/objection handling, deal forecast, team ops (engine.json + notifications.json)
+Four additions on top of the original regex-only engine, aimed at closing the gap between
+"scripted chatbot" and "AI sales rep":
+
+**1. AI intent + sentiment classification** — `HTTP · AI Classify` (a new OpenRouter call inserted
+before `Code · Intent classify`) reads the latest message plus the last few turns and returns
+`{intent, sentiment, objection, confidence}`. The old regex ladder is kept as both a fast-path
+(a literal "talk to a human" always wins instantly, free, with no AI round-trip) and a fallback
+(if the AI call fails, times out, or returns low confidence, regex still classifies the message —
+the bot never goes silent because of an LLM outage). This means the engine now understands
+paraphrased, sarcastic, or non-keyword phrasing the old pure-regex classifier couldn't. A
+`Sentiment` of `Frustrated` force-escalates to human handover regardless of what stage the
+conversation is in — a safety net the regex-only version had no way to express.
+
+**2. Objection handling** — when the classifier detects an objection (`price`/`competitor`/
+`timing`/`trust`) on a message that would otherwise just get a generic FAQ answer, the engine
+routes to a dedicated `Code · Objection prep → HTTP · Objection → Code · Objection reply` chain
+instead. It grounds the response in the client's `objection_playbook` (see schema above) —
+an approved response strategy per category — falling back to a generic "acknowledge honestly,
+respond with confidence, always propose one concrete next step" instruction if the client hasn't
+configured a playbook or hasn't covered that category. Toggle off entirely per client via
+`bot_config.objection_handling_enabled: false` (same JSON blob as the existing `handover_enabled`/
+`qual_enabled`/`antiloop_enabled` flags).
+
+**3. Deal value & forecast** — `DealValue`/`DealCurrency` are dashboard-only fields (the bot has no
+way to know a deal's size, so it never touches them). `WinProbability` is auto-suggested by the
+engine every turn from stage progress + lead score (same inputs the existing `QualScore` heuristic
+already used), capped and floored, and bumped to at least 55 on human handover — but stops
+auto-updating the moment `WinProbabilityManual` is flipped to "Yes", so a rep's manual override is
+never silently clobbered on the lead's next message. This gives pipeline $ value and a weighted
+forecast (`Σ DealValue × WinProbability`) instead of just a stage count.
+
+**4. Sales-team ops layer** — two pieces:
+- **Round-robin owner assignment**: reuses the existing `agents` field (Settings → General → Agents
+  — the same list that already populates the Owner dropdown) rather than adding a new column. If a
+  client has agents configured, every newly created lead is auto-assigned an `Owner` from that
+  list, deterministic by a hash of the phone number (not a shared counter) — spreads evenly with no
+  race condition between concurrent webhook calls, at the cost of not being a perfectly even
+  rotation for tiny agent lists. Existing leads and clients with no agents configured are
+  unaffected — manual assignment still works exactly as before.
+- **SLA + Slack alerting**: `n8n/notifications.json` (the existing 15-minute hot-lead/handover email
+  poll) now also checks for leads sitting in `human_handover` longer than the client's `sla_minutes`
+  (default 15) without a stage change, and alerts once per breach (`SlaAlerted` dedupe flag, reset
+  whenever a lead re-enters handover). All three alert types (hot lead, handover, SLA breach) now
+  also POST to `slack_webhook_url` if the client has set one, in addition to email — set up a Slack
+  **Incoming Webhook** and paste its URL into that field, no other config needed. See the "Known
+  limitation" note under the LEADS schema above for what the SLA check can and can't see.
+
+## Sales models applied to the engine: deal health, proactive insight, urgency, predictive win %
+Four more additions, each a minimal-effort application of a named sales model rather than new
+infrastructure — all reuse nodes/fields already described above:
+
+**1. Deal Health Score (MEDDIC/Gong-style)** — pure dashboard computation, no new schema, no engine
+change. `dealHealth()` in `dashboard.html` combines `WinProbability`, `Sentiment`,
+`LastObjectionCategory`, and days-since-last-message into one Green/"Healthy" · Yellow/"At risk" ·
+Red/"Stalling" chip, shown on kanban cards, the leads list, and the lead detail panel. Skipped
+entirely once a lead reaches a stage in the dashboard's existing `TERMINAL` set (already-decided
+deals don't need a health score).
+
+**2. Proactive commercial insight (Challenger Sale)** — one instruction added to the system prompt
+in `Code · FAQ prep` / `Code · Travel FAQ prep` / `Code · Ecom FAQ prep`: if the lead has stated a
+pain point earlier in the conversation, volunteer one relevant insight tied to it instead of only
+answering the literal question. Self-limits to once per conversation by checking the "Recent
+Conversation" block already in the same prompt — no new field, no new node.
+
+**3. Time-boxed close offer on price objections (urgency/scarcity)** — `Code · Objection prep`
+now adds an urgency instruction specifically for `price`-category objections, grounded in the
+client's real `quote_validity_days` (now read into the ctx object alongside the other quotation
+fields) when set — e.g. "this pricing is confirmed for the next N days." Deliberately instructed
+**not** to invent a discount or deadline when `quote_validity_days` isn't configured, to avoid the
+bot fabricating false urgency.
+
+**4. Predictive win probability (Einstein/HubSpot-style predictive scoring)** — rather than
+standing up a trained model (there isn't yet enough historical Converted/Lost volume for one to be
+meaningful), `HTTP · AI Classify` now also asks the same LLM call for a `win_probability` (0-100)
+estimate from conversation tone/urgency. `Code · Prep lead` uses it in place of the old pure
+stage-progress heuristic whenever the AI gave a valid number, falling back to the heuristic if the
+call failed — same "AI primary, rule-based fallback" pattern as the intent classifier. Still
+respects `WinProbabilityManual`, so a rep's own edit is never overwritten. This can be swapped for
+a real trained model later without changing anything downstream — `Code · Prep lead` only cares
+that `sc.aiWinProbability` is a number.
 
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
