@@ -7,6 +7,9 @@
 <link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Login hits these two hosts first — start DNS/TLS during page load instead of at first fetch -->
+<link rel="preconnect" href="https://secure.leadvyne.com">
+<link rel="preconnect" href="https://leadvyne-api-proxy.leadvyne.workers.dev">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
@@ -2628,6 +2631,12 @@ window.addEventListener('message', (event)=>{
 });
 
 async function startAuthentikLogin(){
+  $id('gErr').textContent='';
+  // Open the popup instantly, synchronously on the click, before any of the async PKCE work below —
+  // a blank window appears immediately instead of the user waiting on a crypto.subtle.digest call
+  // first. It's navigated to the real authorize URL once that's ready.
+  _authPopup=window.open('','lv_auth','width=480,height=680');
+
   const verifier=randomToken(), state=randomToken();
   sessionStorage.setItem('lv_pkce_verifier',verifier);
   sessionStorage.setItem('lv_oidc_state',state);
@@ -2641,13 +2650,12 @@ async function startAuthentikLogin(){
     code_challenge_method:'S256'
   });
   const authorizeUrl=`${CONFIG.AUTHENTIK_BASE}/application/o/authorize/?${params.toString()}`;
-  $id('gErr').textContent='';
-  _authPopup=window.open(authorizeUrl,'lv_auth','width=480,height=680');
   if(!_authPopup){
     // Popup blocked by the browser — fall back to the old full-page redirect so login still works.
     window.location.href=authorizeUrl;
     return;
   }
+  _authPopup.location.href=authorizeUrl;
   $id('gBtn').disabled=true; $id('gBtn').textContent='Waiting for Authentik…';
   clearInterval(_authPopupTimer);
   _authPopupTimer=setInterval(()=>{
