@@ -732,19 +732,31 @@ async function handleBillingCheckoutAddon(request, env){
   return json({ok:true, url:data.url});
 }
 
-async function fulfillAddon(env, clientId, priceId){
+// idempotencyKey is the Checkout Session id — Stripe redelivers webhooks on retry (e.g. a slow
+// or briefly-failing response), and this event otherwise grants credits/enables the add-on again
+// on replay. fulfilled_addon_events is a capped, comma-separated list of session ids already
+// applied to this client, stored on the same row so the check-and-set stays a single NocoDB patch.
+async function fulfillAddon(env, clientId, priceId, idempotencyKey){
+  const c=await getClientById(env, clientId);
+  if(!c) return;
+  const applied=(c.fulfilled_addon_events||'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(idempotencyKey && applied.includes(idempotencyKey)) return;
+
   const {ok, data}=await stripeFetch(env, 'GET', `prices/${priceId}`, {expand:['product']});
   if(!ok) return;
   // Price metadata wins over Product metadata, so a one-off Price can override the Product default.
   const meta={...(data?.product?.metadata||{}), ...(data?.metadata||{})};
-  const c=await getClientById(env, clientId);
-  if(!c) return;
+  const patch={};
   if(meta.fulfillment_type==='wa_credits'){
     const amount=Number(meta.wa_credits_amount||0);
-    await patchClientFields(env, clientId, {wa_credits_balance:(Number(c.wa_credits_balance)||0)+amount});
+    patch.wa_credits_balance=(Number(c.wa_credits_balance)||0)+amount;
   }else if(meta.fulfillment_type==='voice_addon'){
-    await patchClientFields(env, clientId, {voice_addon_active:'Yes'});
+    patch.voice_addon_active='Yes';
+  }else{
+    return; // unrecognized fulfillment_type — nothing to apply, nothing to record
   }
+  if(idempotencyKey) patch.fulfilled_addon_events=[...applied, idempotencyKey].slice(-20).join(',');
+  await patchClientFields(env, clientId, patch);
 }
 
 // Shared by both the checkout.session.completed direct-fetch path and the customer.subscription.*
@@ -789,7 +801,7 @@ async function handleBillingWebhook(request, env){
 
   if(event.type==='checkout.session.completed' && obj.mode==='payment'){
     const clientId=obj.metadata?.client_id, priceId=obj.metadata?.price_id;
-    if(clientId && priceId) await fulfillAddon(env, clientId, priceId);
+    if(clientId && priceId) await fulfillAddon(env, clientId, priceId, obj.id);
   }
   if(event.type==='checkout.session.completed' && obj.mode==='subscription'){
     // Pricing Table checkouts (and our own custom checkout) both set client_reference_id here —

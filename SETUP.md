@@ -56,6 +56,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
+| fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 
 ### LEADS table additions (for the Quotation module's sent log)
 Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
@@ -394,6 +395,9 @@ currency toggle (now scoped to just the Add-ons section) picks the matching Pric
    - WhatsApp credits pack: `fulfillment_type=wa_credits`, `wa_credits_amount=<number>` (added to
      `wa_credits_balance` on purchase).
    - Voice add-on: `fulfillment_type=voice_addon` (sets `voice_addon_active=Yes` on purchase).
+   Fulfillment is keyed off the Checkout Session id (stored in `fulfilled_addon_events`), so a
+   redelivered `checkout.session.completed` webhook won't grant credits/enable the add-on twice —
+   requires the `fulfilled_addon_events` field on CLIENTS (see the schema table above).
 3. **Customer Portal** (Settings → Billing → Customer Portal) — enable "Customers can switch
    plans" and list your plan Prices there; this is what makes upgrade/downgrade self-serve
    without any custom UI.
