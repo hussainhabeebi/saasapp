@@ -898,8 +898,6 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="chats">💬 Chats</button>
     <button class="dnTab" data-page="tasks">✅ Tasks</button>
     <button class="dnTab" data-page="broadcast">📢 Broadcast</button>
-    <button class="dnTab" data-page="channels">🔌 Channels</button>
-    <button class="dnTab" data-page="billing">💳 Billing</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
 
@@ -1371,6 +1369,14 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- SETTINGS -->
     <div class="page hidden" id="pageSettings">
       <div class="page-pad">
+        <!-- SETTINGS SUB-NAV (Settings / Channels / Billing) -->
+        <div class="card" style="margin-bottom:14px;padding:10px 14px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
+          </div>
+        </div>
         <!-- CONNECTION INFO -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -1631,6 +1637,13 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- CHANNELS -->
     <div class="page hidden" id="pageChannels">
       <div class="page-pad">
+        <div class="card" style="margin-bottom:14px;padding:10px 14px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
+          </div>
+        </div>
         <div class="card-title" style="margin-bottom:14px">🔌 Channels</div>
 
         <!-- STEP 1: Chatwoot account -->
@@ -1750,6 +1763,13 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- BILLING -->
     <div class="page hidden" id="pageBilling">
       <div class="page-pad">
+        <div class="card" style="margin-bottom:14px;padding:10px 14px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
+          </div>
+        </div>
         <div class="card-title" style="margin-bottom:14px">💳 Billing</div>
 
         <div id="billingBanner" style="display:none;margin-bottom:14px"></div>
@@ -1821,8 +1841,6 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem" data-page="chats"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
     <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
-    <button class="bnItem" data-page="channels"><span class="bnIcon">🔌</span><span class="bnLabel">Channels</span></button>
-    <button class="bnItem" data-page="billing"><span class="bnIcon">💳</span><span class="bnLabel">Billing</span></button>
     <button class="bnItem" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
   </div>
 
@@ -2654,12 +2672,22 @@ $id('hLogout').addEventListener('click',()=>{
 $id('hRefresh').addEventListener('click',()=>loadAll());
 
 /* ── NAVIGATION ── */
+const SETTINGS_GROUP=['settings','channels','billing']; // shown as one "Settings" tab with an internal sub-nav
+
+function renderSettingsSubnav(active){
+  document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
+    b.style.opacity=b.dataset.subpage===active?'1':'.55';
+  });
+}
+
 function navigate(page){
   const dd=$id('notifDropdown');if(dd)dd.style.display='none';
   document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
   document.querySelectorAll('.bnItem,.dnTab').forEach(b=>b.classList.remove('active'));
   $id('page'+cap(page)).classList.remove('hidden');
-  document.querySelectorAll(`[data-page="${page}"]`).forEach(b=>b.classList.add('active'));
+  const navPage=SETTINGS_GROUP.includes(page)?'settings':page;
+  document.querySelectorAll(`[data-page="${navPage}"]`).forEach(b=>b.classList.add('active'));
+  if(SETTINGS_GROUP.includes(page)) renderSettingsSubnav(page);
   if(page==='quotation') quoteInit();
   if(page==='prospects') prospectInit();
   if(page==='pipeline') renderKanban();
