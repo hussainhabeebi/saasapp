@@ -287,6 +287,12 @@ tr:hover td{background:#FAFCFB}
 .badge-hot{background:#fee2e2;color:#991b1b}
 .badge-warm{background:#fef3c7;color:#92400e}
 .badge-cold{background:#eff6ff;color:#1e40af}
+/* Lead quality score — kept separate from badge-hot/warm/cold above, which the Recruitment
+   module's placement-status badges also reuse for an unrelated meaning (e.g. badge-cold there
+   means "invoiced", not "cold lead") — changing those would recolor placement statuses too. */
+.badge-score-hot{background:#dcfce7;color:#166534}
+.badge-score-warm{background:#fef3c7;color:#92400e}
+.badge-score-cold{background:#fee2e2;color:#991b1b}
 .badge-booked{background:#dcfce7;color:#166534}
 .badge-human{background:var(--warn-soft);color:var(--warn)}
 .badge-active{background:var(--accent-soft);color:var(--accent-ink)}
@@ -716,6 +722,14 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 /* Kanban polish */
 .kb-card{border:1px solid var(--line);transition:box-shadow .15s,transform .15s,border-color .15s}
 .kb-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.1);border-color:var(--ls);transform:translateY(-1px)}
+
+/* Lead quality accent — left-edge color strip so a card's score reads at a glance without
+   opening it. Declared after the base .kb-card rule above so border-left-color only overrides
+   that one side, leaving top/right/bottom as set there. */
+.kb-card{border-left:3px solid transparent}
+.kb-card.kb-hot{border-left-color:#16a34a}
+.kb-card.kb-warm{border-left-color:#d97706}
+.kb-card.kb-cold{border-left-color:#dc2626}
 
 /* Trip cards */
 .trip-card{border:1px solid var(--line);transition:box-shadow .2s,border-color .2s}
@@ -3029,7 +3043,7 @@ function renderKanban(){
 }
 
 function kbCard(l){
-  return `<div class="kb-card" draggable="true" id="kbc${l.Id}"
+  return `<div class="kb-card ${scoreCardClass(l.Score)}" draggable="true" id="kbc${l.Id}"
     ondragstart="kbStart(event,${l.Id})" ondragend="kbEnd(event)"
     onclick="openDetail(${l.Id})">
     <div class="kb-name">${esc(l.Name||l.Phone||'Unknown')}</div>
@@ -4842,7 +4856,10 @@ function tagClass(t){
   if(l.includes('not interested'))return'tag-not-interested';
   return'';
 }
-function scoreBadge(s){if(!s)return'';const cl=s==='Hot'?'badge-hot':s==='Warm'?'badge-warm':'badge-cold';return`<span class="badge ${cl}">${esc(s)}</span>`;}
+function scoreBadge(s){if(!s)return'';const cl=s==='Hot'?'badge-score-hot':s==='Warm'?'badge-score-warm':'badge-score-cold';return`<span class="badge ${cl}">${esc(s)}</span>`;}
+// Mirrors scoreBadge()'s exact Hot/Warm/else-cold fallback so the card's left-edge color strip
+// always agrees with the badge text shown on it.
+function scoreCardClass(s){if(!s)return'';return s==='Hot'?'kb-hot':s==='Warm'?'kb-warm':'kb-cold';}
 function stageBadge(s){
   const cl=TERMINAL.has(s)?(s==='human_handover'?'badge-human':'badge-booked'):s==='new'?'badge-new':'badge-active';
   return`<span class="badge ${cl}">${esc(s||'—')}</span>`;
