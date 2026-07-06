@@ -2545,12 +2545,9 @@ async function autoProvisionAndLogin(email, accessToken){
     });
     const session=await sr.json().catch(()=>({}));
     if(!sr.ok||!session.session_token) throw new Error(session.error||'Account created, but sign-in failed — click "Continue with Authentik" again.');
-    clientId=session.client_id; clientRecord=session.client; sessionToken=session.session_token;
-    sessionStorage.setItem('lv_cid',clientId);
-    sessionStorage.setItem('lv_session',sessionToken);
-    showApp();
+    completeLoginResult(session);
   }catch(e){
-    err.textContent=e.message||'Account setup failed — try again.';
+    completeLoginError(e.message||'Account setup failed — try again.');
     $id('gBtn').disabled=false;
   }
 }
@@ -2573,6 +2570,44 @@ async function pkceChallenge(verifier){
   return b64url(new Uint8Array(hash));
 }
 
+// Login runs in a popup so the main tab never leaves leadvyne.com — Authentik's hosted login
+// page can't be iframed (it sends frame-busting headers like every serious IdP), so a popup is
+// the closest safe equivalent to "same page" without reimplementing password handling ourselves.
+let _authPopup=null, _authPopupTimer=null;
+
+function completeLoginResult(session){
+  if(window.opener && !window.opener.closed){
+    window.opener.postMessage({type:'lv_auth_complete', ...session}, window.location.origin);
+    window.close();
+    return;
+  }
+  clientId=session.client_id; clientRecord=session.client; sessionToken=session.session_token;
+  sessionStorage.setItem('lv_cid',clientId);
+  sessionStorage.setItem('lv_session',sessionToken);
+  showApp();
+}
+function completeLoginError(message){
+  if(window.opener && !window.opener.closed){
+    window.opener.postMessage({type:'lv_auth_error', message}, window.location.origin);
+    window.close();
+    return;
+  }
+  $id('gErr').textContent=message;
+  $id('gBtn').disabled=false;
+}
+
+window.addEventListener('message', (event)=>{
+  if(event.origin!==window.location.origin) return;
+  if(event.data?.type==='lv_auth_complete'){
+    clearInterval(_authPopupTimer);
+    completeLoginResult(event.data);
+  }else if(event.data?.type==='lv_auth_error'){
+    clearInterval(_authPopupTimer);
+    $id('gBtn').disabled=false; $id('gBtn').textContent='Continue with Authentik';
+    $id('gErr').textContent=event.data.message||'Login failed.';
+  }
+});
+
 async function startAuthentikLogin(){
   const verifier=randomToken(), state=randomToken();
   sessionStorage.setItem('lv_pkce_verifier',verifier);
@@ -2586,10 +2621,27 @@ async function startAuthentikLogin(){
     code_challenge:await pkceChallenge(verifier),
     code_challenge_method:'S256'
   });
-  window.location.href=`${CONFIG.AUTHENTIK_BASE}/application/o/authorize/?${params.toString()}`;
+  const authorizeUrl=`${CONFIG.AUTHENTIK_BASE}/application/o/authorize/?${params.toString()}`;
+  $id('gErr').textContent='';
+  _authPopup=window.open(authorizeUrl,'lv_auth','width=480,height=680');
+  if(!_authPopup){
+    // Popup blocked by the browser — fall back to the old full-page redirect so login still works.
+    window.location.href=authorizeUrl;
+    return;
+  }
+  $id('gBtn').disabled=true; $id('gBtn').textContent='Waiting for Authentik…';
+  clearInterval(_authPopupTimer);
+  _authPopupTimer=setInterval(()=>{
+    if(_authPopup.closed){
+      clearInterval(_authPopupTimer);
+      $id('gBtn').disabled=false; $id('gBtn').textContent='Continue with Authentik';
+    }
+  },500);
 }
 
 // Returns true if this page load is an Authentik redirect-back (so boot can skip resumeSession).
+// Runs either in the popup (normal case) or the main tab (popup-blocked fallback) — completeLoginResult/
+// completeLoginError figure out which via window.opener and relay or finish accordingly.
 async function handleAuthentikCallback(){
   const url=new URL(window.location.href);
   const code=url.searchParams.get('code');
@@ -2599,8 +2651,7 @@ async function handleAuthentikCallback(){
   const verifier=sessionStorage.getItem('lv_pkce_verifier');
   sessionStorage.removeItem('lv_oidc_state'); sessionStorage.removeItem('lv_pkce_verifier');
   window.history.replaceState({},'',window.location.pathname); // strip ?code=&state= either way
-  if(!verifier||!state||state!==savedState){$id('gErr').textContent='Login session expired — try again.';return true;}
-  $id('gErr').textContent='';
+  if(!verifier||!state||state!==savedState){completeLoginError('Login session expired — try again.');return true;}
   try{
     const r=await fetch(`${CONFIG.AUTHENTIK_BASE}/application/o/token/`,{
       method:'POST',
@@ -2633,12 +2684,9 @@ async function handleAuthentikCallback(){
       }
       throw new Error(session.error||'Login failed');
     }
-    clientId=session.client_id; clientRecord=session.client; sessionToken=session.session_token;
-    sessionStorage.setItem('lv_cid',clientId);
-    sessionStorage.setItem('lv_session',sessionToken);
-    showApp();
+    completeLoginResult(session);
   }catch(e){
-    $id('gErr').textContent=e.message||'Login failed.';
+    completeLoginError(e.message||'Login failed.');
   }
   return true;
 }
