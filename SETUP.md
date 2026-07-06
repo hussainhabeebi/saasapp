@@ -388,6 +388,26 @@ Worker as a fallback/manual path, but nothing in the UI calls them anymore now t
 through the Pricing Table — safe to ignore, or remove later if you're sure you won't need a
 custom (non-Pricing-Table) subscribe flow.
 
+### Confirming a subscription: pull-based, not just the webhook
+The webhook's `client_reference_id`/`stripe_subscription_id` correlation (below) can fail to link
+up for reasons outside the Worker's control — the Pricing Table's "after payment" redirect not
+configured, a direct/preview Stripe link bypassing `dashboard.html` entirely, etc. Rather than
+only depending on that, there are two **pull-based** routes that use the browser's own
+authenticated session (so there's no correlation to get wrong — we already know which CLIENTS row
+this is):
+- `GET /billing/confirm-session?session_id=cs_...` — fetches that specific Checkout Session from
+  Stripe and syncs it onto the *currently logged-in* CLIENTS row directly. Called automatically
+  when the Billing page loads with both `?billing=success` and `?session_id=...` in the URL — set
+  your Pricing Table's "after payment" redirect (Dashboard → Product catalog → Pricing tables →
+  Edit → Payment page settings) to
+  `https://app.leadvyne.com/dashboard.html?billing=success&session_id={CHECKOUT_SESSION_ID}`
+  (Stripe substitutes that placeholder itself).
+- `GET /billing/sync-now` — a manual "Sync Subscription Now" button on the Billing page. Looks up
+  the Stripe Customer by the account's own email(s) (`authentik_email`/`team_emails`) if
+  `stripe_customer_id` isn't set yet, then pulls whatever subscription exists for that customer.
+  Useful any time a checkout completed on Stripe's side but hasn't shown up here — including
+  retroactively fixing an account that got stuck before this existed, no need to redo the purchase.
+
 ### Flow
 1. **Subscribe** — the Pricing Table embed creates the Checkout Session itself, client-side,
    entirely outside the Worker.

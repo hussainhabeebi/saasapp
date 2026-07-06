@@ -1796,6 +1796,10 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🧾 Customer Portal</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <button class="save-btn" onclick="syncBillingNow()" style="opacity:.85">🔄 Sync Subscription Now</button>
+              <span class="save-msg" id="billingSyncMsg"></span>
+            </div>
             <div id="billingNoPlan">
               <div class="s-note">Choose a plan to get started.</div>
               <div id="billingPricingTableWrap" style="margin-top:8px"></div>
@@ -4696,14 +4700,27 @@ function renderBillingPage(){
 async function billingInit(){
   const params=new URLSearchParams(location.search);
   const billingResult=params.get('billing');
+  const sessionId=params.get('session_id');
   if(billingResult){
     const banner=$id('billingBanner');
     banner.style.display='block';
     banner.innerHTML=billingResult==='success'
-      ? '<div class="s-note" style="color:var(--accent-ink)">✅ Payment received — this may take a few seconds to reflect below.</div>'
+      ? '<div class="s-note" style="color:var(--accent-ink)">✅ Payment received — confirming with Stripe…</div>'
       : '<div class="s-note">Checkout was cancelled.</div>';
-    params.delete('billing');
+    params.delete('billing'); params.delete('session_id');
     history.replaceState({}, '', location.pathname+(params.toString()?'?'+params.toString():''));
+    // Pull-based, not webhook-dependent: we already know which CLIENTS row this is (authenticated
+    // session), so confirming directly against the Checkout Session sidesteps any correlation
+    // guesswork entirely — this is what actually links the subscription, not just a cosmetic refresh.
+    if(billingResult==='success' && sessionId){
+      try{
+        const r=await fetch(`${CONFIG.WORKER_BASE}/billing/confirm-session?session_id=${encodeURIComponent(sessionId)}`,{headers:ncAuthHeaders()});
+        if(!r.ok){ const d=await r.json().catch(()=>({})); throw new Error(d.error||'HTTP '+r.status); }
+        banner.innerHTML='<div class="s-note" style="color:var(--accent-ink)">✅ Subscription confirmed.</div>';
+      }catch(e){
+        banner.innerHTML=`<div class="s-note">Payment received, but confirming with Stripe failed (${esc(e.message)}) — try "Sync Subscription Now" below.</div>`;
+      }
+    }
     await refreshClientRecord();
   }
   $id('cfgCompanyName').value=clientRecord.client_name||'';
@@ -4735,6 +4752,21 @@ async function openBillingPortal(){
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     window.location.href=data.url;
+  }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+// Manual fallback that doesn't depend on the webhook at all — looks up the Stripe Customer by
+// this account's own email(s) and pulls whatever subscription exists directly. Use this any time
+// a checkout completed on Stripe's side but hasn't shown up here yet.
+async function syncBillingNow(){
+  const msg=$id('billingSyncMsg'); msg.textContent='Checking Stripe…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/sync-now`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    await refreshClientRecord();
+    renderBillingPage();
+    msg.textContent='Synced — plan status: '+(data.plan_status||'—');
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 

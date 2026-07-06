@@ -572,6 +572,52 @@ async function handleBillingPortal(request, env){
   return json({ok:true, url:data.url});
 }
 
+// Pull-based sync, independent of the webhook entirely — the authenticated session already tells
+// us which CLIENTS row this is, so unlike the webhook path there's no client_reference_id/email
+// correlation to get wrong. Two uses: (1) auto-called right after returning from Checkout with a
+// session_id, (2) a manual "Sync Subscription Now" button for whenever the webhook didn't land.
+async function handleBillingConfirmSession(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
+  const sessionId=new URL(request.url).searchParams.get('session_id');
+  if(!sessionId) return json({error:'session_id required'}, 400);
+
+  const {ok, data:session}=await stripeFetch(env, 'GET', `checkout/sessions/${sessionId}`);
+  if(!ok||!session?.id) return json({error:'Could not verify that checkout session with Stripe.'}, 502);
+
+  if(session.customer) await patchClientFields(env, payload.cid, {stripe_customer_id:session.customer});
+  if(session.subscription){
+    const {ok:subOk, data:sub}=await stripeFetch(env, 'GET', `subscriptions/${session.subscription}`);
+    if(subOk) await syncSubscriptionFields(env, payload.cid, sub);
+  }
+  return json({ok:true});
+}
+
+async function handleBillingSyncNow(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.STRIPE_SECRET_KEY) return json({error:'Stripe is not configured on the server.'}, 500);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+
+  let customerId=c.stripe_customer_id;
+  if(!customerId){
+    const emails=[c.authentik_email, ...(c.team_emails||'').split(',')].map(e=>e.trim()).filter(Boolean);
+    for(const email of emails){
+      const {ok, data}=await stripeFetch(env, 'GET', 'customers', {email, limit:5});
+      if(ok && data?.data?.length){ customerId=data.data[0].id; break; }
+    }
+    if(!customerId) return json({error:'No Stripe customer found yet for this account\'s email(s). Make sure the checkout used one of them.'}, 404);
+    await patchClientFields(env, payload.cid, {stripe_customer_id:customerId});
+  }
+
+  const {ok, data}=await stripeFetch(env, 'GET', 'subscriptions', {customer:customerId, status:'all', limit:1});
+  if(!ok||!data?.data?.length) return json({error:'No subscription found yet for this Stripe customer.'}, 404);
+  await syncSubscriptionFields(env, payload.cid, data.data[0]);
+  return json({ok:true, plan_status:data.data[0].status});
+}
+
 async function handleBillingCheckoutAddon(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -717,6 +763,8 @@ export default {
       else if(url.pathname==='/channels/chatwoot-sso' && request.method==='GET'){ res=await handleChannelsChatwootSso(request, env); }
       else if(url.pathname==='/billing/checkout-subscription' && request.method==='POST'){ res=await handleBillingCheckoutSubscription(request, env); }
       else if(url.pathname==='/billing/portal' && request.method==='GET'){ res=await handleBillingPortal(request, env); }
+      else if(url.pathname==='/billing/confirm-session' && request.method==='GET'){ res=await handleBillingConfirmSession(request, env); }
+      else if(url.pathname==='/billing/sync-now' && request.method==='GET'){ res=await handleBillingSyncNow(request, env); }
       else if(url.pathname==='/billing/checkout-addon' && request.method==='POST'){ res=await handleBillingCheckoutAddon(request, env); }
       else if(url.pathname==='/billing/webhook' && request.method==='POST'){ res=await handleBillingWebhook(request, env); }
       else if(url.pathname==='/billing/company-profile' && request.method==='POST'){ res=await handleBillingCompanyProfile(request, env); }
