@@ -556,6 +556,45 @@ we already know which CLIENTS row this is):
 follow Stripe's public API docs, but this hasn't been smoke-tested end-to-end — test the full
 subscribe → webhook → portal → add-on loop with Stripe test-mode keys before going live.
 
+### Payment status check & reconciliation (n8n/billing-reconcile.json)
+A standalone n8n workflow, separate from both the Worker's webhook and `n8n/notifications.json`,
+that runs every 6 hours and re-derives each billing-enabled client's status straight from Stripe
+rather than trusting whatever the webhook last wrote. This exists because the webhook is the
+**only** thing keeping NocoDB in sync today — if a delivery is delayed, dropped, or arrives out of
+order (Stripe doesn't guarantee ordering), nothing currently notices or corrects it. This job is
+that second line of defense.
+
+Per client (skips anyone with no `stripe_customer_id` — i.e. anyone who's never started billing):
+1. **Subscription drift** — pulls the customer's live Subscriptions from Stripe and corrects
+   `plan_status`/`plan_renews_at`/`plan_cancel_at_period_end`/`plan_name`/`stripe_subscription_id`
+   in NocoDB if they've drifted from what Stripe actually shows. If Stripe shows no subscription
+   at all for a customer NocoDB still thinks is active, it's marked `canceled` — the most common
+   real cause is a missed `customer.subscription.deleted` webhook.
+2. **Billing email drift** — the Stripe Customer's email is always supposed to mirror the account's
+   billing profile (`authentik_email`); this is treated as the single source of truth precisely
+   *because* Stripe Checkout locks the email field once the Customer object already has one set
+   (see `ensureStripeCustomer` in `worker.js`) — so a customer genuinely **cannot** change their
+   billing email at payment time. If this job finds the two out of sync anyway, that only happens
+   from an out-of-band edit (Stripe Dashboard, direct API call, or a legacy customer created before
+   `authentik_email` existed) — it restores the Customer's email back to the billing profile rather
+   than accepting the drift.
+3. Whatever it corrects (if anything) is reported via the same `notification_email`/
+   `slack_webhook_url` CLIENTS fields `n8n/notifications.json` already uses — no separate alerting
+   config needed.
+
+**Setup**: add a Header Auth credential named **Stripe secret key** (header `Authorization`, value
+`Bearer sk_live_...`) — the Stripe secret key is deliberately *not* hardcoded inline in the JSON the
+way the NocoDB master token is elsewhere in this repo, since a leaked Stripe secret key has a much
+larger blast radius than a leaked self-hosted NocoDB token. Reuses the existing **SMTP Account**
+credential from `notifications.json`. See the workflow's own README sticky note for more.
+
+**Why this is a separate workflow and not folded into `notifications.json` or the Worker**: it has
+a different trigger cadence (6h vs. 15min), a different failure domain (Stripe API, not
+NocoDB/Chatwoot), and a different credential (Stripe secret key — a much higher-blast-radius secret
+than anything else this repo's n8n workflows hold) — keeping it isolated means a bug in one
+workflow's JS can't touch the other, and the credential only needs to be granted to the one
+workflow that actually needs it.
+
 ## AI sales rep: sentiment/objection handling, deal forecast, team ops (engine.json + notifications.json)
 Four additions on top of the original regex-only engine, aimed at closing the gap between
 "scripted chatbot" and "AI sales rep":
