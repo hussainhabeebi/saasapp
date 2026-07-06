@@ -618,10 +618,11 @@ safety net the regex-only version had no way to express.
 node (replacing the `REPLACE_GEMINI_CRED` placeholder). No OpenRouter key needed for this
 particular call — the rest of the engine's `openrouter_key`/`model` config is unaffected.
 
-**Note**: this call currently only asks for `intent`/`sentiment`/`confidence` — it does not (yet)
-populate `objectionCategory` or a win-probability estimate, so the objection-detection route and
-the AI-driven win-probability logic described below stay on their safe defaults (`'none'` objection,
-heuristic-only win %) unless you extend this same agent's prompt/schema to return those fields too.
+The same agent call also asks for `objection` (one of `none`/`price`/`competitor`/`timing`/`trust`)
+and `win_probability` (0-100) in the same JSON response — one Gemini call covers intent, sentiment,
+objection detection, and win-probability estimation together, feeding the objection-handling route
+and the AI-driven win-probability logic described below (both already built to consume these exact
+field names from whatever populates them).
 
 **2. Objection handling** — when the classifier detects an objection (`price`/`competitor`/
 `timing`/`trust`) on a message that would otherwise just get a generic FAQ answer, the engine
