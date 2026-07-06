@@ -786,30 +786,18 @@ const CONFIG = {
   // these from Meta Developer Portal → your Tech Provider app → WhatsApp → Embedded Signup.
   META_APP_ID:              '958889290317772',
   META_WHATSAPP_CONFIG_ID:  '1628996898332605',
-  // Billing (Stripe) — Price IDs from your Stripe Dashboard. Plans are recurring Prices
-  // (Checkout mode=subscription, then managed via the Customer Portal). Add-ons are
-  // one-time Prices (Checkout mode=payment) — set fulfillment_type/wa_credits_amount
-  // metadata on each add-on Price in Stripe so the Worker knows what to grant. See
-  // SETUP.md "Billing module" for the RBI e-mandate reasoning behind this split.
-  //
-  // Each plan/add-on can list more than one currency (separate Stripe Price objects, not
-  // Stripe's currency_options on one Price) — the Billing page's currency toggle picks
-  // which one to check out. Omit a currency key for items that only exist in one currency.
+  // Billing (Stripe). Plans are shown via a Stripe Pricing Table (Dashboard-managed — add/edit
+  // plans and copy there, no code change needed) which creates its own Checkout Session
+  // client-side using just the publishable key below; the Worker never sees that request.
+  // Add-ons stay as our own one-time Checkout (mode=payment) — Pricing Tables are subscription
+  // only — with fulfillment_type/wa_credits_amount metadata on each add-on Price telling the
+  // Worker what to grant. See SETUP.md "Billing module" for the RBI e-mandate reasoning.
+  STRIPE_PRICING_TABLE_ID: 'prctbl_1TOrBjJWa5B2ayZgibTilpxV',
+  STRIPE_PUBLISHABLE_KEY:  'pk_live_51R1PadJWa5B2ayZg4ytt9Q9hI0b8j3Br1jXy7o1FVsiwBgPt6QGx4wYeWuonnkUyH82xRDNHB54xg95dK7wJkpG900cPYq5DuQ',
+  // Add-ons can list more than one currency (separate Stripe Price objects, not Stripe's
+  // currency_options on one Price) — the Billing page's currency toggle picks which one to
+  // check out. Omit a currency key for an add-on that only exists in one currency.
   BILLING_CURRENCIES: ['INR','AED'],
-  BILLING_PLANS: [
-    {id:'starter', name:'Starter', prices:{
-      INR:{price_id:'price_1TWsQ1JWa5B2ayZgL5zPAf3U', display:'₹2,500/mo'},
-      AED:{price_id:'price_1Tpv9nJWa5B2ayZgiCfm5jNo', display:'99 AED/mo'},
-    }},
-    {id:'growth', name:'Growth', prices:{
-      INR:{price_id:'REPLACE_STRIPE_PRICE_GROWTH_INR', display:'₹—/mo'},
-      AED:{price_id:'REPLACE_STRIPE_PRICE_GROWTH_AED', display:'— AED/mo'},
-    }},
-    {id:'pro', name:'Pro', prices:{
-      INR:{price_id:'price_1TpvODJWa5B2ayZg5kNKP689', display:'₹—/mo'},
-      AED:{price_id:'price_1TpvNsJWa5B2ayZgDMLLFGj8', display:'— AED/mo'},
-    }},
-  ],
   BILLING_ADDONS: [
     {id:'wa_credits', name:'WhatsApp Credit Recharge', prices:{
       INR:{price_id:'price_1TpvHaJWa5B2ayZgydjFobcB', display:'₹— one-time'},
@@ -1774,21 +1762,18 @@ const TODAY = new Date().toISOString().slice(0,10);
 
         <div id="billingBanner" style="display:none;margin-bottom:14px"></div>
 
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
-          <span class="form-label" style="margin:0">Currency</span>
-          <div id="billingCurrencyToggle" style="display:flex;gap:6px"></div>
-        </div>
-
-        <!-- Current plan / Customer Portal -->
+        <!-- Current plan -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">Your Plan</div>
             <div id="billingNoPlan">
               <div class="s-note">Choose a plan to get started.</div>
-              <div id="billingPlanPicker" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px"></div>
-              <span class="save-msg" id="billingPlanMsg"></span>
+              <div id="billingPricingTableWrap" style="margin-top:8px"></div>
             </div>
             <div id="billingHasPlan" style="display:none">
+              <div id="billingPastDueBanner" style="display:none;background:#FDECEA;border:1px solid #F3B4AC;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;color:#B23A2E">
+                ⚠️ <strong>Payment issue with your subscription</strong> — <span id="billingPastDueText"></span> Update your payment method to avoid losing access.
+              </div>
               <div class="s-note">
                 Plan: <strong id="billingPlanName"></strong> ·
                 Status: <strong id="billingPlanStatus"></strong> ·
@@ -1804,6 +1789,10 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">Add-ons</div>
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+              <span class="form-label" style="margin:0">Currency</span>
+              <div id="billingCurrencyToggle" style="display:flex;gap:6px"></div>
+            </div>
             <div class="s-note">One-time purchases — not auto-renewing, so buying these never requires re-authorizing a recurring mandate.</div>
             <div class="s-note">WhatsApp credits balance: <strong id="billingWaCredits">0</strong> · Voice add-on: <strong id="billingVoiceStatus">Not active</strong></div>
             <div id="billingAddonList" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px"></div>
@@ -4534,28 +4523,53 @@ function setBillingCurrency(cur){
   _billingCurrency=cur;
   try{localStorage.setItem('lv_billing_currency',cur);}catch(e){}
   renderBillingCurrencyToggle();
-  renderBillingPlanPicker();
   renderBillingAddonList();
 }
 
-// price_id lookups always fall back to whatever currency an item actually has, so a plan/add-on
+// price_id lookups always fall back to whatever currency an item actually has, so an add-on
 // that only exists in one currency still renders correctly regardless of the selected toggle.
 function billingPriceFor(item){
   return item.prices[_billingCurrency]||Object.values(item.prices)[0];
 }
 
-function renderBillingPlanPicker(){
-  $id('billingPlanPicker').innerHTML=CONFIG.BILLING_PLANS.map(p=>{
-    const price=billingPriceFor(p);
-    return `<button class="save-btn" onclick="subscribeToPlan('${esc(price.price_id)}')">${esc(p.name)} — ${esc(price.display)}</button>`;
-  }).join('');
+// Stripe's Pricing Table is a Dashboard-managed plan picker — it creates its own Checkout
+// Session client-side using just the publishable key, so subscribing never touches our Worker
+// at all. client-reference-id is what the webhook later reads (checkout.session.completed) to
+// know which CLIENTS row this belongs to — see handleBillingWebhook in cloudflare-worker/worker.js.
+let _stripePricingTableScriptLoaded=false;
+function _loadStripePricingTableScript(){
+  if(_stripePricingTableScriptLoaded||document.querySelector('script[src*="pricing-table.js"]')) return;
+  _stripePricingTableScriptLoaded=true;
+  const s=document.createElement('script');
+  s.src='https://js.stripe.com/v3/pricing-table.js';
+  s.async=true;
+  document.body.appendChild(s);
 }
+function renderBillingPricingTable(){
+  _loadStripePricingTableScript();
+  const wrap=$id('billingPricingTableWrap');
+  if(wrap.querySelector('stripe-pricing-table')) return; // already rendered, nothing to do
+  const el=document.createElement('stripe-pricing-table');
+  el.setAttribute('pricing-table-id', CONFIG.STRIPE_PRICING_TABLE_ID);
+  el.setAttribute('publishable-key', CONFIG.STRIPE_PUBLISHABLE_KEY);
+  el.setAttribute('client-reference-id', String(clientId));
+  wrap.innerHTML='';
+  wrap.appendChild(el);
+}
+
 function renderBillingAddonList(){
   $id('billingAddonList').innerHTML=CONFIG.BILLING_ADDONS.map(a=>{
     const price=billingPriceFor(a);
     return `<button class="save-btn" onclick="buyAddon('${esc(price.price_id)}')">${esc(a.name)} — ${esc(price.display)}</button>`;
   }).join('');
 }
+
+const BILLING_PAST_DUE_COPY={
+  past_due:'Your last payment failed and Stripe is retrying automatically.',
+  unpaid:'Your subscription is unpaid after repeated retries.',
+  incomplete:'Your first payment did not complete.',
+  incomplete_expired:'Your first payment was not completed in time and the subscription was canceled.'
+};
 
 function renderBillingPage(){
   const hasPlan=!!clientRecord.stripe_subscription_id;
@@ -4565,6 +4579,11 @@ function renderBillingPage(){
     $id('billingPlanName').textContent=clientRecord.plan_name||'—';
     $id('billingPlanStatus').textContent=clientRecord.plan_status||'—';
     $id('billingPlanRenews').textContent=clientRecord.plan_renews_at?new Date(clientRecord.plan_renews_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'—';
+    const pastDueCopy=BILLING_PAST_DUE_COPY[clientRecord.plan_status];
+    $id('billingPastDueBanner').style.display=pastDueCopy?'block':'none';
+    if(pastDueCopy) $id('billingPastDueText').textContent=pastDueCopy;
+  }else{
+    renderBillingPricingTable();
   }
   $id('billingWaCredits').textContent=clientRecord.wa_credits_balance||0;
   $id('billingVoiceStatus').textContent=clientRecord.voice_addon_active==='Yes'?'Active':'Not active';
@@ -4589,19 +4608,8 @@ async function billingInit(){
     await refreshClientRecord();
   }
   renderBillingCurrencyToggle();
-  renderBillingPlanPicker();
   renderBillingAddonList();
   renderBillingPage();
-}
-
-async function subscribeToPlan(price_id){
-  const msg=$id('billingPlanMsg'); msg.textContent='Opening checkout…';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/checkout-subscription`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({price_id})});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    window.location.href=data.url;
-  }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
 async function openBillingPortal(){

@@ -80,6 +80,13 @@ async function findOtherClientByField(env, field, value, excludeId){
   const data=await r.json().catch(()=>({}));
   return (data?.list||[]).find(row=>String(row.Id)!==String(excludeId))||null;
 }
+async function findClientByField(env, field, value){
+  if(!value) return null;
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(${field},eq,${encodeURIComponent(value)})&limit=1`);
+  if(!r.ok) return null;
+  const data=await r.json().catch(()=>({}));
+  return data?.list?.[0]||null;
+}
 /* ── Stripe REST client (fetch-based, no SDK — this Worker ships as a single
    file with no npm build step). Params are flattened to Stripe's bracket
    notation for its form-encoded API, e.g. {line_items:[{price:'x'}]} ->
@@ -564,6 +571,35 @@ async function fulfillAddon(env, clientId, priceId){
   }
 }
 
+// Shared by both the checkout.session.completed direct-fetch path and the customer.subscription.*
+// event path, so a Subscription object is synced onto CLIENTS the same way regardless of how we
+// learned about it.
+async function syncSubscriptionFields(env, clientId, sub){
+  const item=sub.items?.data?.[0];
+  const price=item?.price;
+  // API versions 2025-03-31+ moved current_period_end off the Subscription object and onto
+  // each SubscriptionItem — sub.current_period_end kept as a fallback for older-pinned accounts.
+  const periodEnd=item?.current_period_end||sub.current_period_end;
+  await patchClientFields(env, clientId, {
+    stripe_subscription_id:sub.id,
+    plan_status:sub.status,
+    plan_renews_at:periodEnd?new Date(periodEnd*1000).toISOString():'',
+    plan_name:price?.nickname||price?.id||'',
+    plan_message_limit:Number(price?.metadata?.message_limit||0)||undefined
+  });
+}
+
+// Resolves which CLIENTS row a subscription event belongs to. Subscriptions created through our
+// own /billing/checkout-subscription route carry metadata.client_id (set at creation); ones
+// created through a Stripe Pricing Table embed don't — those only get client_reference_id on the
+// Checkout Session, not on the Subscription itself — so we fall back to matching the CLIENTS row
+// that already has this subscription id (written by the checkout.session.completed handler below).
+async function resolveClientIdForSubscription(env, sub){
+  if(sub.metadata?.client_id) return sub.metadata.client_id;
+  const c=await findClientByField(env, 'stripe_subscription_id', sub.id);
+  return c?.Id||null;
+}
+
 async function handleBillingWebhook(request, env){
   if(!env.STRIPE_WEBHOOK_SECRET) return json({error:'Webhook not configured'}, 500);
   const rawBody=await request.text();
@@ -576,25 +612,27 @@ async function handleBillingWebhook(request, env){
     const clientId=obj.metadata?.client_id, priceId=obj.metadata?.price_id;
     if(clientId && priceId) await fulfillAddon(env, clientId, priceId);
   }
-  if(event.type==='customer.subscription.created' || event.type==='customer.subscription.updated'){
-    const clientId=obj.metadata?.client_id;
-    if(clientId){
-      const item=obj.items?.data?.[0];
-      const price=item?.price;
-      // API versions 2025-03-31+ moved current_period_end off the Subscription object and onto
-      // each SubscriptionItem — obj.current_period_end kept as a fallback for older-pinned accounts.
-      const periodEnd=item?.current_period_end||obj.current_period_end;
-      await patchClientFields(env, clientId, {
-        stripe_subscription_id:obj.id,
-        plan_status:obj.status,
-        plan_renews_at:periodEnd?new Date(periodEnd*1000).toISOString():'',
-        plan_name:price?.nickname||price?.id||'',
-        plan_message_limit:Number(price?.metadata?.message_limit||0)||undefined
-      });
+  if(event.type==='checkout.session.completed' && obj.mode==='subscription'){
+    // Pricing Table checkouts (and our own custom checkout) both set client_reference_id here —
+    // this is the authoritative first link between a brand-new Stripe Customer/Subscription and
+    // a CLIENTS row. Fetching the subscription directly (rather than waiting on a separate
+    // customer.subscription.created event) avoids a race where that event arrives first and
+    // can't yet resolve which client it belongs to.
+    const clientId=obj.client_reference_id;
+    if(clientId && obj.customer){
+      await patchClientFields(env, clientId, {stripe_customer_id:obj.customer});
+      if(obj.subscription){
+        const {ok, data}=await stripeFetch(env, 'GET', `subscriptions/${obj.subscription}`);
+        if(ok) await syncSubscriptionFields(env, clientId, data);
+      }
     }
   }
+  if(event.type==='customer.subscription.created' || event.type==='customer.subscription.updated'){
+    const clientId=await resolveClientIdForSubscription(env, obj);
+    if(clientId) await syncSubscriptionFields(env, clientId, obj);
+  }
   if(event.type==='customer.subscription.deleted'){
-    const clientId=obj.metadata?.client_id;
+    const clientId=await resolveClientIdForSubscription(env, obj);
     if(clientId) await patchClientFields(env, clientId, {plan_status:'canceled'});
   }
   return json({received:true});

@@ -309,22 +309,43 @@ That's why this implementation is split the way it is:
 This is architectural guidance based on Stripe's public documentation, not legal advice —
 confirm the current threshold and any newer RBI circulars before relying on it for a real launch.
 
-### Multi-currency plans/add-ons
-If you sell in more than one currency (e.g. INR + AED), create a **separate Price object per
-currency** under the same Product (Stripe's `currency_options` on a single Price is a different
-mechanism — auto-detected, no manual toggle — and isn't what's implemented here). The Billing
-page shows an explicit currency toggle and picks the matching Price ID per plan/add-on:
-`CONFIG.BILLING_PLANS`/`CONFIG.BILLING_ADDONS` in `dashboard.html` are keyed
-`{id, name, prices:{INR:{price_id,display}, AED:{price_id,display}, …}}` — add a `prices` entry
-per currency you support, and list every one of those Price IDs in the two Worker allow-lists
-below (they're a flat list across all currencies, not per-currency).
+### Plans are shown via a Stripe Pricing Table
+Plan selection uses a **Stripe Pricing Table** (Dashboard → Product catalog → Pricing tables),
+embedded directly in the Billing page:
+```html
+<script async src="https://js.stripe.com/v3/pricing-table.js"></script>
+<stripe-pricing-table pricing-table-id="..." publishable-key="pk_..." client-reference-id="..."></stripe-pricing-table>
+```
+This is Dashboard-managed on purpose — add a plan, change its price or copy, all from Stripe,
+no code change or redeploy. It creates its own Checkout Session client-side using only the
+**publishable key** (safe to expose in the browser, unlike the secret key); the Worker never
+sees that request at all. `client-reference-id` is set to the logged-in client's row `Id` —
+that's what the webhook reads on `checkout.session.completed` to know which CLIENTS row to link.
+
+If you want per-currency manual selection (e.g. an explicit INR/AED toggle) rather than Stripe's
+IP-based auto-detected currency, create **two** Pricing Tables (one per currency's Products) and
+swap which one the Billing page renders based on a currency toggle — same `client-reference-id`
+attribute either way.
+
+### Multi-currency add-ons
+Add-ons (WhatsApp credits, voice) are **not** part of the Pricing Table — Pricing Tables are
+subscription-only, so these stay as our own one-time Checkout (`mode=payment`). If you sell them
+in more than one currency, create a **separate Price object per currency** under the same
+Product (Stripe's `currency_options` on a single Price is a different, auto-detected mechanism
+and isn't what's implemented here). `CONFIG.BILLING_ADDONS` in `dashboard.html` is keyed
+`{id, name, prices:{INR:{price_id,display}, AED:{price_id,display}, …}}` — the Billing page's
+currency toggle (now scoped to just the Add-ons section) picks the matching Price ID.
 
 ### Stripe Dashboard setup
-1. **Products/Prices for plans** (recurring) — one Price per tier **per currency**. Set the
-   Price's **nickname** to the human-readable plan name (e.g. "Growth") — the webhook reads this
-   into `plan_name`. Optionally set metadata `message_limit` (e.g. `1000`) if you want a quota
-   shown in the usage dashboard later.
-2. **Products/Prices for add-ons** (one-time) — one Price per add-on **per currency**. Set metadata on each Price:
+1. **Pricing Table** for plans (Product catalog → Pricing tables → create) — add your recurring
+   Prices there; set each Price's **nickname** to the human-readable plan name (e.g. "Growth") —
+   the webhook reads this into `plan_name`. Optionally set metadata `message_limit` (e.g. `1000`)
+   if you want a quota shown in the usage dashboard later. Copy the resulting `prctbl_...` ID and
+   your publishable key (`pk_...`) into `dashboard.html`'s `CONFIG.STRIPE_PRICING_TABLE_ID` /
+   `CONFIG.STRIPE_PUBLISHABLE_KEY`.
+2. **Products/Prices for add-ons** (one-time, outside the Pricing Table) — one Price per add-on
+   **per currency**. Set metadata on each Price (or its Product — the webhook merges both,
+   Price wins):
    - WhatsApp credits pack: `fulfillment_type=wa_credits`, `wa_credits_amount=<number>` (added to
      `wa_credits_balance` on purchase).
    - Voice add-on: `fulfillment_type=voice_addon` (sets `voice_addon_active=Yes` on purchase).
@@ -333,33 +354,51 @@ below (they're a flat list across all currencies, not per-currency).
    without any custom UI.
 4. **Webhook endpoint** — add `{WORKER_BASE}/billing/webhook`, subscribe to `checkout.session.completed`,
    `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`.
-   Copy the signing secret into `STRIPE_WEBHOOK_SECRET`.
+   Copy the signing secret into `STRIPE_WEBHOOK_SECRET`. Use the **Snapshot** payload style, not
+   Thin — the Worker's handler expects the full object inline on `event.data.object`.
+5. **Customer emails** (Settings → Customer emails) — turn on "Successful payments" and "Failed
+   payments" so customers get Stripe's own receipt/dunning emails. This is also the mechanism
+   behind the RBI pre-debit notice for India-issued cards — Stripe/the card issuer sends it
+   automatically as part of the Subscriptions e-mandate flow; nothing to build here.
 
 ### Worker config
 | Secret/var | What it is |
 |---|---|
 | `STRIPE_SECRET_KEY` (secret) | Your Stripe secret key |
 | `STRIPE_WEBHOOK_SECRET` (secret) | Signing secret for the `/billing/webhook` endpoint |
-| `STRIPE_PLAN_PRICE_IDS` (var, comma list) | Allow-list of subscribable plan Price IDs |
 | `STRIPE_ADDON_PRICE_IDS` (var, comma list) | Allow-list of one-time add-on Price IDs |
 | `APP_BASE_URL` (var) | Dashboard URL Stripe redirects back to after Checkout/Portal (e.g. `https://app.leadvyne.com/dashboard.html`) |
 
-`dashboard.html`'s `CONFIG.BILLING_PLANS` / `CONFIG.BILLING_ADDONS` are the same Price IDs, used
-to render the plan-picker/add-on buttons — keep them in sync with the two allow-lists above.
+`STRIPE_PLAN_PRICE_IDS` and the `POST /billing/checkout-subscription` route still exist in the
+Worker as a fallback/manual path, but nothing in the UI calls them anymore now that plans go
+through the Pricing Table — safe to ignore, or remove later if you're sure you won't need a
+custom (non-Pricing-Table) subscribe flow.
 
 ### Flow
-1. **Subscribe** — `POST /billing/checkout-subscription` creates the Stripe Customer (once,
-   cached as `stripe_customer_id`) and a Checkout Session, redirecting the browser there.
+1. **Subscribe** — the Pricing Table embed creates the Checkout Session itself, client-side,
+   entirely outside the Worker.
 2. **Manage** — `GET /billing/portal` opens the Stripe Customer Portal for that customer —
    invoices, plan switch, payment method, cancellation, all Stripe-hosted.
 3. **Buy an add-on** — `POST /billing/checkout-addon` (allow-listed Price IDs only) creates a
    one-time Checkout Session.
 4. **Webhook** (`POST /billing/webhook`, signature-verified manually via Web Crypto — no Stripe
-   SDK, this Worker ships as a single dependency-free file) syncs `plan_name`/`plan_status`/
-   `plan_renews_at` on subscription events, and fulfills add-ons (credits/voice) by reading the
-   purchased Price's metadata — nothing about specific plans or add-on amounts is hardcoded in
-   the Worker.
-5. **Usage dashboard** — computed client-side from leads already loaded into the dashboard
+   SDK, this Worker ships as a single dependency-free file):
+   - `checkout.session.completed` (mode=subscription): reads `client_reference_id`, writes
+     `stripe_customer_id`, then fetches the Subscription directly and syncs `plan_name`/
+     `plan_status`/`plan_renews_at` immediately — done this way (rather than waiting on a
+     `customer.subscription.created` event) to avoid a race where that event can arrive first
+     and has no CLIENTS row to resolve against yet.
+   - `customer.subscription.updated`/`deleted` (renewals, cancellations, status changes):
+     resolves the CLIENTS row by `stripe_subscription_id` (Pricing Table subscriptions have no
+     `metadata.client_id`, only the Checkout Session had `client_reference_id`).
+   - Add-on fulfillment (credits/voice) still reads the purchased Price's metadata — nothing
+     about specific plans or add-on amounts is hardcoded in the Worker.
+5. **Payment issues** — the Billing page shows a warning banner (linking to Manage Billing) when
+   `plan_status` is `past_due`/`unpaid`/`incomplete`/`incomplete_expired`, which the webhook keeps
+   in sync via the same `customer.subscription.updated` event Stripe fires on every retry/status
+   change (Stripe's own Smart Retries drive these transitions — nothing to build for the retry
+   logic itself).
+6. **Usage dashboard** — computed client-side from leads already loaded into the dashboard
    (`ConvHistory` entries with `role:'assistant'` this calendar month = messages sent, lead count
    this month = leads captured, terminal-stage ratio = conversion rate). No new tracking needed.
 
