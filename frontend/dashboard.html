@@ -2658,19 +2658,22 @@ async function startAuthentikLogin(){
   $id('gErr').textContent='';
   // Immediate visual feedback on the very first click, before any async work starts.
   setGBtnState(true, 'Connecting…');
-  // Popups are unreliable on mobile browsers — many don't share sessionStorage with the new
-  // window/tab the way desktop browsers do, so the PKCE verifier/state saved just below is
-  // missing when Authentik redirects back, failing with "Login session expired" every time.
-  // Skip the popup on mobile entirely and use the plain full-page redirect instead.
+  // Mobile browsers are unreliable about giving a script-opened window/tab any sessionStorage
+  // at all, so the verifier/state below would never be visible to it regardless of timing —
+  // skip the popup on mobile entirely and use a plain full-page redirect instead.
   const useMobileRedirect=isMobileBrowser();
-  // Open the popup instantly, synchronously on the click, before any of the async PKCE work below —
-  // a blank window appears immediately instead of the user waiting on a crypto.subtle.digest call
-  // first. It's navigated to the real authorize URL once that's ready.
-  if(!useMobileRedirect) _authPopup=window.open('','lv_auth','width=480,height=680');
-
+  // On desktop, a same-origin popup's sessionStorage is cloned from the opener at the exact
+  // moment window.open() runs, then never re-syncs afterward. The verifier/state MUST be written
+  // before opening the popup, not after — get this order wrong (as it was before) and the
+  // popup's clone never contains them, so every desktop login fails with "Login session expired"
+  // the moment Authentik redirects back into it. Both writes are synchronous and effectively
+  // instant, so the popup still appears immediately on click either way — only the
+  // crypto.subtle.digest() call below is actually async.
   const verifier=randomToken(), state=randomToken();
   sessionStorage.setItem('lv_pkce_verifier',verifier);
   sessionStorage.setItem('lv_oidc_state',state);
+  if(!useMobileRedirect) _authPopup=window.open('','lv_auth','width=480,height=680');
+
   const params=new URLSearchParams({
     client_id:CONFIG.AUTHENTIK_CLIENT_ID,
     redirect_uri:CONFIG.AUTHENTIK_REDIRECT_URI,
