@@ -4623,6 +4623,9 @@ function renderBillingPricingTable(){
   el.setAttribute('pricing-table-id', CONFIG.STRIPE_PRICING_TABLE_ID);
   el.setAttribute('publishable-key', CONFIG.STRIPE_PUBLISHABLE_KEY);
   el.setAttribute('client-reference-id', String(clientId));
+  // Prefill (not enforce) the checkout email so it matches the LeadVyne account by default —
+  // reduces accidental email/name mismatches between Stripe and the CLIENTS row.
+  if(clientRecord?.authentik_email) el.setAttribute('customer-email', clientRecord.authentik_email);
   wrap.innerHTML='';
   wrap.appendChild(el);
 }
