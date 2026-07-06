@@ -3099,7 +3099,7 @@ function kbCard(l){
     onclick="openDetail(${l.Id})">
     <div class="kb-name">${esc(l.Name||l.Phone||'Unknown')}${sentimentIcon?` <span title="${esc(l.Sentiment)}">${sentimentIcon}</span>`:''}${overdue?' <span title="SLA breached">⏱️</span>':''}</div>
     <div class="kb-phone">${maskPhone(l.Phone)}</div>
-    <div class="kb-meta">${scoreBadge(l.Score)}${l.DealValue?`<span style="font-size:10px;color:var(--accent-ink);font-weight:600">${esc(l.DealCurrency||'')} ${Number(l.DealValue).toLocaleString()}</span>`:''}${l.Owner?`<span style="font-size:10px;color:var(--muted)">${esc(l.Owner)}</span>`:''}</div>
+    <div class="kb-meta">${scoreBadge(l.Score)}${dealHealthChip(l)}${l.DealValue?`<span style="font-size:10px;color:var(--accent-ink);font-weight:600">${esc(l.DealCurrency||'')} ${Number(l.DealValue).toLocaleString()}</span>`:''}${l.Owner?`<span style="font-size:10px;color:var(--muted)">${esc(l.Owner)}</span>`:''}</div>
   </div>`;
 }
 
@@ -3160,6 +3160,7 @@ function renderLeadsList(){
       </div>
       <div class="li-right">
         ${scoreBadge(l.Score)}
+        ${dealHealthChip(l)}
         <span class="li-date">${fmtDateShort(l.Date)}</span>
         ${l.ReminderDate?`<span class="reminder-badge" title="${l.ReminderDate}">⏰</span>`:''}
         ${recoveryBadgeHtml(l)}
@@ -3469,6 +3470,8 @@ async function patchWinProbability(val){
 
 function renderDetailSignals(lead){
   const chips=[];
+  const health=dealHealth(lead);
+  if(health)chips.push(`<span class="tag" style="background:${health.bg};color:${health.fg}">● ${health.label}</span>`);
   if(lead.Sentiment && lead.Sentiment!=='Neutral'){
     const neg=lead.Sentiment==='Negative'||lead.Sentiment==='Frustrated';
     chips.push(`<span class="tag" style="background:${neg?'#FEE2E2':'#DCFCE7'};color:${neg?'#991B1B':'#166534'}">${lead.Sentiment==='Frustrated'?'😠':neg?'🙁':'🙂'} ${esc(lead.Sentiment)}</span>`);
@@ -4975,6 +4978,30 @@ function scoreBadge(s){if(!s)return'';const cl=s==='Hot'?'badge-score-hot':s==='
 // Mirrors scoreBadge()'s exact Hot/Warm/else-cold fallback so the card's left-edge color strip
 // always agrees with the badge text shown on it.
 function scoreCardClass(s){if(!s)return'';return s==='Hot'?'kb-hot':s==='Warm'?'kb-warm':'kb-cold';}
+
+// Deal Health: one glance signal combining what's already tracked (WinProbability, Sentiment,
+// an unresolved objection, and days of silence) instead of reading each field separately.
+function dealHealth(l){
+  if(TERMINAL.has(l.Stage))return null; // decided already — no health score needed
+  const lastMsg=l.LastMsgAt||l.Date;
+  const silentDays=lastMsg?(Date.now()-new Date(lastMsg).getTime())/86400000:999;
+  const wpNum=Number(l.WinProbability);
+  const hasWp=l.WinProbability!==undefined&&l.WinProbability!==null&&l.WinProbability!==''&&!isNaN(wpNum);
+  let score=hasWp?wpNum:40;
+  if(l.Sentiment==='Frustrated')score-=40;
+  else if(l.Sentiment==='Negative')score-=20;
+  if(l.LastObjectionCategory)score-=10;
+  if(silentDays>7)score-=25;
+  else if(silentDays>3)score-=10;
+  if(score>=60)return{level:'green',label:'Healthy',bg:'#DCFCE7',fg:'#166534'};
+  if(score>=35)return{level:'yellow',label:'At risk',bg:'#FEF3C7',fg:'#92400E'};
+  return{level:'red',label:'Stalling',bg:'#FEE2E2',fg:'#991B1B'};
+}
+function dealHealthChip(l){
+  const h=dealHealth(l);
+  if(!h)return'';
+  return`<span class="tag" title="Deal health" style="background:${h.bg};color:${h.fg}">● ${h.label}</span>`;
+}
 function stageBadge(s){
   const cl=TERMINAL.has(s)?(s==='human_handover'?'badge-human':'badge-booked'):s==='new'?'badge-new':'badge-active';
   return`<span class="badge ${cl}">${esc(s||'—')}</span>`;

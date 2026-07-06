@@ -643,6 +643,40 @@ forecast (`Σ DealValue × WinProbability`) instead of just a stage count.
   **Incoming Webhook** and paste its URL into that field, no other config needed. See the "Known
   limitation" note under the LEADS schema above for what the SLA check can and can't see.
 
+## Sales models applied to the engine: deal health, proactive insight, urgency, predictive win %
+Four more additions, each a minimal-effort application of a named sales model rather than new
+infrastructure — all reuse nodes/fields already described above:
+
+**1. Deal Health Score (MEDDIC/Gong-style)** — pure dashboard computation, no new schema, no engine
+change. `dealHealth()` in `dashboard.html` combines `WinProbability`, `Sentiment`,
+`LastObjectionCategory`, and days-since-last-message into one Green/"Healthy" · Yellow/"At risk" ·
+Red/"Stalling" chip, shown on kanban cards, the leads list, and the lead detail panel. Skipped
+entirely once a lead reaches a stage in the dashboard's existing `TERMINAL` set (already-decided
+deals don't need a health score).
+
+**2. Proactive commercial insight (Challenger Sale)** — one instruction added to the system prompt
+in `Code · FAQ prep` / `Code · Travel FAQ prep` / `Code · Ecom FAQ prep`: if the lead has stated a
+pain point earlier in the conversation, volunteer one relevant insight tied to it instead of only
+answering the literal question. Self-limits to once per conversation by checking the "Recent
+Conversation" block already in the same prompt — no new field, no new node.
+
+**3. Time-boxed close offer on price objections (urgency/scarcity)** — `Code · Objection prep`
+now adds an urgency instruction specifically for `price`-category objections, grounded in the
+client's real `quote_validity_days` (now read into the ctx object alongside the other quotation
+fields) when set — e.g. "this pricing is confirmed for the next N days." Deliberately instructed
+**not** to invent a discount or deadline when `quote_validity_days` isn't configured, to avoid the
+bot fabricating false urgency.
+
+**4. Predictive win probability (Einstein/HubSpot-style predictive scoring)** — rather than
+standing up a trained model (there isn't yet enough historical Converted/Lost volume for one to be
+meaningful), `HTTP · AI Classify` now also asks the same LLM call for a `win_probability` (0-100)
+estimate from conversation tone/urgency. `Code · Prep lead` uses it in place of the old pure
+stage-progress heuristic whenever the AI gave a valid number, falling back to the heuristic if the
+call failed — same "AI primary, rule-based fallback" pattern as the intent classifier. Still
+respects `WinProbabilityManual`, so a rep's own edit is never overwritten. This can be swapped for
+a real trained model later without changing anything downstream — `Code · Prep lead` only cares
+that `sc.aiWinProbability` is a number.
+
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
 - **Wrapper** — open that client's generated workflow; add nodes around `Run engine`
