@@ -874,6 +874,7 @@ function renderBillingTable(clients) {
       <td id="billing-actions-${c.Id}">
         <button class="btn-mini" onclick="refreshClientBilling(${c.Id})">🔄 Refresh</button>
         <button class="btn-mini" onclick="openClientPortal(${c.Id})" ${c.stripe_customer_id ? '' : 'disabled title="No Stripe customer yet"'}>Portal ↗</button>
+        <button class="btn-mini" onclick="resetBillingCycle(${c.Id})" ${c.stripe_subscription_id ? '' : 'disabled title="No active subscription"'}>⏱ Reset Cycle</button>
       </td>
     </tr>`;
   }).join('');
@@ -896,6 +897,32 @@ async function refreshClientBilling(clientId) {
   } catch(e) {
     cell.innerHTML = prevHtml;
     showToast('Sync failed: ' + e.message, 'error');
+  }
+}
+
+// Resets a customer's billing cycle to start now instead of waiting for the current period to
+// end (Stripe's Subscription Update only supports 'now', not an arbitrary date). Two separate
+// confirms — this immediately changes the customer's next charge date and, if prorated, their
+// invoice — so it shouldn't be one accidental click.
+async function resetBillingCycle(clientId) {
+  if (!confirm('Reset this customer\'s billing cycle to start now? Their renewal date changes immediately.')) return;
+  const prorate = confirm('Also prorate the shortened/lengthened period (charge or credit the difference)?\n\nOK = prorate, Cancel = no proration.');
+  const cell = document.getElementById(`billing-actions-${clientId}`);
+  const prevHtml = cell.innerHTML;
+  cell.innerHTML = 'Resetting…';
+  try {
+    const res = await fetch(`${CONFIG.WORKER_BASE}/admin/billing-reset-anchor`, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + adminSessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, prorate }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    showToast('Billing cycle reset' + (prorate ? ' (prorated)' : ''), 'success');
+    loadBillingOverview();
+  } catch(e) {
+    cell.innerHTML = prevHtml;
+    showToast('Reset failed: ' + e.message, 'error');
   }
 }
 

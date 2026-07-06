@@ -794,14 +794,13 @@ const CONFIG = {
   // these from Meta Developer Portal → your Tech Provider app → WhatsApp → Embedded Signup.
   META_APP_ID:              '958889290317772',
   META_WHATSAPP_CONFIG_ID:  '1628996898332605',
-  // Billing (Stripe). Plans are shown via a Stripe Pricing Table (Dashboard-managed — add/edit
-  // plans and copy there, no code change needed) which creates its own Checkout Session
-  // client-side using just the publishable key below; the Worker never sees that request.
-  // Add-ons stay as our own one-time Checkout (mode=payment) — Pricing Tables are subscription
-  // only — with fulfillment_type/wa_credits_amount metadata on each add-on Price telling the
-  // Worker what to grant. See SETUP.md "Billing module" for the RBI e-mandate reasoning.
-  STRIPE_PRICING_TABLE_ID: 'prctbl_1TOrBjJWa5B2ayZgibTilpxV',
-  STRIPE_PUBLISHABLE_KEY:  'pk_live_51R1PadJWa5B2ayZg4ytt9Q9hI0b8j3Br1jXy7o1FVsiwBgPt6QGx4wYeWuonnkUyH82xRDNHB54xg95dK7wJkpG900cPYq5DuQ',
+  // Billing (Stripe). Plans are rendered here from /billing/plans (reads STRIPE_PLAN_PRICE_IDS
+  // from the Worker's own Stripe account, no publishable key or Stripe.js needed in the browser)
+  // and subscribing posts to /billing/checkout-subscription — the Worker creates the Checkout
+  // Session and hands back a redirect url, so it sees and can gate every subscription request.
+  // Add-ons stay as our own one-time Checkout (mode=payment) with fulfillment_type/
+  // wa_credits_amount metadata on each add-on Price telling the Worker what to grant.
+  // See SETUP.md "Billing module" for the RBI e-mandate reasoning.
   // Add-ons can list more than one currency (separate Stripe Price objects, not Stripe's
   // currency_options on one Price) — the Billing page's currency toggle picks which one to
   // check out. Omit a currency key for an add-on that only exists in one currency.
@@ -4633,6 +4632,7 @@ function setBillingCurrency(cur){
   try{localStorage.setItem('lv_billing_currency',cur);}catch(e){}
   renderBillingCurrencyToggle();
   renderBillingAddonList();
+  if(!clientRecord.stripe_subscription_id) renderBillingPlanList();
 }
 
 // price_id lookups always fall back to whatever currency an item actually has, so an add-on
@@ -4641,32 +4641,44 @@ function billingPriceFor(item){
   return item.prices[_billingCurrency]||Object.values(item.prices)[0];
 }
 
-// Stripe's Pricing Table is a Dashboard-managed plan picker — it creates its own Checkout
-// Session client-side using just the publishable key, so subscribing never touches our Worker
-// at all. client-reference-id is what the webhook later reads (checkout.session.completed) to
-// know which CLIENTS row this belongs to — see handleBillingWebhook in cloudflare-worker/worker.js.
-let _stripePricingTableScriptLoaded=false;
-function _loadStripePricingTableScript(){
-  if(_stripePricingTableScriptLoaded||document.querySelector('script[src*="pricing-table.js"]')) return;
-  _stripePricingTableScriptLoaded=true;
-  const s=document.createElement('script');
-  s.src='https://js.stripe.com/v3/pricing-table.js';
-  s.async=true;
-  document.body.appendChild(s);
-}
-function renderBillingPricingTable(){
-  _loadStripePricingTableScript();
+// Plan picker — fetched from the Worker (/billing/plans), which reads the live catalog straight
+// from Stripe, so plan names/prices never drift out of sync with what Checkout will actually
+// charge. Cached client-side so switching the currency toggle re-renders instantly instead of
+// re-hitting Stripe on every click.
+let _billingPlansCache=null;
+async function loadBillingPlans(){
+  if(_billingPlansCache){ renderBillingPlanList(); return; }
   const wrap=$id('billingPricingTableWrap');
-  if(wrap.querySelector('stripe-pricing-table')) return; // already rendered, nothing to do
-  const el=document.createElement('stripe-pricing-table');
-  el.setAttribute('pricing-table-id', CONFIG.STRIPE_PRICING_TABLE_ID);
-  el.setAttribute('publishable-key', CONFIG.STRIPE_PUBLISHABLE_KEY);
-  el.setAttribute('client-reference-id', String(clientId));
-  // Prefill (not enforce) the checkout email so it matches the LeadVyne account by default —
-  // reduces accidental email/name mismatches between Stripe and the CLIENTS row.
-  if(clientRecord?.authentik_email) el.setAttribute('customer-email', clientRecord.authentik_email);
-  wrap.innerHTML='';
-  wrap.appendChild(el);
+  wrap.innerHTML='<div class="s-note">Loading plans…</div>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/plans`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    _billingPlansCache=data.plans||[];
+    renderBillingPlanList();
+  }catch(e){ wrap.innerHTML=`<div class="s-note">Error loading plans: ${esc(e.message)}</div>`; }
+}
+function renderBillingPlanList(){
+  const wrap=$id('billingPricingTableWrap');
+  const plans=(_billingPlansCache||[]).filter(p=>(p.currency||'').toUpperCase()===_billingCurrency);
+  if(!plans.length){ wrap.innerHTML=`<div class="s-note">No plans available in ${esc(_billingCurrency)} right now.</div>`; return; }
+  wrap.innerHTML=plans.map(p=>{
+    const amount=((p.unit_amount||0)/100).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const period=p.interval?`/${p.interval_count>1?p.interval_count+' ':''}${p.interval}`:'';
+    return `<div class="card" style="padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px">
+      <div><strong>${esc(p.name)}</strong><div class="s-note">${esc((p.currency||'').toUpperCase())} ${amount}${esc(period)}</div></div>
+      <button class="save-btn" onclick="subscribeToPlan('${esc(p.price_id)}')">Subscribe</button>
+    </div>`;
+  }).join('');
+}
+async function subscribeToPlan(price_id){
+  const wrap=$id('billingPricingTableWrap');
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/checkout-subscription`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({price_id})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    window.location.href=data.url;
+  }catch(e){ wrap.insertAdjacentHTML('beforeend', `<div class="s-note">Error: ${esc(e.message)}</div>`); }
 }
 
 function renderBillingAddonList(){
@@ -4713,7 +4725,7 @@ function renderBillingPage(){
     $id('billingPastDueBanner').style.display=pastDueCopy?'block':'none';
     if(pastDueCopy) $id('billingPastDueText').textContent=pastDueCopy;
   }else{
-    renderBillingPricingTable();
+    loadBillingPlans();
   }
   $id('billingWaCredits').textContent=clientRecord.wa_credits_balance||0;
   $id('billingVoiceStatus').textContent=clientRecord.voice_addon_active==='Yes'?'Active':'Not active';
