@@ -241,7 +241,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst msg = (c.userText || '').trim();\nconst low = msg.toLowerCase();\nlet intent = null, intentData = {};\n\n// WANTS_HUMAN\nif (!intent && /\\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\\b/.test(low)) intent = 'WANTS_HUMAN';\n\n// BOOKING\nif (!intent) {\n  const bookMatch = low.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\\d{1,2}[:\\/\\-]\\d{1,2}|\\d{1,2}\\s*(am|pm)|morning|afternoon|evening|tonight|next week)\\b/);\n  if (bookMatch) { intent = 'BOOKING'; intentData = { booking_time: msg }; }\n}\n\n// WATCHED\nif (!intent && /\\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\\b/.test(low)) intent = 'WATCHED';\n\n// FORM_DONE\nif (!intent && /\\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\\b/.test(low)) intent = 'FORM_DONE';\n\n// DELAY\nif (!intent && /\\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\\b/.test(low)) intent = 'DELAY';\n\n// SHORT_NEUTRAL — pure openers only\nif (!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\\.!]*$/.test(low)) intent = 'SHORT_NEUTRAL';\n\n// AFFIRMATIVE — only clear confirmations\nif (!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\\.!]*$/.test(low)) intent = 'AFFIRMATIVE';\n\n// Everything else → QUESTION (goes to FAQ)\nif (!intent) { intent = 'QUESTION'; intentData = { question: msg }; }\n\nreturn [{ json: { ...c, output: JSON.stringify({ intent, data: intentData }) } }];"
+        "jsCode": "const merged = $('Code · Merge text').first().json;\nconst msg = (merged.userText || '').trim();\nconst low = msg.toLowerCase();\n\nlet aiResult = null;\ntry {\n  const r = $input.first().json;\n  const raw = r.output || r.text || '';\n  const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/);\n  if (m) aiResult = JSON.parse(m[0]);\n} catch(e) {}\n\nconst VALID_INTENTS = new Set(['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL']);\nconst VALID_SENTIMENT = new Set(['Positive','Neutral','Negative','Frustrated']);\n\nlet intent = null, intentData = {};\n\n// Deterministic fast-paths always win over the AI agent — instant, free, and\n// safety-critical (a lead must always be able to reach a human on demand).\nif (/\\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\\b/.test(low)) intent = 'WANTS_HUMAN';\nif (!intent) {\n  const bookMatch = low.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\\d{1,2}[:\\/\\-]\\d{1,2}|\\d{1,2}\\s*(am|pm)|morning|afternoon|evening|tonight|next week)\\b/);\n  if (bookMatch) { intent = 'BOOKING'; intentData = { booking_time: msg }; }\n}\n\n// AI classification (Gemini via the AI Agent node above) — semantic understanding\n// the regex below can't do (paraphrasing, sarcasm, non-keyword phrasing)\nif (!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence === undefined || aiResult.confidence >= 0.5)) {\n  intent = aiResult.intent;\n  if (intent === 'BOOKING') intentData = { booking_time: msg };\n}\n\n// Regex fallback ladder — used when the agent call fails, times out, or returns low confidence\nif (!intent && /\\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\\b/.test(low)) intent = 'WATCHED';\nif (!intent && /\\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\\b/.test(low)) intent = 'FORM_DONE';\nif (!intent && /\\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\\b/.test(low)) intent = 'DELAY';\nif (!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\\.!]*$/.test(low)) intent = 'SHORT_NEUTRAL';\nif (!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\\.!]*$/.test(low)) intent = 'AFFIRMATIVE';\nif (!intent) { intent = 'QUESTION'; intentData = { question: msg }; }\n\nconst sentiment = (aiResult && VALID_SENTIMENT.has(aiResult.sentiment)) ? aiResult.sentiment : 'Neutral';\n\nreturn [{ json: { output: JSON.stringify({ intent, data: intentData }), sentiment } }];"
       },
       "id": "aiagent",
       "name": "Code · Intent classify",
@@ -835,6 +835,44 @@
     },
     {
       "parameters": {
+        "promptType": "define",
+        "text": "=Recent conversation:\n{{ ($('Code · Merge text').first().json.activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\\n') }}\n\nLatest message: {{ $('Code · Merge text').first().json.userText }}",
+        "options": {
+          "systemMessage": "You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), confidence (number 0 to 1)."
+        }
+      },
+      "id": "aiAgentClassify",
+      "name": "AI Agent · Sentiment & Intent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1120,
+        400
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.0-flash",
+        "options": {}
+      },
+      "id": "geminiChatModel",
+      "name": "Google Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        580
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "REPLACE_GEMINI_CRED",
+          "name": "Google Gemini API"
+        }
+      }
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "sendHeaders": true,
@@ -1416,7 +1454,7 @@
       "main": [
         [
           {
-            "node": "Code · Intent classify",
+            "node": "AI Agent · Sentiment & Intent",
             "type": "main",
             "index": 0
           }
@@ -1550,6 +1588,28 @@
           {
             "node": "HTTP · Send reply",
             "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent · Sentiment & Intent": {
+      "main": [
+        [
+          {
+            "node": "Code · Intent classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent · Sentiment & Intent",
+            "type": "ai_languageModel",
             "index": 0
           }
         ]
