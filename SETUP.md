@@ -58,6 +58,11 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
 | fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 | last_renewal_notice_sent | Single line (ISO datetime — set by `n8n/rbi-renewal-notice.json` so each renewal only gets one backup reminder email even though the workflow runs daily; see "RBI pre-debit notification" below) |
+| notification_email | Single line (email address `n8n/notifications.json` sends hot-lead/handover/SLA alerts to) |
+| slack_webhook_url | Single line (optional — Slack incoming-webhook URL; `n8n/notifications.json` posts the same hot-lead/handover/SLA alerts here in addition to email, if set) |
+| sla_minutes | Number (optional, default 15 — minutes a lead can sit in `human_handover` before `n8n/notifications.json` fires an SLA-breach alert; see "AI sales rep" section below) |
+| objection_playbook | Long text (optional — JSON array of `{category, approved_response}`, category one of `price`/`competitor`/`timing`/`trust`; grounds the engine's objection-handling response — falls back to a generic acknowledge-and-propose-next-step strategy if blank or the category isn't covered) |
+| deal_currency | Single line (default `AED` — seeds `DealCurrency` on newly created leads) |
 
 ### LEADS table additions (for the Quotation module's sent log)
 Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
@@ -67,6 +72,29 @@ Quotation tab's "Sent Quotations" report:
 |---|---|
 | QuoteSentAt | Single line (ISO datetime) |
 | QuoteSentTotal | Single line |
+
+### LEADS table additions (AI sales rep: sentiment, objections, deal forecast, SLA)
+More columns on the **LEADS** table, written by `engine.json` and read/edited by `dashboard.html`:
+
+| Field | Type |
+|---|---|
+| Sentiment | Single line (`Positive`/`Neutral`/`Negative`/`Frustrated` — set from the engine's AI intent+sentiment classification on every inbound message; a `Frustrated` reading force-escalates to human handover regardless of stage) |
+| LastObjectionCategory | Single line (`price`/`competitor`/`timing`/`trust` — set whenever the AI classifier detects an objection; drives the objection-handling response, see `objection_playbook` above) |
+| DealValue | Number (manual — the dashboard's only input into deal size; the engine never sets this, since it has no way to know it) |
+| DealCurrency | Single line (defaults from the client's `deal_currency` on lead creation; editable per lead) |
+| WinProbability | Number, 0-100 (auto-suggested by the engine from stage progress + lead score on every turn; stops auto-updating once `WinProbabilityManual` is set to "Yes" so a rep's manual call is never silently overwritten) |
+| WinProbabilityManual | Single line ("Yes"/"No" — set by the dashboard when a rep manually edits `WinProbability`) |
+| HandoverAt | Single line (ISO datetime — stamped the moment a lead first enters `human_handover`; powers the SLA-breach alert and an in-dashboard "waiting Xm" badge) |
+| SlaAlerted | Single line ("Yes"/"No" — dedupe flag so `n8n/notifications.json` only fires one SLA-breach alert per handover, reset by the engine each time a lead re-enters `human_handover`) |
+
+**Known limitation**: SLA tracking only knows a lead *entered* `human_handover` — the bot stops
+writing to the lead entirely once handed over (by design, so it can never talk over a live agent),
+so there's no reliable signal in NocoDB for "an agent already replied in Chatwoot." The SLA alert
+is therefore a **time-in-stage** proxy (has this lead sat in `human_handover` longer than
+`sla_minutes`), not a true first-response-time metric — it clears once the stage changes away from
+`human_handover` (e.g. a rep manually moves the lead in the dashboard), not on the agent's first
+Chatwoot reply. A tighter version would need to poll Chatwoot's own conversation/message API for an
+agent-authored message timestamp, which isn't implemented here.
 
 ### Prospects module
 Uses existing LEADS columns only — no new schema. Imported contacts are created with
@@ -527,6 +555,54 @@ we already know which CLIENTS row this is):
 **Not yet verified against a live Stripe account**: the Checkout/Portal/webhook request shapes
 follow Stripe's public API docs, but this hasn't been smoke-tested end-to-end — test the full
 subscribe → webhook → portal → add-on loop with Stripe test-mode keys before going live.
+
+## AI sales rep: sentiment/objection handling, deal forecast, team ops (engine.json + notifications.json)
+Four additions on top of the original regex-only engine, aimed at closing the gap between
+"scripted chatbot" and "AI sales rep":
+
+**1. AI intent + sentiment classification** — `HTTP · AI Classify` (a new OpenRouter call inserted
+before `Code · Intent classify`) reads the latest message plus the last few turns and returns
+`{intent, sentiment, objection, confidence}`. The old regex ladder is kept as both a fast-path
+(a literal "talk to a human" always wins instantly, free, with no AI round-trip) and a fallback
+(if the AI call fails, times out, or returns low confidence, regex still classifies the message —
+the bot never goes silent because of an LLM outage). This means the engine now understands
+paraphrased, sarcastic, or non-keyword phrasing the old pure-regex classifier couldn't. A
+`Sentiment` of `Frustrated` force-escalates to human handover regardless of what stage the
+conversation is in — a safety net the regex-only version had no way to express.
+
+**2. Objection handling** — when the classifier detects an objection (`price`/`competitor`/
+`timing`/`trust`) on a message that would otherwise just get a generic FAQ answer, the engine
+routes to a dedicated `Code · Objection prep → HTTP · Objection → Code · Objection reply` chain
+instead. It grounds the response in the client's `objection_playbook` (see schema above) —
+an approved response strategy per category — falling back to a generic "acknowledge honestly,
+respond with confidence, always propose one concrete next step" instruction if the client hasn't
+configured a playbook or hasn't covered that category. Toggle off entirely per client via
+`bot_config.objection_handling_enabled: false` (same JSON blob as the existing `handover_enabled`/
+`qual_enabled`/`antiloop_enabled` flags).
+
+**3. Deal value & forecast** — `DealValue`/`DealCurrency` are dashboard-only fields (the bot has no
+way to know a deal's size, so it never touches them). `WinProbability` is auto-suggested by the
+engine every turn from stage progress + lead score (same inputs the existing `QualScore` heuristic
+already used), capped and floored, and bumped to at least 55 on human handover — but stops
+auto-updating the moment `WinProbabilityManual` is flipped to "Yes", so a rep's manual override is
+never silently clobbered on the lead's next message. This gives pipeline $ value and a weighted
+forecast (`Σ DealValue × WinProbability`) instead of just a stage count.
+
+**4. Sales-team ops layer** — two pieces:
+- **Round-robin owner assignment**: reuses the existing `agents` field (Settings → General → Agents
+  — the same list that already populates the Owner dropdown) rather than adding a new column. If a
+  client has agents configured, every newly created lead is auto-assigned an `Owner` from that
+  list, deterministic by a hash of the phone number (not a shared counter) — spreads evenly with no
+  race condition between concurrent webhook calls, at the cost of not being a perfectly even
+  rotation for tiny agent lists. Existing leads and clients with no agents configured are
+  unaffected — manual assignment still works exactly as before.
+- **SLA + Slack alerting**: `n8n/notifications.json` (the existing 15-minute hot-lead/handover email
+  poll) now also checks for leads sitting in `human_handover` longer than the client's `sla_minutes`
+  (default 15) without a stage change, and alerts once per breach (`SlaAlerted` dedupe flag, reset
+  whenever a lead re-enters handover). All three alert types (hot lead, handover, SLA breach) now
+  also POST to `slack_webhook_url` if the client has set one, in addition to email — set up a Slack
+  **Incoming Webhook** and paste its URL into that field, no other config needed. See the "Known
+  limitation" note under the LEADS schema above for what the SLA check can and can't see.
 
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.

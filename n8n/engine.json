@@ -1,5 +1,5 @@
 {
-  "name": "Leadvyne \u00b7 Engine v3 (shared sub-workflow)",
+  "name": "Leadvyne · Engine v3 (shared sub-workflow)",
   "nodes": [
     {
       "parameters": {
@@ -19,7 +19,7 @@
         "jsCode": "const raw = $input.first().json;\nconst b = raw.body || raw;\nif (b.message_type && b.message_type !== 'incoming') return [];\nif (b.private) return [];\n\nconst conv = b.conversation || {};\nconst sender = conv?.meta?.sender || b.sender || {};\nlet phone = (sender.phone_number || sender.identifier || '').replace(/[^0-9+]/g,'').replace(/^\\+/,'');\nif (phone.startsWith('00')) phone = phone.slice(2);\n\nconst atts = b.attachments || b.message?.attachments || [];\nlet mediaType = 'text', mediaUrl = '';\nif (atts.length) {\n  const a = atts[0];\n  mediaUrl = a.data_url || a.file_url || '';\n  if ((a.file_type||'').includes('audio')) mediaType = 'voice';\n  else if ((a.file_type||'').includes('image')) mediaType = 'image';\n}\n\nconst text = (b.content || b.message?.content || '').trim();\nif (!phone) return [];\nif (mediaType === 'text' && !text) return [];\n\nreturn [{ json: {\n  client_id:  String(raw.client_id || b.client_id || ''),\n  account_id: String(b.account?.id || conv?.account_id || ''),\n  inbox_id:   String(b.inbox?.id || conv?.inbox_id || ''),\n  convId:     conv?.id || null,\n  phone, name: sender.name || '', text, mediaType, mediaUrl,\n  _startMs: Date.now()\n} }];"
       },
       "id": "parse",
-      "name": "Code \u00b7 Parse",
+      "name": "Code · Parse",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -43,7 +43,7 @@
         "options": {}
       },
       "id": "tenant",
-      "name": "NocoDB \u00b7 Get tenant",
+      "name": "NocoDB · Get tenant",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -54,10 +54,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const msg = $('Code \u00b7 Parse').first().json;\nconst raw = $input.first().json;\nconst t = raw.list ? raw.list[0] : raw;\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return [];\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nlet services = []; try { services = JSON.parse(t.services || '[]'); } catch(e) {}\nconst kb_summary = t.kb_summary || '';\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key || $env.OPENROUTER_KEY, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions, services, kb_summary,\n  industry: t.industry || 'general',\n  ta_table_ids: (() => { try { return JSON.parse(t.ta_table_ids || '{}'); } catch(e) { return {}; } })(),\n  ecom_table_ids: (() => { try { return JSON.parse(t.ecom_table_ids || '{}'); } catch(e) { return {}; } })(),\n  client_name: t.client_name || '',\n  sarvam_key: t.sarvam_key || $env.SARVAM_API_KEY || '',\n  cal_link: t.cal_link || '',\n  sarvam_lang: ({ml:'ml-IN',hi:'hi-IN',ta:'ta-IN',te:'te-IN',bn:'bn-IN',kn:'kn-IN',mr:'mr-IN',gu:'gu-IN'})[t.language||'ml'] || 'ml-IN',\n  test_mode: t.test_mode || 'No',\n  test_phone: t.test_phone || ''\n} }];"
+        "jsCode": "const msg = $('Code · Parse').first().json;\nconst raw = $input.first().json;\nconst t = raw.list ? raw.list[0] : raw;\nif (!t || !t.chatwoot_inbox_id) return [];\nif (t.active === 'No') return [];\nlet flow = {}; try { flow = JSON.parse(t.flow_json || '{}'); } catch(e) {}\nlet botConfig = {}; try { botConfig = JSON.parse(t.bot_config || '{}'); } catch(e) {}\nlet qualQuestions = []; try { qualQuestions = JSON.parse(t.qual_questions || '[]'); } catch(e) {}\nlet services = []; try { services = JSON.parse(t.services || '[]'); } catch(e) {}\nconst kb_summary = t.kb_summary || '';\nreturn [{ json: {\n  ...msg,\n  chatwoot_base: t.chatwoot_base, chatwoot_account_id: t.chatwoot_account_id, chatwoot_token: t.chatwoot_token,\n  control_nocodb_base: 'https://whizz.aiingo.com', control_nocodb_token: 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF',\n  analytics_table_id: 'm2in19v8n7phitr',\n  openrouter_key: t.openrouter_key || $env.OPENROUTER_KEY, model: t.model || 'google/gemini-2.5-flash',\n  language: t.language || 'ml', main_prompt: t.main_prompt || '', flow,\n  botConfig, qualQuestions, services, kb_summary,\n  industry: t.industry || 'general',\n  ta_table_ids: (() => { try { return JSON.parse(t.ta_table_ids || '{}'); } catch(e) { return {}; } })(),\n  ecom_table_ids: (() => { try { return JSON.parse(t.ecom_table_ids || '{}'); } catch(e) { return {}; } })(),\n  client_name: t.client_name || '',\n  sarvam_key: t.sarvam_key || $env.SARVAM_API_KEY || '',\n  cal_link: t.cal_link || '',\n  sarvam_lang: ({ml:'ml-IN',hi:'hi-IN',ta:'ta-IN',te:'te-IN',bn:'bn-IN',kn:'kn-IN',mr:'mr-IN',gu:'gu-IN'})[t.language||'ml'] || 'ml-IN',\n  test_mode: t.test_mode || 'No',\n  test_phone: t.test_phone || '',\n  sales_reps: (() => { try { const a = JSON.parse(t.agents || '[]'); if (Array.isArray(a) && a.length) return a; } catch(e) {} return (t.agents || '').split('\\n').map(s => s.trim()).filter(Boolean); })(),\n  objection_playbook: (() => { try { return JSON.parse(t.objection_playbook || '[]'); } catch(e) { return []; } })(),\n  deal_currency: t.deal_currency || 'AED'\n} }];"
       },
       "id": "ctx",
-      "name": "Code \u00b7 Build ctx",
+      "name": "Code · Build ctx",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -81,7 +81,7 @@
         "options": {}
       },
       "id": "getlead",
-      "name": "HTTP \u00b7 Get lead",
+      "name": "HTTP · Get lead",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -92,10 +92,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code \u00b7 Build ctx').first().json;\nconst r = $input.first().json;\nconst rows = r.list || [];\nconst lead = rows.find(l => String(l.ClientId) === String(c.client_id)) || null;\n// Opt-out: block opted-out leads (allow START to re-subscribe)\nconst msg = $('Code \u00b7 Parse').first().json;\nif (lead?.OptOut === 'Yes') {\n  const _txt = (msg.text || '').trim().toLowerCase();\n  if (_txt !== 'start') return [];\n}\nif (lead && (lead.Handover === 'Yes' || lead.Stage === 'human_handover')) return [];\nif (c.test_mode === 'Yes' && c.test_phone && c.phone !== c.test_phone.replace(/[^0-9]/g,'')) return [];\n\nconst rateLimitMs = parseInt(c.botConfig?.rate_limit_ms) || 4000;\nconst lastMsgAt = lead?.LastMsgAt ? new Date(lead.LastMsgAt).getTime() : 0;\nif (Date.now() - lastMsgAt < rateLimitMs) return [];\n\nconst duplicateClientIds = rows.filter(l => String(l.ClientId) !== String(c.client_id)).map(l => String(l.ClientId));\nconst isDuplicate = duplicateClientIds.length > 0;\n\nlet history = [];\ntry { history = JSON.parse(lead?.ConvHistory || '[]'); } catch(e) {}\nconst botMsgs = history.filter(m => m.role === 'assistant').slice(-3).map(m => m.content);\nconst looping = botMsgs.length === 3 && botMsgs.every(m => m === botMsgs[0]);\n\nconst memSummary = lead?.MemSummary || '';\nconst activeHistory = history.length > 20 ? history.slice(-6) : history;\n\nlet qualAnswers = {};\ntry { qualAnswers = JSON.parse(lead?.QualAnswers || '{}'); } catch(e) {}\n\nreturn [{ json: { ...c, leadId: lead?.Id || null, stage: lead?.Stage || 'new', history, activeHistory, memSummary, looping, qualAnswers, isDuplicate, leadOptOut: lead?.OptOut || 'No' } }];"
+        "jsCode": "const c = $('Code · Build ctx').first().json;\nconst r = $input.first().json;\nconst rows = r.list || [];\nconst lead = rows.find(l => String(l.ClientId) === String(c.client_id)) || null;\n// Opt-out: block opted-out leads (allow START to re-subscribe)\nconst msg = $('Code · Parse').first().json;\nif (lead?.OptOut === 'Yes') {\n  const _txt = (msg.text || '').trim().toLowerCase();\n  if (_txt !== 'start') return [];\n}\nif (lead && (lead.Handover === 'Yes' || lead.Stage === 'human_handover')) return [];\nif (c.test_mode === 'Yes' && c.test_phone && c.phone !== c.test_phone.replace(/[^0-9]/g,'')) return [];\n\nconst rateLimitMs = parseInt(c.botConfig?.rate_limit_ms) || 4000;\nconst lastMsgAt = lead?.LastMsgAt ? new Date(lead.LastMsgAt).getTime() : 0;\nif (Date.now() - lastMsgAt < rateLimitMs) return [];\n\nconst duplicateClientIds = rows.filter(l => String(l.ClientId) !== String(c.client_id)).map(l => String(l.ClientId));\nconst isDuplicate = duplicateClientIds.length > 0;\n\nlet history = [];\ntry { history = JSON.parse(lead?.ConvHistory || '[]'); } catch(e) {}\nconst botMsgs = history.filter(m => m.role === 'assistant').slice(-3).map(m => m.content);\nconst looping = botMsgs.length === 3 && botMsgs.every(m => m === botMsgs[0]);\n\nconst memSummary = lead?.MemSummary || '';\nconst activeHistory = history.length > 20 ? history.slice(-6) : history;\n\nlet qualAnswers = {};\ntry { qualAnswers = JSON.parse(lead?.QualAnswers || '{}'); } catch(e) {}\n\nreturn [{ json: { ...c, leadId: lead?.Id || null, stage: lead?.Stage || 'new', history, activeHistory, memSummary, looping, qualAnswers, isDuplicate, leadOptOut: lead?.OptOut || 'No', owner: lead?.Owner || null, winProbabilityManual: lead?.WinProbabilityManual || 'No' } }];"
       },
       "id": "state",
-      "name": "Code \u00b7 State",
+      "name": "Code · State",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -160,7 +160,7 @@
         }
       },
       "id": "media",
-      "name": "Switch \u00b7 Media",
+      "name": "Switch · Media",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
@@ -191,7 +191,7 @@
         "options": {}
       },
       "id": "vision",
-      "name": "HTTP \u00b7 Vision",
+      "name": "HTTP · Vision",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -202,10 +202,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code \u00b7 State').first().json;\nconst r = $input.first().json;\nconst txt = r.choices?.[0]?.message?.content || '(image received)';\nreturn [{ json: { ...c, userText: txt } }];"
+        "jsCode": "const c = $('Code · State').first().json;\nconst r = $input.first().json;\nconst txt = r.choices?.[0]?.message?.content || '(image received)';\nreturn [{ json: { ...c, userText: txt } }];"
       },
       "id": "imgtext",
-      "name": "Code \u00b7 image\u2192text",
+      "name": "Code · image→text",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -215,10 +215,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code \u00b7 State').first().json;\nreturn [{ json: { ...c, userText: c.text || (c.mediaType === 'voice' ? '(sent a voice note)' : '') } }];"
+        "jsCode": "const c = $('Code · State').first().json;\nreturn [{ json: { ...c, userText: c.text || (c.mediaType === 'voice' ? '(sent a voice note)' : '') } }];"
       },
       "id": "txtpass",
-      "name": "Code \u00b7 text\u2192text",
+      "name": "Code · text→text",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -231,7 +231,7 @@
         "jsCode": "const c = $input.first().json;\nreturn [{ json: c }];"
       },
       "id": "merge",
-      "name": "Code \u00b7 Merge text",
+      "name": "Code · Merge text",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -241,10 +241,44 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst msg = (c.userText || '').trim();\nconst low = msg.toLowerCase();\nlet intent = null, intentData = {};\n\n// WANTS_HUMAN\nif (!intent && /\\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\\b/.test(low)) intent = 'WANTS_HUMAN';\n\n// BOOKING\nif (!intent) {\n  const bookMatch = low.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\\d{1,2}[:\\/\\-]\\d{1,2}|\\d{1,2}\\s*(am|pm)|morning|afternoon|evening|tonight|next week)\\b/);\n  if (bookMatch) { intent = 'BOOKING'; intentData = { booking_time: msg }; }\n}\n\n// WATCHED\nif (!intent && /\\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\\b/.test(low)) intent = 'WATCHED';\n\n// FORM_DONE\nif (!intent && /\\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\\b/.test(low)) intent = 'FORM_DONE';\n\n// DELAY\nif (!intent && /\\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\\b/.test(low)) intent = 'DELAY';\n\n// SHORT_NEUTRAL \u2014 pure openers only\nif (!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\\.!]*$/.test(low)) intent = 'SHORT_NEUTRAL';\n\n// AFFIRMATIVE \u2014 only clear confirmations\nif (!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\\.!]*$/.test(low)) intent = 'AFFIRMATIVE';\n\n// Everything else \u2192 QUESTION (goes to FAQ)\nif (!intent) { intent = 'QUESTION'; intentData = { question: msg }; }\n\nreturn [{ json: { ...c, output: JSON.stringify({ intent, data: intentData }) } }];"
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $('Code · Merge text').first().json.openrouter_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ JSON.stringify({ model: $('Code · Merge text').first().json.model || 'google/gemini-2.5-flash', max_tokens: 120, messages: [ { role: 'system', content: 'Classify the latest WhatsApp message from a sales lead, using the recent conversation for context. Return ONLY compact JSON with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1). No prose, no markdown, no code fences.' }, { role: 'user', content: 'Recent conversation:\\n' + ($('Code · Merge text').first().json.activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\\n') + '\\n\\nLatest message: ' + $('Code · Merge text').first().json.userText } ] }) }}",
+        "options": {
+          "timeout": 6000
+        }
+      },
+      "id": "aiclassifyhttp",
+      "name": "HTTP · AI Classify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        220
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const merged = $('Code · Merge text').first().json;\nconst msg = (merged.userText || '').trim();\nconst low = msg.toLowerCase();\n\nlet aiResult = null;\ntry {\n  const r = $input.first().json;\n  const raw = r.choices?.[0]?.message?.content || '';\n  const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/);\n  if (m) aiResult = JSON.parse(m[0]);\n} catch(e) {}\n\nconst VALID_INTENTS = new Set(['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL']);\nconst VALID_SENTIMENT = new Set(['Positive','Neutral','Negative','Frustrated']);\nconst VALID_OBJECTION = new Set(['none','price','competitor','timing','trust']);\n\nlet intent = null, intentData = {};\n\n// Deterministic fast-paths always win over the AI call — instant, free, and\n// safety-critical (a lead must always be able to reach a human on demand).\nif (/\\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\\b/.test(low)) intent = 'WANTS_HUMAN';\nif (!intent) {\n  const bookMatch = low.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\\d{1,2}[:\\/\\-]\\d{1,2}|\\d{1,2}\\s*(am|pm)|morning|afternoon|evening|tonight|next week)\\b/);\n  if (bookMatch) { intent = 'BOOKING'; intentData = { booking_time: msg }; }\n}\n\n// AI classification (semantic, handles paraphrasing/sarcasm the regex below can't)\nif (!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence === undefined || aiResult.confidence >= 0.5)) {\n  intent = aiResult.intent;\n  if (intent === 'BOOKING') intentData = { booking_time: msg };\n}\n\n// Regex fallback ladder — unchanged from before, used when the AI call fails,\n// times out, or returns low confidence.\nif (!intent && /\\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\\b/.test(low)) intent = 'WATCHED';\nif (!intent && /\\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\\b/.test(low)) intent = 'FORM_DONE';\nif (!intent && /\\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\\b/.test(low)) intent = 'DELAY';\nif (!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\\.!]*$/.test(low)) intent = 'SHORT_NEUTRAL';\nif (!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\\.!]*$/.test(low)) intent = 'AFFIRMATIVE';\nif (!intent) { intent = 'QUESTION'; intentData = { question: msg }; }\n\nconst sentiment = (aiResult && VALID_SENTIMENT.has(aiResult.sentiment)) ? aiResult.sentiment : 'Neutral';\nconst objectionCategory = (aiResult && VALID_OBJECTION.has(aiResult.objection)) ? aiResult.objection : 'none';\n\nreturn [{ json: { output: JSON.stringify({ intent, data: intentData }), sentiment, objectionCategory } }];"
       },
       "id": "aiagent",
-      "name": "Code \u00b7 Intent classify",
+      "name": "Code · Intent classify",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -254,10 +288,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst mergeCtx = $('Code \u00b7 Merge text').first().json;\nconst sc = $('Code \u00b7 State').first().json;\nconst userText = mergeCtx.userText || '';\nconst _OPT_OUT = ['stop','unsubscribe','opt out','opt-out','optout'];\nconst _isOptOut = _OPT_OUT.some(w => userText.toLowerCase().trim() === w);\nconst _isResub = userText.toLowerCase().trim() === 'start' && sc.leadOptOut === 'Yes';\nif (_isOptOut) return [{ json: { ...slim(sc), userText, intent:'SHORT_NEUTRAL', route:'qualify_next', reply:'You have been unsubscribed. Reply START to re-subscribe.', next: sc.stage, qualAnswers: sc.qualAnswers||{}, _isOptOut:true } }];\nif (_isResub) return [{ json: { ...slim(sc), userText, intent:'SHORT_NEUTRAL', route:'qualify_next', reply:'Welcome back! You are re-subscribed.', next: 'new', qualAnswers: sc.qualAnswers||{}, _isResub:true } }];\n\nconst raw = c.output || c.text || c.choices?.[0]?.message?.content || '';\nlet intent = 'SHORT_NEUTRAL', intentData = {};\ntry {\n  const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/);\n  if (m) { const p = JSON.parse(m[0]); intent = p.intent || intent; intentData = p.data || {}; }\n} catch(e) {}\nconst valid = ['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','WANTS_MORE_INFO','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL'];\nif (!valid.includes(intent)) intent = 'SHORT_NEUTRAL';\n\nif (sc.looping && sc.botConfig?.antiloop_enabled !== false) intent = 'WANTS_HUMAN';\n\nconst qs = sc.qualQuestions || [];\nconst qualDone = !qs.length || sc.botConfig?.qual_enabled === false || (sc.stage && !sc.stage.startsWith('qual_') && sc.stage !== 'new');\nconst qualStage = sc.stage?.startsWith('qual_') ? parseInt(sc.stage.replace('qual_','')) : null;\n\nconst flow = sc.flow || {};\nconst stageNode = flow.stages?.[sc.stage];\nconst node = stageNode || (sc.stage === 'new' || !sc.stage ? flow.stages?.['new'] : null) || {};\nconst stageNotFound = !stageNode && sc.stage && sc.stage !== 'new';\n\nconst _isPostHandover = sc.stage === 'human_handover';\nconst _handoverFaqCount = sc.handoverFaqCount || 0;\nconst action = node[intent] || node['*'] || { next: sc.stage, msg: null };\n\nconst POSITIVE = new Set(['AFFIRMATIVE','WATCHED','FORM_DONE','BOOKING','SHORT_NEUTRAL']);\nconst NEGATIVE = new Set(['DELAY','WANTS_MORE_INFO']);\n\nconst _allStages = Object.keys(flow.stages || {}).filter(k => k !== 'new');\nconst _isFinalStage = _allStages.length > 0 && sc.stage === _allStages[_allStages.length - 1];\n\nconst _lastBotMsg = (sc.history || []).filter(m => m.role === 'assistant').slice(-1)[0]?.content || '';\nconst _actionMsg = action.msg ? (flow.messages?.[action.msg] || '') : '';\nconst _wouldRepeat = _actionMsg && _lastBotMsg && _lastBotMsg.includes(_actionMsg.slice(0, 40));\n\nlet reply = '', videoUrl = null;\nlet route = 'stage';\nif (intent === 'WANTS_HUMAN' && sc.botConfig?.handover_enabled !== false) route = 'human';\nelse if (_isFinalStage && POSITIVE.has(intent) && sc.botConfig?.handover_enabled !== false) {\n  route = 'human';\n  const _tz = sc.botConfig?.timezone || 'Asia/Kolkata';\n  const _now = new Date();\n  const _nowLocal = new Date(_now.toLocaleString('en-US', { timeZone: _tz }));\n  const _hour = _nowLocal.getHours();\n  const _day = _nowLocal.getDay();\n  let _callLabel = 'tomorrow';\n  if (_hour < 9 && _day >= 1 && _day <= 5) _callLabel = 'today';\n  else if (_day === 6) _callLabel = 'on Monday';\n  else if (_day === 0) _callLabel = 'tomorrow (Monday)';\n  reply = sc.botConfig?.callback_msg || `Thank you! \ud83d\ude4f Our team will contact you ${_callLabel} at 9am. We look forward to speaking with you!`;\n}\nelse if (_wouldRepeat && POSITIVE.has(intent)) route = 'faq';\nelse if (_isPostHandover) {\n  if (_handoverFaqCount < 3) route = 'faq';\n  else route = 'drop';\n} else if (stageNotFound || intent === 'QUESTION' || NEGATIVE.has(intent)) {\n  const industry = sc.industry || 'general';\n  if (industry === 'ecommerce') route = 'ecom_faq';\n  else if (industry === 'travel') route = 'travel_faq';\n  else route = 'faq';\n\n  // If a stage flow is active and user asked a genuine question:\n  // answer the FAQ but also push the flow stage forward in the same reply.\n  const _flowHasStages = _allStages.length > 0;\n  const _flowIsActive = _flowHasStages && !_isFinalStage && sc.stage !== 'human_handover' && !stageNotFound;\n  if (_flowIsActive && intent === 'QUESTION' && action.msg) {\n    const _vars = flow.variables || {};\n    const _stageMsg = (flow.messages?.[action.msg] || '')\n      .replace(/\\[(\\w+)\\]/g, (_, k) => _vars[k.toLowerCase()] ?? _vars[k] ?? '');\n    if (_stageMsg) { next = action.next || sc.stage; }\n    Object.assign(intentData, { _flowPendingMsg: _stageMsg || null, _flowPendingNext: action.next || sc.stage });\n  }\n}\nelse if (!qualDone && qualStage === null) route = 'qualify';\nelse if (!qualDone && qualStage !== null) route = 'qualify_next';\n\nlet next = action.next || sc.stage;\nlet qualAnswers = sc.qualAnswers || {};\n\nif (route === 'qualify_next') {\n  const currentIdx = qualStage !== null ? qualStage : 0;\n  const nextIdx = currentIdx + 1;\n  if (qs[currentIdx]) qualAnswers[qs[currentIdx]] = userText;\n  if (nextIdx < qs.length) {\n    reply = qs[nextIdx];\n    next = 'qual_' + nextIdx;\n  } else {\n    const firstStage = Object.keys(flow.stages || {}).filter(k => k !== 'new')[0] || 'new';\n    const firstAction = (flow.stages?.[firstStage] || {})['*'] || { next: firstStage, msg: null };\n    const vars = flow.variables || {};\n    reply = (flow.messages?.[firstAction.msg] || 'Great, thanks! Let me share some information \ud83d\ude0a').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k] ?? '');\n    next = firstAction.next || firstStage;\n  }\n} else if (route === 'stage' && action.msg) {\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || '').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k.toLowerCase()] ?? vars[k] ?? '');\n  if (action.form && vars.form_link && !reply.includes(vars.form_link)) reply += '\\n\\n' + vars.form_link;\n  if (action.video) videoUrl = vars[action.video] || null;\n}\nif (route === 'stage' && !action.msg) route = 'faq';\n\nif (intent === 'BOOKING' && sc.cal_link && !reply.includes(sc.cal_link)) {\n  reply = (reply || 'Great! You can book your slot here \ud83d\udcc5') + '\\n\\n\ud83d\udc49 ' + sc.cal_link;\n}\n\nfunction slim(s) {\n  return {\n    client_id: s.client_id, phone: s.phone, name: s.name, convId: s.convId,\n    chatwoot_base: s.chatwoot_base, chatwoot_account_id: s.chatwoot_account_id, chatwoot_token: s.chatwoot_token,\n    client_name: s.client_name, _startMs: s._startMs, analytics_table_id: s.analytics_table_id,\n    leadId: s.leadId, stage: s.stage, isDuplicate: s.isDuplicate, leadOptOut: s.leadOptOut,\n    looping: s.looping, handoverFaqCount: s.handoverFaqCount || 0,\n    model: s.model, openrouter_key: s.openrouter_key, language: s.language,\n    industry: s.industry,\n    main_prompt: s.main_prompt, services: s.services, kb_summary: s.kb_summary, ta_table_ids: s.ta_table_ids, ecom_table_ids: s.ecom_table_ids,\n    activeHistory: s.activeHistory, cal_link: s.cal_link, mediaType: s.mediaType\n  };\n}\n\nconst _fpm = intentData._flowPendingMsg ?? null;\nconst _fpn = intentData._flowPendingNext ?? null;\nreturn [{ json: { ...slim(sc), userText, intent, intentData, route, next, reply, videoUrl, qualStage, qualAnswers, _flowPendingMsg: _fpm, _flowPendingNext: _fpn } }];"
+        "jsCode": "const c = $input.first().json;\nconst mergeCtx = $('Code · Merge text').first().json;\nconst sc = $('Code · State').first().json;\nconst userText = mergeCtx.userText || '';\nconst _OPT_OUT = ['stop','unsubscribe','opt out','opt-out','optout'];\nconst _isOptOut = _OPT_OUT.some(w => userText.toLowerCase().trim() === w);\nconst _isResub = userText.toLowerCase().trim() === 'start' && sc.leadOptOut === 'Yes';\nif (_isOptOut) return [{ json: { ...slim(sc), userText, intent:'SHORT_NEUTRAL', route:'qualify_next', reply:'You have been unsubscribed. Reply START to re-subscribe.', next: sc.stage, qualAnswers: sc.qualAnswers||{}, _isOptOut:true } }];\nif (_isResub) return [{ json: { ...slim(sc), userText, intent:'SHORT_NEUTRAL', route:'qualify_next', reply:'Welcome back! You are re-subscribed.', next: 'new', qualAnswers: sc.qualAnswers||{}, _isResub:true } }];\n\nconst raw = c.output || c.text || c.choices?.[0]?.message?.content || '';\nlet intent = 'SHORT_NEUTRAL', intentData = {};\ntry {\n  const m = raw.replace(/```json|```/gi,'').match(/\\{[\\s\\S]*\\}/);\n  if (m) { const p = JSON.parse(m[0]); intent = p.intent || intent; intentData = p.data || {}; }\n} catch(e) {}\nconst valid = ['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','WANTS_MORE_INFO','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL'];\nif (!valid.includes(intent)) intent = 'SHORT_NEUTRAL';\n\nconst sentiment = c.sentiment || 'Neutral';\nconst objectionCategory = c.objectionCategory || 'none';\n\nif (sc.looping && sc.botConfig?.antiloop_enabled !== false) intent = 'WANTS_HUMAN';\n\nconst qs = sc.qualQuestions || [];\nconst qualDone = !qs.length || sc.botConfig?.qual_enabled === false || (sc.stage && !sc.stage.startsWith('qual_') && sc.stage !== 'new');\nconst qualStage = sc.stage?.startsWith('qual_') ? parseInt(sc.stage.replace('qual_','')) : null;\n\nconst flow = sc.flow || {};\nconst stageNode = flow.stages?.[sc.stage];\nconst node = stageNode || (sc.stage === 'new' || !sc.stage ? flow.stages?.['new'] : null) || {};\nconst stageNotFound = !stageNode && sc.stage && sc.stage !== 'new';\n\nconst _isPostHandover = sc.stage === 'human_handover';\nconst _handoverFaqCount = sc.handoverFaqCount || 0;\nconst action = node[intent] || node['*'] || { next: sc.stage, msg: null };\n\nconst POSITIVE = new Set(['AFFIRMATIVE','WATCHED','FORM_DONE','BOOKING','SHORT_NEUTRAL']);\nconst NEGATIVE = new Set(['DELAY','WANTS_MORE_INFO']);\n\nconst _allStages = Object.keys(flow.stages || {}).filter(k => k !== 'new');\nconst _isFinalStage = _allStages.length > 0 && sc.stage === _allStages[_allStages.length - 1];\n\nconst _lastBotMsg = (sc.history || []).filter(m => m.role === 'assistant').slice(-1)[0]?.content || '';\nconst _actionMsg = action.msg ? (flow.messages?.[action.msg] || '') : '';\nconst _wouldRepeat = _actionMsg && _lastBotMsg && _lastBotMsg.includes(_actionMsg.slice(0, 40));\n\nlet reply = '', videoUrl = null;\nlet route = 'stage';\nif (intent === 'WANTS_HUMAN' && sc.botConfig?.handover_enabled !== false) route = 'human';\nelse if (_isFinalStage && POSITIVE.has(intent) && sc.botConfig?.handover_enabled !== false) {\n  route = 'human';\n  const _tz = sc.botConfig?.timezone || 'Asia/Kolkata';\n  const _now = new Date();\n  const _nowLocal = new Date(_now.toLocaleString('en-US', { timeZone: _tz }));\n  const _hour = _nowLocal.getHours();\n  const _day = _nowLocal.getDay();\n  let _callLabel = 'tomorrow';\n  if (_hour < 9 && _day >= 1 && _day <= 5) _callLabel = 'today';\n  else if (_day === 6) _callLabel = 'on Monday';\n  else if (_day === 0) _callLabel = 'tomorrow (Monday)';\n  reply = sc.botConfig?.callback_msg || `Thank you! 🙏 Our team will contact you ${_callLabel} at 9am. We look forward to speaking with you!`;\n}\nelse if (_wouldRepeat && POSITIVE.has(intent)) route = 'faq';\nelse if (_isPostHandover) {\n  if (_handoverFaqCount < 3) route = 'faq';\n  else route = 'drop';\n} else if (stageNotFound || intent === 'QUESTION' || NEGATIVE.has(intent)) {\n  const industry = sc.industry || 'general';\n  if (industry === 'ecommerce') route = 'ecom_faq';\n  else if (industry === 'travel') route = 'travel_faq';\n  else route = 'faq';\n\n  // If a stage flow is active and user asked a genuine question:\n  // answer the FAQ but also push the flow stage forward in the same reply.\n  const _flowHasStages = _allStages.length > 0;\n  const _flowIsActive = _flowHasStages && !_isFinalStage && sc.stage !== 'human_handover' && !stageNotFound;\n  if (_flowIsActive && intent === 'QUESTION' && action.msg) {\n    const _vars = flow.variables || {};\n    const _stageMsg = (flow.messages?.[action.msg] || '')\n      .replace(/\\[(\\w+)\\]/g, (_, k) => _vars[k.toLowerCase()] ?? _vars[k] ?? '');\n    if (_stageMsg) { next = action.next || sc.stage; }\n    Object.assign(intentData, { _flowPendingMsg: _stageMsg || null, _flowPendingNext: action.next || sc.stage });\n  }\n}\nelse if (!qualDone && qualStage === null) route = 'qualify';\nelse if (!qualDone && qualStage !== null) route = 'qualify_next';\n\n// Sentiment/objection overrides — evaluated after the base routing decision so they can\n// escalate or redirect it, but never fire on top of an already-decided human handover.\nif (sentiment === 'Frustrated' && route !== 'human' && sc.botConfig?.handover_enabled !== false) {\n  route = 'human';\n  reply = sc.botConfig?.callback_msg_frustrated || sc.botConfig?.callback_msg || \"I'm sorry about that — connecting you with our team right now so we can help properly.\";\n} else if (objectionCategory !== 'none' && ['faq','ecom_faq','travel_faq'].includes(route) && sc.botConfig?.objection_handling_enabled !== false) {\n  route = 'objection';\n}\n\nlet next = action.next || sc.stage;\nlet qualAnswers = sc.qualAnswers || {};\n\nif (route === 'qualify_next') {\n  const currentIdx = qualStage !== null ? qualStage : 0;\n  const nextIdx = currentIdx + 1;\n  if (qs[currentIdx]) qualAnswers[qs[currentIdx]] = userText;\n  if (nextIdx < qs.length) {\n    reply = qs[nextIdx];\n    next = 'qual_' + nextIdx;\n  } else {\n    const firstStage = Object.keys(flow.stages || {}).filter(k => k !== 'new')[0] || 'new';\n    const firstAction = (flow.stages?.[firstStage] || {})['*'] || { next: firstStage, msg: null };\n    const vars = flow.variables || {};\n    reply = (flow.messages?.[firstAction.msg] || 'Great, thanks! Let me share some information 😊').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k] ?? '');\n    next = firstAction.next || firstStage;\n  }\n} else if (route === 'stage' && action.msg) {\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || '').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k.toLowerCase()] ?? vars[k] ?? '');\n  if (action.form && vars.form_link && !reply.includes(vars.form_link)) reply += '\\n\\n' + vars.form_link;\n  if (action.video) videoUrl = vars[action.video] || null;\n}\nif (route === 'stage' && !action.msg) route = 'faq';\n\nif (intent === 'BOOKING' && sc.cal_link && !reply.includes(sc.cal_link)) {\n  reply = (reply || 'Great! You can book your slot here 📅') + '\\n\\n👉 ' + sc.cal_link;\n}\n\nfunction slim(s) {\n  return {\n    client_id: s.client_id, phone: s.phone, name: s.name, convId: s.convId,\n    chatwoot_base: s.chatwoot_base, chatwoot_account_id: s.chatwoot_account_id, chatwoot_token: s.chatwoot_token,\n    client_name: s.client_name, _startMs: s._startMs, analytics_table_id: s.analytics_table_id,\n    leadId: s.leadId, stage: s.stage, isDuplicate: s.isDuplicate, leadOptOut: s.leadOptOut,\n    looping: s.looping, handoverFaqCount: s.handoverFaqCount || 0,\n    model: s.model, openrouter_key: s.openrouter_key, language: s.language,\n    industry: s.industry,\n    main_prompt: s.main_prompt, services: s.services, kb_summary: s.kb_summary, ta_table_ids: s.ta_table_ids, ecom_table_ids: s.ecom_table_ids,\n    activeHistory: s.activeHistory, cal_link: s.cal_link, mediaType: s.mediaType,\n    salesReps: s.sales_reps || [], objectionPlaybook: s.objection_playbook || [],\n    dealCurrency: s.deal_currency, owner: s.owner, winProbabilityManual: s.winProbabilityManual\n  };\n}\n\nconst _fpm = intentData._flowPendingMsg ?? null;\nconst _fpn = intentData._flowPendingNext ?? null;\nreturn [{ json: { ...slim(sc), userText, intent, intentData, route, next, reply, videoUrl, qualStage, qualAnswers, _flowPendingMsg: _fpm, _flowPendingNext: _fpn, sentiment, objectionCategory } }];"
       },
       "id": "parseintent",
-      "name": "Code \u00b7 Intent + flow",
+      "name": "Code · Intent + flow",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -429,6 +463,29 @@
               },
               "renameOutput": true,
               "outputKey": "ecom_faq"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "ob",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "objection",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "objection"
             }
           ]
         },
@@ -437,7 +494,7 @@
         }
       },
       "id": "route",
-      "name": "Switch \u00b7 Route",
+      "name": "Switch · Route",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
@@ -464,7 +521,7 @@
         },
         "sendBody": true,
         "specifyBody": "string",
-        "body": "={{ JSON.stringify({ content: 'Sure \ud83d\ude4f connecting you to our advisor now. Someone will be with you shortly.', message_type: 'outgoing', private: false }) }}",
+        "body": "={{ JSON.stringify({ content: 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.', message_type: 'outgoing', private: false }) }}",
         "options": {
           "retryOnFail": true,
           "maxTries": 3,
@@ -472,7 +529,7 @@
         }
       },
       "id": "sendhuman",
-      "name": "HTTP \u00b7 Handover msg",
+      "name": "HTTP · Handover msg",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -484,13 +541,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Code \u00b7 Intent + flow').first().json.chatwoot_base }}/api/v1/accounts/{{ $('Code \u00b7 Intent + flow').first().json.chatwoot_account_id }}/conversations/{{ $('Code \u00b7 Intent + flow').first().json.convId }}/labels",
+        "url": "={{ $('Code · Intent + flow').first().json.chatwoot_base }}/api/v1/accounts/{{ $('Code · Intent + flow').first().json.chatwoot_account_id }}/conversations/{{ $('Code · Intent + flow').first().json.convId }}/labels",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "api_access_token",
-              "value": "={{ $('Code \u00b7 Intent + flow').first().json.chatwoot_token }}"
+              "value": "={{ $('Code · Intent + flow').first().json.chatwoot_token }}"
             },
             {
               "name": "Content-Type",
@@ -504,7 +561,7 @@
         "options": {}
       },
       "id": "handoverlabel",
-      "name": "HTTP \u00b7 Handover label",
+      "name": "HTTP · Handover label",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -516,14 +573,14 @@
     {
       "parameters": {
         "workflowId": {
-          "cachedResultName": "Leadvyne \u00b7 TA Context",
+          "cachedResultName": "Leadvyne · TA Context",
           "__rl": true,
           "mode": "name"
         },
         "options": {}
       },
       "id": "tasubflow",
-      "name": "Execute Workflow \u00b7 TA Context",
+      "name": "Execute Workflow · TA Context",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
       "position": [
@@ -537,7 +594,7 @@
         "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\n\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\n\nif (c.taContextBlock && c.taContextBlock.trim()) {\n  sys += c.taContextBlock;\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\n\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
       },
       "id": "faqprep",
-      "name": "Code \u00b7 FAQ prep",
+      "name": "Code · FAQ prep",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -548,18 +605,18 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "={{ $('Code \u00b7 FAQ prep').first().json.userText }}",
+        "text": "={{ $('Code · FAQ prep').first().json.userText }}",
         "messages": {
           "messageValues": [
             {
               "type": "SystemMessagePromptTemplate",
-              "message": "={{ $('Code \u00b7 FAQ prep').first().json._systemPrompt }}"
+              "message": "={{ $('Code · FAQ prep').first().json._systemPrompt }}"
             }
           ]
         }
       },
       "id": "faqcall",
-      "name": "LLM Chain \u00b7 FAQ",
+      "name": "LLM Chain · FAQ",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
       "position": [
@@ -570,10 +627,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code \u00b7 FAQ prep').first().json;\nconst r = $input.first().json;\nlet reply = r.text || r.output || r.choices?.[0]?.message?.content?.trim() || 'One moment \ud83d\ude4f';\n// If a stage flow was active, append the stage message after the FAQ answer\nif (c._flowPendingMsg) reply = reply + '\\n\\n' + c._flowPendingMsg;\nconst next = c._flowPendingMsg ? (c._flowPendingNext || c.next) : c.next;\nreturn [{ json: { ...c, reply, next } }];"
+        "jsCode": "const c = $('Code · FAQ prep').first().json;\nconst r = $input.first().json;\nlet reply = r.text || r.output || r.choices?.[0]?.message?.content?.trim() || 'One moment 🙏';\n// If a stage flow was active, append the stage message after the FAQ answer\nif (c._flowPendingMsg) reply = reply + '\\n\\n' + c._flowPendingMsg;\nconst next = c._flowPendingMsg ? (c._flowPendingNext || c.next) : c.next;\nreturn [{ json: { ...c, reply, next } }];"
       },
       "id": "faqextract",
-      "name": "Code \u00b7 FAQ reply",
+      "name": "Code · FAQ reply",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -586,7 +643,7 @@
         "jsCode": "const c = $input.first().json;\nconst qs = c.qualQuestions || [];\nconst question = qs[0] || 'Could you tell me a bit more about what you are looking for?';\nreturn [{ json: { ...c, reply: question, next: 'qual_0' } }];"
       },
       "id": "qualstart",
-      "name": "Code \u00b7 Qual start",
+      "name": "Code · Qual start",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -596,10 +653,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst qs = c.qualQuestions || [];\nconst currentIdx = c.qualStage !== null ? c.qualStage : 0;\nconst nextIdx = currentIdx + 1;\nlet qualAnswers = c.qualAnswers || {};\nif (qs[currentIdx]) qualAnswers[qs[currentIdx]] = c.userText;\nlet reply, next;\nif (nextIdx < qs.length) {\n  reply = qs[nextIdx];\n  next = 'qual_' + nextIdx;\n} else {\n  const flow = c.flow || {};\n  const firstStage = Object.keys(flow.stages || {}).filter(k => k !== 'new')[0] || 'new';\n  const action = (flow.stages?.[firstStage] || {})['*'] || { next: firstStage, msg: null };\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || 'Great, thanks! Let me share some information \ud83d\ude0a').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k] ?? '');\n  next = action.next || firstStage;\n}\nreturn [{ json: { ...c, reply, next, qualAnswers } }];"
+        "jsCode": "const c = $input.first().json;\nconst qs = c.qualQuestions || [];\nconst currentIdx = c.qualStage !== null ? c.qualStage : 0;\nconst nextIdx = currentIdx + 1;\nlet qualAnswers = c.qualAnswers || {};\nif (qs[currentIdx]) qualAnswers[qs[currentIdx]] = c.userText;\nlet reply, next;\nif (nextIdx < qs.length) {\n  reply = qs[nextIdx];\n  next = 'qual_' + nextIdx;\n} else {\n  const flow = c.flow || {};\n  const firstStage = Object.keys(flow.stages || {}).filter(k => k !== 'new')[0] || 'new';\n  const action = (flow.stages?.[firstStage] || {})['*'] || { next: firstStage, msg: null };\n  const vars = flow.variables || {};\n  reply = (flow.messages?.[action.msg] || 'Great, thanks! Let me share some information 😊').replace(/\\[(\\w+)\\]/g, (_,k)=> vars[k] ?? '');\n  next = action.next || firstStage;\n}\nreturn [{ json: { ...c, reply, next, qualAnswers } }];"
       },
       "id": "qualnext",
-      "name": "Code \u00b7 Qual next",
+      "name": "Code · Qual next",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -640,7 +697,7 @@
         }
       },
       "id": "send",
-      "name": "HTTP \u00b7 Send reply",
+      "name": "HTTP · Send reply",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -651,10 +708,10 @@
     },
     {
       "parameters": {
-        "jsCode": "// Pull full context \u2014 try each source until we get one with client_id\nlet sc = null;\nconst _nodesToTry = ['Code \u00b7 Intent + flow', 'Code \u00b7 State', 'Code \u00b7 Build ctx'];\nfor (const n of _nodesToTry) {\n  try { const t = $(n).first().json; if (t && t.client_id) { sc = t; break; } } catch(e) {}\n}\nif (!sc) sc = $input.first().json;\nconst route = sc.route || 'stage';\n\nlet reply = sc.reply;\nlet next = sc.next;\nconst qualAnswers = sc.qualAnswers || {};\n\nif (route === 'drop') {\n  reply = null;\n} else if (route === 'faq') {\n  try { reply = $('Code \u00b7 FAQ reply').first().json.reply || reply; } catch(e) {}\n} else if (route === 'qualify') {\n  try { const qn = $('Code \u00b7 Qual start').first().json; reply = qn.reply; next = qn.next; } catch(e) {}\n}\n\nconst history = (sc.history || []).slice();\nif (sc.userText) history.push({ role: 'user', content: sc.userText });\nif (reply) history.push({ role: 'assistant', content: reply });\n\nconst isHuman = route === 'human';\nconst body = {\n  ClientId: String(sc.client_id),\n  Phone: sc.phone, Name: sc.name, ConversationID: sc.convId,\n  Date: new Date().toISOString(), Language: sc.language,\n  ConvHistory: JSON.stringify(history.slice(-40)),\n  LastMsgAt: new Date().toISOString()\n};\nif (qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers = JSON.stringify(qualAnswers);\nif (isHuman) { body.Stage = 'human_handover'; body.Handover = 'Yes'; }\nelse { body.Stage = next; }\n// Increment FAQ count while bot is in post-handover mode\nif (sc.stage === 'human_handover' && sc.route !== 'drop') {\n  body.HandoverFaqCount = (sc.handoverFaqCount || 0) + 1;\n}\nif (!isHuman && next !== sc.stage) {\n  body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No';\n}\nif (sc.intentData?.booking_time) body.BookingTime = sc.intentData.booking_time;\nlet score = 'Cold';\nif (sc.intent === 'BOOKING' || sc.intentData?.booking_time || body.Stage === 'consultation_booked') score = 'Hot';\nelse if (['AFFIRMATIVE','WATCHED','FORM_DONE'].includes(sc.intent) && sc.stage !== 'new') score = 'Warm';\nelse if (sc.stage !== 'new' && (sc.history||[]).length > 2) score = 'Warm';\nbody.Score = score;\nif (sc.isDuplicate) body.IsDuplicate = 'Yes';\nif (sc._isOptOut) body.OptOut = 'Yes';\nif (sc._isResub) { body.OptOut = 'No'; body.Stage = 'new'; }\n// Hot moment detection\nconst HOT_PHRASES = ['how much','price','cost','available','when can','book','ready to','interested in','want to','sign up','start','confirm','deposit','payment','package','deal','offer','buy','purchase','enroll','register'];\nconst msgLower = (sc.userText||'').toLowerCase();\nconst hotPhrase = HOT_PHRASES.find(p => msgLower.includes(p));\nif (hotPhrase) { body.HotMoment = 'Yes'; body.HotMomentText = (sc.userText||'').slice(0,200); }\n// Auto-qualify score (1-10)\nconst _flow = sc.flow || {};\nconst _stageKeys = Object.keys((_flow.stages||{})).filter(k=>k!=='new');\nconst _stageIdx = _stageKeys.indexOf(sc.stage);\nconst _stageProgress = _stageKeys.length > 0 ? (_stageIdx+1)/_stageKeys.length : 0;\nconst _histLen = (sc.history||[]).length;\nlet _qualScore = Math.round((_stageProgress*4) + (score==='Hot'?3:score==='Warm'?2:0) + (hotPhrase?1.5:0) + Math.min(_histLen/20,1.5));\n_qualScore = Math.max(1, Math.min(10, _qualScore));\nbody.QualScore = _qualScore;\nconst method = sc.leadId ? 'PATCH' : 'POST';\nif (sc.leadId) body.Id = sc.leadId;\nreturn [{ json: { ...sc, reply, next, qualAnswers, _method: method, _body: body } }];"
+        "jsCode": "// Pull full context — try each source until we get one with client_id\nlet sc = null;\nconst _nodesToTry = ['Code · Intent + flow', 'Code · State', 'Code · Build ctx'];\nfor (const n of _nodesToTry) {\n  try { const t = $(n).first().json; if (t && t.client_id) { sc = t; break; } } catch(e) {}\n}\nif (!sc) sc = $input.first().json;\nconst route = sc.route || 'stage';\n\nlet reply = sc.reply;\nlet next = sc.next;\nconst qualAnswers = sc.qualAnswers || {};\n\nif (route === 'drop') {\n  reply = null;\n} else if (route === 'faq') {\n  try { reply = $('Code · FAQ reply').first().json.reply || reply; } catch(e) {}\n} else if (route === 'qualify') {\n  try { const qn = $('Code · Qual start').first().json; reply = qn.reply; next = qn.next; } catch(e) {}\n}\n\nconst history = (sc.history || []).slice();\nif (sc.userText) history.push({ role: 'user', content: sc.userText });\nif (reply) history.push({ role: 'assistant', content: reply });\n\nconst isHuman = route === 'human';\nconst body = {\n  ClientId: String(sc.client_id),\n  Phone: sc.phone, Name: sc.name, ConversationID: sc.convId,\n  Date: new Date().toISOString(), Language: sc.language,\n  ConvHistory: JSON.stringify(history.slice(-40)),\n  LastMsgAt: new Date().toISOString()\n};\nif (qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers = JSON.stringify(qualAnswers);\nif (isHuman) { body.Stage = 'human_handover'; body.Handover = 'Yes'; }\nelse { body.Stage = next; }\n// Increment FAQ count while bot is in post-handover mode\nif (sc.stage === 'human_handover' && sc.route !== 'drop') {\n  body.HandoverFaqCount = (sc.handoverFaqCount || 0) + 1;\n}\nif (!isHuman && next !== sc.stage) {\n  body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No';\n}\nif (sc.intentData?.booking_time) body.BookingTime = sc.intentData.booking_time;\nlet score = 'Cold';\nif (sc.intent === 'BOOKING' || sc.intentData?.booking_time || body.Stage === 'consultation_booked') score = 'Hot';\nelse if (['AFFIRMATIVE','WATCHED','FORM_DONE'].includes(sc.intent) && sc.stage !== 'new') score = 'Warm';\nelse if (sc.stage !== 'new' && (sc.history||[]).length > 2) score = 'Warm';\nbody.Score = score;\nif (sc.isDuplicate) body.IsDuplicate = 'Yes';\nif (sc._isOptOut) body.OptOut = 'Yes';\nif (sc._isResub) { body.OptOut = 'No'; body.Stage = 'new'; }\n// Hot moment detection\nconst HOT_PHRASES = ['how much','price','cost','available','when can','book','ready to','interested in','want to','sign up','start','confirm','deposit','payment','package','deal','offer','buy','purchase','enroll','register'];\nconst msgLower = (sc.userText||'').toLowerCase();\nconst hotPhrase = HOT_PHRASES.find(p => msgLower.includes(p));\nif (hotPhrase) { body.HotMoment = 'Yes'; body.HotMomentText = (sc.userText||'').slice(0,200); }\n// Auto-qualify score (1-10)\nconst _flow = sc.flow || {};\nconst _stageKeys = Object.keys((_flow.stages||{})).filter(k=>k!=='new');\nconst _stageIdx = _stageKeys.indexOf(sc.stage);\nconst _stageProgress = _stageKeys.length > 0 ? (_stageIdx+1)/_stageKeys.length : 0;\nconst _histLen = (sc.history||[]).length;\nlet _qualScore = Math.round((_stageProgress*4) + (score==='Hot'?3:score==='Warm'?2:0) + (hotPhrase?1.5:0) + Math.min(_histLen/20,1.5));\n_qualScore = Math.max(1, Math.min(10, _qualScore));\nbody.QualScore = _qualScore;\n\n// Deal forecast: suggest a WinProbability from stage progress + score, unless the\n// dashboard has manually locked the value (WinProbabilityManual='Yes' on the lead).\nif (sc.winProbabilityManual !== 'Yes') {\n  let _wp = Math.round(_stageProgress * 80 + (score === 'Hot' ? 20 : score === 'Warm' ? 10 : 0));\n  if (isHuman) _wp = Math.max(_wp, 55);\n  if (sc._isOptOut) _wp = 0;\n  body.WinProbability = Math.max(0, Math.min(100, _wp));\n}\nif (sc.dealCurrency && !sc.leadId) body.DealCurrency = sc.dealCurrency;\n\n// Round-robin owner assignment on first creation, spread evenly across configured reps\nif (!sc.leadId && !sc.owner && (sc.salesReps || []).length) {\n  const _reps = sc.salesReps;\n  let _h = 0;\n  const _phoneStr = String(sc.phone || '');\n  for (let i = 0; i < _phoneStr.length; i++) _h = (_h * 31 + _phoneStr.charCodeAt(i)) | 0;\n  body.Owner = _reps[Math.abs(_h) % _reps.length];\n}\n\n// Sentiment / objection signal, surfaced in the dashboard and reports\nif (sc.sentiment) body.Sentiment = sc.sentiment;\nif (sc.objectionCategory && sc.objectionCategory !== 'none') body.LastObjectionCategory = sc.objectionCategory;\n\n// SLA: stamp handover start time the moment a lead newly enters human_handover\nif (isHuman && sc.stage !== 'human_handover') {\n  body.HandoverAt = new Date().toISOString();\n  body.SlaAlerted = 'No';\n}\n\nconst method = sc.leadId ? 'PATCH' : 'POST';\nif (sc.leadId) body.Id = sc.leadId;\nreturn [{ json: { ...sc, reply, next, qualAnswers, _method: method, _body: body } }];"
       },
       "id": "prepupsert",
-      "name": "Code \u00b7 Prep lead",
+      "name": "Code · Prep lead",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -685,7 +742,7 @@
         "options": {}
       },
       "id": "upsert",
-      "name": "HTTP \u00b7 Upsert lead",
+      "name": "HTTP · Upsert lead",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -695,10 +752,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code \u00b7 Prep lead').first().json;\nconst upsertResult = $input.first().json;\nconst isError = !!(upsertResult.error || upsertResult.msg);\nconst responseMs = Date.now() - (c._startMs || Date.now());\nreturn [{ json: {\n  ...c,\n  _analyticsBody: {\n    ClientId: String(c.client_id),\n    ClientName: c.client_name || '',\n    Phone: c.phone,\n    Intent: c.intent || '',\n    Route: c.route || '',\n    Stage: c.stage || '',\n    NextStage: c.next || '',\n    ResponseMs: responseMs,\n    IsError: isError,\n    ErrorMsg: isError ? JSON.stringify(upsertResult).substring(0, 200) : '',\n    Timestamp: new Date().toISOString()\n  }\n} }];"
+        "jsCode": "const c = $('Code · Prep lead').first().json;\nconst upsertResult = $input.first().json;\nconst isError = !!(upsertResult.error || upsertResult.msg);\nconst responseMs = Date.now() - (c._startMs || Date.now());\nreturn [{ json: {\n  ...c,\n  _analyticsBody: {\n    ClientId: String(c.client_id),\n    ClientName: c.client_name || '',\n    Phone: c.phone,\n    Intent: c.intent || '',\n    Route: c.route || '',\n    Stage: c.stage || '',\n    NextStage: c.next || '',\n    ResponseMs: responseMs,\n    IsError: isError,\n    ErrorMsg: isError ? JSON.stringify(upsertResult).substring(0, 200) : '',\n    Timestamp: new Date().toISOString()\n  }\n} }];"
       },
       "id": "prepanalytics",
-      "name": "Code \u00b7 Prep analytics",
+      "name": "Code · Prep analytics",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -729,7 +786,7 @@
         "options": {}
       },
       "id": "loganalytics",
-      "name": "HTTP \u00b7 Log analytics",
+      "name": "HTTP · Log analytics",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -757,11 +814,11 @@
         },
         "sendBody": true,
         "specifyBody": "string",
-        "body": "={{ JSON.stringify({ Id: $('Code \u00b7 Prep lead').first().json.client_id, last_seen: new Date().toISOString() }) }}",
+        "body": "={{ JSON.stringify({ Id: $('Code · Prep lead').first().json.client_id, last_seen: new Date().toISOString() }) }}",
         "options": {}
       },
       "id": "updatelastseen",
-      "name": "HTTP \u00b7 Update last seen",
+      "name": "HTTP · Update last seen",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -774,7 +831,7 @@
       "parameters": {
         "model": {
           "mode": "id",
-          "value": "={{ $('Code \u00b7 FAQ prep').first().json.model || 'google/gemini-2.5-flash' }}"
+          "value": "={{ $('Code · FAQ prep').first().json.model || 'google/gemini-2.5-flash' }}"
         },
         "options": {
           "baseURL": "https://openrouter.ai/api/v1",
@@ -783,7 +840,7 @@
         }
       },
       "id": "lmFaq",
-      "name": "OpenAI Chat Model \u00b7 FAQ",
+      "name": "OpenAI Chat Model · FAQ",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1.2,
       "position": [
@@ -802,7 +859,7 @@
         "jsCode": "const c = $input.first().json;\nreturn [{ json: { stage: c.stage || 'new', userText: c.userText || '', model: c.model || 'google/gemini-2.5-flash' } }];"
       },
       "id": "intentprep",
-      "name": "Code \u00b7 Intent prep",
+      "name": "Code · Intent prep",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -819,7 +876,7 @@
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $('Code \u00b7 FAQ prep').first().json.openrouter_key }}"
+              "value": "={{ 'Bearer ' + $('Code · FAQ prep').first().json.openrouter_key }}"
             },
             {
               "name": "Content-Type",
@@ -829,11 +886,11 @@
         },
         "sendBody": true,
         "specifyBody": "string",
-        "body": "={{ JSON.stringify({ model: $('Code \u00b7 FAQ prep').first().json.model || 'google/gemini-2.5-flash', max_tokens: 300, messages: [ { role: 'system', content: $('Code \u00b7 FAQ prep').first().json._systemPrompt }, { role: 'user', content: $('Code \u00b7 FAQ prep').first().json.userText } ] }) }}",
+        "body": "={{ JSON.stringify({ model: $('Code · FAQ prep').first().json.model || 'google/gemini-2.5-flash', max_tokens: 300, messages: [ { role: 'system', content: $('Code · FAQ prep').first().json._systemPrompt }, { role: 'user', content: $('Code · FAQ prep').first().json.userText } ] }) }}",
         "options": {}
       },
       "id": "faqFallback",
-      "name": "HTTP \u00b7 FAQ fallback",
+      "name": "HTTP · FAQ fallback",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -844,10 +901,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\n\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\n\nif (c.taContextBlock && c.taContextBlock.trim()) {\n  sys += c.taContextBlock;\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\n\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. You are a travel assistant \u2014 answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. If specific details are not available, politely say you will connect them with an advisor.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
+        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\n\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\n\nif (c.taContextBlock && c.taContextBlock.trim()) {\n  sys += c.taContextBlock;\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\n\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. If specific details are not available, politely say you will connect them with an advisor.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
       },
       "id": "travelfaqprep",
-      "name": "Code \u00b7 Travel FAQ prep",
+      "name": "Code · Travel FAQ prep",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -858,18 +915,18 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "={{ $('Code \u00b7 Travel FAQ prep').first().json.userText }}",
+        "text": "={{ $('Code · Travel FAQ prep').first().json.userText }}",
         "messages": {
           "messageValues": [
             {
               "type": "SystemMessagePromptTemplate",
-              "message": "={{ $('Code \u00b7 Travel FAQ prep').first().json._systemPrompt }}"
+              "message": "={{ $('Code · Travel FAQ prep').first().json._systemPrompt }}"
             }
           ]
         }
       },
       "id": "travelfaqcall",
-      "name": "LLM Chain \u00b7 Travel FAQ",
+      "name": "LLM Chain · Travel FAQ",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
       "position": [
@@ -880,10 +937,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code \u00b7 Travel FAQ prep').first().json;\nconst r = $input.first().json;\nlet reply = r.text || r.output || r.choices?.[0]?.message?.content?.trim() || 'One moment \ud83d\ude4f';\nif (c._flowPendingMsg) reply = reply + '\\n\\n' + c._flowPendingMsg;\nconst next = c._flowPendingMsg ? (c._flowPendingNext || c.next) : c.next;\nreturn [{ json: { ...c, reply, next } }];"
+        "jsCode": "const c = $('Code · Travel FAQ prep').first().json;\nconst r = $input.first().json;\nlet reply = r.text || r.output || r.choices?.[0]?.message?.content?.trim() || 'One moment 🙏';\nif (c._flowPendingMsg) reply = reply + '\\n\\n' + c._flowPendingMsg;\nconst next = c._flowPendingMsg ? (c._flowPendingNext || c.next) : c.next;\nreturn [{ json: { ...c, reply, next } }];"
       },
       "id": "travelfaqextract",
-      "name": "Code \u00b7 Travel FAQ reply",
+      "name": "Code · Travel FAQ reply",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -894,14 +951,14 @@
     {
       "parameters": {
         "workflowId": {
-          "cachedResultName": "Leadvyne \u00b7 Ecom Context",
+          "cachedResultName": "Leadvyne · Ecom Context",
           "__rl": true,
           "mode": "name"
         },
         "options": {}
       },
       "id": "ecomsubflow",
-      "name": "Execute Workflow \u00b7 Ecom Context",
+      "name": "Execute Workflow · Ecom Context",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
       "position": [
@@ -912,10 +969,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'INR'} ${s.price} per ${s.per||'item'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\n\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\n\nif (c.ecomContextBlock && c.ecomContextBlock.trim()) {\n  sys += c.ecomContextBlock;\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\n\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. You are an ecommerce assistant \u2014 answer questions about products, orders, pricing, and delivery using the data above. If specific details are not available, politely say you will connect them with support.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
+        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s =>\n    `- ${s.name}: ${s.description||''} | Price: ${s.currency||'INR'} ${s.price} per ${s.per||'item'}`\n  ).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\n\nif (c.kb_summary && c.kb_summary.trim()) {\n  sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n}\n\nif (c.ecomContextBlock && c.ecomContextBlock.trim()) {\n  sys += c.ecomContextBlock;\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\n\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above. If specific details are not available, politely say you will connect them with support.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
       },
       "id": "ecomfaqprep",
-      "name": "Code \u00b7 Ecom FAQ prep",
+      "name": "Code · Ecom FAQ prep",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -926,18 +983,18 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "={{ $('Code \u00b7 Ecom FAQ prep').first().json.userText }}",
+        "text": "={{ $('Code · Ecom FAQ prep').first().json.userText }}",
         "messages": {
           "messageValues": [
             {
               "type": "SystemMessagePromptTemplate",
-              "message": "={{ $('Code \u00b7 Ecom FAQ prep').first().json._systemPrompt }}"
+              "message": "={{ $('Code · Ecom FAQ prep').first().json._systemPrompt }}"
             }
           ]
         }
       },
       "id": "ecomfaqcall",
-      "name": "LLM Chain \u00b7 Ecom FAQ",
+      "name": "LLM Chain · Ecom FAQ",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
       "position": [
@@ -948,15 +1005,73 @@
     },
     {
       "parameters": {
-        "jsCode": "const c = $('Code \u00b7 Ecom FAQ prep').first().json;\nconst r = $input.first().json;\nlet reply = r.text || r.output || r.choices?.[0]?.message?.content?.trim() || 'One moment \ud83d\ude4f';\nif (c._flowPendingMsg) reply = reply + '\\n\\n' + c._flowPendingMsg;\nconst next = c._flowPendingMsg ? (c._flowPendingNext || c.next) : c.next;\nreturn [{ json: { ...c, reply, next } }];"
+        "jsCode": "const c = $('Code · Ecom FAQ prep').first().json;\nconst r = $input.first().json;\nlet reply = r.text || r.output || r.choices?.[0]?.message?.content?.trim() || 'One moment 🙏';\nif (c._flowPendingMsg) reply = reply + '\\n\\n' + c._flowPendingMsg;\nconst next = c._flowPendingMsg ? (c._flowPendingNext || c.next) : c.next;\nreturn [{ json: { ...c, reply, next } }];"
       },
       "id": "ecomfaqextract",
-      "name": "Code \u00b7 Ecom FAQ reply",
+      "name": "Code · Ecom FAQ reply",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         2500,
         760
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $input.first().json;\nconst history = c.activeHistory || [];\nconst lang = c.language || 'en';\nconst cat = c.objectionCategory || 'none';\nconst playbook = c.objectionPlaybook || [];\nconst match = playbook.find(o => (o.category || '').toLowerCase() === cat) || null;\nlet sys = c.main_prompt || '';\n\nif (c.services && c.services.length) {\n  const svcLines = c.services.map(s => `- ${s.name}: ${s.description || ''} | Price: ${s.currency || 'AED'} ${s.price} per ${s.per || 'person'}`).join('\\n');\n  sys += '\\n\\n## Services\\n' + svcLines;\n}\nif (c.kb_summary && c.kb_summary.trim()) sys += '\\n\\n## Knowledge Base\\n' + c.kb_summary.slice(0, 2000);\n\nsys += `\\n\\n## Objection Handling\\nThe lead just raised a \"${cat}\" objection.`;\nif (match && match.approved_response) {\n  sys += ` Use this approved response strategy: ${match.approved_response}`;\n} else {\n  sys += ' Acknowledge the concern briefly and honestly, respond confidently without over-promising, and always end by proposing one concrete next step (a call, a demo, or answering one more question) rather than just apologising.';\n}\n\nif (history.length) {\n  const histText = history.slice(-3).map(m => m.role + ': ' + m.content).join('\\n');\n  sys += '\\n\\n## Recent Conversation\\n' + histText;\n}\nsys += '\\n\\nCurrent stage: ' + (c.stage || 'new') + '. Respond ONLY in ' + lang + '. Never switch languages. Keep it to 2-4 sentences.';\n\nreturn [{ json: { ...c, _systemPrompt: sys } }];"
+      },
+      "id": "objectionprep",
+      "name": "Code · Objection prep",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $json.openrouter_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ JSON.stringify({ model: $json.model || 'google/gemini-2.5-flash', max_tokens: 300, messages: [ { role: 'system', content: $json._systemPrompt }, { role: 'user', content: $json.userText } ] }) }}",
+        "options": {}
+      },
+      "id": "objectionhttp",
+      "name": "HTTP · Objection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2100,
+        960
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Code · Objection prep').first().json;\nconst r = $input.first().json;\nlet reply = r.choices?.[0]?.message?.content?.trim() || 'One moment 🙏';\nif (c._flowPendingMsg) reply = reply + '\\n\\n' + c._flowPendingMsg;\nconst next = c._flowPendingMsg ? (c._flowPendingNext || c.next) : c.next;\nreturn [{ json: { ...c, reply, next } }];"
+      },
+      "id": "objectionreply",
+      "name": "Code · Objection reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        960
       ]
     }
   ],
@@ -965,469 +1080,520 @@
       "main": [
         [
           {
-            "node": "Code \u00b7 Parse",
+            "node": "Code · Parse",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Parse": {
+    "Code · Parse": {
       "main": [
         [
           {
-            "node": "NocoDB \u00b7 Get tenant",
+            "node": "NocoDB · Get tenant",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "NocoDB \u00b7 Get tenant": {
+    "NocoDB · Get tenant": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Build ctx",
+            "node": "Code · Build ctx",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Build ctx": {
+    "Code · Build ctx": {
       "main": [
         [
           {
-            "node": "HTTP \u00b7 Get lead",
+            "node": "HTTP · Get lead",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP \u00b7 Get lead": {
+    "HTTP · Get lead": {
       "main": [
         [
           {
-            "node": "Code \u00b7 State",
+            "node": "Code · State",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 State": {
+    "Code · State": {
       "main": [
         [
           {
-            "node": "Switch \u00b7 Media",
+            "node": "Switch · Media",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Switch \u00b7 Media": {
+    "Switch · Media": {
       "main": [
         [
           {
-            "node": "HTTP \u00b7 Vision",
+            "node": "HTTP · Vision",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Code \u00b7 text\u2192text",
+            "node": "Code · text→text",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Code \u00b7 text\u2192text",
+            "node": "Code · text→text",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP \u00b7 Vision": {
+    "HTTP · Vision": {
       "main": [
         [
           {
-            "node": "Code \u00b7 image\u2192text",
+            "node": "Code · image→text",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 image\u2192text": {
+    "Code · image→text": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Merge text",
+            "node": "Code · Merge text",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 text\u2192text": {
+    "Code · text→text": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Merge text",
+            "node": "Code · Merge text",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Merge text": {
+    "Code · Merge text": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Intent prep",
+            "node": "Code · Intent prep",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Intent + flow": {
+    "Code · Intent + flow": {
       "main": [
         [
           {
-            "node": "Switch \u00b7 Route",
+            "node": "Switch · Route",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Switch \u00b7 Route": {
+    "Switch · Route": {
       "main": [
         [
           {
-            "node": "HTTP \u00b7 Handover msg",
+            "node": "HTTP · Handover msg",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Code \u00b7 FAQ prep",
+            "node": "Code · FAQ prep",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "HTTP \u00b7 Send reply",
+            "node": "HTTP · Send reply",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Code \u00b7 Qual start",
+            "node": "Code · Qual start",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "HTTP \u00b7 Send reply",
+            "node": "HTTP · Send reply",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Code \u00b7 Prep lead",
+            "node": "Code · Prep lead",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Execute Workflow \u00b7 Ecom Context",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP \u00b7 Handover msg": {
-      "main": [
-        [
-          {
-            "node": "HTTP \u00b7 Handover label",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP \u00b7 Handover label": {
-      "main": [
-        [
-          {
-            "node": "Code \u00b7 Prep lead",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Execute Workflow \u00b7 TA Context": {
-      "main": [
-        [
-          {
-            "node": "Code \u00b7 Travel FAQ prep",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code \u00b7 FAQ prep": {
-      "main": [
-        [
-          {
-            "node": "LLM Chain \u00b7 FAQ",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code \u00b7 FAQ reply": {
-      "main": [
-        [
-          {
-            "node": "HTTP \u00b7 Send reply",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code \u00b7 Qual start": {
-      "main": [
-        [
-          {
-            "node": "HTTP \u00b7 Send reply",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code \u00b7 Qual next": {
-      "main": [
-        [
-          {
-            "node": "HTTP \u00b7 Send reply",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP \u00b7 Send reply": {
-      "main": [
-        [
-          {
-            "node": "Code \u00b7 Prep lead",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code \u00b7 Prep lead": {
-      "main": [
-        [
-          {
-            "node": "HTTP \u00b7 Upsert lead",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP \u00b7 Upsert lead": {
-      "main": [
-        [
-          {
-            "node": "Code \u00b7 Prep analytics",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Code \u00b7 Prep analytics": {
-      "main": [
-        [
-          {
-            "node": "HTTP \u00b7 Log analytics",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP \u00b7 Log analytics": {
-      "main": [
-        [
-          {
-            "node": "HTTP \u00b7 Update last seen",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "LLM Chain \u00b7 FAQ": {
-      "main": [
-        [
-          {
-            "node": "Code \u00b7 FAQ reply",
+            "node": "Execute Workflow · Ecom Context",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "HTTP \u00b7 FAQ fallback",
+            "node": "Code · Objection prep",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "OpenAI Chat Model \u00b7 FAQ": {
+    "HTTP · Handover msg": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Handover label",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Handover label": {
+      "main": [
+        [
+          {
+            "node": "Code · Prep lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow · TA Context": {
+      "main": [
+        [
+          {
+            "node": "Code · Travel FAQ prep",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · FAQ prep": {
+      "main": [
+        [
+          {
+            "node": "LLM Chain · FAQ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · FAQ reply": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Send reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Qual start": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Send reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Qual next": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Send reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Send reply": {
+      "main": [
+        [
+          {
+            "node": "Code · Prep lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Prep lead": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Upsert lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Upsert lead": {
+      "main": [
+        [
+          {
+            "node": "Code · Prep analytics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Prep analytics": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Log analytics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Log analytics": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Update last seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Chain · FAQ": {
+      "main": [
+        [
+          {
+            "node": "Code · FAQ reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP · FAQ fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model · FAQ": {
       "main": []
     },
-    "HTTP \u00b7 Intent classify": {
+    "HTTP · Intent classify": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Intent + flow",
+            "node": "Code · Intent + flow",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Intent prep": {
+    "Code · Intent prep": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Intent classify",
+            "node": "HTTP · AI Classify",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Intent classify": {
+    "Code · Intent classify": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Intent + flow",
+            "node": "Code · Intent + flow",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP \u00b7 FAQ fallback": {
+    "HTTP · FAQ fallback": {
       "main": [
         [
           {
-            "node": "Code \u00b7 FAQ reply",
+            "node": "Code · FAQ reply",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Travel FAQ prep": {
+    "Code · Travel FAQ prep": {
       "main": [
         [
           {
-            "node": "LLM Chain \u00b7 Travel FAQ",
+            "node": "LLM Chain · Travel FAQ",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Travel FAQ reply": {
+    "Code · Travel FAQ reply": {
       "main": [
         [
           {
-            "node": "HTTP \u00b7 Send reply",
+            "node": "HTTP · Send reply",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "LLM Chain \u00b7 Travel FAQ": {
+    "LLM Chain · Travel FAQ": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Travel FAQ reply",
+            "node": "Code · Travel FAQ reply",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Execute Workflow \u00b7 Ecom Context": {
+    "Execute Workflow · Ecom Context": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Ecom FAQ prep",
+            "node": "Code · Ecom FAQ prep",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Ecom FAQ prep": {
+    "Code · Ecom FAQ prep": {
       "main": [
         [
           {
-            "node": "LLM Chain \u00b7 Ecom FAQ",
+            "node": "LLM Chain · Ecom FAQ",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "LLM Chain \u00b7 Ecom FAQ": {
+    "LLM Chain · Ecom FAQ": {
       "main": [
         [
           {
-            "node": "Code \u00b7 Ecom FAQ reply",
+            "node": "Code · Ecom FAQ reply",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code \u00b7 Ecom FAQ reply": {
+    "Code · Ecom FAQ reply": {
       "main": [
         [
           {
-            "node": "HTTP \u00b7 Send reply",
+            "node": "HTTP · Send reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · AI Classify": {
+      "main": [
+        [
+          {
+            "node": "Code · Intent classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Objection prep": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Objection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Objection": {
+      "main": [
+        [
+          {
+            "node": "Code · Objection reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code · Objection reply": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Send reply",
             "type": "main",
             "index": 0
           }
