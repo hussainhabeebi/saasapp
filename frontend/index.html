@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Leadvyne · AI Sales Bot for WhatsApp</title>
+<title>Leadvyne · The WhatsApp-First Sales & Support Platform</title>
 <link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -24,7 +24,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);-webkit-font-
 nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;background:rgba(10,26,20,.92);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,.07)}
 .brand{font-family:var(--disp);font-weight:800;font-size:22px;color:#fff;letter-spacing:-.02em}
 .brand span{color:#5FD6A4}
-.nav-cta{background:var(--green);color:#fff;border:none;border-radius:9px;padding:10px 20px;font-family:var(--disp);font-weight:600;font-size:14px;cursor:pointer;transition:background .15s}
+.nav-cta{background:var(--green);color:#fff;border:none;border-radius:9px;padding:10px 20px;font-family:var(--disp);font-weight:600;font-size:14px;cursor:pointer;transition:background .15s;text-decoration:none;display:inline-block}
 .nav-cta:hover{background:var(--green-light)}
 
 /* ── HERO ── */
@@ -36,7 +36,7 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .hero h1{font-family:var(--disp);font-weight:800;font-size:clamp(36px,6vw,72px);color:#fff;line-height:1.08;letter-spacing:-.03em;max-width:900px;margin-bottom:16px}
 .hero h1 .accent{color:#5FD6A4}
 .hero-ml{font-family:var(--ml);font-size:clamp(18px,3vw,26px);color:rgba(255,255,255,.55);margin-bottom:28px;font-weight:600}
-.hero-sub{font-size:clamp(15px,2vw,18px);color:rgba(255,255,255,.6);max-width:560px;line-height:1.65;margin-bottom:48px}
+.hero-sub{font-size:clamp(15px,2vw,18px);color:rgba(255,255,255,.6);max-width:600px;line-height:1.65;margin-bottom:48px}
 .hero-actions{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
 .btn-primary{background:var(--green);color:#fff;border:none;border-radius:11px;padding:16px 32px;font-family:var(--disp);font-weight:700;font-size:16px;cursor:pointer;transition:background .15s,transform .1s;text-decoration:none;display:inline-block}
 .btn-primary:hover{background:var(--green-light);transform:translateY(-1px)}
@@ -65,18 +65,19 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .section-tag-ml{font-family:var(--ml);font-size:11px;color:var(--muted);margin-bottom:8px}
 .section h2{font-family:var(--disp);font-weight:800;font-size:clamp(28px,4vw,44px);letter-spacing:-.025em;line-height:1.12;margin-bottom:16px}
 .section h2 span{color:var(--green)}
-.section-sub{font-size:16px;color:var(--muted);max-width:520px;line-height:1.65;margin-bottom:52px}
+.section-sub{font-size:16px;color:var(--muted);max-width:560px;line-height:1.65;margin-bottom:52px}
 
 /* ── FEATURES ── */
 .features-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:20px}
-.feat{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:28px;transition:border-color .15s,box-shadow .15s;position:relative;overflow:hidden}
+.feat{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:28px;transition:border-color .18s,box-shadow .18s,transform .18s;position:relative;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04),0 4px 12px rgba(0,0,0,.04)}
 .feat::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--green),#5FD6A4);opacity:0;transition:opacity .2s}
-.feat:hover{border-color:var(--green);box-shadow:0 8px 32px var(--green-glow)}
+.feat:hover{border-color:var(--green);box-shadow:0 4px 20px rgba(14,124,90,.12);transform:translateY(-2px)}
 .feat:hover::before{opacity:1}
 .feat-icon{width:48px;height:48px;background:var(--green-soft);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;margin-bottom:18px}
 .feat h3{font-family:var(--disp);font-weight:700;font-size:17px;margin-bottom:8px}
 .feat p{font-size:14px;color:var(--muted);line-height:1.6}
 .feat .ml-tag{font-family:var(--ml);font-size:12px;color:var(--green);font-weight:600;margin-top:10px;display:block}
+.feat .tag-new{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--green);background:var(--green-soft);border-radius:99px;padding:3px 9px;margin-bottom:10px}
 
 /* ── HOW IT WORKS ── */
 .how{background:var(--dark);padding:80px 24px}
@@ -85,7 +86,8 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .how h2{color:#fff}
 .how .section-sub{color:rgba(255,255,255,.5)}
 .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:24px;margin-top:20px}
-.step{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:var(--r);padding:28px;position:relative}
+.step{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:var(--r);padding:28px;position:relative;transition:border-color .18s,box-shadow .18s}
+.step:hover{border-color:rgba(95,214,164,.3);box-shadow:0 4px 20px rgba(95,214,164,.08)}
 .step-num{font-family:var(--disp);font-size:48px;font-weight:800;color:rgba(95,214,164,.15);line-height:1;margin-bottom:14px}
 .step h4{font-family:var(--disp);font-weight:700;font-size:16px;color:#fff;margin-bottom:8px}
 .step p{font-size:13px;color:rgba(255,255,255,.5);line-height:1.6}
@@ -97,65 +99,20 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .langs h2{font-family:var(--disp);font-weight:800;font-size:28px;margin-bottom:8px}
 .langs p{color:var(--muted);margin-bottom:32px;font-size:15px}
 .lang-chips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
-.chip{background:var(--bg);border:1px solid var(--line);border-radius:99px;padding:10px 20px;font-size:13px;font-weight:600;color:var(--ink);display:flex;align-items:center;gap:8px}
+.chip{background:var(--bg);border:1px solid var(--line);border-radius:99px;padding:10px 20px;font-size:13px;font-weight:600;color:var(--ink);display:flex;align-items:center;gap:8px;transition:border-color .15s,background .15s}
+.chip:hover{border-color:var(--green)}
 .chip .flag{font-size:18px}
 .chip.active{background:var(--green-soft);border-color:var(--green);color:var(--green)}
 
-/* ── OWN NUMBER ── */
-.own-number{background:#fff;padding:80px 24px;border-top:1px solid var(--line)}
-.own-inner{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:start}
-@media(max-width:780px){.own-inner{grid-template-columns:1fr;gap:40px}}
-.own-left .section-tag{margin-bottom:10px}
-.own-left h2{font-family:var(--disp);font-weight:800;font-size:clamp(26px,3.5vw,40px);letter-spacing:-.025em;line-height:1.12;margin-bottom:12px}
-.own-left h2 span{color:var(--green)}
-.own-sub{font-size:15px;color:var(--muted);line-height:1.65;margin-bottom:6px}
-.own-sub-ml{font-family:var(--ml);font-size:13px;color:var(--green);font-weight:600;margin-bottom:28px}
-.own-steps{display:flex;flex-direction:column;gap:20px}
-.own-step{display:flex;gap:16px;align-items:flex-start}
-.own-step-num{width:32px;height:32px;background:var(--green-soft);border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--disp);font-weight:700;font-size:14px;color:var(--green);flex:none}
-.own-step strong{font-size:14px;font-weight:600;display:block;margin-bottom:3px}
-.own-step span{font-size:13px;color:var(--muted);line-height:1.5}
-.own-step a{color:var(--green);font-weight:600;text-decoration:none}
-.own-step a:hover{text-decoration:underline}
-
-.enroll-card{background:var(--bg);border:1.5px solid var(--line);border-radius:20px;padding:28px}
-.enroll-head{margin-bottom:20px}
-.enroll-tag{font-family:var(--disp);font-weight:700;font-size:16px;display:block}
-.enroll-tag-ml{font-family:var(--ml);font-size:12px;color:var(--muted);margin-top:3px;display:block}
-.mono-in{font-family:"JetBrains Mono",monospace!important;font-size:13px!important}
-.chatwoot-link{display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;font-weight:600;color:var(--green);text-decoration:none;background:var(--green-soft);padding:7px 12px;border-radius:8px}
-.chatwoot-link:hover{background:#c4e6d8}
-
-/* ── SIGNUP ── */
-.signup{padding:80px 24px;background:var(--bg)}
-.signup-inner{max-width:560px;margin:0 auto;text-align:center}
-.signup h2{font-family:var(--disp);font-weight:800;font-size:clamp(28px,4vw,40px);letter-spacing:-.025em;margin-bottom:8px}
-.signup-ml{font-family:var(--ml);font-size:18px;color:var(--muted);margin-bottom:12px}
-.signup p{color:var(--muted);font-size:15px;line-height:1.6;margin-bottom:36px}
-.signup-card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:36px 32px;box-shadow:0 20px 60px rgba(14,124,90,.1)}
-.signup-card .field{text-align:left;margin-bottom:18px}
-.signup-card label{display:block;font-size:12px;font-weight:700;color:var(--ink);margin-bottom:7px;letter-spacing:.02em}
-.signup-card label .ml{font-family:var(--ml);font-weight:400;color:var(--muted);font-size:11px;margin-left:6px}
-.signup-card input{width:100%;background:#F6F9F7;border:1.5px solid var(--line);border-radius:10px;padding:13px 16px;font-size:15px;color:var(--ink);font-family:var(--body);transition:border-color .12s,box-shadow .12s}
-.signup-card input:focus{outline:none;border-color:var(--green);box-shadow:0 0 0 4px var(--green-glow);background:#fff}
-.signup-card input::placeholder{color:#A8B5B0}
-.signup-btn{width:100%;background:var(--green);color:#fff;border:none;border-radius:11px;padding:15px;font-family:var(--disp);font-weight:700;font-size:16px;cursor:pointer;transition:background .15s,transform .1s;margin-top:6px}
-.signup-btn:hover{background:var(--green-light);transform:translateY(-1px)}
-.signup-btn:disabled{opacity:.55;cursor:default;transform:none}
-.signup-note{font-size:12px;color:var(--muted);margin-top:14px;line-height:1.6}
-.signup-note .ml{font-family:var(--ml);display:block;margin-top:4px}
-.form-msg{font-size:13px;margin-top:14px;min-height:18px;text-align:center}
-.form-msg.err{color:#B23A2E}
-.form-msg.ok{color:var(--green)}
-
-/* success state */
-.success-box{display:none;text-align:center;padding:20px 0}
-.success-box.show{display:block;animation:rise .4s ease}
-@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
-.success-icon{width:64px;height:64px;background:var(--green-soft);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 18px}
-.success-box h3{font-family:var(--disp);font-weight:700;font-size:22px;margin-bottom:8px}
-.success-box p{font-size:14px;color:var(--muted);line-height:1.6}
-.success-box .ml{font-family:var(--ml);font-size:15px;color:var(--green);font-weight:600;margin-top:8px;display:block}
+/* ── FINAL CTA ── */
+.cta-final{padding:90px 24px;background:var(--bg);text-align:center}
+.cta-final-inner{max-width:560px;margin:0 auto}
+.cta-final h2{font-family:var(--disp);font-weight:800;font-size:clamp(28px,4vw,40px);letter-spacing:-.025em;margin-bottom:8px}
+.cta-final-ml{font-family:var(--ml);font-size:18px;color:var(--muted);margin-bottom:12px}
+.cta-final p{color:var(--muted);font-size:15px;line-height:1.6;margin-bottom:32px}
+.cta-final .btn-primary{font-size:18px;padding:18px 40px;box-shadow:0 24px 80px rgba(14,124,90,.18),0 4px 16px rgba(0,0,0,.06)}
+.cta-note{font-size:12px;color:var(--muted);margin-top:16px;line-height:1.6}
+.cta-note .ml{font-family:var(--ml);display:block;margin-top:4px}
 
 /* ── FOOTER ── */
 footer{background:var(--dark);padding:40px 24px;text-align:center;border-top:1px solid rgba(255,255,255,.06)}
@@ -169,29 +126,13 @@ footer .ml{font-family:var(--ml);font-size:12px;color:rgba(255,255,255,.2);margi
 .admin-link:hover{color:rgba(255,255,255,.8)}
 
 @media(max-width:640px){
-  .signup-card{padding:24px 20px}
   .stats{flex-direction:column;align-items:center}.stat{border-right:none;border-bottom:1px solid rgba(255,255,255,.08)}.stat:last-child{border-bottom:none}
 }
 
-/* ── PROFESSIONAL POLISH ── */
-.feat{box-shadow:0 1px 3px rgba(0,0,0,.04),0 4px 12px rgba(0,0,0,.04)}
-.feat:hover{box-shadow:0 4px 20px rgba(14,124,90,.12);transform:translateY(-2px)}
-.feat{transition:border-color .18s,box-shadow .18s,transform .18s}
-.step{transition:border-color .18s,box-shadow .18s}
-.step:hover{border-color:rgba(95,214,164,.3);box-shadow:0 4px 20px rgba(95,214,164,.08)}
 .btn-primary,.btn-ghost{transition:background .15s,transform .12s,box-shadow .15s}
 .btn-primary:hover{box-shadow:0 4px 16px rgba(14,124,90,.3)}
 .btn-ghost:hover{box-shadow:0 2px 8px rgba(255,255,255,.06)}
 nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
-.signup-card{box-shadow:0 24px 80px rgba(14,124,90,.12),0 4px 16px rgba(0,0,0,.06)}
-.signup-card input{transition:border-color .15s,box-shadow .15s,background .15s}
-.signup-card input:focus{box-shadow:0 0 0 4px var(--green-glow);background:#fff}
-.signup-btn{transition:background .15s,transform .12s,box-shadow .15s}
-.signup-btn:hover{box-shadow:0 4px 16px rgba(14,124,90,.3)}
-.own-step-num{transition:background .15s,box-shadow .15s}
-.chip{transition:border-color .15s,background .15s}
-.chip:hover{border-color:var(--green)}
-.enroll-card{box-shadow:0 4px 20px rgba(0,0,0,.07);transition:box-shadow .2s}
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
 ::-webkit-scrollbar-thumb:hover{background:var(--muted)}
@@ -203,19 +144,19 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
 <nav>
   <div class="brand">Leadvyne<span>.</span></div>
   <div style="display:flex;gap:10px;align-items:center">
-    <a href="#own-number" style="font-size:13px;font-weight:600;color:rgba(255,255,255,.6);text-decoration:none;padding:8px 14px">Use My Number</a>
-    <a href="#signup" class="nav-cta">Start Free Trial</a>
+    <a href="#features" style="font-size:13px;font-weight:600;color:rgba(255,255,255,.6);text-decoration:none;padding:8px 14px">Features</a>
+    <a href="https://app.leadvyne.com/dashboard.html?signup=1" class="nav-cta">Sign Up Free</a>
   </div>
 </nav>
 
 <!-- HERO -->
 <section class="hero">
-  <div class="hero-badge"><span class="dot"></span>WhatsApp AI Bot · Live in 24 Hours</div>
+  <div class="hero-badge"><span class="dot"></span>WhatsApp · Website · Email · SMS — One Inbox, One AI</div>
   <h1>Your Sales Team<br>Never <span class="accent">Sleeps</span> Again</h1>
   <div class="hero-ml">നിങ്ങളുടെ ബിസിനസ്സ് 24/7 ജോലി ചെയ്യുന്നു</div>
-  <p class="hero-sub">Leadvyne automates your WhatsApp leads — qualifies, follows up, and hands over to humans at the right moment. In Malayalam, English, Hindi and more.</p>
+  <p class="hero-sub">Leadvyne is the full front-office platform: an AI bot that qualifies and follows up on WhatsApp, a CRM pipeline and quotation tool, omnichannel inboxes, and self-serve billing — all live the moment you sign up. In Malayalam, English, Hindi and more.</p>
   <div class="hero-actions">
-    <a href="#signup" class="btn-primary">Start Free Trial →</a>
+    <a href="https://app.leadvyne.com/dashboard.html?signup=1" class="btn-primary">Sign Up Free →</a>
     <a href="#features" class="btn-ghost">See Features</a>
   </div>
 
@@ -253,9 +194,9 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
     <div class="lbl-ml">കൂടുതൽ ലീഡുകൾ കൺവേർട്ട്</div>
   </div>
   <div class="stat">
-    <div class="num">24h</div>
-    <div class="lbl">Setup to live bot</div>
-    <div class="lbl-ml">24 മണിക്കൂറിൽ ബോട്ട് തയ്യാർ</div>
+    <div class="num">&lt;1 min</div>
+    <div class="lbl">Sign up to a live bot — self-service</div>
+    <div class="lbl-ml">ഒരു മിനിറ്റിനുള്ളിൽ ലൈവ്</div>
   </div>
 </div>
 
@@ -264,63 +205,81 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
 <div class="section">
   <div class="section-tag-ml">സവിശേഷതകൾ</div>
   <div class="section-tag">Features</div>
-  <h2>Everything your sales team<br><span>needs on WhatsApp</span></h2>
-  <p class="section-sub">Built for Kerala businesses — travel agencies, real estate, clinics, and more.</p>
+  <h2>Everything your front office<br><span>needs, in one platform</span></h2>
+  <p class="section-sub">From first WhatsApp message to paid invoice — Leadvyne runs the whole lifecycle. Built for Kerala businesses: travel agencies, real estate, clinics, recruitment, and more.</p>
 
   <div class="features-grid">
     <div class="feat">
       <div class="feat-icon">🤖</div>
       <h3>Smart AI Conversations</h3>
-      <p>Replies naturally in the customer's language. Handles FAQs, objections, and complex questions without human intervention.</p>
+      <p>Replies naturally in the customer's language across text, voice notes, and images. Handles FAQs, objections, and complex questions without human intervention.</p>
       <span class="ml-tag">സ്മാർട്ട് AI സംഭാഷണം</span>
     </div>
     <div class="feat">
-      <div class="feat-icon">✈️</div>
-      <h3>Travel CRM Integration</h3>
-      <p>Automatically shows your packages, Umrah groups, car rentals, and itineraries from your database. Always up to date.</p>
-      <span class="ml-tag">ട്രാവൽ പാക്കേജ് ഓട്ടോ-ഷെയർ</span>
-    </div>
-    <div class="feat">
       <div class="feat-icon">🎯</div>
-      <h3>Lead Qualification</h3>
-      <p>Asks the right questions, collects budget and preferences, and scores leads before your sales team even sees them.</p>
-      <span class="ml-tag">ലീഡ് യോഗ്യത നിർണ്ണയം</span>
+      <h3>Lead Qualification & Pipeline</h3>
+      <p>Asks the right questions, scores leads automatically, and organizes everything into a drag-and-drop Kanban pipeline your team already understands.</p>
+      <span class="ml-tag">ലീഡ് യോഗ്യത & പൈപ്പ്‌ലൈൻ</span>
     </div>
     <div class="feat">
       <div class="feat-icon">🔄</div>
-      <h3>Automated Follow-ups</h3>
-      <p>Never let a lead go cold. Sends timed nudges at 2h, 12h, and 24h after silence — automatically.</p>
+      <h3>Automated Follow-ups & Win-back</h3>
+      <p>Never let a lead go cold. Timed nudges after silence, plus a 3-step escalating win-back drip for leads that have gone fully quiet.</p>
       <span class="ml-tag">ഓട്ടോ ഫോളോ-അപ്പ്</span>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">🧾</div>
+      <h3>Quotation Module</h3>
+      <p>Generate branded PDF quotations from your product catalog and send them straight over WhatsApp — with a live "sent quotations" report.</p>
+      <span class="ml-tag">ബ്രാൻഡഡ് ക്വട്ടേഷൻ</span>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">🔌</div>
+      <h3>Omnichannel Inboxes</h3>
+      <p>One Chatwoot account, auto-provisioned at signup — add WhatsApp, Website chat, Email, SMS, Telegram, and LINE inboxes, all in one place for your team.</p>
+      <span class="ml-tag">എല്ലാ ചാനലും ഒരിടത്ത്</span>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">✅</div>
+      <h3>One-Click WhatsApp Connect</h3>
+      <p>Connect your own WhatsApp Business number via Meta's official Embedded Signup — no manual tokens, no developer console, no waiting.</p>
+      <span class="ml-tag">ഒറ്റ ക്ലിക്കിൽ WhatsApp</span>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">🛍️</div>
+      <h3>Shopify Integration</h3>
+      <p>See a customer's orders, shipping status, and payment info right in the conversation — no tab-switching for your agents.</p>
+      <span class="ml-tag">ഷോപ്പിഫൈ ഇന്റഗ്രേഷൻ</span>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">📥</div>
+      <h3>Prospects & Broadcast</h3>
+      <p>Bulk-import prospect lists and kick off first-touch outreach with approved WhatsApp templates, or run one-off broadcast campaigns to your existing leads.</p>
+      <span class="ml-tag">പ്രോസ്‌പെക്ട്സ് & ബ്രോഡ്‌കാസ്റ്റ്</span>
     </div>
     <div class="feat">
       <div class="feat-icon">👤</div>
       <h3>Human Handover</h3>
-      <p>Detects when a customer needs a human and routes them instantly to your agent via Chatwoot — with full context.</p>
+      <p>Detects when a customer needs a human and routes them instantly to your agent via Chatwoot — with full conversation context, not a cold handoff.</p>
       <span class="ml-tag">ഏജന്റിലേക്ക് ഹാൻഡ്ഓവർ</span>
     </div>
     <div class="feat">
-      <div class="feat-icon">🌐</div>
-      <h3>Multi-Language</h3>
-      <p>Malayalam, English, Hindi, Arabic, Tamil — the bot auto-detects the language and responds accordingly.</p>
-      <span class="ml-tag">മലയാളം · English · हिन्दी · عربي</span>
+      <div class="feat-icon">💳</div>
+      <h3>Self-Serve Billing</h3>
+      <p>View invoices, upgrade or downgrade your plan, and buy add-ons like extra WhatsApp credits — all without emailing anyone or a sales call.</p>
+      <span class="ml-tag">സ്വയം ബില്ലിംഗ്</span>
     </div>
     <div class="feat">
       <div class="feat-icon">📊</div>
-      <h3>Live Analytics</h3>
-      <p>Track every conversation, lead status, and conversion from your dashboard in real time.</p>
+      <h3>Usage & ROI Dashboard</h3>
+      <p>Messages sent, leads captured, conversion rate — see the return on your subscription in real time, right from your own dashboard.</p>
       <span class="ml-tag">തത്സമയ അനലിറ്റിക്സ്</span>
     </div>
     <div class="feat">
       <div class="feat-icon">⚡</div>
-      <h3>Instant Setup</h3>
-      <p>Enter your company name and number. Your bot is live on WhatsApp within 24 hours — no coding required.</p>
-      <span class="ml-tag">24 മണിക്കൂറിൽ തയ്യാർ</span>
-    </div>
-    <div class="feat">
-      <div class="feat-icon">🔒</div>
-      <h3>Anti-Loop & Safety</h3>
-      <p>Built-in loop protection, opt-out handling, and safe escalation so your bot never embarrasses your brand.</p>
-      <span class="ml-tag">സേഫ്റ്റി & പ്രൊട്ടക്ഷൻ</span>
+      <h3>Instant Self-Service Signup</h3>
+      <p>No forms, no passcodes, no waiting for our team. Sign in securely, and your account, engine, and dashboard are provisioned automatically in seconds.</p>
+      <span class="ml-tag">തൽക്ഷണ സൈൻ അപ്പ്</span>
     </div>
   </div>
 </div>
@@ -331,30 +290,30 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
   <div class="how-inner">
     <div class="section-tag">How it works</div>
     <h2 style="color:#fff;font-family:var(--disp);font-weight:800;font-size:clamp(28px,4vw,44px);letter-spacing:-.025em;margin-bottom:12px">എങ്ങനെ പ്രവർത്തിക്കുന്നു?</h2>
-    <p class="section-sub">3 simple steps to a 24/7 AI sales bot</p>
+    <p class="section-sub">4 steps, entirely self-service — no sales call required</p>
     <div class="steps">
       <div class="step">
         <div class="step-num">01</div>
-        <h4>Sign Up</h4>
-        <p>Enter your company name and WhatsApp number. That's all we need to get started.</p>
-        <div class="ml">കമ്പനി പേരും നമ്പറും നൽകുക</div>
+        <h4>Sign Up Securely</h4>
+        <p>One click, verified sign-in — your account is created automatically the moment you're in. No forms to fill.</p>
+        <div class="ml">സുരക്ഷിതമായി സൈൻ അപ്പ് ചെയ്യുക</div>
       </div>
       <div class="step">
         <div class="step-num">02</div>
-        <h4>We Configure</h4>
-        <p>Our team sets up your AI bot with your products, services, language, and conversation flow.</p>
-        <div class="ml">ഞങ്ങൾ ബോട്ട് സജ്ജീകരിക്കുന്നു</div>
+        <h4>Connect a Channel</h4>
+        <p>Connect your WhatsApp number in one click from your dashboard's Channels page, or add Website, Email, SMS and more.</p>
+        <div class="ml">ചാനൽ കണക്റ്റ് ചെയ്യുക</div>
       </div>
       <div class="step">
         <div class="step-num">03</div>
-        <h4>Go Live</h4>
-        <p>Your WhatsApp bot is live within 24 hours. Watch leads qualify and follow-ups happen automatically.</p>
-        <div class="ml">24 മണിക്കൂറിൽ ലൈവ് ആകുന്നു</div>
+        <h4>Go Live Instantly</h4>
+        <p>Your AI bot starts replying immediately. Watch leads qualify, quotations go out, and follow-ups happen automatically.</p>
+        <div class="ml">തൽക്ഷണം ലൈവ് ആകുന്നു</div>
       </div>
       <div class="step">
         <div class="step-num">04</div>
         <h4>Scale & Grow</h4>
-        <p>Monitor from your dashboard. Add more products, update packages, and grow without adding staff.</p>
+        <p>Track usage and ROI from your dashboard, upgrade your plan or add WhatsApp credits yourself, anytime.</p>
         <div class="ml">വളർന്നുകൊണ്ടിരിക്കുന്നു</div>
       </div>
     </div>
@@ -379,149 +338,25 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
   </div>
 </div>
 
-<!-- OWN NUMBER -->
-<div class="own-number" id="own-number">
-  <div class="own-inner">
-    <div class="own-left">
-      <div class="section-tag">Upgrade</div>
-      <h2>Use Your Own<br><span>WhatsApp Number</span></h2>
-      <p class="own-sub">Already on the trial? Connect your Meta Business WhatsApp number — we'll set up everything automatically in seconds.</p>
-      <div class="own-sub-ml">നിങ്ങളുടെ സ്വന്തം WhatsApp നമ്പർ ഉപയോഗിക്കൂ</div>
-      <div class="own-steps">
-        <div class="own-step">
-          <div class="own-step-num">1</div>
-          <div>
-            <strong>Enter your Meta credentials</strong><br>
-            <span>Get your Access Token, Phone Number ID, and WABA ID from <a href="https://business.facebook.com" target="_blank">Meta Business Manager</a></span>
-          </div>
-        </div>
-        <div class="own-step">
-          <div class="own-step-num">2</div>
-          <div>
-            <strong>We create everything for you</strong><br>
-            <span>Your Chatwoot account and WhatsApp inbox are created automatically — no manual steps</span>
-          </div>
-        </div>
-        <div class="own-step">
-          <div class="own-step-num">3</div>
-          <div>
-            <strong>Bot goes live instantly</strong><br>
-            <span>Your AI sales bot starts replying from your own WhatsApp number right away</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="own-right">
-      <div class="enroll-card">
-        <div class="enroll-head">
-          <span class="enroll-tag">Connect Your Number</span>
-          <span class="enroll-tag-ml">നിങ്ങളുടെ നമ്പർ ചേർക്കൂ</span>
-        </div>
-        <div id="enrollForm">
-          <div class="field">
-            <label>Your Leadvyne Client ID <span class="ml">Client ID</span></label>
-            <input id="enrollClientId" type="text" placeholder="e.g. 12 (from your dashboard URL)" class="mono-in" />
-          </div>
-          <div class="field">
-            <label>Business Email</label>
-            <input id="enrollEmail" type="email" placeholder="your@business.com" />
-          </div>
-          <div class="field">
-            <label>Choose a Password <span style="font-size:11px;color:var(--muted)">(for your Chatwoot account)</span></label>
-            <input id="enrollPassword" type="password" placeholder="Min 6 characters" />
-          </div>
-          <div class="field">
-            <label>WhatsApp Phone Number</label>
-            <input id="enrollPhone" type="tel" placeholder="+91 98765 43210" class="mono-in" />
-          </div>
-          <div class="field">
-            <label>Meta Access Token <span style="font-size:11px;color:var(--muted)">(from Meta Business Manager)</span></label>
-            <input id="enrollMetaToken" type="password" placeholder="EAAxxxxxxx..." class="mono-in" />
-          </div>
-          <div class="field">
-            <label>Phone Number ID</label>
-            <input id="enrollPhoneNumberId" type="text" placeholder="123456789012345" class="mono-in" />
-          </div>
-          <div class="field">
-            <label>WhatsApp Business Account ID (WABA ID)</label>
-            <input id="enrollWabaId" type="text" placeholder="987654321098765" class="mono-in" />
-          </div>
-          <button class="signup-btn" id="enrollBtn" onclick="submitEnroll()" style="margin-top:16px">Create Account &amp; Connect →</button>
-          <div class="form-msg" id="enrollMsg"></div>
-        </div>
-        <div class="success-box" id="enrollSuccess">
-          <div class="success-icon">✅</div>
-          <h3>Number connected!</h3>
-          <p>Your Chatwoot account is live and your bot is now replying from your own WhatsApp number.</p>
-          <div id="enrollWebhookBox" style="margin-top:14px;background:var(--green-soft);border-radius:10px;padding:14px">
-            <div style="font-size:12px;font-weight:600;color:var(--green);margin-bottom:6px">Add this webhook to Meta Dashboard:</div>
-            <code id="enrollWebhookUrl" style="font-size:11px;word-break:break-all;color:var(--ink)"></code>
-          </div>
-          <span class="ml" style="display:block;margin-top:12px">നിങ്ങളുടെ WhatsApp നമ്പർ ബോട്ടിൽ ചേർത്തു 🎉</span>
-          <a id="enrollDashLink" href="https://app.leadvyne.com/dashboard.html" class="btn-primary" style="display:inline-block;margin-top:18px;font-size:14px">Go to Dashboard →</a>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- SIGNUP -->
-<div class="signup" id="signup">
-  <div class="signup-inner">
+<!-- FINAL CTA -->
+<div class="cta-final" id="signup">
+  <div class="cta-final-inner">
     <div class="section-tag" style="text-align:center">Get Started</div>
-    <h2>Start your free trial</h2>
-    <div class="signup-ml">ഇന്നുതന്നെ ആരംഭിക്കൂ</div>
-    <p>Enter your details and get instant access to your dashboard on our shared trial number. No credit card needed.</p>
-
-    <div class="signup-card">
-      <div id="signupForm">
-        <div class="field">
-          <label>Company / Business Name <span class="ml">കമ്പനി / ബിസിനസ്സ് പേര്</span></label>
-          <input id="companyName" type="text" placeholder="e.g. Moulavi Travels" autocomplete="organization" />
-        </div>
-        <div class="field">
-          <label>WhatsApp / Mobile Number <span class="ml">വാട്ട്‌സ്ആപ്പ് / മൊബൈൽ നമ്പർ</span></label>
-          <input id="mobileNumber" type="tel" placeholder="+91 98765 43210" autocomplete="tel" />
-        </div>
-        <div class="field">
-          <label>Business Type <span class="ml">ബിസിനസ്സ് തരം</span></label>
-          <input id="businessType" type="text" placeholder="e.g. Travel Agency, Real Estate, Clinic…" />
-        </div>
-        <div class="field">
-          <label>Chatwoot Account ID <span class="ml">ചാറ്റ്‌വൂട്ട് അക്കൗണ്ട് ID</span></label>
-          <input id="chatwootAccountId" type="text" placeholder="e.g. 12" />
-        </div>
-        <div class="field">
-          <label>Chatwoot Inbox ID <span class="ml">ഇൻബോക്സ് ID</span></label>
-          <input id="chatwootInboxId" type="text" placeholder="e.g. 5" />
-        </div>
-        <div class="field">
-          <label>Chatwoot User Token <span class="ml">യൂസർ ടോക്കൺ</span></label>
-          <input id="chatwootToken" type="text" placeholder="Paste your Chatwoot access token" />
-        </div>
-        <button class="signup-btn" id="signupBtn" onclick="submitSignup()">Create My Dashboard →</button>
-        <div class="form-msg" id="signupMsg"></div>
-        <p class="signup-note">
-          You'll be redirected to your dashboard instantly.
-          <span class="ml">ഉടനെ നിങ്ങളുടെ ഡാഷ്‌ബോർഡിലേക്ക് redirect ആകും.</span>
-        </p>
-      </div>
-
-      <div class="success-box" id="successBox">
-        <div class="success-icon">🚀</div>
-        <h3>Dashboard created!</h3>
-        <p>Redirecting to your dashboard…</p>
-        <span class="ml">നിങ്ങളുടെ ഡാഷ്‌ബോർഡ് തയ്യാർ 🎉</span>
-      </div>
-    </div>
+    <h2>Ready when you are</h2>
+    <div class="cta-final-ml">ഇന്നുതന്നെ ആരംഭിക്കൂ</div>
+    <p>One button, straight into a secure sign-in — no forms, no passcodes, no waiting for our team.</p>
+    <a href="https://app.leadvyne.com/dashboard.html?signup=1" class="btn-primary">Sign Up Free →</a>
+    <p class="cta-note">
+      You'll be taken straight to a secure sign-in — your dashboard is ready the moment you're verified.
+      <span class="ml">സൈൻ ഇൻ ചെയ്ത ഉടനെ ഡാഷ്‌ബോർഡ് തയ്യാർ.</span>
+    </p>
   </div>
 </div>
 
 <!-- FOOTER -->
 <footer>
   <div class="foot-brand">Leadvyne<span>.</span></div>
-  <p>AI Sales Automation for WhatsApp · Built for Kerala Businesses</p>
+  <p>The WhatsApp-First Sales & Support Platform · Built for Kerala Businesses</p>
   <p class="ml">കേരളത്തിലെ ബിസിനസ്സുകൾക്ക് വേണ്ടി നിർമ്മിച്ചത്</p>
   <p style="margin-top:16px">© 2026 Leadvyne · Powered by Aiingo</p>
 </footer>
@@ -529,218 +364,5 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
 <!-- Admin shortcut (hidden at bottom right) -->
 <a href="admin.html" class="admin-link">admin ↗</a>
 
-<script>
-// ── TRIAL CONFIG — fill these before going live ──────────────────
-const TRIAL = {
-  onboard_endpoint:     'https://apps.leadvyne.com/webhook/leadvyne-onboard',
-  passcode:             'Bath*2026*ld',
-  chatwoot_base:        'https://app.aiingo.com',
-  language:             'ml',
-  model:                'google/gemini-2.5-flash',
-};
-// ─────────────────────────────────────────────────────────────────
-
-const DEFAULT_PROMPT = (company, biz) =>
-`You are a friendly AI assistant for ${company}. Business type: ${biz || 'general'}.
-Never reveal you are an AI. Keep replies short and warm (3–4 lines max, one question per reply).
-Answer questions about the business, products, and services.
-For anything you cannot answer, politely say you will connect them with an advisor.
-Always respond in the same language the customer uses.`;
-
-async function submitSignup() {
-  const company   = document.getElementById('companyName').value.trim();
-  const mobile    = document.getElementById('mobileNumber').value.trim();
-  const bizType   = document.getElementById('businessType').value.trim();
-  const accountId = document.getElementById('chatwootAccountId').value.trim();
-  const inboxId   = document.getElementById('chatwootInboxId').value.trim();
-  const token     = document.getElementById('chatwootToken').value.trim();
-  const msg       = document.getElementById('signupMsg');
-  const btn       = document.getElementById('signupBtn');
-
-  msg.textContent = '';
-  msg.className = 'form-msg';
-
-  if (!company)   { msg.textContent = 'Please enter your company name.'; msg.className = 'form-msg err'; return; }
-  if (!mobile)    { msg.textContent = 'Please enter your mobile number.'; msg.className = 'form-msg err'; return; }
-  if (!accountId) { msg.textContent = 'Please enter your Chatwoot Account ID.'; msg.className = 'form-msg err'; return; }
-  if (!inboxId)   { msg.textContent = 'Please enter your Chatwoot Inbox ID.'; msg.className = 'form-msg err'; return; }
-  if (!token)     { msg.textContent = 'Please enter your Chatwoot User Token.'; msg.className = 'form-msg err'; return; }
-
-  btn.disabled = true;
-  btn.textContent = 'Setting up your dashboard…';
-
-  try {
-    const payload = {
-      passcode:             TRIAL.passcode,
-      client_name:          company,
-      phone:                mobile,
-      business_type:        bizType,
-      chatwoot_base:        TRIAL.chatwoot_base,
-      chatwoot_account_id:  accountId,
-      chatwoot_inbox_id:    inboxId,
-      chatwoot_token:       token,
-      language:             TRIAL.language,
-      model:                TRIAL.model,
-      main_prompt:          DEFAULT_PROMPT(company, bizType),
-      source:               'trial_signup',
-      flow_json:            JSON.stringify({ stages: { new: { '*': { next: 'new', msg: 'fallback' } } }, messages: { fallback: `Hi! I'm the AI assistant for ${company}. How can I help you today? 😊` }, variables: {} }),
-      qual_questions:       [],
-      bot_config:           { qual_enabled: false, handover_enabled: true, memory_enabled: true, antiloop_enabled: true },
-      followup_count:       2,
-      followup_hours:       '4, 24',
-      followup_messages:    `Hi 😊 Just checking in — happy to help anytime!\nA quick reminder — I'm here if you have any questions 🙏`,
-      is_trial:             true,
-    };
-
-    const res = await fetch(TRIAL.onboard_endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) throw new Error(data.message || 'Provisioning failed');
-
-    // Show success then redirect to dashboard
-    document.getElementById('signupForm').style.display = 'none';
-    document.getElementById('successBox').classList.add('show');
-
-    const clientId = data.client_id;
-    if (clientId) {
-      setTimeout(() => {
-        window.location.href = 'https://app.leadvyne.com/dashboard.html?client=' + clientId;
-      }, 2000);
-    }
-
-  } catch(e) {
-    msg.textContent = 'Could not create dashboard. Please try again or contact us on WhatsApp.';
-    msg.className = 'form-msg err';
-    btn.disabled = false;
-    btn.textContent = 'Create My Dashboard →';
-  }
-}
-
-// ── ENROLL OWN NUMBER ──────────────────────────────────────────
-const NOCODB_BASE    = 'https://whizz.aiingo.com';
-const NOCODB_TOKEN   = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';
-const CLIENTS_TABLE  = 'mxl33bg4wi70fqj';
-
-async function submitEnroll() {
-  const clientId       = document.getElementById('enrollClientId').value.trim();
-  const email          = document.getElementById('enrollEmail').value.trim();
-  const password       = document.getElementById('enrollPassword').value.trim();
-  const phone          = document.getElementById('enrollPhone').value.trim();
-  const metaToken      = document.getElementById('enrollMetaToken').value.trim();
-  const phoneNumberId  = document.getElementById('enrollPhoneNumberId').value.trim();
-  const wabaId         = document.getElementById('enrollWabaId').value.trim();
-  const msg            = document.getElementById('enrollMsg');
-  const btn            = document.getElementById('enrollBtn');
-
-  msg.textContent = ''; msg.className = 'form-msg';
-
-  if (!clientId)      { msg.textContent = 'Enter your Leadvyne Client ID.'; msg.className = 'form-msg err'; return; }
-  if (!email)         { msg.textContent = 'Enter your business email.'; msg.className = 'form-msg err'; return; }
-  if (!password || password.length < 6) { msg.textContent = 'Password must be at least 6 characters.'; msg.className = 'form-msg err'; return; }
-  if (!phone)         { msg.textContent = 'Enter your WhatsApp phone number.'; msg.className = 'form-msg err'; return; }
-  if (!metaToken)     { msg.textContent = 'Enter your Meta Access Token.'; msg.className = 'form-msg err'; return; }
-  if (!phoneNumberId) { msg.textContent = 'Enter your Phone Number ID.'; msg.className = 'form-msg err'; return; }
-  if (!wabaId)        { msg.textContent = 'Enter your WhatsApp Business Account ID.'; msg.className = 'form-msg err'; return; }
-
-  btn.disabled = true; btn.textContent = 'Creating account…';
-
-  const CHATWOOT = 'https://app.aiingo.com';
-
-  try {
-    // Step 1: Create Chatwoot account
-    msg.textContent = 'Creating your Chatwoot account…'; msg.className = 'form-msg';
-    const signupRes = await fetch(`${CHATWOOT}/auth/sign_up`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        account_name: email.split('@')[0],
-        email,
-        password,
-        password_confirmation: password
-      })
-    });
-
-    if (!signupRes.ok) {
-      const err = await signupRes.json().catch(() => ({}));
-      throw new Error(err.message || err.errors?.join(', ') || `Sign-up failed (${signupRes.status})`);
-    }
-
-    const signupData = await signupRes.json();
-    const accountId  = signupData.data?.account_id || signupData.account?.id;
-    const userToken  = signupData.data?.access_token || signupData.data?.token;
-
-    if (!accountId || !userToken) throw new Error('Sign-up succeeded but account details missing. Please contact support.');
-
-    // Step 2: Create WhatsApp Cloud API inbox
-    msg.textContent = 'Setting up WhatsApp inbox…'; msg.className = 'form-msg';
-    const inboxRes = await fetch(`${CHATWOOT}/api/v1/accounts/${accountId}/inboxes`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'api_access_token': userToken },
-      body: JSON.stringify({
-        name: 'WhatsApp',
-        channel: {
-          type: 'whatsapp',
-          provider: 'whatsapp_cloud',
-          provider_config: {
-            api_key:            metaToken,
-            phone_number_id:    phoneNumberId,
-            business_account_id: wabaId,
-            phone_number:       phone
-          }
-        }
-      })
-    });
-
-    if (!inboxRes.ok) {
-      const err = await inboxRes.json().catch(() => ({}));
-      throw new Error(err.message || `Inbox creation failed (${inboxRes.status})`);
-    }
-
-    const inboxData = await inboxRes.json();
-    const inboxId   = inboxData.id;
-
-    if (!inboxId) throw new Error('Inbox created but inbox ID missing.');
-
-    // Step 3: Save credentials to NocoDB
-    msg.textContent = 'Saving your configuration…'; msg.className = 'form-msg';
-    const patchRes = await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`, {
-      method: 'PATCH',
-      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        Id:                  parseInt(clientId),
-        chatwoot_base:       CHATWOOT,
-        chatwoot_account_id: String(accountId),
-        chatwoot_inbox_id:   String(inboxId),
-        chatwoot_token:      userToken,
-        own_number:          'Yes'
-      })
-    });
-
-    if (!patchRes.ok) throw new Error('Account created but config save failed — contact support with your Client ID.');
-
-    // Success
-    document.getElementById('enrollForm').style.display = 'none';
-    const webhookUrl = `${CHATWOOT}/webhooks/whatsapp/${phoneNumberId}`;
-    document.getElementById('enrollWebhookUrl').textContent = webhookUrl;
-    document.getElementById('enrollDashLink').href = 'https://app.leadvyne.com/dashboard.html?client=' + clientId;
-    document.getElementById('enrollSuccess').classList.add('show');
-
-  } catch(e) {
-    msg.textContent = e.message || 'Something went wrong. Please try again.';
-    msg.className = 'form-msg err';
-    btn.disabled = false; btn.textContent = 'Create Account & Connect →';
-  }
-}
-
-// Enter key on inputs
-document.querySelectorAll('.signup-card input').forEach(inp => {
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') submitSignup(); });
-});
-</script>
 </body>
 </html>

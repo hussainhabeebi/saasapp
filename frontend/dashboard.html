@@ -7563,7 +7563,13 @@ function renderChatEmpty(){
   const wasCallback=await handleAuthentikCallback();
   if(wasCallback) return;
   const saved=sessionStorage.getItem('lv_cid');
-  if(saved)resumeSession(saved);
+  if(saved){ resumeSession(saved); return; }
+  // The marketing site's "Sign Up Free" button links straight here with ?signup=1 — skip the
+  // gate screen entirely and go straight into Authentik, so leadvyne.com only ever needs one button.
+  if(new URLSearchParams(location.search).get('signup')){
+    history.replaceState({},'',location.pathname);
+    startAuthentikLogin();
+  }
 })();
 </script>
 </body>
