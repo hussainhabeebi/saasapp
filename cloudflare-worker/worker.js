@@ -396,6 +396,120 @@ async function handleAiComplete(request, env){
   return json(data);
 }
 
+/* ── Campaigns module (broadcast.html) — Chatwoot template list/create + send
+   routes, so chatwoot_token never reaches the browser (previously broadcast.html
+   embedded both the master NocoDB token and the client's own chatwoot_token
+   directly, readable via view-source — see SETUP.md's "Known gap" note). Lead
+   reads/writes for the Follow-ups tab and the Tracking log reuse the existing
+   generic /nocodb/* passthrough below — only the actual Chatwoot sends and the
+   template list/create need a dedicated route, since those are the only calls
+   that require the client's chatwoot_token. ── */
+async function handleBroadcastTemplatesGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}/whatsapp_templates`, {headers:{api_access_token:c.chatwoot_token}});
+  const data=await r.json().catch(()=>([]));
+  if(!r.ok) return json({error:'Chatwoot API '+r.status}, 502);
+  return json({ok:true, templates:data});
+}
+
+async function handleBroadcastTemplatesCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {name, category, language, body, header, footer}=await request.json().catch(()=>({}));
+  if(!name||!body) return json({error:'name and body required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
+  const components=[{type:'BODY', text:body}];
+  if(header) components.unshift({type:'HEADER', format:'TEXT', text:header});
+  if(footer) components.push({type:'FOOTER', text:footer});
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}/whatsapp_templates`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({name, category, language, components})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.message||'Chatwoot API '+r.status}, 502);
+  return json({ok:true, data});
+}
+
+// Plain message send, with an optional image/video attachment — the "Direct Message" tab
+// (leads still inside WhatsApp's 24h session window, so a free-text message is allowed).
+async function handleBroadcastSendDm(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const form=await request.formData().catch(()=>null);
+  if(!form) return json({error:'multipart form data required'}, 400);
+  const conv_id=form.get('conv_id');
+  const content=form.get('content')||'';
+  const file=form.get('file');
+  if(!conv_id||(!content&&!file)) return json({error:'conv_id and content (or file) required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+  const fd=new FormData();
+  fd.append('message_type','outgoing'); fd.append('private','false');
+  if(content) fd.append('content', content);
+  if(file && file.size) fd.append('attachments[]', file, file.name||'attachment');
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  return json({ok:true, data:await r.json().catch(()=>({}))});
+}
+
+// Approved-template send — for leads outside the 24h window, or any lead you want to reach
+// with a formal WhatsApp Business template. The "Template Broadcast" tab.
+async function handleBroadcastSendTemplate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {conv_id, content, template_name, category, language, processed_params}=await request.json().catch(()=>({}));
+  if(!conv_id||!content||!template_name) return json({error:'conv_id, content, and template_name required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({content, message_type:'outgoing', private:false, template_params:{name:template_name, category:category||'MARKETING', language:language||'en', processed_params:processed_params||{}}})
+  });
+  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  return json({ok:true, data:await r.json().catch(()=>({}))});
+}
+
+// Manual "send next follow-up now" — a rep's on-demand override alongside the automated
+// classic follow-up sequence (followup-template.json) and the recovery ladder (recovery.js).
+// Only covers the classic followup_messages sequence, not the recovery_* ladder, which stays
+// automation-only and read-only in the Follow-ups tab (see SETUP.md).
+async function handleBroadcastFollowupSend(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {lead_id}=await request.json().catch(()=>({}));
+  if(!lead_id) return json({error:'lead_id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
+  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  const lead=await leadR.json();
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Not your lead'}, 403);
+  const convId=lead.ConversationID;
+  if(!convId) return json({error:'This lead has no conversation yet.'}, 400);
+
+  const messages=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const count=parseInt(c.followup_count||0);
+  let nextIdx=-1;
+  for(let i=0;i<Math.min(count,3);i++){ if(lead['Follow up '+(i+1)]!=='Yes'){ nextIdx=i; break; } }
+  if(nextIdx===-1) return json({error:'No follow-up steps left to send for this lead.'}, 400);
+  const tmpl=messages[nextIdx]||messages[messages.length-1];
+  if(!tmpl) return json({error:'No follow-up message configured for this client.'}, 400);
+  const text=tmpl.replace(/\{name\}/gi, lead.Name||'there');
+
+  const fd=new FormData();
+  fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), ['Follow up '+(nextIdx+1)]:'Yes'}});
+  return json({ok:true, stage:nextIdx+1, sentText:text});
+}
+
 /* ── Channels module ──────────────────────────────────────────────────────
    Automates what SETUP.md used to require by hand: creating the client's
    Chatwoot account, connecting WhatsApp via Meta Embedded Signup, and adding
@@ -909,6 +1023,11 @@ export default {
       else if(url.pathname==='/wa/templates' && request.method==='POST'){ res=await handleWaTemplatesCreate(request, env); }
       else if(url.pathname==='/wa/send' && request.method==='POST'){ res=await handleWaSend(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
+      else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
+      else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }
+      else if(url.pathname==='/broadcast/send-dm' && request.method==='POST'){ res=await handleBroadcastSendDm(request, env); }
+      else if(url.pathname==='/broadcast/send-template' && request.method==='POST'){ res=await handleBroadcastSendTemplate(request, env); }
+      else if(url.pathname==='/broadcast/followup-send' && request.method==='POST'){ res=await handleBroadcastFollowupSend(request, env); }
       else if(url.pathname==='/channels/create-account' && request.method==='POST'){ res=await handleChannelsCreateAccount(request, env); }
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
