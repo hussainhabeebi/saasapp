@@ -489,7 +489,7 @@ async function handleBroadcastFollowupSend(request, env){
   if(!leadR.ok) return json({error:'Lead not found'}, 404);
   const lead=await leadR.json();
   if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Not your lead'}, 403);
-  const convId=lead.ConversationID;
+  const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
   if(!convId) return json({error:'This lead has no conversation yet.'}, 400);
 
   const messages=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
