@@ -411,7 +411,7 @@ async function handleBroadcastTemplatesGet(request, env){
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}/whatsapp_templates`, {headers:{api_access_token:c.chatwoot_token}});
   const data=await r.json().catch(()=>([]));
-  if(!r.ok) return json({error:'Chatwoot API '+r.status}, 502);
+  if(!r.ok) return json({error:(data&&!Array.isArray(data)&&data.message)||'Chatwoot API '+r.status}, 502);
   return json({ok:true, templates:data});
 }
 
