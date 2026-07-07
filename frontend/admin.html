@@ -11,7 +11,7 @@
 <style>
 :root {
   --bg:#E9EEEC; --card:#FFFFFF; --ink:#0F1F1A; --muted:#5B6B65;
-  --accent:#0E7C5A; --accent-ink:#0A5C43; --accent-soft:#D8EEE4;
+  --accent:#0D9C93; --accent-ink:#1E3A6E; --accent-soft:#DFF6F3;
   --line:#D7E0DC; --line-strong:#C2CEC9; --warn:#9A5B12; --warn-soft:#F6ECD9;
   --r:10px; --mono:"JetBrains Mono",ui-monospace,monospace;
   --disp:"Space Grotesk",system-ui,sans-serif; --body:"Inter",system-ui,sans-serif;
@@ -159,7 +159,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
   border:1.5px solid var(--line);position:relative;
   transition:box-shadow .18s,border-color .18s;
 }
-.client-card:hover{box-shadow:0 4px 20px rgba(14,124,90,.1);border-color:var(--line-strong)}
+.client-card:hover{box-shadow:0 4px 20px rgba(13,156,147,.1);border-color:var(--line-strong)}
 .card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:.5rem;margin-bottom:.875rem}
 .client-name{font-family:var(--disp);font-size:1.0625rem;font-weight:600;color:var(--ink);line-height:1.25}
 .health-dot{
@@ -273,9 +273,9 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 
 /* ── PROFESSIONAL POLISH ── */
 .client-card{transition:box-shadow .2s,border-color .2s,transform .15s}
-.client-card:hover{box-shadow:0 4px 20px rgba(14,124,90,.09);border-color:var(--accent);transform:translateY(-1px)}
-.btn-primary{transition:background .15s,transform .1s,box-shadow .15s;box-shadow:0 1px 3px rgba(14,124,90,.2)}
-.btn-primary:hover{box-shadow:0 3px 10px rgba(14,124,90,.25);transform:translateY(-1px)}
+.client-card:hover{box-shadow:0 4px 20px rgba(13,156,147,.09);border-color:var(--accent);transform:translateY(-1px)}
+.btn-primary{transition:background .15s,transform .1s,box-shadow .15s;box-shadow:0 1px 3px rgba(13,156,147,.2)}
+.btn-primary:hover{box-shadow:0 3px 10px rgba(13,156,147,.25);transform:translateY(-1px)}
 .btn-primary:active{transform:none;box-shadow:none}
 .btn-edit{transition:all .15s}
 .btn-view{transition:background .15s,transform .1s}
@@ -285,14 +285,14 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 .badge-active,.badge-suspended{border-radius:6px}
 #header{box-shadow:0 1px 0 var(--line),0 2px 8px rgba(0,0,0,.04)}
 .header-search{transition:border-color .15s,background .15s,box-shadow .15s}
-.header-search:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
+.header-search:focus{box-shadow:0 0 0 3px rgba(13,156,147,.1)}
 .edit-modal{box-shadow:0 16px 64px rgba(0,0,0,.2),0 4px 16px rgba(0,0,0,.1);animation:modalIn .2s cubic-bezier(.22,.61,.36,1)}
 @keyframes modalIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 .login-card{animation:loginIn .35s cubic-bezier(.22,.61,.36,1);box-shadow:0 24px 80px rgba(0,0,0,.32)}
 @keyframes loginIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
-.modal-form-group input:focus,.modal-form-group textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
+.modal-form-group input:focus,.modal-form-group textarea:focus{box-shadow:0 0 0 3px rgba(13,156,147,.1)}
 .btn-save{transition:background .15s,box-shadow .15s}
-.btn-save:hover{box-shadow:0 2px 8px rgba(14,124,90,.2)}
+.btn-save:hover{box-shadow:0 2px 8px rgba(13,156,147,.2)}
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-thumb{background:#C2CEC9;border-radius:4px}
 ::-webkit-scrollbar-thumb:hover{background:#9AADA8}
