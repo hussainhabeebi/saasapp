@@ -612,7 +612,7 @@ function renderOrdersTable() {
     tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">🧾</div>${allOrders.length ? 'No orders match your search' : 'No orders found'}</div></td></tr>`;
     return;
   }
-  const statusClass = s => ({shipped:'shipped',pending:'pending',cancelled:'cancelled',processing:'processing'}[s]||'');
+  const statusClass = s => ({shipped:'shipped',delivered:'shipped',pending:'pending',received:'processing',cancelled:'cancelled',processing:'processing'}[s]||'');
   tbody.innerHTML = list.map(o => `
     <tr>
       <td style="font-family:var(--mono);font-size:12px">#${esc(String(o.order_id||o.Id||'—'))}</td>
