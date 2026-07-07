@@ -173,17 +173,18 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <div class="card-title">Orders</div>
       <div class="card-actions">
         <input class="search-input" id="orderSearch" type="text" placeholder="🔍 Search orders…" oninput="renderOrdersTable()">
+        <button class="save-btn" onclick="openAddOrderModal()">+ Add Order</button>
       </div>
     </div>
     <div class="tbl-wrap">
       <table>
         <thead>
           <tr>
-            <th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th>
+            <th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="ordersTbody">
-          <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
+          <tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -312,6 +313,39 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <button class="save-btn sec" onclick="closeProductModal()">Cancel</button>
       <button class="save-btn" onclick="submitAddProduct()">Save Product</button>
       <span class="save-msg" id="productModalMsg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ADD ORDER MODAL -->
+<div class="modal-overlay" id="orderModalOverlay" onclick="if(event.target===this) closeOrderModal()">
+  <div class="modal-card">
+    <div class="modal-title">Add Order</div>
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Order ID</span><input class="s-input" id="omOrderId" type="text" placeholder="Auto-generated if left blank"></div>
+      <div class="s-sec"><span class="s-lbl">Order Date</span><input class="s-input" id="omOrderDate" type="date"></div>
+      <div class="s-sec"><span class="s-lbl">Customer Name</span><input class="s-input" id="omCustomerName" type="text"></div>
+      <div class="s-sec"><span class="s-lbl">Customer Phone *</span><input class="s-input" id="omCustomerPhone" type="text"></div>
+      <div class="s-sec"><span class="s-lbl">Total</span><input class="s-input" id="omTotal" type="number" step="0.01"></div>
+      <div class="s-sec"><span class="s-lbl">Currency</span><input class="s-input" id="omCurrency" type="text" placeholder="INR"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Status</span>
+        <select class="s-input" id="omStatus">
+          <option value="received">Received</option>
+          <option value="processing">Processing</option>
+          <option value="shipped">Shipped</option>
+          <option value="delivered">Delivered</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </div>
+    </div>
+    <div class="s-sec"><span class="s-lbl">Items</span><textarea class="s-input" id="omItems" rows="2" placeholder="e.g. 2x Wireless Mouse, 1x Desk Lamp"></textarea></div>
+    <div class="s-sec"><span class="s-lbl">Delivery Address</span><textarea class="s-input" id="omAddress" rows="2"></textarea></div>
+    <div class="s-sec"><span class="s-lbl">Notes</span><textarea class="s-input" id="omNotes" rows="2"></textarea></div>
+    <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" onclick="closeOrderModal()">Cancel</button>
+      <button class="save-btn" onclick="submitAddOrder()">Save Order</button>
+      <span class="save-msg" id="orderModalMsg"></span>
     </div>
   </div>
 </div>
@@ -544,7 +578,7 @@ async function deleteProduct(id, name) {
 async function loadOrders() {
   const tbody = document.getElementById('ordersTbody');
   if (!ecomTableIds.orders) {
-    tbody.innerHTML = '<tr><td colspan="6" class="loading-row">Set Orders Table ID in Settings first</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="loading-row">Set Orders Table ID in Settings first</td></tr>';
     return;
   }
   try {
@@ -555,7 +589,7 @@ async function loadOrders() {
     allOrders = data.list || [];
     renderOrdersTable();
   } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="loading-row">Error: ${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="loading-row">Error: ${e.message}</td></tr>`;
   }
 }
 
@@ -575,7 +609,7 @@ function renderOrdersTable() {
   document.getElementById('statRevenue').textContent = revenue.toLocaleString();
 
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">🧾</div>${allOrders.length ? 'No orders match your search' : 'No orders found'}</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">🧾</div>${allOrders.length ? 'No orders match your search' : 'No orders found'}</div></td></tr>`;
     return;
   }
   const statusClass = s => ({shipped:'shipped',pending:'pending',cancelled:'cancelled',processing:'processing'}[s]||'');
@@ -587,7 +621,75 @@ function renderOrdersTable() {
       <td>${esc(o.items||'—')}</td>
       <td>${esc(o.currency||'INR')} ${Number(o.total||0).toLocaleString()}</td>
       <td><span class="badge ${statusClass(o.status)}">${esc(o.status||'—')}</span></td>
+      <td><div class="row-actions"><button class="icon-btn danger" onclick="deleteOrderById(${o.Id})" title="Delete order">🗑</button></div></td>
     </tr>`).join('');
+}
+
+// ── ADD / DELETE ORDER ────────────────────────────
+function openAddOrderModal() {
+  if (!ecomTableIds.orders) { alert('Set the Orders Table ID in Settings first.'); return; }
+  ['omOrderId','omCustomerName','omCustomerPhone','omTotal','omItems','omAddress','omNotes'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('omCurrency').value = 'INR';
+  document.getElementById('omStatus').value = 'received';
+  document.getElementById('omOrderDate').value = new Date().toISOString().slice(0,10);
+  document.getElementById('orderModalMsg').textContent = '';
+  document.getElementById('orderModalOverlay').classList.add('active');
+  document.getElementById('omCustomerName').focus();
+}
+
+function closeOrderModal() {
+  document.getElementById('orderModalOverlay').classList.remove('active');
+}
+
+async function submitAddOrder() {
+  const phone = document.getElementById('omCustomerPhone').value.trim();
+  if (!phone) { showMsg('orderModalMsg', 'Customer phone is required'); return; }
+  const body = {
+    client_id: clientId,
+    order_id: document.getElementById('omOrderId').value.trim() || ('ORD-' + Date.now()),
+    customer_name: document.getElementById('omCustomerName').value.trim(),
+    customer_phone: phone.replace(/[^0-9+]/g,''),
+    order_date: document.getElementById('omOrderDate').value || new Date().toISOString().slice(0,10),
+    items: document.getElementById('omItems').value.trim(),
+    total: parseFloat(document.getElementById('omTotal').value) || 0,
+    currency: document.getElementById('omCurrency').value.trim() || 'INR',
+    status: document.getElementById('omStatus').value,
+    delivery_address: document.getElementById('omAddress').value.trim(),
+    notes: document.getElementById('omNotes').value.trim()
+  };
+  showMsg('orderModalMsg', 'Saving…', 10000);
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.orders}/records`, {
+      method: 'POST',
+      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    closeOrderModal();
+    loadOrders();
+  } catch(e) {
+    showMsg('orderModalMsg', 'Error: ' + e.message, 5000);
+  }
+}
+
+function deleteOrderById(id) {
+  const o = allOrders.find(x => x.Id === id);
+  deleteOrder(id, o?.order_id || o?.Id || 'this order');
+}
+
+async function deleteOrder(id, label) {
+  if (!confirm(`Delete order "${label}"? This cannot be undone.`)) return;
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.orders}/records`, {
+      method: 'DELETE',
+      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Id: id })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    loadOrders();
+  } catch(e) {
+    alert('Error deleting order: ' + e.message);
+  }
 }
 
 // ── COLUMN MAPPING ────────────────────────────────

@@ -2708,6 +2708,42 @@ const TODAY = new Date().toISOString().slice(0,10);
   </div>
 </div>
 
+<!-- MODAL: Push Lead to Order -->
+<div class="modal" id="modalPushOrder" style="width:520px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title">Push to Order</div><button class="icon-btn" onclick="closeModal('modalPushOrder')">✕</button></div>
+  <div class="modal-body">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="poCustomerName"></div>
+      <div class="form-group"><label class="form-label">Customer Phone *</label><input class="form-input" id="poCustomerPhone"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Items</label><textarea class="form-input" id="poItems" rows="2" placeholder="e.g. 2x Wireless Mouse, 1x Desk Lamp"></textarea></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Total</label><input class="form-input" type="number" step="0.01" id="poTotal"></div>
+      <div class="form-group"><label class="form-label">Currency</label><input class="form-input" id="poCurrency" placeholder="INR"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Order Date</label><input class="form-input" type="date" id="poOrderDate"></div>
+      <div class="form-group"><label class="form-label">Status</label>
+        <select class="form-input" id="poStatus">
+          <option value="received">Received</option>
+          <option value="processing">Processing</option>
+          <option value="shipped">Shipped</option>
+          <option value="delivered">Delivered</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">Delivery Address</label><textarea class="form-input" id="poAddress" rows="2"></textarea></div>
+    <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="poNotes" rows="2"></textarea></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="savePushOrderBtn" onclick="submitPushOrder()">Create Order</button>
+    <span class="save-msg" id="pushOrderMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalPushOrder')">Cancel</button>
+  </div>
+</div>
+
 <script>
 'use strict';
 
@@ -3576,6 +3612,7 @@ function openDetail(id){
     <a class="action-btn" href="${callLink}"><span class="ab-icon">📞</span>Call</a>
     <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>
     <button class="action-btn" onclick="openEditLead(currentLead)"><span class="ab-icon">✏️</span>Edit</button>
+    <button class="action-btn" onclick="openPushOrderModal()"><span class="ab-icon">🛒</span>Push to Order</button>
     <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
     ${TERMINAL.has(lead.Stage)?`<button class="action-btn" onclick="reopenLead()"><span class="ab-icon">🔄</span>Re-open</button>`:''}
     ${lead.IsDuplicate==='Yes'?`<button class="action-btn" onclick="openMerge()"><span class="ab-icon">🔀</span>Merge</button>`:''}
@@ -3629,6 +3666,59 @@ function openDetail(id){
 }
 
 function editCurrentLead(){ if(currentLead){closeModal('modalDetail');openEditLead(currentLead);} }
+
+/* ── PUSH LEAD TO ORDER (Ecommerce module) ── */
+function getEcomTableIds(){
+  try{return JSON.parse(clientRecord?.ecom_table_ids||'{}');}catch(e){return{};}
+}
+
+function openPushOrderModal(){
+  const lead=currentLead; if(!lead)return;
+  if(!getEcomTableIds().orders){
+    alert('The Ecommerce Orders table isn\'t set up yet. Open the Ecommerce module → Settings and save your Orders Table ID first.');
+    return;
+  }
+  $id('poCustomerName').value=lead.Name||'';
+  $id('poCustomerPhone').value=lead.Phone||'';
+  $id('poItems').value='';
+  $id('poTotal').value=lead.DealValue||'';
+  $id('poCurrency').value=lead.DealCurrency||clientRecord?.deal_currency||'INR';
+  $id('poOrderDate').value=TODAY;
+  $id('poStatus').value='received';
+  $id('poAddress').value='';
+  $id('poNotes').value='';
+  $id('pushOrderMsg').textContent='';
+  openModal('modalPushOrder');
+}
+
+async function submitPushOrder(){
+  const lead=currentLead; if(!lead)return;
+  const ecomIds=getEcomTableIds();
+  if(!ecomIds.orders){ $id('pushOrderMsg').textContent='Orders table not configured'; return; }
+  const phone=$id('poCustomerPhone').value.trim();
+  if(!phone){ $id('pushOrderMsg').textContent='Customer phone is required'; return; }
+  const body={
+    client_id: clientId,
+    order_id: 'ORD-'+Date.now(),
+    customer_name: $id('poCustomerName').value.trim(),
+    customer_phone: phone.replace(/[^0-9+]/g,''),
+    order_date: $id('poOrderDate').value||TODAY,
+    items: $id('poItems').value.trim(),
+    total: parseFloat($id('poTotal').value)||0,
+    currency: $id('poCurrency').value.trim()||'INR',
+    status: $id('poStatus').value,
+    delivery_address: $id('poAddress').value.trim(),
+    notes: $id('poNotes').value.trim()
+  };
+  $id('pushOrderMsg').textContent='Saving…';
+  try{
+    await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${ecomIds.orders}/records`, body);
+    closeModal('modalPushOrder');
+    addTag('Order Pushed').catch(()=>{});
+  }catch(e){
+    $id('pushOrderMsg').textContent='Error: '+e.message;
+  }
+}
 
 function renderDetailTags(lead){
   const tags=parseTags(lead.Tags);
