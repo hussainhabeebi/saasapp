@@ -64,6 +64,10 @@ tr:last-child td{border-bottom:none}
 .badge.processing{background:#DBEAFE;color:#1E3A8A}
 .thumb{width:36px;height:36px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block}
 .thumb-empty{background:var(--accent-soft)}
+select.badge{border:none;cursor:pointer;font-family:inherit;appearance:auto}
+select.badge:focus{outline:2px solid var(--accent);outline-offset:1px}
+.stock-input{width:64px;border:1.5px solid var(--line);border-radius:6px;padding:4px 6px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg)}
+.stock-input:focus{outline:none;border-color:var(--accent);background:#fff}
 
 /* SETTINGS */
 .s-sec{margin-bottom:24px}
@@ -271,6 +275,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <span class="save-msg" id="waTemplatesMsg"></span>
       </div>
       <div id="waTemplateReceived" style="margin-top:14px"></div>
+      <div id="waTemplateShipped" style="margin-top:14px"></div>
       <div id="waTemplateDelivered" style="margin-top:14px"></div>
     </div>
     <div class="s-row">
@@ -280,10 +285,12 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 
     <div style="background:var(--accent-soft);border-radius:10px;padding:14px;font-size:13px;color:var(--accent-ink);margin-top:14px">
       <strong>How it works:</strong><br>
-      Set up a NocoDB webhook on the <em>ecom_orders</em> table → <em>after.update</em> → POST to:<br>
+      Changing an order's status here (or via NocoDB) fires a webhook on the <em>ecom_orders</em> table → <em>after.update</em> → POST to:<br>
       <code style="font-family:var(--mono);font-size:11px;word-break:break-all;overflow-wrap:anywhere;display:block;margin-top:4px">https://n8n.aiingo.com/webhook/leadvyne-ecom-order-event</code><br><br>
       • Status → <strong>received / confirmed / processing</strong> → sends the "Order Received" template<br>
-      • Status → <strong>delivered / completed</strong> → sends the "Order Delivered" template
+      • Status → <strong>shipped / dispatched / out_for_delivery</strong> → sends the "Order Shipped" template<br>
+      • Status → <strong>delivered / completed</strong> → sends the "Order Delivered" template<br><br>
+      Note: this only fires on a <em>status change</em> — creating a new order already at that status won't trigger it.
     </div>
   </div>
 </div>
@@ -391,20 +398,23 @@ let columnMaps = { products: {}, orders: {} };
 let sheetHeaders = { products: [], orders: [] };
 let allProducts = [];
 let allOrders = [];
+const ORDER_STATUS_OPTIONS = ['pending','received','processing','shipped','delivered','cancelled'];
 
 const WA_TEMPLATE_KINDS = [
   { key:'received',  label:'Order Received Template' },
+  { key:'shipped',   label:'Order Shipped Template' },
   { key:'delivered', label:'Order Delivered Template' }
 ];
 const WA_VARS = [
   { key:'customer_name', label:'Customer Name' },
   { key:'order_id',      label:'Order ID' },
   { key:'items',         label:'Items' },
+  { key:'notes',         label:'Notes / Tracking Info' },
   { key:'review_link',   label:'Review Link' },
   { key:'store_name',    label:'Store Name' }
 ];
 let waTemplates = [];
-let waTemplateConfig = { received: null, delivered: null };
+let waTemplateConfig = { received: null, shipped: null, delivered: null };
 
 // ── INIT ──────────────────────────────────────────
 async function init() {
@@ -503,7 +513,7 @@ function renderProductsTable() {
       <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
       <td>${esc(p.category||'—')}</td>
       <td>${esc(p.currency||'INR')} ${Number(p.price||0).toLocaleString()}</td>
-      <td>${p.stock ?? '—'}</td>
+      <td><input type="number" class="stock-input" min="0" value="${p.stock ?? 0}" onchange="updateProductStock(${p.Id}, this.value)"></td>
       <td><span class="badge ${p.status==='active'?'shipped':p.status==='inactive'?'cancelled':''}">${esc(p.status||'—')}</span></td>
       <td><div class="row-actions"><button class="icon-btn danger" onclick="deleteProductById(${p.Id})" title="Delete product">🗑</button></div></td>
     </tr>`).join('');
@@ -557,6 +567,23 @@ async function submitAddProduct() {
 function deleteProductById(id) {
   const p = allProducts.find(x => x.Id === id);
   deleteProduct(id, p?.name || 'this product');
+}
+
+async function updateProductStock(id, value) {
+  const stock = Math.max(0, parseInt(value, 10) || 0);
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records`, {
+      method: 'PATCH',
+      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Id: id, stock })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const p = allProducts.find(x => x.Id === id);
+    if (p) p.stock = stock;
+    renderProductsTable();
+  } catch(e) {
+    alert('Error updating stock: ' + e.message);
+  }
 }
 
 async function deleteProduct(id, name) {
@@ -613,16 +640,20 @@ function renderOrdersTable() {
     return;
   }
   const statusClass = s => ({shipped:'shipped',delivered:'shipped',pending:'pending',received:'processing',cancelled:'cancelled',processing:'processing'}[s]||'');
-  tbody.innerHTML = list.map(o => `
+  const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  tbody.innerHTML = list.map(o => {
+    const opts = ORDER_STATUS_OPTIONS.includes(o.status) ? ORDER_STATUS_OPTIONS : [...ORDER_STATUS_OPTIONS, o.status].filter(Boolean);
+    return `
     <tr>
       <td style="font-family:var(--mono);font-size:12px">#${esc(String(o.order_id||o.Id||'—'))}</td>
       <td>${esc(o.customer_name||'—')}</td>
       <td>${esc(o.order_date||'—')}</td>
       <td>${esc(o.items||'—')}</td>
       <td>${esc(o.currency||'INR')} ${Number(o.total||0).toLocaleString()}</td>
-      <td><span class="badge ${statusClass(o.status)}">${esc(o.status||'—')}</span></td>
+      <td><select class="badge ${statusClass(o.status)}" onchange="updateOrderStatus(${o.Id}, this.value)">${opts.map(s => `<option value="${escAttr(s)}" ${s===o.status?'selected':''}>${esc(cap(s))}</option>`).join('')}</select></td>
       <td><div class="row-actions"><button class="icon-btn danger" onclick="deleteOrderById(${o.Id})" title="Delete order">🗑</button></div></td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 // ── ADD / DELETE ORDER ────────────────────────────
@@ -675,6 +706,22 @@ async function submitAddOrder() {
 function deleteOrderById(id) {
   const o = allOrders.find(x => x.Id === id);
   deleteOrder(id, o?.order_id || o?.Id || 'this order');
+}
+
+async function updateOrderStatus(id, newStatus) {
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.orders}/records`, {
+      method: 'PATCH',
+      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Id: id, status: newStatus })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const o = allOrders.find(x => x.Id === id);
+    if (o) o.status = newStatus;
+    renderOrdersTable();
+  } catch(e) {
+    alert('Error updating status: ' + e.message);
+  }
 }
 
 async function deleteOrder(id, label) {
@@ -769,7 +816,7 @@ async function loadWaTemplates() {
 }
 
 function renderWaTemplateBlock(kind, label) {
-  const container = document.getElementById(kind === 'received' ? 'waTemplateReceived' : 'waTemplateDelivered');
+  const container = document.getElementById('waTemplate' + kind.charAt(0).toUpperCase() + kind.slice(1));
   const cfg = waTemplateConfig[kind] || {};
   const options = ['<option value="">— None —</option>']
     .concat(waTemplates.map(t => `<option value="${escAttr(t.name+'|'+t.language)}" ${cfg.name===t.name && cfg.lang===t.language ? 'selected':''}>${esc(t.name)} (${esc(t.language)})</option>`));
