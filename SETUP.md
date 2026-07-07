@@ -260,9 +260,9 @@ Copy the resulting `https://leadvyne-api-proxy.<your-subdomain>.workers.dev` URL
 `dashboard.html`'s `WORKER_BASE` constant (replacing `REPLACE_WITH_WORKER_URL`), and redeploy
 the frontend.
 
-**Known gap**: `broadcast.html` and `ecom.html` still embed the master NocoDB token directly and
-are **not yet migrated** to this Worker — same exposure as before on those two pages
-specifically. `dashboard.html`, `index.html`, and `admin.html` are fully migrated.
+**Known gap**: `ecom.html` still embeds the master NocoDB token directly and is **not yet
+migrated** to this Worker. `dashboard.html`, `index.html`, `admin.html`, and now `broadcast.html`
+(see "Campaigns module" below) are fully migrated.
 
 ## Admin panel (admin.html)
 `admin.html` used to hold **three** master credentials in plaintext, extractable via view-source
@@ -691,6 +691,45 @@ call failed — same "AI primary, rule-based fallback" pattern as the intent cla
 respects `WinProbabilityManual`, so a rep's own edit is never overwritten. This can be swapped for
 a real trained model later without changing anything downstream — `Code · Prep lead` only cares
 that `sc.aiWinProbability` is a number.
+
+## Campaigns module (frontend/broadcast.html — renamed from "Broadcast")
+Reworked in two ways: migrated off the master-NocoDB-token/plaintext-password pattern onto the
+same Worker-session architecture as `dashboard.html`, and reorganized from 3 tabs into 5, adding
+Follow-ups and Tracking.
+
+**Security migration**: this page used to embed the master NocoDB token *and* the client's own
+`chatwoot_token` directly in the page source (view-source readable) — the exact vulnerability
+already fixed in `dashboard.html` via Authentik + the Worker (see "Dashboard login" above), just
+never carried over here. Fixed the same way:
+- No more standalone login form. This page only ever opens via `window.open('broadcast.html',
+  '_blank')` from an already-authenticated `dashboard.html` tab, which — per the same-origin
+  `window.open` spec behavior — copies its `sessionStorage` into the new tab, so `lv_cid`/
+  `lv_session` are already present. If they're missing (e.g. someone bookmarks this page directly),
+  it just redirects to `dashboard.html` to sign in there.
+- All NocoDB reads/writes now go through `${WORKER_BASE}/nocodb/*` with the inherited session
+  bearer token, same as `dashboard.html`.
+- Every Chatwoot call (template list/create, DM send, template-broadcast send) moved server-side
+  into the Worker — new routes `GET/POST /broadcast/templates`, `POST /broadcast/send-dm`, `POST
+  /broadcast/send-template` — so `chatwoot_token` never reaches the browser. The template list/
+  create routes hit Chatwoot's own inbox-scoped `whatsapp_templates` endpoint (this page's existing
+  integration path), which is separate from the Graph-API-direct `/wa/templates` route used
+  elsewhere in this Worker for the Prospects module — both are real, just different upstreams.
+
+**New tab: 🔁 Follow-ups** — shows leads currently mid-sequence in either of the two existing
+automated systems: the classic `followup_messages` sequence (`Follow up 1/2/3` flags, up to
+`followup_count` steps) and the recovery ladder (`recovery_stage`/`recovery_done`, driven by
+`backend/recovery.js`). A "Send Next Now" button gives a rep a manual override — **classic
+sequence only**; the recovery ladder is shown read-only since it's a separate automation with its
+own escalation timing that a one-off manual send would desync. New Worker route: `POST
+/broadcast/followup-send` (`{lead_id}`) — sends the next unconfigured classic step via Chatwoot
+and marks the corresponding `Follow up N` field, reusing the same message templates the automated
+`followup-template.json` workflow already uses.
+
+**New tab: 📊 Tracking** — every Direct Message / Template Broadcast / manual follow-up run gets
+logged to a new CLIENTS field, `broadcast_log` (Long text, JSON array of `{ts, type, total, sent,
+failed}`, capped to the most recent 50 — same capped-list pattern as `fulfilled_addon_events`).
+Read/written via the existing generic `/nocodb/*` passthrough, no dedicated Worker route needed for
+it. Add this column to the CLIENTS table before using the Tracking tab.
 
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
