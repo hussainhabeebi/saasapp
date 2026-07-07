@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const b = $('Webhook · Sheet Headers').first().json.body;\nconst gsheetUrl = b.gsheet_url || '';\nconst match = gsheetUrl.match(/\\/spreadsheets\\/d\\/([a-zA-Z0-9-_]+)/);\nif (!match) throw new Error('Invalid Google Sheet URL');\nreturn [{ json: { spreadsheetId: match[1] } }];"
+        "jsCode": "const b = $('Webhook · Sheet Headers').first().json.body;\nconst gsheetUrl = b.gsheet_url || '';\nconst match = gsheetUrl.match(/\\/spreadsheets\\/d\\/([a-zA-Z0-9-_]+)/);\nif (!match) throw new Error('Invalid Google Sheet URL');\n// Default to the first tab (gid=0) when the URL doesn't name one — far more\n// forgiving than requiring an exact sheet-tab name match.\nconst gidMatch = gsheetUrl.match(/gid=(\\d+)/);\nconst gid = gidMatch ? gidMatch[1] : '0';\nreturn [{ json: { spreadsheetId: match[1], gid } }];"
       },
       "id": "eheaders-parse",
       "name": "Code · Parse Request",
@@ -27,22 +27,22 @@
     },
     {
       "parameters": {
-        "operation": "read",
-        "documentId": "={{ $json.spreadsheetId }}",
-        "sheetName": "Sheet1",
-        "options": { "range": "Sheet1!1:1" }
+        "method": "GET",
+        "url": "=https://docs.google.com/spreadsheets/d/{{ $json.spreadsheetId }}/export?format=csv&gid={{ $json.gid }}",
+        "options": {
+          "response": { "response": { "responseFormat": "text" } }
+        }
       },
       "id": "eheaders-fetch",
-      "name": "HTTP · Fetch Header Row",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.4,
+      "name": "HTTP · Fetch Sheet CSV",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [-160, 0],
-      "credentials": { "googleSheetsOAuth2Api": { "id": "REPLACE_GSHEET_CRED", "name": "Google Sheets" } },
       "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "jsCode": "const raw = $input.first().json;\nconst rowValues = raw.values ? raw.values[0] : Object.values(raw).filter(v => typeof v === 'string' || typeof v === 'number');\nconst headers = (rowValues || []).map(h => String(h).trim()).filter(Boolean);\nreturn [{ json: { headers } }];"
+        "jsCode": "const raw = $input.first().json;\nconst csvText = typeof raw === 'string' ? raw : (raw.data ?? raw.body ?? raw.text ?? '');\n\n// A sheet that isn't publicly viewable returns Google's HTML login/error page\n// instead of CSV — surface that clearly instead of returning garbage headers.\nif (!csvText || /^\\s*<(!doctype|html)/i.test(csvText.trim())) {\n  return [{ json: { headers: [], error: 'Could not read the sheet. In Google Sheets, use Share → General access → \"Anyone with the link\" (Viewer), then try again.' } }];\n}\n\nfunction parseCSVLine(text) {\n  const row = [];\n  let field = '', inQuotes = false;\n  for (let i = 0; i < text.length; i++) {\n    const c = text[i];\n    if (inQuotes) {\n      if (c === '\"') { if (text[i + 1] === '\"') { field += '\"'; i++; } else { inQuotes = false; } }\n      else field += c;\n    } else {\n      if (c === '\"') inQuotes = true;\n      else if (c === ',') { row.push(field); field = ''; }\n      else if (c === '\\r') { /* skip */ }\n      else if (c === '\\n') { break; } // stop at end of first line\n      else field += c;\n    }\n  }\n  row.push(field);\n  return row;\n}\n\nconst headers = parseCSVLine(csvText).map(h => String(h).trim()).filter(Boolean);\nreturn [{ json: { headers } }];"
       },
       "id": "eheaders-format",
       "name": "Code · Format Headers",
@@ -65,8 +65,8 @@
   ],
   "connections": {
     "Webhook · Sheet Headers": { "main": [ [ { "node": "Code · Parse Request", "type": "main", "index": 0 } ] ] },
-    "Code · Parse Request":    { "main": [ [ { "node": "HTTP · Fetch Header Row", "type": "main", "index": 0 } ] ] },
-    "HTTP · Fetch Header Row": { "main": [ [ { "node": "Code · Format Headers", "type": "main", "index": 0 } ] ] },
+    "Code · Parse Request":    { "main": [ [ { "node": "HTTP · Fetch Sheet CSV", "type": "main", "index": 0 } ] ] },
+    "HTTP · Fetch Sheet CSV":  { "main": [ [ { "node": "Code · Format Headers", "type": "main", "index": 0 } ] ] },
     "Code · Format Headers":   { "main": [ [ { "node": "Respond · Headers", "type": "main", "index": 0 } ] ] }
   },
   "settings": { "executionOrder": "v1" },

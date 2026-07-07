@@ -145,6 +145,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     <div class="card-title-row">
       <div class="card-title">Products</div>
       <div class="card-actions">
+        <button class="save-btn sec" id="bulkDeleteProductsBtn" style="display:none" onclick="bulkDeleteProducts()">🗑 Delete Selected</button>
         <input class="search-input" id="productSearch" type="text" placeholder="🔍 Search products…" oninput="renderProductsTable()">
         <button class="save-btn" onclick="openAddProductModal()">+ Add Product</button>
       </div>
@@ -153,11 +154,12 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <table>
         <thead>
           <tr>
-            <th>Image</th><th>Name</th><th>SKU</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th>
+            <th style="width:1%"><input type="checkbox" id="selectAllProducts" onchange="toggleSelectAllProducts(this.checked)"></th>
+            <th>Image</th><th>Name</th><th>SKU</th><th>Category</th><th>Color</th><th>Size</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="productsTbody">
-          <tr class="loading-row"><td colspan="8"><span class="spinner"></span>Loading…</td></tr>
+          <tr class="loading-row"><td colspan="11"><span class="spinner"></span>Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -295,14 +297,17 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 </div>
 
-<!-- ADD PRODUCT MODAL -->
+<!-- ADD/EDIT PRODUCT MODAL -->
 <div class="modal-overlay" id="productModalOverlay" onclick="if(event.target===this) closeProductModal()">
   <div class="modal-card">
-    <div class="modal-title">Add Product</div>
+    <div class="modal-title" id="productModalTitle">Add Product</div>
+    <input type="hidden" id="pmId">
     <div class="modal-grid">
       <div class="s-sec"><span class="s-lbl">Name *</span><input class="s-input" id="pmName" type="text"></div>
       <div class="s-sec"><span class="s-lbl">SKU</span><input class="s-input" id="pmSku" type="text"></div>
       <div class="s-sec"><span class="s-lbl">Category</span><input class="s-input" id="pmCategory" type="text"></div>
+      <div class="s-sec"><span class="s-lbl">Color</span><input class="s-input" id="pmColor" type="text" placeholder="e.g. Black"></div>
+      <div class="s-sec"><span class="s-lbl">Size</span><input class="s-input" id="pmSize" type="text" placeholder="e.g. M, 42, 10ml"></div>
       <div class="s-sec"><span class="s-lbl">Price</span><input class="s-input" id="pmPrice" type="number" step="0.01"></div>
       <div class="s-sec"><span class="s-lbl">Currency</span><input class="s-input" id="pmCurrency" type="text" placeholder="INR"></div>
       <div class="s-sec"><span class="s-lbl">Stock</span><input class="s-input" id="pmStock" type="number"></div>
@@ -318,7 +323,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     </div>
     <div class="s-row" style="justify-content:flex-end">
       <button class="save-btn sec" onclick="closeProductModal()">Cancel</button>
-      <button class="save-btn" onclick="submitAddProduct()">Save Product</button>
+      <button class="save-btn" id="productModalSaveBtn" onclick="submitProductForm()">Save Product</button>
       <span class="save-msg" id="productModalMsg"></span>
     </div>
   </div>
@@ -375,6 +380,8 @@ const PRODUCT_FIELDS = [
   { key:'name',        label:'Name',        required:true },
   { key:'sku',         label:'SKU' },
   { key:'category',    label:'Category' },
+  { key:'color',       label:'Color' },
+  { key:'size',        label:'Size' },
   { key:'price',       label:'Price' },
   { key:'currency',    label:'Currency' },
   { key:'stock',       label:'Stock' },
@@ -397,6 +404,7 @@ const ORDER_FIELDS = [
 let columnMaps = { products: {}, orders: {} };
 let sheetHeaders = { products: [], orders: [] };
 let allProducts = [];
+let selectedProductIds = new Set();
 let allOrders = [];
 const ORDER_STATUS_OPTIONS = ['pending','received','processing','shipped','delivered','cancelled'];
 
@@ -474,7 +482,7 @@ function showTab(name) {
 async function loadProducts() {
   const tbody = document.getElementById('productsTbody');
   if (!ecomTableIds.products) {
-    tbody.innerHTML = '<tr><td colspan="8" class="loading-row">Set Products Table ID in Settings first</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="loading-row">Set Products Table ID in Settings first</td></tr>';
     return;
   }
   try {
@@ -483,9 +491,11 @@ async function loadProducts() {
     });
     const data = await r.json();
     allProducts = data.list || [];
+    const liveIds = new Set(allProducts.map(p => p.Id));
+    [...selectedProductIds].forEach(id => { if (!liveIds.has(id)) selectedProductIds.delete(id); });
     renderProductsTable();
   } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="loading-row">Error: ${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="loading-row">Error: ${e.message}</td></tr>`;
   }
 }
 
@@ -493,7 +503,7 @@ function renderProductsTable() {
   const tbody = document.getElementById('productsTbody');
   const q = (document.getElementById('productSearch')?.value || '').trim().toLowerCase();
   const list = q
-    ? allProducts.filter(p => [p.name, p.sku, p.category].some(v => (v||'').toLowerCase().includes(q)))
+    ? allProducts.filter(p => [p.name, p.sku, p.category, p.color, p.size].some(v => (v||'').toLowerCase().includes(q)))
     : allProducts;
 
   const inStock = allProducts.filter(p => p.stock > 0).length;
@@ -503,28 +513,113 @@ function renderProductsTable() {
   document.getElementById('statOutOfStock').textContent = outOfStock;
 
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📦</div>${allProducts.length ? 'No products match your search' : 'No products found'}</div></td></tr>`;
-    return;
+    tbody.innerHTML = `<tr><td colspan="11"><div class="empty-state"><div class="empty-icon">📦</div>${allProducts.length ? 'No products match your search' : 'No products found'}</div></td></tr>`;
+  } else {
+    tbody.innerHTML = list.map(p => `
+      <tr>
+        <td><input type="checkbox" class="row-check" onchange="toggleProductSelect(${p.Id}, this.checked)" ${selectedProductIds.has(p.Id)?'checked':''}></td>
+        <td>${p.image_url ? `<img src="${escAttr(p.image_url)}" alt="" class="thumb" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb thumb-empty'}))">` : '<div class="thumb thumb-empty"></div>'}</td>
+        <td><strong>${esc(p.name||p.title||'—')}</strong></td>
+        <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
+        <td>${esc(p.category||'—')}</td>
+        <td>${esc(p.color||'—')}</td>
+        <td>${esc(p.size||'—')}</td>
+        <td>${esc(p.currency||'INR')} ${Number(p.price||0).toLocaleString()}</td>
+        <td><input type="number" class="stock-input" min="0" value="${p.stock ?? 0}" onchange="updateProductStock(${p.Id}, this.value)"></td>
+        <td><span class="badge ${p.status==='active'?'shipped':p.status==='inactive'?'cancelled':''}">${esc(p.status||'—')}</span></td>
+        <td><div class="row-actions">
+          <button class="icon-btn" onclick="openEditProductModal(${p.Id})" title="Edit product">✏️</button>
+          <button class="icon-btn danger" onclick="deleteProductById(${p.Id})" title="Delete product">🗑</button>
+        </div></td>
+      </tr>`).join('');
   }
-  tbody.innerHTML = list.map(p => `
-    <tr>
-      <td>${p.image_url ? `<img src="${escAttr(p.image_url)}" alt="" class="thumb" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb thumb-empty'}))">` : '<div class="thumb thumb-empty"></div>'}</td>
-      <td><strong>${esc(p.name||p.title||'—')}</strong></td>
-      <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
-      <td>${esc(p.category||'—')}</td>
-      <td>${esc(p.currency||'INR')} ${Number(p.price||0).toLocaleString()}</td>
-      <td><input type="number" class="stock-input" min="0" value="${p.stock ?? 0}" onchange="updateProductStock(${p.Id}, this.value)"></td>
-      <td><span class="badge ${p.status==='active'?'shipped':p.status==='inactive'?'cancelled':''}">${esc(p.status||'—')}</span></td>
-      <td><div class="row-actions"><button class="icon-btn danger" onclick="deleteProductById(${p.Id})" title="Delete product">🗑</button></div></td>
-    </tr>`).join('');
+
+  const visibleIds = list.map(p => p.Id);
+  const selectAll = document.getElementById('selectAllProducts');
+  if (selectAll) {
+    selectAll.checked = visibleIds.length > 0 && visibleIds.every(id => selectedProductIds.has(id));
+    selectAll.indeterminate = !selectAll.checked && visibleIds.some(id => selectedProductIds.has(id));
+  }
+  updateBulkDeleteUI();
 }
 
-// ── ADD / DELETE PRODUCT ──────────────────────────
+// ── SELECTION / BULK DELETE ────────────────────────
+function toggleProductSelect(id, checked) {
+  if (checked) selectedProductIds.add(id); else selectedProductIds.delete(id);
+  renderProductsTable();
+}
+
+function toggleSelectAllProducts(checked) {
+  const q = (document.getElementById('productSearch')?.value || '').trim().toLowerCase();
+  const list = q
+    ? allProducts.filter(p => [p.name, p.sku, p.category, p.color, p.size].some(v => (v||'').toLowerCase().includes(q)))
+    : allProducts;
+  list.forEach(p => { if (checked) selectedProductIds.add(p.Id); else selectedProductIds.delete(p.Id); });
+  renderProductsTable();
+}
+
+function updateBulkDeleteUI() {
+  const btn = document.getElementById('bulkDeleteProductsBtn');
+  if (!btn) return;
+  if (selectedProductIds.size) {
+    btn.style.display = '';
+    btn.textContent = `🗑 Delete Selected (${selectedProductIds.size})`;
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+async function bulkDeleteProducts() {
+  const ids = [...selectedProductIds];
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} selected product${ids.length>1?'s':''}? This cannot be undone.`)) return;
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records`, {
+      method: 'DELETE',
+      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify(ids.map(id => ({ Id: id })))
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    selectedProductIds.clear();
+    loadProducts();
+  } catch(e) {
+    alert('Error deleting products: ' + e.message);
+  }
+}
+
+// ── ADD / EDIT / DELETE PRODUCT ───────────────────
+const PRODUCT_MODAL_FIELDS = ['pmName','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmDescription'];
+
 function openAddProductModal() {
   if (!ecomTableIds.products) { alert('Set the Products Table ID in Settings first.'); return; }
-  ['pmName','pmSku','pmCategory','pmPrice','pmStock','pmImage','pmDescription'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('pmId').value = '';
+  PRODUCT_MODAL_FIELDS.forEach(id => document.getElementById(id).value = '');
   document.getElementById('pmCurrency').value = 'INR';
   document.getElementById('pmStatus').value = 'active';
+  document.getElementById('productModalTitle').textContent = 'Add Product';
+  document.getElementById('productModalSaveBtn').textContent = 'Save Product';
+  document.getElementById('productModalMsg').textContent = '';
+  document.getElementById('productModalOverlay').classList.add('active');
+  document.getElementById('pmName').focus();
+}
+
+function openEditProductModal(id) {
+  const p = allProducts.find(x => x.Id === id);
+  if (!p) return;
+  document.getElementById('pmId').value = p.Id;
+  document.getElementById('pmName').value = p.name || '';
+  document.getElementById('pmSku').value = p.sku || '';
+  document.getElementById('pmCategory').value = p.category || '';
+  document.getElementById('pmColor').value = p.color || '';
+  document.getElementById('pmSize').value = p.size || '';
+  document.getElementById('pmPrice').value = p.price ?? '';
+  document.getElementById('pmCurrency').value = p.currency || 'INR';
+  document.getElementById('pmStock').value = p.stock ?? '';
+  document.getElementById('pmStatus').value = p.status === 'inactive' ? 'inactive' : 'active';
+  document.getElementById('pmImage').value = p.image_url || '';
+  document.getElementById('pmDescription').value = p.description || '';
+  document.getElementById('productModalTitle').textContent = 'Edit Product';
+  document.getElementById('productModalSaveBtn').textContent = 'Save Changes';
   document.getElementById('productModalMsg').textContent = '';
   document.getElementById('productModalOverlay').classList.add('active');
   document.getElementById('pmName').focus();
@@ -534,14 +629,16 @@ function closeProductModal() {
   document.getElementById('productModalOverlay').classList.remove('active');
 }
 
-async function submitAddProduct() {
+async function submitProductForm() {
   const name = document.getElementById('pmName').value.trim();
   if (!name) { showMsg('productModalMsg', 'Name is required'); return; }
+  const editId = document.getElementById('pmId').value;
   const body = {
-    client_id: clientId,
     name,
     sku: document.getElementById('pmSku').value.trim(),
     category: document.getElementById('pmCategory').value.trim(),
+    color: document.getElementById('pmColor').value.trim(),
+    size: document.getElementById('pmSize').value.trim(),
     price: parseFloat(document.getElementById('pmPrice').value) || 0,
     currency: document.getElementById('pmCurrency').value.trim() || 'INR',
     stock: parseInt(document.getElementById('pmStock').value, 10) || 0,
@@ -549,12 +646,13 @@ async function submitAddProduct() {
     image_url: document.getElementById('pmImage').value.trim(),
     description: document.getElementById('pmDescription').value.trim()
   };
+  if (!editId) body.client_id = clientId;
   showMsg('productModalMsg', 'Saving…', 10000);
   try {
     const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records`, {
-      method: 'POST',
+      method: editId ? 'PATCH' : 'POST',
       headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(editId ? { Id: parseInt(editId, 10), ...body } : body)
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     closeProductModal();
@@ -595,6 +693,7 @@ async function deleteProduct(id, name) {
       body: JSON.stringify({ Id: id })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
+    selectedProductIds.delete(id);
     loadProducts();
   } catch(e) {
     alert('Error deleting product: ' + e.message);
