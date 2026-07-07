@@ -341,7 +341,7 @@ async function handleWaTemplatesGet(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
   if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates?fields=name,status,language,category&limit=200`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates?fields=name,status,language,category,components&limit=200`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
   const data=await r.json();
   if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
   return json(data);
@@ -377,6 +377,25 @@ async function handleWaSend(request, env){
   const data=await r.json();
   if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
   return json({ok:true, data});
+}
+
+// Template sends go straight to Meta's Graph API, bypassing Chatwoot entirely — needed for
+// leads outside the 24h session window, where only an approved template is allowed, and
+// avoids depending on Chatwoot's own whatsapp_templates sync (which some inboxes 404 on).
+async function handleWaSendTemplate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {phone, template_name, language, components}=await request.json().catch(()=>({}));
+  if(!phone||!template_name) return json({error:'phone and template_name required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp Business API is not connected for this account — connect it from Settings → Channels.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'template', template:{name:template_name, language:{code:language||'en'}, components:components||[]}})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  return json({ok:true, message_id:data?.messages?.[0]?.id});
 }
 
 async function handleAiComplete(request, env){
@@ -1022,6 +1041,7 @@ export default {
       else if(url.pathname==='/wa/templates' && request.method==='GET'){ res=await handleWaTemplatesGet(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='POST'){ res=await handleWaTemplatesCreate(request, env); }
       else if(url.pathname==='/wa/send' && request.method==='POST'){ res=await handleWaSend(request, env); }
+      else if(url.pathname==='/wa/send-template' && request.method==='POST'){ res=await handleWaSendTemplate(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }

@@ -836,15 +836,27 @@ async function sendDm(){
 }
 
 // ── TEMPLATES ──
+// Sent straight via Meta's Graph API (not Chatwoot) — template sends need to reach leads
+// outside the 24h session window, and this avoids depending on Chatwoot's own template sync.
+// Requires WhatsApp to be connected via the dashboard's Settings → Channels (Embedded Signup);
+// that flow already collects and stores the Graph API credentials this page needs, so there's
+// no separate credential form here — just a deep link back to it if not connected yet.
 async function loadTemplates(){
   ['tplLoading','tplListLoading'].forEach(id=>$id(id).classList.remove('hidden'));
   ['tplGrid','tplNone','tplError','tplListWrap'].forEach(id=>$id(id).classList.add('hidden'));
 
+  if(!clientRecord?.wa_phone_id||!clientRecord?.wa_token){
+    ['tplLoading','tplListLoading'].forEach(id=>$id(id).classList.add('hidden'));
+    $id('tplError').innerHTML='WhatsApp Business API isn\'t connected yet. <a href="dashboard.html?channels=1" style="color:inherit;text-decoration:underline;font-weight:600">Connect it in Settings → Channels</a> — one-time setup via Meta\'s Embedded Signup, no manual token entry.';
+    $id('tplError').classList.remove('hidden');
+    return;
+  }
+
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates`,{headers:ncAuthHeaders()});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/wa/templates`,{headers:ncAuthHeaders()});
     const resp=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(resp.error||('HTTP '+r.status));
-    const data=resp.templates||[];
+    const data=resp.data||[];
     allTemplates=(data||[]).filter(t=>t.status==='approved'||t.status==='APPROVED');
 
     renderTemplateGrid();
@@ -954,23 +966,22 @@ async function sendTemplateBroadcast(){
   let sent=0,failed=0;
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
-    const convId=leadConvId(lead);
-    if(!convId){ failed++; appendLog('tpl',`⚠️ ${lead.Name||lead.Phone} — no conversation ID`); setProgress('tpl',i+1,leads.length); await sleep(400); continue; }
+    const phone=(lead.Phone||'').replace(/[^0-9]/g,'');
+    if(!phone){ failed++; appendLog('tpl',`⚠️ ${lead.Name||lead.Phone} — no phone number`); setProgress('tpl',i+1,leads.length); await sleep(400); continue; }
 
     const resolvedVars=vars.map((v,idx)=>idx===0&&personalize?(lead.Name||v):v);
-    let content=getTemplateBody(selectedTemplate);
-    resolvedVars.forEach((v,j)=>{ content=content.replace(new RegExp(`\\{\\{${j+1}\\}\\}`,'g'),v); });
 
     try{
-      const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/send-template`,{
+      // Sent directly via Graph API (not Chatwoot) — works outside the 24h session window,
+      // which is the whole point of a template broadcast. See loadTemplates() for why.
+      const r=await fetch(`${CONFIG.WORKER_BASE}/wa/send-template`,{
         method:'POST',
         headers:ncAuthHeaders({'Content-Type':'application/json'}),
         body:JSON.stringify({
-          conv_id:convId, content,
+          phone,
           template_name:selectedTemplate.name,
-          category:selectedTemplate.category||'MARKETING',
           language:selectedTemplate.language||selectedTemplate.language_code||'en',
-          processed_params:Object.fromEntries(resolvedVars.map((v,j)=>[String(j+1),v]))
+          components:varCount?[{type:'body', parameters:resolvedVars.map(v=>({type:'text', text:v}))}]:[]
         })
       });
       const data=await r.json().catch(()=>({}));

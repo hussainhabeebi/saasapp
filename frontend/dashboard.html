@@ -2984,6 +2984,8 @@ function showApp(){
   _reminderTimer=setInterval(checkReminders,6*3600*1000);
   // Land back on Billing after a Stripe Checkout/Portal redirect instead of the default Home tab.
   if(new URLSearchParams(location.search).has('billing')) navigate('billing');
+  // Deep link from Campaigns' Template Broadcast tab when WhatsApp Business API isn't connected yet.
+  if(new URLSearchParams(location.search).has('channels')) navigate('channels');
 }
 
 const _CACHE_KEY=()=>`lv_leads_${clientId}`;
