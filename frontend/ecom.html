@@ -366,9 +366,10 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 </main>
 
 <script>
-const NOCODB_BASE = 'https://whizz.aiingo.com';
-const NOCODB_TOKEN = 'nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF';
-const CLIENTS_TABLE = 'mxl33bg4wi70fqj';
+// All NocoDB access goes through the Worker's /ecom/* routes — the master
+// NocoDB token stays server-side there, never in this page. See worker.js's
+// top-of-file comment and the ECOM_* handlers for how access is scoped.
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const N8N_BASE = 'https://apps.leadvyne.com';
 
 const params = new URLSearchParams(location.search);
@@ -429,10 +430,9 @@ async function init() {
   if (!clientId) { clientId = prompt('Enter your Client ID:') || ''; }
   if (!clientId) return;
 
-  const res = await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`, {
-    headers: { 'xc-token': NOCODB_TOKEN }
-  });
+  const res = await fetch(`${WORKER_BASE}/ecom/client?client_id=${encodeURIComponent(clientId)}`);
   clientRecord = await res.json();
+  if (clientRecord.error) { alert(clientRecord.error); return; }
   try { ecomTableIds = JSON.parse(clientRecord.ecom_table_ids || '{}'); } catch(e) { ecomTableIds = {}; }
 
   // Populate settings
@@ -486,9 +486,7 @@ async function loadProducts() {
     return;
   }
   try {
-    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records?where=(client_id,eq,${clientId})&limit=200`, {
-      headers: { 'xc-token': NOCODB_TOKEN }
-    });
+    const r = await fetch(`${WORKER_BASE}/ecom/products?client_id=${encodeURIComponent(clientId)}&limit=200`);
     const data = await r.json();
     allProducts = data.list || [];
     const liveIds = new Set(allProducts.map(p => p.Id));
@@ -574,14 +572,18 @@ async function bulkDeleteProducts() {
   if (!ids.length) return;
   if (!confirm(`Delete ${ids.length} selected product${ids.length>1?'s':''}? This cannot be undone.`)) return;
   try {
-    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records`, {
+    const r = await fetch(`${WORKER_BASE}/ecom/products`, {
       method: 'DELETE',
-      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify(ids.map(id => ({ Id: id })))
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, ids })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json().catch(() => ({}));
     selectedProductIds.clear();
     loadProducts();
+    if (data.requested && data.deleted < data.requested) {
+      alert(`Deleted ${data.deleted} of ${data.requested} selected products.`);
+    }
   } catch(e) {
     alert('Error deleting products: ' + e.message);
   }
@@ -646,13 +648,14 @@ async function submitProductForm() {
     image_url: document.getElementById('pmImage').value.trim(),
     description: document.getElementById('pmDescription').value.trim()
   };
-  if (!editId) body.client_id = clientId;
+  body.client_id = clientId;
+  if (editId) body.Id = parseInt(editId, 10);
   showMsg('productModalMsg', 'Saving…', 10000);
   try {
-    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records`, {
+    const r = await fetch(`${WORKER_BASE}/ecom/products`, {
       method: editId ? 'PATCH' : 'POST',
-      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify(editId ? { Id: parseInt(editId, 10), ...body } : body)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     closeProductModal();
@@ -670,10 +673,10 @@ function deleteProductById(id) {
 async function updateProductStock(id, value) {
   const stock = Math.max(0, parseInt(value, 10) || 0);
   try {
-    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records`, {
+    const r = await fetch(`${WORKER_BASE}/ecom/products`, {
       method: 'PATCH',
-      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ Id: id, stock })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, Id: id, stock })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const p = allProducts.find(x => x.Id === id);
@@ -687,10 +690,10 @@ async function updateProductStock(id, value) {
 async function deleteProduct(id, name) {
   if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
   try {
-    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records`, {
+    const r = await fetch(`${WORKER_BASE}/ecom/products`, {
       method: 'DELETE',
-      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ Id: id })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, ids: [id] })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     selectedProductIds.delete(id);
@@ -708,9 +711,7 @@ async function loadOrders() {
     return;
   }
   try {
-    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.orders}/records?where=(client_id,eq,${clientId})&sort=-order_date&limit=200`, {
-      headers: { 'xc-token': NOCODB_TOKEN }
-    });
+    const r = await fetch(`${WORKER_BASE}/ecom/orders?client_id=${encodeURIComponent(clientId)}&sort=-order_date&limit=200`);
     const data = await r.json();
     allOrders = data.list || [];
     renderOrdersTable();
@@ -789,9 +790,9 @@ async function submitAddOrder() {
   };
   showMsg('orderModalMsg', 'Saving…', 10000);
   try {
-    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.orders}/records`, {
+    const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
       method: 'POST',
-      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -809,10 +810,10 @@ function deleteOrderById(id) {
 
 async function updateOrderStatus(id, newStatus) {
   try {
-    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.orders}/records`, {
+    const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
       method: 'PATCH',
-      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ Id: id, status: newStatus })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, Id: id, status: newStatus })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const o = allOrders.find(x => x.Id === id);
@@ -826,10 +827,10 @@ async function updateOrderStatus(id, newStatus) {
 async function deleteOrder(id, label) {
   if (!confirm(`Delete order "${label}"? This cannot be undone.`)) return;
   try {
-    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.orders}/records`, {
+    const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
       method: 'DELETE',
-      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ Id: id })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, ids: [id] })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     loadOrders();
@@ -1019,10 +1020,10 @@ async function syncSheet(type) {
 
 // ── HELPERS ───────────────────────────────────────
 async function patchClient(body) {
-  await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`, {
+  await fetch(`${WORKER_BASE}/ecom/client`, {
     method: 'PATCH',
-    headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ Id: parseInt(clientId), ...body })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: clientId, ...body })
   });
 }
 

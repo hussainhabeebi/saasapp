@@ -14,10 +14,10 @@
 //     short-lived (minutes) — this avoids needing token-refresh logic in the
 //     browser for a whole session.
 //
-// Known limitation: index.html, broadcast.html, and ecom.html still embed the
-// master NocoDB token directly and are NOT covered by this Worker yet — same
-// exposure as before, just not yet migrated. dashboard.html is the primary
-// surface and is fully migrated.
+// Known limitation: index.html and broadcast.html still embed the master
+// NocoDB token directly and are NOT covered by this Worker yet — same
+// exposure as before, just not yet migrated. dashboard.html and ecom.html
+// (via the /ecom/* routes) are fully migrated.
 
 const SESSION_TTL_SECONDS = 24 * 3600;
 const CLIENTS_TABLE = 'mxl33bg4wi70fqj';
@@ -1052,6 +1052,124 @@ async function handleBillingWebhook(request, env){
   return json({received:true});
 }
 
+/* ── ECOMMERCE (ecom.html) — the master NocoDB token used to live directly in
+   ecom.html's JS, giving anyone who viewed page source full read/write access
+   to every table in the base (not just ecom data — the whole clients table,
+   leads, everything). ecom.html has no login/session of its own (just a
+   client_id in the URL), so these endpoints can't check "is this really that
+   client" the way session-based routes do — but they do confine every
+   operation to (a) only the client's own configured products/orders table,
+   (b) only rows whose client_id column matches, since that table is shared
+   across all clients and rows are separated only by that column, and (c) only
+   a small whitelist of non-secret client fields for the settings endpoints.
+   That closes "read/write the entire database" down to "read/write one
+   client's own ecom data" — full protection against someone else's client_id
+   being guessed would need real per-client authentication, which ecom.html
+   doesn't have today. ── */
+const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates'];
+const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates'];
+
+// Shared default tables used until a client explicitly saves their own table
+// ID in Settings — mirrors ecom.html's client-side DEFAULT_ECOM_IDS fallback.
+const ECOM_DEFAULT_TABLE_IDS={products:'mjlc2vi6iqbp87c', orders:'mjqaeatoe88gay6'};
+
+async function ecomResolveTable(env, clientId, kind){
+  const c=await getClientById(env, clientId);
+  if(!c) return null;
+  let ids={}; try{ ids=JSON.parse(c.ecom_table_ids||'{}'); }catch(e){}
+  return ids[kind]||ECOM_DEFAULT_TABLE_IDS[kind]||null;
+}
+
+async function handleEcomClientGet(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'},404);
+  const out={};
+  ECOM_CLIENT_READ_FIELDS.forEach(k=>{ out[k]=c[k]; });
+  return json(out);
+}
+
+async function handleEcomClientUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const fields={};
+  ECOM_CLIENT_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=body[k]; });
+  if(!Object.keys(fields).length) return json({error:'No valid fields to update'},400);
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), ...fields}});
+  const data=await r.json().catch(()=>({}));
+  return json(data, r.status);
+}
+
+async function handleEcomList(request, env, kind){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const tableId=await ecomResolveTable(env, clientId, kind);
+  if(!tableId) return json({list:[]});
+  const limit=Math.min(parseInt(url.searchParams.get('limit')||'200',10)||200, 1000);
+  const sort=url.searchParams.get('sort')||'';
+  const qs=new URLSearchParams({where:`(client_id,eq,${clientId})`, limit:String(limit)});
+  if(sort) qs.set('sort', sort);
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?${qs.toString()}`);
+  const data=await r.json().catch(()=>({}));
+  return json(data, r.status);
+}
+
+async function handleEcomCreate(request, env, kind){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const tableId=await ecomResolveTable(env, clientId, kind);
+  if(!tableId) return json({error:kind+' table not configured for this client'},400);
+  const { client_id, Id, ...fields }=body;
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:{...fields, client_id:clientId}});
+  const data=await r.json().catch(()=>({}));
+  return json(data, r.status);
+}
+
+async function handleEcomUpdate(request, env, kind){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const tableId=await ecomResolveTable(env, clientId, kind);
+  if(!tableId) return json({error:kind+' table not configured for this client'},400);
+  const existingR=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
+  const existing=await existingR.json().catch(()=>null);
+  if(!existingR.ok || !existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const { client_id, Id, ...fields }=body;
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:id, ...fields}});
+  const data=await r.json().catch(()=>({}));
+  return json(data, r.status);
+}
+
+async function handleEcomDelete(request, env, kind){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const ids=(Array.isArray(body.ids)?body.ids:[body.Id]).map(v=>parseInt(v,10)).filter(Boolean);
+  if(!clientId||!ids.length) return json({error:'client_id and ids required'},400);
+  const tableId=await ecomResolveTable(env, clientId, kind);
+  if(!tableId) return json({error:kind+' table not configured for this client'},400);
+  // Confirm ownership of every requested Id in one query, then only delete that
+  // verified subset — otherwise one client could delete another's row in this
+  // shared table just by guessing its Id.
+  const ownedR=await ncFetch(env, `api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})~and(Id,in,${ids.join(',')})&fields=Id&limit=1000`);
+  const owned=await ownedR.json().catch(()=>({list:[]}));
+  const ownedIds=(owned.list||[]).map(row=>row.Id);
+  if(!ownedIds.length) return json({deleted:0, requested:ids.length});
+  const CHUNK=40; // NocoDB rejects overly large bulk-delete arrays with a 422
+  let deleted=0;
+  for(let i=0;i<ownedIds.length;i+=CHUNK){
+    const chunk=ownedIds.slice(i,i+CHUNK);
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'DELETE', body:chunk.map(id=>({Id:id}))});
+    if(r.ok) deleted+=chunk.length;
+  }
+  return json({deleted, requested:ids.length});
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -1073,6 +1191,16 @@ export default {
       else if(url.pathname==='/wa/send' && request.method==='POST'){ res=await handleWaSend(request, env); }
       else if(url.pathname==='/wa/send-template' && request.method==='POST'){ res=await handleWaSendTemplate(request, env); }
       else if(url.pathname==='/tasks/notify' && request.method==='POST'){ res=await handleTaskEmailNotify(request, env); }
+      else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
+      else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }
+      else if(url.pathname==='/ecom/products' && request.method==='GET'){ res=await handleEcomList(request, env, 'products'); }
+      else if(url.pathname==='/ecom/products' && request.method==='POST'){ res=await handleEcomCreate(request, env, 'products'); }
+      else if(url.pathname==='/ecom/products' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'products'); }
+      else if(url.pathname==='/ecom/products' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'products'); }
+      else if(url.pathname==='/ecom/orders' && request.method==='GET'){ res=await handleEcomList(request, env, 'orders'); }
+      else if(url.pathname==='/ecom/orders' && request.method==='POST'){ res=await handleEcomCreate(request, env, 'orders'); }
+      else if(url.pathname==='/ecom/orders' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'orders'); }
+      else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }
