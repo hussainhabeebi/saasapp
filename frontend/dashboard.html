@@ -19,7 +19,10 @@
 <style>
 :root{
   --bg:#F2F5F3;--card:#FFFFFF;--ink:#0C1E16;--muted:#637870;
-  --accent:#0E7C5A;--accent-ink:#0A5C43;--accent-soft:#E2F5EC;
+  /* Accent palette matches the logo's teal→navy gradient: teal for interactive
+     elements (buttons/links/badges), navy for the darker "ink" variant (headings,
+     emphasis) — mirrors the same two-tone direction as the brand mark itself. */
+  --accent:#0D9C93;--accent-ink:#1E3A6E;--accent-soft:#DFF6F3;
   --line:#E4EBE7;--ls:#C8D6D0;--warn:#9A5B12;--warn-soft:#FEF0DA;
   --red:#DC2626;--yellow:#F59E0B;
   --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
@@ -33,18 +36,18 @@ html,body{height:100%;overflow:hidden}
 body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15px;-webkit-font-smoothing:antialiased}
 
 /* ── GATE ── */
-#gate{position:fixed;inset:0;z-index:200;background:linear-gradient(160deg,#071410 0%,#0D2218 60%,#0A1A13 100%);display:flex;align-items:center;justify-content:center;padding:24px}
+#gate{position:fixed;inset:0;z-index:200;background:linear-gradient(160deg,#081C30 0%,#0F2C4C 60%,#0B3B37 100%);display:flex;align-items:center;justify-content:center;padding:24px}
 #gate.hidden{display:none}
 .gbox{width:100%;max-width:380px}
 .gbrand{font-family:var(--disp);font-size:28px;font-weight:700;color:#fff;margin-bottom:6px;letter-spacing:-.3px;display:flex;align-items:center;justify-content:center;gap:10px}
-.gbrand span{color:#4ECFA0}
+.gbrand span{color:#3DD9C8}
 .gbrand img{height:32px;width:32px;object-fit:contain}
-.gsub{color:#6FA898;font-size:13.5px;margin-bottom:20px;line-height:1.5}
+.gsub{color:#7FAFC9;font-size:13.5px;margin-bottom:20px;line-height:1.5}
 .gfld{display:flex;flex-direction:column;gap:12px;margin-bottom:8px}
 .ginput{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);border-radius:14px;padding:14px 18px;color:#fff;font-family:var(--body);font-size:15px;transition:border-color .2s,background .2s}
 .ginput::placeholder{color:rgba(255,255,255,.3)}
-.ginput:focus{outline:none;border-color:#4ECFA0;background:rgba(255,255,255,.10);box-shadow:0 0 0 4px rgba(78,207,160,.12)}
-.gbtn{margin-top:8px;width:100%;background:linear-gradient(135deg,#0E7C5A,#0CB870);color:#fff;border:none;border-radius:14px;padding:15px;font-family:var(--disp);font-weight:700;font-size:15px;cursor:pointer;transition:opacity .15s,transform .1s;letter-spacing:.01em;display:flex;align-items:center;justify-content:center;gap:10px}
+.ginput:focus{outline:none;border-color:#3DD9C8;background:rgba(255,255,255,.10);box-shadow:0 0 0 4px rgba(61,217,200,.14)}
+.gbtn{margin-top:8px;width:100%;background:linear-gradient(135deg,#0D9C93,#1E3A6E);color:#fff;border:none;border-radius:14px;padding:15px;font-family:var(--disp);font-weight:700;font-size:15px;cursor:pointer;transition:opacity .15s,transform .1s;letter-spacing:.01em;display:flex;align-items:center;justify-content:center;gap:10px}
 .gbtn:hover{opacity:.92}
 .gbtn:active{transform:scale(.98)}
 .gbtn:disabled{opacity:.5;cursor:not-allowed}
@@ -58,15 +61,44 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 /* HOME COMMAND CENTER */
 #pageHome{overflow-y:auto}
 #pageHome.hidden{display:none!important}
-.home-hero{background:linear-gradient(135deg,#071410 0%,#0D2218 55%,#0a2e1c 100%);padding:26px 32px;position:relative;overflow:hidden;flex-shrink:0}
-.home-hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 80% 50%,rgba(14,124,90,.28) 0%,transparent 65%);pointer-events:none}
+.home-hero{background:linear-gradient(135deg,#0A1F38 0%,#123152 55%,#0E4A44 100%);padding:26px 32px;position:relative;overflow:hidden;flex-shrink:0}
+.home-hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 80% 50%,rgba(13,156,147,.30) 0%,transparent 65%);pointer-events:none}
 .home-hero-inner{max-width:1800px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;position:relative;z-index:1}
 .home-greeting{font-family:var(--disp);font-size:26px;font-weight:700;color:#fff;letter-spacing:-.4px}
 .home-sub{font-size:13px;color:rgba(255,255,255,.5);margin-top:4px}
 .home-actions{display:flex;gap:8px;flex-wrap:wrap}
+.home-trust-row{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px}
+.trust-chip{display:flex;align-items:center;gap:5px;font-size:11.5px;color:rgba(255,255,255,.62);font-weight:500}
+.trust-chip .td{width:6px;height:6px;border-radius:50%;background:#2DD4BF;flex:none}
+.trust-chip.live .td{background:#2DD4BF;box-shadow:0 0 0 3px rgba(45,212,191,.25);animation:trust-pulse 2s ease-in-out infinite}
+.trust-chip.off .td{background:#94A3B8}
+@keyframes trust-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+/* Billing/payment banners on Home */
+.home-banner{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:var(--r-sm);margin-bottom:12px;font-size:13px;border-left:4px solid var(--accent)}
+.home-banner.ok{background:var(--accent-soft);border-left-color:var(--accent);color:var(--accent-ink)}
+.home-banner.warn{background:var(--warn-soft);border-left-color:var(--warn);color:var(--warn)}
+.home-banner.danger{background:#FEE2E2;border-left-color:var(--red);color:#991B1B}
+.home-banner .hb-icon{font-size:18px;flex:none}
+.home-banner .hb-body{flex:1;min-width:0}
+.home-banner .hb-title{font-weight:700;margin-bottom:1px}
+.home-banner .hb-action{flex:none}
+/* Getting Started checklist */
+.onb-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:18px 22px;box-shadow:var(--shadow)}
+.onb-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+.onb-title{font-family:var(--disp);font-weight:700;font-size:15px}
+.onb-progress-track{flex:1;min-width:120px;height:6px;background:var(--line);border-radius:4px;overflow:hidden;margin:0 14px}
+.onb-progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),#2DD4BF);border-radius:4px;transition:width .3s ease}
+.onb-count{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap}
+.onb-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.onb-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--r-sm);border:1px solid var(--line);cursor:pointer;transition:background .15s,border-color .15s}
+.onb-item:hover{background:var(--accent-soft);border-color:var(--accent)}
+.onb-item.done{opacity:.55}
+.onb-check{width:20px;height:20px;border-radius:50%;border:2px solid var(--ls);flex:none;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff}
+.onb-item.done .onb-check{background:var(--accent);border-color:var(--accent)}
+.onb-label{font-size:13px;font-weight:500}
 .hact-btn{background:rgba(255,255,255,.12);color:#fff;border:1.5px solid rgba(255,255,255,.18);border-radius:10px;padding:9px 18px;font-family:var(--disp);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap;backdrop-filter:blur(4px)}
 .hact-btn:hover{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.3)}
-.hact-btn.primary-act{background:linear-gradient(135deg,#0E7C5A,#0CB870);border-color:transparent}
+.hact-btn.primary-act{background:linear-gradient(135deg,#0D9C93,#2DD4BF);border-color:transparent}
 .hact-btn.primary-act:hover{opacity:.9;transform:translateY(-1px)}
 .home-body{padding:22px 28px;max-width:1800px;margin:0 auto;width:100%}
 /* KPI strip */
@@ -75,7 +107,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 @media(max-width:600px){.kpi-grid{grid-template-columns:repeat(2,1fr)}}
 .kpi-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow);transition:box-shadow .2s,transform .2s}
 .kpi-card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
-.kpi-card.accent{background:linear-gradient(135deg,#0E7C5A,#0CB870);border-color:transparent}
+.kpi-card.accent{background:linear-gradient(135deg,#0D9C93,#2DD4BF);border-color:transparent}
 .kpi-card.accent .kpi-val,.kpi-card.accent .kpi-lbl,.kpi-card.accent .kpi-icon{color:#fff}
 .kpi-card.accent .kpi-lbl{color:rgba(255,255,255,.7)}
 .kpi-card.accent .kpi-icon{opacity:.6}
@@ -258,7 +290,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 
 /* stat cards */
 .stat{background:var(--card);border-radius:var(--r);padding:16px 18px;box-shadow:var(--shadow)}
-.stat.accent{background:linear-gradient(135deg,var(--accent),#0CB870)}
+.stat.accent{background:linear-gradient(135deg,var(--accent),#2DD4BF)}
 .stat-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px}
 .stat.accent .stat-lbl{color:rgba(255,255,255,.75)}
 .stat-val{font-family:var(--disp);font-size:30px;font-weight:700;line-height:1;letter-spacing:-.5px}
@@ -345,7 +377,7 @@ tr:hover td{background:#FAFCFB}
 .search-input:focus{outline:none;border-color:var(--accent)}
 .btn{padding:10px 18px;border:none;border-radius:var(--r-sm);font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:background .15s,transform .1s}
 .btn:active{transform:scale(.97)}
-.btn-primary{background:linear-gradient(135deg,var(--accent),#0CB870);color:#fff}
+.btn-primary{background:linear-gradient(135deg,var(--accent),#2DD4BF);color:#fff}
 .btn-primary:hover{background:linear-gradient(135deg,var(--accent-ink),var(--accent))}
 .btn-secondary{background:var(--card);color:var(--ink);border:1.5px solid var(--line);box-shadow:var(--shadow)}
 .btn-secondary:hover{border-color:var(--accent)}
@@ -416,7 +448,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .settings-section{margin-bottom:26px}
 .s-head{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:4px}
 .s-note{font-size:12.5px;color:var(--muted);margin-bottom:12px;line-height:1.6}
-.save-btn{background:linear-gradient(135deg,var(--accent),#0CB870);color:#fff;border:none;border-radius:var(--r-sm);padding:10px 22px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
+.save-btn{background:linear-gradient(135deg,var(--accent),#2DD4BF);color:#fff;border:none;border-radius:var(--r-sm);padding:10px 22px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
 .save-btn:hover{opacity:.88}
 .save-btn:disabled{opacity:.5;cursor:default}
 .save-msg{font-size:12px;margin-left:10px;color:var(--accent-ink)}
@@ -685,8 +717,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .bnItem.active .bnLabel{color:var(--accent-ink);font-weight:700}
 
 /* Polished buttons */
-.btn-primary{box-shadow:0 1px 3px rgba(14,124,90,.2),0 3px 8px rgba(14,124,90,.15);letter-spacing:-.01em}
-.btn-primary:hover{box-shadow:0 2px 6px rgba(14,124,90,.25),0 6px 16px rgba(14,124,90,.2);transform:translateY(-1px)}
+.btn-primary{box-shadow:0 1px 3px rgba(13,156,147,.2),0 3px 8px rgba(13,156,147,.15);letter-spacing:-.01em}
+.btn-primary:hover{box-shadow:0 2px 6px rgba(13,156,147,.25),0 6px 16px rgba(13,156,147,.2);transform:translateY(-1px)}
 .btn-primary:active{transform:translateY(0);box-shadow:none}
 .btn-secondary:hover{border-color:var(--accent);color:var(--accent-ink)}
 .hact-btn:active{transform:translateY(0)}
@@ -702,7 +734,7 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 
 /* Better form inputs */
 .form-input{transition:border-color .15s,box-shadow .15s,background .15s}
-.form-input:focus{box-shadow:0 0 0 3px rgba(14,124,90,.12)}
+.form-input:focus{box-shadow:0 0 0 3px rgba(13,156,147,.12)}
 .ginput{transition:border-color .2s,background .2s,box-shadow .2s}
 
 /* Refined lead items */
@@ -762,8 +794,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 /* Gate refinements */
 .gbox{animation:gateIn .4s cubic-bezier(.22,.61,.36,1)}
 @keyframes gateIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
-.gbtn{letter-spacing:-.01em;box-shadow:0 2px 8px rgba(14,124,90,.25)}
-.gbtn:hover{box-shadow:0 4px 16px rgba(14,124,90,.3)}
+.gbtn{letter-spacing:-.01em;box-shadow:0 2px 8px rgba(13,156,147,.25)}
+.gbtn:hover{box-shadow:0 4px 16px rgba(13,156,147,.3)}
 
 /* Package/job cards */
 .pkg-card,.job-card{transition:box-shadow .15s,border-color .15s,transform .15s}
@@ -778,7 +810,7 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .empty-state .ei{font-size:44px;margin-bottom:14px;opacity:.5}
 
 /* Profile card */
-.profile-card{border:1px solid rgba(14,124,90,.15)}
+.profile-card{border:1px solid rgba(13,156,147,.15)}
 
 /* Webhook box */
 .webhook-box{border-radius:12px;transition:border-color .15s}
@@ -835,7 +867,7 @@ const CONFIG = {
 
 const INDUSTRIES = {
   general:     { label:'General',      booked:'Converted',     active:'Active',            tags:['Hot','Callback','No Answer','Not Interested'],
-    theme:{accent:'#0E7C5A',accentInk:'#0A5C43',accentSoft:'#D8EEE4',bg:'#EEF2F0',line:'#D7E0DC'} },
+    theme:{accent:'#0D9C93',accentInk:'#1E3A6E',accentSoft:'#DFF6F3',bg:'#EEF2F0',line:'#D7E0DC'} },
   insurance:   { label:'Insurance',    booked:'Policies Sold', active:'Active Quotes',     tags:['Hot Lead','Callback','No Answer','Price Sensitive','Not Interested'],
     theme:{accent:'#1D4ED8',accentInk:'#1E3A8A',accentSoft:'#DBEAFE',bg:'#EFF6FF',line:'#BFDBFE'} },
   real_estate: { label:'Real Estate',  booked:'Deals Closed',  active:'Active Buyers',     tags:['Hot Buyer','Viewing Booked','No Answer','Out of Budget','Not Interested'],
@@ -923,6 +955,7 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div>
             <div class="home-greeting" id="homeGreeting">Good morning</div>
             <div class="home-sub" id="homeSubLine">Loading your workspace…</div>
+            <div class="home-trust-row" id="homeTrustRow"></div>
           </div>
           <div class="home-actions">
             <button class="hact-btn primary-act" onclick="openAddLead()">＋ Add Lead</button>
@@ -934,6 +967,12 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
 
       <div class="home-body">
+        <!-- Payment / billing-health banners -->
+        <div id="homeBillingBanners"></div>
+
+        <!-- Getting Started checklist (new/incomplete accounts only) -->
+        <div id="onboardingChecklist" style="display:none;margin-bottom:18px"></div>
+
         <!-- KPI Strip -->
         <div class="kpi-grid">
           <div class="kpi-card accent">
@@ -2942,6 +2981,9 @@ function renderHome(){
   // Run KPI/greeting first so UI is never blank even if other renders fail
   try{populateCommandCenter(allLeads);}catch(e){}
   try{renderNbaStrip(allLeads);}catch(e){}
+  try{renderTrustBadges();}catch(e){}
+  try{renderHomeBillingBanners();}catch(e){}
+  try{renderOnboardingChecklist();}catch(e){}
 
   const ind=getIndustry();
   const booked=allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
@@ -2968,6 +3010,119 @@ function renderHome(){
   try{renderTasks();}catch(e){}
 }
 
+/* ── TRUST SIGNALS (Home hero) ── */
+function renderTrustBadges(){
+  const row=$id('homeTrustRow'); if(!row) return;
+  const c=clientRecord||{};
+  const lastSeen=c.last_seen;
+  const mins=lastSeen?(Date.now()-new Date(lastSeen).getTime())/60000:Infinity;
+  const isActive=c.active==='Yes';
+  const botLabel = !isActive ? 'AI Assistant paused'
+    : mins<60 ? 'AI Assistant active now'
+    : lastSeen ? `AI Assistant connected · last message ${timeAgo(lastSeen)}`
+    : 'AI Assistant ready — waiting for your first message';
+  const chips=[`<span class="trust-chip ${isActive&&mins<60?'live':'off'}"><span class="td"></span>${esc(botLabel)}</span>`];
+  chips.push(`<span class="trust-chip">🔒 Data encrypted in transit</span>`);
+  chips.push(`<span class="trust-chip">💳 Payments secured by Stripe</span>`);
+  if(allLeads.length){
+    let msgCount=0;
+    for(const l of allLeads){ try{ const h=JSON.parse(l.ConvHistory||'[]'); msgCount+=h.filter(m=>m.role==='assistant').length; }catch(e){} }
+    if(msgCount>0) chips.push(`<span class="trust-chip">💬 ${msgCount.toLocaleString()} messages handled</span>`);
+  }
+  row.innerHTML=chips.join('');
+}
+
+/* ── PAYMENT / BILLING-HEALTH BANNERS (Home) — ongoing status, not just the
+   post-checkout redirect (which already lands on the Billing tab via showApp()) ── */
+function renderHomeBillingBanners(){
+  const wrap=$id('homeBillingBanners'); if(!wrap) return;
+  const c=clientRecord||{};
+  const banners=[];
+
+  const pastDueCopy=(typeof BILLING_PAST_DUE_COPY!=='undefined')?BILLING_PAST_DUE_COPY[c.plan_status]:null;
+  if(pastDueCopy){
+    banners.push({level:'danger',icon:'⚠️',title:'Payment issue',
+      text:pastDueCopy+' Update your payment method to avoid interruption.',
+      actionLabel:'Manage Billing',action:()=>navigate('billing')});
+  }
+
+  if(c.plan_cancel_at_period_end==='Yes'){
+    const days=daysUntil(c.plan_renews_at);
+    banners.push({level:'warn',icon:'🔔',title:'Subscription ending',
+      text:days!==null?`Your plan won't renew — access ends in ${days} day${days===1?'':'s'}.`:`Your plan is set to cancel at the end of the billing period.`,
+      actionLabel:'Reactivate',action:()=>navigate('billing')});
+  } else if(c.plan_status==='trialing'){
+    const days=daysUntil(c.plan_renews_at);
+    if(days!==null && days<=5) banners.push({level:'warn',icon:'⏳',title:'Trial ending soon',
+      text:`Your trial ends in ${days} day${days===1?'':'s'} — add a payment method to keep your bot running.`,
+      actionLabel:'Add Payment',action:()=>navigate('billing')});
+  } else if(c.plan_status==='active'){
+    const days=daysUntil(c.plan_renews_at);
+    if(days!==null && days<=3) banners.push({level:'ok',icon:'🔔',title:'Renewal coming up',
+      text:`Your plan renews in ${days} day${days===1?'':'s'}.`, actionLabel:null,action:null});
+  }
+
+  const waCredits=Number(c.wa_credits_balance);
+  if(!isNaN(waCredits) && waCredits>0 && waCredits<50){
+    banners.push({level:'warn',icon:'💬',title:'WhatsApp credits running low',
+      text:`Only ${waCredits} credits left — top up to avoid interrupting conversations.`,
+      actionLabel:'Buy Credits',action:()=>navigate('billing')});
+  }
+
+  if(!banners.length){ wrap.innerHTML=''; return; }
+  window._homeBannerActions=banners.map(b=>b.action||(()=>{}));
+  wrap.innerHTML=banners.map((b,i)=>`
+    <div class="home-banner ${b.level}">
+      <span class="hb-icon">${b.icon}</span>
+      <div class="hb-body"><div class="hb-title">${esc(b.title)}</div><div>${esc(b.text)}</div></div>
+      ${b.actionLabel?`<button class="btn btn-secondary btn-sm hb-action" onclick="_homeBannerActions[${i}]()">${esc(b.actionLabel)}</button>`:''}
+    </div>`).join('');
+}
+
+/* ── GETTING STARTED CHECKLIST (Home) — shown until every step is complete,
+   then auto-dismissed; a customer can also hide it manually at any point ── */
+let _onbSteps=[];
+function renderOnboardingChecklist(){
+  const wrap=$id('onboardingChecklist'); if(!wrap) return;
+  const c=clientRecord||{};
+  const steps=[
+    {label:'Connect a channel (WhatsApp/website)', done:!!c.chatwoot_inbox_id, go:()=>navigate('channels')},
+    {label:"Set up your bot's prompt", done:!!(c.main_prompt&&c.main_prompt.trim()), go:()=>navigate('settings')},
+    {label:'Activate your plan', done:!!c.stripe_subscription_id, go:()=>navigate('billing')},
+    {label:'Get your first lead', done:allLeads.length>0, go:()=>navigate('leads')},
+  ];
+  _onbSteps=steps;
+  const doneCount=steps.filter(s=>s.done).length;
+  const dismissKey='lv_onb_dismissed_'+clientId;
+  const dismissed=localStorage.getItem(dismissKey)==='1';
+
+  if(doneCount===steps.length){
+    localStorage.setItem(dismissKey,'1'); // fully done — no need to show again
+    wrap.style.display='none';
+    return;
+  }
+  if(dismissed){ wrap.style.display='none'; return; }
+
+  wrap.style.display='block';
+  const pct=Math.round(doneCount/steps.length*100);
+  wrap.innerHTML=`<div class="onb-card">
+    <div class="onb-head">
+      <div class="onb-title">🚀 Getting Started</div>
+      <div class="onb-progress-track"><div class="onb-progress-fill" style="width:${pct}%"></div></div>
+      <div class="onb-count">${doneCount} of ${steps.length} done</div>
+      <button class="btn-ghost" onclick="dismissOnboarding()" style="font-size:11px">Hide</button>
+    </div>
+    <div class="onb-list">${steps.map((s,i)=>`
+      <div class="onb-item ${s.done?'done':''}" onclick="onbStepClick(${i})">
+        <div class="onb-check">${s.done?'✓':''}</div>
+        <div class="onb-label">${esc(s.label)}</div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+function onbStepClick(i){ if(_onbSteps[i]) _onbSteps[i].go(); }
+function dismissOnboarding(){ localStorage.setItem('lv_onb_dismissed_'+clientId,'1'); const w=$id('onboardingChecklist'); if(w) w.style.display='none'; }
+
 /* ── CHART ── */
 function setChartMode(m){ chartMode=m; renderChart(); }
 
@@ -2988,7 +3143,7 @@ function renderChart(){
   if(leadsChart){leadsChart.destroy();}
   leadsChart=new Chart(canvas,{
     type:'line',
-    data:{labels,datasets:[{label:'Leads',data:counts,borderColor:'#0E7C5A',backgroundColor:'rgba(14,124,90,.08)',tension:.35,fill:true,pointRadius:2,pointHoverRadius:5}]},
+    data:{labels,datasets:[{label:'Leads',data:counts,borderColor:'#0D9C93',backgroundColor:'rgba(13,156,147,.08)',tension:.35,fill:true,pointRadius:2,pointHoverRadius:5}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{font:{size:10},maxRotation:0,autoSkip:true,maxTicksLimit:8}},y:{beginAtZero:true,grid:{color:'#EEF2F0'},ticks:{font:{size:10},stepSize:1}}}}
   });
 }
@@ -3004,7 +3159,7 @@ function renderFunnel(){
     stageOrder=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([s])=>s);
   }
   const data=stageOrder.map(s=>allLeads.filter(l=>l.Stage===s).length);
-  const colors=stageOrder.map((_,i)=>`hsl(${155-i*15},60%,${45+i*8}%)`);
+  const colors=stageOrder.map((_,i)=>`hsl(${176-i*15},60%,${40+i*8}%)`);
   const el=$id('funnelChart');
   el.innerHTML='<canvas id="funnelCanvas" style="max-height:220px"></canvas>';
   const canvas=$id('funnelCanvas');
@@ -3038,7 +3193,7 @@ function renderConvTrend(){
   _convTrendChart=new Chart(canvas,{
     type:'line',
     data:{labels,datasets:[
-      {label:'New Leads',data:newCounts,borderColor:'#0E7C5A',backgroundColor:'rgba(14,124,90,.08)',tension:.35,fill:true,pointRadius:2},
+      {label:'New Leads',data:newCounts,borderColor:'#0D9C93',backgroundColor:'rgba(13,156,147,.08)',tension:.35,fill:true,pointRadius:2},
       {label:'Converted',data:convCounts,borderColor:'#F59E0B',backgroundColor:'rgba(245,158,11,.08)',tension:.35,fill:true,pointRadius:2}
     ]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,labels:{font:{size:10}}}},scales:{x:{grid:{display:false},ticks:{font:{size:10}}},y:{beginAtZero:true,grid:{color:'#EEF2F0'},ticks:{font:{size:10},stepSize:1}}}}
@@ -5569,7 +5724,7 @@ h1{font-size:22px;margin-bottom:4px}
 .sub{color:#5B6B65;font-size:12px;margin-bottom:32px}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:32px}
 .stat-box{border:1px solid #D7E0DC;border-radius:10px;padding:16px;text-align:center}
-.stat-val{font-size:28px;font-weight:700;color:#0E7C5A}
+.stat-val{font-size:28px;font-weight:700;color:#0D9C93}
 .stat-lbl{font-size:11px;color:#5B6B65;margin-top:4px}
 h2{font-size:14px;font-weight:700;margin:24px 0 10px}
 table{width:100%;border-collapse:collapse}
@@ -6953,7 +7108,7 @@ function printItinerary(id){
     body+='</ul>';
   });
   if(it.notes)body+=`<p><em>${esc(it.notes)}</em></p>`;
-  w.document.write(`<!DOCTYPE html><html><head><title>${esc(it.title||'Itinerary')}</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;color:#111}h1{font-size:22px}h2{font-size:16px;margin-top:20px;color:#0E7C5A}ul{margin:8px 0 0 18px}li{margin-bottom:4px}</style></head><body>${body}</body></html>`);
+  w.document.write(`<!DOCTYPE html><html><head><title>${esc(it.title||'Itinerary')}</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;color:#111}h1{font-size:22px}h2{font-size:16px;margin-top:20px;color:#0D9C93}ul{margin:8px 0 0 18px}li{margin-bottom:4px}</style></head><body>${body}</body></html>`);
   w.document.close();
   w.print();
 }
