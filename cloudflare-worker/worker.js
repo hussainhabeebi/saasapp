@@ -411,7 +411,7 @@ async function handleBroadcastTemplatesGet(request, env){
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}/whatsapp_templates`, {headers:{api_access_token:c.chatwoot_token}});
   const data=await r.json().catch(()=>([]));
-  if(!r.ok) return json({error:'Chatwoot API '+r.status}, 502);
+  if(!r.ok) return json({error:(data&&!Array.isArray(data)&&data.message)||'Chatwoot API '+r.status}, 502);
   return json({ok:true, templates:data});
 }
 
@@ -489,7 +489,7 @@ async function handleBroadcastFollowupSend(request, env){
   if(!leadR.ok) return json({error:'Lead not found'}, 404);
   const lead=await leadR.json();
   if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Not your lead'}, 403);
-  const convId=lead.ConversationID;
+  const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
   if(!convId) return json({error:'This lead has no conversation yet.'}, 400);
 
   const messages=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);

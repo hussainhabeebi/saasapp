@@ -571,6 +571,9 @@ let imgFile=null;
 
 const $id = id => document.getElementById(id);
 function ncAuthHeaders(extra){ return {'Authorization':'Bearer '+sessionToken, ...extra}; }
+// Same field-name fallback chain as dashboard.html's leadConvId() — the bot writes this as
+// "ConversationID", but older rows / other write paths have used other casings.
+function leadConvId(lead){ return lead&&(lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id||''); }
 
 // ── UTILS ──
 function esc(s){ const d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
@@ -801,7 +804,7 @@ async function sendDm(){
   let sent=0,failed=0;
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
-    const convId=lead.ConversationID||lead.convId||'';
+    const convId=leadConvId(lead);
     if(!convId){ failed++; appendLog('dm',`⚠️ ${lead.Name||lead.Phone} — no conversation ID`); setProgress('dm',i+1,leads.length); await sleep(400); continue; }
 
     let content=text;
@@ -951,7 +954,7 @@ async function sendTemplateBroadcast(){
   let sent=0,failed=0;
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
-    const convId=lead.ConversationID||lead.convId||'';
+    const convId=leadConvId(lead);
     if(!convId){ failed++; appendLog('tpl',`⚠️ ${lead.Name||lead.Phone} — no conversation ID`); setProgress('tpl',i+1,leads.length); await sleep(400); continue; }
 
     const resolvedVars=vars.map((v,idx)=>idx===0&&personalize?(lead.Name||v):v);
@@ -1041,7 +1044,7 @@ function renderFollowupsTab(){
   tbody.innerHTML=followupLeads.map(l=>{
     const fuSent=[1,2,3].filter(n=>l['Follow up '+n]==='Yes').length;
     const classicLabel = fuCount>0 ? `${fuSent}/${fuCount} sent` : '—';
-    const canSendClassic = fuCount>0 && fuSent<fuCount && (l.ConversationID||l.convId);
+    const canSendClassic = fuCount>0 && fuSent<fuCount && leadConvId(l);
     const recoveryLabel = l.recovery_stage ? `Stage ${l.recovery_stage}${l.recovery_done==='Yes'?' (done)':''}` : '—';
     const lastSent = l.recovery_last_sent_at ? timeSince(l.recovery_last_sent_at) : '—';
     return `<tr>
