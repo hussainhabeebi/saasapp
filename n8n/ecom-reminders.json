@@ -29,7 +29,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// NocoDB sends: { type, data: { rows: [newRow], previous_rows: [oldRow] } }\n// We also support direct POST: { client_id, order_id, status, customer_phone, customer_name, ... }\nconst b = $('Webhook · Order Event').first().json.body || $('Webhook · Order Event').first().json;\n\nlet row = {};\nif (b.data && b.data.rows && b.data.rows[0]) {\n  row = b.data.rows[0];\n} else {\n  row = b; // direct POST\n}\n\nconst prevStatus = (b.data?.previous_rows?.[0]?.status || '').toLowerCase();\nconst newStatus  = (row.status || '').toLowerCase();\nconst clientId   = String(row.client_id || b.client_id || '');\nconst phone      = (row.customer_phone || '').replace(/[^0-9+]/g, '').replace(/^\\+/, '').replace(/^00/, '');\nconst customerName = row.customer_name || 'Customer';\nconst orderId    = row.order_id || row.Id || '';\nconst items      = row.items || '';\n\n// Only act on status transitions\nconst RECEIVED  = new Set(['received','confirmed','processing','accepted']);\nconst DELIVERED = new Set(['delivered','completed','done']);\n\nlet reminderType = null;\nif (RECEIVED.has(newStatus) && !RECEIVED.has(prevStatus)) reminderType = 'received';\nif (DELIVERED.has(newStatus) && !DELIVERED.has(prevStatus)) reminderType = 'delivered';\n\nif (!reminderType)  return []; // no reminder needed\nif (!phone)         return []; // no phone to send to\nif (!clientId)      return []; // no client\n\nreturn [{ json: { clientId, phone, customerName, orderId, items, newStatus, reminderType } }];"
+        "jsCode": "// NocoDB sends: { type, data: { rows: [newRow], previous_rows: [oldRow] } }\n// We also support direct POST: { client_id, order_id, status, customer_phone, customer_name, ... }\nconst b = $('Webhook · Order Event').first().json.body || $('Webhook · Order Event').first().json;\n\nlet row = {};\nif (b.data && b.data.rows && b.data.rows[0]) {\n  row = b.data.rows[0];\n} else {\n  row = b; // direct POST\n}\n\nconst prevStatus = (b.data?.previous_rows?.[0]?.status || '').toLowerCase();\nconst newStatus  = (row.status || '').toLowerCase();\nconst clientId   = String(row.client_id || b.client_id || '');\nconst phone      = (row.customer_phone || '').replace(/[^0-9+]/g, '').replace(/^\\+/, '').replace(/^00/, '');\nconst customerName = row.customer_name || 'Customer';\nconst orderId    = row.order_id || row.Id || '';\nconst items      = row.items || '';\nconst notes      = row.notes || '';\n\n// Only act on status transitions\nconst RECEIVED  = new Set(['received','confirmed','processing','accepted']);\nconst SHIPPED   = new Set(['shipped','dispatched','out_for_delivery']);\nconst DELIVERED = new Set(['delivered','completed','done']);\n\nlet reminderType = null;\nif (RECEIVED.has(newStatus) && !RECEIVED.has(prevStatus)) reminderType = 'received';\nif (SHIPPED.has(newStatus) && !SHIPPED.has(prevStatus)) reminderType = 'shipped';\nif (DELIVERED.has(newStatus) && !DELIVERED.has(prevStatus)) reminderType = 'delivered';\n\nif (!reminderType)  return []; // no reminder needed\nif (!phone)         return []; // no phone to send to\nif (!clientId)      return []; // no client\n\nreturn [{ json: { clientId, phone, customerName, orderId, items, notes, newStatus, reminderType } }];"
       },
       "id": "or-parse",
       "name": "Code · Parse Event",
@@ -57,204 +57,35 @@
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "=https://whizz.aiingo.com/api/v2/tables/mvg6rcw0ia5qqrx/records?where=(ClientId,eq,{{ $('Code · Parse Event').first().json.clientId }})~and(Phone,eq,{{ $('Code · Parse Event').first().json.phone }})&limit=1",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "xc-token", "value": "nc_pat_n5dMpFolDUQNtkCWGiCJnX45xXWUoFnZdsQkwEyF" }
-          ]
-        },
-        "options": {}
-      },
-      "id": "or-get-lead",
-      "name": "HTTP · Get Lead",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [-360, 120],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "jsCode": "const ev   = $('Code · Parse Event').first().json;\nconst t    = $('HTTP · Get Client').first().json;\nconst lead = ($('HTTP · Get Lead').first().json.list || [])[0] || null;\n\nif (!t.chatwoot_base || !t.chatwoot_token) throw new Error('Client missing Chatwoot credentials');\n\nconst convId = lead?.ConversationID || null;\nconst language = t.language || 'en';\nconst clientName = t.client_name || '';\nconst reviewLink = t.review_link || '';\n\nlet message = '';\nif (ev.reminderType === 'received') {\n  const lines = [\n    `Hi ${ev.customerName}! 👋`,\n    ``,\n    `✅ Your order *#${ev.orderId}* has been *received* and is being processed.`,\n  ];\n  if (ev.items) lines.push(`📦 Items: ${ev.items}`);\n  lines.push(``, `We will notify you once it is shipped. Thank you for shopping with us! 🙏`);\n  if (clientName) lines.push(``, `— ${clientName} Team`);\n  message = lines.join('\\n');\n} else if (ev.reminderType === 'delivered') {\n  const lines = [\n    `Hi ${ev.customerName}! 🎉`,\n    ``,\n    `📦 Your order *#${ev.orderId}* has been *delivered*!`,\n    ``,\n    `We hope you love your purchase. Could you spare a moment to leave us a review? Your feedback means the world to us 🙏`,\n  ];\n  if (reviewLink) lines.push(``, `⭐ Leave a review: ${reviewLink}`);\n  if (clientName) lines.push(``, `— ${clientName} Team`);\n  message = lines.join('\\n');\n}\n\nreturn [{ json: {\n  ...ev,\n  chatwoot_base: t.chatwoot_base,\n  chatwoot_account_id: t.chatwoot_account_id,\n  chatwoot_token: t.chatwoot_token,\n  chatwoot_inbox_id: t.chatwoot_inbox_id,\n  convId, language, message\n} }];"
+        "jsCode": "// Sends straight to Meta's Graph API using the client's own connected WhatsApp Business\n// number — no Chatwoot dependency, and templates are required anyway once a contact is\n// outside the 24h session window (which is the norm for delivery/status notifications).\nconst ev = $('Code · Parse Event').first().json;\nconst t  = $input.first().json;\n\nif (!t.wa_phone_id || !t.wa_token) return []; // WhatsApp not connected for this client\n\nlet templatesCfg = {};\ntry { templatesCfg = JSON.parse(t.ecom_wa_templates || '{}').config || {}; } catch(e) {}\n\nconst cfg = templatesCfg[ev.reminderType];\nif (!cfg || !cfg.name) return []; // no template configured for this event\n\nconst valueMap = {\n  customer_name: ev.customerName,\n  order_id: String(ev.orderId),\n  items: ev.items,\n  notes: ev.notes,\n  review_link: t.review_link || '',\n  store_name: t.client_name || ''\n};\nconst parameters = (cfg.params || []).map(key => ({ type: 'text', text: String(valueMap[key] || '') }));\nconst components = parameters.length ? [{ type: 'body', parameters }] : [];\n\nreturn [{ json: {\n  phone: ev.phone,\n  wa_phone_id: t.wa_phone_id,\n  wa_token: t.wa_token,\n  template_name: cfg.name,\n  template_lang: cfg.lang || 'en',\n  components\n} }];"
       },
       "id": "or-build",
-      "name": "Code · Build Message",
+      "name": "Code · Build Template Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [-140, 0]
     },
     {
       "parameters": {
-        "conditions": {
-          "options": { "version": 2 },
-          "conditions": [
-            {
-              "id": "has-conv",
-              "leftValue": "={{ $json.convId }}",
-              "rightValue": "",
-              "operator": { "type": "string", "operation": "notEmpty" }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "id": "or-has-conv",
-      "name": "If · Has Conversation",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [80, 0]
-    },
-    {
-      "parameters": {
         "method": "POST",
-        "url": "={{ $json.chatwoot_base }}/api/v1/accounts/{{ $json.chatwoot_account_id }}/conversations/{{ $json.convId }}/messages",
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.wa_phone_id }}/messages",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "api_access_token", "value": "={{ $json.chatwoot_token }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $json.wa_token }}" },
             { "name": "Content-Type", "value": "application/json" }
           ]
         },
         "sendBody": true,
         "specifyBody": "string",
-        "body": "={{ JSON.stringify({ content: $json.message, message_type: 'outgoing', private: false }) }}",
+        "body": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.phone, type: 'template', template: { name: $json.template_name, language: { code: $json.template_lang }, components: $json.components } }) }}",
         "options": {}
       },
-      "id": "or-send-existing",
-      "name": "HTTP · Send to Existing Conv",
+      "id": "or-send-template",
+      "name": "HTTP · Send WA Template",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [300, -80],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "method": "GET",
-        "url": "={{ $json.chatwoot_base }}/api/v1/accounts/{{ $json.chatwoot_account_id }}/contacts/search?q={{ $json.phone }}&include_contacts=true",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "api_access_token", "value": "={{ $json.chatwoot_token }}" }
-          ]
-        },
-        "options": {}
-      },
-      "id": "or-search-contact",
-      "name": "HTTP · Search Contact",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [300, 80],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "jsCode": "const ctx  = $('Code · Build Message').first().json;\nconst res  = $input.first().json;\n// Chatwoot contact search returns { payload: [{ id, name, phone_number }] }\nconst contacts = res.payload || res.contacts || [];\nconst contact  = contacts.find(c => (c.phone_number||'').replace(/[^0-9]/g,'').includes(ctx.phone) || ctx.phone.includes((c.phone_number||'').replace(/[^0-9]/g,'')));\nconst contactId = contact?.id || null;\nreturn [{ json: { ...ctx, contactId } }];"
-      },
-      "id": "or-pick-contact",
-      "name": "Code · Pick Contact",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [520, 80]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": { "version": 2 },
-          "conditions": [
-            {
-              "id": "has-contact",
-              "leftValue": "={{ $json.contactId }}",
-              "rightValue": "",
-              "operator": { "type": "string", "operation": "notEmpty" }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "id": "or-has-contact",
-      "name": "If · Has Contact",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [740, 80]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $('Code · Build Message').first().json.chatwoot_base }}/api/v1/accounts/{{ $('Code · Build Message').first().json.chatwoot_account_id }}/contacts",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "api_access_token", "value": "={{ $('Code · Build Message').first().json.chatwoot_token }}" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify({ name: $('Code · Build Message').first().json.customerName, phone_number: '+' + $('Code · Build Message').first().json.phone }) }}",
-        "options": {}
-      },
-      "id": "or-create-contact",
-      "name": "HTTP · Create Contact",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [960, 160],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "jsCode": "const ctx = $('Code · Build Message').first().json;\n// contactId from search OR from newly created contact\nlet contactId = null;\ntry { contactId = $('Code · Pick Contact').first().json.contactId; } catch(e) {}\nif (!contactId) {\n  try { contactId = $input.first().json.id || $input.first().json.payload?.id; } catch(e) {}\n}\nreturn [{ json: { ...ctx, contactId } }];"
-      },
-      "id": "or-merge-contact",
-      "name": "Code · Merge Contact ID",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1180, 80]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $('Code · Build Message').first().json.chatwoot_base }}/api/v1/accounts/{{ $('Code · Build Message').first().json.chatwoot_account_id }}/conversations",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "api_access_token", "value": "={{ $('Code · Build Message').first().json.chatwoot_token }}" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify({ inbox_id: parseInt($('Code · Build Message').first().json.chatwoot_inbox_id), contact_id: $json.contactId }) }}",
-        "options": {}
-      },
-      "id": "or-create-conv",
-      "name": "HTTP · Create Conversation",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1400, 80],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $('Code · Build Message').first().json.chatwoot_base }}/api/v1/accounts/{{ $('Code · Build Message').first().json.chatwoot_account_id }}/conversations/{{ $json.id }}/messages",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "api_access_token", "value": "={{ $('Code · Build Message').first().json.chatwoot_token }}" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "string",
-        "body": "={{ JSON.stringify({ content: $('Code · Build Message').first().json.message, message_type: 'outgoing', private: false }) }}",
-        "options": {}
-      },
-      "id": "or-send-new",
-      "name": "HTTP · Send to New Conv",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1620, 80],
+      "position": [80, 0],
       "onError": "continueRegularOutput"
     }
   ],
@@ -267,34 +98,9 @@
         ]
       ]
     },
-    "Code · Parse Event": {
-      "main": [
-        [
-          { "node": "HTTP · Get Client", "type": "main", "index": 0 },
-          { "node": "HTTP · Get Lead",   "type": "main", "index": 0 }
-        ]
-      ]
-    },
-    "HTTP · Get Client": { "main": [ [ { "node": "Code · Build Message", "type": "main", "index": 0 } ] ] },
-    "HTTP · Get Lead":   { "main": [ [ { "node": "Code · Build Message", "type": "main", "index": 0 } ] ] },
-    "Code · Build Message": { "main": [ [ { "node": "If · Has Conversation", "type": "main", "index": 0 } ] ] },
-    "If · Has Conversation": {
-      "main": [
-        [ { "node": "HTTP · Send to Existing Conv", "type": "main", "index": 0 } ],
-        [ { "node": "HTTP · Search Contact",        "type": "main", "index": 0 } ]
-      ]
-    },
-    "HTTP · Search Contact":  { "main": [ [ { "node": "Code · Pick Contact",    "type": "main", "index": 0 } ] ] },
-    "Code · Pick Contact":    { "main": [ [ { "node": "If · Has Contact",        "type": "main", "index": 0 } ] ] },
-    "If · Has Contact": {
-      "main": [
-        [ { "node": "Code · Merge Contact ID", "type": "main", "index": 0 } ],
-        [ { "node": "HTTP · Create Contact",   "type": "main", "index": 0 } ]
-      ]
-    },
-    "HTTP · Create Contact":  { "main": [ [ { "node": "Code · Merge Contact ID", "type": "main", "index": 0 } ] ] },
-    "Code · Merge Contact ID":{ "main": [ [ { "node": "HTTP · Create Conversation","type": "main", "index": 0 } ] ] },
-    "HTTP · Create Conversation":{ "main": [ [ { "node": "HTTP · Send to New Conv", "type": "main", "index": 0 } ] ] }
+    "Code · Parse Event":           { "main": [ [ { "node": "HTTP · Get Client", "type": "main", "index": 0 } ] ] },
+    "HTTP · Get Client":            { "main": [ [ { "node": "Code · Build Template Payload", "type": "main", "index": 0 } ] ] },
+    "Code · Build Template Payload":{ "main": [ [ { "node": "HTTP · Send WA Template", "type": "main", "index": 0 } ] ] }
   },
   "settings": { "executionOrder": "v1" },
   "pinData": {}
