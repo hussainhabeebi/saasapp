@@ -545,11 +545,25 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .bar-val{font-family:var(--mono);font-size:11px;color:var(--muted);min-width:26px;text-align:right}
 
 /* tasks */
-.task-item{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.task-item{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .task-item:last-child{border-bottom:none}
+.task-item.done{opacity:.45}
 .task-lead{font-weight:600;font-size:14px}
 .task-meta{font-size:11.5px;color:var(--muted);margin-top:2px}
 .task-due{font-family:var(--mono);font-size:10px;color:#92400E;background:#FEF3C7;padding:3px 8px;border-radius:6px;white-space:nowrap}
+.task-tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;text-transform:uppercase;letter-spacing:.02em;white-space:nowrap}
+.task-tag.manual{background:var(--accent-soft);color:var(--accent-ink)}
+.task-tag.reminder{background:#DBEAFE;color:#1E40AF}
+.task-tag.hot{background:#FEE2E2;color:#991B1B}
+.task-tag.overdue{background:#FEF3C7;color:#92400E}
+.task-actions{display:flex;gap:6px;flex-wrap:wrap}
+.task-action-btn{font-size:11px;font-weight:600;padding:5px 9px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;white-space:nowrap}
+.task-action-btn:hover{background:var(--accent-soft);border-color:var(--accent)}
+.task-action-btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.task-filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.task-filter-btn{font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer}
+.task-filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.task-filter-btn .cnt{margin-left:4px;opacity:.8}
 
 /* profile card */
 .profile-card{background:var(--accent-soft);border-radius:var(--r-sm);padding:14px;margin-bottom:12px}
@@ -947,7 +961,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="chats">💬 Chats</button>
     <button class="dnTab" data-page="leads">👥 Leads</button>
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
-    <button class="dnTab" data-page="tasks">✅ Tasks</button>
+    <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')">🛒 Ecommerce</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
@@ -1420,18 +1434,13 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- TASKS -->
     <div class="page hidden" id="pageTasks">
       <div class="page-pad">
-        <div class="card-title" style="margin-bottom:14px">✅ Today's Tasks</div>
-        <div class="card" style="margin-bottom:14px">
-          <div class="card-title" style="font-size:13px">📅 Reminders Due Today</div>
-          <div id="tasksDueToday"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+          <div class="card-title" style="margin-bottom:0">✅ Tasks</div>
+          <button class="btn btn-primary btn-sm" onclick="openTaskModal()">+ New Task</button>
         </div>
-        <div class="card" style="margin-bottom:14px">
-          <div class="card-title" style="font-size:13px">🔥 Hot Moments (Action Required)</div>
-          <div id="tasksHotMoments"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
-        </div>
+        <div class="task-filter-row" id="taskFilterRow"></div>
         <div class="card">
-          <div class="card-title" style="font-size:13px">⏰ Overdue Follow-ups</div>
-          <div id="tasksOverdue"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+          <div id="tasksList"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
         </div>
       </div>
     </div>
@@ -1978,7 +1987,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem" data-page="chats"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span></button>
     <button class="bnItem" data-page="leads"><span class="bnIcon">👥</span><span class="bnLabel">Leads</span></button>
     <button class="bnItem" data-page="pipeline"><span class="bnIcon">📋</span><span class="bnLabel">Pipeline</span></button>
-    <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
+    <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span><span id="bnTaskBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
     <button class="bnItem" id="bnMore" onclick="openMoreSheet()"><span class="bnIcon">⋯</span><span class="bnLabel">More</span></button>
   </div>
 
@@ -2661,12 +2670,45 @@ const TODAY = new Date().toISOString().slice(0,10);
   </div>
 </div>
 
+<!-- TASK (create/edit) -->
+<div class="modal" id="modalTask" style="width:520px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="taskModalTitle">New Task</div><button class="icon-btn" onclick="closeModal('modalTask')">✕</button></div>
+  <div class="modal-body">
+    <div class="form-group"><label class="form-label">Title *</label><input class="form-input" id="taskTitle" placeholder="e.g. Call back about pricing"></div>
+    <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="taskNotes" rows="2" placeholder="Optional details"></textarea></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Due Date</label><input class="form-input" type="date" id="taskDueDate"></div>
+      <div class="form-group"><label class="form-label">Due Time</label><input class="form-input" type="time" id="taskDueTime"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Related Lead (optional)</label>
+      <select class="form-input" id="taskLeadSelect"><option value="">Not linked to a lead</option></select>
+    </div>
+    <div class="form-group"><label class="form-label">Assign To</label>
+      <select class="form-input" id="taskAssignee"><option value="">Unassigned</option></select>
+    </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:8px;margin-top:4px">
+      <input type="checkbox" id="taskNotifyEmail" style="width:16px;height:16px">
+      <label for="taskNotifyEmail" style="font-size:13px;color:var(--muted);margin:0">Email the assignee when this is saved</label>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="saveTaskBtn" onclick="saveTaskFromModal()">Save Task</button>
+    <span class="save-msg" id="taskModalMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalTask')">Cancel</button>
+  </div>
+</div>
+
 <script>
 'use strict';
 
 /* ── STATE ── */
 let clientId = null, clientRecord = null, refreshTimer = null;
 let sessionToken = sessionStorage.getItem('lv_session') || '';
+// The specific logged-in person's own verified email — distinct from clientRecord.authentik_email
+// (the account owner) when a teammate from team_emails is the one signed in right now. Used for
+// "assigned to me" task filtering and defaulting new tasks to the person creating them.
+let myEmail = sessionStorage.getItem('lv_me_email') || '';
 let allLeads = [], currentLead = null, chartMode = 'week', leadsChart = null;
 let _stages = [], _convSearchActive = false;
 let _leadsPage=1; const LEADS_PGS=50;
@@ -2745,8 +2787,10 @@ function completeLoginResult(session){
     return;
   }
   clientId=session.client_id; clientRecord=session.client; sessionToken=session.session_token;
+  myEmail=(session.email||'').toLowerCase();
   sessionStorage.setItem('lv_cid',clientId);
   sessionStorage.setItem('lv_session',sessionToken);
+  sessionStorage.setItem('lv_me_email',myEmail);
   showApp();
 }
 function completeLoginError(message){
@@ -3031,6 +3075,7 @@ function renderHome(){
   try{renderTrustBadges();}catch(e){}
   try{renderHomeBillingBanners();}catch(e){}
   try{renderOnboardingChecklist();}catch(e){}
+  try{updateTasksBadge();}catch(e){}
 
   const ind=getIndustry();
   const booked=allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
@@ -5431,63 +5476,315 @@ function renderPredictive(){
 }
 
 /* ── TASKS PAGE ── */
-function renderTasks(){
-  const now=new Date();
+/* ── TASK MANAGER ──
+   Two kinds of task live side by side in one merged, filterable, sortable list:
+   - "virtual" tasks: computed fresh every render from lead fields (Reminders Due Today, Hot
+     Moments, Overdue Follow-ups) — exactly what the old three-card page showed, just unified.
+     Dismissing one doesn't delete any lead data; it appends a dismiss key (tied to the specific
+     field value, e.g. "remind:123:2026-07-10") to clientRecord.manual_tasks.dismissed, so a NEW
+     reminder/hot-moment/message on the same lead naturally reappears rather than staying hidden.
+   - "manual" tasks: ad-hoc entries the user creates via the modal, stored in the same field's
+     .items array. No new NocoDB table — reuses the capped-JSON-array-on-CLIENTS pattern already
+     used for broadcast_log, since a whole new table+ID round trip isn't needed for this volume. */
+let TASK_FILTER='all';
+
+function getTasksState(){
+  try{
+    const parsed=JSON.parse(clientRecord?.manual_tasks||'{}');
+    return {items:Array.isArray(parsed.items)?parsed.items:[], dismissed:Array.isArray(parsed.dismissed)?parsed.dismissed:[]};
+  }catch(e){ return {items:[],dismissed:[]}; }
+}
+async function saveTasksState(state){
+  if(state.dismissed.length>300) state.dismissed=state.dismissed.slice(-300);
+  const openItems=state.items.filter(t=>t.status!=='done');
+  const doneItems=state.items.filter(t=>t.status==='done').slice(-100);
+  state.items=[...openItems,...doneItems];
+  await patchClient({manual_tasks:JSON.stringify(state)});
+}
+function taskAssigneeEmails(){
+  const emails=(clientRecord?.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
+  const owner=(clientRecord?.authentik_email||'').trim();
+  return [...new Set([owner,...emails].filter(Boolean))];
+}
+
+function computeAllTasks(){
   const todayStr=TODAY;
+  const dismissed=new Set(getTasksState().dismissed);
+  const out=[];
 
-  // Reminders due today
-  const dueToday=allLeads.filter(l=>l.ReminderDate&&l.ReminderDate.slice(0,10)<=todayStr&&!TERMINAL.has(l.Stage));
-  if(!dueToday.length){
-    $id('tasksDueToday').innerHTML='<div style="color:var(--muted);font-size:13px">No reminders due today</div>';
-  } else {
-    $id('tasksDueToday').innerHTML=dueToday.map(l=>`
-      <div class="task-item" style="cursor:pointer" onclick="openDetail(${l.Id})">
-        ${qsPill(l.QualScore)}
-        <div style="flex:1;min-width:0">
-          <div class="task-lead">${esc(l.Name||'—')}</div>
-          <div class="task-meta">${esc(l.Stage||'new')} · ${esc(l.Owner||'Unassigned')}</div>
-        </div>
-        <div class="task-due">📅 ${fmtDate(l.ReminderDate)}</div>
-      </div>`).join('');
-  }
+  allLeads.forEach(l=>{
+    if(TERMINAL.has(l.Stage)) return;
+    if(l.ReminderDate && l.ReminderDate.slice(0,10)<=todayStr){
+      const key='remind:'+l.Id+':'+l.ReminderDate;
+      if(!dismissed.has(key)){
+        const daysOverdue=Math.max(0,Math.floor((new Date(todayStr)-new Date(l.ReminderDate.slice(0,10)))/86400000));
+        out.push({_virtual:true,_type:'reminder',_dismissKey:key,leadId:l.Id,
+          title:'Reminder: '+(l.Name||'Lead'), meta:(l.Stage||'new')+' · '+(l.Owner||'Unassigned'),
+          due:l.ReminderDate, urgency:300+daysOverdue*10, qs:l.QualScore});
+      }
+    }
+    if(l.HotMoment==='Yes'){
+      const key='hot:'+l.Id+':'+(l.HotMomentText||'');
+      if(!dismissed.has(key)){
+        out.push({_virtual:true,_type:'hot',_dismissKey:key,leadId:l.Id,
+          title:'🔥 '+(l.Name||'Lead'), meta:l.HotMomentText||'Buying signal detected',
+          due:l.LastMsgAt||l.Date, urgency:1000});
+      }
+    }
+  });
 
-  // Hot moments
-  const hotMoments=allLeads.filter(l=>l.HotMoment==='Yes'&&!TERMINAL.has(l.Stage));
-  if(!hotMoments.length){
-    $id('tasksHotMoments').innerHTML='<div style="color:var(--muted);font-size:13px">No hot moments right now</div>';
-  } else {
-    $id('tasksHotMoments').innerHTML=hotMoments.map(l=>`
-      <div class="task-item" style="cursor:pointer" onclick="openDetail(${l.Id})">
-        <span style="font-size:18px">🔥</span>
-        <div style="flex:1;min-width:0">
-          <div class="task-lead">${esc(l.Name||'—')}</div>
-          <div class="task-meta">${esc(l.HotMomentText||'Buying signal detected')}</div>
-        </div>
-        <div class="task-due">${fmtDateShort(l.LastMsgAt||l.Date)}</div>
-      </div>`).join('');
-  }
-
-  // Overdue follow-ups (no follow-up sent, last msg > 48h)
-  const overdue48=allLeads.filter(l=>{
-    if(TERMINAL.has(l.Stage))return false;
+  const overdueCandidates=[];
+  allLeads.forEach(l=>{
+    if(TERMINAL.has(l.Stage)) return;
     const last=l.LastMsgAt?new Date(l.LastMsgAt).getTime():l.Date?new Date(l.Date).getTime():0;
-    return last&&(Date.now()-last)/(3600000)>=48&&(l['Follow up 1']||'No')==='No';
-  }).slice(0,10);
-  if(!overdue48.length){
-    $id('tasksOverdue').innerHTML='<div style="color:var(--muted);font-size:13px">No overdue follow-ups 🎉</div>';
-  } else {
-    $id('tasksOverdue').innerHTML=overdue48.map(l=>{
-      const hrs=Math.round((Date.now()-new Date(l.LastMsgAt||l.Date).getTime())/3600000);
-      return`<div class="task-item" style="cursor:pointer" onclick="openDetail(${l.Id})">
-        <span style="font-size:18px">⏰</span>
-        <div style="flex:1;min-width:0">
-          <div class="task-lead">${esc(l.Name||'—')}</div>
-          <div class="task-meta">${esc(l.Stage||'new')} · ${hrs}h since last message</div>
-        </div>
-        <div class="task-due">${fmtDate(l.LastMsgAt||l.Date)}</div>
-      </div>`;
-    }).join('');
+    if(!last) return;
+    const hrs=(Date.now()-last)/3600000;
+    if(hrs<48||(l['Follow up 1']||'No')!=='No') return;
+    const key='overdue:'+l.Id+':'+(l.LastMsgAt||l.Date);
+    if(dismissed.has(key)) return;
+    overdueCandidates.push({_virtual:true,_type:'overdue',_dismissKey:key,leadId:l.Id,
+      title:'⏰ '+(l.Name||'Lead'), meta:(l.Stage||'new')+' · '+Math.round(hrs)+'h since last message',
+      due:l.LastMsgAt||l.Date, urgency:500+Math.min(hrs,500), _hrs:hrs});
+  });
+  overdueCandidates.sort((a,b)=>b._hrs-a._hrs);
+  out.push(...overdueCandidates.slice(0,10));
+
+  getTasksState().items.forEach(t=>{
+    if(t.status==='done') return;
+    let urgency=50;
+    if(t.due_date){
+      const daysUntil=Math.floor((new Date(t.due_date)-new Date(todayStr))/86400000);
+      urgency=daysUntil<=0?(300-daysUntil*10):Math.max(10,100-daysUntil*5);
+    }
+    out.push({_virtual:false,_type:'manual',id:t.id,leadId:t.lead_id||null,
+      title:t.title, meta:[t.notes,t.lead_name?('Re: '+t.lead_name):'',t.assignee_email?('→ '+t.assignee_email):''].filter(Boolean).join(' · '),
+      due:t.due_date, dueTime:t.due_time, assignee:t.assignee_email||'', urgency});
+  });
+
+  return out;
+}
+
+function taskCounts(all){
+  return {
+    all: all.length,
+    today: all.filter(t=>t._type==='reminder'||(t._type==='manual'&&t.due&&t.due<=TODAY)).length,
+    hot: all.filter(t=>t._type==='hot').length,
+    overdue: all.filter(t=>t._type==='overdue').length,
+    manual: all.filter(t=>t._type==='manual').length,
+    mine: all.filter(t=>t._type==='manual'&&myEmail&&t.assignee===myEmail).length,
+  };
+}
+
+function setTaskFilter(f){ TASK_FILTER=f; renderTasks(); }
+
+function renderTaskFilterRow(counts){
+  const tabs=[['all','All'],['today','Due Today'],['hot','Hot'],['overdue','Overdue'],['manual','Manual'],['mine','Mine']];
+  $id('taskFilterRow').innerHTML=tabs.map(([key,label])=>
+    `<button class="task-filter-btn${TASK_FILTER===key?' active':''}" onclick="setTaskFilter('${key}')">${label}<span class="cnt">${counts[key]}</span></button>`
+  ).join('');
+}
+
+function updateTasksBadge(){
+  const c=taskCounts(computeAllTasks());
+  const n=c.today+c.hot+c.overdue;
+  const dnBadge=$id('dnTaskBadge'), bnBadge=$id('bnTaskBadge');
+  if(dnBadge){ dnBadge.style.display=n?'inline-block':'none'; dnBadge.textContent=n>99?'99+':n; }
+  if(bnBadge){ bnBadge.style.display=n?'block':'none'; }
+}
+
+function renderTasks(){
+  const all=computeAllTasks();
+  const counts=taskCounts(all);
+  renderTaskFilterRow(counts);
+  updateTasksBadge();
+
+  let filtered=all;
+  if(TASK_FILTER==='today') filtered=all.filter(t=>t._type==='reminder'||(t._type==='manual'&&t.due&&t.due<=TODAY));
+  else if(TASK_FILTER==='hot') filtered=all.filter(t=>t._type==='hot');
+  else if(TASK_FILTER==='overdue') filtered=all.filter(t=>t._type==='overdue');
+  else if(TASK_FILTER==='manual') filtered=all.filter(t=>t._type==='manual');
+  else if(TASK_FILTER==='mine') filtered=all.filter(t=>t._type==='manual'&&myEmail&&t.assignee===myEmail);
+
+  filtered.sort((a,b)=>b.urgency-a.urgency);
+
+  if(!filtered.length){
+    $id('tasksList').innerHTML='<div style="color:var(--muted);font-size:13px;padding:8px 0">Nothing here 🎉</div>';
+    return;
   }
+  $id('tasksList').innerHTML=filtered.map(t=>{
+    const clickOpen=t.leadId?`onclick="openDetail(${t.leadId})"`:'';
+    // Hot/overdue titles already carry their own emoji prefix (see computeAllTasks) — no separate icon needed there.
+    const iconHtml=t._type==='reminder'
+      ? (t.qs?qsPill(t.qs):'<span style="font-size:18px;flex:none">📅</span>')
+      : t._type==='manual' ? '<span style="font-size:18px;flex:none">📝</span>' : '';
+    const dueLabel=t._type==='manual'
+      ? (t.due?`${fmtDateShort(t.due)}${t.dueTime?' '+esc(t.dueTime):''}`:'')
+      : (t._type==='reminder'?fmtDate(t.due):fmtDateShort(t.due));
+    return `<div class="task-item">
+      ${iconHtml}
+      <div style="flex:1;min-width:0;${t.leadId?'cursor:pointer':''}" ${clickOpen}>
+        <div class="task-lead">${esc(t.title)}</div>
+        <div class="task-meta">${esc(t.meta||'')}</div>
+      </div>
+      <span class="task-tag ${t._type}">${t._type==='reminder'?'Reminder':t._type==='hot'?'Hot':t._type==='overdue'?'Overdue':'Manual'}</span>
+      ${dueLabel?`<div class="task-due">${dueLabel}</div>`:''}
+      <div class="task-actions">
+        ${t._type==='manual'?`<button class="task-action-btn" onclick="event.stopPropagation();openTaskModal('${t.id}')">Edit</button>`:''}
+        ${t._type==='manual'&&t.assignee?`<button class="task-action-btn" onclick="event.stopPropagation();sendTaskEmailFollowUp('${t.id}')">📧 Follow Up</button>`:''}
+        ${t.leadId?`<button class="task-action-btn" onclick="event.stopPropagation();sendTaskWaFollowUp(${t.leadId},this)">💬 WA Follow-up</button>`:''}
+        ${t._type==='reminder'?`<button class="task-action-btn" onclick="event.stopPropagation();snoozeReminderLead(${t.leadId})">+1d</button>`:''}
+        ${t._type==='manual'?`<button class="task-action-btn" onclick="event.stopPropagation();snoozeManualTask('${t.id}')">+1d</button>`:''}
+        <button class="task-action-btn primary" onclick="event.stopPropagation();${t._virtual?`dismissVirtualTask('${t._dismissKey}')`:`toggleTaskDone('${t.id}')`}">✓ Done</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function dismissVirtualTask(key){
+  const state=getTasksState();
+  if(!state.dismissed.includes(key)) state.dismissed.push(key);
+  try{ await saveTasksState(state); }catch(e){}
+  renderTasks();
+}
+
+async function toggleTaskDone(id){
+  const state=getTasksState();
+  const t=state.items.find(x=>x.id===id);
+  if(!t) return;
+  t.status=t.status==='done'?'open':'done';
+  t.completed_at=t.status==='done'?new Date().toISOString():null;
+  try{ await saveTasksState(state); }catch(e){ alert('Could not save: '+e.message); }
+  renderTasks();
+}
+
+async function snoozeReminderLead(leadId){
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead) return;
+  const base=lead.ReminderDate?new Date(lead.ReminderDate):new Date();
+  base.setDate(base.getDate()+1);
+  const newDate=base.toISOString().slice(0,10);
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,ReminderDate:newDate});
+    lead.ReminderDate=newDate;
+    renderTasks();
+  }catch(e){ alert('Could not snooze: '+e.message); }
+}
+
+async function snoozeManualTask(id){
+  const state=getTasksState();
+  const t=state.items.find(x=>x.id===id);
+  if(!t) return;
+  const base=t.due_date?new Date(t.due_date):new Date();
+  base.setDate(base.getDate()+1);
+  t.due_date=base.toISOString().slice(0,10);
+  try{ await saveTasksState(state); }catch(e){ alert('Could not save: '+e.message); return; }
+  renderTasks();
+}
+
+async function deleteManualTask(id){
+  if(!confirm('Delete this task?')) return;
+  const state=getTasksState();
+  state.items=state.items.filter(x=>x.id!==id);
+  try{ await saveTasksState(state); }catch(e){ alert('Could not delete: '+e.message); return; }
+  closeModal('modalTask');
+  renderTasks();
+}
+
+// Re-sends the same email a task's creation would have sent — the per-task "Follow Up" action.
+async function sendTaskEmailFollowUp(id){
+  const state=getTasksState();
+  const t=state.items.find(x=>x.id===id);
+  if(!t||!t.assignee_email) return;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/tasks/notify`,{
+      method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({to:t.assignee_email, subject:'Follow-up reminder: '+t.title, title:t.title, notes:t.notes, due_date:t.due_date, due_time:t.due_time, lead_name:t.lead_name})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    alert('✓ Follow-up email sent to '+t.assignee_email);
+  }catch(e){ alert('Could not send email: '+e.message); }
+}
+
+// Fires the same classic follow-up sequence step as Campaigns' Follow-ups tab, straight from
+// a task row when it's linked to a lead — no need to leave Tasks to nudge a stalled lead.
+async function sendTaskWaFollowUp(leadId,btn){
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead||!leadConvId(lead)){ alert('This lead has no linked WhatsApp conversation yet.'); return; }
+  if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/followup-send`,{
+      method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({lead_id:leadId})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    if(data.stage) lead['Follow up '+data.stage]='Yes';
+    alert('✓ Follow-up sent to '+(lead.Name||lead.Phone));
+  }catch(e){ alert('Could not send follow-up: '+e.message); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent='💬 WA Follow-up'; } }
+}
+
+let _editingTaskId=null;
+function openTaskModal(id){
+  _editingTaskId=id||null;
+  const state=getTasksState();
+  const t=id?state.items.find(x=>x.id===id):null;
+  $id('taskModalTitle').textContent=t?'Edit Task':'New Task';
+  $id('taskTitle').value=t?.title||'';
+  $id('taskNotes').value=t?.notes||'';
+  $id('taskDueDate').value=t?.due_date||'';
+  $id('taskDueTime').value=t?.due_time||'';
+  $id('taskNotifyEmail').checked=false;
+
+  const leadSel=$id('taskLeadSelect');
+  const activeLeads=allLeads.filter(l=>!TERMINAL.has(l.Stage)).slice(0,500);
+  leadSel.innerHTML='<option value="">Not linked to a lead</option>'+activeLeads.map(l=>`<option value="${l.Id}"${t?.lead_id===l.Id?' selected':''}>${esc(l.Name||l.Phone||('Lead #'+l.Id))}</option>`).join('');
+
+  const assigneeSel=$id('taskAssignee');
+  const emails=taskAssigneeEmails();
+  assigneeSel.innerHTML='<option value="">Unassigned</option>'+emails.map(e=>`<option value="${esc(e)}"${t?.assignee_email===e?' selected':''}>${esc(e)}${e===myEmail?' (you)':''}</option>`).join('');
+
+  $id('taskModalMsg').textContent='';
+  openModal('modalTask');
+}
+
+async function saveTaskFromModal(){
+  const title=$id('taskTitle').value.trim();
+  const msg=$id('taskModalMsg');
+  if(!title){ msg.textContent='Enter a title.'; msg.style.color='var(--red)'; return; }
+  const leadId=$id('taskLeadSelect').value?Number($id('taskLeadSelect').value):null;
+  const lead=leadId?allLeads.find(l=>l.Id===leadId):null;
+  const assigneeEmail=$id('taskAssignee').value||'';
+  const notify=$id('taskNotifyEmail').checked;
+
+  const state=getTasksState();
+  let task=_editingTaskId?state.items.find(x=>x.id===_editingTaskId):null;
+  const isNew=!task;
+  if(!task){ task={id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), status:'open', created_at:new Date().toISOString()}; state.items.push(task); }
+  Object.assign(task,{
+    title, notes:$id('taskNotes').value.trim(),
+    due_date:$id('taskDueDate').value||'', due_time:$id('taskDueTime').value||'',
+    lead_id:leadId, lead_name:lead?(lead.Name||lead.Phone||''):'',
+    assignee_email:assigneeEmail,
+  });
+
+  msg.textContent='Saving…'; msg.style.color='var(--muted)';
+  try{
+    await saveTasksState(state);
+    if(notify&&assigneeEmail){
+      try{
+        const r=await fetch(`${CONFIG.WORKER_BASE}/tasks/notify`,{
+          method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+          body:JSON.stringify({to:assigneeEmail, subject:(isNew?'New task assigned: ':'Task updated: ')+title, title, notes:task.notes, due_date:task.due_date, due_time:task.due_time, lead_name:task.lead_name})
+        });
+        const data=await r.json().catch(()=>({}));
+        if(!r.ok) msg.textContent='Saved — but email failed: '+(data.error||'unknown error');
+      }catch(e){ msg.textContent='Saved — but email failed: '+e.message; }
+    }
+    closeModal('modalTask');
+    renderTasks();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.style.color='var(--red)'; }
 }
 
 function qsPill(qs){

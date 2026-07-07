@@ -269,7 +269,11 @@ async function handleSessionExchange(request, env){
     return json({error:'no_account', email}, 403);
   }
   const session_token=await signSession(env, rec.Id);
-  return json({session_token, client_id:String(rec.Id), client:safeClient(rec)});
+  // Individual verified email of whoever just logged in — distinct from the account's own
+  // authentik_email when a teammate (added via team_emails) signs in to a shared client account.
+  // The frontend keeps this for "assigned to me" task filtering, since the session token itself
+  // only ever carries the shared account's cid, not which specific person is behind it.
+  return json({session_token, client_id:String(rec.Id), client:safeClient(rec), email});
 }
 
 async function handleSessionMe(request, env){
@@ -397,6 +401,32 @@ async function handleWaSendTemplate(request, env){
   if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
   return json({ok:true, message_id:data?.messages?.[0]?.id});
 }
+
+// Task assignment / follow-up nudge emails, via Resend (simple fetch-based REST API, no SDK).
+// Best-effort by design — a client that hasn't set RESEND_API_KEY yet should still be able to
+// create and manage tasks; it just won't get the email side until that's configured.
+async function handleTaskEmailNotify(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {to, subject, title, notes, due_date, due_time, lead_name}=await request.json().catch(()=>({}));
+  if(!to||!subject||!title) return json({error:'to, subject and title required'}, 400);
+  if(!env.RESEND_API_KEY) return json({error:'Email notifications aren\'t configured on the server yet (RESEND_API_KEY missing).'}, 400);
+  const from=env.RESEND_FROM_EMAIL||'Leadvyne Tasks <tasks@leadvyne.com>';
+  const lines=[
+    `<p><strong>${esc(title)}</strong></p>`,
+    notes?`<p>${esc(notes)}</p>`:'',
+    due_date?`<p>Due: ${esc(due_date)}${due_time?' '+esc(due_time):''}</p>`:'',
+    lead_name?`<p>Related to: ${esc(lead_name)}</p>`:''
+  ].filter(Boolean).join('');
+  const r=await fetch('https://api.resend.com/emails', {
+    method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({from, to:[to], subject, html:lines})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.message||'Resend API HTTP '+r.status}, 502);
+  return json({ok:true});
+}
+function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 async function handleAiComplete(request, env){
   const payload=await requireSession(request, env);
@@ -1042,6 +1072,7 @@ export default {
       else if(url.pathname==='/wa/templates' && request.method==='POST'){ res=await handleWaTemplatesCreate(request, env); }
       else if(url.pathname==='/wa/send' && request.method==='POST'){ res=await handleWaSend(request, env); }
       else if(url.pathname==='/wa/send-template' && request.method==='POST'){ res=await handleWaSendTemplate(request, env); }
+      else if(url.pathname==='/tasks/notify' && request.method==='POST'){ res=await handleTaskEmailNotify(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }

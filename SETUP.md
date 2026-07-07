@@ -746,6 +746,56 @@ failed}`, capped to the most recent 50 — same capped-list pattern as `fulfille
 Read/written via the existing generic `/nocodb/*` passthrough, no dedicated Worker route needed for
 it. Add this column to the CLIENTS table before using the Tracking tab.
 
+## Task manager (frontend/dashboard.html — Tasks page)
+Reworked from three static, un-actionable read-only cards (Reminders Due Today / Hot Moments /
+Overdue Follow-ups — no way to mark anything done, no manual tasks, no assignment) into one merged,
+filterable, sortable worklist with ad-hoc task creation.
+
+**Data model** — one new CLIENTS field, `manual_tasks` (Long Text), holding a single JSON object:
+`{ items: [...], dismissed: [...] }`. No new NocoDB table — reuses the same capped-JSON-array-on-
+CLIENTS pattern as `broadcast_log`, since task volume for a single account doesn't need a dedicated
+table. Add this column to the CLIENTS table before using the Tasks page.
+- `items`: manual (ad-hoc) tasks — `{id, title, notes, due_date, due_time, lead_id, lead_name,
+  assignee_email, status: 'open'|'done', created_at, completed_at}`. Capped on save: all open items
+  kept, done items capped to the most recent 100.
+- `dismissed`: dismiss keys for auto-derived ("virtual") tasks the user clicked "✓ Done" on, e.g.
+  `remind:123:2026-07-10` or `hot:55:<hot moment text>`. Keying on the specific field value (not
+  just the lead ID) means dismissing one reminder doesn't hide a *later* reminder on the same lead —
+  a new `ReminderDate`/`HotMomentText`/message on that lead produces a new key and reappears
+  automatically. Capped to the most recent 300.
+
+**Unified list** (`computeAllTasks()` in dashboard.html) — merges virtual tasks (recomputed fresh
+from `allLeads` every render, exactly as the old three cards did) with stored manual tasks, sorted
+by a single urgency score across all types, with filter tabs: All / Due Today / Hot / Overdue /
+Manual / Mine. A live badge (red dot on mobile, red count on desktop) appears on the Tasks nav item
+whenever due-today + hot + overdue items exist, updated from `renderHome()` so it's fresh even when
+Tasks isn't the active page.
+
+**Per-item actions**: ✓ Done (marks a manual task done, or dismisses a virtual one), +1d snooze
+(bumps a lead's `ReminderDate`, or a manual task's `due_date`), Edit (manual tasks only), and — if
+linked to a lead — 💬 WA Follow-up, which reuses the exact same `POST /broadcast/followup-send`
+Worker route the Campaigns Follow-ups tab uses, so a stalled lead can be nudged without leaving
+Tasks.
+
+**Email notifications** — creating/editing a task offers an assignee (from `team_emails` +
+`authentik_email` — the same real, verified addresses used for team login, not the plain
+`agents` name list used for lead-Owner assignment, which has no emails) and a "notify by email"
+checkbox. Sends via a new best-effort Worker route, `POST /tasks/notify`, using
+[Resend](https://resend.com)'s REST API directly (`fetch`, no SDK). Requires two new Worker env
+vars: `RESEND_API_KEY` and optionally `RESEND_FROM_EMAIL` (defaults to
+`Leadvyne Tasks <tasks@leadvyne.com>` — set this to a domain verified in Resend, or sends will be
+rejected). If `RESEND_API_KEY` isn't set, task creation/editing still works fine — the email side
+just no-ops with a clear inline error, same "optional integration degrades gracefully" pattern used
+elsewhere (e.g. the webhook auto-wiring in Channels). Each task row also has a "📧 Follow Up" button
+that re-sends this same email as a manual nudge.
+
+**"Mine" filter / knowing who's logged in** — the session JWT only ever carries the shared account's
+`cid`, not which specific teammate (from `team_emails`) is behind a given browser session. Fixed by
+having `POST /session/exchange` also return the verified `email` from the Authentik userinfo call it
+already makes (previously discarded) — the frontend stores it as `sessionStorage.lv_me_email` /
+the `myEmail` JS var, used to filter manual tasks assigned to whoever is actually logged in right
+now, and to visually mark "(you)" in the assignee dropdown.
+
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
 - **Wrapper** — open that client's generated workflow; add nodes around `Run engine`
