@@ -708,12 +708,27 @@ never carried over here. Fixed the same way:
   it just redirects to `dashboard.html` to sign in there.
 - All NocoDB reads/writes now go through `${WORKER_BASE}/nocodb/*` with the inherited session
   bearer token, same as `dashboard.html`.
-- Every Chatwoot call (template list/create, DM send, template-broadcast send) moved server-side
-  into the Worker — new routes `GET/POST /broadcast/templates`, `POST /broadcast/send-dm`, `POST
-  /broadcast/send-template` — so `chatwoot_token` never reaches the browser. The template list/
-  create routes hit Chatwoot's own inbox-scoped `whatsapp_templates` endpoint (this page's existing
-  integration path), which is separate from the Graph-API-direct `/wa/templates` route used
-  elsewhere in this Worker for the Prospects module — both are real, just different upstreams.
+- Every Chatwoot call (DM send, follow-up send) moved server-side into the Worker — routes `POST
+  /broadcast/send-dm`, `POST /broadcast/followup-send` — so `chatwoot_token` never reaches the
+  browser. Both look up a lead's conversation ID via the same fallback chain as `dashboard.html`'s
+  `leadConvId()` (`ConversationID`/`conv_id`/`ConversationId`/`chatwoot_conv_id`) since leads have
+  been written under inconsistent field casings depending on the write path — checking only
+  `ConversationID` silently sent a blank ID to Chatwoot on some leads.
+- **Template Broadcast lists and sends go straight through Meta's Graph API** (`GET /wa/templates`,
+  `POST /wa/send-template`), the same route the Prospects module already uses — **not** Chatwoot's
+  inbox-scoped `whatsapp_templates` endpoint, which one production client's account 404'd on even
+  with a confirmed-correct `chatwoot_account_id`/`chatwoot_inbox_id`/token (matched Chatwoot's own
+  UI) and templates visible in Chatwoot's dashboard. This also fixes the underlying reason a
+  template send is needed at all: leads outside the 24h session window require an approved
+  template, and that has nothing to do with which system lists/sends it — Graph API direct works
+  regardless of window, and drops the dependency on Chatwoot's template sync entirely. Requires
+  `wa_phone_id`/`wa_token`/`waba_id` on the client record; if missing, the page shows a "Connect it
+  in Settings → Channels" link (`dashboard.html?channels=1` deep-links straight to that tab) instead
+  of a separate credential form — Channels' existing Meta Embedded Signup flow already collects and
+  stores these, so there's nothing new to build there.
+- The **Manage Templates** tab (creating new templates) still submits via the Chatwoot-scoped
+  `POST /broadcast/templates` route — not yet switched to Graph API direct. Known follow-up if that
+  same client also can't create templates from Chatwoot; not reported broken as of this writing.
 
 **New tab: 🔁 Follow-ups** — shows leads currently mid-sequence in either of the two existing
 automated systems: the classic `followup_messages` sequence (`Follow up 1/2/3` flags, up to
