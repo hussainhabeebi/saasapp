@@ -1,0 +1,74 @@
+{
+  "name": "Leadvyne · Ecom Sheet Headers",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leadvyne-ecom-sheet-headers",
+        "responseMode": "responseNode",
+        "options": { "allowedOrigins": "*" }
+      },
+      "id": "eheaders-wh",
+      "name": "Webhook · Sheet Headers",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-600, 0],
+      "webhookId": "leadvyne-ecom-sheet-headers"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $('Webhook · Sheet Headers').first().json.body;\nconst gsheetUrl = b.gsheet_url || '';\nconst match = gsheetUrl.match(/\\/spreadsheets\\/d\\/([a-zA-Z0-9-_]+)/);\nif (!match) throw new Error('Invalid Google Sheet URL');\nreturn [{ json: { spreadsheetId: match[1] } }];"
+      },
+      "id": "eheaders-parse",
+      "name": "Code · Parse Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-380, 0]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": "={{ $json.spreadsheetId }}",
+        "sheetName": "Sheet1",
+        "options": { "range": "Sheet1!1:1" }
+      },
+      "id": "eheaders-fetch",
+      "name": "HTTP · Fetch Header Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [-160, 0],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "REPLACE_GSHEET_CRED", "name": "Google Sheets" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst rowValues = raw.values ? raw.values[0] : Object.values(raw).filter(v => typeof v === 'string' || typeof v === 'number');\nconst headers = (rowValues || []).map(h => String(h).trim()).filter(Boolean);\nreturn [{ json: { headers } }];"
+      },
+      "id": "eheaders-format",
+      "name": "Code · Format Headers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [60, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "eheaders-respond",
+      "name": "Respond · Headers",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [280, 0]
+    }
+  ],
+  "connections": {
+    "Webhook · Sheet Headers": { "main": [ [ { "node": "Code · Parse Request", "type": "main", "index": 0 } ] ] },
+    "Code · Parse Request":    { "main": [ [ { "node": "HTTP · Fetch Header Row", "type": "main", "index": 0 } ] ] },
+    "HTTP · Fetch Header Row": { "main": [ [ { "node": "Code · Format Headers", "type": "main", "index": 0 } ] ] },
+    "Code · Format Headers":   { "main": [ [ { "node": "Respond · Headers", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

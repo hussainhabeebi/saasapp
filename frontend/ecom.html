@@ -62,6 +62,8 @@ tr:last-child td{border-bottom:none}
 .badge.pending{background:#FEF3C7;color:#92400E}
 .badge.cancelled{background:#FEE2E2;color:#991B1B}
 .badge.processing{background:#DBEAFE;color:#1E3A8A}
+.thumb{width:36px;height:36px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block}
+.thumb-empty{background:var(--accent-soft)}
 
 /* SETTINGS */
 .s-sec{margin-bottom:24px}
@@ -74,6 +76,12 @@ tr:last-child td{border-bottom:none}
 .save-btn:hover{opacity:.9}
 .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)}
 .save-msg{font-size:12px;color:var(--accent);align-self:center}
+
+/* COLUMN MAP */
+.colmap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:12px}
+.colmap-field label{font-size:11px;color:var(--muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.03em}
+.colmap-field select{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg)}
+.colmap-field select:focus{outline:none;border-color:var(--accent);background:#fff}
 
 /* LOADING */
 .spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
@@ -114,11 +122,11 @@ tr:last-child td{border-bottom:none}
       <table>
         <thead>
           <tr>
-            <th>Name</th><th>SKU</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th>
+            <th>Image</th><th>Name</th><th>SKU</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th>
           </tr>
         </thead>
         <tbody id="productsTbody">
-          <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
+          <tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -195,8 +203,13 @@ tr:last-child td{border-bottom:none}
     <div class="s-sec">
       <span class="s-lbl">Google Sheet URL (Products)</span>
       <input class="s-input" id="cfgProductsSheet" type="url" placeholder="https://docs.google.com/spreadsheets/d/…">
-      <div class="s-hint">Sheet must have headers: name, sku, category, price, stock, status, description</div>
+      <div class="s-hint">Any column headers work — map them to fields below. Supports an image link column too.</div>
     </div>
+    <div class="s-row">
+      <button class="save-btn sec" onclick="detectColumns('products')">🔍 Detect Sheet Columns</button>
+      <span class="save-msg" id="prodDetectMsg"></span>
+    </div>
+    <div class="colmap-grid" id="prodColumnMap"></div>
     <div class="s-row">
       <button class="save-btn" onclick="saveProductsSheet()">Save</button>
       <button class="save-btn sec" onclick="syncSheet('products')">▶ Sync Products Now</button>
@@ -209,8 +222,13 @@ tr:last-child td{border-bottom:none}
     <div class="s-sec">
       <span class="s-lbl">Google Sheet URL (Orders)</span>
       <input class="s-input" id="cfgOrdersSheet" type="url" placeholder="https://docs.google.com/spreadsheets/d/…">
-      <div class="s-hint">Sheet must have headers: order_id, customer_name, order_date, items, total, status</div>
+      <div class="s-hint">Any column headers work — map them to fields below.</div>
     </div>
+    <div class="s-row">
+      <button class="save-btn sec" onclick="detectColumns('orders')">🔍 Detect Sheet Columns</button>
+      <span class="save-msg" id="ordDetectMsg"></span>
+    </div>
+    <div class="colmap-grid" id="ordColumnMap"></div>
     <div class="s-row">
       <button class="save-btn" onclick="saveOrdersSheet()">Save</button>
       <button class="save-btn sec" onclick="syncSheet('orders')">▶ Sync Orders Now</button>
@@ -233,6 +251,32 @@ let clientId = params.get('client') || '';
 let clientRecord = null;
 let ecomTableIds = {};
 
+const PRODUCT_FIELDS = [
+  { key:'name',        label:'Name',        required:true },
+  { key:'sku',         label:'SKU' },
+  { key:'category',    label:'Category' },
+  { key:'price',       label:'Price' },
+  { key:'currency',    label:'Currency' },
+  { key:'stock',       label:'Stock' },
+  { key:'status',      label:'Status' },
+  { key:'description', label:'Description' },
+  { key:'image_url',   label:'Image Link' }
+];
+const ORDER_FIELDS = [
+  { key:'order_id',         label:'Order ID',      required:true },
+  { key:'customer_name',    label:'Customer Name' },
+  { key:'customer_phone',   label:'Customer Phone' },
+  { key:'order_date',       label:'Order Date' },
+  { key:'items',            label:'Items' },
+  { key:'total',            label:'Total' },
+  { key:'currency',         label:'Currency' },
+  { key:'status',           label:'Status' },
+  { key:'delivery_address', label:'Delivery Address' },
+  { key:'notes',            label:'Notes' }
+];
+let columnMaps = { products: {}, orders: {} };
+let sheetHeaders = { products: [], orders: [] };
+
 // ── INIT ──────────────────────────────────────────
 async function init() {
   if (!clientId) { clientId = prompt('Enter your Client ID:') || ''; }
@@ -254,6 +298,19 @@ async function init() {
   if (clientRecord.ecom_products_sheet) document.getElementById('cfgProductsSheet').value = clientRecord.ecom_products_sheet;
   if (clientRecord.ecom_orders_sheet)   document.getElementById('cfgOrdersSheet').value   = clientRecord.ecom_orders_sheet;
   if (clientRecord.review_link)         document.getElementById('cfgReviewLink').value    = clientRecord.review_link;
+
+  try {
+    const pm = JSON.parse(clientRecord.ecom_products_column_map || '{}');
+    columnMaps.products = pm.map || {};
+    sheetHeaders.products = pm.headers || [];
+  } catch(e) {}
+  try {
+    const om = JSON.parse(clientRecord.ecom_orders_column_map || '{}');
+    columnMaps.orders = om.map || {};
+    sheetHeaders.orders = om.headers || [];
+  } catch(e) {}
+  if (sheetHeaders.products.length) renderColumnMap('products', sheetHeaders.products);
+  if (sheetHeaders.orders.length)   renderColumnMap('orders', sheetHeaders.orders);
 
   loadProducts();
   loadOrders();
@@ -287,11 +344,12 @@ async function loadProducts() {
     document.getElementById('statOutOfStock').textContent = outOfStock;
 
     if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📦</div>No products found</div></td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">📦</div>No products found</div></td></tr>';
       return;
     }
     tbody.innerHTML = list.map(p => `
       <tr>
+        <td>${p.image_url ? `<img src="${escAttr(p.image_url)}" alt="" class="thumb" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb thumb-empty'}))">` : '<div class="thumb thumb-empty"></div>'}</td>
         <td><strong>${esc(p.name||p.title||'—')}</strong></td>
         <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
         <td>${esc(p.category||'—')}</td>
@@ -344,6 +402,51 @@ async function loadOrders() {
   }
 }
 
+// ── COLUMN MAPPING ────────────────────────────────
+async function detectColumns(type) {
+  const msgId = type === 'products' ? 'prodDetectMsg' : 'ordDetectMsg';
+  const sheetUrl = (type === 'products' ? document.getElementById('cfgProductsSheet') : document.getElementById('cfgOrdersSheet')).value.trim();
+  if (!sheetUrl) { showMsg(msgId, 'Enter a sheet URL first'); return; }
+  showMsg(msgId, 'Detecting…', 10000);
+  try {
+    const r = await fetch(`${N8N_BASE}/webhook/leadvyne-ecom-sheet-headers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gsheet_url: sheetUrl })
+    });
+    const data = await r.json();
+    const headers = data.headers || [];
+    if (!headers.length) { showMsg(msgId, 'No columns found — check the sheet & sharing'); return; }
+    sheetHeaders[type] = headers;
+    renderColumnMap(type, headers);
+    showMsg(msgId, `Found ${headers.length} columns ✓`);
+  } catch(e) {
+    showMsg(msgId, 'Error: ' + e.message);
+  }
+}
+
+function renderColumnMap(type, headers) {
+  const fields = type === 'products' ? PRODUCT_FIELDS : ORDER_FIELDS;
+  const container = document.getElementById(type === 'products' ? 'prodColumnMap' : 'ordColumnMap');
+  const saved = columnMaps[type] || {};
+  container.innerHTML = fields.map(f => {
+    const guess = (saved[f.key] && headers.includes(saved[f.key]))
+      ? saved[f.key]
+      : (headers.find(h => h.trim().toLowerCase().replace(/\s+/g,'_') === f.key) || '');
+    columnMaps[type][f.key] = guess;
+    const options = ['<option value="">— Skip —</option>']
+      .concat(headers.map(h => `<option value="${escAttr(h)}" ${h===guess?'selected':''}>${esc(h)}</option>`));
+    return `<div class="colmap-field">
+      <label>${esc(f.label)}${f.required?' *':''}</label>
+      <select onchange="updateColumnMap('${type}','${f.key}',this.value)">${options.join('')}</select>
+    </div>`;
+  }).join('');
+}
+
+function updateColumnMap(type, key, value) {
+  columnMaps[type][key] = value;
+}
+
 // ── SETTINGS SAVE ─────────────────────────────────
 async function saveTableIds() {
   const products = document.getElementById('cfgProductsTable').value.trim();
@@ -357,7 +460,10 @@ async function saveTableIds() {
 
 async function saveProductsSheet() {
   const url = document.getElementById('cfgProductsSheet').value.trim();
-  await patchClient({ ecom_products_sheet: url });
+  await patchClient({
+    ecom_products_sheet: url,
+    ecom_products_column_map: JSON.stringify({ map: columnMaps.products, headers: sheetHeaders.products })
+  });
   showMsg('prodSheetMsg', 'Saved ✓');
 }
 
@@ -369,7 +475,10 @@ async function saveReviewLink() {
 
 async function saveOrdersSheet() {
   const url = document.getElementById('cfgOrdersSheet').value.trim();
-  await patchClient({ ecom_orders_sheet: url });
+  await patchClient({
+    ecom_orders_sheet: url,
+    ecom_orders_column_map: JSON.stringify({ map: columnMaps.orders, headers: sheetHeaders.orders })
+  });
   showMsg('ordSheetMsg', 'Saved ✓');
 }
 
@@ -387,7 +496,7 @@ async function syncSheet(type) {
       method: 'POST',
       mode: 'no-cors',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, sync_type: type, gsheet_url: sheetUrl, table_id: tableId })
+      body: JSON.stringify({ client_id: clientId, sync_type: type, gsheet_url: sheetUrl, table_id: tableId, column_map: columnMaps[type] || {} })
     });
     showMsg(msgId, 'Sync started ✓', 5000);
     setTimeout(() => { if(type==='products') loadProducts(); else loadOrders(); }, 4000);
@@ -414,6 +523,10 @@ function showMsg(id, msg, duration = 3000) {
 
 function esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function escAttr(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 // Auto-login: skip gate, init immediately

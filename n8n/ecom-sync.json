@@ -29,7 +29,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const b = $('Webhook · Ecom Sync').first().json.body;\nconst clientId     = b.client_id;\nconst syncType     = b.sync_type || 'products'; // 'products' or 'orders'\nconst gsheetUrl    = b.gsheet_url || '';\nconst tableId      = b.table_id || '';\n\nconst match = gsheetUrl.match(/\\/spreadsheets\\/d\\/([a-zA-Z0-9-_]+)/);\nif (!match) throw new Error('Invalid Google Sheet URL');\nconst spreadsheetId = match[1];\n\nreturn [{ json: { clientId, syncType, spreadsheetId, gsheetUrl, tableId } }];"
+        "jsCode": "const b = $('Webhook · Ecom Sync').first().json.body;\nconst clientId     = b.client_id;\nconst syncType     = b.sync_type || 'products'; // 'products' or 'orders'\nconst gsheetUrl    = b.gsheet_url || '';\nconst tableId      = b.table_id || '';\nconst columnMap    = (b.column_map && typeof b.column_map === 'object') ? b.column_map : {};\n\nconst match = gsheetUrl.match(/\\/spreadsheets\\/d\\/([a-zA-Z0-9-_]+)/);\nif (!match) throw new Error('Invalid Google Sheet URL');\nconst spreadsheetId = match[1];\n\nreturn [{ json: { clientId, syncType, spreadsheetId, gsheetUrl, tableId, columnMap } }];"
       },
       "id": "esync-parse",
       "name": "Code · Parse Request",
@@ -59,7 +59,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const meta = $('Code · Parse Request').first().json;\nconst raw = $input.first().json;\n// GSheet read returns array of row arrays\nconst rows = raw.values || [];\nif (rows.length < 2) return [];\n\nconst headers = rows[0].map(h => h.toLowerCase().replace(/\\s+/g,'_'));\nconst dataRows = rows.slice(1);\n\nconst records = dataRows.map(row => {\n  const obj = { client_id: meta.clientId };\n  headers.forEach((h, i) => { obj[h] = row[i] || ''; });\n  return { json: obj };\n});\n\nreturn [{ json: { ...meta, records, headers } }];"
+        "jsCode": "const meta = $('Code · Parse Request').first().json;\nconst raw = $input.first().json;\n// GSheet read returns array of row arrays\nconst rows = raw.values || [];\nif (rows.length < 2) return [];\n\nconst rawHeaders = rows[0];\nconst normHeaders = rawHeaders.map(h => String(h).toLowerCase().replace(/\\s+/g,'_'));\nconst dataRows = rows.slice(1);\n\nconst FIELDS_BY_TYPE = {\n  products: ['name','sku','category','price','currency','stock','status','description','image_url'],\n  orders: ['order_id','customer_name','customer_phone','order_date','items','total','currency','status','delivery_address','notes']\n};\nconst targetFields = FIELDS_BY_TYPE[meta.syncType] || FIELDS_BY_TYPE.products;\nconst columnMap = meta.columnMap || {};\n\nfunction findIndex(headerName) {\n  if (!headerName) return -1;\n  const needle = String(headerName).trim().toLowerCase();\n  return rawHeaders.findIndex(h => String(h).trim().toLowerCase() === needle);\n}\n\n// Resolve each target field to a column index: explicit mapping first, else\n// fall back to matching the normalized (snake_case) header name directly.\nconst fieldIndex = {};\ntargetFields.forEach(f => {\n  const mapped = columnMap[f];\n  let idx = mapped ? findIndex(mapped) : -1;\n  if (idx === -1) idx = normHeaders.indexOf(f);\n  fieldIndex[f] = idx;\n});\n\nconst records = dataRows.map(row => {\n  const obj = { client_id: meta.clientId };\n  targetFields.forEach(f => {\n    const idx = fieldIndex[f];\n    obj[f] = idx >= 0 ? (row[idx] || '') : '';\n  });\n  return { json: obj };\n});\n\nreturn [{ json: { ...meta, records, headers: rawHeaders } }];"
       },
       "id": "esync-parse-rows",
       "name": "Code · Parse Sheet Rows",
