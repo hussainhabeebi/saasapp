@@ -1439,6 +1439,7 @@ const TODAY = new Date().toISOString().slice(0,10);
           <button class="btn btn-primary btn-sm" onclick="openTaskModal()">+ New Task</button>
         </div>
         <div class="task-filter-row" id="taskFilterRow"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px" id="taskSecondaryRow"></div>
         <div class="card">
           <div id="tasksList"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
         </div>
@@ -2680,6 +2681,14 @@ const TODAY = new Date().toISOString().slice(0,10);
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       <div class="form-group"><label class="form-label">Due Date</label><input class="form-input" type="date" id="taskDueDate"></div>
       <div class="form-group"><label class="form-label">Due Time</label><input class="form-input" type="time" id="taskDueTime"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Category</label>
+        <select class="form-input" id="taskCategory"><option value="">No category</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Project</label>
+        <select class="form-input" id="taskProject"><option value="">No project</option></select>
+      </div>
     </div>
     <div class="form-group"><label class="form-label">Related Lead (optional)</label>
       <select class="form-input" id="taskLeadSelect"><option value="">Not linked to a lead</option></select>
@@ -5487,12 +5496,43 @@ function renderPredictive(){
      .items array. No new NocoDB table — reuses the capped-JSON-array-on-CLIENTS pattern already
      used for broadcast_log, since a whole new table+ID round trip isn't needed for this volume. */
 let TASK_FILTER='all';
+let TASK_VIEW='list'; // 'list' | 'projects' | 'board'
+let TASK_CATEGORY_FILTER='';
+let TASK_PROJECT_FILTER='';
+
+// Fixed palette so category tags stay visually consistent everywhere they render (list, board,
+// project groups) without per-task custom colors to manage. Auto-tagging (see computeAllTasks)
+// means virtual tasks get a sensible category for free, without ever touching the task modal.
+const TASK_CATEGORIES=[
+  {name:'Sales',color:'#991B1B',bg:'#FEE2E2'},
+  {name:'Follow-up',color:'#92400E',bg:'#FEF3C7'},
+  {name:'Admin',color:'#3730A3',bg:'#E0E7FF'},
+  {name:'Support',color:'#065F46',bg:'#D1FAE5'},
+  {name:'Marketing',color:'#9D174D',bg:'#FCE7F3'},
+  {name:'Internal',color:'#374151',bg:'#F3F4F6'},
+];
+function categoryStyle(name){ return TASK_CATEGORIES.find(c=>c.name===name)||{name:name||'',color:'#374151',bg:'#F3F4F6'}; }
+
+// Ready-made task sets for the "+ New Project" flow's "start from a template" option — saves
+// re-typing the same checklist every time a similar project (onboarding, a renewal push, a
+// campaign) comes up. Purely a convenience prefill; the resulting tasks are ordinary manual
+// tasks afterward, no special linkage back to the template.
+const PROJECT_TEMPLATES=[
+  {name:'New Client Onboarding',tasks:['Send welcome message','Collect required documents','Schedule kickoff call','Confirm first payment','Send onboarding guide']},
+  {name:'Deal Close Push',tasks:['Send final proposal','Confirm decision maker sign-off','Send contract','Schedule signing call','Confirm payment received']},
+  {name:'Campaign Launch',tasks:['Finalize messaging','Prepare WhatsApp broadcast list','Send campaign','Follow up non-responders','Report results']},
+];
+const PROJECT_COLORS=['#0D9C93','#2563EB','#DC2626','#D97706','#7C3AED','#0891B2'];
 
 function getTasksState(){
   try{
     const parsed=JSON.parse(clientRecord?.manual_tasks||'{}');
-    return {items:Array.isArray(parsed.items)?parsed.items:[], dismissed:Array.isArray(parsed.dismissed)?parsed.dismissed:[]};
-  }catch(e){ return {items:[],dismissed:[]}; }
+    return {
+      items:Array.isArray(parsed.items)?parsed.items:[],
+      dismissed:Array.isArray(parsed.dismissed)?parsed.dismissed:[],
+      projects:Array.isArray(parsed.projects)?parsed.projects:[],
+    };
+  }catch(e){ return {items:[],dismissed:[],projects:[]}; }
 }
 async function saveTasksState(state){
   if(state.dismissed.length>300) state.dismissed=state.dismissed.slice(-300);
@@ -5518,7 +5558,7 @@ function computeAllTasks(){
       const key='remind:'+l.Id+':'+l.ReminderDate;
       if(!dismissed.has(key)){
         const daysOverdue=Math.max(0,Math.floor((new Date(todayStr)-new Date(l.ReminderDate.slice(0,10)))/86400000));
-        out.push({_virtual:true,_type:'reminder',_dismissKey:key,leadId:l.Id,
+        out.push({_virtual:true,_type:'reminder',_dismissKey:key,leadId:l.Id,category:'Follow-up',
           title:'Reminder: '+(l.Name||'Lead'), meta:(l.Stage||'new')+' · '+(l.Owner||'Unassigned'),
           due:l.ReminderDate, urgency:300+daysOverdue*10, qs:l.QualScore});
       }
@@ -5526,7 +5566,7 @@ function computeAllTasks(){
     if(l.HotMoment==='Yes'){
       const key='hot:'+l.Id+':'+(l.HotMomentText||'');
       if(!dismissed.has(key)){
-        out.push({_virtual:true,_type:'hot',_dismissKey:key,leadId:l.Id,
+        out.push({_virtual:true,_type:'hot',_dismissKey:key,leadId:l.Id,category:'Sales',
           title:'🔥 '+(l.Name||'Lead'), meta:l.HotMomentText||'Buying signal detected',
           due:l.LastMsgAt||l.Date, urgency:1000});
       }
@@ -5542,23 +5582,27 @@ function computeAllTasks(){
     if(hrs<48||(l['Follow up 1']||'No')!=='No') return;
     const key='overdue:'+l.Id+':'+(l.LastMsgAt||l.Date);
     if(dismissed.has(key)) return;
-    overdueCandidates.push({_virtual:true,_type:'overdue',_dismissKey:key,leadId:l.Id,
+    overdueCandidates.push({_virtual:true,_type:'overdue',_dismissKey:key,leadId:l.Id,category:'Follow-up',
       title:'⏰ '+(l.Name||'Lead'), meta:(l.Stage||'new')+' · '+Math.round(hrs)+'h since last message',
       due:l.LastMsgAt||l.Date, urgency:500+Math.min(hrs,500), _hrs:hrs});
   });
   overdueCandidates.sort((a,b)=>b._hrs-a._hrs);
   out.push(...overdueCandidates.slice(0,10));
 
-  getTasksState().items.forEach(t=>{
+  const state=getTasksState();
+  state.items.forEach(t=>{
     if(t.status==='done') return;
     let urgency=50;
     if(t.due_date){
       const daysUntil=Math.floor((new Date(t.due_date)-new Date(todayStr))/86400000);
       urgency=daysUntil<=0?(300-daysUntil*10):Math.max(10,100-daysUntil*5);
     }
+    const proj=t.project_id?state.projects.find(p=>p.id===t.project_id):null;
     out.push({_virtual:false,_type:'manual',id:t.id,leadId:t.lead_id||null,
       title:t.title, meta:[t.notes,t.lead_name?('Re: '+t.lead_name):'',t.assignee_email?('→ '+t.assignee_email):''].filter(Boolean).join(' · '),
-      due:t.due_date, dueTime:t.due_time, assignee:t.assignee_email||'', urgency});
+      due:t.due_date, dueTime:t.due_time, assignee:t.assignee_email||'', urgency,
+      category:t.category||'', projectId:t.project_id||'', projectName:proj?.name||'', projectColor:proj?.color||'',
+      status:t.status||'open'});
   });
 
   return out;
@@ -5576,12 +5620,36 @@ function taskCounts(all){
 }
 
 function setTaskFilter(f){ TASK_FILTER=f; renderTasks(); }
+function setTaskView(v){ TASK_VIEW=v; renderTasks(); }
+function setTaskCategoryFilter(v){ TASK_CATEGORY_FILTER=v; renderTasks(); }
+function setTaskProjectFilter(v){ TASK_PROJECT_FILTER=v; renderTasks(); }
 
 function renderTaskFilterRow(counts){
   const tabs=[['all','All'],['today','Due Today'],['hot','Hot'],['overdue','Overdue'],['manual','Manual'],['mine','Mine']];
   $id('taskFilterRow').innerHTML=tabs.map(([key,label])=>
     `<button class="task-filter-btn${TASK_FILTER===key?' active':''}" onclick="setTaskFilter('${key}')">${label}<span class="cnt">${counts[key]}</span></button>`
   ).join('');
+}
+
+function renderTaskSecondaryControls(all){
+  const projects=getTasksState().projects;
+  const categoriesInUse=[...new Set(all.map(t=>t.category).filter(Boolean))];
+  $id('taskSecondaryRow').innerHTML=`
+    <select class="form-input" style="max-width:170px" onchange="setTaskCategoryFilter(this.value)">
+      <option value="">All categories</option>
+      ${categoriesInUse.map(c=>`<option value="${esc(c)}"${TASK_CATEGORY_FILTER===c?' selected':''}>${esc(c)}</option>`).join('')}
+    </select>
+    <select class="form-input" style="max-width:170px" onchange="setTaskProjectFilter(this.value)">
+      <option value="">All projects</option>
+      ${projects.map(p=>`<option value="${esc(p.id)}"${TASK_PROJECT_FILTER===p.id?' selected':''}>${esc(p.name)}</option>`).join('')}
+    </select>
+    <button class="task-action-btn" onclick="promptNewProject()">+ New Project</button>
+    <div style="flex:1"></div>
+    <div style="display:flex;gap:4px;background:var(--bg);border-radius:10px;padding:3px">
+      ${[['list','📋 List'],['projects','📁 Projects'],['board','🗂️ Board']].map(([key,label])=>
+        `<button class="task-action-btn${TASK_VIEW===key?' primary':''}" style="border:none" onclick="setTaskView('${key}')">${label}</button>`
+      ).join('')}
+    </div>`;
 }
 
 function updateTasksBadge(){
@@ -5596,48 +5664,176 @@ function renderTasks(){
   const all=computeAllTasks();
   const counts=taskCounts(all);
   renderTaskFilterRow(counts);
+  renderTaskSecondaryControls(all);
   updateTasksBadge();
 
   let filtered=all;
-  if(TASK_FILTER==='today') filtered=all.filter(t=>t._type==='reminder'||(t._type==='manual'&&t.due&&t.due<=TODAY));
-  else if(TASK_FILTER==='hot') filtered=all.filter(t=>t._type==='hot');
-  else if(TASK_FILTER==='overdue') filtered=all.filter(t=>t._type==='overdue');
-  else if(TASK_FILTER==='manual') filtered=all.filter(t=>t._type==='manual');
-  else if(TASK_FILTER==='mine') filtered=all.filter(t=>t._type==='manual'&&myEmail&&t.assignee===myEmail);
+  if(TASK_FILTER==='today') filtered=filtered.filter(t=>t._type==='reminder'||(t._type==='manual'&&t.due&&t.due<=TODAY));
+  else if(TASK_FILTER==='hot') filtered=filtered.filter(t=>t._type==='hot');
+  else if(TASK_FILTER==='overdue') filtered=filtered.filter(t=>t._type==='overdue');
+  else if(TASK_FILTER==='manual') filtered=filtered.filter(t=>t._type==='manual');
+  else if(TASK_FILTER==='mine') filtered=filtered.filter(t=>t._type==='manual'&&myEmail&&t.assignee===myEmail);
+  if(TASK_CATEGORY_FILTER) filtered=filtered.filter(t=>t.category===TASK_CATEGORY_FILTER);
+  if(TASK_PROJECT_FILTER) filtered=filtered.filter(t=>t.projectId===TASK_PROJECT_FILTER);
 
+  if(TASK_VIEW==='board') renderTasksBoard(filtered.filter(t=>t._type==='manual'));
+  else if(TASK_VIEW==='projects') renderTasksByProject(filtered);
+  else renderTasksList(filtered);
+}
+
+function taskTagsHtml(t){
+  const catTag=t.category?(()=>{const s=categoryStyle(t.category);return `<span class="task-tag" style="background:${s.bg};color:${s.color}">${esc(t.category)}</span>`;})():'';
+  const projTag=t.projectName?`<span class="task-tag" style="background:${t.projectColor}22;color:${t.projectColor}">📁 ${esc(t.projectName)}</span>`:'';
+  return catTag+projTag;
+}
+
+function taskItemHtml(t){
+  const clickOpen=t.leadId?`onclick="openDetail(${t.leadId})"`:'';
+  // Hot/overdue titles already carry their own emoji prefix (see computeAllTasks) — no separate icon needed there.
+  const iconHtml=t._type==='reminder'
+    ? (t.qs?qsPill(t.qs):'<span style="font-size:18px;flex:none">📅</span>')
+    : t._type==='manual' ? '<span style="font-size:18px;flex:none">📝</span>' : '';
+  const dueLabel=t._type==='manual'
+    ? (t.due?`${fmtDateShort(t.due)}${t.dueTime?' '+esc(t.dueTime):''}`:'')
+    : (t._type==='reminder'?fmtDate(t.due):fmtDateShort(t.due));
+  return `<div class="task-item">
+    ${iconHtml}
+    <div style="flex:1;min-width:0;${t.leadId?'cursor:pointer':''}" ${clickOpen}>
+      <div class="task-lead">${esc(t.title)}</div>
+      <div class="task-meta">${esc(t.meta||'')}</div>
+    </div>
+    <span class="task-tag ${t._type}">${t._type==='reminder'?'Reminder':t._type==='hot'?'Hot':t._type==='overdue'?'Overdue':'Manual'}</span>
+    ${taskTagsHtml(t)}
+    ${dueLabel?`<div class="task-due">${dueLabel}</div>`:''}
+    <div class="task-actions">
+      ${t._type==='manual'?`<button class="task-action-btn" onclick="event.stopPropagation();openTaskModal('${t.id}')">Edit</button>`:''}
+      ${t._type==='manual'&&t.assignee?`<button class="task-action-btn" onclick="event.stopPropagation();sendTaskEmailFollowUp('${t.id}')">📧 Follow Up</button>`:''}
+      ${t.leadId?`<button class="task-action-btn" onclick="event.stopPropagation();sendTaskWaFollowUp(${t.leadId},this)">💬 WA Follow-up</button>`:''}
+      ${t._type==='reminder'?`<button class="task-action-btn" onclick="event.stopPropagation();snoozeReminderLead(${t.leadId})">+1d</button>`:''}
+      ${t._type==='manual'?`<button class="task-action-btn" onclick="event.stopPropagation();snoozeManualTask('${t.id}')">+1d</button>`:''}
+      <button class="task-action-btn primary" onclick="event.stopPropagation();${t._virtual?`dismissVirtualTask('${t._dismissKey}')`:`toggleTaskDone('${t.id}')`}">✓ Done</button>
+    </div>
+  </div>`;
+}
+
+function renderTasksList(filtered){
   filtered.sort((a,b)=>b.urgency-a.urgency);
-
   if(!filtered.length){
     $id('tasksList').innerHTML='<div style="color:var(--muted);font-size:13px;padding:8px 0">Nothing here 🎉</div>';
     return;
   }
-  $id('tasksList').innerHTML=filtered.map(t=>{
-    const clickOpen=t.leadId?`onclick="openDetail(${t.leadId})"`:'';
-    // Hot/overdue titles already carry their own emoji prefix (see computeAllTasks) — no separate icon needed there.
-    const iconHtml=t._type==='reminder'
-      ? (t.qs?qsPill(t.qs):'<span style="font-size:18px;flex:none">📅</span>')
-      : t._type==='manual' ? '<span style="font-size:18px;flex:none">📝</span>' : '';
-    const dueLabel=t._type==='manual'
-      ? (t.due?`${fmtDateShort(t.due)}${t.dueTime?' '+esc(t.dueTime):''}`:'')
-      : (t._type==='reminder'?fmtDate(t.due):fmtDateShort(t.due));
-    return `<div class="task-item">
-      ${iconHtml}
-      <div style="flex:1;min-width:0;${t.leadId?'cursor:pointer':''}" ${clickOpen}>
-        <div class="task-lead">${esc(t.title)}</div>
-        <div class="task-meta">${esc(t.meta||'')}</div>
+  $id('tasksList').innerHTML=filtered.map(taskItemHtml).join('');
+}
+
+// Groups by project — manual tasks with no project_id fall into "No Project" alongside every
+// virtual (auto-derived) task, since those are lead-derived and never belong to a project.
+function renderTasksByProject(filtered){
+  const state=getTasksState();
+  if(!state.projects.length && !filtered.length){
+    $id('tasksList').innerHTML='<div style="color:var(--muted);font-size:13px;padding:8px 0">No projects yet — click "+ New Project" to start one.</div>';
+    return;
+  }
+  const groups=state.projects.map(p=>({project:p, tasks:filtered.filter(t=>t.projectId===p.id)}));
+  const noProject=filtered.filter(t=>!t.projectId);
+  groups.push({project:null, tasks:noProject});
+
+  $id('tasksList').innerHTML=groups.map(g=>{
+    const allInProject=g.project?state.items.filter(t=>t.project_id===g.project.id):[];
+    const doneCount=allInProject.filter(t=>t.status==='done').length;
+    const totalCount=allInProject.length;
+    const pct=totalCount?Math.round(doneCount/totalCount*100):0;
+    const name=g.project?g.project.name:'No Project';
+    const color=g.project?g.project.color:'#94A3B8';
+    return `<div style="margin-bottom:18px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <span style="width:10px;height:10px;border-radius:50%;background:${color};flex:none"></span>
+        <div style="font-family:var(--disp);font-weight:700;font-size:14px">${esc(name)}</div>
+        ${g.project?`<div style="flex:1;max-width:140px;height:6px;background:var(--line);border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${color}"></div></div><span style="font-size:11px;color:var(--muted)">${doneCount}/${totalCount} done</span>`:''}
+        ${g.project?`<button class="task-action-btn" style="margin-left:auto" onclick="deleteProject('${g.project.id}')">🗑</button>`:''}
       </div>
-      <span class="task-tag ${t._type}">${t._type==='reminder'?'Reminder':t._type==='hot'?'Hot':t._type==='overdue'?'Overdue':'Manual'}</span>
-      ${dueLabel?`<div class="task-due">${dueLabel}</div>`:''}
-      <div class="task-actions">
-        ${t._type==='manual'?`<button class="task-action-btn" onclick="event.stopPropagation();openTaskModal('${t.id}')">Edit</button>`:''}
-        ${t._type==='manual'&&t.assignee?`<button class="task-action-btn" onclick="event.stopPropagation();sendTaskEmailFollowUp('${t.id}')">📧 Follow Up</button>`:''}
-        ${t.leadId?`<button class="task-action-btn" onclick="event.stopPropagation();sendTaskWaFollowUp(${t.leadId},this)">💬 WA Follow-up</button>`:''}
-        ${t._type==='reminder'?`<button class="task-action-btn" onclick="event.stopPropagation();snoozeReminderLead(${t.leadId})">+1d</button>`:''}
-        ${t._type==='manual'?`<button class="task-action-btn" onclick="event.stopPropagation();snoozeManualTask('${t.id}')">+1d</button>`:''}
-        <button class="task-action-btn primary" onclick="event.stopPropagation();${t._virtual?`dismissVirtualTask('${t._dismissKey}')`:`toggleTaskDone('${t.id}')`}">✓ Done</button>
-      </div>
+      ${g.tasks.length?g.tasks.sort((a,b)=>b.urgency-a.urgency).map(taskItemHtml).join(''):'<div style="color:var(--muted);font-size:12.5px;padding:4px 0 4px 20px">Nothing open here</div>'}
     </div>`;
   }).join('');
+}
+
+// Board only covers manual tasks — the open/in-progress/done lifecycle doesn't map cleanly onto
+// auto-derived reminders/hot-moments/overdue items, which don't get "started," only dismissed.
+function renderTasksBoard(manualOpen){
+  const state=getTasksState();
+  const doneRecent=state.items.filter(t=>t.status==='done').slice(-20).reverse();
+  const cols=[
+    ['open','📋 To Do',manualOpen.filter(t=>(t.status||'open')==='open')],
+    ['in_progress','🔨 In Progress',manualOpen.filter(t=>t.status==='in_progress')],
+  ];
+  const colHtml=(status,label,tasks,isDone)=>`
+    <div style="flex:1;min-width:220px;background:var(--bg);border-radius:var(--r-sm);padding:10px">
+      <div style="font-weight:700;font-size:12.5px;margin-bottom:8px">${label} <span style="color:var(--muted);font-weight:500">(${tasks.length})</span></div>
+      ${tasks.length?tasks.map(t=>isDone?`
+        <div class="card" style="padding:10px;margin-bottom:8px">
+          <div style="font-weight:600;font-size:13px;text-decoration:line-through;color:var(--muted)">${esc(t.title)}</div>
+          <button class="task-action-btn" style="margin-top:6px" onclick="moveTaskStatus('${t.id}','open')">↩ Reopen</button>
+        </div>` : `
+        <div class="card" style="padding:10px;margin-bottom:8px">
+          <div style="font-weight:600;font-size:13px">${esc(t.title)}</div>
+          ${t.meta?`<div class="task-meta">${esc(t.meta)}</div>`:''}
+          ${taskTagsHtml(t)}
+          <div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap">
+            <button class="task-action-btn" onclick="openTaskModal('${t.id}')">Edit</button>
+            ${status==='open'?`<button class="task-action-btn" onclick="moveTaskStatus('${t.id}','in_progress')">→ Start</button>`:''}
+            ${status==='in_progress'?`<button class="task-action-btn" onclick="moveTaskStatus('${t.id}','open')">← To Do</button>`:''}
+            <button class="task-action-btn primary" onclick="moveTaskStatus('${t.id}','done')">✓ Done</button>
+          </div>
+        </div>`).join(''):'<div style="color:var(--muted);font-size:12px">Empty</div>'}
+    </div>`;
+  $id('tasksList').innerHTML=`<div style="display:flex;gap:12px;flex-wrap:wrap">
+    ${cols.map(([status,label,tasks])=>colHtml(status,label,tasks,false)).join('')}
+    ${colHtml('done','✅ Done',doneRecent,true)}
+  </div>`;
+}
+
+async function moveTaskStatus(id,newStatus){
+  const state=getTasksState();
+  const t=state.items.find(x=>x.id===id);
+  if(!t) return;
+  t.status=newStatus;
+  t.completed_at=newStatus==='done'?new Date().toISOString():null;
+  try{ await saveTasksState(state); }catch(e){ alert('Could not save: '+e.message); return; }
+  renderTasks();
+}
+
+function promptNewProject(){
+  const list=PROJECT_TEMPLATES.map((t,i)=>`${i+1}. ${t.name} (${t.tasks.length} starter tasks)`).join('\n');
+  const choice=prompt(`New project — enter a name for a blank project, or a template number:\n${list}`);
+  if(!choice) return;
+  const trimmed=choice.trim();
+  const idx=parseInt(trimmed,10)-1;
+  if(/^\d+$/.test(trimmed) && idx>=0 && idx<PROJECT_TEMPLATES.length) createProject(PROJECT_TEMPLATES[idx].name, PROJECT_TEMPLATES[idx].tasks);
+  else createProject(trimmed);
+}
+
+async function createProject(name,starterTasks){
+  if(!name) return;
+  const state=getTasksState();
+  const color=PROJECT_COLORS[state.projects.length%PROJECT_COLORS.length];
+  const proj={id:'p_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), name, color, created_at:new Date().toISOString()};
+  state.projects.push(proj);
+  (starterTasks||[]).forEach(title=>{
+    state.items.push({id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), title, notes:'', due_date:'', due_time:'',
+      lead_id:null, lead_name:'', assignee_email:'', category:'', project_id:proj.id, status:'open', created_at:new Date().toISOString()});
+  });
+  try{ await saveTasksState(state); }catch(e){ alert('Could not create project: '+e.message); return; }
+  TASK_PROJECT_FILTER=proj.id; TASK_VIEW='projects';
+  renderTasks();
+}
+
+async function deleteProject(id){
+  if(!confirm('Delete this project? Its tasks stay, just unlinked from the project.')) return;
+  const state=getTasksState();
+  state.projects=state.projects.filter(p=>p.id!==id);
+  state.items.forEach(t=>{ if(t.project_id===id) t.project_id=''; });
+  try{ await saveTasksState(state); }catch(e){ alert('Could not delete: '+e.message); return; }
+  if(TASK_PROJECT_FILTER===id) TASK_PROJECT_FILTER='';
+  renderTasks();
 }
 
 async function dismissVirtualTask(key){
@@ -5745,6 +5941,13 @@ function openTaskModal(id){
   const emails=taskAssigneeEmails();
   assigneeSel.innerHTML='<option value="">Unassigned</option>'+emails.map(e=>`<option value="${esc(e)}"${t?.assignee_email===e?' selected':''}>${esc(e)}${e===myEmail?' (you)':''}</option>`).join('');
 
+  const catSel=$id('taskCategory');
+  catSel.innerHTML='<option value="">No category</option>'+TASK_CATEGORIES.map(c=>`<option value="${esc(c.name)}"${t?.category===c.name?' selected':''}>${esc(c.name)}</option>`).join('');
+
+  const projSel=$id('taskProject');
+  const projects=state.projects;
+  projSel.innerHTML='<option value="">No project</option>'+projects.map(p=>`<option value="${esc(p.id)}"${t?.project_id===p.id?' selected':''}>${esc(p.name)}</option>`).join('');
+
   $id('taskModalMsg').textContent='';
   openModal('modalTask');
 }
@@ -5757,6 +5960,8 @@ async function saveTaskFromModal(){
   const lead=leadId?allLeads.find(l=>l.Id===leadId):null;
   const assigneeEmail=$id('taskAssignee').value||'';
   const notify=$id('taskNotifyEmail').checked;
+  const category=$id('taskCategory').value||'';
+  const projectId=$id('taskProject').value||'';
 
   const state=getTasksState();
   let task=_editingTaskId?state.items.find(x=>x.id===_editingTaskId):null;
@@ -5766,7 +5971,7 @@ async function saveTaskFromModal(){
     title, notes:$id('taskNotes').value.trim(),
     due_date:$id('taskDueDate').value||'', due_time:$id('taskDueTime').value||'',
     lead_id:leadId, lead_name:lead?(lead.Name||lead.Phone||''):'',
-    assignee_email:assigneeEmail,
+    assignee_email:assigneeEmail, category, project_id:projectId,
   });
 
   msg.textContent='Saving…'; msg.style.color='var(--muted)';

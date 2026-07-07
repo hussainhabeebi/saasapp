@@ -756,13 +756,35 @@ filterable, sortable worklist with ad-hoc task creation.
 CLIENTS pattern as `broadcast_log`, since task volume for a single account doesn't need a dedicated
 table. Add this column to the CLIENTS table before using the Tasks page.
 - `items`: manual (ad-hoc) tasks — `{id, title, notes, due_date, due_time, lead_id, lead_name,
-  assignee_email, status: 'open'|'done', created_at, completed_at}`. Capped on save: all open items
-  kept, done items capped to the most recent 100.
+  assignee_email, category, project_id, status: 'open'|'in_progress'|'done', created_at,
+  completed_at}`. Capped on save: all open/in-progress items kept, done items capped to the most
+  recent 100.
 - `dismissed`: dismiss keys for auto-derived ("virtual") tasks the user clicked "✓ Done" on, e.g.
   `remind:123:2026-07-10` or `hot:55:<hot moment text>`. Keying on the specific field value (not
   just the lead ID) means dismissing one reminder doesn't hide a *later* reminder on the same lead —
   a new `ReminderDate`/`HotMomentText`/message on that lead produces a new key and reappears
   automatically. Capped to the most recent 300.
+- `projects`: `{id, name, color, created_at}` — lightweight named groupings, no separate table,
+  referenced by a manual task's `project_id`. Deleting a project unlinks its tasks rather than
+  deleting them.
+
+**Categories & Projects** — `category` is a fixed palette (`TASK_CATEGORIES` in dashboard.html:
+Sales, Follow-up, Admin, Support, Marketing, Internal), each with a consistent tag color reused
+everywhere it renders (list rows, project groups, board cards). Virtual tasks are auto-tagged for
+free (Reminder/Overdue → Follow-up, Hot Moment → Sales) so category filtering works immediately
+without touching a single manual task. Projects are created via a "+ New Project" prompt — either
+blank, or from one of a few starter templates (`PROJECT_TEMPLATES`: New Client Onboarding, Deal
+Close Push, Campaign Launch) that pre-populate a standard checklist as ordinary manual tasks
+(no special linkage back to the template after creation).
+
+**Three views** (toggle in the secondary control row): **List** (the original unified sorted view,
+now with category/project tags), **Projects** (grouped by `project_id`, each group showing a
+progress bar computed from *all* of that project's tasks including done ones, not just the open
+ones the list itself shows — virtual tasks and unassigned manual tasks fall into a "No Project"
+group), and **Board** (a 3-column To Do / In Progress / Done kanban, **manual tasks only** — the
+open→dismissed lifecycle of auto-derived reminders/hot-moments/overdue items doesn't map onto a
+kanban's start/finish flow, so those never appear here). Board is the only place a task can be
+`in_progress`; the quick "✓ Done" button elsewhere just toggles open↔done directly.
 
 **Unified list** (`computeAllTasks()` in dashboard.html) — merges virtual tasks (recomputed fresh
 from `allLeads` every render, exactly as the old three cards did) with stored manual tasks, sorted
