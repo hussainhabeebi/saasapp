@@ -280,6 +280,20 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .bnItem.active .bnLabel{color:var(--accent-ink)}
 .bnItem.active .bnIcon{transform:scale(1.1)}
 
+/* Mobile "More" sheet — everything besides the 5 daily-driver bottom-nav tabs */
+.more-backdrop{position:fixed;inset:0;background:rgba(10,20,30,.45);z-index:98;opacity:0;pointer-events:none;transition:opacity .2s}
+.more-backdrop.show{opacity:1;pointer-events:auto}
+.more-sheet{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-radius:20px 20px 0 0;z-index:99;box-shadow:0 -8px 30px rgba(0,0,0,.15);padding:10px 18px calc(18px + env(safe-area-inset-bottom));transform:translateY(100%);transition:transform .25s ease}
+.more-sheet.show{transform:translateY(0)}
+.more-sheet-handle{width:36px;height:4px;border-radius:3px;background:var(--ls);margin:2px auto 12px}
+.more-sheet-title{font-family:var(--disp);font-weight:700;font-size:14px;margin-bottom:12px}
+.more-sheet-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.more-item{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;border:none;background:var(--bg);cursor:pointer;padding:14px 4px;border-radius:14px;transition:background .15s}
+.more-item:active{background:var(--accent-soft)}
+.more-item .bnIcon{font-size:22px}
+.more-item .bnLabel{font-size:10.5px;font-weight:600;font-family:var(--disp);color:var(--muted)}
+@media(min-width:768px){.more-backdrop,.more-sheet{display:none}}
+
 /* ── CARDS / LAYOUT ── */
 .card{background:var(--card);border-radius:var(--r);padding:18px;box-shadow:var(--shadow)}
 .card-title{font-family:var(--disp);font-size:14px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px;color:var(--ink)}
@@ -930,16 +944,16 @@ const TODAY = new Date().toISOString().slice(0,10);
   <!-- Desktop nav -->
   <div id="desktopNav">
     <button class="dnTab active" data-page="home">🏠 Home</button>
-    <button class="dnTab" data-page="quotation">🧾 Quotation</button>
-    <button class="dnTab" data-page="prospects">🎯 Prospects</button>
+    <button class="dnTab" data-page="chats">💬 Chats</button>
+    <button class="dnTab" data-page="leads">👥 Leads</button>
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
-    <button class="dnTab" data-page="leads">💬 Leads</button>
+    <button class="dnTab" data-page="tasks">✅ Tasks</button>
     <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')">🛒 Ecommerce</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
-    <button class="dnTab" data-page="chats">💬 Chats</button>
-    <button class="dnTab" data-page="tasks">✅ Tasks</button>
+    <button class="dnTab" data-page="quotation">🧾 Quotation</button>
+    <button class="dnTab" data-page="prospects">🎯 Prospects</button>
     <button class="dnTab" data-page="broadcast">📢 Broadcast</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
@@ -1955,18 +1969,28 @@ const TODAY = new Date().toISOString().slice(0,10);
   <!-- Bottom nav -->
   <div id="bottomNav">
     <button class="bnItem active" data-page="home"><span class="bnIcon">🏠</span><span class="bnLabel">Home</span></button>
-    <button class="bnItem" data-page="quotation"><span class="bnIcon">🧾</span><span class="bnLabel">Quotation</span></button>
-    <button class="bnItem" data-page="prospects"><span class="bnIcon">🎯</span><span class="bnLabel">Prospects</span></button>
-    <button class="bnItem" data-page="pipeline"><span class="bnIcon">📋</span><span class="bnLabel">Pipeline</span></button>
-    <button class="bnItem" data-page="leads"><span class="bnIcon">💬</span><span class="bnLabel">Leads</span></button>
-    <button class="bnItem industry-tab" data-page="travel" data-industry="travel" style="display:none"><span class="bnIcon">✈️</span><span class="bnLabel">Travel</span></button>
-    <button class="bnItem industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
-    <button class="bnItem" data-page="agency" id="bnAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
-    <button class="bnItem" data-page="recruit" id="bnRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
     <button class="bnItem" data-page="chats"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span></button>
+    <button class="bnItem" data-page="leads"><span class="bnIcon">👥</span><span class="bnLabel">Leads</span></button>
+    <button class="bnItem" data-page="pipeline"><span class="bnIcon">📋</span><span class="bnLabel">Pipeline</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span></button>
-    <button class="bnItem" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
-    <button class="bnItem" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
+    <button class="bnItem" id="bnMore" onclick="openMoreSheet()"><span class="bnIcon">⋯</span><span class="bnLabel">More</span></button>
+  </div>
+
+  <!-- Mobile "More" sheet — everything besides the 5 daily-driver bottom-nav tabs -->
+  <div id="moreBackdrop" class="more-backdrop" onclick="closeMoreSheet()"></div>
+  <div id="moreSheet" class="more-sheet">
+    <div class="more-sheet-handle"></div>
+    <div class="more-sheet-title">More</div>
+    <div class="more-sheet-grid">
+      <button class="more-item" data-page="quotation"><span class="bnIcon">🧾</span><span class="bnLabel">Quotation</span></button>
+      <button class="more-item" data-page="prospects"><span class="bnIcon">🎯</span><span class="bnLabel">Prospects</span></button>
+      <button class="more-item" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Broadcast</span></button>
+      <button class="more-item industry-tab" data-page="travel" data-industry="travel" style="display:none"><span class="bnIcon">✈️</span><span class="bnLabel">Travel</span></button>
+      <button class="more-item industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank');closeMoreSheet()"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
+      <button class="more-item" data-page="agency" id="moreAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
+      <button class="more-item" data-page="recruit" id="moreRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
+      <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
+    </div>
   </div>
 
 </div><!-- /app -->
@@ -2884,6 +2908,9 @@ $id('hRefresh').addEventListener('click',()=>loadAll());
 
 /* ── NAVIGATION ── */
 const SETTINGS_GROUP=['settings','channels','billing']; // shown as one "Settings" tab with an internal sub-nav
+// Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
+// tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
+const MORE_GROUP=['quotation','prospects','broadcast','travel','agency','recruit','settings','channels','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -2894,10 +2921,11 @@ function renderSettingsSubnav(active){
 function navigate(page){
   const dd=$id('notifDropdown');if(dd)dd.style.display='none';
   document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
-  document.querySelectorAll('.bnItem,.dnTab').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>b.classList.remove('active'));
   $id('page'+cap(page)).classList.remove('hidden');
   const navPage=SETTINGS_GROUP.includes(page)?'settings':page;
   document.querySelectorAll(`[data-page="${navPage}"]`).forEach(b=>b.classList.add('active'));
+  const moreBtn=$id('bnMore');if(moreBtn)moreBtn.classList.toggle('active',MORE_GROUP.includes(navPage));
   if(SETTINGS_GROUP.includes(page)) renderSettingsSubnav(page);
   if(page==='quotation') quoteInit();
   if(page==='prospects') prospectInit();
@@ -2912,10 +2940,21 @@ function navigate(page){
   if(page==='billing') billingInit();
 }
 
-document.querySelectorAll('.bnItem,.dnTab').forEach(b=>{
+function openMoreSheet(){
+  $id('moreBackdrop')?.classList.add('show');
+  $id('moreSheet')?.classList.add('show');
+}
+function closeMoreSheet(){
+  $id('moreBackdrop')?.classList.remove('show');
+  $id('moreSheet')?.classList.remove('show');
+}
+
+document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>{
   b.addEventListener('click',()=>{
-    if(b.dataset.page==='broadcast'){ window.open('broadcast.html','_blank'); return; }
+    if(!b.dataset.page) return; // e.g. the "More" button itself, or Ecommerce (its own onclick opens a new tab)
+    if(b.dataset.page==='broadcast'){ window.open('broadcast.html','_blank'); closeMoreSheet(); return; }
     navigate(b.dataset.page);
+    closeMoreSheet();
   });
 });
 
@@ -6959,7 +6998,7 @@ function initTaSettings(){
 
 function updateAgencyTabVisibility(){
   const enabled=(clientRecord.ta_enabled==='Yes');
-  [$id('dnAgencyTab'),$id('bnAgencyTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+  [$id('dnAgencyTab'),$id('bnAgencyTab'),$id('moreAgencyTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
 }
 
 $id('saveTaEnabled').addEventListener('click',async()=>{
@@ -7169,7 +7208,7 @@ function rcMergeLocal(){const loc=rcLoadLocal();if(loc.recruit_enabled&&!clientR
 
 function updateRecruitTabVisibility(){
   const enabled=(clientRecord.recruit_enabled==='Yes');
-  [$id('dnRecruitTab'),$id('bnRecruitTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+  [$id('dnRecruitTab'),$id('bnRecruitTab'),$id('moreRecruitTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
 }
 
 async function renderRecruit(){
