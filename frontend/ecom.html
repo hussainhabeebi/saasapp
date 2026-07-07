@@ -80,8 +80,29 @@ tr:last-child td{border-bottom:none}
 /* COLUMN MAP */
 .colmap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:12px}
 .colmap-field label{font-size:11px;color:var(--muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.03em}
-.colmap-field select{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg)}
-.colmap-field select:focus{outline:none;border-color:var(--accent);background:#fff}
+.colmap-field select,.colmap-field input{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg)}
+.colmap-field select:focus,.colmap-field input:focus{outline:none;border-color:var(--accent);background:#fff}
+
+/* CARD HEADER ROW */
+.card-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.card-title-row .card-title{margin-bottom:0}
+.card-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.search-input{border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:200px}
+.search-input:focus{outline:none;border-color:var(--accent);background:#fff}
+tbody tr:hover{background:var(--bg)}
+.row-actions{display:flex;gap:6px}
+.icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
+.icon-btn:hover{background:var(--bg)}
+.icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
+
+/* MODAL */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(12,10,30,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal-card{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal-title{font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:18px}
+.modal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px}
+.modal-grid .s-sec{margin-bottom:0}
+textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 
 /* LOADING */
 .spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
@@ -117,16 +138,22 @@ tr:last-child td{border-bottom:none}
     <div class="stat"><div class="stat-val" id="statOutOfStock">—</div><div class="stat-lbl">Out of Stock</div></div>
   </div>
   <div class="card">
-    <div class="card-title">Products</div>
+    <div class="card-title-row">
+      <div class="card-title">Products</div>
+      <div class="card-actions">
+        <input class="search-input" id="productSearch" type="text" placeholder="🔍 Search products…" oninput="renderProductsTable()">
+        <button class="save-btn" onclick="openAddProductModal()">+ Add Product</button>
+      </div>
+    </div>
     <div class="tbl-wrap">
       <table>
         <thead>
           <tr>
-            <th>Image</th><th>Name</th><th>SKU</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th>
+            <th>Image</th><th>Name</th><th>SKU</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="productsTbody">
-          <tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>
+          <tr class="loading-row"><td colspan="8"><span class="spinner"></span>Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -142,7 +169,12 @@ tr:last-child td{border-bottom:none}
     <div class="stat"><div class="stat-val" id="statRevenue">—</div><div class="stat-lbl">Revenue</div></div>
   </div>
   <div class="card">
-    <div class="card-title">Orders</div>
+    <div class="card-title-row">
+      <div class="card-title">Orders</div>
+      <div class="card-actions">
+        <input class="search-input" id="orderSearch" type="text" placeholder="🔍 Search orders…" oninput="renderOrdersTable()">
+      </div>
+    </div>
     <div class="tbl-wrap">
       <table>
         <thead>
@@ -179,26 +211,6 @@ tr:last-child td{border-bottom:none}
   </div>
 
   <div class="card">
-    <div class="card-title">Order Reminders</div>
-    <div class="s-sec">
-      <span class="s-lbl">Google Review Link</span>
-      <input class="s-input" id="cfgReviewLink" type="url" placeholder="https://g.page/r/…/review">
-      <div class="s-hint">Sent automatically when order status → <strong>delivered</strong>. Leave blank to skip the review link.</div>
-    </div>
-    <div style="background:var(--accent-soft);border-radius:10px;padding:14px;font-size:13px;color:var(--accent-ink);margin-bottom:14px">
-      <strong>How reminders work:</strong><br>
-      Set up a NocoDB webhook on the <em>ecom_orders</em> table → <em>after.update</em> → POST to:<br>
-      <code style="font-family:var(--mono);font-size:11px;word-break:break-all;overflow-wrap:anywhere;display:block;margin-top:4px">https://n8n.aiingo.com/webhook/leadvyne-ecom-order-event</code><br><br>
-      • Status → <strong>received / confirmed / processing</strong> → sends order confirmation WhatsApp<br>
-      • Status → <strong>delivered / completed</strong> → sends review request WhatsApp
-    </div>
-    <div class="s-row">
-      <button class="save-btn" onclick="saveReviewLink()">Save</button>
-      <span class="save-msg" id="reviewLinkMsg"></span>
-    </div>
-  </div>
-
-  <div class="card">
     <div class="card-title">Products Sheet Sync</div>
     <div class="s-sec">
       <span class="s-lbl">Google Sheet URL (Products)</span>
@@ -207,6 +219,7 @@ tr:last-child td{border-bottom:none}
     </div>
     <div class="s-row">
       <button class="save-btn sec" onclick="detectColumns('products')">🔍 Detect Sheet Columns</button>
+      <button class="save-btn sec" onclick="renderColumnMap('products', sheetHeaders.products, true)">✏️ Type Manually</button>
       <span class="save-msg" id="prodDetectMsg"></span>
     </div>
     <div class="colmap-grid" id="prodColumnMap"></div>
@@ -226,6 +239,7 @@ tr:last-child td{border-bottom:none}
     </div>
     <div class="s-row">
       <button class="save-btn sec" onclick="detectColumns('orders')">🔍 Detect Sheet Columns</button>
+      <button class="save-btn sec" onclick="renderColumnMap('orders', sheetHeaders.orders, true)">✏️ Type Manually</button>
       <span class="save-msg" id="ordDetectMsg"></span>
     </div>
     <div class="colmap-grid" id="ordColumnMap"></div>
@@ -233,6 +247,71 @@ tr:last-child td{border-bottom:none}
       <button class="save-btn" onclick="saveOrdersSheet()">Save</button>
       <button class="save-btn sec" onclick="syncSheet('orders')">▶ Sync Orders Now</button>
       <span class="save-msg" id="ordSheetMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Order Delivery Notifications</div>
+    <div class="s-sec">
+      <span class="s-lbl">Google Review Link</span>
+      <input class="s-input" id="cfgReviewLink" type="url" placeholder="https://g.page/r/…/review">
+      <div class="s-hint">Available as a variable in your "Delivered" template below. Leave blank to skip.</div>
+    </div>
+    <div class="s-row" style="margin-top:0;margin-bottom:20px">
+      <button class="save-btn" onclick="saveReviewLink()">Save Review Link</button>
+      <span class="save-msg" id="reviewLinkMsg"></span>
+    </div>
+
+    <div class="s-sec">
+      <span class="s-lbl">WhatsApp Templates (Meta)</span>
+      <div class="s-hint" style="margin-bottom:10px">Sent via your connected WhatsApp Business number when an order's status changes — straight to Meta's Graph API, no Chatwoot dependency. Connect WhatsApp under Settings → Channels first.</div>
+      <div class="s-row" style="margin-top:0">
+        <button class="save-btn sec" onclick="loadWaTemplates()">🔍 Load My WhatsApp Templates</button>
+        <span class="save-msg" id="waTemplatesMsg"></span>
+      </div>
+      <div id="waTemplateReceived" style="margin-top:14px"></div>
+      <div id="waTemplateDelivered" style="margin-top:14px"></div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveWaTemplates()">Save Templates</button>
+      <span class="save-msg" id="waTemplatesSaveMsg"></span>
+    </div>
+
+    <div style="background:var(--accent-soft);border-radius:10px;padding:14px;font-size:13px;color:var(--accent-ink);margin-top:14px">
+      <strong>How it works:</strong><br>
+      Set up a NocoDB webhook on the <em>ecom_orders</em> table → <em>after.update</em> → POST to:<br>
+      <code style="font-family:var(--mono);font-size:11px;word-break:break-all;overflow-wrap:anywhere;display:block;margin-top:4px">https://n8n.aiingo.com/webhook/leadvyne-ecom-order-event</code><br><br>
+      • Status → <strong>received / confirmed / processing</strong> → sends the "Order Received" template<br>
+      • Status → <strong>delivered / completed</strong> → sends the "Order Delivered" template
+    </div>
+  </div>
+</div>
+
+<!-- ADD PRODUCT MODAL -->
+<div class="modal-overlay" id="productModalOverlay" onclick="if(event.target===this) closeProductModal()">
+  <div class="modal-card">
+    <div class="modal-title">Add Product</div>
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Name *</span><input class="s-input" id="pmName" type="text"></div>
+      <div class="s-sec"><span class="s-lbl">SKU</span><input class="s-input" id="pmSku" type="text"></div>
+      <div class="s-sec"><span class="s-lbl">Category</span><input class="s-input" id="pmCategory" type="text"></div>
+      <div class="s-sec"><span class="s-lbl">Price</span><input class="s-input" id="pmPrice" type="number" step="0.01"></div>
+      <div class="s-sec"><span class="s-lbl">Currency</span><input class="s-input" id="pmCurrency" type="text" placeholder="INR"></div>
+      <div class="s-sec"><span class="s-lbl">Stock</span><input class="s-input" id="pmStock" type="number"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Status</span>
+        <select class="s-input" id="pmStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+      <div class="s-sec"><span class="s-lbl">Image Link</span><input class="s-input" id="pmImage" type="url"></div>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Description</span>
+      <textarea class="s-input" id="pmDescription" rows="3"></textarea>
+    </div>
+    <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" onclick="closeProductModal()">Cancel</button>
+      <button class="save-btn" onclick="submitAddProduct()">Save Product</button>
+      <span class="save-msg" id="productModalMsg"></span>
     </div>
   </div>
 </div>
@@ -276,6 +355,22 @@ const ORDER_FIELDS = [
 ];
 let columnMaps = { products: {}, orders: {} };
 let sheetHeaders = { products: [], orders: [] };
+let allProducts = [];
+let allOrders = [];
+
+const WA_TEMPLATE_KINDS = [
+  { key:'received',  label:'Order Received Template' },
+  { key:'delivered', label:'Order Delivered Template' }
+];
+const WA_VARS = [
+  { key:'customer_name', label:'Customer Name' },
+  { key:'order_id',      label:'Order ID' },
+  { key:'items',         label:'Items' },
+  { key:'review_link',   label:'Review Link' },
+  { key:'store_name',    label:'Store Name' }
+];
+let waTemplates = [];
+let waTemplateConfig = { received: null, delivered: null };
 
 // ── INIT ──────────────────────────────────────────
 async function init() {
@@ -312,6 +407,13 @@ async function init() {
   if (sheetHeaders.products.length) renderColumnMap('products', sheetHeaders.products);
   if (sheetHeaders.orders.length)   renderColumnMap('orders', sheetHeaders.orders);
 
+  try {
+    const wt = JSON.parse(clientRecord.ecom_wa_templates || '{}');
+    waTemplateConfig = wt.config || { received: null, delivered: null };
+    waTemplates = wt.templates || [];
+  } catch(e) {}
+  if (waTemplates.length) WA_TEMPLATE_KINDS.forEach(k => renderWaTemplateBlock(k.key, k.label));
+
   loadProducts();
   loadOrders();
 }
@@ -328,7 +430,7 @@ function showTab(name) {
 async function loadProducts() {
   const tbody = document.getElementById('productsTbody');
   if (!ecomTableIds.products) {
-    tbody.innerHTML = '<tr><td colspan="6" class="loading-row">Set Products Table ID in Settings first</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="loading-row">Set Products Table ID in Settings first</td></tr>';
     return;
   }
   try {
@@ -336,29 +438,105 @@ async function loadProducts() {
       headers: { 'xc-token': NOCODB_TOKEN }
     });
     const data = await r.json();
-    const list = data.list || [];
-    const inStock = list.filter(p => p.stock > 0).length;
-    const outOfStock = list.filter(p => !p.stock || p.stock <= 0).length;
-    document.getElementById('statTotalProducts').textContent = list.length;
-    document.getElementById('statInStock').textContent = inStock;
-    document.getElementById('statOutOfStock').textContent = outOfStock;
-
-    if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">📦</div>No products found</div></td></tr>';
-      return;
-    }
-    tbody.innerHTML = list.map(p => `
-      <tr>
-        <td>${p.image_url ? `<img src="${escAttr(p.image_url)}" alt="" class="thumb" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb thumb-empty'}))">` : '<div class="thumb thumb-empty"></div>'}</td>
-        <td><strong>${esc(p.name||p.title||'—')}</strong></td>
-        <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
-        <td>${esc(p.category||'—')}</td>
-        <td>${esc(p.currency||'INR')} ${p.price||0}</td>
-        <td>${p.stock ?? '—'}</td>
-        <td><span class="badge ${p.status==='active'?'shipped':p.status==='inactive'?'cancelled':''}">${esc(p.status||'—')}</span></td>
-      </tr>`).join('');
+    allProducts = data.list || [];
+    renderProductsTable();
   } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="loading-row">Error: ${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="loading-row">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function renderProductsTable() {
+  const tbody = document.getElementById('productsTbody');
+  const q = (document.getElementById('productSearch')?.value || '').trim().toLowerCase();
+  const list = q
+    ? allProducts.filter(p => [p.name, p.sku, p.category].some(v => (v||'').toLowerCase().includes(q)))
+    : allProducts;
+
+  const inStock = allProducts.filter(p => p.stock > 0).length;
+  const outOfStock = allProducts.filter(p => !p.stock || p.stock <= 0).length;
+  document.getElementById('statTotalProducts').textContent = allProducts.length;
+  document.getElementById('statInStock').textContent = inStock;
+  document.getElementById('statOutOfStock').textContent = outOfStock;
+
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📦</div>${allProducts.length ? 'No products match your search' : 'No products found'}</div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(p => `
+    <tr>
+      <td>${p.image_url ? `<img src="${escAttr(p.image_url)}" alt="" class="thumb" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb thumb-empty'}))">` : '<div class="thumb thumb-empty"></div>'}</td>
+      <td><strong>${esc(p.name||p.title||'—')}</strong></td>
+      <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
+      <td>${esc(p.category||'—')}</td>
+      <td>${esc(p.currency||'INR')} ${Number(p.price||0).toLocaleString()}</td>
+      <td>${p.stock ?? '—'}</td>
+      <td><span class="badge ${p.status==='active'?'shipped':p.status==='inactive'?'cancelled':''}">${esc(p.status||'—')}</span></td>
+      <td><div class="row-actions"><button class="icon-btn danger" onclick="deleteProductById(${p.Id})" title="Delete product">🗑</button></div></td>
+    </tr>`).join('');
+}
+
+// ── ADD / DELETE PRODUCT ──────────────────────────
+function openAddProductModal() {
+  if (!ecomTableIds.products) { alert('Set the Products Table ID in Settings first.'); return; }
+  ['pmName','pmSku','pmCategory','pmPrice','pmStock','pmImage','pmDescription'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('pmCurrency').value = 'INR';
+  document.getElementById('pmStatus').value = 'active';
+  document.getElementById('productModalMsg').textContent = '';
+  document.getElementById('productModalOverlay').classList.add('active');
+  document.getElementById('pmName').focus();
+}
+
+function closeProductModal() {
+  document.getElementById('productModalOverlay').classList.remove('active');
+}
+
+async function submitAddProduct() {
+  const name = document.getElementById('pmName').value.trim();
+  if (!name) { showMsg('productModalMsg', 'Name is required'); return; }
+  const body = {
+    client_id: clientId,
+    name,
+    sku: document.getElementById('pmSku').value.trim(),
+    category: document.getElementById('pmCategory').value.trim(),
+    price: parseFloat(document.getElementById('pmPrice').value) || 0,
+    currency: document.getElementById('pmCurrency').value.trim() || 'INR',
+    stock: parseInt(document.getElementById('pmStock').value, 10) || 0,
+    status: document.getElementById('pmStatus').value,
+    image_url: document.getElementById('pmImage').value.trim(),
+    description: document.getElementById('pmDescription').value.trim()
+  };
+  showMsg('productModalMsg', 'Saving…', 10000);
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records`, {
+      method: 'POST',
+      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    closeProductModal();
+    loadProducts();
+  } catch(e) {
+    showMsg('productModalMsg', 'Error: ' + e.message, 5000);
+  }
+}
+
+function deleteProductById(id) {
+  const p = allProducts.find(x => x.Id === id);
+  deleteProduct(id, p?.name || 'this product');
+}
+
+async function deleteProduct(id, name) {
+  if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${ecomTableIds.products}/records`, {
+      method: 'DELETE',
+      headers: { 'xc-token': NOCODB_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Id: id })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    loadProducts();
+  } catch(e) {
+    alert('Error deleting product: ' + e.message);
   }
 }
 
@@ -374,32 +552,42 @@ async function loadOrders() {
       headers: { 'xc-token': NOCODB_TOKEN }
     });
     const data = await r.json();
-    const list = data.list || [];
-    const pending  = list.filter(o => o.status === 'pending').length;
-    const shipped  = list.filter(o => o.status === 'shipped').length;
-    const revenue  = list.reduce((s, o) => s + (parseFloat(o.total)||0), 0);
-    document.getElementById('statTotalOrders').textContent = list.length;
-    document.getElementById('statPending').textContent = pending;
-    document.getElementById('statShipped').textContent = shipped;
-    document.getElementById('statRevenue').textContent = revenue.toLocaleString();
-
-    if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">🧾</div>No orders found</div></td></tr>';
-      return;
-    }
-    const statusClass = s => ({shipped:'shipped',pending:'pending',cancelled:'cancelled',processing:'processing'}[s]||'');
-    tbody.innerHTML = list.map(o => `
-      <tr>
-        <td style="font-family:var(--mono);font-size:12px">#${esc(String(o.order_id||o.Id||'—'))}</td>
-        <td>${esc(o.customer_name||'—')}</td>
-        <td>${esc(o.order_date||'—')}</td>
-        <td>${esc(o.items||'—')}</td>
-        <td>${esc(o.currency||'INR')} ${o.total||0}</td>
-        <td><span class="badge ${statusClass(o.status)}">${esc(o.status||'—')}</span></td>
-      </tr>`).join('');
+    allOrders = data.list || [];
+    renderOrdersTable();
   } catch(e) {
     tbody.innerHTML = `<tr><td colspan="6" class="loading-row">Error: ${e.message}</td></tr>`;
   }
+}
+
+function renderOrdersTable() {
+  const tbody = document.getElementById('ordersTbody');
+  const q = (document.getElementById('orderSearch')?.value || '').trim().toLowerCase();
+  const list = q
+    ? allOrders.filter(o => [o.customer_name, String(o.order_id||o.Id||'')].some(v => (v||'').toString().toLowerCase().includes(q)))
+    : allOrders;
+
+  const pending  = allOrders.filter(o => o.status === 'pending').length;
+  const shipped  = allOrders.filter(o => o.status === 'shipped').length;
+  const revenue  = allOrders.reduce((s, o) => s + (parseFloat(o.total)||0), 0);
+  document.getElementById('statTotalOrders').textContent = allOrders.length;
+  document.getElementById('statPending').textContent = pending;
+  document.getElementById('statShipped').textContent = shipped;
+  document.getElementById('statRevenue').textContent = revenue.toLocaleString();
+
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">🧾</div>${allOrders.length ? 'No orders match your search' : 'No orders found'}</div></td></tr>`;
+    return;
+  }
+  const statusClass = s => ({shipped:'shipped',pending:'pending',cancelled:'cancelled',processing:'processing'}[s]||'');
+  tbody.innerHTML = list.map(o => `
+    <tr>
+      <td style="font-family:var(--mono);font-size:12px">#${esc(String(o.order_id||o.Id||'—'))}</td>
+      <td>${esc(o.customer_name||'—')}</td>
+      <td>${esc(o.order_date||'—')}</td>
+      <td>${esc(o.items||'—')}</td>
+      <td>${esc(o.currency||'INR')} ${Number(o.total||0).toLocaleString()}</td>
+      <td><span class="badge ${statusClass(o.status)}">${esc(o.status||'—')}</span></td>
+    </tr>`).join('');
 }
 
 // ── COLUMN MAPPING ────────────────────────────────
@@ -425,10 +613,21 @@ async function detectColumns(type) {
   }
 }
 
-function renderColumnMap(type, headers) {
+function renderColumnMap(type, headers, forceManual) {
   const fields = type === 'products' ? PRODUCT_FIELDS : ORDER_FIELDS;
   const container = document.getElementById(type === 'products' ? 'prodColumnMap' : 'ordColumnMap');
   const saved = columnMaps[type] || {};
+  const manual = forceManual || !(headers && headers.length);
+
+  if (manual) {
+    container.innerHTML = fields.map(f => `
+      <div class="colmap-field">
+        <label>${esc(f.label)}${f.required?' *':''}</label>
+        <input type="text" value="${escAttr(saved[f.key]||'')}" placeholder="Exact column header" oninput="updateColumnMap('${type}','${f.key}',this.value)">
+      </div>`).join('');
+    return;
+  }
+
   container.innerHTML = fields.map(f => {
     const guess = (saved[f.key] && headers.includes(saved[f.key]))
       ? saved[f.key]
@@ -445,6 +644,70 @@ function renderColumnMap(type, headers) {
 
 function updateColumnMap(type, key, value) {
   columnMaps[type][key] = value;
+}
+
+// ── WHATSAPP TEMPLATES (ORDER DELIVERY NOTIFICATIONS) ─
+async function loadWaTemplates() {
+  showMsg('waTemplatesMsg', 'Loading…', 10000);
+  try {
+    const r = await fetch(`${N8N_BASE}/webhook/leadvyne-ecom-wa-templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId })
+    });
+    const data = await r.json();
+    if (data.error) { showMsg('waTemplatesMsg', data.error, 6000); return; }
+    waTemplates = data.templates || [];
+    if (!waTemplates.length) { showMsg('waTemplatesMsg', 'No approved templates found'); return; }
+    WA_TEMPLATE_KINDS.forEach(k => renderWaTemplateBlock(k.key, k.label));
+    showMsg('waTemplatesMsg', `Found ${waTemplates.length} templates ✓`);
+  } catch(e) {
+    showMsg('waTemplatesMsg', 'Error: ' + e.message, 6000);
+  }
+}
+
+function renderWaTemplateBlock(kind, label) {
+  const container = document.getElementById(kind === 'received' ? 'waTemplateReceived' : 'waTemplateDelivered');
+  const cfg = waTemplateConfig[kind] || {};
+  const options = ['<option value="">— None —</option>']
+    .concat(waTemplates.map(t => `<option value="${escAttr(t.name+'|'+t.language)}" ${cfg.name===t.name && cfg.lang===t.language ? 'selected':''}>${esc(t.name)} (${esc(t.language)})</option>`));
+  container.innerHTML = `
+    <span class="s-lbl">${esc(label)}</span>
+    <select class="s-input" style="margin-bottom:8px" onchange="onWaTemplateSelect('${kind}', this.value)">${options.join('')}</select>
+    <div class="colmap-grid" id="waParams_${kind}"></div>`;
+  const selected = waTemplates.find(t => t.name === cfg.name && t.language === cfg.lang);
+  if (selected) renderWaParamMap(kind, selected, cfg.params || []);
+}
+
+function onWaTemplateSelect(kind, value) {
+  if (!value) { waTemplateConfig[kind] = null; document.getElementById(`waParams_${kind}`).innerHTML = ''; return; }
+  const [name, language] = value.split('|');
+  const t = waTemplates.find(tt => tt.name === name && tt.language === language);
+  waTemplateConfig[kind] = { name, lang: language, params: [] };
+  renderWaParamMap(kind, t, []);
+}
+
+function renderWaParamMap(kind, template, savedParams) {
+  const el = document.getElementById(`waParams_${kind}`);
+  if (!template.var_count) { el.innerHTML = '<div class="s-hint">This template has no variables.</div>'; return; }
+  const rows = [];
+  for (let i = 0; i < template.var_count; i++) {
+    const val = savedParams[i] || '';
+    const options = ['<option value="">— Skip —</option>'].concat(WA_VARS.map(v => `<option value="${v.key}" ${v.key===val?'selected':''}>${v.label}</option>`));
+    rows.push(`<div class="colmap-field"><label>Variable {{${i+1}}}</label><select onchange="updateWaParam('${kind}',${i},this.value)">${options.join('')}</select></div>`);
+  }
+  el.innerHTML = rows.join('');
+  waTemplateConfig[kind].params = savedParams.length ? savedParams : new Array(template.var_count).fill('');
+}
+
+function updateWaParam(kind, idx, value) {
+  if (!waTemplateConfig[kind]) return;
+  waTemplateConfig[kind].params[idx] = value;
+}
+
+async function saveWaTemplates() {
+  await patchClient({ ecom_wa_templates: JSON.stringify({ config: waTemplateConfig, templates: waTemplates }) });
+  showMsg('waTemplatesSaveMsg', 'Saved ✓');
 }
 
 // ── SETTINGS SAVE ─────────────────────────────────
