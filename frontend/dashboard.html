@@ -4220,7 +4220,7 @@ async function saveIndustry(){
     _renderModuleBadge('taModuleStatusBadge',ind==='travel');
     _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
     msg.textContent='✓ Saved — theme applied';
-  }catch(e){msg.textContent='Error';msg.className='save-msg err';}
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 }
 
@@ -4243,7 +4243,7 @@ $id('saveGeneral').addEventListener('click',async()=>{
     _renderModuleBadge('taModuleStatusBadge',ind==='travel');
     _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
     msg.textContent='✓ Saved — theme applied';
-  }catch(e){msg.textContent='Error';msg.className='save-msg err';}
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
 
