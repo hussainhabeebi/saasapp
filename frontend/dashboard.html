@@ -330,6 +330,11 @@ tr:hover td{background:#FAFCFB}
 
 /* badges */
 .badge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;font-family:var(--mono)}
+/* Integrations tab status badges (health check / connection state) */
+.badge.green{background:#dcfce7;color:#166534}
+.badge.warn{background:var(--warn-soft);color:var(--warn)}
+.badge.red{background:#fee2e2;color:var(--red)}
+.badge.gray{background:#ECEEF0;color:var(--muted)}
 .badge-hot{background:#fee2e2;color:#991b1b}
 .badge-warm{background:#fef3c7;color:#92400e}
 .badge-cold{background:#eff6ff;color:#1e40af}
@@ -1454,6 +1459,7 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
           </div>
         </div>
@@ -1776,6 +1782,7 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
           </div>
         </div>
@@ -1895,6 +1902,74 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
+    <!-- INTEGRATIONS (Bulk Marketing module: WhatsApp/Meta status, Resend email, Google Sheets,
+         and the automated health check for all of the above) -->
+    <div class="page hidden" id="pageIntegrations">
+      <div class="page-pad">
+        <div class="card" style="margin-bottom:14px;padding:10px 14px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
+          </div>
+        </div>
+        <div class="card-title" style="margin-bottom:14px">🧩 Integrations</div>
+
+        <!-- WhatsApp (Meta) — read-only summary, connect flow stays in Channels -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">💬 WhatsApp (Meta)</div>
+            <div id="intWaStatus" class="s-note">Checking…</div>
+          </div>
+        </div>
+
+        <!-- Resend (Email) -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">✉️ Resend (Email)</div>
+            <div class="s-note">Used by the Bulk Marketing module to send email campaigns from your own verified sending domain. Use a sending-only (restricted) Resend API key, not a full-access one.</div>
+            <div id="intEmailStatus" class="s-note" style="margin:8px 0"></div>
+            <label class="form-label">From Name</label>
+            <input class="form-input" id="cfgResendFromName" type="text" placeholder="Your Business Name" style="margin-bottom:8px">
+            <label class="form-label">From Email</label>
+            <input class="form-input" id="cfgResendFromEmail" type="email" placeholder="marketing@yourdomain.com" style="margin-bottom:8px">
+            <label class="form-label">Resend API Key</label>
+            <input class="form-input" id="cfgResendApiKey" type="password" placeholder="re_xxxxxxxx" style="margin-bottom:8px">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button class="save-btn" onclick="saveEmailConfig()">Save</button>
+              <button class="save-btn" style="background:var(--muted)" onclick="sendTestEmail()">Send Test Email</button>
+              <span class="save-msg" id="saveEmailMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Google Sheets — consolidated view of the sheet connections configured elsewhere -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📊 Google Sheets</div>
+            <div class="s-note">All Google Sheet connections in one place. Each still requires "Anyone with the link can view" sharing. Advanced options (column mapping) stay in their original screen — links below.</div>
+            <div id="intSheetsList" style="margin-top:10px"></div>
+          </div>
+        </div>
+
+        <!-- Health Check -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head" style="display:flex;align-items:center;gap:8px">
+              🩺 Health Check
+              <span id="intHealthBadge" class="badge" style="font-size:11px"></span>
+            </div>
+            <div class="s-note">Every integration and core automation is checked automatically once a day. Run it manually here any time.</div>
+            <div id="intHealthLastChecked" class="s-note" style="margin:4px 0 10px"></div>
+            <div id="intHealthList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+            <button class="save-btn" onclick="runHealthCheck()" id="intHealthRunBtn">Run Check Now</button>
+            <span class="save-msg" id="intHealthMsg"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- BILLING -->
     <div class="page hidden" id="pageBilling">
       <div class="page-pad">
@@ -1902,6 +1977,7 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
           </div>
         </div>
@@ -3004,10 +3080,10 @@ $id('hLogout').addEventListener('click',()=>{
 $id('hRefresh').addEventListener('click',()=>loadAll());
 
 /* ── NAVIGATION ── */
-const SETTINGS_GROUP=['settings','channels','billing']; // shown as one "Settings" tab with an internal sub-nav
+const SETTINGS_GROUP=['settings','channels','integrations','billing']; // shown as one "Settings" tab with an internal sub-nav
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['quotation','prospects','broadcast','travel','agency','recruit','settings','channels','billing'];
+const MORE_GROUP=['quotation','prospects','broadcast','travel','agency','recruit','settings','channels','integrations','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -3034,6 +3110,7 @@ function navigate(page){
   if(page==='settings') populateSettings();
   if(page==='chats') openChatsTab();
   if(page==='channels') channelsInit();
+  if(page==='integrations') integrationsInit();
   if(page==='billing') billingInit();
 }
 
@@ -4998,6 +5075,141 @@ function channelsInit(){
   renderChannelInboxForm();
   renderChannelsPage();
   loadChannelsStatus();
+}
+
+/* ── INTEGRATIONS TAB (Bulk Marketing module: WhatsApp status, Resend, Sheets, Health Check) ── */
+const INT_SHEETS=[
+  {field:'gsheet_url', label:'Leads Export', page:'settings'},
+  {field:'prospect_gsheet_url', label:'Prospect Import', page:'prospects'},
+  {field:'ecom_products_sheet', label:'Ecom Products', page:null},
+  {field:'ecom_orders_sheet', label:'Ecom Orders', page:null},
+];
+
+function integrationsInit(){
+  renderWaStatus();
+  renderSheetsList();
+  loadEmailStatus();
+  renderHealthResults();
+}
+
+function renderWaStatus(){
+  const el=$id('intWaStatus');
+  if(clientRecord?.wa_phone_id && clientRecord?.wa_token){
+    el.innerHTML=`✅ Connected — phone number ID <b>${esc(clientRecord.wa_phone_id)}</b>`;
+  }else{
+    el.innerHTML=`Not connected. <a href="#" onclick="navigate('channels');return false" style="color:inherit;text-decoration:underline;font-weight:600">Connect it in Channels</a>.`;
+  }
+}
+
+function renderSheetsList(){
+  const box=$id('intSheetsList');
+  box.innerHTML=INT_SHEETS.map(s=>{
+    const val=clientRecord?.[s.field]||'';
+    const status=val?'<span class="badge green" style="font-size:10px">Configured</span>':'<span class="badge gray" style="font-size:10px">Not set</span>';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+      <div style="flex:1;min-width:160px"><b>${esc(s.label)}</b> ${status}<div style="font-size:11px;color:var(--muted);word-break:break-all">${esc(val||'—')}</div></div>
+      ${s.page?`<button class="save-btn" style="font-size:12px" onclick="navigate('${s.page}')">Edit</button>`:''}
+    </div>`;
+  }).join('');
+}
+
+async function loadEmailStatus(){
+  $id('cfgResendFromName').value=clientRecord?.resend_from_name||'';
+  $id('cfgResendFromEmail').value=clientRecord?.resend_from_email||'';
+  const el=$id('intEmailStatus');
+  el.textContent='Checking…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/email/status`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    if(!data.connected){
+      el.innerHTML=data.error?`⚠️ ${esc(data.error)}`:'Not connected yet — add your Resend API key below.';
+    }else{
+      const verified=(data.domains||[]).some(d=>d.status==='verified');
+      el.innerHTML=verified?'✅ Connected — sending domain verified':'⚠️ Connected, but no verified sending domain yet (check DNS records in Resend).';
+    }
+  }catch(e){ el.textContent='Could not check status: '+e.message; }
+}
+
+async function saveEmailConfig(){
+  const msg=$id('saveEmailMsg'); msg.textContent='Saving…'; msg.className='save-msg';
+  const fields={resend_from_name:$id('cfgResendFromName').value.trim(), resend_from_email:$id('cfgResendFromEmail').value.trim()};
+  const key=$id('cfgResendApiKey').value.trim();
+  if(key) fields.resend_api_key=key;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/email/client`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(fields)});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    Object.assign(clientRecord,{resend_from_name:fields.resend_from_name, resend_from_email:fields.resend_from_email});
+    $id('cfgResendApiKey').value='';
+    msg.textContent='✓ Saved'; msg.className='save-msg ok';
+    loadEmailStatus();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+async function sendTestEmail(){
+  const msg=$id('saveEmailMsg');
+  const to=prompt('Send a test email to which address?', clientRecord?.authentik_email||'');
+  if(!to) return;
+  msg.textContent='Sending test email…'; msg.className='save-msg';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/email/test`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({to})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    msg.textContent='✓ Test email sent — check your inbox'; msg.className='save-msg ok';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+const HEALTH_STATUS_COLOR={ok:'green', warn:'warn', fail:'red'};
+const HEALTH_STATUS_ICON={ok:'✅', warn:'⚠️', fail:'❌'};
+
+function intTimeSince(iso){
+  if(!iso) return '—';
+  const mins=Math.max(0,Math.round((Date.now()-new Date(iso).getTime())/60000));
+  if(mins<60) return mins+'m';
+  if(mins<1440) return Math.round(mins/60)+'h';
+  return Math.round(mins/1440)+'d';
+}
+
+function renderHealthResults(){
+  const status=clientRecord?.integration_health_status;
+  const badge=$id('intHealthBadge');
+  if(status){
+    badge.textContent=status==='ok'?'All good':status==='warn'?'Needs attention':'Action needed';
+    badge.className='badge '+(HEALTH_STATUS_COLOR[status]||'gray');
+  }else{
+    badge.textContent='Not checked yet'; badge.className='badge gray';
+  }
+  const checkedAt=clientRecord?.integration_health_checked_at;
+  $id('intHealthLastChecked').textContent=checkedAt?('Last checked '+intTimeSince(checkedAt)+' ago — runs automatically once a day.'):'Not run yet — click "Run Check Now" below, or wait for tonight\'s automatic run.';
+
+  let log=[]; try{ log=JSON.parse(clientRecord?.integration_health_log||'[]'); }catch(e){}
+  const latest=log.length?log[log.length-1].results:[];
+  const list=$id('intHealthList');
+  if(!latest.length){ list.innerHTML='<div class="s-note">No results yet.</div>'; return; }
+  list.innerHTML=latest.map(r=>`<div style="display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0">
+    <span>${HEALTH_STATUS_ICON[r.status]||'—'}</span>
+    <b style="min-width:220px">${esc(r.label)}</b>
+    <span style="color:var(--muted)">${esc(r.detail||'')}</span>
+  </div>`).join('');
+}
+
+async function runHealthCheck(){
+  const btn=$id('intHealthRunBtn'), msg=$id('intHealthMsg');
+  btn.disabled=true; msg.textContent='Running checks…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/health/run`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    Object.assign(clientRecord,{
+      integration_health_status:data.status,
+      integration_health_checked_at:data.checked_at,
+      integration_health_log:JSON.stringify([...(()=>{try{return JSON.parse(clientRecord.integration_health_log||'[]');}catch(e){return [];}})(), {ts:data.checked_at, results:data.results}].slice(-14))
+    });
+    msg.textContent='✓ Done';
+    renderHealthResults();
+  }catch(e){ msg.textContent='Error: '+e.message; }
+  finally{ btn.disabled=false; }
 }
 
 async function createChatwootAccount(){

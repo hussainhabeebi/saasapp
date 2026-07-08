@@ -320,6 +320,17 @@ async function processClient(client) {
   }
 
   console.log(`  Sent ${sent} recovery message(s)`);
+
+  // Heartbeat for the Integrations tab health check — lets it tell "engine is running fine,
+  // just nothing to send right now" apart from "engine has silently stopped running".
+  try {
+    await ncPatch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE}/records`, {
+      Id: client.Id,
+      recovery_heartbeat_at: new Date().toISOString(),
+    }, NOCODB_TOKEN);
+  } catch (e) {
+    console.warn(`  [heartbeat error] ${e.message}`);
+  }
 }
 
 // ── MAIN RUN ─────────────────────────────────────────────────────────────────

@@ -2,6 +2,11 @@ name = "leadvyne-api-proxy"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
+# Integrations tab health check — runs once daily for every client (see `scheduled()` /
+# runDailyHealthCheckForAllClients in worker.js), independent of anyone opening the dashboard.
+[triggers]
+crons = ["0 2 * * *"]
+
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
 [vars]

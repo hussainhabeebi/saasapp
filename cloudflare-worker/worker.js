@@ -428,6 +428,186 @@ async function handleTaskEmailNotify(request, env){
 }
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+// ── EMAIL INTEGRATION (Bulk Marketing module — per-client Resend account) ──
+// Distinct from env.RESEND_API_KEY above, which is a platform-level key used only for internal
+// task-notification emails. This is the client's own Resend account/API key, used so marketing
+// email goes out under their own verified sending domain and their own Resend billing/quota.
+// Stored on the client row like wa_token/chatwoot_token; no route here ever returns the key
+// itself back to the browser — only connection status derived from calling Resend with it.
+const EMAIL_CLIENT_WRITE_FIELDS=['resend_api_key','resend_from_email','resend_from_name'];
+
+async function handleEmailClientUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const fields={};
+  EMAIL_CLIENT_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=body[k]; });
+  if(!Object.keys(fields).length) return json({error:'Nothing to save'}, 400);
+  await patchClientFields(env, payload.cid, fields);
+  return json({ok:true});
+}
+
+async function handleEmailStatus(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  const from_email=c?.resend_from_email||'', from_name=c?.resend_from_name||'';
+  if(!c?.resend_api_key) return json({connected:false, from_email, from_name});
+  const r=await fetch('https://api.resend.com/domains', {headers:{Authorization:`Bearer ${c.resend_api_key}`}});
+  if(!r.ok) return json({connected:false, from_email, from_name, error:r.status===401?'API key is invalid or revoked.':'Resend API HTTP '+r.status});
+  const data=await r.json().catch(()=>({}));
+  const domains=(data?.data||[]).map(d=>({name:d.name, status:d.status}));
+  return json({connected:true, from_email, from_name, domains});
+}
+
+async function handleEmailTest(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {to}=await request.json().catch(()=>({}));
+  if(!to) return json({error:'to required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.resend_api_key) return json({error:'Connect Resend first.'}, 400);
+  if(!c?.resend_from_email) return json({error:'Set a from-email first.'}, 400);
+  const from=`${c.resend_from_name||c.client_name||'Bulk Marketing'} <${c.resend_from_email}>`;
+  const r=await fetch('https://api.resend.com/emails', {
+    method:'POST', headers:{Authorization:`Bearer ${c.resend_api_key}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({from, to:[to], subject:'Test email from your Bulk Marketing integration', html:'<p>This is a test email — if you got this, your Resend integration is working.</p>'})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.message||'Resend API HTTP '+r.status}, 502);
+  return json({ok:true});
+}
+
+// ── HEALTH CHECKS (Integrations tab — on-demand "Run Check Now" and once-daily Cron Trigger) ──
+// Every check here is read-only and cheap by design, since the daily run fires unattended for
+// every client: it only confirms a credential/config still works, it never sends a real
+// message/email. "Send yourself a test message" stays a manual, on-demand action elsewhere in
+// the Integrations tab, not something this loop does automatically.
+function sheetCsvUrl(sheetUrl){
+  const m=String(sheetUrl||'').match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if(!m) return null;
+  const gidMatch=String(sheetUrl).match(/[#&?]gid=(\d+)/);
+  return `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv${gidMatch?'&gid='+gidMatch[1]:''}`;
+}
+
+async function checkSheet(url){
+  if(!url) return {status:'warn', detail:'Not configured'};
+  const csvUrl=sheetCsvUrl(url);
+  if(!csvUrl) return {status:'fail', detail:'Not a recognizable Google Sheets URL'};
+  try{
+    const r=await fetch(csvUrl, {redirect:'follow'});
+    const text=await r.text();
+    if(!r.ok) return {status:'fail', detail:'HTTP '+r.status+' — check sharing is set to "Anyone with the link can view"'};
+    if(/<html/i.test(text.slice(0,200))) return {status:'fail', detail:'Sheet is not publicly viewable — check sharing settings'};
+    if(!text.trim()) return {status:'warn', detail:'Sheet is empty'};
+    return {status:'ok', detail:Math.max(text.trim().split('\n').length-1,0)+' row(s)'};
+  }catch(e){ return {status:'fail', detail:e.message||'Fetch failed'}; }
+}
+
+const HEALTH_CHECKS=[
+  { key:'whatsapp', label:'WhatsApp (Meta)', category:'integration', fn: async (env,c)=>{
+    if(!c.wa_phone_id||!c.wa_token) return {status:'warn', detail:'Not connected'};
+    const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}?fields=display_phone_number,quality_rating`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) return {status:'fail', detail:data?.error?.message||'HTTP '+r.status};
+    if(data.quality_rating==='RED') return {status:'warn', detail:'Connected, but number quality rating is RED'};
+    return {status:'ok', detail:data.display_phone_number||'Connected'};
+  }},
+  { key:'resend', label:'Resend (Email)', category:'integration', fn: async (env,c)=>{
+    if(!c.resend_api_key) return {status:'warn', detail:'Not connected'};
+    const r=await fetch('https://api.resend.com/domains', {headers:{Authorization:`Bearer ${c.resend_api_key}`}});
+    if(!r.ok) return {status:'fail', detail:r.status===401?'API key invalid or revoked':'HTTP '+r.status};
+    const data=await r.json().catch(()=>({}));
+    const verified=(data?.data||[]).some(d=>d.status==='verified');
+    return {status:verified?'ok':'warn', detail:verified?'Domain verified':'Connected, but no verified sending domain yet'};
+  }},
+  { key:'chatwoot', label:'Chatwoot', category:'integration', fn: async (env,c)=>{
+    if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return {status:'warn', detail:'Not connected'};
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {headers:{api_access_token:c.chatwoot_token}});
+    if(!r.ok) return {status:'fail', detail:'HTTP '+r.status};
+    return {status:'ok', detail:'Connected'};
+  }},
+  { key:'sheet_leads', label:'Google Sheet — Leads Export', category:'sheets', fn: async (env,c)=>checkSheet(c.gsheet_url) },
+  { key:'sheet_prospect', label:'Google Sheet — Prospect Import', category:'sheets', fn: async (env,c)=>checkSheet(c.prospect_gsheet_url) },
+  { key:'sheet_ecom_products', label:'Google Sheet — Ecom Products', category:'sheets', fn: async (env,c)=>checkSheet(c.ecom_products_sheet) },
+  { key:'sheet_ecom_orders', label:'Google Sheet — Ecom Orders', category:'sheets', fn: async (env,c)=>checkSheet(c.ecom_orders_sheet) },
+  { key:'recovery_engine', label:'Follow-up Recovery Engine', category:'core', fn: async (env,c)=>{
+    if(c.recovery_enabled==='No') return {status:'warn', detail:'Disabled for this account'};
+    if(!c.recovery_heartbeat_at) return {status:'warn', detail:'Never run yet for this account'};
+    const hrs=(Date.now()-new Date(c.recovery_heartbeat_at).getTime())/3600000;
+    if(hrs>36) return {status:'fail', detail:'No heartbeat in '+Math.round(hrs)+'h — engine may be down'};
+    return {status:'ok', detail:'Last run '+Math.round(hrs)+'h ago'};
+  }},
+  { key:'followup_config', label:'Follow-up Sequence Config', category:'core', fn: async (env,c)=>{
+    const count=parseInt(c.followup_count||0);
+    if(!count) return {status:'warn', detail:'Not configured'};
+    const hours=(c.followup_hours||'').split(',').map(s=>s.trim()).filter(Boolean);
+    const msgs=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
+    if(hours.length<count||msgs.length<count) return {status:'fail', detail:`Configured for ${count} steps but only ${hours.length} hour(s) / ${msgs.length} message(s) set`};
+    return {status:'ok', detail:count+'-step sequence configured correctly'};
+  }},
+];
+
+async function runHealthChecks(env, client){
+  const results=[];
+  for(const check of HEALTH_CHECKS){
+    let result;
+    try{ result=await check.fn(env, client); }
+    catch(e){ result={status:'fail', detail:e.message||'Check threw an error'}; }
+    results.push({key:check.key, label:check.label, category:check.category, ...result});
+  }
+  return results;
+}
+
+function overallHealthStatus(results){
+  if(results.some(r=>r.status==='fail')) return 'fail';
+  if(results.some(r=>r.status==='warn')) return 'warn';
+  return 'ok';
+}
+
+async function saveHealthResults(env, client, results){
+  let log=[]; try{ log=JSON.parse(client.integration_health_log||'[]'); }catch(e){}
+  log.push({ts:new Date().toISOString(), results});
+  if(log.length>14) log=log.slice(-14); // ~2 weeks of daily runs
+  await patchClientFields(env, client.Id, {
+    integration_health_log: JSON.stringify(log),
+    integration_health_status: overallHealthStatus(results),
+    integration_health_checked_at: new Date().toISOString(),
+  });
+}
+
+async function handleHealthRun(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const results=await runHealthChecks(env, c);
+  await saveHealthResults(env, c, results);
+  return json({ok:true, status:overallHealthStatus(results), results, checked_at:new Date().toISOString()});
+}
+
+// Daily Cron Trigger entry point — see wrangler.toml [triggers]. Loops every client (paginated)
+// instead of relying on each client's browser being open, so the check genuinely runs once a
+// day for everyone, not just for whoever happens to visit Settings that day.
+async function runDailyHealthCheckForAllClients(env){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      try{
+        const results=await runHealthChecks(env, c);
+        await saveHealthResults(env, c, results);
+      }catch(e){ console.error('[health] check failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+
 async function handleAiComplete(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -1191,6 +1371,10 @@ export default {
       else if(url.pathname==='/wa/send' && request.method==='POST'){ res=await handleWaSend(request, env); }
       else if(url.pathname==='/wa/send-template' && request.method==='POST'){ res=await handleWaSendTemplate(request, env); }
       else if(url.pathname==='/tasks/notify' && request.method==='POST'){ res=await handleTaskEmailNotify(request, env); }
+      else if(url.pathname==='/email/client' && request.method==='POST'){ res=await handleEmailClientUpdate(request, env); }
+      else if(url.pathname==='/email/status' && request.method==='GET'){ res=await handleEmailStatus(request, env); }
+      else if(url.pathname==='/email/test' && request.method==='POST'){ res=await handleEmailTest(request, env); }
+      else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }
       else if(url.pathname==='/ecom/products' && request.method==='GET'){ res=await handleEcomList(request, env, 'products'); }
@@ -1234,5 +1418,11 @@ export default {
     const headers=new Headers(res.headers);
     Object.entries(cors).forEach(([k,v])=>headers.set(k,v));
     return new Response(res.body, {status:res.status, headers});
+  },
+
+  // Cloudflare Cron Trigger — see wrangler.toml [triggers]. Runs the Integrations health
+  // check for every client once a day, independent of anyone opening the dashboard.
+  async scheduled(event, env, ctx){
+    ctx.waitUntil(runDailyHealthCheckForAllClients(env));
   }
 };
