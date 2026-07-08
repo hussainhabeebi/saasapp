@@ -1517,6 +1517,8 @@ const TODAY = new Date().toISOString().slice(0,10);
                 <span id="themeSwatchB" style="width:14px;height:14px;border-radius:50%;background:var(--accent-soft);display:inline-block"></span>
                 <span id="themeLabel">Current theme</span>
               </div>
+              <button class="save-btn" id="saveIndustryBtn" onclick="saveIndustry()">Save</button>
+              <span class="save-msg" id="saveIndustryMsg"></span>
             </div>
           </div>
 
@@ -4200,6 +4202,28 @@ $id('saveSvc').addEventListener('click',async()=>{
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
 
+async function saveIndustry(){
+  const btn=$id('saveIndustryBtn'),msg=$id('saveIndustryMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    const ind=$id('cfgIndustry').value;
+    const patch={industry:ind};
+    // Auto-enable matching module based on industry
+    if(ind==='travel'){patch.ta_enabled='Yes';clientRecord.ta_enabled='Yes';taSaveLocal('ta_enabled','Yes');}
+    else{patch.ta_enabled='No';clientRecord.ta_enabled='No';taSaveLocal('ta_enabled','No');}
+    if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';rcSaveLocal('recruit_enabled','Yes');}
+    else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
+    await patchClient(patch);
+    clientRecord.industry=ind;
+    applyTheme(ind);
+    updateRecruitTabVisibility();
+    _renderModuleBadge('taModuleStatusBadge',ind==='travel');
+    _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
+    msg.textContent='✓ Saved — theme applied';
+  }catch(e){msg.textContent='Error';msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+}
+
 $id('saveGeneral').addEventListener('click',async()=>{
   const btn=$id('saveGeneral'),msg=$id('saveGeneralMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
@@ -4213,6 +4237,7 @@ $id('saveGeneral').addEventListener('click',async()=>{
     if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';rcSaveLocal('recruit_enabled','Yes');}
     else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
     await patchClient(patch);
+    clientRecord.industry=ind;
     applyTheme(ind);
     updateRecruitTabVisibility();
     _renderModuleBadge('taModuleStatusBadge',ind==='travel');
