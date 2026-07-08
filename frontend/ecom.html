@@ -147,6 +147,8 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <div class="card-actions">
         <button class="save-btn sec" id="bulkDeleteProductsBtn" style="display:none" onclick="bulkDeleteProducts()">🗑 Delete Selected</button>
         <input class="search-input" id="productSearch" type="text" placeholder="🔍 Search products…" oninput="renderProductsTable()">
+        <button class="save-btn sec" onclick="downloadProductTemplate()">📄 CSV Template</button>
+        <button class="save-btn sec" onclick="openImportModal()">⬆ Upload CSV</button>
         <button class="save-btn" onclick="openAddProductModal()">+ Add Product</button>
       </div>
     </div>
@@ -214,26 +216,6 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     <div class="s-row">
       <button class="save-btn" onclick="saveTableIds()">Save Table IDs</button>
       <span class="save-msg" id="tableIdsMsg"></span>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Products Sheet Sync</div>
-    <div class="s-sec">
-      <span class="s-lbl">Google Sheet URL (Products)</span>
-      <input class="s-input" id="cfgProductsSheet" type="url" placeholder="https://docs.google.com/spreadsheets/d/…">
-      <div class="s-hint">Any column headers work — map them to fields below. Supports an image link column too.</div>
-    </div>
-    <div class="s-row">
-      <button class="save-btn sec" onclick="detectColumns('products')">🔍 Detect Sheet Columns</button>
-      <button class="save-btn sec" onclick="renderColumnMap('products', sheetHeaders.products, true)">✏️ Type Manually</button>
-      <span class="save-msg" id="prodDetectMsg"></span>
-    </div>
-    <div class="colmap-grid" id="prodColumnMap"></div>
-    <div class="s-row">
-      <button class="save-btn" onclick="saveProductsSheet()">Save</button>
-      <button class="save-btn sec" onclick="syncSheet('products')">▶ Sync Products Now</button>
-      <span class="save-msg" id="prodSheetMsg"></span>
     </div>
   </div>
 
@@ -325,6 +307,32 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <button class="save-btn sec" onclick="closeProductModal()">Cancel</button>
       <button class="save-btn" id="productModalSaveBtn" onclick="submitProductForm()">Save Product</button>
       <span class="save-msg" id="productModalMsg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- IMPORT PRODUCTS CSV MODAL -->
+<div class="modal-overlay" id="importModalOverlay" onclick="if(event.target===this) closeImportModal()">
+  <div class="modal-card" style="max-width:820px">
+    <div class="modal-title">Upload Products CSV</div>
+    <div class="s-hint" style="margin-bottom:14px">
+      Use the same headers as the <a href="#" onclick="downloadProductTemplate();return false" style="color:var(--accent-ink);font-weight:600">CSV template</a>: <code style="font-family:var(--mono);font-size:11px">name, sku, category, color, size, price, currency, stock, status, description, image_url</code>.
+      Only <strong>name</strong> is required. Rows whose <strong>sku</strong> matches an existing product update it in place — everything else is created as new.
+    </div>
+    <input type="file" id="importFileInput" accept=".csv" style="margin-bottom:12px" onchange="handleImportFile(this.files[0])">
+    <div id="importPreviewWrap" style="display:none">
+      <div id="importSummary" class="s-hint" style="margin-bottom:8px"></div>
+      <div class="tbl-wrap" style="max-height:320px">
+        <table>
+          <thead><tr><th>Row</th><th>Name</th><th>SKU</th><th>Price</th><th>Stock</th><th>Action</th></tr></thead>
+          <tbody id="importPreviewTbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="s-row" style="justify-content:flex-end;margin-top:14px">
+      <button class="save-btn sec" onclick="closeImportModal()">Cancel</button>
+      <button class="save-btn" id="importConfirmBtn" onclick="confirmImport()" style="display:none">Import Products</button>
+      <span class="save-msg" id="importMsg"></span>
     </div>
   </div>
 </div>
@@ -442,21 +450,14 @@ async function init() {
   if (!ecomTableIds.orders   && DEFAULT_ECOM_IDS.orders)   ecomTableIds.orders   = DEFAULT_ECOM_IDS.orders;
   document.getElementById('cfgProductsTable').value = ecomTableIds.products || '';
   document.getElementById('cfgOrdersTable').value   = ecomTableIds.orders   || '';
-  if (clientRecord.ecom_products_sheet) document.getElementById('cfgProductsSheet').value = clientRecord.ecom_products_sheet;
   if (clientRecord.ecom_orders_sheet)   document.getElementById('cfgOrdersSheet').value   = clientRecord.ecom_orders_sheet;
   if (clientRecord.review_link)         document.getElementById('cfgReviewLink').value    = clientRecord.review_link;
 
-  try {
-    const pm = JSON.parse(clientRecord.ecom_products_column_map || '{}');
-    columnMaps.products = pm.map || {};
-    sheetHeaders.products = pm.headers || [];
-  } catch(e) {}
   try {
     const om = JSON.parse(clientRecord.ecom_orders_column_map || '{}');
     columnMaps.orders = om.map || {};
     sheetHeaders.orders = om.headers || [];
   } catch(e) {}
-  if (sheetHeaders.products.length) renderColumnMap('products', sheetHeaders.products);
   if (sheetHeaders.orders.length)   renderColumnMap('orders', sheetHeaders.orders);
 
   try {
@@ -703,6 +704,182 @@ async function deleteProduct(id, name) {
   }
 }
 
+// ── PRODUCTS CSV IMPORT ────────────────────────────
+// Replaces the old Google Sheet + n8n webhook sync (fire-and-forget `mode:'no-cors'`, so the
+// page could never tell if it worked, and the n8n side had a fake-upsert that created
+// duplicates on every re-sync instead of updating). This runs entirely client-side: parse the
+// CSV, match each row against already-loaded products by SKU, then PATCH the ones that match
+// and POST the rest — a real upsert, and errors surface per-row instead of disappearing.
+let _importRows = [];
+
+function downloadProductTemplate() {
+  const headers = PRODUCT_FIELDS.map(f => f.key);
+  const sample = ['Classic T-Shirt','TSHIRT-BLK-M','Apparel','Black','M','19.99','USD','25','active','100% cotton crew neck','https://example.com/images/tshirt-black-m.jpg'];
+  const csv = [headers.join(','), sample.map(csvCell).join(',')].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'products_template.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function csvCell(v) {
+  const s = String(v ?? '');
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function parseCsvText(text) {
+  // Minimal RFC4180-ish parser: handles quoted fields with embedded commas/newlines/escaped quotes.
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i+1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+      } else field += c;
+    } else if (c === '"') { inQuotes = true; }
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i+1] === '\n') i++;
+      row.push(field); field = '';
+      if (row.some(v => v !== '')) rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+function openImportModal() {
+  if (!ecomTableIds.products) { alert('Set the Products Table ID in Settings first.'); return; }
+  _importRows = [];
+  document.getElementById('importFileInput').value = '';
+  document.getElementById('importPreviewWrap').style.display = 'none';
+  document.getElementById('importConfirmBtn').style.display = 'none';
+  document.getElementById('importMsg').textContent = '';
+  document.getElementById('importModalOverlay').classList.add('active');
+}
+
+function closeImportModal() {
+  document.getElementById('importModalOverlay').classList.remove('active');
+}
+
+function handleImportFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      _importRows = parseImportCsv(reader.result);
+      renderImportPreview();
+    } catch(e) {
+      document.getElementById('importMsg').textContent = 'Could not read that file: ' + e.message;
+    }
+  };
+  reader.readAsText(file);
+}
+
+function parseImportCsv(text) {
+  const rows = parseCsvText(text);
+  if (rows.length < 2) throw new Error('CSV needs a header row plus at least one product row');
+  const headerRow = rows[0].map(h => h.trim().toLowerCase());
+  // Match by field key ("sku") or label ("SKU") so a template downloaded from here, or a sheet
+  // export with human-readable headers, both work without a separate column-mapping step.
+  const colIndex = {};
+  PRODUCT_FIELDS.forEach(f => {
+    let idx = headerRow.indexOf(f.key);
+    if (idx === -1) idx = headerRow.indexOf(f.label.toLowerCase());
+    if (idx !== -1) colIndex[f.key] = idx;
+  });
+  if (colIndex.name === undefined) throw new Error('CSV must have a "name" column');
+
+  const existingBySku = new Map(allProducts.filter(p => p.sku).map(p => [String(p.sku).trim().toLowerCase(), p]));
+
+  return rows.slice(1).map((cells, i) => {
+    const get = key => (colIndex[key] !== undefined ? (cells[colIndex[key]] || '').trim() : '');
+    const name = get('name');
+    const sku = get('sku');
+    const match = sku ? existingBySku.get(sku.toLowerCase()) : null;
+    return {
+      rowNum: i + 2, // account for header row, 1-indexed for the user
+      valid: !!name,
+      action: match ? 'update' : 'create',
+      existingId: match ? match.Id : null,
+      data: {
+        name, sku,
+        category: get('category'),
+        color: get('color'),
+        size: get('size'),
+        price: parseFloat(get('price')) || 0,
+        currency: get('currency') || 'INR',
+        stock: parseInt(get('stock'), 10) || 0,
+        status: (get('status') || 'active').toLowerCase() === 'inactive' ? 'inactive' : 'active',
+        description: get('description'),
+        image_url: get('image_url')
+      }
+    };
+  });
+}
+
+function renderImportPreview() {
+  const wrap = document.getElementById('importPreviewWrap');
+  const tbody = document.getElementById('importPreviewTbody');
+  const summary = document.getElementById('importSummary');
+  const confirmBtn = document.getElementById('importConfirmBtn');
+
+  const valid = _importRows.filter(r => r.valid);
+  const invalid = _importRows.filter(r => !r.valid);
+  const creates = valid.filter(r => r.action === 'create').length;
+  const updates = valid.filter(r => r.action === 'update').length;
+
+  summary.innerHTML = `<strong>${_importRows.length}</strong> row(s) parsed — <strong>${creates}</strong> new, <strong>${updates}</strong> updating existing products (matched by SKU)` +
+    (invalid.length ? `, <span style="color:var(--danger,#c0392b)"><strong>${invalid.length}</strong> skipped (missing name)</span>` : '');
+
+  tbody.innerHTML = _importRows.map(r => `
+    <tr${r.valid ? '' : ' style="opacity:.5"'}>
+      <td>${r.rowNum}</td>
+      <td>${esc(r.data.name || '—')}</td>
+      <td style="font-family:var(--mono);font-size:12px">${esc(r.data.sku || '—')}</td>
+      <td>${esc(r.data.currency)} ${r.data.price}</td>
+      <td>${r.data.stock}</td>
+      <td>${r.valid ? (r.action === 'update' ? '<span class="badge processing">Update</span>' : '<span class="badge shipped">Create</span>') : '<span class="badge cancelled">Skip — no name</span>'}</td>
+    </tr>`).join('');
+
+  wrap.style.display = '';
+  confirmBtn.style.display = valid.length ? '' : 'none';
+}
+
+async function confirmImport() {
+  const valid = _importRows.filter(r => r.valid);
+  if (!valid.length) return;
+  const btn = document.getElementById('importConfirmBtn');
+  const msg = document.getElementById('importMsg');
+  btn.disabled = true;
+  let done = 0, failed = 0;
+  for (const r of valid) {
+    msg.textContent = `Importing… ${done + failed}/${valid.length}`;
+    const body = { ...r.data, client_id: clientId };
+    if (r.existingId) body.Id = r.existingId;
+    try {
+      const resp = await fetch(`${WORKER_BASE}/ecom/products`, {
+        method: r.existingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      done++;
+    } catch(e) {
+      failed++;
+    }
+  }
+  btn.disabled = false;
+  msg.textContent = failed ? `Done — ${done} imported, ${failed} failed` : `✓ Imported ${done} product(s)`;
+  loadProducts();
+  if (!failed) setTimeout(closeImportModal, 1200);
+}
+
 // ── ORDERS ──────────────────────────────────────
 async function loadOrders() {
   const tbody = document.getElementById('ordersTbody');
@@ -839,10 +1016,11 @@ async function deleteOrder(id, label) {
   }
 }
 
-// ── COLUMN MAPPING ────────────────────────────────
+// ── COLUMN MAPPING (Orders sheet sync only — Products now uses direct CSV
+// upload on the Products tab instead, see CSV IMPORT below) ────────────────
 async function detectColumns(type) {
-  const msgId = type === 'products' ? 'prodDetectMsg' : 'ordDetectMsg';
-  const sheetUrl = (type === 'products' ? document.getElementById('cfgProductsSheet') : document.getElementById('cfgOrdersSheet')).value.trim();
+  const msgId = 'ordDetectMsg';
+  const sheetUrl = document.getElementById('cfgOrdersSheet').value.trim();
   if (!sheetUrl) { showMsg(msgId, 'Enter a sheet URL first'); return; }
   showMsg(msgId, 'Detecting…', 10000);
   try {
@@ -863,8 +1041,8 @@ async function detectColumns(type) {
 }
 
 function renderColumnMap(type, headers, forceManual) {
-  const fields = type === 'products' ? PRODUCT_FIELDS : ORDER_FIELDS;
-  const container = document.getElementById(type === 'products' ? 'prodColumnMap' : 'ordColumnMap');
+  const fields = ORDER_FIELDS;
+  const container = document.getElementById('ordColumnMap');
   const saved = columnMaps[type] || {};
   const manual = forceManual || !(headers && headers.length);
 
@@ -970,15 +1148,6 @@ async function saveTableIds() {
   loadOrders();
 }
 
-async function saveProductsSheet() {
-  const url = document.getElementById('cfgProductsSheet').value.trim();
-  await patchClient({
-    ecom_products_sheet: url,
-    ecom_products_column_map: JSON.stringify({ map: columnMaps.products, headers: sheetHeaders.products })
-  });
-  showMsg('prodSheetMsg', 'Saved ✓');
-}
-
 async function saveReviewLink() {
   const url = document.getElementById('cfgReviewLink').value.trim();
   await patchClient({ review_link: url });
@@ -995,11 +1164,9 @@ async function saveOrdersSheet() {
 }
 
 async function syncSheet(type) {
-  const msgId = type === 'products' ? 'prodSheetMsg' : 'ordSheetMsg';
-  const sheetKey = type === 'products' ? 'ecom_products_sheet' : 'ecom_orders_sheet';
-  const sheetUrl = (type === 'products' ? document.getElementById('cfgProductsSheet') : document.getElementById('cfgOrdersSheet')).value.trim()
-    || clientRecord?.[sheetKey] || '';
-  const tableId = ecomTableIds[type === 'products' ? 'products' : 'orders'] || '';
+  const msgId = 'ordSheetMsg';
+  const sheetUrl = document.getElementById('cfgOrdersSheet').value.trim() || clientRecord?.ecom_orders_sheet || '';
+  const tableId = ecomTableIds.orders || '';
   if (!sheetUrl) { showMsg(msgId, 'No sheet URL set'); return; }
   if (!tableId)  { showMsg(msgId, 'No table ID set'); return; }
   showMsg(msgId, 'Syncing…', 10000);
@@ -1011,10 +1178,10 @@ async function syncSheet(type) {
       body: JSON.stringify({ client_id: clientId, sync_type: type, gsheet_url: sheetUrl, table_id: tableId, column_map: columnMaps[type] || {} })
     });
     showMsg(msgId, 'Sync started ✓', 5000);
-    setTimeout(() => { if(type==='products') loadProducts(); else loadOrders(); }, 4000);
+    setTimeout(loadOrders, 4000);
   } catch(e) {
     showMsg(msgId, 'Sync sent ✓', 5000);
-    setTimeout(() => { if(type==='products') loadProducts(); else loadOrders(); }, 4000);
+    setTimeout(loadOrders, 4000);
   }
 }
 
