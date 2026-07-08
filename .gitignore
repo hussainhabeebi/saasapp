@@ -1,3 +1,6 @@
 .DS_Store
 *.log
 .claude/
+.env
+*.env
+!*.env.example
