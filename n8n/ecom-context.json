@@ -14,7 +14,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Execute Workflow Trigger').first().json.ecom_table_ids.products }}/records?where=(client_id,eq,{{ $('Execute Workflow Trigger').first().json.client_id }})~and(status,eq,active)&limit=30",
+        "url": "=https://whizz.aiingo.com/api/v2/tables/{{ $('Execute Workflow Trigger').first().json.ecom_table_ids.products }}/records?where=(client_id,eq,{{ $('Execute Workflow Trigger').first().json.client_id }})~and(status,neq,inactive)&limit=30",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
