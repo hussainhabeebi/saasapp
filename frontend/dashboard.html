@@ -4746,7 +4746,7 @@ async function quoteSend(){
   // never be shown as a send failure, since the WhatsApp message already went out.
   const sentAt=new Date().toISOString();
   try{
-    let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    const hist=await freshConvHistory(lead);
     hist.push({role:'assistant',content:caption+`\n[Quotation PDF — ${items.length} item(s), total ${currency} ${total.toLocaleString()}]`,ts:sentAt});
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(','),QuoteSentAt:sentAt,QuoteSentTotal:`${currency} ${total.toLocaleString()}`});
     lead.ConvHistory=JSON.stringify(hist);
@@ -4967,6 +4967,19 @@ async function ncGet(url){
   const r=await fetch(url,{headers:ncAuthHeaders()});
   if(!r.ok)throw new Error('HTTP '+r.status);
   return r.json();
+}
+// Every place that appends to ConvHistory PATCHes the whole field (NocoDB has no atomic
+// array-append), so it must start from the *current* server value, not the locally cached
+// `lead` object — allLeads only refreshes every 60s (or up to 5min from the sessionStorage
+// cache), so reading the stale local copy here would silently overwrite/discard any messages
+// the WhatsApp bot appended server-side in the meantime.
+async function freshConvHistory(lead){
+  try{
+    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${lead.Id}?fields=ConvHistory`);
+    return JSON.parse(fresh?.ConvHistory||'[]');
+  }catch(e){
+    try{return JSON.parse(lead.ConvHistory||'[]');}catch(e2){return [];}
+  }
 }
 async function ncPatch(url,body){
   const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
@@ -7956,7 +7969,7 @@ async function sendWaReply(){
     });
     const respData=await resp.json().catch(()=>({}));
     if(!resp.ok) throw new Error(respData.error||'HTTP '+resp.status);
-    let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    const hist=await freshConvHistory(lead);
     hist.push({role:'assistant',content:text,ts:new Date().toISOString(),direction:'out'});
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
     lead.ConvHistory=JSON.stringify(hist);
@@ -8948,7 +8961,7 @@ async function chatSendFromTab(leadId){
     msg.textContent='Failed — message did not reach Chatwoot.'; msg.className='chat-send-status err';
     return;
   }
-  let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+  const hist=await freshConvHistory(lead);
   hist.push({role:'assistant',content:text,ts:new Date().toISOString()});
   try{
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
