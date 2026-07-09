@@ -972,7 +972,6 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="leads">👥 Leads</button>
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
     <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
-    <button class="dnTab industry-tab" data-page="travel" data-industry="travel" style="display:none">✈️ Travel</button>
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')">🛒 Ecommerce</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
@@ -1351,43 +1350,9 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
-    <!-- TRAVEL MODULE -->
-    <div class="page hidden" id="pageTravel">
-      <div class="page-pad">
-        <!-- Hero banner -->
-        <div class="travel-hero">
-          <div class="travel-hero-title">✈️ Travel & Tourism Hub</div>
-          <div class="travel-hero-sub" id="travelHeroSub">Loading your travel data…</div>
-          <div class="travel-stat-row" id="travelHeroStats" style="margin-top:14px;margin-bottom:0"></div>
-        </div>
-
-        <!-- Trip type breakdown -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="card-title">🧳 Trip Types</div>
-          <div class="trip-types" id="tripTypes"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
-        </div>
-
-        <!-- Upcoming departures + top destinations -->
-        <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr;margin-bottom:14px">
-          <div class="card">
-            <div class="card-title">📅 Upcoming Departures <span id="upcomingCount" style="margin-left:auto;font-size:11px;color:var(--muted)"></span></div>
-            <div id="upcomingList"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
-          </div>
-          <div class="card">
-            <div class="card-title">🌍 Top Destinations</div>
-            <div id="destinationChart"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
-          </div>
-        </div>
-
-        <!-- Hot travel leads -->
-        <div class="card">
-          <div class="card-title">🔥 Hot Inquiries <span style="font-size:11px;color:var(--muted);margin-left:auto">Needs follow-up</span></div>
-          <div id="travelHotList"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- TRAVEL AGENCY MODULE -->
+    <!-- TRAVEL AGENCY MODULE (the standalone "Travel" tab was merged into this module's
+         Dashboard sub-page — same industry, same clients, no reason for two nav entries;
+         see renderTaDashboard()) -->
     <div class="page hidden" id="pageAgency">
       <div id="agencySubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
         <button class="ta-tab active" data-ta="dashboard">📊 Dashboard</button>
@@ -2088,7 +2053,6 @@ const TODAY = new Date().toISOString().slice(0,10);
       <button class="more-item" data-page="quotation"><span class="bnIcon">🧾</span><span class="bnLabel">Quotation</span></button>
       <button class="more-item" data-page="prospects"><span class="bnIcon">🎯</span><span class="bnLabel">Prospects</span></button>
       <button class="more-item" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
-      <button class="more-item industry-tab" data-page="travel" data-industry="travel" style="display:none"><span class="bnIcon">✈️</span><span class="bnLabel">Travel</span></button>
       <button class="more-item industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank');closeMoreSheet()"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
       <button class="more-item" data-page="agency" id="moreAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
       <button class="more-item" data-page="recruit" id="moreRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
@@ -3116,7 +3080,7 @@ $id('hRefresh').addEventListener('click',()=>loadAll());
 const SETTINGS_GROUP=['settings','channels','integrations','billing']; // shown as one "Settings" tab with an internal sub-nav
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['quotation','prospects','broadcast','travel','agency','recruit','settings','channels','integrations','billing'];
+const MORE_GROUP=['quotation','prospects','broadcast','agency','recruit','settings','channels','integrations','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -3137,7 +3101,6 @@ function navigate(page){
   if(page==='prospects') prospectInit();
   if(page==='pipeline') renderKanban();
   if(page==='leads'){if(_leadsTableView)renderLeadsTable();else renderLeadsList();}
-  if(page==='travel') renderTravel();
   if(page==='agency') renderAgency();
   if(page==='recruit') renderRecruit();
   if(page==='settings') populateSettings();
@@ -6490,18 +6453,19 @@ function previewTheme(val){
 }
 
 /* ── TRAVEL MODULE ── */
-function renderTravel(){
+// Ported from the old standalone "Travel" tab (merged into the Agency module's Dashboard —
+// same industry, same clients as Agency, so there was no reason for two separate nav entries).
+// Returns a template string instead of writing to fixed $id() elements, since this now renders
+// inline as part of renderTaDashboard()'s own template rather than a dedicated page.
+function renderTravelAnalyticsSection(){
   const leads=allLeads;
   const now=new Date();
 
-  // Hero stats
   const booked=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
   const upcoming=leads.filter(l=>{if(!l.TravelDates&&!l.BookingTime)return false;const d=new Date(l.TravelDates||l.BookingTime);return d>now;});
-  const hot=leads.filter(l=>l.Score==='Hot'||l.HotMoment==='Yes');
   const totalPax=leads.reduce((s,l)=>s+(parseInt(l.PaxCount)||0),0);
 
-  $id('travelHeroSub').textContent=`${leads.length} inquiries · ${booked.length} confirmed bookings`;
-  $id('travelHeroStats').innerHTML=`
+  const heroStats=`
     <div class="travel-stat"><div class="travel-stat-val">${leads.length}</div><div class="travel-stat-lbl">Inquiries</div></div>
     <div class="travel-stat"><div class="travel-stat-val">${booked.length}</div><div class="travel-stat-lbl">Booked</div></div>
     <div class="travel-stat"><div class="travel-stat-val">${upcoming.length}</div><div class="travel-stat-lbl">Upcoming</div></div>
@@ -6511,13 +6475,14 @@ function renderTravel(){
   const types={FIT:0,Group:0,Honeymoon:0,Corporate:0,Family:0,Adventure:0,Other:0};
   leads.forEach(l=>{const t=l.TripType||'Other';types[t]=(types[t]||0)+1;});
   const typeIcons={FIT:'🧍',Group:'👥',Honeymoon:'💑',Corporate:'💼',Family:'👨‍👩‍👧',Adventure:'🏔️',Other:'✈️'};
-  $id('tripTypes').innerHTML=Object.entries(types).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).map(([t,n])=>`
+  const tripTypesHtml=Object.entries(types).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).map(([t,n])=>`
     <div class="tt-pill">
       <div class="tt-pill-icon">${typeIcons[t]||'✈️'}</div>
       <div class="tt-pill-body"><div class="tt-pill-label">${t}</div><div class="tt-pill-val">${n}</div></div>
     </div>`).join('')||'<div style="color:var(--muted);font-size:13px">No trip type data. Add TripType field to leads.</div>';
 
-  // Upcoming departures (next 90 days)
+  // Upcoming trip inquiries (next 90 days) — from the lead pipeline, distinct from the TA
+  // module's own "Upcoming Departures" card above (which tracks confirmed ta_bookings rows).
   const dep90=leads.filter(l=>{
     const raw=l.TravelDates||l.BookingTime||'';
     if(!raw)return false;
@@ -6528,8 +6493,8 @@ function renderTravel(){
     const db=new Date((b.TravelDates||b.BookingTime||'').split('→')[0].trim());
     return da-db;
   });
-  $id('upcomingCount').textContent=dep90.length?dep90.length+' in next 90 days':'';
-  $id('upcomingList').innerHTML=dep90.slice(0,8).map(l=>{
+  const upcomingCount=dep90.length?dep90.length+' in next 90 days':'';
+  const upcomingHtml=dep90.slice(0,8).map(l=>{
     const raw=(l.TravelDates||l.BookingTime||'').split('→')[0].trim();
     const d=new Date(raw);
     const day=d.getDate();
@@ -6549,7 +6514,7 @@ function renderTravel(){
   leads.forEach(l=>{if(l.Destination){const d=(l.Destination||'').trim();if(d)destCount[d]=(destCount[d]||0)+1;}});
   const dests=Object.entries(destCount).sort((a,b)=>b[1]-a[1]).slice(0,8);
   const maxD=dests[0]?.[1]||1;
-  $id('destinationChart').innerHTML=dests.length?dests.map(([d,n])=>`
+  const destHtml=dests.length?dests.map(([d,n])=>`
     <div class="dest-row">
       <div class="dest-name">${esc(d)}</div>
       <div class="dest-bar-bg"><div class="dest-bar-fill" style="width:${Math.round(n/maxD*100)}%"></div></div>
@@ -6559,7 +6524,7 @@ function renderTravel(){
 
   // Hot inquiries
   const hotLeads=leads.filter(l=>!TERMINAL.has(l.Stage)&&(l.Score==='Hot'||l.HotMoment==='Yes')).slice(0,10);
-  $id('travelHotList').innerHTML=hotLeads.length?hotLeads.map(l=>`
+  const hotHtml=hotLeads.length?hotLeads.map(l=>`
     <div class="predict-row" style="cursor:pointer" onclick="openDetail(${l.Id})">
       <div style="font-size:16px">🔥</div>
       <div class="predict-name">
@@ -6569,6 +6534,31 @@ function renderTravel(){
       <div style="font-family:var(--mono);font-size:10px;color:var(--muted)">${fmtDateShort(l.LastMsgAt||l.Date)}</div>
     </div>`).join('')
     :'<div style="color:var(--muted);font-size:13px">No hot inquiries right now 🎉</div>';
+
+  return `
+  <div class="travel-hero" style="margin-bottom:14px">
+    <div class="travel-hero-title">✈️ Travel Pipeline (from Leads)</div>
+    <div class="travel-hero-sub">${leads.length} inquiries · ${booked.length} confirmed bookings</div>
+    <div class="travel-stat-row" style="margin-top:14px;margin-bottom:0">${heroStats}</div>
+  </div>
+  <div class="ta-card">
+    <div class="ta-card-title">🧳 Trip Types</div>
+    <div class="trip-types">${tripTypesHtml}</div>
+  </div>
+  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+    <div class="ta-card">
+      <div class="ta-card-title">📅 Upcoming Trip Inquiries <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400">${upcomingCount}</span></div>
+      ${upcomingHtml}
+    </div>
+    <div class="ta-card">
+      <div class="ta-card-title">🌍 Top Destinations</div>
+      ${destHtml}
+    </div>
+  </div>
+  <div class="ta-card">
+    <div class="ta-card-title">🔥 Hot Inquiries <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">Needs follow-up</span></div>
+    ${hotHtml}
+  </div>`;
 }
 
 /* ── LEAD RE-OPEN ── */
@@ -7285,7 +7275,8 @@ function renderTaDashboard() {
           <div style="background:var(--accent-soft);color:var(--accent-ink);padding:3px 8px;border-radius:6px;font-size:10px;font-weight:700;font-family:var(--mono)">${g.seats?Math.round(((g.pilgrims||[]).length/g.seats)*100):0}%</div>
         </div>`).join('') || '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No groups created</div>'}
     </div>
-  </div>`;
+  </div>
+  ${clientRecord?.industry==='travel' ? renderTravelAnalyticsSection() : ''}`;
 }
 
 function caseIcon(type) {
