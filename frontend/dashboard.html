@@ -182,61 +182,58 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .recovery-chip-label{font-family:var(--disp);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:4px}
 .recovery-chip-stage{display:inline-block;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;font-family:var(--disp);margin-bottom:6px;background:#EDE9FE;color:#5B21B6}
 .glabel{color:rgba(255,255,255,.45);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:-6px;font-family:var(--disp)}
-/* CHATS TAB */
-#pageChats{display:flex;flex-direction:column;min-height:0;flex:1}
-.chats-layout{display:flex;flex:1;min-height:0;overflow:hidden}
-.chat-sidebar{width:300px;flex-shrink:0;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--card)}
-.chat-sidebar-hd{padding:14px 16px;border-bottom:1px solid var(--line);flex-shrink:0}
-.chat-search{width:100%;box-sizing:border-box;background:var(--bg);border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px;color:var(--ink);font-family:var(--body);outline:none;transition:border-color .15s}
-.chat-search:focus{border-color:var(--accent)}
+/* CHATS TAB — styled to match WhatsApp's own UI; deliberately hardcoded colors instead of
+   the app's --accent/--bg theme vars, since WhatsApp's look shouldn't shift with the
+   industry theme picker. Scoped entirely to these classes, which are used only inside
+   #pageChats (the lead-detail conversation thread elsewhere uses its own inline styles). */
+#pageChats{display:flex;flex-direction:column;min-height:0;flex:1;background:#fff}
+.chats-layout{display:flex;flex:1;min-height:0;overflow:hidden;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif}
+.chat-sidebar{width:320px;flex-shrink:0;border-right:1px solid #e9edef;display:flex;flex-direction:column;background:#fff}
+.chat-sidebar-hd{padding:14px 16px;background:#f0f2f5;border-bottom:1px solid #e9edef;flex-shrink:0}
+.chat-sidebar-title{font-size:19px;font-weight:600;color:#111b21;margin-bottom:10px}
+.chat-search-wrap{position:relative}
+.chat-search-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:12px;opacity:.55;pointer-events:none}
+.chat-search{width:100%;box-sizing:border-box;background:#fff;border:none;border-radius:20px;padding:8px 12px 8px 32px;font-size:13.5px;color:#111b21;font-family:inherit;outline:none}
 .chat-contact-list{flex:1;overflow-y:auto;min-height:0}
-.chat-contact-row{display:flex;align-items:center;gap:11px;padding:11px 16px;cursor:pointer;border-bottom:1px solid var(--line);transition:background .12s}
-.chat-contact-row:hover{background:var(--bg)}
-.chat-contact-row.active{background:var(--accent-soft)}
-.cc-avatar{width:36px;height:36px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--disp);font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.chat-contact-row{display:flex;align-items:center;gap:13px;padding:12px 16px;cursor:pointer;border-bottom:1px solid #f0f2f5;transition:background .1s}
+.chat-contact-row:hover{background:#f5f6f6}
+.chat-contact-row.active{background:#f0f2f5}
+.cc-avatar{width:44px;height:44px;border-radius:50%;background:#00a884;color:#fff;font-size:15px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.cc-avatar.lg{width:40px;height:40px}
 .cc-info{flex:1;min-width:0}
-.cc-name{font-size:13.5px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cc-phone{font-size:11.5px;color:var(--muted);font-family:var(--mono)}
-.cc-preview{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.chat-load-more{padding:12px 16px;text-align:center;border:none;background:none;font-size:12.5px;color:var(--accent-ink);font-family:var(--disp);font-weight:600;cursor:pointer;width:100%;transition:background .12s}
-.chat-load-more:hover{background:var(--bg)}
-.chat-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg)}
-.chat-main-hd{padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line);flex-shrink:0;display:flex;align-items:center;gap:12px}
-.chat-main-name{font-family:var(--disp);font-size:15px;font-weight:700;color:var(--ink)}
-.chat-main-phone{font-size:12px;color:var(--muted);font-family:var(--mono)}
-.chat-conv-list{flex:1;overflow-y:auto;min-height:0;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
-.chat-conv-card{background:var(--card);border:1.5px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .15s}
-.chat-conv-hd{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;user-select:none}
-.chat-conv-hd:hover{background:var(--bg)}
-.chat-conv-id{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--accent-ink)}
-.chat-conv-status{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;font-family:var(--disp)}
-.cs-open{background:#dcfce7;color:#166534}
-.cs-resolved{background:#f1f5f9;color:#64748b}
-.cs-pending{background:#fef9c3;color:#854d0e}
-.chat-conv-time{font-size:11px;color:var(--muted);font-family:var(--mono);margin-left:auto}
-.chat-conv-chevron{font-size:14px;color:var(--muted);transition:transform .2s;margin-left:6px}
-.chat-conv-body{display:none;padding:0 14px 14px}
-.chat-conv-body.open{display:block}
-.chat-messages{display:flex;flex-direction:column;gap:8px;margin-bottom:14px;max-height:320px;overflow-y:auto;padding:4px 0}
-.chat-bubble{max-width:80%;padding:9px 13px;border-radius:12px;font-size:13px;line-height:1.5;word-break:break-word}
-.bubble-bot{align-self:flex-start;background:#f1f5f9;color:#1e293b;border-bottom-left-radius:3px}
-.bubble-user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:3px}
-.bubble-activity{align-self:center;background:none;color:var(--muted);font-size:11.5px;font-style:italic;padding:2px 0}
-.bubble-time{font-size:10.5px;opacity:.6;margin-top:3px;font-family:var(--mono)}
-.chat-assign-row{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
-.chat-assign-sel{flex:1;min-width:0;background:var(--bg);border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px;color:var(--ink);font-family:var(--body);outline:none;cursor:pointer}
-.chat-assign-sel:focus{border-color:var(--accent)}
-.chat-assign-btn{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12.5px;font-family:var(--disp);font-weight:600;cursor:pointer;transition:opacity .15s;white-space:nowrap}
-.chat-assign-btn:hover{opacity:.88}
-.chat-reply-row{display:flex;gap:8px;align-items:flex-end}
-.chat-reply-input{flex:1;background:var(--bg);border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px;color:var(--ink);font-family:var(--body);resize:vertical;min-height:60px;outline:none;transition:border-color .15s}
-.chat-reply-input:focus{border-color:var(--accent)}
-.chat-reply-send{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-size:13px;font-family:var(--disp);font-weight:600;cursor:pointer;transition:opacity .15s;white-space:nowrap;align-self:flex-end}
-.chat-reply-send:hover{opacity:.88}
-.chat-msg-loading{text-align:center;padding:20px;color:var(--muted);font-size:13px}
-.chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--muted);text-align:center;gap:10px;padding:40px}
-.chat-empty-icon{font-size:42px;opacity:.4}
-@media(max-width:767px){.chat-sidebar{width:100%;border-right:none;border-bottom:1px solid var(--line);max-height:40vh}.chats-layout{flex-direction:column}}
+.cc-row-top{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.cc-name{font-size:14.5px;font-weight:500;color:#111b21;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cc-time{font-size:11.5px;color:#667781;flex-shrink:0}
+.cc-row-bottom{display:flex;align-items:center;gap:4px;margin-top:2px}
+.cc-preview{font-size:13px;color:#667781;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.cc-check{font-size:13px;color:#8696a0;flex-shrink:0}
+.chat-load-more{padding:12px 16px;text-align:center;border:none;background:none;font-size:12.5px;color:#00a884;font-weight:600;cursor:pointer;width:100%}
+.chat-load-more:hover{background:#f5f6f6}
+.chat-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;background:#efeae2 url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><g fill="none" stroke="%23000" stroke-opacity="0.028" stroke-width="1.2"><circle cx="20" cy="20" r="9"/><path d="M55 10 L70 30 L45 35 Z"/><circle cx="80" cy="70" r="12"/><path d="M15 70 q10 -15 25 0 q10 15 -5 20 q-15 5 -20 -20"/></g></svg>')}
+.chat-main-hd{padding:10px 20px;background:#f0f2f5;border-bottom:1px solid #e9edef;flex-shrink:0;display:flex;align-items:center;gap:12px}
+.chat-main-name{font-size:15.5px;font-weight:600;color:#111b21}
+.chat-main-phone{font-size:12.5px;color:#667781}
+.chat-messages{display:flex;flex-direction:column;gap:2px}
+.chat-bubble-row{display:flex;margin-top:2px}
+.chat-bubble-row.in{justify-content:flex-start}
+.chat-bubble-row.out{justify-content:flex-end}
+.chat-bubble{position:relative;max-width:65%;padding:6px 9px 8px;border-radius:8px;font-size:14px;line-height:1.4;word-break:break-word;box-shadow:0 1px 1px rgba(0,0,0,.08);color:#111b21}
+.chat-bubble.in{background:#fff}
+.chat-bubble.out{background:#d9fdd3}
+.chat-bubble.tail-in::before{content:'';position:absolute;top:0;left:-7px;width:0;height:0;border-style:solid;border-width:0 8px 9px 0;border-color:transparent #fff transparent transparent}
+.chat-bubble.tail-out::before{content:'';position:absolute;top:0;right:-7px;width:0;height:0;border-style:solid;border-width:0 0 9px 8px;border-color:transparent transparent transparent #d9fdd3}
+.bubble-meta{display:flex;align-items:center;justify-content:flex-end;gap:3px;margin-top:2px;margin-left:10px;float:right}
+.bubble-time{font-size:10.5px;color:#667781;white-space:nowrap}
+.bubble-check{font-size:11px;color:#8696a0}
+.chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#667781;text-align:center;gap:10px;padding:40px;background:#f8f9fa}
+.chat-empty-icon{font-size:42px;opacity:.35}
+.chat-input-bar{padding:10px 16px;background:#f0f2f5;display:flex;gap:10px;align-items:flex-end;flex-shrink:0}
+.chat-input-box{flex:1;background:#fff;border:none;border-radius:20px;padding:9px 16px;font-size:14px;color:#111b21;font-family:inherit;resize:none;outline:none;max-height:100px}
+.chat-send-btn{width:40px;height:40px;border-radius:50%;background:#00a884;color:#fff;border:none;font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:opacity .15s}
+.chat-send-btn:hover{opacity:.88}
+.chat-send-status{font-size:11.5px;color:#667781;padding:2px 16px 0}
+.chat-send-status.err{color:#c0392b}
+@media(max-width:767px){.chat-sidebar{width:100%;border-right:none;border-bottom:1px solid #e9edef;max-height:40vh}.chats-layout{flex-direction:column}}
 
 /* ── APP SHELL ── */
 #app{position:fixed;inset:0;display:none;flex-direction:column}
@@ -1419,7 +1416,11 @@ const TODAY = new Date().toISOString().slice(0,10);
         <!-- Left: contact list -->
         <div class="chat-sidebar">
           <div class="chat-sidebar-hd">
-            <input class="chat-search" id="chatSearch" type="text" placeholder="Search contacts…" oninput="chatSearchDebounce()" autocomplete="off" />
+            <div class="chat-sidebar-title">Chats</div>
+            <div class="chat-search-wrap">
+              <span class="chat-search-icon">🔍</span>
+              <input class="chat-search" id="chatSearch" type="text" placeholder="Search or start a new chat" oninput="chatSearchDebounce()" autocomplete="off" />
+            </div>
           </div>
           <div class="chat-contact-list" id="chatContactList">
             <div class="chat-empty"><div class="chat-empty-icon">👤</div><div>Loading contacts…</div></div>
@@ -4745,7 +4746,7 @@ async function quoteSend(){
   // never be shown as a send failure, since the WhatsApp message already went out.
   const sentAt=new Date().toISOString();
   try{
-    let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    const hist=await freshConvHistory(lead);
     hist.push({role:'assistant',content:caption+`\n[Quotation PDF — ${items.length} item(s), total ${currency} ${total.toLocaleString()}]`,ts:sentAt});
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(','),QuoteSentAt:sentAt,QuoteSentTotal:`${currency} ${total.toLocaleString()}`});
     lead.ConvHistory=JSON.stringify(hist);
@@ -4966,6 +4967,19 @@ async function ncGet(url){
   const r=await fetch(url,{headers:ncAuthHeaders()});
   if(!r.ok)throw new Error('HTTP '+r.status);
   return r.json();
+}
+// Every place that appends to ConvHistory PATCHes the whole field (NocoDB has no atomic
+// array-append), so it must start from the *current* server value, not the locally cached
+// `lead` object — allLeads only refreshes every 60s (or up to 5min from the sessionStorage
+// cache), so reading the stale local copy here would silently overwrite/discard any messages
+// the WhatsApp bot appended server-side in the meantime.
+async function freshConvHistory(lead){
+  try{
+    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${lead.Id}?fields=ConvHistory`);
+    return JSON.parse(fresh?.ConvHistory||'[]');
+  }catch(e){
+    try{return JSON.parse(lead.ConvHistory||'[]');}catch(e2){return [];}
+  }
 }
 async function ncPatch(url,body){
   const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
@@ -7955,7 +7969,7 @@ async function sendWaReply(){
     });
     const respData=await resp.json().catch(()=>({}));
     if(!resp.ok) throw new Error(respData.error||'HTTP '+resp.status);
-    let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    const hist=await freshConvHistory(lead);
     hist.push({role:'assistant',content:text,ts:new Date().toISOString(),direction:'out'});
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
     lead.ConvHistory=JSON.stringify(hist);
@@ -8835,25 +8849,29 @@ function renderChatContacts(){
   }
 
   list.innerHTML=leads.map(l=>{
-    let lastMsg='';
+    let lastMsg='', lastFromUs=false;
     try{
       const h=JSON.parse(l.ConvHistory||'[]');
       const last=h[h.length-1];
-      if(last) lastMsg=(last.content||'').slice(0,50);
+      if(last){ lastMsg=(last.content||'').slice(0,50); lastFromUs=last.role==='assistant'||last.role==='bot'; }
     }catch(e){}
     const initial=(l.Name||l.Phone||'?')[0].toUpperCase();
     const when=timeAgo(l.LastMsgAt||l.Date||'');
-    const scoreDot=l.Score==='Hot'?'🔴':l.Score==='Warm'?'🟡':'';
+    const scoreDot=l.Score==='Hot'?'🔴 ':l.Score==='Warm'?'🟡 ':'';
+    // WhatsApp's list shows the last message as the subtitle, not a phone number — but this
+    // CRM leans on phone to identify leads with no name yet, so fall back to it only then.
+    const preview=l.Name?lastMsg:(maskPhone(l.Phone)+(lastMsg?' — '+lastMsg:''));
     return `<div class="chat-contact-row${_chatLeadId===l.Id?' active':''}" id="ccRow${l.Id}" onclick="chatSelectLead(${l.Id})">
       <div class="cc-avatar">${initial}</div>
       <div class="cc-info">
-        <div class="cc-name">${esc(l.Name||'Unknown')} ${scoreDot}</div>
-        <div class="cc-phone">${esc(maskPhone(l.Phone))}</div>
-        <div class="cc-preview">${esc(lastMsg)}</div>
-      </div>
-      <div style="font-size:10px;color:var(--muted);flex-shrink:0;text-align:right">
-        <div>${esc(when)}</div>
-        <div style="margin-top:3px">${esc(l.Stage||'')}</div>
+        <div class="cc-row-top">
+          <div class="cc-name">${scoreDot}${esc(l.Name||'Unknown')}</div>
+          <div class="cc-time">${esc(when)}</div>
+        </div>
+        <div class="cc-row-bottom">
+          ${lastFromUs?'<span class="cc-check">✓✓</span>':''}
+          <div class="cc-preview">${esc(preview)}</div>
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -8881,28 +8899,32 @@ function chatSelectLead(leadId){
   const main=$id('chatMain');
   main.innerHTML=`
     <div class="chat-main-hd">
-      <div class="cc-avatar" style="width:38px;height:38px;font-size:15px">${(lead.Name||'?')[0].toUpperCase()}</div>
+      <div class="cc-avatar lg">${(lead.Name||'?')[0].toUpperCase()}</div>
       <div style="flex:1;min-width:0">
         <div class="chat-main-name">${esc(lead.Name||'Unknown')}</div>
         <div class="chat-main-phone">${esc(lead.Phone||'')} · ${esc(lead.Stage||'new')}</div>
       </div>
       <button class="btn btn-secondary btn-sm" onclick="openDetail(${lead.Id})">View Lead →</button>
     </div>
-    <div class="chat-messages" id="chatMsgBox" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;max-height:none">
-      ${history.length?history.map(m=>{
-        const isBot=m.role==='assistant'||m.role==='bot';
-        return `<div style="display:flex;flex-direction:column;align-items:${isBot?'flex-end':'flex-start'}">
-          <div class="chat-bubble ${isBot?'bubble-bot':'bubble-user'}" style="max-width:75%">${esc(m.content||'').replace(/\n/g,'<br>')}
-            ${m.ts?`<div class="bubble-time">${new Date(m.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div>`:''}
+    <div class="chat-messages" id="chatMsgBox" style="flex:1;overflow-y:auto;padding:16px 6%">
+      ${history.length?history.map((m,i)=>{
+        const isOut=m.role==='assistant'||m.role==='bot';
+        // Tail only on the first bubble of a consecutive run from the same side — matches
+        // how WhatsApp groups a burst of messages from one sender under a single tail.
+        const prevOut=i>0&&(history[i-1].role==='assistant'||history[i-1].role==='bot');
+        const firstInGroup=i===0||prevOut!==isOut;
+        const side=isOut?'out':'in';
+        return `<div class="chat-bubble-row ${side}">
+          <div class="chat-bubble ${side}${firstInGroup?' tail-'+side:''}">${esc(m.content||'').replace(/\n/g,'<br>')}<span class="bubble-meta">${m.ts?`<span class="bubble-time">${new Date(m.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`:''}${isOut?'<span class="bubble-check">✓✓</span>':''}</span>
           </div>
         </div>`;
-      }).join(''):'<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No conversation yet</div>'}
+      }).join(''):'<div style="color:#667781;font-size:13px;text-align:center;padding:20px">No conversation yet</div>'}
     </div>
-    <div style="padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:flex-end;flex-shrink:0;background:var(--card)">
-      <textarea id="chatReplyBox" class="form-input" rows="2" style="flex:1;resize:none" placeholder="Type a WhatsApp reply…"></textarea>
-      <button class="btn btn-primary btn-sm" onclick="chatSendFromTab(${lead.Id})">Send ✈</button>
-      <span id="chatReplyMsg" class="save-msg" style="font-size:12px"></span>
-    </div>`;
+    <div class="chat-input-bar">
+      <textarea id="chatReplyBox" class="chat-input-box" rows="1" placeholder="Type a message"></textarea>
+      <button class="chat-send-btn" onclick="chatSendFromTab(${lead.Id})" title="Send">➤</button>
+    </div>
+    <div id="chatReplyMsg" class="chat-send-status"></div>`;
   // scroll to bottom
   setTimeout(()=>{const b=$id('chatMsgBox');if(b)b.scrollTop=b.scrollHeight;},50);
 }
@@ -8917,8 +8939,8 @@ async function chatSendFromTab(leadId){
   const convId=leadConvId(lead);
   // Require a real Chatwoot conversation — silently writing to ConvHistory only and
   // reporting "Sent" when there's nowhere to actually deliver it is worse than an error.
-  if(!convId){msg.textContent='No Chatwoot conversation linked to this lead — reply cannot reach WhatsApp.';msg.className='save-msg err';return;}
-  msg.textContent='Sending…'; msg.className='save-msg';
+  if(!convId){msg.textContent='No Chatwoot conversation linked to this lead — reply cannot reach WhatsApp.';msg.className='chat-send-status err';return;}
+  msg.textContent='Sending…'; msg.className='chat-send-status';
   let delivered=false;
   try{
     // Sent via the Worker proxy (cloudflare-worker/worker.js), which holds the Chatwoot
@@ -8932,21 +8954,21 @@ async function chatSendFromTab(leadId){
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     delivered=true;
   }catch(e){
-    msg.textContent='Failed — message did not reach Chatwoot: '+e.message; msg.className='save-msg err';
+    msg.textContent='Failed — message did not reach Chatwoot: '+e.message; msg.className='chat-send-status err';
     return;
   }
   if(!delivered){
-    msg.textContent='Failed — message did not reach Chatwoot.'; msg.className='save-msg err';
+    msg.textContent='Failed — message did not reach Chatwoot.'; msg.className='chat-send-status err';
     return;
   }
-  let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+  const hist=await freshConvHistory(lead);
   hist.push({role:'assistant',content:text,ts:new Date().toISOString()});
   try{
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
   }catch(e){/* best-effort — the WhatsApp message already went out */}
   lead.ConvHistory=JSON.stringify(hist);
   input.value='';
-  msg.textContent='Sent ✓'; msg.className='save-msg';
+  msg.textContent='Sent ✓'; msg.className='chat-send-status';
   chatSelectLead(leadId);
   setTimeout(()=>{if(msg)msg.textContent='';},2500);
 }
