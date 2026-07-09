@@ -857,3 +857,53 @@ leads table (auto-created on first run) — it never writes `Stage`, `ConvHistor
 - Deploy as its own container: `docker compose up -d leadvyne-recovery` (see
   `backend/docker-compose.yml`). Test a single run with `RUN_NOW=1`.
 - Uses the same `NOCODB_TOKEN`/`CLIENTS_TABLE` as `nba.js`; no new credentials needed.
+
+## Ecom bot memory (`ecom_prefs`) and product filtering
+Two additions that fix the ecom WhatsApp bot forgetting a customer's stated size/color mid-order
+and re-answering in the wrong language turn to turn (see `n8n/ecom-bot.json`).
+
+**`ecom_prefs`** — new LongText column on the **Leads** table (same pattern as `QualAnswers`,
+already used elsewhere for durable per-lead state that shouldn't be re-derived from the raw chat
+transcript every turn). One JSON object per lead:
+
+```json
+{
+  "size": "S",
+  "color": "green",
+  "category": "shirt",
+  "last_sku": "TSHIRT-GRN-S",
+  "last_product_name": "Men's Classic Green Shirt",
+  "budget_max": null,
+  "language": "ml",
+  "updated_at": "2026-07-09T20:31:00.000Z"
+}
+```
+
+- Every field is optional/nullable — only set what the customer has actually stated so far.
+- `language` is set once (detected from the first message) and reused for every reply after —
+  this is what stops the bot answering in Malayalam then English then Malayalam again to the
+  same person.
+- `updated_at` backs a staleness rule: if the workflow finds `ecom_prefs` older than **6 hours**,
+  it treats it as a new inquiry and doesn't carry the old size/color forward — otherwise someone
+  asking about a green shirt today could get treated as still wanting a green shirt in an
+  unrelated conversation next week.
+- Read at the start of every ecom-intent message, merged with whatever new slots the current
+  message adds (a customer naming a color doesn't erase a previously-stated size), then written
+  back after the reply is sent.
+
+**`/ecom/products` filter/sort params** (`cloudflare-worker/worker.js`, `handleEcomList`) — lets
+the bot ask NocoDB for only the products that already match instead of dumping the whole
+catalogue into the AI prompt for it to search (slower, costlier, and the main source of the bot
+"inventing" a product that doesn't actually exist):
+
+| Param | Behavior |
+|---|---|
+| `color` | Partial, case-insensitive match (shop-owner free text like "Bottle Green") |
+| `category` | Partial, case-insensitive match |
+| `size` | Exact match (S/M/L/XL etc. are short coded values, not prose) |
+| `min_price` / `max_price` | Inclusive price range |
+| `in_stock=true` | Only `stock > 0` |
+| `include_inactive=true` | Skip the default `status != inactive` filter |
+| `sort` | One of `price_asc`, `price_desc`, `newest`, `oldest`, `stock_desc`, `name_asc` — a whitelist, not a raw passthrough, since this endpoint has no session of its own |
+
+Example: `GET /ecom/products?client_id=123&color=green&size=S&in_stock=true&sort=price_asc`

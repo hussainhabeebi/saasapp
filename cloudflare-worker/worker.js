@@ -1283,6 +1283,18 @@ async function handleEcomClientUpdate(request, env){
   return json(data, r.status);
 }
 
+// Sort is a small whitelist mapped to real NocoDB sort strings, not passed through raw — this
+// endpoint has no session of its own (see ecomResolveTable's comment above), so an arbitrary
+// caller-supplied sort field would be an unnecessary way to let a stranger probe column names.
+const ECOM_SORT_MAP={
+  price_asc:'price', price_desc:'-price',
+  newest:'-CreatedAt', oldest:'CreatedAt',
+  stock_desc:'-stock', name_asc:'name',
+};
+// Strips characters that have syntactic meaning in NocoDB's `where=(field,op,value)` filter DSL,
+// so a color/size/category value can't break out of its own clause or inject another one.
+function ecomSanitizeFilterValue(v){ return String(v).replace(/[(),~]/g,'').trim(); }
+
 async function handleEcomList(request, env, kind){
   const url=new URL(request.url);
   const clientId=String(url.searchParams.get('client_id')||'');
@@ -1290,9 +1302,36 @@ async function handleEcomList(request, env, kind){
   const tableId=await ecomResolveTable(env, clientId, kind);
   if(!tableId) return json({list:[]});
   const limit=Math.min(parseInt(url.searchParams.get('limit')||'200',10)||200, 1000);
-  const sort=url.searchParams.get('sort')||'';
-  const qs=new URLSearchParams({where:`(client_id,eq,${clientId})`, limit:String(limit)});
-  if(sort) qs.set('sort', sort);
+
+  const clauses=[`(client_id,eq,${clientId})`];
+  if(kind==='products'){
+    // Partial + case-insensitive by nature of `like` — color/category are shop-owner free text
+    // ("Green" vs "green" vs "Bottle Green"), so an exact `eq` would miss real matches too often.
+    const color=url.searchParams.get('color');
+    const category=url.searchParams.get('category');
+    // Size stays an exact match — S/M/L/XL (or numeric sizes) are short coded buckets, not prose,
+    // and a `like` match on "S" would also match "M" via no value at all / partial noise.
+    const size=url.searchParams.get('size');
+    const minPrice=parseFloat(url.searchParams.get('min_price'));
+    const maxPrice=parseFloat(url.searchParams.get('max_price'));
+    const inStock=url.searchParams.get('in_stock')==='true';
+    const includeInactive=url.searchParams.get('include_inactive')==='true';
+    if(color) clauses.push(`(color,like,${ecomSanitizeFilterValue(color)})`);
+    if(category) clauses.push(`(category,like,${ecomSanitizeFilterValue(category)})`);
+    if(size) clauses.push(`(size,eq,${ecomSanitizeFilterValue(size)})`);
+    if(!isNaN(minPrice)) clauses.push(`(price,gte,${minPrice})`);
+    if(!isNaN(maxPrice)) clauses.push(`(price,lte,${maxPrice})`);
+    if(inStock) clauses.push(`(stock,gt,0)`);
+    if(!includeInactive) clauses.push(`(status,neq,inactive)`);
+  }
+
+  const qs=new URLSearchParams({where:clauses.join('~and'), limit:String(limit)});
+  const sortParam=url.searchParams.get('sort')||'';
+  if(sortParam){
+    const sortVal=ECOM_SORT_MAP[sortParam];
+    if(!sortVal) return json({error:`Invalid sort value. Use one of: ${Object.keys(ECOM_SORT_MAP).join(', ')}`},400);
+    qs.set('sort', sortVal);
+  }
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records?${qs.toString()}`);
   const data=await r.json().catch(()=>({}));
   return json(data, r.status);
