@@ -266,6 +266,11 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 #pageAgency:not(.hidden){display:flex;flex-direction:column}
 .page-pad{padding:16px}
 @media(min-width:768px){.page-pad{max-width:1200px;margin:0 auto;padding:22px 28px}}
+/* Agency module uses the full page width instead of the app's default centered 1200px
+   column — its grids (packages, cars, bookings…) benefit from the extra room, and the
+   generic max-width was leaving large empty margins on wider screens. */
+#pageAgency .page-pad{max-width:none}
+@media(min-width:768px){#agencySubNav{padding:0 28px}}
 
 /* ── BOTTOM NAV (mobile) — pill-style ── */
 #bottomNav{height:var(--nav);background:var(--card);border-top:1px solid var(--line);display:flex;align-items:center;flex-shrink:0;position:relative;z-index:50;padding:0 4px;padding-bottom:env(safe-area-inset-bottom)}
@@ -664,17 +669,20 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .s-key{font-weight:600;min-width:120px;color:var(--muted);font-size:12px;flex-shrink:0}
 
 /* ── TRAVEL AGENCY MODULE ── */
-.ta-tab{font-family:var(--disp);font-size:12px;font-weight:600;padding:11px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
+.ta-tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:13px 16px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
 .ta-tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
-.ta-card{background:var(--card);border-radius:var(--r);padding:18px;box-shadow:var(--shadow);margin-bottom:14px}
-.ta-card-title{font-family:var(--disp);font-size:14px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px;color:var(--ink)}
-.pkg-card{background:var(--card);border-radius:var(--r);padding:18px;box-shadow:var(--shadow);cursor:pointer;transition:box-shadow .15s;border:1.5px solid var(--line)}
-.pkg-card:hover{box-shadow:var(--shadow-md);border-color:var(--accent)}
-.pkg-name{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:4px}
-.pkg-meta{font-size:11.5px;color:var(--muted);margin-bottom:10px}
-.pkg-price{font-family:var(--disp);font-size:20px;font-weight:700;color:var(--accent-ink)}
+.ta-card{background:var(--card);border-radius:var(--r);padding:20px;box-shadow:var(--shadow);margin-bottom:16px}
+.ta-card-title{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;gap:8px;color:var(--ink)}
+.pkg-filter-pill{background:none;border:1.5px solid var(--line);color:var(--muted);padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:var(--disp);font-weight:600;transition:background .15s,border-color .15s,color .15s}
+.pkg-filter-pill.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.pkg-card{background:var(--card);border-radius:var(--r);padding:20px;padding-left:22px;box-shadow:var(--shadow);cursor:pointer;transition:box-shadow .15s,transform .15s;border:1px solid var(--line);position:relative;overflow:hidden}
+.pkg-card::before{content:'';position:absolute;top:0;left:0;width:4px;height:100%;background:var(--pkg-accent,var(--accent))}
+.pkg-card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
+.pkg-name{font-family:var(--disp);font-size:16px;font-weight:700;margin-bottom:5px}
+.pkg-meta{font-size:12px;color:var(--muted);margin-bottom:12px}
+.pkg-price{font-family:var(--disp);font-size:21px;font-weight:700;color:var(--accent-ink)}
 .pkg-price-sub{font-size:10px;color:var(--muted);margin-left:4px}
-.pkg-type-badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:5px;background:var(--accent-soft);color:var(--accent-ink)}
+.pkg-type-badge{font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;background:var(--pkg-accent-soft,var(--accent-soft));color:var(--pkg-accent,var(--accent-ink));text-transform:capitalize}
 .case-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
 .case-row:hover{background:var(--bg)}
 .case-row:last-child{border-bottom:none}
@@ -7122,17 +7130,21 @@ function caseIcon(type) {
 }
 
 /* ── TA: PACKAGES ── */
+// Purely a visual grouping (accent bar + badge color per package type) — no effect on data.
+const PKG_TYPE_COLORS={tour:'#0D9C93',umrah:'#7C3AED',hajj:'#B45309',hotel:'#0369A1',visa:'#EA580C',custom:'#64748B'};
+function pkgTypeColor(type){ return PKG_TYPE_COLORS[type]||PKG_TYPE_COLORS.tour; }
+
 function renderTaPackages() {
   return `
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-    <div style="font-family:var(--disp);font-size:16px;font-weight:700">📦 Package Catalogue</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
+    <div style="font-family:var(--disp);font-size:18px;font-weight:700">📦 Package Catalogue</div>
     <button class="btn btn-primary btn-sm" onclick="openPkgModal()">+ New Package</button>
   </div>
-  <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
-    ${['','tour','umrah','hajj','hotel','visa','custom'].map((t,i)=>`<button class="btn btn-ghost" onclick="filterPkgs('${t}')" id="pkgF_${t||'all'}" style="${i===0?'border-color:var(--accent);color:var(--accent)':''}">${t?cap(t):'All'}</button>`).join('')}
+  <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap">
+    ${['','tour','umrah','hajj','hotel','visa','custom'].map((t,i)=>`<button class="pkg-filter-pill${i===0?' active':''}" onclick="filterPkgs('${t}')" id="pkgF_${t||'all'}">${t?cap(t):'All'}</button>`).join('')}
   </div>
-  <div id="pkgGrid" style="display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
-    ${_taPackages.length ? _taPackages.map((p,i) => renderPkgCard(p,i)).join('') : '<div style="grid-column:1/-1;text-align:center;padding:52px 24px;color:var(--muted);font-size:13px"><div style="font-size:36px;margin-bottom:10px">📦</div>No packages yet.<br>Create your first package to get started.</div>'}
+  <div id="pkgGrid" style="display:grid;gap:18px;grid-template-columns:repeat(auto-fill,minmax(250px,300px))">
+    ${_taPackages.length ? _taPackages.map((p,i) => renderPkgCard(p,i)).join('') : '<div style="grid-column:1/-1;text-align:center;padding:60px 24px;color:var(--muted);font-size:13px"><div style="font-size:38px;margin-bottom:12px">📦</div>No packages yet.<br>Create your first package to get started.</div>'}
   </div>`;
 }
 
@@ -7140,27 +7152,28 @@ function renderPkgCard(p) {
   const inc = safeJson(p.inclusions, p.inclusions instanceof Array ? p.inclusions : []).slice(0,3);
   const incArr = safeJson(p.inclusions, p.inclusions instanceof Array ? p.inclusions : []);
   const margin = p.sell_price && p.base_price && parseFloat(p.sell_price)>parseFloat(p.base_price) ? Math.round((parseFloat(p.sell_price)-parseFloat(p.base_price))/parseFloat(p.sell_price)*100) : 0;
+  const color=pkgTypeColor(p.type);
   return `
-  <div class="pkg-card" onclick="openPkgModal('${p.Id}')">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
+  <div class="pkg-card" style="--pkg-accent:${color};--pkg-accent-soft:${color}1a" onclick="openPkgModal('${p.Id}')">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px">
       <span class="pkg-type-badge">${esc(p.type||'tour')}</span>
       <button onclick="event.stopPropagation();deletePkg('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Delete">✕</button>
     </div>
     <div class="pkg-name">${esc(p.name||'—')}</div>
     <div class="pkg-meta">${esc(p.destination||'—')} · ${p.nights||0} nights · ${p.pax_min||1}–${p.pax_max||99} pax</div>
-    ${inc.length ? `<div style="margin-bottom:10px">${inc.map(x=>`<div style="font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px;margin-bottom:3px">✓ ${esc(x)}</div>`).join('')}${incArr.length>3?`<div style="font-size:11px;color:var(--accent-ink)">+${incArr.length-3} more</div>`:''}</div>` : ''}
+    ${inc.length ? `<div style="margin-bottom:12px">${inc.map(x=>`<div style="font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px;margin-bottom:3px">✓ ${esc(x)}</div>`).join('')}${incArr.length>3?`<div style="font-size:11px;color:var(--accent-ink)">+${incArr.length-3} more</div>`:''}</div>` : ''}
     <div style="display:flex;align-items:baseline;gap:4px;margin-top:auto">
       <span class="pkg-price">${esc(p.currency||'AED')} ${(parseFloat(p.sell_price||p.base_price)||0).toLocaleString()}</span>
       <span class="pkg-price-sub">/ person</span>
     </div>
-    ${margin>0 ? `<div style="font-size:10px;color:#166534;margin-top:2px">Cost: ${esc(p.currency||'AED')} ${parseFloat(p.base_price).toLocaleString()} · Margin: ${margin}%</div>` : ''}
+    ${margin>0 ? `<div style="font-size:10px;color:#166534;margin-top:4px">Cost: ${esc(p.currency||'AED')} ${parseFloat(p.base_price).toLocaleString()} · Margin: ${margin}%</div>` : ''}
   </div>`;
 }
 
 function filterPkgs(type) {
-  document.querySelectorAll('[id^="pkgF_"]').forEach(b=>{b.style.borderColor='';b.style.color='';});
+  document.querySelectorAll('[id^="pkgF_"]').forEach(b=>b.classList.remove('active'));
   const active=$id('pkgF_'+(type||'all'));
-  if(active){active.style.borderColor='var(--accent)';active.style.color='var(--accent)';}
+  if(active) active.classList.add('active');
   const grid=$id('pkgGrid');if(!grid)return;
   const filtered=type?_taPackages.filter(p=>p.type===type):_taPackages;
   grid.innerHTML=filtered.length?filtered.map(p=>renderPkgCard(p)).join(''):'<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted);font-size:13px">No packages in this category</div>';
