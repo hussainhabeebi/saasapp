@@ -1,11 +1,11 @@
 {
-  "name": "Ecom Bot — Slot Memory + Filtered Catalog",
+  "name": "Ecom Bot — Slot Memory + Filtered Catalog + Drive Images",
   "nodes": [
     {
       "parameters": {
-        "content": "## Ecom Bot — Slot Memory + Filtered Catalog + Anti-Hallucination Prompt\n\n**One-time setup**\n1. Credentials -> New -> \"Header Auth\". Name it \"NocoDB Master Token\", header name `xc-token`,\n   value = your NocoDB personal access token (nc_pat_...). Never type the token into a node\n   directly — every HTTP node below references this credential by id, not a literal value.\n2. Open each HTTP Request node once and pick that credential from the dropdown (re-picking it\n   after import re-links it to your own credential id — the id in this file is a placeholder).\n3. Point the Webhook node's path at wherever you're forwarding Chatwoot's `message_created`\n   event from (see SETUP.md \"Channels module\"), or wire this in as an Execute Workflow sub-flow\n   called from your main bot engine — either works, nothing here assumes which.\n4. `ecom_prefs` (LongText) must exist on the Leads table — see SETUP.md \"Ecom bot memory\".\n\nSee SETUP.md \"Ecom bot memory (ecom_prefs) and product filtering\" for the full schema and the\nreasoning behind each rule in the prompt below.",
-        "height": 460,
-        "width": 460
+        "content": "## Ecom Bot — native nodes + Google Drive image send\n\n**Why some nodes are native and some are still HTTP Request:**\n- **NocoDB nodes are native** (n8n-nodes-base.nocoDb) — every NocoDB call here uses ONE shared\n  platform credential (the master token), so there's no per-client dynamic-secret conflict.\n- **OpenRouter and Chatwoot calls stay as HTTP Request, deliberately.** Both need a per-client\n  dynamic value (each client's own openrouter_key / chatwoot_token, fetched from their row at\n  runtime) plugged into the Authorization header via an expression. n8n's native OpenAI node and\n  a hypothetical native Chatwoot node both bind to ONE static credential chosen at build time —\n  that doesn't fit this app's per-tenant model, so HTTP Request (which supports fully dynamic\n  headers) is the *correct* choice here, not a shortcut.\n- **Google Drive download is native** (n8n-nodes-base.googleDrive) — new in this version, see\n  below.\n\n**One-time setup**\n1. Credentials -> New -> \"NocoDB API Token\" credential type (or \"Header Auth\" with header name\n   `xc-token` if your n8n version doesn't have a dedicated NocoDB credential type) — value is\n   your NocoDB PAT (nc_pat_...). Never type it into a node directly.\n2. Credentials -> New -> Google Drive OAuth2 — one shared account/service account is fine, this\n   only needs read access to whatever Drive files store your product images.\n3. Open each NocoDB / Google Drive node once and (re)pick your credential + confirm the\n   table/operation dropdowns — node parameter names can differ slightly across n8n versions;\n   n8n will flag anything that doesn't match after import.\n4. ecom_prefs (LongText) must exist on the Leads table — see SETUP.md \"Ecom bot memory\".\n\n**New in this version — Google Drive product images:** if the single confidently-matched\nproduct's image_url is a Google Drive share link, the workflow downloads the actual image and\nsends it as a real WhatsApp image attachment (caption = the bot's reply) instead of pasting the\nlink as plain text. Any other image host, or no confident single match, falls back to the\nprevious text-only reply — see the IF node below.",
+        "height": 560,
+        "width": 520
       },
       "id": "Sticky_Setup_Notes",
       "name": "Sticky Note · Setup",
@@ -13,7 +13,7 @@
       "typeVersion": 1,
       "position": [
         -200,
-        -260
+        -320
       ]
     },
     {
@@ -35,7 +35,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Chatwoot's message_created payload shape — spot-check field names against a real delivery\n// before going live (SETUP.md already flags this varies slightly by channel/version).\nconst body = $input.first().json.body || $input.first().json;\nconst clientId = body.client_id || body.account_id || '';\nconst leadId = body.lead_id || body.conversation?.contact_inbox?.contact_id || '';\nconst messageText = body.content || body.message?.content || '';\nconst conversationId = body.conversation?.id || body.conv_id || '';\n\nif (!clientId || !leadId || !messageText) {\n  throw new Error('Missing client_id, lead_id, or message content in webhook payload — check the payload shape against Chatwoot\\'s actual message_created schema.');\n}\n\nreturn [{ json: { clientId: String(clientId), leadId: String(leadId), messageText, conversationId } }];"
+        "jsCode": "// Chatwoot's message_created payload shape — spot-check field names against a real delivery.\nconst body = $input.first().json.body || $input.first().json;\nconst clientId = body.client_id || body.account_id || '';\nconst leadId = body.lead_id || body.conversation?.contact_inbox?.contact_id || '';\nconst messageText = body.content || body.message?.content || '';\nconst conversationId = body.conversation?.id || body.conv_id || '';\n\nif (!clientId || !leadId || !messageText) {\n  throw new Error('Missing client_id, lead_id, or message content in webhook payload — check the payload shape against Chatwoot\\'s actual message_created schema.');\n}\nreturn [{ json: { clientId: String(clientId), leadId: String(leadId), messageText, conversationId } }];"
       },
       "id": "Code___Parse_Incoming_Message",
       "name": "Code · Parse Incoming Message",
@@ -48,25 +48,24 @@
     },
     {
       "parameters": {
-        "url": "https://whizz.aiingo.com/api/v2/tables/mxl33bg4wi70fqj/records/={{ $json.clientId }}",
-        "method": "GET",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": false,
-        "options": {}
+        "authentication": "nocoDbApiToken",
+        "operation": "get",
+        "baseId": "={{ \"p_placeholder\" }}",
+        "table": "mxl33bg4wi70fqj",
+        "id": "={{ $json.clientId }}"
       },
-      "id": "HTTP___Get_Client",
-      "name": "HTTP · Get Client",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "NocoDB___Get_Client",
+      "name": "NocoDB · Get Client",
+      "type": "n8n-nodes-base.nocoDb",
+      "typeVersion": 3,
       "position": [
         280,
         0
       ],
       "credentials": {
-        "httpHeaderAuth": {
+        "nocoDbApiToken": {
           "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
-          "name": "NocoDB Master Token"
+          "name": "NocoDB API Token"
         }
       }
     },
@@ -86,32 +85,31 @@
     },
     {
       "parameters": {
-        "url": "https://whizz.aiingo.com/api/v2/tables/={{ $json.leadsTableId }}/records/={{ $json.leadId }}",
-        "method": "GET",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": false,
-        "options": {}
+        "authentication": "nocoDbApiToken",
+        "operation": "get",
+        "baseId": "={{ \"p_placeholder\" }}",
+        "table": "={{ $json.leadsTableId }}",
+        "id": "={{ $json.leadId }}"
       },
-      "id": "HTTP___Get_Lead",
-      "name": "HTTP · Get Lead",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "NocoDB___Get_Lead",
+      "name": "NocoDB · Get Lead",
+      "type": "n8n-nodes-base.nocoDb",
+      "typeVersion": 3,
       "position": [
         760,
         0
       ],
       "credentials": {
-        "httpHeaderAuth": {
+        "nocoDbApiToken": {
           "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
-          "name": "NocoDB Master Token"
+          "name": "NocoDB API Token"
         }
       }
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const lead = $input.first().json;\nconst prior = $('Code · Resolve Leads Table').first().json;\n\nlet prefs = {};\ntry { prefs = JSON.parse(lead.ecom_prefs || '{}'); } catch (e) { prefs = {}; }\n\n// A stated size/color shouldn't silently apply to an unrelated inquiry days later — see\n// SETUP.md \"Ecom bot memory\" for why 6h.\nconst STALE_MS = 6 * 3600 * 1000;\nconst isStale = !prefs.updated_at || (Date.now() - new Date(prefs.updated_at).getTime()) > STALE_MS;\nif (isStale) prefs = {};\n\nreturn [{ json: { ...prior, lead, prefs } }];"
+        "jsCode": "const lead = $input.first().json;\nconst prior = $('Code · Resolve Leads Table').first().json;\nlet prefs = {};\ntry { prefs = JSON.parse(lead.ecom_prefs || '{}'); } catch (e) { prefs = {}; }\nconst STALE_MS = 6 * 3600 * 1000; // see SETUP.md \"Ecom bot memory\" for why 6h\nconst isStale = !prefs.updated_at || (Date.now() - new Date(prefs.updated_at).getTime()) > STALE_MS;\nif (isStale) prefs = {};\nreturn [{ json: { ...prior, lead, prefs } }];"
       },
       "id": "Code___Load_ecom_prefs__with_staleness_check_",
       "name": "Code · Load ecom_prefs (with staleness check)",
@@ -125,7 +123,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d = $input.first().json;\nconst prompt = `Extract shopping preferences mentioned in this WhatsApp message as STRICT JSON only — no prose, no markdown fences.\n\nFields (all optional — use null for anything not mentioned in THIS message):\n- size (string)\n- color (string)\n- category (string)\n- budget_max (number)\n- language (ISO 639-1 code, e.g. \"en\", \"ml\", \"hi\" — detect from the message itself, don't guess from a name)\n\nMessage: \"${d.messageText}\"\n\nReturn ONLY a JSON object with exactly these five keys.`;\n\nreturn [{ json: { ...d, extractionPrompt: prompt } }];"
+        "jsCode": "const d = $input.first().json;\nconst prompt = `Extract shopping preferences mentioned in this WhatsApp message as STRICT JSON only — no prose, no markdown fences.\n\nFields (all optional — use null for anything not mentioned in THIS message):\n- size (string)\n- color (string)\n- category (string)\n- budget_max (number)\n- language (ISO 639-1 code, e.g. \"en\", \"ml\", \"hi\" — detect from the message itself, don't guess from a name)\n\nMessage: \"${d.messageText}\"\n\nReturn ONLY a JSON object with exactly these five keys.`;\nreturn [{ json: { ...d, extractionPrompt: prompt } }];"
       },
       "id": "Code___Build_Slot_Extraction_Prompt",
       "name": "Code · Build Slot-Extraction Prompt",
@@ -140,15 +138,19 @@
       "parameters": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "method": "POST",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "options": {},
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": []
-        },
-        "jsonBody": "={{ { model: $json.client.model || \"google/gemini-2.5-flash\", temperature: 0, messages: [{ role: \"user\", content: $json.extractionPrompt }] } }}",
         "specifyBody": "json",
-        "options": {}
+        "jsonBody": "={{ { model: $json.client.model || \"google/gemini-2.5-flash\", temperature: 0, messages: [{ role: \"user\", content: $json.extractionPrompt }] } }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.client.openrouter_key }}"
+            }
+          ]
+        }
       },
       "id": "HTTP___Extract_Slots__OpenRouter_",
       "name": "HTTP · Extract Slots (OpenRouter)",
@@ -157,18 +159,12 @@
       "position": [
         1480,
         0
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
-          "name": "NocoDB Master Token"
-        }
-      }
+      ]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d = $('Code · Build Slot-Extraction Prompt').first().json;\nconst aiResp = $input.first().json;\n\nlet extracted = {};\ntry {\n  const raw = aiResp.choices?.[0]?.message?.content || '{}';\n  extracted = JSON.parse((raw.match(/\\{[\\s\\S]*\\}/) || ['{}'])[0]);\n} catch (e) { extracted = {}; }\n\n// A newly-named slot overrides the old one; anything not mentioned this turn keeps whatever\n// was already remembered — this is the actual fix for \"customer said S size, then just said\n// GREEN, bot forgot the size\".\nconst merged = {\n  size: extracted.size || d.prefs.size || null,\n  color: extracted.color || d.prefs.color || null,\n  category: extracted.category || d.prefs.category || null,\n  budget_max: extracted.budget_max ?? d.prefs.budget_max ?? null,\n  language: extracted.language || d.prefs.language || 'en',\n  last_sku: d.prefs.last_sku || null,\n  last_product_name: d.prefs.last_product_name || null,\n};\n\nlet ecomIds = {};\ntry { ecomIds = JSON.parse(d.client.ecom_table_ids || '{}'); } catch (e) {}\nconst productsTableId = ecomIds.products || 'mjlc2vi6iqbp87c';\n\n// Same clause-building rules as handleEcomList in cloudflare-worker/worker.js — kept in sync\n// deliberately, see SETUP.md.\nfunction sanitize(v) { return String(v).replace(/[(),~]/g, '').trim(); }\nconst clauses = [`(client_id,eq,${d.client.Id})`, '(status,neq,inactive)'];\nif (merged.color) clauses.push(`(color,like,${sanitize(merged.color)})`);\nif (merged.category) clauses.push(`(category,like,${sanitize(merged.category)})`);\nif (merged.size) clauses.push(`(size,eq,${sanitize(merged.size)})`);\nif (merged.budget_max) clauses.push(`(price,lte,${parseFloat(merged.budget_max) || 0})`);\n\nreturn [{ json: { ...d, merged, productsTableId, whereClause: clauses.join('~and') } }];"
+        "jsCode": "const d = $('Code · Build Slot-Extraction Prompt').first().json;\nconst aiResp = $input.first().json;\nlet extracted = {};\ntry {\n  const raw = aiResp.choices?.[0]?.message?.content || '{}';\n  extracted = JSON.parse((raw.match(/\\{[\\s\\S]*\\}/) || ['{}'])[0]);\n} catch (e) { extracted = {}; }\n\nconst merged = {\n  size: extracted.size || d.prefs.size || null,\n  color: extracted.color || d.prefs.color || null,\n  category: extracted.category || d.prefs.category || null,\n  budget_max: extracted.budget_max ?? d.prefs.budget_max ?? null,\n  language: extracted.language || d.prefs.language || 'en',\n  last_sku: d.prefs.last_sku || null,\n  last_product_name: d.prefs.last_product_name || null,\n};\n\nlet ecomIds = {};\ntry { ecomIds = JSON.parse(d.client.ecom_table_ids || '{}'); } catch (e) {}\nconst productsTableId = ecomIds.products || 'mjlc2vi6iqbp87c';\n\n// Same clause-building rules as handleEcomList in cloudflare-worker/worker.js — kept in sync\n// deliberately, see SETUP.md.\nfunction sanitize(v) { return String(v).replace(/[(),~]/g, '').trim(); }\nconst clauses = [`(client_id,eq,${d.client.Id})`, '(status,neq,inactive)'];\nif (merged.color) clauses.push(`(color,like,${sanitize(merged.color)})`);\nif (merged.category) clauses.push(`(category,like,${sanitize(merged.category)})`);\nif (merged.size) clauses.push(`(size,eq,${sanitize(merged.size)})`);\nif (merged.budget_max) clauses.push(`(price,lte,${parseFloat(merged.budget_max) || 0})`);\n\nreturn [{ json: { ...d, merged, productsTableId, whereClause: clauses.join('~and') } }];"
       },
       "id": "Code___Merge_Slots___Resolve_Products_Table",
       "name": "Code · Merge Slots + Resolve Products Table",
@@ -181,32 +177,36 @@
     },
     {
       "parameters": {
-        "url": "https://whizz.aiingo.com/api/v2/tables/={{ $json.productsTableId }}/records?where={{ encodeURIComponent($json.whereClause) }}&limit=5&sort=-stock",
-        "method": "GET",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": false,
-        "options": {}
+        "authentication": "nocoDbApiToken",
+        "operation": "getAll",
+        "baseId": "={{ \"p_placeholder\" }}",
+        "table": "={{ $json.productsTableId }}",
+        "returnAll": false,
+        "limit": 5,
+        "options": {
+          "where": "={{ $json.whereClause }}",
+          "sort": "-stock"
+        }
       },
-      "id": "HTTP___Get_Matching_Products",
-      "name": "HTTP · Get Matching Products",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "NocoDB___Get_Matching_Products",
+      "name": "NocoDB · Get Matching Products",
+      "type": "n8n-nodes-base.nocoDb",
+      "typeVersion": 3,
       "position": [
         1960,
         0
       ],
       "credentials": {
-        "httpHeaderAuth": {
+        "nocoDbApiToken": {
           "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
-          "name": "NocoDB Master Token"
+          "name": "NocoDB API Token"
         }
       }
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d = $('Code · Merge Slots + Resolve Products Table').first().json;\nconst productsResp = $input.first().json;\nconst products = (productsResp.list || []).slice(0, 5);\nconst merged = { ...d.merged };\n\n// A single confident match becomes \"the\" product being discussed, remembered for next turn.\nif (products.length === 1) {\n  merged.last_sku = products[0].sku || merged.last_sku;\n  merged.last_product_name = products[0].name || merged.last_product_name;\n}\nmerged.updated_at = new Date().toISOString();\n\nconst storeName = d.client.client_name || 'our store';\nconst contact = d.client.support_phone || d.client.review_link || d.client.authentik_email || 'us on WhatsApp';\n\nconst productBlock = products.length\n  ? products.map(p => `- ${p.name} | SKU ${p.sku || 'N/A'} | Color: ${p.color || '—'} | Size: ${p.size || '—'} | ${p.currency || 'AED'} ${p.price} | ${p.stock > 0 ? 'In stock' : 'Out of stock'}${p.image_url ? ' | ' + p.image_url : ''}`).join('\\n')\n  : \"NONE — no products currently match this customer's stated preferences.\";\n\nconst prefsBlock = Object.entries(merged).filter(([k, v]) => v && k !== 'updated_at' && k !== 'last_sku' && k !== 'last_product_name').map(([k, v]) => `${k}: ${v}`).join(', ') || 'none yet';\n\n// The actual anti-hallucination guardrails — see SETUP.md for why each rule exists.\nconst systemPrompt = `You are the WhatsApp shopping assistant for ${storeName}. Support contact: ${contact}.\n\nSTRICT RULES:\n1. You may ONLY describe, recommend, or quote prices/sizes/colors for products listed under MATCHED PRODUCTS below. Never invent a product, price, size, color, or link that isn't in that list.\n2. If MATCHED PRODUCTS is NONE, say so honestly and offer to check with ${storeName} directly (${contact}) instead of making something up.\n3. Remembered preferences for this customer so far: ${prefsBlock}. Do not ask again for anything already listed there — only ask about what's still missing (e.g. if size is known but color isn't, ask for color only).\n4. Always reply in this customer's language: ${merged.language}. Never switch language mid-conversation.\n5. Use the same reply format every time a product is shown: Name, Price, Size, Color, Link, then one short question that moves the sale forward.\n\nMATCHED PRODUCTS:\n${productBlock}\n\nCustomer's message: \"${d.messageText}\"`;\n\nreturn [{ json: { ...d, merged, systemPrompt } }];"
+        "jsCode": "const d = $('Code · Merge Slots + Resolve Products Table').first().json;\nconst items = $input.all();\nconst products = items.map(i => i.json).slice(0, 5);\nconst merged = { ...d.merged };\n\nif (products.length === 1) {\n  merged.last_sku = products[0].sku || merged.last_sku;\n  merged.last_product_name = products[0].name || merged.last_product_name;\n}\nmerged.updated_at = new Date().toISOString();\n\nconst storeName = d.client.client_name || 'our store';\nconst contact = d.client.support_phone || d.client.review_link || d.client.authentik_email || 'us on WhatsApp';\n\nconst productBlock = products.length\n  ? products.map(p => `- ${p.name} | SKU ${p.sku || 'N/A'} | Color: ${p.color || '—'} | Size: ${p.size || '—'} | ${p.currency || 'AED'} ${p.price} | ${p.stock > 0 ? 'In stock' : 'Out of stock'}${p.image_url ? ' | ' + p.image_url : ''}`).join('\\n')\n  : \"NONE — no products currently match this customer's stated preferences.\";\n\nconst prefsBlock = Object.entries(merged).filter(([k, v]) => v && k !== 'updated_at' && k !== 'last_sku' && k !== 'last_product_name').map(([k, v]) => `${k}: ${v}`).join(', ') || 'none yet';\n\nconst systemPrompt = `You are the WhatsApp shopping assistant for ${storeName}. Support contact: ${contact}.\n\nSTRICT RULES:\n1. You may ONLY describe, recommend, or quote prices/sizes/colors for products listed under MATCHED PRODUCTS below. Never invent a product, price, size, color, or link that isn't in that list.\n2. If MATCHED PRODUCTS is NONE, say so honestly and offer to check with ${storeName} directly (${contact}) instead of making something up.\n3. Remembered preferences for this customer so far: ${prefsBlock}. Do not ask again for anything already listed there — only ask about what's still missing (e.g. if size is known but color isn't, ask for color only).\n4. Always reply in this customer's language: ${merged.language}. Never switch language mid-conversation.\n5. Use the same reply format every time a product is shown: Name, Price, Size, Color, Link, then one short question that moves the sale forward.\n6. If a product image is being sent as an attachment separately, don't repeat its link in your text — just write the caption-style reply.\n\nMATCHED PRODUCTS:\n${productBlock}\n\nCustomer's message: \"${d.messageText}\"`;\n\nreturn [{ json: { ...d, merged, products, systemPrompt } }];"
       },
       "id": "Code___Build_Anti_Hallucination_Prompt",
       "name": "Code · Build Anti-Hallucination Prompt",
@@ -221,15 +221,19 @@
       "parameters": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "method": "POST",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "options": {},
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": []
-        },
-        "jsonBody": "={{ { model: $json.client.model || \"google/gemini-2.5-flash\", temperature: 0.4, messages: [{ role: \"system\", content: $json.systemPrompt }, { role: \"user\", content: $json.messageText }] } }}",
         "specifyBody": "json",
-        "options": {}
+        "jsonBody": "={{ { model: $json.client.model || \"google/gemini-2.5-flash\", temperature: 0.4, messages: [{ role: \"system\", content: $json.systemPrompt }, { role: \"user\", content: $json.messageText }] } }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.client.openrouter_key }}"
+            }
+          ]
+        }
       },
       "id": "HTTP___Generate_Reply__OpenRouter_",
       "name": "HTTP · Generate Reply (OpenRouter)",
@@ -238,26 +242,124 @@
       "position": [
         2440,
         0
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
-          "name": "NocoDB Master Token"
-        }
-      }
+      ]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d = $('Code · Build Anti-Hallucination Prompt').first().json;\nconst aiResp = $input.first().json;\nconst replyText = aiResp.choices?.[0]?.message?.content || \"Sorry, I couldn't process that — let me get a team member to help.\";\nreturn [{ json: { ...d, replyText } }];"
+        "jsCode": "const d = $('Code · Build Anti-Hallucination Prompt').first().json;\nconst aiResp = $input.first().json;\nconst replyText = aiResp.choices?.[0]?.message?.content || \"Sorry, I couldn't process that — let me get a team member to help.\";\n\n// Only attach an image when there's exactly one confidently-matched product — sending a\n// possibly-wrong photo for an ambiguous multi-match list is worse than no photo at all.\nlet driveFileId = null;\nif (d.products.length === 1 && d.products[0].image_url) {\n  const url = d.products[0].image_url;\n  if (/drive\\.google\\.com/.test(url)) {\n    // Two independent shapes rather than one combined pattern: /file/d/{id}/... (the \"share\"\n    // link format) and ?id={id} anywhere in the query string (open?id=, uc?id=, uc?export=\n    // download&id=, thumbnail?id=, etc. — id can be the first or a later query param either way).\n    const pathMatch = url.match(/\\/file\\/d\\/([a-zA-Z0-9_-]+)/);\n    const queryMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);\n    driveFileId = pathMatch?.[1] || queryMatch?.[1] || null;\n  }\n}\n\nreturn [{ json: { ...d, replyText, driveFileId, hasDriveImage: !!driveFileId } }];"
       },
-      "id": "Code___Extract_Reply_Text",
-      "name": "Code · Extract Reply Text",
+      "id": "Code___Extract_Reply_Text___Detect_Drive_Image",
+      "name": "Code · Extract Reply Text + Detect Drive Image",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         2680,
         0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.hasDriveImage }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "IF_Has_Drive_Image",
+      "name": "IF · Has Drive Image",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.driveFileId }}"
+        },
+        "options": {}
+      },
+      "id": "GDrive_Download_Product_Image",
+      "name": "Google Drive · Download Product Image",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        3160,
+        -160
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Drive (Ecom Images)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.client.chatwoot_base }}/api/v1/accounts/={{ $json.client.chatwoot_account_id }}/conversations/={{ $json.conversationId }}/messages",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "={{ $json.client.chatwoot_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{ $json.replyText }}"
+            },
+            {
+              "name": "message_type",
+              "value": "outgoing"
+            },
+            {
+              "name": "private",
+              "value": "false"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachments[]",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "HTTP_Send_WhatsApp_Image",
+      "name": "HTTP · Send WhatsApp Image + Caption (Chatwoot)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3400,
+        -160
       ]
     },
     {
@@ -293,41 +395,44 @@
         },
         "options": {}
       },
-      "id": "HTTP_Send_WhatsApp_Reply",
-      "name": "HTTP · Send WhatsApp Reply (Chatwoot)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2920,
-        0
-      ]
-    },
-    {
-      "parameters": {
-        "url": "https://whizz.aiingo.com/api/v2/tables/={{ $('Code · Resolve Leads Table').first().json.leadsTableId }}/records",
-        "method": "PATCH",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": []
-        },
-        "jsonBody": "={{ { Id: parseInt($('Code · Parse Incoming Message').first().json.leadId, 10), ecom_prefs: JSON.stringify($('Code · Extract Reply Text').first().json.merged) } }}",
-        "specifyBody": "json",
-        "options": {}
-      },
-      "id": "HTTP___Save_ecom_prefs",
-      "name": "HTTP · Save ecom_prefs",
+      "id": "HTTP_Send_WhatsApp_Text",
+      "name": "HTTP · Send WhatsApp Text Reply (Chatwoot)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
         3160,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "nocoDbApiToken",
+        "operation": "update",
+        "baseId": "={{ \"p_placeholder\" }}",
+        "table": "={{ $('Code · Resolve Leads Table').first().json.leadsTableId }}",
+        "id": "={{ $('Code · Parse Incoming Message').first().json.leadId }}",
+        "updateAllFields": false,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "ecom_prefs",
+              "fieldValue": "={{ JSON.stringify($('Code · Extract Reply Text + Detect Drive Image').first().json.merged) }}"
+            }
+          ]
+        }
+      },
+      "id": "NocoDB___Save_ecom_prefs",
+      "name": "NocoDB · Save ecom_prefs",
+      "type": "n8n-nodes-base.nocoDb",
+      "typeVersion": 3,
+      "position": [
+        3640,
         0
       ],
       "credentials": {
-        "httpHeaderAuth": {
+        "nocoDbApiToken": {
           "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
-          "name": "NocoDB Master Token"
+          "name": "NocoDB API Token"
         }
       }
     }
@@ -348,14 +453,14 @@
       "main": [
         [
           {
-            "node": "HTTP · Get Client",
+            "node": "NocoDB · Get Client",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP · Get Client": {
+    "NocoDB · Get Client": {
       "main": [
         [
           {
@@ -370,14 +475,14 @@
       "main": [
         [
           {
-            "node": "HTTP · Get Lead",
+            "node": "NocoDB · Get Lead",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP · Get Lead": {
+    "NocoDB · Get Lead": {
       "main": [
         [
           {
@@ -425,14 +530,14 @@
       "main": [
         [
           {
-            "node": "HTTP · Get Matching Products",
+            "node": "NocoDB · Get Matching Products",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP · Get Matching Products": {
+    "NocoDB · Get Matching Products": {
       "main": [
         [
           {
@@ -458,29 +563,69 @@
       "main": [
         [
           {
-            "node": "Code · Extract Reply Text",
+            "node": "Code · Extract Reply Text + Detect Drive Image",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code · Extract Reply Text": {
+    "Code · Extract Reply Text + Detect Drive Image": {
       "main": [
         [
           {
-            "node": "HTTP · Send WhatsApp Reply (Chatwoot)",
+            "node": "IF · Has Drive Image",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP · Send WhatsApp Reply (Chatwoot)": {
+    "IF · Has Drive Image": {
       "main": [
         [
           {
-            "node": "HTTP · Save ecom_prefs",
+            "node": "Google Drive · Download Product Image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP · Send WhatsApp Text Reply (Chatwoot)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Drive · Download Product Image": {
+      "main": [
+        [
+          {
+            "node": "HTTP · Send WhatsApp Image + Caption (Chatwoot)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Send WhatsApp Image + Caption (Chatwoot)": {
+      "main": [
+        [
+          {
+            "node": "NocoDB · Save ecom_prefs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP · Send WhatsApp Text Reply (Chatwoot)": {
+      "main": [
+        [
+          {
+            "node": "NocoDB · Save ecom_prefs",
             "type": "main",
             "index": 0
           }
