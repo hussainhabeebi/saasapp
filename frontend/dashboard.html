@@ -6813,23 +6813,61 @@ function taTablesReady(){
 }
 function safeJson(s,def=[]){try{return JSON.parse(s||'null')||def;}catch(e){return def;}}
 
-async function taFetch(key,limit=500,offset=0){
+// Table titles keyed the same way as ta_table_ids, shared by taSetupTables() (first-time
+// creation) and taRepairTableIds() below (re-resolving a stored ID that's stopped working —
+// e.g. the table was deleted and recreated in NocoDB directly, which gives it a new ID that
+// the client's stored ta_table_ids doesn't know about, so every save 404s until repaired).
+const TA_TABLE_TITLES={packages:'ta_packages',bookings:'ta_bookings',cases:'ta_cases',itineraries:'ta_itineraries',umrah_groups:'ta_umrah_groups',cars:'ta_cars',car_bookings:'ta_car_bookings'};
+
+async function taRepairTableIds(){
+  const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+  const baseId=info.base_id;
+  if(!baseId) return taTableIds();
+  const baseTables=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`).catch(()=>({list:[]}));
+  const existingTableMap={};
+  (baseTables.list||[]).forEach(t=>{ existingTableMap[t.title]=t.id; });
+  const ids=taTableIds();
+  Object.entries(TA_TABLE_TITLES).forEach(([key,title])=>{
+    if(existingTableMap[title]) ids[key]=existingTableMap[title];
+  });
+  const tableIdsJson=JSON.stringify(ids);
+  taSaveLocal('ta_table_ids',tableIdsJson);
+  clientRecord.ta_table_ids=tableIdsJson;
+  await patchClient({ta_table_ids:tableIdsJson}).catch(()=>{});
+  return ids;
+}
+
+// Wraps a taFetch/taCreate/taUpdate/taDeleteRow call: if the stored table ID 404s (table was
+// deleted/recreated since it was first configured, or a stale ta_table_ids was resurrected from
+// this browser's localStorage cache — see taMergeLocal), re-resolve every table ID by its actual
+// name in NocoDB and retry once, instead of leaving the user stuck on a bare "HTTP 404".
+async function taWithRepair(key,fn){
   const id=taTableIds()[key];
-  if(!id)return[];
-  const d=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records?where=(client_id,eq,${clientId})&limit=${limit}&sort=-CreatedAt&offset=${offset}`);
+  if(!id) throw new Error(`${TA_TABLE_TITLES[key]||key} isn't set up yet — run "Create Tables Now" in the Agency module.`);
+  try{
+    return await fn(id);
+  }catch(e){
+    if(e.message!=='HTTP 404') throw e;
+    const repaired=await taRepairTableIds().catch(()=>({}));
+    const newId=repaired[key];
+    if(!newId||newId===id) throw new Error(`${TA_TABLE_TITLES[key]||key} table is missing in NocoDB (it may have been deleted). Re-run "Create Tables Now" in the Agency module to recreate it.`);
+    return await fn(newId);
+  }
+}
+
+async function taFetch(key,limit=500,offset=0){
+  if(!taTableIds()[key])return[];
+  const d=await taWithRepair(key,id=>ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records?where=(client_id,eq,${clientId})&limit=${limit}&sort=-CreatedAt&offset=${offset}`));
   return d.list||[];
 }
 async function taCreate(key,record){
-  const id=taTableIds()[key];
-  return ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{...record,client_id:String(clientId)});
+  return taWithRepair(key,id=>ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{...record,client_id:String(clientId)}));
 }
 async function taUpdate(key,rowId,record){
-  const id=taTableIds()[key];
-  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{Id:rowId,...record});
+  await taWithRepair(key,id=>ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{Id:rowId,...record}));
 }
 async function taDeleteRow(key,rowId){
-  const id=taTableIds()[key];
-  await ncDelete(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{Id:rowId});
+  await taWithRepair(key,id=>ncDelete(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{Id:rowId}));
 }
 
 async function taLoad(){
@@ -6875,6 +6913,9 @@ async function taSetupTables(){
       }
     }
 
+    // Table titles here must match TA_TABLE_TITLES above (used by taRepairTableIds to
+    // re-resolve a stored ID that's stopped working) — this object also carries the full
+    // column schema needed for first-time creation, which is why it isn't just reused directly.
     const defs={
       packages:{title:'ta_packages',columns:[
         {title:'client_id',uidt:'SingleLineText'},{title:'name',uidt:'SingleLineText'},
