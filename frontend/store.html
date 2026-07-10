@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Store</title>
+<!-- Public customer-facing storefront. Read-only: it only ever calls the /ecom/public/*
+     endpoints (cloudflare-worker/worker.js), which return a fixed customer-safe field
+     whitelist and have no create/update/delete handler at all — there is no code path
+     here that can reach ecom.html's admin features, other clients' data, or leads/orders. -->
+<style>
+:root{
+  --bg:#F5F3FF;--card:#FFFFFF;--ink:#0C0A1E;--muted:#5B5280;
+  --accent:#7C3AED;--accent-ink:#6D28D9;--accent-soft:#EDE9FE;
+  --line:#E5E1F5;--wa:#25D366;--wa-ink:#128C4A;
+  --body:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --disp:var(--body);
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.hdr{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:16px 18px;display:flex;flex-direction:column;gap:10px}
+.hdr-top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.store-name{font-size:19px;font-weight:700;letter-spacing:-.01em}
+.wa-btn{display:inline-flex;align-items:center;gap:6px;background:var(--wa);color:#fff;border:none;border-radius:20px;padding:9px 16px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap}
+.wa-btn:active{background:var(--wa-ink)}
+.search{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:11px 14px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg)}
+.search:focus{outline:none;border-color:var(--accent);background:#fff}
+.wrap{max-width:960px;margin:0 auto;padding:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column}
+.thumb{width:100%;aspect-ratio:1/1;object-fit:cover;background:var(--accent-soft);display:block}
+.thumb-empty{width:100%;aspect-ratio:1/1;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px}
+.card-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px;flex:1}
+.p-name{font-weight:600;font-size:14.5px;line-height:1.3}
+.p-meta{font-size:12.5px;color:var(--muted)}
+.p-price{font-size:16px;font-weight:700;color:var(--accent-ink);margin-top:2px}
+.badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;background:var(--accent-soft);color:var(--accent-ink);width:fit-content}
+.badge.out{background:#FDE8E8;color:#B42318}
+.order-btn{margin-top:auto;display:flex;align-items:center;justify-content:center;gap:6px;background:var(--wa);color:#fff;border:none;border-radius:10px;padding:10px;font-size:13.5px;font-weight:600;text-decoration:none}
+.order-btn:active{background:var(--wa-ink)}
+.order-btn.disabled{background:var(--line);color:var(--muted);pointer-events:none}
+.empty,.err{text-align:center;color:var(--muted);padding:60px 20px;font-size:14px}
+.skel{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.skel .thumb{background:linear-gradient(90deg,var(--accent-soft),#fff,var(--accent-soft));background-size:200% 100%;animation:shimmer 1.4s infinite}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-top">
+    <div class="store-name" id="storeName">Store</div>
+    <a class="wa-btn" id="chatBtn" style="display:none" href="#">💬 Chat on WhatsApp</a>
+  </div>
+  <input class="search" id="searchBox" placeholder="Search products..." oninput="renderProducts()">
+</div>
+
+<div class="wrap">
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="emptyMsg" style="display:none">No products found.</div>
+  <div class="err" id="errMsg" style="display:none">Sorry, this store link isn't working right now.</div>
+</div>
+
+<script>
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const params = new URLSearchParams(location.search);
+const clientId = params.get('client') || params.get('client_id') || '';
+const focusSku = params.get('sku') || '';
+
+let storeInfo = {};
+let allProducts = [];
+
+function escHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Google Drive share links (/file/d/ID/view or ?id=ID) don't render directly as <img src> —
+// convert to Drive's thumbnail endpoint, same file-id extraction rule as the WhatsApp bot's
+// ecom-context.json uses server-side.
+function toImageUrl(url){
+  if(!url) return '';
+  if(!/drive\.google\.com/.test(url)) return url;
+  const pathMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  const queryMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  const id = (pathMatch && pathMatch[1]) || (queryMatch && queryMatch[1]) || null;
+  return id ? `https://drive.google.com/thumbnail?id=${id}&sz=w600` : url;
+}
+
+function waLink(phone, text){
+  const digits = String(phone||'').replace(/[^\d]/g,'');
+  if(!digits) return null;
+  return `https://wa.me/${digits}${text?'?text='+encodeURIComponent(text):''}`;
+}
+
+function renderProducts(){
+  const q = (document.getElementById('searchBox').value||'').toLowerCase().trim();
+  const list = q ? allProducts.filter(p =>
+    [p.name,p.category,p.color,p.sku].some(v => String(v||'').toLowerCase().includes(q))
+  ) : allProducts;
+
+  const grid = document.getElementById('grid');
+  document.getElementById('emptyMsg').style.display = list.length ? 'none' : 'block';
+
+  grid.innerHTML = list.map(p => {
+    const img = toImageUrl(p.image_url);
+    const inStock = Number(p.stock||0) > 0;
+    const orderText = inStock
+      ? `Hi! I'd like to order:\n${p.name}${p.sku?' (SKU '+p.sku+')':''}\n${p.currency||'INR'} ${p.price}`
+      : `Hi! Is this back in stock soon?\n${p.name}${p.sku?' (SKU '+p.sku+')':''}`;
+    const order = waLink(storeInfo.support_phone, orderText);
+    return `
+      <div class="card" id="p-${escHtml(p.sku||p.Id)}">
+        ${img ? `<img class="thumb" src="${escHtml(img)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb-empty',textContent:'No photo'}))">` : `<div class="thumb-empty">No photo</div>`}
+        <div class="card-body">
+          <div class="p-name">${escHtml(p.name)}</div>
+          <div class="p-meta">${[p.color,p.size].filter(Boolean).map(escHtml).join(' · ')||'&nbsp;'}</div>
+          <div class="p-price">${escHtml(p.currency||'INR')} ${Number(p.price||0).toLocaleString()}</div>
+          <span class="badge ${inStock?'':'out'}">${inStock?'In stock':'Out of stock'}</span>
+          ${order
+            ? `<a class="order-btn" href="${escHtml(order)}" target="_blank" rel="noopener">${inStock?'💬 Order on WhatsApp':'💬 Ask about restock'}</a>`
+            : `<span class="order-btn disabled">Contact store to order</span>`}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function load(){
+  if(!clientId){
+    document.getElementById('errMsg').style.display = 'block';
+    return;
+  }
+  try{
+    const [clientRes, productsRes] = await Promise.all([
+      fetch(`${WORKER_BASE}/ecom/public/client?client_id=${encodeURIComponent(clientId)}`),
+      fetch(`${WORKER_BASE}/ecom/public/products?client_id=${encodeURIComponent(clientId)}`),
+    ]);
+    if(!clientRes.ok || !productsRes.ok) throw new Error('fetch failed');
+    storeInfo = await clientRes.json();
+    const data = await productsRes.json();
+    allProducts = data.list || [];
+
+    document.title = storeInfo.client_name || 'Store';
+    document.getElementById('storeName').textContent = storeInfo.client_name || 'Store';
+    const chatBtn = document.getElementById('chatBtn');
+    const chat = waLink(storeInfo.support_phone, `Hi! I'm browsing your products.`);
+    if(chat){ chatBtn.href = chat; chatBtn.style.display = 'inline-flex'; }
+
+    renderProducts();
+    if(focusSku){
+      const el = document.getElementById('p-'+focusSku);
+      if(el) el.scrollIntoView({behavior:'smooth', block:'center'});
+    }
+  }catch(e){
+    document.getElementById('errMsg').style.display = 'block';
+  }
+}
+load();
+</script>
+</body>
+</html>

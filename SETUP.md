@@ -907,3 +907,26 @@ catalogue into the AI prompt for it to search (slower, costlier, and the main so
 | `sort` | One of `price_asc`, `price_desc`, `newest`, `oldest`, `stock_desc`, `name_asc` — a whitelist, not a raw passthrough, since this endpoint has no session of its own |
 
 Example: `GET /ecom/products?client_id=123&color=green&size=S&in_stock=true&sort=price_asc`
+
+## Public storefront (`frontend/store.html`) and per-product order links
+A read-only, no-login page customers can open straight from a WhatsApp link — lets the ecom bot
+hand over a real "Order on WhatsApp" button instead of asking the customer to type out every
+detail in chat.
+
+- **`frontend/store.html?client=<id>`** — lists that client's active products (name, price,
+  size, color, photo, stock badge) with a search box and a per-product "Order on WhatsApp" /
+  "Ask about restock" button that deep-links to `https://wa.me/<support_phone>` with a
+  pre-filled message. `&sku=<sku>` scrolls/highlights straight to one product. No admin
+  controls of any kind live on this page — it only ever calls the two read-only endpoints below.
+- **`GET /ecom/public/client?client_id=`** and **`GET /ecom/public/products?client_id=`**
+  (`cloudflare-worker/worker.js`) — deliberately separate from the `/ecom/client` and
+  `/ecom/products` admin endpoints ecom.html uses. Three things keep this from exposing more than
+  a product catalog: (1) GET only, no create/update/delete handler exists under `/ecom/public/*`
+  at all; (2) a fixed field whitelist on both the client record (`client_name`, `support_phone`,
+  `review_link` only — no table IDs, sheet URLs, or column maps) and each product row (no cost
+  price or internal notes, even if those columns exist); (3) it never touches leads/orders.
+  Still scoped by `client_id` the same way every `/ecom/*` route is — see the comment above
+  `ECOM_CLIENT_READ_FIELDS` for why that's an accepted trade-off for this whole module.
+- **In `ecom-context.json`** (n8n-saas repo) — `Code · Build Ecom Context Block` appends
+  `https://app.leadvyne.com/store.html?client=<client_id>&sku=<sku>` to every matched product,
+  and the prompt tells the AI to reuse that link verbatim rather than inventing or shortening it.

@@ -1389,6 +1389,52 @@ async function handleEcomDelete(request, env, kind){
   return json({deleted, requested:ids.length});
 }
 
+/* ── ECOMMERCE PUBLIC STOREFRONT (store.html) — unlike every /ecom/* route above, these are
+   meant to be opened directly by end customers (shared as a WhatsApp link), so they must not
+   give a customer any of what a client's own staff can do in ecom.html. Three separate cuts
+   enforce that: (1) GET only — no create/update/delete handler exists under this prefix at
+   all, so there's no write path to wire up by mistake; (2) a fixed field whitelist on both
+   the client record and each product row, so columns like NocoDB table ids, sheet URLs, cost
+   price, or internal notes can never leak even though the underlying tables hold them; (3) no
+   access to leads/orders/CRM tables whatsoever — this code path never touches them. Still
+   scoped by client_id the same way every ecom.html route is (see the big comment above) —
+   closing that last gap needs real per-client auth, which neither surface has today. ── */
+const ECOM_PUBLIC_CLIENT_FIELDS=['client_name','support_phone','review_link'];
+const ECOM_PUBLIC_PRODUCT_FIELDS=['Id','name','sku','category','color','size','price','currency','stock','image_url'];
+const ECOM_PUBLIC_MAX_LIMIT=60;
+
+function ecomPublicPick(row, fields){
+  const out={};
+  fields.forEach(k=>{ out[k]=row[k]===undefined?null:row[k]; });
+  return out;
+}
+
+async function handleEcomPublicClient(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'},404);
+  return json(ecomPublicPick(c, ECOM_PUBLIC_CLIENT_FIELDS));
+}
+
+async function handleEcomPublicProducts(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const tableId=await ecomResolveTable(env, clientId, 'products');
+  if(!tableId) return json({list:[]});
+  // Filtering/search is done client-side in store.html against this one fetch — capped well
+  // below the admin endpoint's 1000 so this can't be used to scrape a large catalog quickly.
+  const limit=Math.min(parseInt(url.searchParams.get('limit')||String(ECOM_PUBLIC_MAX_LIMIT),10)||ECOM_PUBLIC_MAX_LIMIT, ECOM_PUBLIC_MAX_LIMIT);
+  const qs=new URLSearchParams({where:`(client_id,eq,${clientId})~and(status,neq,inactive)`, limit:String(limit), sort:'-stock'});
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?${qs.toString()}`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  const list=(data.list||[]).map(row=>ecomPublicPick(row, ECOM_PUBLIC_PRODUCT_FIELDS));
+  return json({list});
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -1424,6 +1470,8 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='POST'){ res=await handleEcomCreate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
+      else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
+      else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }
