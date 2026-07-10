@@ -343,7 +343,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <div class="card">
       <div class="card-title">
         <span class="step-num">1</span> Select WhatsApp Template
-        <button class="btn btn-sec btn-sm" onclick="loadTemplates()" style="margin-left:auto">↻ Refresh</button>
+        <button class="btn btn-sec btn-sm" onclick="refreshTemplates()" style="margin-left:auto">↻ Refresh</button>
       </div>
       <div id="tplLoading" class="msg info">Loading templates from Meta…</div>
       <div id="tplError" class="msg error hidden"></div>
@@ -511,7 +511,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <!-- Template List -->
     <div class="card">
       <div class="card-title">📋 All Templates
-        <button class="btn btn-sec btn-sm" style="margin-left:auto" onclick="loadTemplates()">↻ Refresh</button>
+        <button class="btn btn-sec btn-sm" style="margin-left:auto" onclick="refreshTemplates()">↻ Refresh</button>
       </div>
       <div id="tplListLoading" class="msg info">Loading…</div>
       <div id="tplListWrap" class="hidden">
@@ -836,7 +836,7 @@ async function sendDm(){
 }
 
 // ── TEMPLATES ──
-// Listed and sent through Chatwoot's own whatsapp_templates sync (/broadcast/templates,
+// Listed and sent through Chatwoot's own template cache (/broadcast/templates,
 // /broadcast/send-template — same routes the "Manage Templates" tab already uses), using only
 // the Chatwoot credentials already on the client record. This used to require a *separate* Meta
 // Embedded Signup connection (wa_phone_id/wa_token) just to list/send templates here, even
@@ -871,6 +871,19 @@ async function loadTemplates(){
   }finally{
     ['tplLoading','tplListLoading'].forEach(id=>$id(id).classList.add('hidden'));
   }
+}
+
+// Chatwoot's template sync is asynchronous (it just enqueues a background job that pulls the
+// latest approved templates from Meta), so "Refresh" kicks that off, gives it a few seconds to
+// land, then re-fetches the cached list — a single immediate re-fetch would usually show nothing.
+async function refreshTemplates(){
+  if(!clientRecord?.chatwoot_inbox_id){ loadTemplates(); return; }
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates/sync`,{method:'POST',headers:ncAuthHeaders()});
+  }catch(e){ /* fall through — still try to show whatever's already cached */ }
+  await loadTemplates();
+  await sleep(3000);
+  await loadTemplates();
 }
 
 function renderTemplateGrid(){
