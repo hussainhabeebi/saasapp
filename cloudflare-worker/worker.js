@@ -164,8 +164,8 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
 // the rest of this object (clientRecord) sits in a page-lifetime JS variable in
 // dashboard.html/broadcast.html, inspectable via devtools for as long as the tab is open.
 function safeClient(rec){
-  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, ...safe}=rec;
-  return safe;
+  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, ...safe}=rec;
+  return {...safe, meta_capi_connected:!!meta_capi_token};
 }
 
 /* ── Session token: HMAC-signed, not a full JWT — just enough to avoid a
@@ -475,6 +475,93 @@ async function handleEmailStatus(request, env){
   const data=await r.json().catch(()=>({}));
   const domains=(data?.data||[]).map(d=>({name:d.name, status:d.status}));
   return json({connected:true, from_email, from_name, domains});
+}
+
+// ── META ADS CONVERSIONS API (CAPI) — lead-quality reporting ──────────────────────────────
+// Feeds CRM lead-quality signals back to Meta (Lead → QualifiedLead/DisqualifiedLead → Schedule)
+// so ad delivery optimizes for real quality, not just WhatsApp message volume. Per-client
+// meta_pixel_id/meta_capi_token (Events Manager → Conversions API → a generated access token),
+// stored on the client row like resend_api_key — meta_capi_token never reaches the browser
+// (stripped by safeClient) and is only ever written via /meta/capi/config below, never through
+// the generic /nocodb/ passthrough the dashboard uses for its own row.
+// Matching relies on the lead's phone/email (hashed, never sent in the clear) — there's no
+// ctwa_clid (Click-to-WhatsApp ad click id) capture yet since WhatsApp inbound messages are
+// handled by the n8n engine, outside this repo; if that's ever wired through, add it to
+// user_data.ctwa_clid below (unhashed) for much stronger attribution. See SETUP.md.
+const META_CAPI_WRITE_FIELDS=['meta_pixel_id','meta_capi_token'];
+const META_CAPI_EVENTS={
+  lead:         {name:'Lead'},         // fired once, when a lead is first captured
+  qualified:    {name:'QualifiedLead'},// custom event — lead scored Hot / marked good
+  disqualified: {name:'DisqualifiedLead'}, // custom event — negative signal matters too
+  booked:       {name:'Schedule'},     // standard event — reached a terminal/booked pipeline stage
+};
+async function sha256Hex(str){
+  return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)));
+}
+async function capiHashEmail(email){
+  const v=String(email||'').trim().toLowerCase();
+  return v?await sha256Hex(v):undefined;
+}
+async function capiHashPhone(phone){
+  const digits=String(phone||'').replace(/[^0-9]/g,'');
+  return digits?await sha256Hex(digits):undefined;
+}
+async function sendMetaCapiEvent(env, c, eventKey, lead, extra={}){
+  const def=META_CAPI_EVENTS[eventKey];
+  if(!def) return {ok:false, error:'Unknown event type'};
+  if(!c?.meta_pixel_id||!c?.meta_capi_token) return {ok:false, skipped:true};
+  const user_data={};
+  const em=await capiHashEmail(lead.Email); if(em) user_data.em=[em];
+  const ph=await capiHashPhone(lead.Phone); if(ph) user_data.ph=[ph];
+  if(!em && !ph) return {ok:false, error:'Lead has no email or phone to match on'};
+  const event={
+    event_name:def.name,
+    event_time:Math.floor(Date.now()/1000),
+    // Stable per lead+stage — dedupes retries and lines up with a future client-side Pixel event_id.
+    event_id:`lead_${lead.Id}_${eventKey}`,
+    action_source:'business_messaging',
+    messaging_channel:'whatsapp',
+    user_data,
+  };
+  if(extra.value) event.custom_data={value:Number(extra.value), currency:extra.currency||'INR'};
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.meta_pixel_id}/events?access_token=${encodeURIComponent(c.meta_capi_token)}`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({data:[event]})
+  });
+  const data=await r.json().catch(()=>({}));
+  return {ok:r.ok, status:r.status, data};
+}
+async function handleMetaCapiLeadEvent(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {lead_id, event, value, currency}=await request.json().catch(()=>({}));
+  if(!lead_id||!event) return json({error:'lead_id and event required'}, 400);
+  if(!META_CAPI_EVENTS[event]) return json({error:'Unknown event type'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!c.meta_pixel_id||!c.meta_capi_token) return json({ok:true, skipped:true});
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
+  const lead=await leadR.json().catch(()=>null);
+  if(!leadR.ok||!lead) return json({error:'Lead not found'}, 404);
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Not your lead'}, 403);
+  const result=await sendMetaCapiEvent(env, c, event, lead, {value, currency});
+  if(!result.ok && !result.skipped) return json({error:result.data?.error?.message||result.error||'Meta rejected the event'}, 502);
+  return json({ok:true, sent:result.ok===true});
+}
+async function handleMetaCapiConfigSet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const fields={};
+  META_CAPI_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=String(body[k]||'').trim(); });
+  if(!Object.keys(fields).length) return json({error:'Nothing to save'}, 400);
+  await patchClientFields(env, payload.cid, fields);
+  return json({ok:true});
+}
+async function handleMetaCapiStatus(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  return json({connected:!!(c?.meta_pixel_id&&c?.meta_capi_token), pixel_id:c?.meta_pixel_id||''});
 }
 
 // Shared by handleEmailTest and the campaign send-one route below — the only difference between
@@ -2080,6 +2167,9 @@ export default {
       else if(url.pathname==='/email/campaigns/send-init' && request.method==='POST'){ res=await handleEmailCampaignSendInit(request, env); }
       else if(url.pathname==='/email/campaigns/send-one' && request.method==='POST'){ res=await handleEmailCampaignSendOne(request, env); }
       else if(url.pathname==='/email/unsubscribe' && request.method==='GET'){ res=await handleEmailUnsubscribe(request, env); }
+      else if(url.pathname==='/meta/capi/lead-event' && request.method==='POST'){ res=await handleMetaCapiLeadEvent(request, env); }
+      else if(url.pathname==='/meta/capi/config' && request.method==='POST'){ res=await handleMetaCapiConfigSet(request, env); }
+      else if(url.pathname==='/meta/capi/status' && request.method==='GET'){ res=await handleMetaCapiStatus(request, env); }
       else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }
