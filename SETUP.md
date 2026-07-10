@@ -930,3 +930,38 @@ detail in chat.
 - **In `ecom-context.json`** (n8n-saas repo) — `Code · Build Ecom Context Block` appends
   `https://app.leadvyne.com/store.html?client=<client_id>&sku=<sku>` to every matched product,
   and the prompt tells the AI to reuse that link verbatim rather than inventing or shortening it.
+
+## onshope.com — dedicated storefront domain, client slugs, and the real WhatsApp number
+`store.html` above lives under `app.leadvyne.com`, which reads as "the SaaS backend" to a
+customer and produces long, tracking-parameter-looking links (`?client=1&sku=...`). onshope.com
+is a second, brand-neutral domain for the customer-facing side only — same backend, separate
+frontend files, short URLs.
+
+- **`frontend/onshope-home.html`** — directory homepage (IndiaMART-style): lists every client
+  that has published a store, links to `/<slug>`.
+- **`frontend/onshope-store.html`** — per-client storefront, identical generic design for every
+  client, resolved by `?slug=` instead of `?client=`. Deliberately a separate file from
+  `store.html` — different brand/palette, not part of the Leadvyne dashboard's own frontend.
+- **`client_slug`** — new short-text column on the **Clients** table, e.g. `vintage1950`. Must
+  be unique and URL-safe (letters/digits/hyphen/underscore). Set directly in NocoDB for now (same
+  as `ecom_prefs` before it) — no dashboard UI for editing it yet. A client only appears on the
+  onshope.com homepage once both `client_slug` is set **and** `industry` is `ecommerce`.
+- **`frontend/nginx.conf`** — new `server_name onshope.com www.onshope.com` block: `/` serves
+  `onshope-home.html`; any bare `/<slug>` path rewrites to `onshope-store.html?slug=<slug>`.
+- **`GET /ecom/public/client` / `GET /ecom/public/products`** now accept **either** `client_id`
+  (store.html) **or** `slug` (onshope.com) — same handlers, same whitelist, just an extra lookup
+  path (`getClientBySlug`, `cloudflare-worker/worker.js`).
+- **`GET /ecom/public/stores`** — new, powers the onshope.com homepage directory. Returns only
+  `{client_slug, client_name}` for clients with both a slug and `industry=ecommerce` set.
+- **The real WhatsApp number fix**: `wa_phone_id` (saved when a client connects WhatsApp in
+  Settings → Channels) is Meta's internal phone-number-id, not something a customer can dial.
+  `handleChannelsWhatsappConnect` already fetched the real `display_phone_number` from Meta but
+  never saved it — it's now persisted as **`wa_display_phone`**, and every public endpoint's
+  `whatsapp_phone` output field prefers it over the older, manually-typed `support_phone`. This
+  is what makes "order from the storefront" and "chat with the bot" the same WhatsApp thread.
+
+**Manual steps still needed outside this repo** (not achievable from a code change alone):
+1. Buy/point `onshope.com` (and `www.onshope.com`) DNS at the same host serving `app.leadvyne.com`.
+2. Add `https://onshope.com` (and the `www` variant) to the Worker's `ALLOWED_ORIGINS` environment
+   variable/secret.
+3. Set `client_slug` in NocoDB for each client that should appear on onshope.com.
