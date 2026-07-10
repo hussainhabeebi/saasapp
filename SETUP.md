@@ -1008,3 +1008,130 @@ What's different from `engine-ecom.json`:
 Tested with 53 cases (38 unit tests over the extracted node logic, 15 end-to-end vm simulations
 chaining the actual generated `jsCode` through three full conversation turns — text with a
 catalog match, a failed voice transcription, and an explicit human-handover request).
+
+## Email Marketing module (Phase 1 — Resend only; SMTP and inbound intake are separate later phases)
+A new module, built as plain Cloudflare Worker code (not n8n) per the decision to move new bot/
+automation logic into `cloudflare-worker/worker.js` directly — testable, deployed by `git push`,
+one source of truth. This phase ships the full campaign tool (new page, audience segmentation,
+send flow, server-side unsubscribe enforcement) wired to the existing per-client Resend
+integration only. Two follow-up phases are intentionally **not** part of this work: wiring in
+client-connectable SMTP sending, and inbound email-based lead intake via Cloudflare Email
+Routing — see "Deferred phases" below for what's already been scoped for those.
+
+### Schema — set these up directly in NocoDB (same convention as `client_slug`/`ecom_prefs` before it)
+
+**Leads table** (`mvg6rcw0ia5qqrx`) — two new fields, matching the existing `OptOut`/`ClientId` naming convention:
+- `Email` (Single line text) — canonical email address. **There was no first-class email field on
+  Leads before this** — the dashboard's lead table only ever read one out of a `QualAnswers` JSON
+  blob as a read-only fallback, never wrote one. Back-fill existing leads by scanning `QualAnswers`
+  for an email-shaped value where `Email` is still empty, and the Add/Edit Lead modal now has a
+  real `Email` input (see "dashboard.html changes" below) so new leads capture it going forward.
+- `EmailOptOut` (Single line text, `Yes`/`No`) — independent of the WhatsApp `OptOut` field; a lead
+  can unsubscribe from one channel without affecting the other.
+
+**Clients table** (`mxl33bg4wi70fqj`) — one new field for now:
+- `email_table_ids` (Long text, JSON) — e.g. `{"campaigns":"<table id>","sends":"<table id>"}`.
+  Unlike the ecom module's `ecom_table_ids` (an *optional* per-client override of a shared
+  default), there is no shared default here yet because these two tables don't exist until you
+  create them — create **one** `EmailCampaigns` table and **one** `EmailSends` table in NocoDB
+  (shared across all clients, rows scoped by a `client_id` column, matching the ecom module's
+  pattern), then paste their table IDs into `EMAIL_CAMPAIGNS_TABLE`/`EMAIL_SENDS_TABLE` at the top
+  of `worker.js` (currently `REPLACE_WITH_YOUR_EMAIL_CAMPAIGNS_TABLE_ID`/`_SENDS_TABLE_ID`
+  placeholders) so every client uses the same shared tables without needing `email_table_ids` set
+  individually. (The field still exists as an escape hatch for a client who wants a bespoke table,
+  same override pattern as `ecom_table_ids`.)
+
+**`EmailCampaigns` table** — one row per campaign:
+| Field | Type | Notes |
+|---|---|---|
+| `client_id` | Number | scoping column |
+| `subject` | Single line | |
+| `html_body` | Long text | simple HTML |
+| `segment_filter` | Long text (JSON) | e.g. `{"stage":["Hot Lead"]}` — JSON blob, not columns-per-filter-type, so new filter criteria don't need a schema change later |
+| `status` | Single line | `draft` \| `sending` \| `sent` \| `failed` |
+| `created_at` / `sent_at` | Single line (ISO) | |
+| `total_recipients` / `total_sent` / `total_failed` | Number | denormalized counters, updated as sends complete |
+
+**`EmailSends` table** — one row per recipient per campaign (why a real table instead of
+`broadcast.html`'s capped-50-JSON-blob-on-the-client-row pattern: a campaign needs
+per-recipient status/error visibility a 50-entry aggregate log structurally can't provide):
+| Field | Type | Notes |
+|---|---|---|
+| `client_id` | Number | |
+| `campaign_id` | Number | |
+| `lead_id` | Number | |
+| `recipient_email` | Single line | snapshot at send time |
+| `status` | Single line | `queued` \| `sent` \| `failed` |
+| `error` | Long text | last error, if failed |
+| `sent_at` | Single line (ISO) | |
+
+No `unsubscribe_token` column — the unsubscribe link's token is a stateless HMAC over `lead_id`
+(reusing `SESSION_SIGNING_KEY` with a domain-separation prefix, same `crypto.subtle` HMAC pattern
+already used by `signSession`), so nothing needs to be stored per-send.
+
+### Backend (`cloudflare-worker/worker.js`)
+- `safeClient()` (used by `/session/exchange` and `/session/me`, whose result sits in a
+  page-lifetime `clientRecord` JS variable in `dashboard.html`/`broadcast.html` for as long as the
+  tab is open) now also strips `resend_api_key`, not just `dashboard_password` — a pre-existing
+  gap where a live, send-capable API key was shipped to the browser on every login even though no
+  *route* ever echoed it back directly.
+- New routes, all session-gated via the same `requireSession`/`payload.cid` pattern as
+  `/email/client`/`/broadcast/*` (deriving the client from the session, never a client-supplied
+  id — the stronger of the two auth patterns already in this codebase, not the weaker
+  client-supplied-`client_id` pattern the ecom module uses):
+  - `GET/POST/PATCH/DELETE /email/campaigns` — CRUD, ownership-checked like `handleEcomUpdate`.
+  - `GET /email/audience/preview` — resolves a campaign's `segment_filter` server-side against
+    Leads (`Email` present, `EmailOptOut != 'Yes'`, plus the filter's own criteria) and returns a
+    count + small sample, powering the builder's live "this will reach N leads".
+  - `POST /email/campaigns/send-init` — resolves the full audience, bulk-creates `EmailSends` rows
+    (`status:'queued'`, chunked at 40 per NocoDB bulk-insert like `handleEcomDelete`'s existing
+    `CHUNK=40` pattern), sets the campaign to `status:'sending'`.
+  - `POST /email/campaigns/send-one` — sends a single queued row via the client's Resend account
+    (extracted into a shared `sendClientResendEmail()` helper from the existing `handleEmailTest`
+    logic), re-checks `EmailOptOut` immediately before sending (defensive — a long campaign send
+    could overlap with someone unsubscribing mid-send), updates the row's status + the campaign's
+    counters. Called once per recipient **from the browser**, not looped server-side — same
+    pattern `broadcast.html` already uses for WhatsApp sends (`send-dm`/`send-template`), avoiding
+    Workers' per-request subrequest/wall-clock limits on a "send to many" feature, and leaving a
+    durable per-recipient record if the tab closes mid-campaign.
+  - `GET /email/unsubscribe` — the one **unauthenticated** route in this set (no session — it's
+    clicked from an email, not the dashboard). Verifies the HMAC token, sets `EmailOptOut:'Yes'`,
+    returns a small confirmation page.
+
+### Frontend
+- **`frontend/email-marketing.html`** — new dedicated page, structured like `broadcast.html`
+  (own self-contained CSS palette, not shared with `dashboard.html`): Compose/Campaigns tab,
+  Audience tab (segment builder + live preview count), History tab (per-campaign send stats and
+  per-recipient drill-down — the concrete improvement over `broadcast.html`'s capped-log Tracking
+  tab), and a Settings tab that links out to `dashboard.html`'s existing Integrations tab for
+  Resend/SMTP credentials rather than duplicating those forms here. Same `sessionStorage`
+  (`lv_session`/`lv_cid`) auth as `broadcast.html` — only ever opened via `window.open()` from an
+  already-logged-in `dashboard.html` tab.
+- **`dashboard.html`** — `Email` field added to the Add/Edit Lead modal and the leads table
+  (previously read-only via a `QualAnswers` fallback, not editable anywhere); a new nav button
+  opens `email-marketing.html`, alongside the existing WhatsApp Campaigns button.
+
+### Deferred phases (scoped, not built yet)
+- **SMTP sending** — a client-connectable alternative to Resend (host/port/user/pass). Spiked via
+  desk research (Cloudflare's TCP Sockets API docs + a relevant `workerd` GitHub issue), not a
+  live deployment test: **port 25 is blocked outright** (anti-abuse); **port 587 with STARTTLS has
+  a confirmed, unresolved `workerd` runtime bug** ([cloudflare/workerd#2712](https://github.com/cloudflare/workerd/issues/2712) —
+  `startTls()` leaves the stream in a broken locked state); **port 465 with implicit TLS
+  (`secureTransport:'on'`) works reliably**. So Phase 2 should support **465/implicit TLS only**,
+  which also simplifies the client considerably (no STARTTLS negotiation code needed at all) —
+  hand-rolling the EHLO/AUTH/MAIL FROM/RCPT TO/DATA exchange over `cloudflare:sockets`' `connect()`
+  stays viable within the existing single-file-Worker constraint (no bundler/build step needed).
+  Confirm against a real deployed Worker + a real account (e.g. a Gmail app password) before
+  trusting this in production — this finding is grounded in documentation and a bug report, not a
+  live test from this environment.
+- **Inbound email lead intake** — a new `export default { async email(message, env, ctx) {...} }`
+  handler (Cloudflare Email Routing's native trigger), matched to a client via plus-addressing on
+  a **dedicated subdomain** (e.g. `leads+<slug>@inbound.leadvyne.com`, using a new
+  `email_intake_slug` Clients field — deliberately not `client_slug`, which is onshope.com/
+  ecommerce-only and unset for most clients), deduped by an `Email`+`client_id` lookup on Leads
+  analogous to phone-based WhatsApp dedup. Needs a dedicated subdomain (to avoid entangling with
+  any existing MX records on the root domain) and a Cloudflare Email Routing catch-all rule
+  pointing at this Worker — both manual, account/DNS-level steps outside this repo, same shape as
+  the `onshope.com` domain wiring earlier in this file. MVP body-parsing should stay deliberately
+  narrow (best-effort `text/plain` extraction, not a full RFC 2045 MIME parser) and that limitation
+  should be documented, not silently papered over.
