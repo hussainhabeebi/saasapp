@@ -2,10 +2,13 @@ name = "leadvyne-api-proxy"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
-# Integrations tab health check — runs once daily for every client (see `scheduled()` /
-# runDailyHealthCheckForAllClients in worker.js), independent of anyone opening the dashboard.
+# Two schedules, dispatched by event.cron in `scheduled()`:
+#  - "0 2 * * *"     Integrations tab health check, once daily for every client
+#                    (runDailyHealthCheckForAllClients in worker.js).
+#  - "*/20 * * * *"  Shopify module — abandoned-cart nudge sweep
+#                    (sweepAbandonedShopifyCheckouts in worker.js).
 [triggers]
-crons = ["0 2 * * *"]
+crons = ["0 2 * * *", "*/20 * * * *"]
 
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
@@ -17,6 +20,9 @@ ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com"
 CHATWOOT_INSTANCE_BASE = "https://app.aiingo.com"
 # Billing module — see SETUP.md "Billing module"
 APP_BASE_URL = "https://app.leadvyne.com/dashboard.html"
+# This Worker's own public base URL — used to build the Shopify OAuth redirect_uri and webhook
+# address (Shopify calls back into this Worker, so it needs to know its own address).
+WORKER_BASE_URL = "https://leadvyne-api-proxy.leadvyne.workers.dev"
 # Starter and Pro (INR, AED) are live; Growth still needs a Product/Price created in Stripe.
 STRIPE_PLAN_PRICE_IDS = "price_1TWsQ1JWa5B2ayZgL5zPAf3U,price_1Tpv9nJWa5B2ayZgiCfm5jNo,REPLACE_STRIPE_PRICE_GROWTH_INR,REPLACE_STRIPE_PRICE_GROWTH_AED,price_1TpvODJWa5B2ayZg5kNKP689,price_1TpvNsJWa5B2ayZgDMLLFGj8"
 STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZghpfgBxli,price_1TpvPlJWa5B2ayZgHya1YHiK,price_1TpvPRJWa5B2ayZgWmPFKXvG"
@@ -30,3 +36,5 @@ STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZgh
 #   STRIPE_SECRET_KEY       Stripe secret key — see SETUP.md "Billing module"
 #   STRIPE_WEBHOOK_SECRET   Stripe webhook signing secret for /billing/webhook
 #   ADMIN_PASSCODE          admin.html login passcode — see SETUP.md "Admin panel"
+#   SHOPIFY_API_KEY         Shopify Partners app's Client ID — see SETUP.md "Shopify module"
+#   SHOPIFY_API_SECRET      Shopify Partners app's Client Secret (also verifies OAuth + webhook HMACs)

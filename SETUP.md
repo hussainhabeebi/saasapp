@@ -363,6 +363,65 @@ Channels page uses this to show what's already connected and never offers to rec
 `develop` branch source, not a live test — worth a smoke test on your instance before relying
 on it for production onboarding.
 
+## Shopify module (order/fulfillment/abandoned-cart WhatsApp notifications, no n8n)
+A separate connection from item 4 above — Chatwoot's Shopify integration only shows order
+context inside a conversation. This one lets the Worker itself read a client's Shopify store
+(order/fulfillment/checkout webhooks → WhatsApp templates straight through Meta's Graph API),
+one-click OAuth connect from **Settings → Integrations** (`dashboard.html`), with the
+notification template setup and send log living in the Ecommerce module's new **Shopify** tab
+(`ecom.html`).
+
+**One-time Shopify Partners setup:**
+1. Create an app in [partners.shopify.com](https://partners.shopify.com) (Custom or Public
+   distribution both work — this doesn't need to be listed on the Shopify App Store).
+2. App URL: anything (not used by this flow). **Allowed redirection URL(s)**:
+   `{WORKER_BASE_URL}/shopify/oauth/callback` (must match exactly, including scheme).
+3. Copy the app's **Client ID** / **Client secret** → set as Worker secrets `SHOPIFY_API_KEY` /
+   `SHOPIFY_API_SECRET` (`wrangler secret put ...`). `SHOPIFY_API_SECRET` also verifies both the
+   OAuth callback's HMAC and every incoming webhook's HMAC — never let it reach the browser.
+4. Set `WORKER_BASE_URL` in `wrangler.toml` `[vars]` to this Worker's real public URL (already
+   defaulted to the production one — only change it if you run a staging Worker).
+
+**New CLIENTS columns** (add alongside the Channels-module ones): `shopify_shop_domain`,
+`shopify_access_token`, `shopify_connected_at`, `shopify_notify_config` (Long text, JSON — same
+shape as `ecom_wa_templates`: `{config:{received,shipped,delivered,abandoned}, templates:[...]}`),
+`shopify_notify_log` (Long text, JSON array, capped at the last 30 entries).
+
+**New NocoDB table** `shopify_checkouts` (abandoned-cart tracking) — fields: `client_id`,
+`checkout_token`, `phone`, `customer_name`, `cart_summary`, `total`, `currency`, `recovery_url`,
+`created_at`, `nudge_sent` (Yes/No), `completed` (Yes/No). Paste its table id into
+`SHOPIFY_CHECKOUTS_TABLE` in `worker.js` (same pattern as `EMAIL_CAMPAIGNS_TABLE` above it).
+
+**Flow:**
+1. **Connect** — Settings → Integrations → Shopify → enter `yourstore.myshopify.com` → `POST
+   /shopify/oauth/start` returns Shopify's authorize URL (client id + scopes + a signed `state`
+   carrying the client id) and the browser navigates there directly (full-page redirect, not a
+   popup — Shopify's authorize screen refuses to render in an iframe/popup on some plans).
+2. **Callback** — `GET /shopify/oauth/callback` verifies Shopify's query-param HMAC, verifies
+   `state`, exchanges `code` for a permanent access token, registers the six webhooks this module
+   needs (`orders/create`, `fulfillments/create`, `fulfillments/update`, `checkouts/create`,
+   `checkouts/update`, `app/uninstalled`) pointing at `/shopify/webhook`, writes
+   `shopify_shop_domain`/`shopify_access_token`/`shopify_connected_at`, then redirects back into
+   `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`).
+3. **Notifications** — set up per-event WhatsApp templates in the Ecommerce module's Shopify tab
+   (`GET /ecom/wa-templates` pulls approved templates straight from Meta's Graph API — no n8n
+   hop, unlike the existing Order Delivery Notifications section which still uses the
+   `leadvyne-ecom-wa-templates` n8n webhook). `POST /shopify/webhook` verifies each webhook's
+   HMAC over the raw body, then sends the matching template via `sendShopifyNotification` and
+   appends the attempt (sent/skipped/failed) to `shopify_notify_log`.
+4. **Abandoned cart** — `checkouts/create`/`checkouts/update` upsert into `shopify_checkouts`;
+   `orders/create` marks the matching checkout row `completed`. A second Cron Trigger
+   (`*/20 * * * *` in `wrangler.toml`, dispatched to `sweepAbandonedShopifyCheckouts` in
+   `scheduled()`) nudges any checkout that's 60+ minutes old, not completed, and not already
+   nudged — replacing the n8n `followup-template.json` pattern for Shopify carts specifically.
+
+**Known limitation**: Shopify only reports a fulfillment as `delivered` for carriers it tracks
+natively — the "Order Delivered" notification is best-effort and won't fire for every order.
+
+**Disconnect**: `POST /shopify/disconnect` (Settings → Integrations) clears the stored
+domain/token on this side. It does not revoke the app from the Shopify Admin — for a full
+uninstall the merchant should also remove the app from their store's Apps page.
+
 ## Billing module (Stripe — self-serve portal, add-on purchases, usage dashboard)
 Implements: a self-serve billing portal (invoices, upgrade/downgrade, renewal date), in-app
 add-on purchases (WhatsApp credits, voice add-on), and a client-facing usage dashboard

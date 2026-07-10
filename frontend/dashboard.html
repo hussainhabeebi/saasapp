@@ -1900,6 +1900,31 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
+        <!-- Shopify — one-click OAuth connect (distinct from Channels' "Connect Shopify", which
+             deep-links into Chatwoot's own Shopify sidebar integration). This one lets the
+             Worker read the store directly for order/fulfillment notifications and the
+             abandoned-cart nudge — see the Ecommerce module's Shopify tab for the notification
+             template setup and send log. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🛍️ Shopify</div>
+            <div class="s-note">Connect your Shopify store so order confirmations, shipping and delivery updates go out over WhatsApp automatically. Set up which template sends for each event in the Ecommerce module's Shopify tab.</div>
+            <div id="intShopifyStatus" class="s-note" style="margin:8px 0">Checking…</div>
+            <div id="intShopifyConnectForm" style="display:none;margin-top:8px">
+              <label class="form-label">Shopify Store Domain</label>
+              <input class="form-input" id="cfgShopifyDomain" type="text" placeholder="yourstore.myshopify.com" style="margin-bottom:8px">
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <button class="save-btn" onclick="connectShopifyOAuth()">Connect Shopify</button>
+                <span class="save-msg" id="intShopifyMsg"></span>
+              </div>
+            </div>
+            <div id="intShopifyConnectedActions" style="display:none;margin-top:8px">
+              <button class="save-btn" style="background:var(--muted)" onclick="disconnectShopifyOAuth()">Disconnect</button>
+              <span class="save-msg" id="intShopifyDisconnectMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- Resend (Email) -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -3159,6 +3184,16 @@ function showApp(){
   if(new URLSearchParams(location.search).has('billing')) navigate('billing');
   // Deep link from Campaigns' Template Broadcast tab when WhatsApp Business API isn't connected yet.
   if(new URLSearchParams(location.search).has('channels')) navigate('channels');
+  // Deep link from the Ecommerce module's Shopify tab when no store is connected yet.
+  if(new URLSearchParams(location.search).has('integrations')) navigate('integrations');
+  // Land back on Integrations after the Shopify OAuth redirect (handleShopifyOauthCallback in worker.js).
+  const shopifyParam=new URLSearchParams(location.search).get('shopify');
+  if(shopifyParam){
+    navigate('integrations');
+    if(shopifyParam==='connected'){ showToast('Shopify connected ✓'); refreshClientRecord().then(renderShopifyStatus); }
+    else showToast(new URLSearchParams(location.search).get('msg')||'Shopify connection failed', 'error');
+    history.replaceState(null, '', location.pathname+(clientId?`?client=${clientId}`:''));
+  }
 }
 
 const _CACHE_KEY=()=>`lv_leads_${clientId}`;
@@ -5100,9 +5135,48 @@ const INT_SHEETS=[
 
 function integrationsInit(){
   renderWaStatus();
+  renderShopifyStatus();
   renderSheetsList();
   loadEmailStatus();
   renderHealthResults();
+}
+
+function renderShopifyStatus(){
+  const connected=!!clientRecord?.shopify_shop_domain;
+  $id('intShopifyConnectForm').style.display=connected?'none':'block';
+  $id('intShopifyConnectedActions').style.display=connected?'block':'none';
+  $id('intShopifyStatus').innerHTML=connected
+    ? `✅ Connected — <b>${esc(clientRecord.shopify_shop_domain)}</b>`
+    : 'Not connected.';
+}
+
+async function connectShopifyOAuth(){
+  const shop=$id('cfgShopifyDomain').value.trim().toLowerCase();
+  const msg=$id('intShopifyMsg');
+  if(!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shop)){ msg.textContent='Enter your store as yourstore.myshopify.com'; return; }
+  msg.textContent='Connecting…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/shopify/oauth/start`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({shop})});
+    const data=await r.json();
+    if(!r.ok||!data.url){ msg.textContent=data.error||'Failed to start Shopify connection'; return; }
+    // Full-page navigation, not a popup — Shopify's install/authorize screen refuses to render
+    // inside an iframe or a small popup window for some store plans.
+    window.location.href=data.url;
+  }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+async function disconnectShopifyOAuth(){
+  if(!confirm('Disconnect Shopify? Order/shipping notifications will stop until you reconnect.')) return;
+  const msg=$id('intShopifyDisconnectMsg');
+  msg.textContent='Disconnecting…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/shopify/disconnect`,{method:'POST',headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok){ msg.textContent=data.error||'Failed to disconnect'; return; }
+    await refreshClientRecord();
+    renderShopifyStatus();
+    showToast('Shopify disconnected');
+  }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
 function renderWaStatus(){

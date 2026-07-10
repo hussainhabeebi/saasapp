@@ -160,11 +160,11 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
 }
 
 // Strips fields that must never reach the browser — dashboard_password obviously, but
-// resend_api_key and smtp_pass are live send-capable credentials too, and the rest of this
-// object (clientRecord) sits in a page-lifetime JS variable in dashboard.html/broadcast.html,
-// inspectable via devtools for as long as the tab is open.
+// resend_api_key, smtp_pass and shopify_access_token are live send-capable credentials too, and
+// the rest of this object (clientRecord) sits in a page-lifetime JS variable in
+// dashboard.html/broadcast.html, inspectable via devtools for as long as the tab is open.
 function safeClient(rec){
-  const {dashboard_password, resend_api_key, smtp_pass, ...safe}=rec;
+  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, ...safe}=rec;
   return safe;
 }
 
@@ -1174,6 +1174,298 @@ async function handleChannelsChatwootSso(request, env){
   return json({ok:true, url:data.url});
 }
 
+/* ── Shopify module (Integrations tab connect + order/fulfillment/checkout webhooks) ────────
+   A one-click OAuth connect that lets this Worker read a client's Shopify store directly —
+   order/fulfillment webhooks trigger WhatsApp notifications straight from here, and checkout
+   webhooks feed an abandoned-cart nudge, all without n8n in the loop. Contrast with
+   handleChannelsChatwootSso above: that's Chatwoot's own Shopify sidebar integration (order
+   context inside a conversation); this is a separate connection whose token/data live on the
+   client row here, used for WhatsApp notifications (and, later, WhatsApp Catalog sync).
+   Requires SHOPIFY_API_KEY / SHOPIFY_API_SECRET (a Shopify Partners app's credentials) and a
+   `shopify_checkouts` NocoDB table (id below) — see SETUP.md "Shopify module". ── */
+// Keep in sync with the "Webhooks API version" set on the app in Shopify Partners — Shopify only
+// supports a given version for ~9-12 months after release, so this needs bumping periodically
+// (quarterly releases: -01, -04, -07, -10).
+const SHOPIFY_API_VERSION='2026-07';
+const SHOPIFY_SCOPES='read_orders,read_fulfillments,read_checkouts';
+// Create this table once in NocoDB (fields: client_id, checkout_token, phone, customer_name,
+// cart_summary, total, currency, recovery_url, created_at, nudge_sent, completed) and paste its
+// id here — same pattern as EMAIL_CAMPAIGNS_TABLE/EMAIL_SENDS_TABLE above.
+const SHOPIFY_CHECKOUTS_TABLE='REPLACE_SHOPIFY_CHECKOUTS_TABLE_ID';
+// Sent via WhatsApp when each event fires — 'abandoned' is swept in by cron, the rest by webhook.
+const SHOPIFY_EVENT_KINDS=['received','shipped','delivered','abandoned'];
+
+function isValidShopDomain(shop){ return /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(String(shop||'')); }
+
+// Same HMAC scheme as signAdminSession/hmacSignB64 above, reused so the OAuth `state` param can
+// carry the client id through Shopify's redirect round-trip with no server-side session store —
+// Shopify hands `state` back verbatim on the callback. 10-minute expiry: this only needs to
+// survive one redirect hop, not a whole session.
+async function signShopifyState(env, clientId){
+  const payload={cid:String(clientId), exp:Math.floor(Date.now()/1000)+600, n:crypto.randomUUID()};
+  const body=btoa(JSON.stringify(payload));
+  return `${body}.${await hmacSignB64(env, body)}`;
+}
+async function verifyShopifyState(env, token){
+  if(!token) return null;
+  const [body, sig]=String(token).split('.');
+  if(!body||!sig) return null;
+  if(await hmacSignB64(env, body)!==sig) return null;
+  let payload; try{ payload=JSON.parse(atob(body)); }catch(e){ return null; }
+  if(!payload?.cid||!payload?.exp||payload.exp<Math.floor(Date.now()/1000)) return null;
+  return payload;
+}
+
+// Shopify's OAuth callback signs every query param (except hmac/signature) with the app's
+// client secret — sorted key=value pairs joined with '&', hex HMAC-SHA256. Same idea as
+// verifyStripeSignature above, just over query params instead of a raw body.
+async function verifyShopifyOauthHmac(env, searchParams){
+  const hmac=searchParams.get('hmac');
+  if(!hmac) return false;
+  const pairs=[...searchParams.entries()].filter(([k])=>k!=='hmac'&&k!=='signature').sort(([a],[b])=>a<b?-1:1);
+  const message=pairs.map(([k,v])=>`${k}=${v}`).join('&');
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(env.SHOPIFY_API_SECRET), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
+  const expected=hex(sig);
+  if(expected.length!==hmac.length) return false;
+  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^hmac.charCodeAt(i);
+  return diff===0;
+}
+
+// Shopify signs webhook bodies with a base64 HMAC-SHA256 (X-Shopify-Hmac-Sha256) over the raw,
+// unparsed request body — must be verified before the body is touched as JSON.
+async function verifyShopifyWebhookHmac(env, rawBody, hmacHeader){
+  if(!hmacHeader) return false;
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(env.SHOPIFY_API_SECRET), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawBody));
+  const expected=btoa(String.fromCharCode(...new Uint8Array(sig)));
+  if(expected.length!==hmacHeader.length) return false;
+  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^hmacHeader.charCodeAt(i);
+  return diff===0;
+}
+
+async function shopifyFetch(env, shop, token, path, opts={}){
+  return fetch(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}${path}`, {
+    ...opts,
+    headers:{'X-Shopify-Access-Token':token, 'Content-Type':'application/json', ...(opts.headers||{})}
+  });
+}
+
+async function handleShopifyOauthStart(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.SHOPIFY_API_KEY||!env.SHOPIFY_API_SECRET) return json({error:'Shopify app credentials are not configured on the server.'}, 500);
+  const {shop}=await request.json().catch(()=>({}));
+  if(!isValidShopDomain(shop)) return json({error:'Enter your store as yourstore.myshopify.com'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(c.shopify_shop_domain && c.shopify_access_token) return json({error:'A Shopify store is already connected for this client. Disconnect it first to switch stores.'}, 400);
+
+  const state=await signShopifyState(env, payload.cid);
+  const redirectUri=`${env.WORKER_BASE_URL}/shopify/oauth/callback`;
+  const url=`https://${shop}/admin/oauth/authorize?client_id=${env.SHOPIFY_API_KEY}&scope=${encodeURIComponent(SHOPIFY_SCOPES)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
+  return json({ok:true, url});
+}
+
+// Browser redirect target, not an XHR call — Shopify itself lands the merchant here after they
+// approve the install, so failures redirect back into the dashboard with a query param instead
+// of returning JSON (there's no frontend JS listening on this response).
+async function handleShopifyOauthCallback(request, env){
+  const url=new URL(request.url);
+  const appBase=env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html';
+  const fail=(msg)=>Response.redirect(`${appBase}?shopify=error&msg=${encodeURIComponent(msg)}`, 302);
+  if(!env.SHOPIFY_API_KEY||!env.SHOPIFY_API_SECRET) return fail('Shopify app credentials are not configured on the server.');
+
+  if(!await verifyShopifyOauthHmac(env, url.searchParams)) return fail('Shopify signature verification failed');
+  const shop=url.searchParams.get('shop');
+  const code=url.searchParams.get('code');
+  const state=url.searchParams.get('state');
+  if(!isValidShopDomain(shop)||!code) return fail('Invalid callback from Shopify');
+  const statePayload=await verifyShopifyState(env, state);
+  if(!statePayload) return fail('This connection link expired — try connecting again from Integrations');
+
+  const collision=await findOtherClientByField(env, 'shopify_shop_domain', shop, statePayload.cid);
+  if(collision) return fail('This Shopify store is already connected to a different client');
+
+  const tokenR=await fetch(`https://${shop}/admin/oauth/access_token`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({client_id:env.SHOPIFY_API_KEY, client_secret:env.SHOPIFY_API_SECRET, code})
+  });
+  const tokenData=await tokenR.json().catch(()=>({}));
+  if(!tokenR.ok||!tokenData.access_token) return fail('Token exchange failed: '+(tokenData?.error||'HTTP '+tokenR.status));
+  const access_token=tokenData.access_token;
+
+  // Best-effort — registers the webhooks this module depends on. A client re-connecting after a
+  // revoke can just disconnect and connect again to re-register them.
+  const topics=['orders/create','fulfillments/create','fulfillments/update','checkouts/create','checkouts/update','app/uninstalled'];
+  const webhookUri=`${env.WORKER_BASE_URL}/shopify/webhook`;
+  await Promise.all(topics.map(topic=>
+    shopifyFetch(env, shop, access_token, '/webhooks.json', {method:'POST', body:JSON.stringify({webhook:{topic, address:webhookUri, format:'json'}})}).catch(()=>{})
+  ));
+
+  await patchClientFields(env, statePayload.cid, {shopify_shop_domain:shop, shopify_access_token:access_token, shopify_connected_at:new Date().toISOString()});
+  return Response.redirect(`${appBase}?client=${statePayload.cid}&shopify=connected`, 302);
+}
+
+async function handleShopifyDisconnect(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await patchClientFields(env, payload.cid, {shopify_shop_domain:'', shopify_access_token:'', shopify_connected_at:''});
+  return json({ok:true});
+}
+
+// Fires a WhatsApp template straight through Meta's Graph API (same shape as
+// handleWaSendTemplate above) and records the attempt in shopify_notify_log regardless of
+// outcome, so the Shopify Notifications page (ecom.html) has something to show even for a
+// skipped/failed send. `kind` indexes into shopify_notify_config.config; `vars` supplies the
+// values available for that event's template variable mapping.
+async function sendShopifyNotification(env, c, kind, vars, logMeta){
+  let stored={}; try{ stored=JSON.parse(c.shopify_notify_config||'{}'); }catch(e){}
+  const cfg=stored?.config?.[kind];
+  let log=[]; try{ log=JSON.parse(c.shopify_notify_log||'[]'); }catch(e){}
+  const entry={ts:new Date().toISOString(), event:kind, order:logMeta.order||'', phone:logMeta.phone||''};
+
+  if(!cfg?.name){ entry.status='skipped'; entry.detail='Not configured'; }
+  else if(!c.wa_phone_id||!c.wa_token){ entry.status='skipped'; entry.detail='WhatsApp not connected'; }
+  else if(!logMeta.phone){ entry.status='skipped'; entry.detail='No customer phone on this order'; }
+  else{
+    const params=cfg.params||[];
+    const components=params.length ? [{type:'body', parameters:params.map(key=>({type:'text', text:String((key&&vars[key])||'')}))}] : [];
+    const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp', to:logMeta.phone, type:'template', template:{name:cfg.name, language:{code:cfg.lang||'en'}, components}})
+    });
+    const data=await r.json().catch(()=>({}));
+    entry.status=r.ok?'sent':'failed';
+    entry.detail=r.ok?(data?.messages?.[0]?.id||'sent'):(data?.error?.message||'HTTP '+r.status);
+  }
+  log.push(entry);
+  if(log.length>30) log=log.slice(-30); // ~last 30 events is plenty for the log view, not an audit trail
+  await patchClientFields(env, c.Id, {shopify_notify_log:JSON.stringify(log)});
+}
+
+async function findShopifyCheckoutRow(env, clientId, token){
+  if(!token) return null;
+  const r=await ncFetch(env, `api/v2/tables/${SHOPIFY_CHECKOUTS_TABLE}/records?where=(client_id,eq,${clientId})~and(checkout_token,eq,${encodeURIComponent(token)})&limit=1`);
+  if(!r.ok) return null;
+  const data=await r.json().catch(()=>({}));
+  return data?.list?.[0]||null;
+}
+
+async function upsertShopifyCheckout(env, clientId, payload){
+  const token=payload.token||payload.cart_token;
+  if(!token) return;
+  const fields={
+    client_id:clientId, checkout_token:token,
+    phone:payload.phone||payload.shipping_address?.phone||payload.billing_address?.phone||'',
+    customer_name:[payload.billing_address?.first_name, payload.billing_address?.last_name].filter(Boolean).join(' '),
+    cart_summary:(payload.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
+    total:payload.total_price||'', currency:payload.currency||'',
+    recovery_url:payload.abandoned_checkout_url||'', created_at:payload.created_at||new Date().toISOString(),
+  };
+  const existing=await findShopifyCheckoutRow(env, clientId, token);
+  if(existing) await ncFetch(env, `api/v2/tables/${SHOPIFY_CHECKOUTS_TABLE}/records`, {method:'PATCH', body:{Id:existing.Id, ...fields}});
+  else await ncFetch(env, `api/v2/tables/${SHOPIFY_CHECKOUTS_TABLE}/records`, {method:'POST', body:{...fields, nudge_sent:'No', completed:'No'}});
+}
+
+async function markShopifyCheckoutCompleted(env, clientId, token){
+  if(!token) return;
+  const existing=await findShopifyCheckoutRow(env, clientId, token);
+  if(existing) await ncFetch(env, `api/v2/tables/${SHOPIFY_CHECKOUTS_TABLE}/records`, {method:'PATCH', body:{Id:existing.Id, completed:'Yes'}});
+}
+
+// Webhook receiver — server-to-server from Shopify, so auth is the HMAC header, not a session.
+// Reads the raw body first and verifies before touching it as JSON (order matters: the HMAC is
+// computed over the exact bytes Shopify sent).
+async function handleShopifyWebhook(request, env){
+  const rawBody=await request.text();
+  if(!await verifyShopifyWebhookHmac(env, rawBody, request.headers.get('X-Shopify-Hmac-Sha256'))) return json({error:'Invalid signature'}, 401);
+  const shop=request.headers.get('X-Shopify-Shop-Domain');
+  const topic=request.headers.get('X-Shopify-Topic');
+  const c=await findClientByField(env, 'shopify_shop_domain', shop);
+  // Unknown shop (e.g. a leftover webhook after disconnect) — ack with 200 so Shopify doesn't
+  // keep retrying; there's no client row left to act on.
+  if(!c) return json({ok:true});
+  let data; try{ data=JSON.parse(rawBody); }catch(e){ return json({ok:true}); }
+
+  if(topic==='orders/create'){
+    const phone=data.phone||data.shipping_address?.phone||data.customer?.phone||'';
+    await sendShopifyNotification(env, c, 'received', {
+      customer_name:data.customer?.first_name||'', order_number:String(data.name||data.order_number||''),
+      total:data.total_price||'', items:(data.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
+      store_name:c.client_name||''
+    }, {phone, order:data.name||''});
+    await markShopifyCheckoutCompleted(env, c.Id, data.checkout_token||data.cart_token);
+  }
+  else if(topic==='fulfillments/create'){
+    const orderR=await shopifyFetch(env, shop, c.shopify_access_token, `/orders/${data.order_id}.json`);
+    const order=await orderR.json().catch(()=>null);
+    const phone=order?.order?.phone||order?.order?.shipping_address?.phone||'';
+    await sendShopifyNotification(env, c, 'shipped', {
+      customer_name:order?.order?.customer?.first_name||'', order_number:String(order?.order?.name||''),
+      tracking_number:data.tracking_number||'', tracking_url:(data.tracking_urls||[])[0]||'', store_name:c.client_name||''
+    }, {phone, order:order?.order?.name||''});
+  }
+  else if(topic==='fulfillments/update'){
+    // Shopify only reports 'delivered' when the carrier is one it tracks natively — best-effort,
+    // not every order will get this event. See SETUP.md "Shopify module" for the caveat.
+    if(data.shipment_status==='delivered'){
+      const orderR=await shopifyFetch(env, shop, c.shopify_access_token, `/orders/${data.order_id}.json`);
+      const order=await orderR.json().catch(()=>null);
+      const phone=order?.order?.phone||order?.order?.shipping_address?.phone||'';
+      await sendShopifyNotification(env, c, 'delivered', {
+        customer_name:order?.order?.customer?.first_name||'', order_number:String(order?.order?.name||''),
+        review_link:c.review_link||'', store_name:c.client_name||''
+      }, {phone, order:order?.order?.name||''});
+    }
+  }
+  else if(topic==='checkouts/create'||topic==='checkouts/update'){
+    await upsertShopifyCheckout(env, c.Id, data);
+  }
+  else if(topic==='app/uninstalled'){
+    await patchClientFields(env, c.Id, {shopify_shop_domain:'', shopify_access_token:'', shopify_connected_at:''});
+  }
+  return json({ok:true});
+}
+
+// Cron-swept abandoned-cart nudge (see wrangler.toml's second, more frequent cron entry) —
+// replaces the n8n followup-template.json pattern for Shopify carts specifically.
+async function sweepAbandonedShopifyCheckouts(env){
+  const nudgeAfterMs=Date.now()-60*60*1000; // wait 60 min after abandonment before nudging
+  const staleBeforeMs=Date.now()-48*60*60*1000; // ignore anything older than 48h
+  // Every qualifying row gets nudge_sent flipped to 'Yes' before the next fetch, which is what
+  // keeps this at offset 0 instead of paginating — the matching set shrinks under the same
+  // filter as rows are processed, so a fixed offset would silently skip rows (see NocoDB's
+  // offset pagination + concurrent-mutation interaction). A hard iteration cap just guards
+  // against ever looping forever if a row's mutation doesn't stick for some reason.
+  for(let i=0;i<50;i++){
+    const r=await ncFetch(env, `api/v2/tables/${SHOPIFY_CHECKOUTS_TABLE}/records?where=(completed,eq,No)~and(nudge_sent,eq,No)&limit=100`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const row of rows){
+      const createdMs=new Date(row.created_at).getTime();
+      if(!createdMs || createdMs>nudgeAfterMs || createdMs<staleBeforeMs || !row.phone){
+        // Not eligible yet (too new) or too stale to bother — mark 'nudge_sent' anyway only for
+        // the stale case, so it stops being re-fetched every sweep; too-new rows are left alone
+        // to be picked up once they cross the 60-minute mark.
+        if(createdMs && createdMs<staleBeforeMs) await ncFetch(env, `api/v2/tables/${SHOPIFY_CHECKOUTS_TABLE}/records`, {method:'PATCH', body:{Id:row.Id, nudge_sent:'Yes'}});
+        continue;
+      }
+      try{
+        const c=await getClientById(env, row.client_id);
+        if(c) await sendShopifyNotification(env, c, 'abandoned', {
+          customer_name:row.customer_name||'', items:row.cart_summary||'', total:row.total||'',
+          checkout_url:row.recovery_url||'', store_name:c.client_name||''
+        }, {phone:row.phone, order:row.checkout_token});
+      }catch(e){ console.error('[shopify] abandoned nudge failed for checkout', row.Id, e.message); }
+      await ncFetch(env, `api/v2/tables/${SHOPIFY_CHECKOUTS_TABLE}/records`, {method:'PATCH', body:{Id:row.Id, nudge_sent:'Yes'}});
+    }
+    if(rows.length<100) break;
+  }
+}
+
 /* ── Billing module (Stripe) ──────────────────────────────────────────────
    Plan subscriptions use Stripe Checkout (mode=subscription) + the Stripe
    Customer Portal for everything after signup (upgrade/downgrade/cancel/
@@ -1517,8 +1809,10 @@ async function handleBillingWebhook(request, env){
    client's own ecom data" — full protection against someone else's client_id
    being guessed would need real per-client authentication, which ecom.html
    doesn't have today. ── */
-const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates'];
-const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates'];
+// shopify_shop_domain/connected_at are read-only here — only the OAuth callback sets them.
+// shopify_access_token is deliberately excluded (never reaches the browser).
+const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log'];
+const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config'];
 
 // Shared default tables used until a client explicitly saves their own table
 // ID in Settings — mirrors ecom.html's client-side DEFAULT_ECOM_IDS fallback.
@@ -1552,6 +1846,23 @@ async function handleEcomClientUpdate(request, env){
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), ...fields}});
   const data=await r.json().catch(()=>({}));
   return json(data, r.status);
+}
+
+// client_id-based like the rest of /ecom/* (see the comment on handleEcomList below) — ecom.html
+// has no Authentik session of its own, so the Shopify Notifications page's template picker needs
+// a route it can call directly instead of going through session-authed /wa/templates. Same Graph
+// API call as handleWaTemplatesGet, just keyed by client_id instead of a session token, and with
+// no n8n hop (unlike the existing "Order Delivery Notifications" section's loadWaTemplates()).
+async function handleEcomWaTemplatesGet(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const c=await getClientById(env, clientId);
+  if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates?fields=name,status,language,category,components&limit=200`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  return json(data);
 }
 
 // Sort is a small whitelist mapped to real NocoDB sort strings, not passed through raw — this
@@ -1783,6 +2094,7 @@ export default {
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
+      else if(url.pathname==='/ecom/wa-templates' && request.method==='GET'){ res=await handleEcomWaTemplatesGet(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }
@@ -1795,6 +2107,10 @@ export default {
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
       else if(url.pathname==='/channels/status' && request.method==='GET'){ res=await handleChannelsStatus(request, env); }
       else if(url.pathname==='/channels/chatwoot-sso' && request.method==='GET'){ res=await handleChannelsChatwootSso(request, env); }
+      else if(url.pathname==='/shopify/oauth/start' && request.method==='POST'){ res=await handleShopifyOauthStart(request, env); }
+      else if(url.pathname==='/shopify/oauth/callback' && request.method==='GET'){ res=await handleShopifyOauthCallback(request, env); }
+      else if(url.pathname==='/shopify/webhook' && request.method==='POST'){ res=await handleShopifyWebhook(request, env); }
+      else if(url.pathname==='/shopify/disconnect' && request.method==='POST'){ res=await handleShopifyDisconnect(request, env); }
       else if(url.pathname==='/billing/plans' && request.method==='GET'){ res=await handleBillingPlans(request, env); }
       else if(url.pathname==='/billing/checkout-subscription' && request.method==='POST'){ res=await handleBillingCheckoutSubscription(request, env); }
       else if(url.pathname==='/billing/portal' && request.method==='GET'){ res=await handleBillingPortal(request, env); }
@@ -1819,9 +2135,10 @@ export default {
     return new Response(res.body, {status:res.status, headers});
   },
 
-  // Cloudflare Cron Trigger — see wrangler.toml [triggers]. Runs the Integrations health
-  // check for every client once a day, independent of anyone opening the dashboard.
+  // Cloudflare Cron Triggers — see wrangler.toml [triggers]. Two schedules share this one
+  // entry point: the daily health check, and the more frequent Shopify abandoned-cart sweep.
   async scheduled(event, env, ctx){
-    ctx.waitUntil(runDailyHealthCheckForAllClients(env));
+    if(event.cron==='0 2 * * *') ctx.waitUntil(runDailyHealthCheckForAllClients(env));
+    else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }
 };
