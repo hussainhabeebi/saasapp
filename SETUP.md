@@ -1030,16 +1030,17 @@ Routing — see "Deferred phases" below for what's already been scoped for those
   can unsubscribe from one channel without affecting the other.
 
 **Clients table** (`mxl33bg4wi70fqj`) — one new field for now:
-- `email_table_ids` (Long text, JSON) — e.g. `{"campaigns":"<table id>","sends":"<table id>"}`.
-  Unlike the ecom module's `ecom_table_ids` (an *optional* per-client override of a shared
-  default), there is no shared default here yet because these two tables don't exist until you
-  create them — create **one** `EmailCampaigns` table and **one** `EmailSends` table in NocoDB
-  (shared across all clients, rows scoped by a `client_id` column, matching the ecom module's
-  pattern), then paste their table IDs into `EMAIL_CAMPAIGNS_TABLE`/`EMAIL_SENDS_TABLE` at the top
-  of `worker.js` (currently `REPLACE_WITH_YOUR_EMAIL_CAMPAIGNS_TABLE_ID`/`_SENDS_TABLE_ID`
-  placeholders) so every client uses the same shared tables without needing `email_table_ids` set
-  individually. (The field still exists as an escape hatch for a client who wants a bespoke table,
-  same override pattern as `ecom_table_ids`.)
+- `email_table_ids` (Long text, JSON) — optional per-client override, e.g.
+  `{"campaigns":"<table id>","sends":"<table id>"}`, same escape-hatch pattern as the ecom
+  module's `ecom_table_ids`. Not needed for a client using the shared tables below.
+
+**Shared `EmailCampaigns`/`EmailSends` tables** — created in NocoDB, IDs set in `worker.js`:
+```js
+const EMAIL_CAMPAIGNS_TABLE = 'md3ghcfigac4yqs';
+const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
+```
+Every client uses these same two tables (rows scoped by `client_id`) unless a client sets its
+own override in `email_table_ids` above.
 
 **`EmailCampaigns` table** — one row per campaign:
 | Field | Type | Notes |

@@ -24,8 +24,8 @@ const CLIENTS_TABLE = 'mxl33bg4wi70fqj';
 const DEFAULT_LEADS_TABLE = 'mvg6rcw0ia5qqrx';
 // Create these two tables once in NocoDB (shared across all clients, rows scoped by a
 // client_id column — see SETUP.md "Email Marketing module") and paste their real ids here.
-const EMAIL_CAMPAIGNS_TABLE = 'REPLACE_WITH_YOUR_EMAIL_CAMPAIGNS_TABLE_ID';
-const EMAIL_SENDS_TABLE = 'REPLACE_WITH_YOUR_EMAIL_SENDS_TABLE_ID';
+const EMAIL_CAMPAIGNS_TABLE = 'md3ghcfigac4yqs';
+const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
 
 function corsHeaders(origin, env){
   const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
