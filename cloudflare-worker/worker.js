@@ -1183,7 +1183,10 @@ async function handleChannelsChatwootSso(request, env){
    client row here, used for WhatsApp notifications (and, later, WhatsApp Catalog sync).
    Requires SHOPIFY_API_KEY / SHOPIFY_API_SECRET (a Shopify Partners app's credentials) and a
    `shopify_checkouts` NocoDB table (id below) — see SETUP.md "Shopify module". ── */
-const SHOPIFY_API_VERSION='2024-10';
+// Keep in sync with the "Webhooks API version" set on the app in Shopify Partners — Shopify only
+// supports a given version for ~9-12 months after release, so this needs bumping periodically
+// (quarterly releases: -01, -04, -07, -10).
+const SHOPIFY_API_VERSION='2026-07';
 const SHOPIFY_SCOPES='read_orders,read_fulfillments,read_checkouts';
 // Create this table once in NocoDB (fields: client_id, checkout_token, phone, customer_name,
 // cart_summary, total, currency, recovery_url, created_at, nudge_sent, completed) and paste its
