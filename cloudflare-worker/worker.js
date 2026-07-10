@@ -62,6 +62,15 @@ async function getClientById(env, clientId){
   if(!r.ok) return null;
   return r.json();
 }
+// client_slug is the short, human-readable handle used in onshope.com URLs (onshope.com/<slug>)
+// instead of the raw numeric client_id, so a storefront link doesn't reveal or let visitors
+// enumerate other clients' ids.
+async function getClientBySlug(env, slug){
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(client_slug,eq,${encodeURIComponent(slug)})&limit=1`);
+  if(!r.ok) return null;
+  const data=await r.json().catch(()=>({}));
+  return data?.list?.[0]||null;
+}
 async function getClientByAuthentikEmail(env, email){
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(authentik_email,eq,${encodeURIComponent(email)})&limit=1`);
   if(!r.ok) return null;
@@ -812,7 +821,11 @@ async function handleChannelsWhatsappConnect(request, env){
     }).catch(()=>{});
   }
 
-  await patchClientFields(env, payload.cid, {chatwoot_inbox_id:String(inbox.id), waba_id, wa_token, wa_phone_id:phone_number_id});
+  // wa_phone_id is Meta's internal phone-number-id (needed for API calls), not something a
+  // customer can dial — wa_display_phone is the actual number (e.g. "+91 94969 71950") and is
+  // what the public storefront's "Order on WhatsApp" links use, so they open the exact same
+  // WhatsApp thread this bot/inbox replies from instead of a different, unrelated number.
+  await patchClientFields(env, payload.cid, {chatwoot_inbox_id:String(inbox.id), waba_id, wa_token, wa_phone_id:phone_number_id, wa_display_phone:phone_number});
   return json({ok:true, chatwoot_inbox_id:String(inbox.id), waba_id, wa_phone_id:phone_number_id});
 }
 
@@ -1389,50 +1402,81 @@ async function handleEcomDelete(request, env, kind){
   return json({deleted, requested:ids.length});
 }
 
-/* ── ECOMMERCE PUBLIC STOREFRONT (store.html) — unlike every /ecom/* route above, these are
-   meant to be opened directly by end customers (shared as a WhatsApp link), so they must not
-   give a customer any of what a client's own staff can do in ecom.html. Three separate cuts
-   enforce that: (1) GET only — no create/update/delete handler exists under this prefix at
-   all, so there's no write path to wire up by mistake; (2) a fixed field whitelist on both
-   the client record and each product row, so columns like NocoDB table ids, sheet URLs, cost
-   price, or internal notes can never leak even though the underlying tables hold them; (3) no
-   access to leads/orders/CRM tables whatsoever — this code path never touches them. Still
-   scoped by client_id the same way every ecom.html route is (see the big comment above) —
-   closing that last gap needs real per-client auth, which neither surface has today. ── */
-const ECOM_PUBLIC_CLIENT_FIELDS=['client_name','support_phone','review_link'];
+/* ── ECOMMERCE PUBLIC STOREFRONT (store.html, and onshope.com's onshope-store.html /
+   onshope-home.html) — unlike every /ecom/* route above, these are meant to be opened directly
+   by end customers (shared as a WhatsApp link), so they must not give a customer any of what a
+   client's own staff can do in ecom.html. Three separate cuts enforce that: (1) GET only — no
+   create/update/delete handler exists under this prefix at all, so there's no write path to
+   wire up by mistake; (2) a fixed field whitelist on both the client record and each product
+   row, so columns like NocoDB table ids, sheet URLs, cost price, Meta API tokens, or internal
+   notes can never leak even though the underlying tables hold them; (3) no access to
+   leads/orders/CRM tables whatsoever — this code path never touches them. Client/product lookup
+   accepts either client_id (store.html) or client_slug (onshope.com, so its URLs don't reveal or
+   let visitors enumerate other clients' numeric ids). Closing the last gap — someone guessing
+   another client's slug or id — needs real per-client auth, which neither surface has today. ── */
+const ECOM_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug','review_link'];
 const ECOM_PUBLIC_PRODUCT_FIELDS=['Id','name','sku','category','color','size','price','currency','stock','image_url'];
 const ECOM_PUBLIC_MAX_LIMIT=60;
+const ECOM_PUBLIC_STORES_MAX=200;
 
 function ecomPublicPick(row, fields){
   const out={};
   fields.forEach(k=>{ out[k]=row[k]===undefined?null:row[k]; });
   return out;
 }
+// wa_display_phone (the real dialable number, saved when the client connects WhatsApp — see
+// handleChannelsWhatsappConnect) is preferred; support_phone is a manually-entered fallback for
+// clients who haven't connected the native WhatsApp Cloud API integration yet. Never expose
+// wa_phone_id/wa_token themselves — those are Meta API credentials, not a dialable number.
+function ecomPublicClientOut(row){
+  return {...ecomPublicPick(row, ECOM_PUBLIC_CLIENT_FIELDS), whatsapp_phone: row.wa_display_phone||row.support_phone||null};
+}
+
+// Both public endpoints resolve a client by client_id (store.html, already shipped) or by
+// client_slug (onshope.com's onshope-store.html) — same handler, same whitelist either way.
+async function ecomPublicResolveClient(env, url){
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(clientId) return getClientById(env, clientId);
+  const slug=String(url.searchParams.get('slug')||'');
+  if(slug) return getClientBySlug(env, slug);
+  return null;
+}
 
 async function handleEcomPublicClient(request, env){
   const url=new URL(request.url);
-  const clientId=String(url.searchParams.get('client_id')||'');
-  if(!clientId) return json({error:'client_id required'},400);
-  const c=await getClientById(env, clientId);
-  if(!c) return json({error:'Client not found'},404);
-  return json(ecomPublicPick(c, ECOM_PUBLIC_CLIENT_FIELDS));
+  const c=await ecomPublicResolveClient(env, url);
+  if(!c) return json({error:'Store not found'},404);
+  return json(ecomPublicClientOut(c));
 }
 
 async function handleEcomPublicProducts(request, env){
   const url=new URL(request.url);
-  const clientId=String(url.searchParams.get('client_id')||'');
-  if(!clientId) return json({error:'client_id required'},400);
-  const tableId=await ecomResolveTable(env, clientId, 'products');
+  const c=await ecomPublicResolveClient(env, url);
+  if(!c) return json({error:'Store not found'},404);
+  const tableId=await ecomResolveTable(env, c.Id, 'products');
   if(!tableId) return json({list:[]});
-  // Filtering/search is done client-side in store.html against this one fetch — capped well
-  // below the admin endpoint's 1000 so this can't be used to scrape a large catalog quickly.
+  // Filtering/search is done client-side against this one fetch — capped well below the admin
+  // endpoint's 1000 so this can't be used to scrape a large catalog quickly.
   const limit=Math.min(parseInt(url.searchParams.get('limit')||String(ECOM_PUBLIC_MAX_LIMIT),10)||ECOM_PUBLIC_MAX_LIMIT, ECOM_PUBLIC_MAX_LIMIT);
-  const qs=new URLSearchParams({where:`(client_id,eq,${clientId})~and(status,neq,inactive)`, limit:String(limit), sort:'-stock'});
+  const qs=new URLSearchParams({where:`(client_id,eq,${c.Id})~and(status,neq,inactive)`, limit:String(limit), sort:'-stock'});
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records?${qs.toString()}`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json(data, r.status);
   const list=(data.list||[]).map(row=>ecomPublicPick(row, ECOM_PUBLIC_PRODUCT_FIELDS));
   return json({list});
+}
+
+// Directory/homepage listing for onshope.com — every client that has published a store (has a
+// client_slug set) and has the ecommerce module on. Same whitelist discipline as the two
+// handlers above; still no leads/orders/internal fields.
+async function handleEcomPublicStores(request, env){
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=${ECOM_PUBLIC_STORES_MAX}`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  const stores=(data.list||[])
+    .filter(c=>c.client_slug && c.industry==='ecommerce')
+    .map(c=>({client_slug:c.client_slug, client_name:c.client_name||c.client_slug}));
+  return json({list:stores});
 }
 
 export default {
@@ -1472,6 +1516,7 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
+      else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }

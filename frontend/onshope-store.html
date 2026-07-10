@@ -3,26 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Store</title>
-<!-- Public customer-facing storefront. Read-only: it only ever calls the /ecom/public/*
-     endpoints (cloudflare-worker/worker.js), which return a fixed customer-safe field
-     whitelist and have no create/update/delete handler at all — there is no code path
-     here that can reach ecom.html's admin features, other clients' data, or leads/orders. -->
+<title>Store · onshope</title>
+<!-- onshope.com per-client storefront. Deliberately a separate file from saasapp's own
+     frontend/store.html — same backend (cloudflare-worker/worker.js's /ecom/public/* routes),
+     but its own brand/design since onshope.com is its own public-facing product, not part of
+     the Leadvyne dashboard. Read-only: no create/update/delete path exists here at all. -->
 <style>
 :root{
-  --bg:#F5F3FF;--card:#FFFFFF;--ink:#0C0A1E;--muted:#5B5280;
-  --accent:#7C3AED;--accent-ink:#6D28D9;--accent-soft:#EDE9FE;
-  --line:#E5E1F5;--wa:#25D366;--wa-ink:#128C4A;
+  --bg:#F7F8FC;--card:#FFFFFF;--ink:#101828;--muted:#667085;
+  --accent:#155EEF;--accent-ink:#0B44C0;--accent-soft:#EAF1FF;
+  --line:#E4E7EC;--wa:#25D366;--wa-ink:#128C4A;
   --body:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
-  --disp:var(--body);
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
 a{color:inherit}
-.hdr{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:16px 18px;display:flex;flex-direction:column;gap:10px}
+.hdr{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:14px 18px;display:flex;flex-direction:column;gap:10px}
 .hdr-top{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.store-name{font-size:19px;font-weight:700;letter-spacing:-.01em}
-.wa-btn{display:inline-flex;align-items:center;gap:6px;background:var(--wa);color:#fff;border:none;border-radius:20px;padding:9px 16px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap}
+.brand-row{display:flex;align-items:center;gap:10px;min-width:0}
+.brand{font-size:13px;font-weight:700;color:var(--accent-ink);text-decoration:none;white-space:nowrap}
+.divider{width:1px;height:16px;background:var(--line)}
+.store-name{font-size:17px;font-weight:700;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wa-btn{display:inline-flex;align-items:center;gap:6px;background:var(--wa);color:#fff;border:none;border-radius:20px;padding:9px 16px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0}
 .wa-btn:active{background:var(--wa-ink)}
 .search{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:11px 14px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg)}
 .search:focus{outline:none;border-color:var(--accent);background:#fff}
@@ -36,22 +38,25 @@ a{color:inherit}
 .p-meta{font-size:12.5px;color:var(--muted)}
 .p-price{font-size:16px;font-weight:700;color:var(--accent-ink);margin-top:2px}
 .badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;background:var(--accent-soft);color:var(--accent-ink);width:fit-content}
-.badge.out{background:#FDE8E8;color:#B42318}
+.badge.out{background:#FEF0F0;color:#B42318}
 .order-btn{margin-top:auto;display:flex;align-items:center;justify-content:center;gap:6px;background:var(--wa);color:#fff;border:none;border-radius:10px;padding:10px;font-size:13.5px;font-weight:600;text-decoration:none}
 .order-btn:active{background:var(--wa-ink)}
 .order-btn.disabled{background:var(--line);color:var(--muted);pointer-events:none}
 .empty,.err{text-align:center;color:var(--muted);padding:60px 20px;font-size:14px}
-.skel{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
-.skel .thumb{background:linear-gradient(90deg,var(--accent-soft),#fff,var(--accent-soft));background-size:200% 100%;animation:shimmer 1.4s infinite}
-@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.foot{text-align:center;color:var(--muted);font-size:12px;padding:24px 16px}
+.foot a{color:var(--accent-ink);font-weight:600;text-decoration:none}
 </style>
 </head>
 <body>
 
 <div class="hdr">
   <div class="hdr-top">
-    <div class="store-name" id="storeName">Store</div>
-    <a class="wa-btn" id="chatBtn" style="display:none" href="#">💬 Chat on WhatsApp</a>
+    <div class="brand-row">
+      <a class="brand" href="/">onshope</a>
+      <div class="divider"></div>
+      <div class="store-name" id="storeName">Store</div>
+    </div>
+    <a class="wa-btn" id="chatBtn" style="display:none" href="#">💬 Chat</a>
   </div>
   <input class="search" id="searchBox" placeholder="Search products..." oninput="renderProducts()">
 </div>
@@ -62,10 +67,12 @@ a{color:inherit}
   <div class="err" id="errMsg" style="display:none">Sorry, this store link isn't working right now.</div>
 </div>
 
+<div class="foot">Powered by <a href="/">onshope</a> — WhatsApp commerce for local businesses</div>
+
 <script>
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const params = new URLSearchParams(location.search);
-const clientId = params.get('client') || params.get('client_id') || '';
+const slug = params.get('slug') || '';
 const focusSku = params.get('sku') || '';
 
 let storeInfo = {};
@@ -124,21 +131,21 @@ function renderProducts(){
 }
 
 async function load(){
-  if(!clientId){
+  if(!slug){
     document.getElementById('errMsg').style.display = 'block';
     return;
   }
   try{
     const [clientRes, productsRes] = await Promise.all([
-      fetch(`${WORKER_BASE}/ecom/public/client?client_id=${encodeURIComponent(clientId)}`),
-      fetch(`${WORKER_BASE}/ecom/public/products?client_id=${encodeURIComponent(clientId)}`),
+      fetch(`${WORKER_BASE}/ecom/public/client?slug=${encodeURIComponent(slug)}`),
+      fetch(`${WORKER_BASE}/ecom/public/products?slug=${encodeURIComponent(slug)}`),
     ]);
     if(!clientRes.ok || !productsRes.ok) throw new Error('fetch failed');
     storeInfo = await clientRes.json();
     const data = await productsRes.json();
     allProducts = data.list || [];
 
-    document.title = storeInfo.client_name || 'Store';
+    document.title = (storeInfo.client_name || 'Store') + ' · onshope';
     document.getElementById('storeName').textContent = storeInfo.client_name || 'Store';
     const chatBtn = document.getElementById('chatBtn');
     const chat = waLink(storeInfo.whatsapp_phone, `Hi! I'm browsing your products.`);
