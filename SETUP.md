@@ -965,3 +965,46 @@ frontend files, short URLs.
 2. Add `https://onshope.com` (and the `www` variant) to the Worker's `ALLOWED_ORIGINS` environment
    variable/secret.
 3. Set `client_slug` in NocoDB for each client that should appear on onshope.com.
+
+## `engine-ecom-native.json` (n8n-saas repo) — dedicated, native-node ecom engine
+`wrapper.json` routes ecommerce clients to a workflow named **"Leadvyne · Engine · Ecom"**
+(`engine-ecom.json`) — a generic lead-qualification-funnel engine (intent classes like
+BOOKING/AFFIRMATIVE/DELAY, funnel stages, qualification questions) with ecom bolted on as one
+FAQ sub-route. That mismatch was the root cause of several "false negative" bugs earlier in this
+file. `engine-ecom-native.json` is a from-scratch replacement built specifically for ecom —
+**not yet wired into `wrapper.json`**; switch to it by pointing the wrapper's "Execute · Ecom
+Engine" node's `workflowId` at "Leadvyne · Engine · Ecom (Native)" once tested.
+
+What's different from `engine-ecom.json`:
+- **No generic funnel at all.** No intent classifier, no BOOKING/DELAY/qualification stages —
+  every message goes straight to the ecom pipeline. One AI call decides the reply (down from
+  three: the old intent-classifier call, the FAQ-reply call, and `ecom-context.json`'s own
+  slot-extraction call — now just the slot-extraction call plus this one).
+- **Voice messages are actually transcribed.** `engine-ecom.json` never called Sarvam STT for
+  ecom — a voice note just became the literal string `"(sent a voice note)"`. The native engine
+  downloads the audio, transcribes via Sarvam STT (language dynamic from the client's own
+  `language` field, not hardcoded to Malayalam), and if transcription fails, replies with an
+  honest "couldn't hear that, please try again" message in the client's language **without**
+  spending an AI/catalog round trip on empty input.
+- **Dynamic language, not a hardcoded lock.** Replaces the old `main_prompt` suffix's "Respond
+  ONLY in {lang}. Never switch languages." with "Respond in the same language the customer is
+  currently writing in — switch naturally if they switch."
+- **Memory keyed by phone, not just an internal id.** The lead lookup queries NocoDB by
+  `(Phone,eq,<phone>)` directly (native NocoDB node, not a raw HTTP call) — a lead, and
+  everything hung off it (`ecom_prefs`, conversation history), resolves for a given phone
+  number regardless of which client's inbox a message arrives through, same duplicate-detection
+  behavior as before but now on a native node.
+- **All native nodes except two.** NocoDB (client lookup, lead lookup) and the AI Agent + Chat
+  Model (shared OpenRouter credential, same convention as `ecom-context.json`) are native.
+  Two things intentionally stay `HTTP Request`, both with a credential (not an inline token):
+  Chatwoot has no native n8n node at all, and the lead-record PATCH needs a JS-built body with
+  only the fields this turn actually changed — NocoDB's native node sends a fixed field list,
+  which would silently blank out fields (like `Handover`) this turn didn't intend to touch.
+  Color/size matching, progressive relaxation, Drive photo auto-send, and the storefront order
+  link all come from calling the existing `ecom-context.json` sub-workflow unchanged.
+- Human handover is now a field the single AI reply call itself returns (`wants_human`), plus
+  the same loop-detection safety net as before (3 identical bot replies in a row forces it).
+
+Tested with 53 cases (38 unit tests over the extracted node logic, 15 end-to-end vm simulations
+chaining the actual generated `jsCode` through three full conversation turns — text with a
+catalog match, a failed voice transcription, and an explicit human-handover request).
