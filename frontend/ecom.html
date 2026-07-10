@@ -128,6 +128,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 <div id="tabs">
   <button class="tab active" data-tab="products" onclick="showTab('products')">📦 Products</button>
   <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
+  <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
 </div>
 
@@ -194,6 +195,54 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <tbody id="ordersTbody">
           <tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>
         </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- SHOPIFY TAB (order/fulfillment/abandoned-cart WhatsApp notifications) -->
+<div id="tabShopify" class="page">
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-title">Shopify Connection</div>
+    <div id="shopifyNotConnected" style="display:none">
+      <div class="s-hint">No Shopify store connected yet. Connect it once from the main dashboard — <a href="https://app.leadvyne.com/dashboard.html?client=" id="shopifyConnectLink" style="color:var(--accent-ink);font-weight:600">open Settings → Integrations</a> — then come back here to set up notifications.</div>
+    </div>
+    <div id="shopifyConnected" style="display:none">
+      <div class="s-note">✅ Connected — <b id="shopifyDomainDisplay"></b></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-title">Notifications</div>
+    <div class="s-hint" style="margin-bottom:10px">Sent via your connected WhatsApp Business number straight through Meta's Graph API — no Chatwoot or n8n dependency. Connect WhatsApp under Settings → Channels first.</div>
+    <div class="s-row" style="margin-top:0">
+      <button class="save-btn sec" onclick="loadShopifyTemplates()">🔍 Load My WhatsApp Templates</button>
+      <span class="save-msg" id="shopifyTemplatesMsg"></span>
+    </div>
+    <div id="shopifyTemplateReceived" style="margin-top:14px"></div>
+    <div id="shopifyTemplateShipped" style="margin-top:14px"></div>
+    <div id="shopifyTemplateDelivered" style="margin-top:14px"></div>
+    <div id="shopifyTemplateAbandoned" style="margin-top:14px"></div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveShopifyTemplates()">Save Templates</button>
+      <span class="save-msg" id="shopifyTemplatesSaveMsg"></span>
+    </div>
+
+    <div style="background:var(--accent-soft);border-radius:10px;padding:14px;font-size:13px;color:var(--accent-ink);margin-top:14px">
+      <strong>How it works:</strong><br>
+      • Shopify order created → sends the <em>Order Received</em> template<br>
+      • Fulfillment created (shipping label/tracking added) → sends the <em>Order Shipped</em> template<br>
+      • Carrier reports delivered → sends the <em>Order Delivered</em> template (best-effort — only carriers Shopify tracks natively report this)<br>
+      • Checkout abandoned for 60+ minutes with no order → sends the <em>Abandoned Cart</em> template (checked every 20 min)
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Notification Log</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Event</th><th>Order/Checkout</th><th>Phone</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody id="shopifyLogTbody"><tr class="loading-row"><td colspan="6">No notifications sent yet.</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -433,6 +482,27 @@ const WA_VARS = [
 let waTemplates = [];
 let waTemplateConfig = { received: null, shipped: null, delivered: null };
 
+// ── SHOPIFY NOTIFICATIONS ─────────────────────────
+const SHOPIFY_TEMPLATE_KINDS = [
+  { key:'received',  label:'Order Received Template' },
+  { key:'shipped',   label:'Order Shipped Template' },
+  { key:'delivered', label:'Order Delivered Template' },
+  { key:'abandoned', label:'Abandoned Cart Template' }
+];
+const SHOPIFY_WA_VARS = [
+  { key:'customer_name',   label:'Customer Name' },
+  { key:'order_number',    label:'Order Number' },
+  { key:'total',           label:'Order/Cart Total' },
+  { key:'items',           label:'Items' },
+  { key:'tracking_number', label:'Tracking Number' },
+  { key:'tracking_url',    label:'Tracking URL' },
+  { key:'checkout_url',    label:'Cart Recovery URL' },
+  { key:'review_link',     label:'Review Link' },
+  { key:'store_name',      label:'Store Name' }
+];
+let shopifyTemplates = [];
+let shopifyNotifyConfig = { received: null, shipped: null, delivered: null, abandoned: null };
+
 // ── INIT ──────────────────────────────────────────
 async function init() {
   if (!clientId) { clientId = prompt('Enter your Client ID:') || ''; }
@@ -467,8 +537,41 @@ async function init() {
   } catch(e) {}
   if (waTemplates.length) WA_TEMPLATE_KINDS.forEach(k => renderWaTemplateBlock(k.key, k.label));
 
+  renderShopifyConnection();
+  try {
+    const st = JSON.parse(clientRecord.shopify_notify_config || '{}');
+    shopifyNotifyConfig = st.config || { received: null, shipped: null, delivered: null, abandoned: null };
+    shopifyTemplates = st.templates || [];
+  } catch(e) {}
+  if (shopifyTemplates.length) SHOPIFY_TEMPLATE_KINDS.forEach(k => renderShopifyTemplateBlock(k.key, k.label));
+  renderShopifyLog();
+
   loadProducts();
   loadOrders();
+}
+
+function renderShopifyConnection() {
+  const connected = !!clientRecord.shopify_shop_domain;
+  document.getElementById('shopifyNotConnected').style.display = connected ? 'none' : 'block';
+  document.getElementById('shopifyConnected').style.display = connected ? 'block' : 'none';
+  if (connected) document.getElementById('shopifyDomainDisplay').textContent = clientRecord.shopify_shop_domain;
+  else document.getElementById('shopifyConnectLink').href = `https://app.leadvyne.com/dashboard.html?client=${encodeURIComponent(clientId)}&integrations`;
+}
+
+function renderShopifyLog() {
+  const tbody = document.getElementById('shopifyLogTbody');
+  let log = [];
+  try { log = JSON.parse(clientRecord.shopify_notify_log || '[]'); } catch(e) {}
+  if (!log.length) { tbody.innerHTML = '<tr><td colspan="6" class="loading-row">No notifications sent yet.</td></tr>'; return; }
+  const statusBadge = s => s === 'sent' ? '✅ sent' : s === 'failed' ? '❌ failed' : '⏭ skipped';
+  tbody.innerHTML = log.slice().reverse().map(e => `<tr>
+    <td>${esc(new Date(e.ts).toLocaleString())}</td>
+    <td>${esc(e.event)}</td>
+    <td>${esc(e.order || '—')}</td>
+    <td>${esc(e.phone || '—')}</td>
+    <td>${statusBadge(e.status)}</td>
+    <td>${esc(e.detail || '')}</td>
+  </tr>`).join('');
 }
 
 // ── TAB NAV ──────────────────────────────────────
@@ -476,6 +579,7 @@ function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.getElementById('tabProducts').classList.toggle('active', name === 'products');
   document.getElementById('tabOrders').classList.toggle('active', name === 'orders');
+  document.getElementById('tabShopify').classList.toggle('active', name === 'shopify');
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
 }
 
@@ -1135,6 +1239,70 @@ function updateWaParam(kind, idx, value) {
 async function saveWaTemplates() {
   await patchClient({ ecom_wa_templates: JSON.stringify({ config: waTemplateConfig, templates: waTemplates }) });
   showMsg('waTemplatesSaveMsg', 'Saved ✓');
+}
+
+// ── SHOPIFY NOTIFICATION TEMPLATES ────────────────
+// Same picker UX as the WhatsApp Templates block above, but backed by the Worker's own
+// /ecom/wa-templates (client_id-based, no session needed here) instead of the n8n webhook —
+// the Shopify module's webhook handler sends straight through Meta's Graph API, no n8n involved.
+async function loadShopifyTemplates() {
+  showMsg('shopifyTemplatesMsg', 'Loading…', 10000);
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/wa-templates?client_id=${encodeURIComponent(clientId)}`);
+    const data = await r.json();
+    if (data.error) { showMsg('shopifyTemplatesMsg', data.error, 6000); return; }
+    shopifyTemplates = data.data || data.templates || [];
+    if (!shopifyTemplates.length) { showMsg('shopifyTemplatesMsg', 'No approved templates found'); return; }
+    SHOPIFY_TEMPLATE_KINDS.forEach(k => renderShopifyTemplateBlock(k.key, k.label));
+    showMsg('shopifyTemplatesMsg', `Found ${shopifyTemplates.length} templates ✓`);
+  } catch(e) {
+    showMsg('shopifyTemplatesMsg', 'Error: ' + e.message, 6000);
+  }
+}
+
+function renderShopifyTemplateBlock(kind, label) {
+  const container = document.getElementById('shopifyTemplate' + kind.charAt(0).toUpperCase() + kind.slice(1));
+  const cfg = shopifyNotifyConfig[kind] || {};
+  const options = ['<option value="">— None —</option>']
+    .concat(shopifyTemplates.map(t => `<option value="${escAttr(t.name+'|'+t.language)}" ${cfg.name===t.name && cfg.lang===t.language ? 'selected':''}>${esc(t.name)} (${esc(t.language)})</option>`));
+  container.innerHTML = `
+    <span class="s-lbl">${esc(label)}</span>
+    <select class="s-input" style="margin-bottom:8px" onchange="onShopifyTemplateSelect('${kind}', this.value)">${options.join('')}</select>
+    <div class="colmap-grid" id="shopifyParams_${kind}"></div>`;
+  const selected = shopifyTemplates.find(t => t.name === cfg.name && t.language === cfg.lang);
+  if (selected) renderShopifyParamMap(kind, selected, cfg.params || []);
+}
+
+function onShopifyTemplateSelect(kind, value) {
+  if (!value) { shopifyNotifyConfig[kind] = null; document.getElementById(`shopifyParams_${kind}`).innerHTML = ''; return; }
+  const [name, language] = value.split('|');
+  const t = shopifyTemplates.find(tt => tt.name === name && tt.language === language);
+  shopifyNotifyConfig[kind] = { name, lang: language, params: [] };
+  renderShopifyParamMap(kind, t, []);
+}
+
+function renderShopifyParamMap(kind, template, savedParams) {
+  const el = document.getElementById(`shopifyParams_${kind}`);
+  const varCount = template.var_count || (template.components||[]).find(c=>c.type==='BODY')?.text?.match(/\{\{\d+\}\}/g)?.length || 0;
+  if (!varCount) { el.innerHTML = '<div class="s-hint">This template has no variables.</div>'; return; }
+  const rows = [];
+  for (let i = 0; i < varCount; i++) {
+    const val = savedParams[i] || '';
+    const options = ['<option value="">— Skip —</option>'].concat(SHOPIFY_WA_VARS.map(v => `<option value="${v.key}" ${v.key===val?'selected':''}>${v.label}</option>`));
+    rows.push(`<div class="colmap-field"><label>Variable {{${i+1}}}</label><select onchange="updateShopifyParam('${kind}',${i},this.value)">${options.join('')}</select></div>`);
+  }
+  el.innerHTML = rows.join('');
+  shopifyNotifyConfig[kind].params = savedParams.length ? savedParams : new Array(varCount).fill('');
+}
+
+function updateShopifyParam(kind, idx, value) {
+  if (!shopifyNotifyConfig[kind]) return;
+  shopifyNotifyConfig[kind].params[idx] = value;
+}
+
+async function saveShopifyTemplates() {
+  await patchClient({ shopify_notify_config: JSON.stringify({ config: shopifyNotifyConfig, templates: shopifyTemplates }) });
+  showMsg('shopifyTemplatesSaveMsg', 'Saved ✓');
 }
 
 // ── SETTINGS SAVE ─────────────────────────────────
