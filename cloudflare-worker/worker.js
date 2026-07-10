@@ -875,33 +875,58 @@ async function handleAiComplete(request, env){
    generic /nocodb/* passthrough below — only the actual Chatwoot sends and the
    template list/create need a dedicated route, since those are the only calls
    that require the client's chatwoot_token. ── */
+// Chatwoot has no "whatsapp_templates" sub-resource (that route 404s on every inbox — it doesn't
+// exist in Chatwoot's API at all). The real API surface, confirmed against Chatwoot's own source:
+// templates are synced from Meta asynchronously via POST .../sync_templates (fire-and-forget, no
+// templates in the response), and the last-synced list is exposed as a flat `message_templates`
+// field on the ordinary GET .../inboxes/:id (inbox show) response.
 async function handleBroadcastTemplatesGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
-  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}/whatsapp_templates`, {headers:{api_access_token:c.chatwoot_token}});
-  const data=await r.json().catch(()=>([]));
-  if(!r.ok) return json({error:(data&&!Array.isArray(data)&&data.message)||'Chatwoot API '+r.status}, 502);
-  return json({ok:true, templates:data});
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}`, {headers:{api_access_token:c.chatwoot_token}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.message||'Chatwoot API '+r.status}, 502);
+  return json({ok:true, templates:data?.message_templates||[], last_updated:data?.message_templates_last_updated||null});
 }
 
+// Triggers Chatwoot's async template sync job (pulls the latest approved templates from Meta into
+// Chatwoot's cache). It only enqueues the job and returns immediately — the caller should wait a
+// few seconds and then call handleBroadcastTemplatesGet again to see the refreshed list.
+async function handleBroadcastTemplatesSync(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}/sync_templates`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token}
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error||data?.message||'Chatwoot API '+r.status}, 502);
+  return json({ok:true, message:data?.message||'Template sync initiated'});
+}
+
+// Chatwoot only *syncs* templates from Meta — it has no API to create a new one, since a template
+// must be submitted straight to Meta for approval. So creating one still requires the client's own
+// Meta WhatsApp Business API credentials (waba_id/wa_token) — this is a real limitation of Chatwoot
+// itself, not something we can route around, unlike listing/sending which Chatwoot fully supports.
 async function handleBroadcastTemplatesCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {name, category, language, body, header, footer}=await request.json().catch(()=>({}));
   if(!name||!body) return json({error:'name and body required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
+  if(!c?.waba_id||!c?.wa_token) return json({error:'Creating a new template requires connecting your Meta WhatsApp Business API (Settings → Channels) — Chatwoot can only sync templates that already exist on Meta, not create new ones. Alternatively, create the template directly in Meta Business Manager, then use Refresh to pull it in.'}, 400);
   const components=[{type:'BODY', text:body}];
   if(header) components.unshift({type:'HEADER', format:'TEXT', text:header});
   if(footer) components.push({type:'FOOTER', text:footer});
-  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}/whatsapp_templates`, {
-    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({name, category, language, components})
   });
   const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json({error:data?.message||'Chatwoot API '+r.status}, 502);
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
   return json({ok:true, data});
 }
 
@@ -1761,6 +1786,7 @@ export default {
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }
+      else if(url.pathname==='/broadcast/templates/sync' && request.method==='POST'){ res=await handleBroadcastTemplatesSync(request, env); }
       else if(url.pathname==='/broadcast/send-dm' && request.method==='POST'){ res=await handleBroadcastSendDm(request, env); }
       else if(url.pathname==='/broadcast/send-template' && request.method==='POST'){ res=await handleBroadcastSendTemplate(request, env); }
       else if(url.pathname==='/broadcast/followup-send' && request.method==='POST'){ res=await handleBroadcastFollowupSend(request, env); }

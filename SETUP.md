@@ -714,21 +714,29 @@ never carried over here. Fixed the same way:
   `leadConvId()` (`ConversationID`/`conv_id`/`ConversationId`/`chatwoot_conv_id`) since leads have
   been written under inconsistent field casings depending on the write path — checking only
   `ConversationID` silently sent a blank ID to Chatwoot on some leads.
-- **Template Broadcast lists and sends go straight through Meta's Graph API** (`GET /wa/templates`,
-  `POST /wa/send-template`), the same route the Prospects module already uses — **not** Chatwoot's
-  inbox-scoped `whatsapp_templates` endpoint, which one production client's account 404'd on even
-  with a confirmed-correct `chatwoot_account_id`/`chatwoot_inbox_id`/token (matched Chatwoot's own
-  UI) and templates visible in Chatwoot's dashboard. This also fixes the underlying reason a
-  template send is needed at all: leads outside the 24h session window require an approved
-  template, and that has nothing to do with which system lists/sends it — Graph API direct works
-  regardless of window, and drops the dependency on Chatwoot's template sync entirely. Requires
-  `wa_phone_id`/`wa_token`/`waba_id` on the client record; if missing, the page shows a "Connect it
-  in Settings → Channels" link (`dashboard.html?channels=1` deep-links straight to that tab) instead
-  of a separate credential form — Channels' existing Meta Embedded Signup flow already collects and
-  stores these, so there's nothing new to build there.
-- The **Manage Templates** tab (creating new templates) still submits via the Chatwoot-scoped
-  `POST /broadcast/templates` route — not yet switched to Graph API direct. Known follow-up if that
-  same client also can't create templates from Chatwoot; not reported broken as of this writing.
+- **Template Broadcast and Manage Templates both list/send through Chatwoot** (`GET/POST
+  /broadcast/templates`, `POST /broadcast/send-template`), using only the client's existing
+  `chatwoot_token`/`chatwoot_inbox_id` — no separate Meta Embedded Signup connection required just
+  to browse or send an already-approved template. This used to require `wa_phone_id`/`wa_token`
+  (Template Broadcast) or hit a Chatwoot route that doesn't actually exist (Manage Templates),
+  producing the exact bug report "WhatsApp already connected in Chatwoot, still says to connect
+  WhatsApp" / "404 Chatwoot error" — see the note below on the real Chatwoot API shape.
+  - **The real Chatwoot API has no `whatsapp_templates` sub-resource at all** — that route 404s on
+    every inbox, always (confirmed directly against Chatwoot's own open-source `routes.rb`/
+    controller/model/jbuilder view). The actual shape: `POST .../inboxes/:id/sync_templates` is
+    *asynchronous* — it only enqueues a background job that pulls the latest approved templates
+    from Meta and returns `{message: 'Template sync initiated successfully'}` immediately, no
+    templates in the response. The synced list itself lives in a `message_templates` field on the
+    *plain* inbox-show response, `GET .../inboxes/:id`. `handleBroadcastTemplatesGet` now reads
+    that field; `POST /broadcast/templates/sync` triggers the async sync; `broadcast.html`'s
+    `refreshTemplates()` fires the sync, waits ~3s, then re-fetches, since a single immediate
+    re-fetch after sync usually still shows the stale list.
+  - **Creating a new template is the one operation that genuinely still needs Meta credentials** —
+    Chatwoot's API only *syncs* templates that already exist on Meta; it has no create-template
+    endpoint at all. `POST /broadcast/templates` (Manage Templates tab) submits straight to Meta's
+    Graph API (`waba_id`/`wa_token`, same credentials the Channels module's Embedded Signup flow
+    already collects) and returns a clear "connect Meta / create it in Business Manager, then
+    Refresh" message if those aren't set — never a raw 404/502 from a nonexistent Chatwoot call.
 
 **New tab: 🔁 Follow-ups** — shows leads currently mid-sequence in either of the two existing
 automated systems: the classic `followup_messages` sequence (`Follow up 1/2/3` flags, up to
