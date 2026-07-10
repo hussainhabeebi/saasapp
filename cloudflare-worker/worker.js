@@ -22,6 +22,10 @@
 const SESSION_TTL_SECONDS = 24 * 3600;
 const CLIENTS_TABLE = 'mxl33bg4wi70fqj';
 const DEFAULT_LEADS_TABLE = 'mvg6rcw0ia5qqrx';
+// Create these two tables once in NocoDB (shared across all clients, rows scoped by a
+// client_id column — see SETUP.md "Email Marketing module") and paste their real ids here.
+const EMAIL_CAMPAIGNS_TABLE = 'md3ghcfigac4yqs';
+const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
 
 function corsHeaders(origin, env){
   const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -155,8 +159,12 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
   return diff===0;
 }
 
+// Strips fields that must never reach the browser — dashboard_password obviously, but
+// resend_api_key and smtp_pass are live send-capable credentials too, and the rest of this
+// object (clientRecord) sits in a page-lifetime JS variable in dashboard.html/broadcast.html,
+// inspectable via devtools for as long as the tab is open.
 function safeClient(rec){
-  const {dashboard_password, ...safe}=rec;
+  const {dashboard_password, resend_api_key, smtp_pass, ...safe}=rec;
   return safe;
 }
 
@@ -469,22 +477,247 @@ async function handleEmailStatus(request, env){
   return json({connected:true, from_email, from_name, domains});
 }
 
+// Shared by handleEmailTest and the campaign send-one route below — the only difference between
+// a test send and a campaign send is the subject/html, so this is the one place that talks to
+// Resend on a client's own account.
+async function sendClientResendEmail(c, {to, subject, html}){
+  if(!c?.resend_api_key) return {ok:false, error:'Connect Resend first.'};
+  if(!c?.resend_from_email) return {ok:false, error:'Set a from-email first.'};
+  const from=`${c.resend_from_name||c.client_name||'Bulk Marketing'} <${c.resend_from_email}>`;
+  const r=await fetch('https://api.resend.com/emails', {
+    method:'POST', headers:{Authorization:`Bearer ${c.resend_api_key}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({from, to:[to], subject, html})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return {ok:false, error:data?.message||'Resend API HTTP '+r.status};
+  return {ok:true};
+}
+
 async function handleEmailTest(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {to}=await request.json().catch(()=>({}));
   if(!to) return json({error:'to required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.resend_api_key) return json({error:'Connect Resend first.'}, 400);
-  if(!c?.resend_from_email) return json({error:'Set a from-email first.'}, 400);
-  const from=`${c.resend_from_name||c.client_name||'Bulk Marketing'} <${c.resend_from_email}>`;
-  const r=await fetch('https://api.resend.com/emails', {
-    method:'POST', headers:{Authorization:`Bearer ${c.resend_api_key}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({from, to:[to], subject:'Test email from your Bulk Marketing integration', html:'<p>This is a test email — if you got this, your Resend integration is working.</p>'})
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json({error:data?.message||'Resend API HTTP '+r.status}, 502);
+  const result=await sendClientResendEmail(c, {to, subject:'Test email from your Bulk Marketing integration', html:'<p>This is a test email — if you got this, your Resend integration is working.</p>'});
+  if(!result.ok) return json({error:result.error}, result.error==='Connect Resend first.'||result.error==='Set a from-email first.'?400:502);
   return json({ok:true});
+}
+
+/* ── EMAIL MARKETING MODULE (Phase 1 — Resend only, see SETUP.md) ──
+   Campaigns/Sends are shared platform-wide tables (like the ecom module's products/orders),
+   rows scoped by client_id, with an email_table_ids override field for a client who wants a
+   bespoke table — same two-tier pattern as ecomResolveTable/ecom_table_ids. Every route below
+   derives the client from the session (payload.cid), never a client-supplied id — the stronger
+   of the two auth patterns already in this codebase (the weaker one, trusting a client-supplied
+   client_id, is what the older ecom.html routes do and is documented there as a known gap). ── */
+async function emailResolveTable(env, clientId, kind){
+  const c=await getClientById(env, clientId);
+  if(!c) return null;
+  let ids={}; try{ ids=JSON.parse(c.email_table_ids||'{}'); }catch(e){}
+  const DEFAULTS={campaigns:EMAIL_CAMPAIGNS_TABLE, sends:EMAIL_SENDS_TABLE};
+  return ids[kind]||DEFAULTS[kind]||null;
+}
+
+// Sanitizes the same way ecomSanitizeFilterValue does — segment_filter values are shop-owner/
+// staff-authored (not end-customer input), but still shouldn't be able to break out of their
+// own where() clause.
+function emailSanitizeFilterValue(v){ return String(v).replace(/[(),~]/g,'').trim(); }
+
+// Builds the NocoDB where clause a campaign's audience resolves to. Every campaign send is
+// implicitly scoped to leads that (a) have an email address at all and (b) haven't opted out of
+// email specifically — segment_filter only narrows further from there.
+function emailAudienceWhereClause(clientId, segmentFilter){
+  const clauses=[`(ClientId,eq,${clientId})`, `(Email,notblank)`, `(EmailOptOut,neq,Yes)`];
+  const f=segmentFilter||{};
+  if(Array.isArray(f.stage)&&f.stage.length){
+    clauses.push('('+f.stage.map(s=>`(Stage,eq,${emailSanitizeFilterValue(s)})`).join('~or')+')');
+  }
+  if(Array.isArray(f.tags_any)&&f.tags_any.length){
+    clauses.push('('+f.tags_any.map(t=>`(Tags,like,${emailSanitizeFilterValue(t)})`).join('~or')+')');
+  }
+  return clauses.join('~and');
+}
+
+async function handleEmailCampaignsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const tableId=await emailResolveTable(env, payload.cid, 'campaigns');
+  if(!tableId) return json({list:[]});
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&sort=-created_at&limit=200`);
+  const data=await r.json().catch(()=>({}));
+  return json(data, r.status);
+}
+
+async function handleEmailCampaignCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.subject||!body.html_body) return json({error:'subject and html_body required'}, 400);
+  const tableId=await emailResolveTable(env, payload.cid, 'campaigns');
+  if(!tableId) return json({error:'Email campaigns table not configured — see SETUP.md'}, 400);
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:{
+    client_id:payload.cid, subject:body.subject, html_body:body.html_body,
+    segment_filter:JSON.stringify(body.segment_filter||{}), status:'draft',
+    created_at:new Date().toISOString(), total_recipients:0, total_sent:0, total_failed:0,
+  }});
+  const data=await r.json().catch(()=>({}));
+  return json(data, r.status);
+}
+
+async function handleEmailCampaignUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const tableId=await emailResolveTable(env, payload.cid, 'campaigns');
+  if(!tableId) return json({error:'Email campaigns table not configured'}, 400);
+  const existingR=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
+  const existing=await existingR.json().catch(()=>null);
+  if(!existingR.ok||!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(existing.status!=='draft') return json({error:'Only draft campaigns can be edited'}, 400);
+  const fields={};
+  ['subject','html_body'].forEach(k=>{ if(k in body) fields[k]=body[k]; });
+  if('segment_filter' in body) fields.segment_filter=JSON.stringify(body.segment_filter||{});
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:id, ...fields}});
+  const data=await r.json().catch(()=>({}));
+  return json(data, r.status);
+}
+
+async function handleEmailCampaignDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const tableId=await emailResolveTable(env, payload.cid, 'campaigns');
+  if(!tableId) return json({error:'Email campaigns table not configured'}, 400);
+  const existingR=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
+  const existing=await existingR.json().catch(()=>null);
+  if(!existingR.ok||!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  // Deleting a sending/sent campaign would orphan its EmailSends history — drafts only.
+  if(existing.status!=='draft') return json({error:'Only draft campaigns can be deleted'}, 400);
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'DELETE', body:{Id:id}});
+  const data=await r.json().catch(()=>({}));
+  return json(data, r.status);
+}
+
+async function handleEmailAudiencePreview(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  let segmentFilter={};
+  try{ segmentFilter=JSON.parse(url.searchParams.get('segment_filter')||'{}'); }catch(e){}
+  const where=emailAudienceWhereClause(payload.cid, segmentFilter);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=5&fields=Id,Name,Email`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  // NocoDB's standard list response already includes pageInfo.totalRows for the given where
+  // clause, regardless of the page's own limit — no separate count call needed.
+  return json({count:data?.pageInfo?.totalRows??(data.list||[]).length, sample:(data.list||[]).slice(0,5)});
+}
+
+async function handleEmailCampaignSendInit(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const campaignId=parseInt(body.campaign_id,10);
+  if(!campaignId) return json({error:'campaign_id required'}, 400);
+  const campaignsTable=await emailResolveTable(env, payload.cid, 'campaigns');
+  const sendsTable=await emailResolveTable(env, payload.cid, 'sends');
+  if(!campaignsTable||!sendsTable) return json({error:'Email tables not configured'}, 400);
+
+  const campR=await ncFetch(env, `api/v2/tables/${campaignsTable}/records/${campaignId}`);
+  const campaign=await campR.json().catch(()=>null);
+  if(!campR.ok||!campaign||String(campaign.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(campaign.status!=='draft') return json({error:'Campaign already sent or sending'}, 400);
+
+  let segmentFilter={}; try{ segmentFilter=JSON.parse(campaign.segment_filter||'{}'); }catch(e){}
+  const where=emailAudienceWhereClause(payload.cid, segmentFilter);
+  const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=1000&fields=Id,Email`);
+  const leadsData=await leadsR.json().catch(()=>({}));
+  const leads=leadsData.list||[];
+  if(!leads.length) return json({error:'No eligible recipients for this segment'}, 400);
+
+  const CHUNK=40; // matches handleEcomDelete's bulk-write chunk size — NocoDB rejects overly large bulk arrays with a 422
+  const rows=leads.map(l=>({client_id:payload.cid, campaign_id:campaignId, lead_id:l.Id, recipient_email:l.Email, status:'queued'}));
+  const sendIds=[];
+  for(let i=0;i<rows.length;i+=CHUNK){
+    const r=await ncFetch(env, `api/v2/tables/${sendsTable}/records`, {method:'POST', body:rows.slice(i,i+CHUNK)});
+    const created=await r.json().catch(()=>[]);
+    // NocoDB's bulk-insert response is an array of the created rows (with their new Ids) —
+    // the frontend needs these back so it has something concrete to loop send-one calls over.
+    (Array.isArray(created)?created:[]).forEach(row=>{ if(row?.Id) sendIds.push(row.Id); });
+  }
+  await ncFetch(env, `api/v2/tables/${campaignsTable}/records`, {method:'PATCH', body:{Id:campaignId, status:'sending', total_recipients:leads.length}});
+  return json({ok:true, total_recipients:leads.length, send_ids:sendIds});
+}
+
+async function handleEmailCampaignSendOne(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const sendId=parseInt(body.send_id,10);
+  if(!sendId) return json({error:'send_id required'}, 400);
+  const sendsTable=await emailResolveTable(env, payload.cid, 'sends');
+  const campaignsTable=await emailResolveTable(env, payload.cid, 'campaigns');
+  if(!sendsTable||!campaignsTable) return json({error:'Email tables not configured'}, 400);
+
+  const sendR=await ncFetch(env, `api/v2/tables/${sendsTable}/records/${sendId}`);
+  const sendRow=await sendR.json().catch(()=>null);
+  if(!sendR.ok||!sendRow||String(sendRow.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(sendRow.status!=='queued') return json({ok:true, skipped:true});
+
+  // Defensive re-check — a long-running campaign send can overlap with a lead unsubscribing
+  // partway through; send-init already filtered the audience, this is the last line of defense.
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${sendRow.lead_id}`);
+  const lead=await leadR.json().catch(()=>null);
+  if(leadR.ok && lead?.EmailOptOut==='Yes'){
+    await ncFetch(env, `api/v2/tables/${sendsTable}/records`, {method:'PATCH', body:{Id:sendId, status:'failed', error:'Lead unsubscribed before send'}});
+    return json({ok:true, skipped:true});
+  }
+
+  const campR=await ncFetch(env, `api/v2/tables/${campaignsTable}/records/${sendRow.campaign_id}`);
+  const campaign=await campR.json().catch(()=>null);
+  if(!campR.ok||!campaign) return json({error:'Campaign not found'}, 404);
+  const c=await getClientById(env, payload.cid);
+
+  const unsubToken=await hmacHex(env, `unsub:${sendRow.lead_id}`);
+  const unsubLink=`${new URL(request.url).origin}/email/unsubscribe?lead_id=${sendRow.lead_id}&token=${unsubToken}`;
+  const html=`${campaign.html_body}<p style="font-size:11px;color:#888;margin-top:24px">Don't want these emails? <a href="${unsubLink}">Unsubscribe</a>.</p>`;
+
+  const result=await sendClientResendEmail(c, {to:sendRow.recipient_email, subject:campaign.subject, html});
+  if(result.ok){
+    await ncFetch(env, `api/v2/tables/${sendsTable}/records`, {method:'PATCH', body:{Id:sendId, status:'sent', sent_at:new Date().toISOString()}});
+    await ncFetch(env, `api/v2/tables/${campaignsTable}/records`, {method:'PATCH', body:{Id:sendRow.campaign_id, total_sent:(campaign.total_sent||0)+1}});
+  }else{
+    await ncFetch(env, `api/v2/tables/${sendsTable}/records`, {method:'PATCH', body:{Id:sendId, status:'failed', error:result.error}});
+    await ncFetch(env, `api/v2/tables/${campaignsTable}/records`, {method:'PATCH', body:{Id:sendRow.campaign_id, total_failed:(campaign.total_failed||0)+1}});
+  }
+  return json(result);
+}
+
+// Stateless HMAC helper, reusing SESSION_SIGNING_KEY with a domain-separation prefix rather than
+// provisioning a new secret — same crypto.subtle HMAC pattern as signSession/verifySession.
+async function hmacHex(env, message){
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(env.SESSION_SIGNING_KEY), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
+  return hex(sig);
+}
+
+async function handleEmailUnsubscribe(request, env){
+  const url=new URL(request.url);
+  const leadId=parseInt(url.searchParams.get('lead_id'),10);
+  const token=url.searchParams.get('token')||'';
+  if(!leadId||!token) return new Response('Invalid unsubscribe link.', {status:400});
+  const expected=await hmacHex(env, `unsub:${leadId}`);
+  if(expected.length!==token.length) return new Response('Invalid unsubscribe link.', {status:400});
+  let diff=0;
+  for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^token.charCodeAt(i);
+  if(diff!==0) return new Response('Invalid unsubscribe link.', {status:400});
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, EmailOptOut:'Yes'}});
+  return new Response('<!doctype html><html><body style="font-family:sans-serif;text-align:center;padding:60px 20px"><h2>You\'ve been unsubscribed</h2><p>You won\'t receive any more marketing emails from us.</p></body></html>', {status:200, headers:{'Content-Type':'text/html'}});
 }
 
 // ── HEALTH CHECKS (Integrations tab — on-demand "Run Check Now" and once-daily Cron Trigger) ──
@@ -1503,6 +1736,14 @@ export default {
       else if(url.pathname==='/email/client' && request.method==='POST'){ res=await handleEmailClientUpdate(request, env); }
       else if(url.pathname==='/email/status' && request.method==='GET'){ res=await handleEmailStatus(request, env); }
       else if(url.pathname==='/email/test' && request.method==='POST'){ res=await handleEmailTest(request, env); }
+      else if(url.pathname==='/email/campaigns' && request.method==='GET'){ res=await handleEmailCampaignsList(request, env); }
+      else if(url.pathname==='/email/campaigns' && request.method==='POST'){ res=await handleEmailCampaignCreate(request, env); }
+      else if(url.pathname==='/email/campaigns' && request.method==='PATCH'){ res=await handleEmailCampaignUpdate(request, env); }
+      else if(url.pathname==='/email/campaigns' && request.method==='DELETE'){ res=await handleEmailCampaignDelete(request, env); }
+      else if(url.pathname==='/email/audience/preview' && request.method==='GET'){ res=await handleEmailAudiencePreview(request, env); }
+      else if(url.pathname==='/email/campaigns/send-init' && request.method==='POST'){ res=await handleEmailCampaignSendInit(request, env); }
+      else if(url.pathname==='/email/campaigns/send-one' && request.method==='POST'){ res=await handleEmailCampaignSendOne(request, env); }
+      else if(url.pathname==='/email/unsubscribe' && request.method==='GET'){ res=await handleEmailUnsubscribe(request, env); }
       else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }

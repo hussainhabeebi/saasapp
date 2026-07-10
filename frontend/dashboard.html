@@ -999,6 +999,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="hact-btn" onclick="navigate('pipeline')">📋 Pipeline</button>
             <button class="hact-btn" onclick="navigate('chats')">💬 Chats</button>
             <button class="hact-btn" onclick="window.open('broadcast.html','_blank')">📢 Campaigns</button>
+            <button class="hact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
           </div>
         </div>
       </div>
@@ -1121,6 +1122,7 @@ const TODAY = new Date().toISOString().slice(0,10);
                 <button class="qact-btn" onclick="navigate('leads')">💬 Manage Leads</button>
                 <button class="qact-btn" onclick="navigate('chats')">💬 Open Chats</button>
                 <button class="qact-btn" onclick="window.open('broadcast.html','_blank')">📢 Send Campaign</button>
+                <button class="qact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
                 <button class="qact-btn" onclick="navigate('settings')">⚙️ Settings</button>
               </div>
             </div>
@@ -2402,6 +2404,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <div class="modal-body">
     <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="fName" type="text" placeholder="Full name" /></div>
     <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="fPhone" type="tel" placeholder="971501234567" /></div>
+    <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="fEmail" type="email" placeholder="lead@example.com" /></div>
     <div class="form-group"><label class="form-label">Stage</label><select class="form-input" id="fStage"></select></div>
     <div class="form-group"><label class="form-label">Owner</label><select class="form-input" id="fOwner"><option value="">Unassigned</option></select></div>
     <div class="form-group"><label class="form-label">Score</label>
@@ -3600,7 +3603,7 @@ function renderLeadsTable(){
 function openAddLead(){
   $id('modalLeadTitle').textContent=clientRecord?.industry==='travel'?'Add Inquiry':'Add Lead';
   $id('fLeadId').value='';
-  $id('fName').value=''; $id('fPhone').value=''; $id('fNotes').value=''; $id('fTags').value=''; $id('fReminder').value='';
+  $id('fName').value=''; $id('fPhone').value=''; $id('fEmail').value=''; $id('fNotes').value=''; $id('fTags').value=''; $id('fReminder').value='';
   if(clientRecord?.industry==='travel'){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';}
   populateFormSelects();
   $id('fStage').value='new'; $id('fScore').value='Cold';
@@ -3610,7 +3613,7 @@ function openAddLead(){
 function openEditLead(lead){
   $id('modalLeadTitle').textContent='Edit Lead';
   $id('fLeadId').value=lead.Id;
-  $id('fName').value=lead.Name||''; $id('fPhone').value=lead.Phone||'';
+  $id('fName').value=lead.Name||''; $id('fPhone').value=lead.Phone||''; $id('fEmail').value=lead.Email||'';
   $id('fNotes').value=lead.Notes||''; $id('fTags').value=lead.Tags||''; $id('fReminder').value=lead.ReminderDate||'';
   // Travel fields
   if(clientRecord?.industry==='travel'){
@@ -3643,6 +3646,7 @@ async function saveLead(){
     ClientId:String(clientId),
     Name:$id('fName').value.trim(),
     Phone:$id('fPhone').value.trim().replace(/[^0-9+]/g,''),
+    Email:$id('fEmail').value.trim(),
     Stage:$id('fStage').value,
     Owner:$id('fOwner').value,
     Score:$id('fScore').value,

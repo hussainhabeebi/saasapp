@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Email Marketing · Leadvyne</title>
+<style>
+:root{
+  --bg:#F4F6FB;--card:#FFFFFF;--ink:#101322;--muted:#5B6178;
+  --accent:#4F46E5;--accent-ink:#3730A3;--accent-soft:#EEF0FF;
+  --line:#E2E5F1;--good:#16A34A;--good-soft:#EAFBEF;--bad:#DC2626;--bad-soft:#FDEBEB;--warn:#D97706;--warn-soft:#FFF6E5;
+  --body:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14.5px;-webkit-font-smoothing:antialiased}
+button,input,textarea,select{font-family:inherit;font-size:inherit}
+.hdr{background:var(--card);border-bottom:1px solid var(--line);padding:14px 22px;display:flex;align-items:center;justify-content:space-between}
+.brand{font-size:16px;font-weight:700;letter-spacing:-.01em}
+.brand span{color:var(--accent)}
+.hback{background:none;border:1px solid var(--line);border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;color:var(--muted)}
+.hback:hover{background:var(--bg)}
+.tabs{display:flex;gap:4px;padding:0 22px;background:var(--card);border-bottom:1px solid var(--line)}
+.tab{background:none;border:none;padding:12px 16px;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent}
+.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.wrap{max-width:980px;margin:0 auto;padding:22px}
+.hidden{display:none !important}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.card-head h2{font-size:15px;margin:0}
+.btn{display:inline-flex;align-items:center;gap:6px;border:none;border-radius:9px;padding:9px 16px;font-size:13.5px;font-weight:600;cursor:pointer}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent-ink)}
+.btn-sec{background:var(--accent-soft);color:var(--accent-ink)}
+.btn-ghost{background:none;color:var(--muted);border:1px solid var(--line)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.form-label{font-size:12.5px;font-weight:600;color:var(--muted);margin:12px 0 6px;display:block}
+.form-input,.form-textarea,.form-select{width:100%;border:1.5px solid var(--line);border-radius:9px;padding:9px 12px;color:var(--ink);background:var(--bg)}
+.form-input:focus,.form-textarea:focus,.form-select:focus{outline:none;border-color:var(--accent);background:#fff}
+.form-textarea{min-height:140px;font-family:ui-monospace,monospace;font-size:13px;resize:vertical}
+.chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.chip{border:1.5px solid var(--line);border-radius:20px;padding:6px 12px;font-size:12.5px;cursor:pointer;user-select:none}
+.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.table{width:100%;border-collapse:collapse;font-size:13px}
+.table th{text-align:left;color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;padding:8px 10px;border-bottom:1px solid var(--line)}
+.table td{padding:10px;border-bottom:1px solid var(--line)}
+.table tr:last-child td{border-bottom:none}
+.badge{display:inline-block;padding:3px 9px;border-radius:6px;font-size:11px;font-weight:700}
+.badge.draft{background:var(--accent-soft);color:var(--accent-ink)}
+.badge.sending{background:var(--warn-soft);color:var(--warn)}
+.badge.sent{background:var(--good-soft);color:var(--good)}
+.badge.failed{background:var(--bad-soft);color:var(--bad)}
+.audience-preview{background:var(--accent-soft);border-radius:10px;padding:12px 14px;font-size:13px;color:var(--accent-ink);margin-top:10px}
+.progress{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:10px 0}
+.progress-fill{height:100%;background:var(--accent);transition:width .2s}
+.empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:13.5px}
+#gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px}
+</style>
+</head>
+<body>
+
+<div id="gate">Loading…</div>
+
+<div id="app" class="hidden">
+  <div class="hdr">
+    <div class="brand">✉️ <span>Email</span> Marketing</div>
+    <button class="hback" onclick="goBack()">← Back to CRM</button>
+  </div>
+  <div class="tabs">
+    <button class="tab active" id="tab-campaigns" onclick="showTab('campaigns')">📨 Campaigns</button>
+    <button class="tab" id="tab-history" onclick="showTab('history')">📊 History</button>
+    <button class="tab" id="tab-settings" onclick="showTab('settings')">⚙️ Settings</button>
+  </div>
+
+  <div class="wrap">
+    <!-- CAMPAIGNS -->
+    <div id="page-campaigns">
+      <div class="card">
+        <div class="card-head"><h2>Campaigns</h2><button class="btn btn-primary" onclick="openComposer()">+ New Campaign</button></div>
+        <table class="table" id="campaignsTable"><thead><tr><th>Subject</th><th>Status</th><th>Recipients</th><th>Sent</th><th>Failed</th><th></th></tr></thead><tbody id="campaignsBody"></tbody></table>
+        <div class="empty hidden" id="campaignsEmpty">No campaigns yet — create one to get started.</div>
+      </div>
+
+      <div class="card hidden" id="composerCard">
+        <div class="card-head"><h2 id="composerTitle">New Campaign</h2><button class="btn btn-ghost" onclick="closeComposer()">Cancel</button></div>
+        <label class="form-label">Subject</label>
+        <input class="form-input" id="cSubject" placeholder="e.g. This week's offers">
+        <label class="form-label">HTML Body</label>
+        <textarea class="form-textarea" id="cHtml" placeholder="&lt;p&gt;Hi there...&lt;/p&gt;"></textarea>
+        <label class="form-label">Audience — Stage</label>
+        <div class="chip-row" id="stageChips"></div>
+        <label class="form-label">Audience — Tag contains</label>
+        <input class="form-input" id="cTag" placeholder="e.g. vip (leave blank for any tag)">
+        <div class="audience-preview" id="audiencePreview">Checking audience…</div>
+        <div style="margin-top:16px;display:flex;gap:10px">
+          <button class="btn btn-sec" onclick="saveCampaign()">Save Draft</button>
+          <button class="btn btn-primary" id="sendBtn" onclick="sendCampaign()">Send Now</button>
+        </div>
+        <div class="progress hidden" id="sendProgressWrap"><div class="progress-fill" id="sendProgressFill" style="width:0%"></div></div>
+        <div id="sendStatus" style="font-size:12.5px;color:var(--muted);margin-top:6px"></div>
+      </div>
+    </div>
+
+    <!-- HISTORY -->
+    <div id="page-history" class="hidden">
+      <div class="card">
+        <div class="card-head"><h2>Send History</h2></div>
+        <table class="table" id="historyTable"><thead><tr><th>Subject</th><th>Sent</th><th>Recipients</th><th>Delivered</th><th>Failed</th></tr></thead><tbody id="historyBody"></tbody></table>
+        <div class="empty hidden" id="historyEmpty">Nothing sent yet.</div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div id="page-settings" class="hidden">
+      <div class="card">
+        <div class="card-head"><h2>Sending account</h2></div>
+        <p style="color:var(--muted);font-size:13.5px;line-height:1.6">
+          Campaigns send through the Resend account connected in your CRM's Integrations tab —
+          same connection used for other transactional email. Connect or update it there; this
+          page doesn't duplicate those settings.
+        </p>
+        <button class="btn btn-sec" onclick="window.open('dashboard.html','_blank')">Open Integrations →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const NOCODB_BASE = WORKER_BASE + '/nocodb';
+const CLIENTS_TABLE_ID = 'mxl33bg4wi70fqj';
+const STAGES = ['New', 'Hot Lead', 'Warm Lead', 'Cold', 'Converted', 'Lost'];
+
+let clientId = null, clientRecord = null;
+let sessionToken = sessionStorage.getItem('lv_session') || '';
+let campaigns = [];
+let editingCampaignId = null;
+let selectedStages = new Set();
+
+const $id = id => document.getElementById(id);
+function ncAuthHeaders(extra) { return { 'Authorization': 'Bearer ' + sessionToken, ...(extra || {}) }; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+// ── AUTH — identical pattern to broadcast.html: this page only ever opens from an
+// already-logged-in dashboard.html tab (window.open, same origin), which shares its
+// sessionStorage into the new tab. No separate login form.
+async function tryAutoLogin() {
+  const id = sessionStorage.getItem('lv_cid');
+  if (!id || !sessionToken) { goBack(); return; }
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE_ID}/records/${id}`, { headers: ncAuthHeaders() });
+    if (!r.ok) throw new Error('auth failed');
+    clientRecord = await r.json();
+    clientId = String(clientRecord.Id);
+    initApp();
+  } catch (e) { goBack(); }
+}
+function goBack() { window.location.href = 'dashboard.html'; }
+
+function showTab(tab) {
+  ['campaigns', 'history', 'settings'].forEach(t => {
+    $id('tab-' + t).classList.toggle('active', t === tab);
+    $id('page-' + t).classList.toggle('hidden', t !== tab);
+  });
+  if (tab === 'history') renderHistory();
+}
+
+async function initApp() {
+  $id('gate').classList.add('hidden');
+  $id('app').classList.remove('hidden');
+  renderStageChips();
+  await loadCampaigns();
+}
+
+function renderStageChips() {
+  $id('stageChips').innerHTML = STAGES.map(s => `<span class="chip" data-stage="${esc(s)}" onclick="toggleStage('${esc(s)}')">${esc(s)}</span>`).join('');
+}
+function toggleStage(stage) {
+  if (selectedStages.has(stage)) selectedStages.delete(stage); else selectedStages.add(stage);
+  document.querySelectorAll('#stageChips .chip').forEach(el => el.classList.toggle('on', selectedStages.has(el.dataset.stage)));
+  refreshAudiencePreview();
+}
+
+function currentSegmentFilter() {
+  const f = {};
+  if (selectedStages.size) f.stage = [...selectedStages];
+  const tag = $id('cTag').value.trim();
+  if (tag) f.tags_any = [tag];
+  return f;
+}
+
+let audienceDebounce = null;
+function refreshAudiencePreview() {
+  clearTimeout(audienceDebounce);
+  audienceDebounce = setTimeout(async () => {
+    $id('audiencePreview').textContent = 'Checking audience…';
+    try {
+      const qs = new URLSearchParams({ segment_filter: JSON.stringify(currentSegmentFilter()) });
+      const r = await fetch(`${WORKER_BASE}/email/audience/preview?${qs}`, { headers: ncAuthHeaders() });
+      const data = await r.json();
+      $id('audiencePreview').textContent = data.count
+        ? `This will reach ${data.count} lead${data.count === 1 ? '' : 's'}.`
+        : 'No eligible leads match this audience yet (need an email address and not opted out).';
+    } catch (e) { $id('audiencePreview').textContent = 'Could not check audience.'; }
+  }, 300);
+}
+
+async function loadCampaigns() {
+  const r = await fetch(`${WORKER_BASE}/email/campaigns`, { headers: ncAuthHeaders() });
+  const data = await r.json().catch(() => ({ list: [] }));
+  campaigns = data.list || [];
+  renderCampaignsTable();
+}
+
+function renderCampaignsTable() {
+  $id('campaignsEmpty').classList.toggle('hidden', campaigns.length > 0);
+  $id('campaignsBody').innerHTML = campaigns.map(c => `
+    <tr>
+      <td>${esc(c.subject)}</td>
+      <td><span class="badge ${c.status}">${esc(c.status)}</span></td>
+      <td>${c.total_recipients || 0}</td>
+      <td>${c.total_sent || 0}</td>
+      <td>${c.total_failed || 0}</td>
+      <td>${c.status === 'draft' ? `<button class="btn btn-ghost" onclick="openComposer(${c.Id})">Edit</button>` : ''}</td>
+    </tr>`).join('');
+}
+
+function openComposer(id) {
+  editingCampaignId = id || null;
+  selectedStages = new Set();
+  const c = id ? campaigns.find(x => x.Id === id) : null;
+  $id('composerTitle').textContent = id ? 'Edit Campaign' : 'New Campaign';
+  $id('cSubject').value = c?.subject || '';
+  $id('cHtml').value = c?.html_body || '';
+  $id('cTag').value = '';
+  if (c) {
+    let f = {}; try { f = JSON.parse(c.segment_filter || '{}'); } catch (e) {}
+    (f.stage || []).forEach(s => selectedStages.add(s));
+    $id('cTag').value = (f.tags_any || [])[0] || '';
+  }
+  renderStageChips();
+  document.querySelectorAll('#stageChips .chip').forEach(el => el.classList.toggle('on', selectedStages.has(el.dataset.stage)));
+  $id('sendProgressWrap').classList.add('hidden');
+  $id('sendStatus').textContent = '';
+  $id('composerCard').classList.remove('hidden');
+  refreshAudiencePreview();
+}
+function closeComposer() { $id('composerCard').classList.add('hidden'); }
+
+async function saveCampaign() {
+  const subject = $id('cSubject').value.trim();
+  const html_body = $id('cHtml').value.trim();
+  if (!subject || !html_body) { alert('Subject and body are required.'); return; }
+  const body = { subject, html_body, segment_filter: currentSegmentFilter() };
+  if (editingCampaignId) body.Id = editingCampaignId;
+  const method = editingCampaignId ? 'PATCH' : 'POST';
+  const r = await fetch(`${WORKER_BASE}/email/campaigns`, { method, headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) { alert(data.error || 'Failed to save.'); return; }
+  closeComposer();
+  await loadCampaigns();
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Sends one recipient at a time from the browser, same pattern broadcast.html already uses for
+// WhatsApp sends (send-dm/send-template) — avoids a single Worker invocation looping over
+// hundreds of recipients, and leaves a durable per-recipient EmailSends row (status queued/
+// sent/failed) if this tab closes mid-campaign, so a future "resume" action has something real
+// to resume from.
+async function sendCampaign() {
+  if (!editingCampaignId) { await saveCampaign(); if (!editingCampaignId) return; }
+  if (!confirm('Send this campaign now? This cannot be undone.')) return;
+
+  const initR = await fetch(`${WORKER_BASE}/email/campaigns/send-init`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ campaign_id: editingCampaignId }) });
+  const initData = await initR.json();
+  if (!initR.ok) { alert(initData.error || 'Could not start send.'); return; }
+
+  const sendIds = initData.send_ids || [];
+  const total = sendIds.length;
+  $id('sendBtn').disabled = true;
+  $id('sendProgressWrap').classList.remove('hidden');
+  $id('sendStatus').textContent = `Sending 0 / ${total}…`;
+
+  let sent = 0, failed = 0;
+  for (let i = 0; i < sendIds.length; i++) {
+    try {
+      const r = await fetch(`${WORKER_BASE}/email/campaigns/send-one`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ send_id: sendIds[i] }) });
+      const data = await r.json().catch(() => ({}));
+      if (data.ok) sent++; else failed++;
+    } catch (e) { failed++; }
+    $id('sendProgressFill').style.width = Math.round(((i + 1) / total) * 100) + '%';
+    $id('sendStatus').textContent = `Sending ${i + 1} / ${total}… (${sent} sent, ${failed} failed so far)`;
+    await sleep(500); // throttle, same interval broadcast.html uses for its own send loops
+  }
+
+  $id('sendStatus').textContent = `Done — ${sent} sent, ${failed} failed.`;
+  $id('sendBtn').disabled = false;
+  await loadCampaigns();
+}
+
+function renderHistory() {
+  const sent = campaigns.filter(c => c.status !== 'draft');
+  $id('historyEmpty').classList.toggle('hidden', sent.length > 0);
+  $id('historyBody').innerHTML = sent.map(c => `
+    <tr>
+      <td>${esc(c.subject)}</td>
+      <td><span class="badge ${c.status}">${esc(c.status)}</span></td>
+      <td>${c.total_recipients || 0}</td>
+      <td>${c.total_sent || 0}</td>
+      <td>${c.total_failed || 0}</td>
+    </tr>`).join('');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  $id('cTag').addEventListener('input', refreshAudiencePreview);
+});
+
+tryAutoLogin();
+</script>
+</body>
+</html>
