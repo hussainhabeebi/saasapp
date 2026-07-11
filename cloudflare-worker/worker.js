@@ -2152,6 +2152,42 @@ async function handleEcomWaTemplatesCreatePreset(request, env){
   return json({ok:true, name:preset.name, language:preset.language, params:preset.params, status:data?.status||'PENDING'});
 }
 
+// Meta's Template Library — pre-vetted Utility templates that (per Meta's own docs) skip the
+// review queue entirely, unlike SHOPIFY_TEMPLATE_PRESETS above which submits custom wording and
+// waits hours for approval. `library_template_name` values below are confirmed real entries
+// (screenshotted from WhatsApp Manager → Message templates → Create template → Browse the
+// template library, Utility category) — Meta's library catalog is global, not per-WABA, so the
+// same three names are reused for every client; no re-lookup needed per client or over time.
+// No confirmed library equivalent exists for `delivered`/`abandoned` yet, so those still only
+// have the from-scratch preset path above.
+// Deliberately doesn't guess a `params` mapping the way SHOPIFY_TEMPLATE_PRESETS does — the
+// library template's fixed wording ("Hi {{text}}, ... order number is {{text}} ...") has more
+// than one same-typed placeholder per template with no documented way (found while building this)
+// to confirm which slot means what without a live WABA to test against. So after creation this
+// falls through to the exact same manual param-mapping UI (ecom.html's renderShopifyParamMap)
+// already used for every other synced template — nothing new to build, and no risk of silently
+// mismatching e.g. order number into the delivery-date slot.
+const SHOPIFY_LIBRARY_TEMPLATES={
+  received:{ name:'order_received_leadvyne', library_template_name:'order_management_1', language:'en_US', category:'UTILITY' },
+  paid:{ name:'order_payment_received_leadvyne', library_template_name:'payment_confirmation_4', language:'en_US', category:'UTILITY' },
+  shipped:{ name:'order_shipped_leadvyne', library_template_name:'shipment_confirmation_1', language:'en_US', category:'UTILITY' },
+};
+async function handleEcomWaTemplatesCreateFromLibrary(request, env){
+  const {client_id, kind}=await request.json().catch(()=>({}));
+  if(!client_id||!kind) return json({error:'client_id and kind required'}, 400);
+  const lib=SHOPIFY_LIBRARY_TEMPLATES[kind];
+  if(!lib) return json({error:'No library template available for this event yet'}, 400);
+  const c=await getClientById(env, client_id);
+  if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({name:lib.name, category:lib.category, language:lib.language, library_template_name:lib.library_template_name})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  return json({ok:true, name:lib.name, language:lib.language, status:data?.status||'APPROVED'});
+}
+
 // Sort is a small whitelist mapped to real NocoDB sort strings, not passed through raw — this
 // endpoint has no session of its own (see ecomResolveTable's comment above), so an arbitrary
 // caller-supplied sort field would be an unnecessary way to let a stranger probe column names.
@@ -2387,6 +2423,7 @@ export default {
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
       else if(url.pathname==='/ecom/wa-templates' && request.method==='GET'){ res=await handleEcomWaTemplatesGet(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-preset' && request.method==='POST'){ res=await handleEcomWaTemplatesCreatePreset(request, env); }
+      else if(url.pathname==='/ecom/wa-templates/create-from-library' && request.method==='POST'){ res=await handleEcomWaTemplatesCreateFromLibrary(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }

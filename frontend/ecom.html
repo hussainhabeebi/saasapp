@@ -236,7 +236,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       • Fulfillment created (shipping label/tracking added) → sends the <em>Order Shipped</em> template<br>
       • Carrier reports delivered → sends the <em>Order Delivered</em> template (best-effort — only carriers Shopify tracks natively report this)<br>
       • Checkout abandoned for 60+ minutes with no order → sends the <em>Abandoned Cart</em> template (checked every 20 min)<br><br>
-      Don't have a template yet for one of these? Each block above has a <em>Create Suggested Template</em> button — submits a ready-made Meta Utility template for that event straight to your WhatsApp Business Account for review. It's usually approved within a few hours; this page will start sending it automatically the moment Meta approves it.
+      Don't have a template yet for one of these? Order Received, Payment Received and Order Shipped each have a <em>⚡ Use Meta Library Template</em> button — creates one of Meta's own pre-approved templates, no review wait, but you'll need to map its variables below afterward. Every event also has a <em>✨ Create Suggested Template</em> button that submits custom wording instead — usually approved within a few hours, and its variables are already mapped for you.
     </div>
   </div>
 
@@ -1265,15 +1265,24 @@ async function loadShopifyTemplates() {
   }
 }
 
+// Events with a confirmed Meta Template Library entry (see SHOPIFY_LIBRARY_TEMPLATES in
+// worker.js) — these get the faster "⚡ Use Meta Library Template" option too, alongside the
+// always-available from-scratch "✨ Create Suggested Template".
+const SHOPIFY_LIBRARY_KINDS = ['received', 'paid', 'shipped'];
+
 function renderShopifyTemplateBlock(kind, label) {
   const container = document.getElementById('shopifyTemplate' + kind.charAt(0).toUpperCase() + kind.slice(1));
   const cfg = shopifyNotifyConfig[kind] || {};
   const options = ['<option value="">— None —</option>']
     .concat(shopifyTemplates.map(t => `<option value="${escAttr(t.name+'|'+t.language)}" ${cfg.name===t.name && cfg.lang===t.language ? 'selected':''}>${esc(t.name)} (${esc(t.language)}) — ${esc(t.status||'')}</option>`));
+  const libraryBtn = SHOPIFY_LIBRARY_KINDS.includes(kind)
+    ? `<button class="save-btn sec" onclick="createShopifyLibraryTemplate('${kind}')" id="shopifyLibrary_${kind}_btn">⚡ Use Meta Library Template</button>`
+    : '';
   container.innerHTML = `
     <span class="s-lbl">${esc(label)}</span>
     <div class="s-row" style="margin-bottom:8px">
       <select class="s-input" style="margin-bottom:0" onchange="onShopifyTemplateSelect('${kind}', this.value)">${options.join('')}</select>
+      ${libraryBtn}
       <button class="save-btn sec" onclick="createShopifyPresetTemplate('${kind}')" id="shopifyPreset_${kind}_btn">✨ Create Suggested Template</button>
     </div>
     <div class="colmap-grid" id="shopifyParams_${kind}"></div>`;
@@ -1300,6 +1309,33 @@ async function createShopifyPresetTemplate(kind) {
     await saveShopifyTemplates();
     await loadShopifyTemplates(); // pulls the new (PENDING) template in — may need one more manual refresh if Meta hasn't indexed it yet
     showMsg('shopifyTemplatesMsg', `Submitted "${data.name}" to Meta for review — usually approved within a few hours. It'll start sending automatically once approved.`, 10000);
+  } catch(e) {
+    showMsg('shopifyTemplatesMsg', 'Error: ' + e.message, 6000);
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+}
+
+// Creates a template from Meta's own Template Library (see SHOPIFY_LIBRARY_TEMPLATES in
+// worker.js) — pre-vetted wording, no review wait per Meta's docs. Unlike the from-scratch
+// button above, this deliberately does NOT pre-fill the variable mapping (the library wording has
+// several same-typed placeholders and there's no confirmed way yet to know which slot means what
+// without live-testing against a real WABA) — map each {{}} below once it shows up.
+async function createShopifyLibraryTemplate(kind) {
+  const btn = document.getElementById(`shopifyLibrary_${kind}_btn`);
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/wa-templates/create-from-library`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ client_id: clientId, kind })
+    });
+    const data = await r.json();
+    if (data.error) { showMsg('shopifyTemplatesMsg', data.error, 8000); return; }
+    shopifyNotifyConfig[kind] = { name: data.name, lang: data.language, params: [] };
+    await saveShopifyTemplates();
+    await loadShopifyTemplates(); // may need one more manual refresh if Meta hasn't indexed it yet
+    showMsg('shopifyTemplatesMsg', `Created "${data.name}" from Meta's template library (${data.status}). Map each {{}} below to finish setup.`, 10000);
   } catch(e) {
     showMsg('shopifyTemplatesMsg', 'Error: ' + e.message, 6000);
   } finally {
