@@ -314,6 +314,32 @@ async function authentikApiFetch(env, path, opts={}){
     headers:{Authorization:`Bearer ${env.AUTHENTIK_API_TOKEN}`, 'Content-Type':'application/json', ...(opts.headers||{})}
   });
 }
+// Best-effort companion to Authentik user creation below — creates a Chatwoot Platform user with
+// the same name/email/password, links them to the client's existing Chatwoot account as an
+// 'agent' (not 'administrator' — matches a teammate's actual role, distinct from the account
+// owner's own Chatwoot user created by handleChannelsCreateAccount), and generates a one-time SSO
+// login link via the same Platform API `/users/{id}/login` endpoint handleChannelsChatwootSso
+// uses. Failure here never fails the overall user-creation request — Chatwoot may not be
+// connected for this client yet, or the email may already exist as a Chatwoot Platform user.
+async function createChatwootAgent(env, c, {name, email, password}){
+  try{
+    const userR=await chatwootPlatformFetch(env, '/platform/api/v1/users', {method:'POST', body:{name, email, password}});
+    const user=await userR.json().catch(()=>({}));
+    if(!userR.ok||!user?.id) return {ok:false, error:user?.message||('HTTP '+userR.status)};
+
+    const linkR=await chatwootPlatformFetch(env, `/platform/api/v1/accounts/${c.chatwoot_account_id}/account_users`, {method:'POST', body:{user_id:user.id, role:'agent'}});
+    if(!linkR.ok) return {ok:false, error:'Failed to link Chatwoot agent to account: HTTP '+linkR.status};
+
+    const ssoR=await chatwootPlatformFetch(env, `/platform/api/v1/users/${user.id}/login`);
+    const sso=await ssoR.json().catch(()=>({}));
+    const inbox_url=c.chatwoot_inbox_id
+      ? `${c.chatwoot_base}/app/accounts/${c.chatwoot_account_id}/inbox/${c.chatwoot_inbox_id}`
+      : `${c.chatwoot_base}/app/accounts/${c.chatwoot_account_id}/dashboard`;
+    return {ok:true, sso_url:ssoR.ok?(sso?.url||null):null, inbox_url};
+  }catch(e){
+    return {ok:false, error:e.message||'Chatwoot agent creation failed'};
+  }
+}
 async function handleTeamCreateUser(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -324,6 +350,8 @@ async function handleTeamCreateUser(request, env){
   const emailNorm=String(email).trim().toLowerCase();
   const existing=await getClientByAuthentikEmail(env, emailNorm);
   if(existing) return json({error:'This email is already linked to an account.'}, 409);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
 
   const createR=await authentikApiFetch(env, '/core/users/', {
     method:'POST',
@@ -343,7 +371,12 @@ async function handleTeamCreateUser(request, env){
     const pwData=await pwR.json().catch(()=>({}));
     return json({error:'Failed to set password: '+(pwData?.password?.[0]||pwData?.detail||'HTTP '+pwR.status)}, 502);
   }
-  return json({ok:true, email:emailNorm});
+
+  let chatwoot=null;
+  if(c.chatwoot_account_id && env.CHATWOOT_PLATFORM_TOKEN){
+    chatwoot=await createChatwootAgent(env, c, {name:String(name||username).trim(), email:emailNorm, password});
+  }
+  return json({ok:true, email:emailNorm, chatwoot});
 }
 
 async function handleNocodbPassthrough(request, env, upstreamPath){

@@ -233,6 +233,21 @@ behind. On success, the frontend appends the new email to `team_emails` the same
 single-tenant Authentik instance where this Worker is the only caller of the Admin API). Create
 it under **Directory → Tokens** (or a dedicated service account) in Authentik.
 
+**Matching Chatwoot agent (same request, best-effort):** if the client already has Chatwoot
+connected (`chatwoot_account_id` set — see "Channels module"), `handleTeamCreateUser` also calls
+`createChatwootAgent()`, which reuses `chatwootPlatformFetch` (the same Platform API helper
+`handleChannelsCreateAccount`/`handleChannelsChatwootSso` already use) to: create a Chatwoot
+Platform user with the *same* name/email/password, link them to the client's existing account via
+`POST /platform/api/v1/accounts/{id}/account_users` with `role:'agent'` (not `'administrator'` —
+that role is reserved for the account owner's own Chatwoot user), and generate a one-time SSO
+login link via `POST /platform/api/v1/users/{id}/login`. None of this can fail the overall
+`/team/create-user` request — Chatwoot may not be connected yet, or the email may already exist as
+a Chatwoot Platform user; either way the Authentik/dashboard account is still created and the
+response just carries `chatwoot:{ok:false, error}` instead. On success the frontend shows the new
+teammate's email/password plus two links: the one-time "Log in to Chatwoot now" SSO link, and a
+durable direct link to the connected inbox (`{chatwoot_base}/app/accounts/{account_id}/inbox/{inbox_id}`)
+for viewing conversation detail.
+
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
 write every client's row in every table via devtools — not just their own), plus each logged-in
