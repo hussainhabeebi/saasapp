@@ -1391,7 +1391,10 @@ const TODAY = new Date().toISOString().slice(0,10);
         <!-- Left: contact list -->
         <div class="chat-sidebar">
           <div class="chat-sidebar-hd">
-            <div class="chat-sidebar-title">Chats</div>
+            <div class="chat-sidebar-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+              <span>Chats</span>
+              <a href="#" id="chatwootSsoLink" onclick="openChatwootSso();return false" style="font-size:11px;font-weight:600;color:#00a884;text-decoration:none;white-space:nowrap">Log in to Chatwoot ↗</a>
+            </div>
             <div class="chat-search-wrap">
               <span class="chat-search-icon">🔍</span>
               <input class="chat-search" id="chatSearch" type="text" placeholder="Search or start a new chat" oninput="chatSearchDebounce()" autocomplete="off" />
@@ -4282,7 +4285,7 @@ function renderTeamCreateResult(email, password, chatwoot){
       ${chatwoot.sso_url?`<a class="save-btn" style="text-decoration:none;display:inline-block" href="${esc(chatwoot.sso_url)}" target="_blank" rel="noopener">Log in to Chatwoot now</a>`:''}
       ${chatwoot.inbox_url?`<a class="save-btn" style="text-decoration:none;display:inline-block;background:var(--muted)" href="${esc(chatwoot.inbox_url)}" target="_blank" rel="noopener">Open Chatwoot Inbox</a>`:''}
     </div>
-    <div class="s-note" style="margin-top:6px">A matching Chatwoot agent was created with the same email/password. "Log in to Chatwoot now" only works once — after that, sign in with the email/password above at ${esc(clientRecord?.chatwoot_base||'your Chatwoot URL')}.</div>`;
+    <div class="s-note" style="margin-top:6px">A matching Chatwoot agent was created with the same email/password. This "Log in to Chatwoot now" link only works once — once they're signed in, they can always get back in via the "Log in to Chatwoot ↗" link at the top of their own Chats tab (or the email/password above).</div>`;
   }else if(chatwoot && !chatwoot.ok){
     html+=`<div class="s-note" style="margin-top:6px;color:var(--red)">Chatwoot agent wasn't created: ${esc(chatwoot.error||'unknown error')}. The dashboard/Authentik login above still works.</div>`;
   }else{
@@ -5535,6 +5538,23 @@ async function addChannelInbox(){
     msg.innerHTML=`Created "${esc(data.name)}". <a href="${esc(data.chatwoot_settings_url)}" target="_blank" rel="noopener">Open in Chatwoot →</a>`;
     loadChannelsStatus();
   }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+// "Log in to Chatwoot" link in the Chats tab header — passes myEmail (this specific person's own
+// verified email, set at login, see session/exchange) so the Worker can hand back an SSO link for
+// their own Chatwoot agent (see createChatwootAgent/handleChannelsChatwootSso in worker.js)
+// instead of always the account owner's identity.
+async function openChatwootSso(){
+  const link=$id('chatwootSsoLink');
+  const original=link.textContent;
+  link.textContent='Opening…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/chatwoot-sso?email=${encodeURIComponent(myEmail)}`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    window.open(data.url, '_blank', 'noopener');
+  }catch(e){ alert('Could not open Chatwoot: '+e.message); }
+  finally{ link.textContent=original; }
 }
 
 async function connectShopify(){

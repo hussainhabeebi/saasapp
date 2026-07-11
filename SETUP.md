@@ -56,6 +56,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
+| team_chatwoot_users | Long text (JSON, `{email: chatwoot_user_id}` — per-teammate Chatwoot Platform user ids, populated by User Management → Create New User — see "Matching Chatwoot agent" below) |
 | fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 | last_renewal_notice_sent | Single line (ISO datetime — set by `n8n/rbi-renewal-notice.json` so each renewal only gets one backup reminder email even though the workflow runs daily; see "RBI pre-debit notification" below) |
 | notification_email | Single line (email address `n8n/notifications.json` sends hot-lead/handover/SLA alerts to) |
@@ -247,6 +248,17 @@ response just carries `chatwoot:{ok:false, error}` instead. On success the front
 teammate's email/password plus two links: the one-time "Log in to Chatwoot now" SSO link, and a
 durable direct link to the connected inbox (`{chatwoot_base}/app/accounts/{account_id}/inbox/{inbox_id}`)
 for viewing conversation detail.
+
+**`team_chatwoot_users`** (Long text, JSON — new Clients field, e.g. `{"jane@x.com":42}`): the
+one-time SSO link shown at creation time is single-use, so `handleTeamCreateUser` also persists
+`{email: chatwoot_user_id}` here on success. That's what powers the always-available "Log in to
+Chatwoot ↗" link at the top of the Chats tab sidebar (`dashboard.html`'s `openChatwootSso()`) —
+it calls `GET /channels/chatwoot-sso?email=<myEmail>` (the caller's own verified email,
+`dashboard.html`'s `myEmail`, set at login), and `handleChannelsChatwootSso` looks up that
+specific person's Chatwoot user id here (falling back to the account owner's `chatwoot_user_id`
+if the email matches the owner, or if no per-user agent was ever created for them — e.g. they
+were added via "Add Existing Authentik User" instead of "Create New User") before minting a fresh
+one-time login link. Each click always mints a new link — none are stored or reused.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/

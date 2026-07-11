@@ -335,7 +335,7 @@ async function createChatwootAgent(env, c, {name, email, password}){
     const inbox_url=c.chatwoot_inbox_id
       ? `${c.chatwoot_base}/app/accounts/${c.chatwoot_account_id}/inbox/${c.chatwoot_inbox_id}`
       : `${c.chatwoot_base}/app/accounts/${c.chatwoot_account_id}/dashboard`;
-    return {ok:true, sso_url:ssoR.ok?(sso?.url||null):null, inbox_url};
+    return {ok:true, user_id:user.id, sso_url:ssoR.ok?(sso?.url||null):null, inbox_url};
   }catch(e){
     return {ok:false, error:e.message||'Chatwoot agent creation failed'};
   }
@@ -375,6 +375,13 @@ async function handleTeamCreateUser(request, env){
   let chatwoot=null;
   if(c.chatwoot_account_id && env.CHATWOOT_PLATFORM_TOKEN){
     chatwoot=await createChatwootAgent(env, c, {name:String(name||username).trim(), email:emailNorm, password});
+    if(chatwoot.ok && chatwoot.user_id){
+      // Persists which Chatwoot user belongs to this email so handleChannelsChatwootSso can mint
+      // this specific teammate their own SSO link later, not just at creation time.
+      let teamUsers={}; try{ teamUsers=JSON.parse(c.team_chatwoot_users||'{}'); }catch(e){}
+      teamUsers[emailNorm]=chatwoot.user_id;
+      await patchClientFields(env, payload.cid, {team_chatwoot_users:JSON.stringify(teamUsers)}).catch(()=>{});
+    }
   }
   return json({ok:true, email:emailNorm, chatwoot});
 }
@@ -1325,15 +1332,29 @@ async function handleChannelsStatus(request, env){
 // Shopify (and any other Chatwoot-native OAuth integration) is configured at the Chatwoot
 // instance level (SHOPIFY_CLIENT_ID/SECRET) and connected per-account via Chatwoot's own
 // Settings -> Integrations page — that OAuth hop has to run on Chatwoot's own domain/callback,
-// it can't be done from this Worker. This route just gets the client into Chatwoot already
+// it can't be done from this Worker. This route just gets the caller into Chatwoot already
 // logged in (via the Platform API's one-time SSO link) so they land on that page with zero
 // credential friction, instead of hitting a login wall for a password they were never shown.
+//
+// Also used by the "Log in to Chatwoot" link in the Chats tab — an optional ?email= (the
+// caller's own verified Authentik email, from dashboard.html's `myEmail`) picks that specific
+// person's own Chatwoot agent (team_chatwoot_users, populated by createChatwootAgent above) so
+// each teammate lands in Chatwoot as themselves, not borrowing the account owner's identity.
+// Falls back to the owner's chatwoot_user_id when no email is given or no per-user agent exists
+// for it (e.g. they were added via "Add Existing Authentik User", which never provisions one).
 async function handleChannelsChatwootSso(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_user_id) return json({error:'Connect a Chatwoot account first.'}, 400);
-  const r=await chatwootPlatformFetch(env, `/platform/api/v1/users/${c.chatwoot_user_id}/login`);
+  const requestedEmail=(new URL(request.url).searchParams.get('email')||'').trim().toLowerCase();
+  let chatwootUserId=c?.chatwoot_user_id;
+  if(requestedEmail && requestedEmail!==String(c?.authentik_email||'').toLowerCase()){
+    let teamUsers={}; try{ teamUsers=JSON.parse(c?.team_chatwoot_users||'{}'); }catch(e){}
+    const key=Object.keys(teamUsers).find(k=>k.toLowerCase()===requestedEmail);
+    if(key) chatwootUserId=teamUsers[key];
+  }
+  if(!chatwootUserId) return json({error:'Connect a Chatwoot account first.'}, 400);
+  const r=await chatwootPlatformFetch(env, `/platform/api/v1/users/${chatwootUserId}/login`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok||!data?.url) return json({error:'Failed to generate a Chatwoot login link: '+(data?.message||('HTTP '+r.status))}, 502);
   return json({ok:true, url:data.url});
