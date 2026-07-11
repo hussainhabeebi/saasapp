@@ -488,6 +488,21 @@ Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp not
      already saved) so nothing else needs configuring once Meta approves it. `abandoned` is
      submitted as `MARKETING` category (a re-engagement nudge, not a transactional confirmation)
      — everything else is `UTILITY`.
+   - **Faster alternative for `received`/`paid`/`shipped`**: a "⚡ Use Meta Library Template"
+     button — `POST /ecom/wa-templates/create-from-library` (`{client_id, kind}`) creates a
+     template from Meta's own **Template Library** instead (pre-vetted wording Meta maintains
+     globally, not per-WABA — per Meta's docs these skip the review queue entirely, unlike the
+     from-scratch preset above). `SHOPIFY_LIBRARY_TEMPLATES` (`worker.js`) holds the three
+     confirmed real `library_template_name` values (`order_management_1`,
+     `payment_confirmation_4`, `shipment_confirmation_1` — found via WhatsApp Manager → Message
+     templates → Create template → Browse the template library; this catalog is global, so these
+     three names are reused for every client, no per-client lookup). Unlike the preset button,
+     this one does **not** pre-fill the `{{n}}` → vars mapping — the library wording has several
+     same-typed placeholders (e.g. multiple `{{text}}` slots) with no confirmed way found yet
+     (Meta's own docs blocked automated access while building this) to know which slot means what
+     without live-testing against a real WABA — so it falls through to the same manual
+     param-mapping UI every other synced template already uses. No confirmed library entry exists
+     yet for `delivered`/`abandoned`.
 4. **Abandoned cart** — `checkouts/create`/`checkouts/update` upsert into `shopify_checkouts`;
    `orders/create` marks the matching checkout row `completed`. A second Cron Trigger
    (`*/20 * * * *` in `wrangler.toml`, dispatched to `sweepAbandonedShopifyCheckouts` in
