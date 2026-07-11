@@ -1914,18 +1914,6 @@ const TODAY = new Date().toISOString().slice(0,10);
             </div>
           </div>
         </div>
-
-        <!-- Shopify: an OAuth integration that lives on Chatwoot's own Settings -> Integrations
-             page (its client secret is configured on the Chatwoot instance, not here) — this
-             just gets the client into Chatwoot already logged in via a one-time SSO link. -->
-        <div class="card" id="chShopifySection" style="display:none">
-          <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🛍️ Shopify</div>
-            <div class="s-note">Connect your Shopify store to see orders in the conversation sidebar. This opens your Chatwoot account (already signed in) on the Integrations page — click Shopify → Connect there.</div>
-            <button class="save-btn" onclick="connectShopify()">Connect Shopify</button>
-            <span class="save-msg" id="chShopifyMsg"></span>
-          </div>
-        </div>
       </div>
     </div>
 
@@ -1951,11 +1939,11 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
-        <!-- Shopify — one-click OAuth connect (distinct from Channels' "Connect Shopify", which
-             deep-links into Chatwoot's own Shopify sidebar integration). This one lets the
-             Worker read the store directly for order/fulfillment notifications and the
-             abandoned-cart nudge — see the Ecommerce module's Shopify tab for the notification
-             template setup and send log. -->
+        <!-- Shopify — the one and only connect method (a Chatwoot-native sidebar-integration
+             deep-link used to live in Channels too; removed so there's a single, unambiguous way
+             to connect a store). This one-click OAuth flow lets the Worker read the store
+             directly for order/fulfillment notifications and the abandoned-cart nudge — see the
+             Ecommerce module's Shopify tab for the notification template setup and send log. -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🛍️ Shopify</div>
@@ -5321,7 +5309,6 @@ function renderChannelsPage(){
   if(hasWa) $id('chWaPhoneDisplay').textContent=clientRecord.wa_phone_id||'';
 
   $id('chOtherSection').style.display=hasAccount?'block':'none';
-  $id('chShopifySection').style.display=hasAccount?'block':'none';
 
   $id('chConnectedSection').style.display=hasAccount?'block':'none';
   const list=status.inboxes||[];
@@ -5647,17 +5634,6 @@ async function openChatwootSso(){
     window.open(data.url, '_blank', 'noopener');
   }catch(e){ alert('Could not open Chatwoot: '+e.message); }
   finally{ link.textContent=original; }
-}
-
-async function connectShopify(){
-  const msg=$id('chShopifyMsg'); msg.textContent='Opening Chatwoot…';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/chatwoot-sso`,{headers:ncAuthHeaders()});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    window.open(data.url, '_blank', 'noopener');
-    msg.textContent='Opened — go to Settings → Integrations → Shopify → Connect.';
-  }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
 /* ── BILLING MODULE (Stripe) ──────────────────────────────────────────────
