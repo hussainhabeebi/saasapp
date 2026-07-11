@@ -301,6 +301,51 @@ async function handleSessionMe(request, env){
   return json({client_id:String(rec.Id), client:safeClient(rec)});
 }
 
+/* ── Team user creation (User Management) — provisions a real Authentik account (username +
+   password) for a teammate directly, instead of requiring them to self-serve through Authentik's
+   own hosted signup page first. Uses a service-account API token (AUTHENTIK_API_TOKEN, a Worker
+   secret — needs the authentik_core.add_user and authentik_core.reset_user_password permissions,
+   or a superuser token) against Authentik's Core API; the password is set directly on the
+   Authentik user and never stored anywhere in NocoDB/this Worker. On success the new email is
+   added to the client's team_emails the same way the existing "add by email" flow does. ── */
+async function authentikApiFetch(env, path, opts={}){
+  return fetch(`${env.AUTHENTIK_BASE}/api/v3${path}`, {
+    ...opts,
+    headers:{Authorization:`Bearer ${env.AUTHENTIK_API_TOKEN}`, 'Content-Type':'application/json', ...(opts.headers||{})}
+  });
+}
+async function handleTeamCreateUser(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.AUTHENTIK_API_TOKEN) return json({error:'Authentik admin API is not configured on the server.'}, 500);
+  const {name, username, email, password}=await request.json().catch(()=>({}));
+  if(!username||!email||!password) return json({error:'username, email and password are required'}, 400);
+  if(String(password).length<8) return json({error:'Password must be at least 8 characters.'}, 400);
+  const emailNorm=String(email).trim().toLowerCase();
+  const existing=await getClientByAuthentikEmail(env, emailNorm);
+  if(existing) return json({error:'This email is already linked to an account.'}, 409);
+
+  const createR=await authentikApiFetch(env, '/core/users/', {
+    method:'POST',
+    body:JSON.stringify({username:String(username).trim(), email:emailNorm, name:String(name||username).trim(), is_active:true})
+  });
+  const createData=await createR.json().catch(()=>({}));
+  if(!createR.ok){
+    const detail=createData?.username?.[0]||createData?.email?.[0]||createData?.detail||('HTTP '+createR.status);
+    return json({error:'Authentik rejected the new user: '+detail}, 502);
+  }
+
+  const userId=createData.pk;
+  const pwR=await authentikApiFetch(env, `/core/users/${userId}/set_password/`, {method:'POST', body:JSON.stringify({password})});
+  if(!pwR.ok){
+    // Don't leave a passwordless, unreachable account behind — best-effort cleanup.
+    await authentikApiFetch(env, `/core/users/${userId}/`, {method:'DELETE'}).catch(()=>{});
+    const pwData=await pwR.json().catch(()=>({}));
+    return json({error:'Failed to set password: '+(pwData?.password?.[0]||pwData?.detail||'HTTP '+pwR.status)}, 502);
+  }
+  return json({ok:true, email:emailNorm});
+}
+
 async function handleNocodbPassthrough(request, env, upstreamPath){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -2148,6 +2193,7 @@ export default {
       if(url.pathname==='/health'){ res=json({ok:true}); }
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
+      else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/quote/send' && request.method==='POST'){ res=await handleQuoteSend(request, env); }

@@ -1439,17 +1439,36 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
           </div>
         </div>
-        <!-- TEAM MEMBERS -->
+        <!-- USER MANAGEMENT -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">👥 Team Members</div>
-            <div class="s-note">Anyone added here can sign in with their own Authentik account and gets full access to this dashboard — same as you.</div>
+            <div class="s-head">👥 User Management</div>
+            <div class="s-note">Everyone below can sign in with their own Authentik account and gets full access to this dashboard — same as you.</div>
             <div id="teamMembersList" style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px"></div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <input class="form-input" id="teamNewEmail" type="email" placeholder="teammate@company.com" style="max-width:260px">
-              <button class="save-btn" onclick="addTeamMember()">Add</button>
+
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <div style="font-weight:700;font-size:13px;margin-bottom:6px">Create New User</div>
+              <div class="s-note" style="margin-bottom:8px">Creates a real Authentik login for them — they can sign in immediately with the username/password below.</div>
+              <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
+                <input class="form-input" id="teamNewName" type="text" placeholder="Full Name">
+                <input class="form-input" id="teamNewUsername" type="text" placeholder="Username">
+                <input class="form-input" id="teamNewUserEmail" type="email" placeholder="Email">
+                <input class="form-input" id="teamNewUserPassword" type="password" placeholder="Password (min 8 chars)">
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+                <button class="save-btn" onclick="createTeamUser()">Create User</button>
+                <span class="save-msg" id="teamCreateUserMsg"></span>
+              </div>
             </div>
-            <span class="save-msg" id="teamMembersMsg"></span>
+
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <div style="font-weight:700;font-size:13px;margin-bottom:6px">Add Existing Authentik User</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <input class="form-input" id="teamNewEmail" type="email" placeholder="teammate@company.com" style="max-width:260px">
+                <button class="save-btn" onclick="addTeamMember()">Add</button>
+              </div>
+              <span class="save-msg" id="teamMembersMsg"></span>
+            </div>
           </div>
         </div>
         <!-- CONNECTION INFO -->
@@ -4219,6 +4238,30 @@ async function addTeamMember(){
     msg.textContent='Added.';
     renderTeamMembers();
   }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+async function createTeamUser(){
+  const msg=$id('teamCreateUserMsg'); msg.textContent=''; msg.className='save-msg';
+  const name=$id('teamNewName').value.trim();
+  const username=$id('teamNewUsername').value.trim();
+  const email=$id('teamNewUserEmail').value.trim().toLowerCase();
+  const password=$id('teamNewUserPassword').value;
+  if(!username||!email||!password){ msg.textContent='Username, email and password are required.'; msg.className='save-msg err'; return; }
+  if(password.length<8){ msg.textContent='Password must be at least 8 characters.'; msg.className='save-msg err'; return; }
+  msg.textContent='Creating…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/create-user`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name,username,email,password})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
+    if(!current.includes(data.email)){
+      current.push(data.email);
+      await patchClient({team_emails:current.join(',')});
+    }
+    $id('teamNewName').value=''; $id('teamNewUsername').value=''; $id('teamNewUserEmail').value=''; $id('teamNewUserPassword').value='';
+    msg.textContent='✓ User created — they can sign in now'; msg.className='save-msg ok';
+    renderTeamMembers();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
 async function removeTeamMember(email){
