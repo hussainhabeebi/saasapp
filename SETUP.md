@@ -211,11 +211,27 @@ one Authentik login can access it. `getClientByAuthentikEmail` in the Worker fir
 `authentik_email` match (the primary owner); if that misses, it falls back to `team_emails` — a
 plain comma-separated list on the same CLIENTS row — matched exactly (case-insensitive) in code
 rather than trusting NocoDB's `LIKE` alone, since a naive substring match could false-positive on
-similar addresses. There's no separate invite email: the owner adds a teammate's address from
-**Settings → Team Members**, and the moment that person signs in via Authentik (existing account
-or brand new), they land straight in the same dashboard with full access — same as the owner,
-no role restrictions, no seat limit. If you want restricted roles or plan-tied seat limits later,
-that logic would live in this same matching function plus per-action permission checks in the UI.
+similar addresses. **Settings → User Management** has two ways to add a teammate: "Add Existing
+Authentik User" just appends an email to `team_emails` (they must already have — or self-serve
+create — an Authentik account); "Create New User" (see below) provisions the Authentik account
+itself, no separate step required. Either way, the moment that email signs in via Authentik they
+land straight in the same dashboard with full access — same as the owner, no role restrictions,
+no seat limit. If you want restricted roles or plan-tied seat limits later, that logic would live
+in this same matching function plus per-action permission checks in the UI.
+
+**Creating users directly (User Management → Create New User):** `POST /team/create-user`
+(session-gated) calls Authentik's own Core API — `POST /api/v3/core/users/` to create the account
+(`username`/`email`/`name`/`is_active`), then `POST /api/v3/core/users/{id}/set_password/` to set
+the password — using a service-account API token, `AUTHENTIK_API_TOKEN` (a new Worker secret, see
+"Deploy" below). The password is set directly on the Authentik user; it's never written to
+NocoDB or logged by this Worker. If `set_password` fails after the user was created, the Worker
+best-effort deletes the just-created user rather than leaving a passwordless, unreachable account
+behind. On success, the frontend appends the new email to `team_emails` the same way the existing
+"add by email" flow already does — no separate Worker-side write, reusing `patchClient()`.
+**Authentik token permissions needed**: `authentik_core.add_user` and
+`authentik_core.reset_user_password` (a superuser token also works, simplest for a self-hosted
+single-tenant Authentik instance where this Worker is the only caller of the Admin API). Create
+it under **Directory → Tokens** (or a dedicated service account) in Authentik.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
@@ -249,6 +265,7 @@ npm install -g wrangler          # if not already installed
 cd cloudflare-worker
 wrangler secret put NOCODB_TOKEN         # the master NocoDB token (nc_pat_...)
 wrangler secret put SESSION_SIGNING_KEY  # a long random string, e.g. `openssl rand -hex 32`
+wrangler secret put AUTHENTIK_API_TOKEN  # User Management → Create New User — see "Dashboard login" above
 wrangler secret put CHATWOOT_PLATFORM_TOKEN  # Channels module — see "Channels module" section below
 wrangler secret put META_APP_ID              # Channels module — Meta Tech Provider app id
 wrangler secret put META_APP_SECRET          # Channels module — Meta Tech Provider app secret
