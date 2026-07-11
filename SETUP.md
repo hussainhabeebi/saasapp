@@ -1203,3 +1203,55 @@ already used by `signSession`), so nothing needs to be stored per-send.
   the `onshope.com` domain wiring earlier in this file. MVP body-parsing should stay deliberately
   narrow (best-effort `text/plain` extraction, not a full RFC 2045 MIME parser) and that limitation
   should be documented, not silently papered over.
+
+## Meta Ads Conversions API (CAPI) module — lead-quality reporting
+Feeds CRM lead-quality signals (captured → qualified/disqualified → booked) back to Meta via
+server-side Conversions API calls, so ad delivery optimizes for real conversions instead of just
+WhatsApp message volume. Built as plain Worker code, same pattern as the Email Marketing module.
+
+### Schema — one new pair of fields on the Clients table (`mxl33bg4wi70fqj`)
+- `meta_pixel_id` (Single line text) — the Meta Pixel/Dataset ID from Events Manager.
+- `meta_capi_token` (Single line text) — a Conversions API access token generated for that Pixel
+  (Events Manager → Data Sources → Pixel → Settings → Conversions API → Generate Access Token).
+  A true secret, like `resend_api_key`: stripped by `safeClient()` so it never reaches the
+  browser, and only ever written server-side via `/meta/capi/config` — never through the generic
+  `/nocodb/` passthrough the dashboard uses for its own Clients row.
+
+### Worker routes (`cloudflare-worker/worker.js`)
+- `POST /meta/capi/config` — session-gated, writes `meta_pixel_id`/`meta_capi_token` (token only
+  if a non-empty value was submitted — same "leave blank to keep the current value" pattern as
+  `/email/client`'s `resend_api_key`).
+- `GET /meta/capi/status` — session-gated, returns `{connected, pixel_id}` only — never the token.
+- `POST /meta/capi/lead-event` — session-gated, body `{lead_id, event, value?, currency?}`. Looks
+  up the lead (ownership-checked against the session's `cid`, same pattern as
+  `handleBroadcastFollowupSend`), hashes its `Email`/`Phone` (SHA-256, per Meta's spec) into
+  `user_data.em`/`user_data.ph`, and posts to `https://graph.facebook.com/v18.0/{pixel_id}/events`
+  with `action_source:'business_messaging'` + `messaging_channel:'whatsapp'` (Meta's documented
+  shape for click-to-WhatsApp CAPI events). No-ops with `{ok:true, skipped:true}` if the client
+  hasn't connected a Pixel/token — this is best-effort secondary reporting, never a hard
+  dependency for core lead CRUD.
+- `event` is one of a fixed small set (`META_CAPI_EVENTS`): `lead` → standard `Lead`, `qualified`/
+  `disqualified` → custom `QualifiedLead`/`DisqualifiedLead` (negative signal matters to Meta's
+  optimization too, not just positive), `booked` → standard `Schedule` (fired when a lead reaches
+  a `TERMINAL` pipeline stage — `consultation_booked`/`visit_booked`/`appt_booked`/
+  `human_handover` — the one cross-industry "real conversion" concept this CRM already has, since
+  pipeline `Stage` names themselves are freeform per client via the stage builder).
+
+### Frontend (`dashboard.html`)
+- New "Meta Ads (Conversions API)" card in the Integrations tab (`cfgMetaPixelId`/
+  `cfgMetaCapiToken` inputs, `saveMetaCapiConfig()`/`loadMetaCapiStatus()`), same shape as the
+  existing Resend card.
+- `sendLeadCapiEvent(leadId, event, extra)` — fire-and-forget POST to `/meta/capi/lead-event`,
+  errors swallowed (never blocks the UI for what is secondary reporting).
+- `reportLeadQualityChange(leadId, before, after)` — compares a lead's before/after `Score`/
+  `Stage` and calls `sendLeadCapiEvent` for the relevant transition. Wired into the three places
+  a lead's Score or Stage actually changes: `saveLead()` (Add/Edit modal — also fires the initial
+  `lead` event on create), `kbDrop()` (kanban drag-to-stage), and `patchDetailField()` (the
+  Score dropdown in the lead detail pane).
+
+### Known limitation
+No `ctwa_clid` (Click-to-WhatsApp ad click id) capture — WhatsApp inbound messages are handled by
+the n8n engine, outside this repo, so matching relies on the lead's phone/email only. Match
+quality/attribution would improve if the n8n workflow captured `ctwa_clid` from the first-message
+webhook's referral payload and stored it on the Lead row for `sendMetaCapiEvent()` to forward
+(unhashed, per Meta's spec) alongside `user_data`.

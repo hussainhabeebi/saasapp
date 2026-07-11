@@ -1945,6 +1945,25 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
+        <!-- Meta Ads Conversions API — server-side lead-quality reporting (Lead capture, then
+             Hot/Disqualified score changes and terminal pipeline stages) fed back to Meta so ad
+             delivery optimizes for real lead quality, not just message volume. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📈 Meta Ads (Conversions API)</div>
+            <div class="s-note">Reports lead quality (captured → qualified/disqualified → booked) back to Meta so your ad campaigns optimize for real conversions, not just chat volume. Get a Pixel ID and access token from Events Manager → Data Sources → your Pixel → Settings → Conversions API.</div>
+            <div id="intMetaCapiStatus" class="s-note" style="margin:8px 0"></div>
+            <label class="form-label">Pixel ID</label>
+            <input class="form-input" id="cfgMetaPixelId" type="text" placeholder="123456789012345" style="margin-bottom:8px">
+            <label class="form-label">Conversions API Access Token</label>
+            <input class="form-input" id="cfgMetaCapiToken" type="password" placeholder="Leave blank to keep the current token" style="margin-bottom:8px">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button class="save-btn" onclick="saveMetaCapiConfig()">Save</button>
+              <span class="save-msg" id="saveMetaCapiMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- Google Sheets — consolidated view of the sheet connections configured elsewhere -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -3519,8 +3538,10 @@ async function kbDrop(e,stage){
   if(!_dragId)return;
   const lead=allLeads.find(l=>l.Id===_dragId);
   if(!lead||lead.Stage===stage)return;
+  const prevStage=lead.Stage;
   lead.Stage=stage;
   await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:_dragId,Stage:stage});
+  reportLeadQualityChange(_dragId, {Stage:prevStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:stage});
   renderKanban();
 }
 
@@ -3677,6 +3698,7 @@ function populateFormSelects(){
 
 async function saveLead(){
   const id=$id('fLeadId').value;
+  const original=id?allLeads.find(l=>l.Id===parseInt(id)):null;
   const body={
     ClientId:String(clientId),
     Name:$id('fName').value.trim(),
@@ -3703,8 +3725,14 @@ async function saveLead(){
     if($id('fSpecialReq').value)body.SpecialRequests=$id('fSpecialReq').value.trim();
   }
   if(!body.Phone){alert('Phone is required.');return;}
-  if(id){body.Id=parseInt(id); await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);}
-  else{await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);}
+  if(id){
+    body.Id=parseInt(id);
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);
+    reportLeadQualityChange(body.Id, original, body);
+  }else{
+    const created=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);
+    if(created?.Id) sendLeadCapiEvent(created.Id,'lead');
+  }
   sessionStorage.removeItem(_CACHE_KEY()); // bust cache so fresh data loads
   closeModal('modalLead');
   await loadAll();
@@ -3905,10 +3933,12 @@ async function saveCall(){
 
 async function patchDetailField(field,val){
   if(!currentLead)return;
+  const prevVal=currentLead[field];
   currentLead[field]=val;
   const idx=allLeads.findIndex(l=>l.Id===currentLead.Id);
   if(idx>=0)allLeads[idx][field]=val;
   await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:currentLead.Id,[field]:val});
+  if(field==='Score') reportLeadQualityChange(currentLead.Id, {Score:prevVal}, {Score:val});
 }
 
 async function patchDealValue(val){
@@ -5025,6 +5055,23 @@ async function ncPost(url,body){
   if(!r.ok)throw new Error('HTTP '+r.status);
   return r.json();
 }
+// Fire-and-forget: reports a lead-quality signal to Meta's Conversions API (see Integrations →
+// Meta Ads). No-ops server-side if the client hasn't connected a Pixel/token, and never blocks
+// or surfaces errors to the UI — this is secondary reporting, not core CRM functionality.
+function sendLeadCapiEvent(leadId, event, extra){
+  fetch(`${CONFIG.WORKER_BASE}/meta/capi/lead-event`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:leadId, event, ...extra})}).catch(()=>{});
+}
+// Compares a lead's before/after Stage & Score and reports the resulting quality signal to Meta
+// — Score reaching Hot/Cold and Stage reaching a TERMINAL pipeline stage are the two universal
+// (cross-industry, not tied to any one client's custom stage names beyond TERMINAL) quality
+// signals this CRM has.
+function reportLeadQualityChange(leadId, before, after){
+  if(after.Score==='Hot' && before?.Score!=='Hot') sendLeadCapiEvent(leadId,'qualified');
+  else if(after.Score==='Cold' && before?.Score && before.Score!=='Cold') sendLeadCapiEvent(leadId,'disqualified');
+  if(after.Stage && TERMINAL.has(after.Stage) && !TERMINAL.has(before?.Stage)){
+    sendLeadCapiEvent(leadId,'booked',{value:after.DealValue??before?.DealValue, currency:after.DealCurrency??before?.DealCurrency});
+  }
+}
 async function ncDelete(url,body){
   const r=await fetch(url,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
   if(!r.ok)throw new Error('HTTP '+r.status);
@@ -5138,6 +5185,7 @@ function integrationsInit(){
   renderShopifyStatus();
   renderSheetsList();
   loadEmailStatus();
+  loadMetaCapiStatus();
   renderHealthResults();
 }
 
@@ -5231,6 +5279,34 @@ async function saveEmailConfig(){
     $id('cfgResendApiKey').value='';
     msg.textContent='✓ Saved'; msg.className='save-msg ok';
     loadEmailStatus();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+async function loadMetaCapiStatus(){
+  $id('cfgMetaPixelId').value=clientRecord?.meta_pixel_id||'';
+  const el=$id('intMetaCapiStatus');
+  el.textContent='Checking…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/capi/status`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    el.innerHTML=data.connected?'✅ Connected — lead events are being reported':'Not connected yet — add your Pixel ID and access token below.';
+  }catch(e){ el.textContent='Could not check status: '+e.message; }
+}
+
+async function saveMetaCapiConfig(){
+  const msg=$id('saveMetaCapiMsg'); msg.textContent='Saving…'; msg.className='save-msg';
+  const fields={meta_pixel_id:$id('cfgMetaPixelId').value.trim()};
+  const token=$id('cfgMetaCapiToken').value.trim();
+  if(token) fields.meta_capi_token=token;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/capi/config`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(fields)});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    clientRecord.meta_pixel_id=fields.meta_pixel_id;
+    $id('cfgMetaCapiToken').value='';
+    msg.textContent='✓ Saved'; msg.className='save-msg ok';
+    loadMetaCapiStatus();
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
