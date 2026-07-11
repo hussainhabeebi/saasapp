@@ -314,6 +314,32 @@ async function authentikApiFetch(env, path, opts={}){
     headers:{Authorization:`Bearer ${env.AUTHENTIK_API_TOKEN}`, 'Content-Type':'application/json', ...(opts.headers||{})}
   });
 }
+// Best-effort companion to Authentik user creation below — creates a Chatwoot Platform user with
+// the same name/email/password, links them to the client's existing Chatwoot account as an
+// 'agent' (not 'administrator' — matches a teammate's actual role, distinct from the account
+// owner's own Chatwoot user created by handleChannelsCreateAccount), and generates a one-time SSO
+// login link via the same Platform API `/users/{id}/login` endpoint handleChannelsChatwootSso
+// uses. Failure here never fails the overall user-creation request — Chatwoot may not be
+// connected for this client yet, or the email may already exist as a Chatwoot Platform user.
+async function createChatwootAgent(env, c, {name, email, password}){
+  try{
+    const userR=await chatwootPlatformFetch(env, '/platform/api/v1/users', {method:'POST', body:{name, email, password}});
+    const user=await userR.json().catch(()=>({}));
+    if(!userR.ok||!user?.id) return {ok:false, error:user?.message||('HTTP '+userR.status)};
+
+    const linkR=await chatwootPlatformFetch(env, `/platform/api/v1/accounts/${c.chatwoot_account_id}/account_users`, {method:'POST', body:{user_id:user.id, role:'agent'}});
+    if(!linkR.ok) return {ok:false, error:'Failed to link Chatwoot agent to account: HTTP '+linkR.status};
+
+    const ssoR=await chatwootPlatformFetch(env, `/platform/api/v1/users/${user.id}/login`);
+    const sso=await ssoR.json().catch(()=>({}));
+    const inbox_url=c.chatwoot_inbox_id
+      ? `${c.chatwoot_base}/app/accounts/${c.chatwoot_account_id}/inbox/${c.chatwoot_inbox_id}`
+      : `${c.chatwoot_base}/app/accounts/${c.chatwoot_account_id}/dashboard`;
+    return {ok:true, user_id:user.id, sso_url:ssoR.ok?(sso?.url||null):null, inbox_url};
+  }catch(e){
+    return {ok:false, error:e.message||'Chatwoot agent creation failed'};
+  }
+}
 async function handleTeamCreateUser(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -324,6 +350,8 @@ async function handleTeamCreateUser(request, env){
   const emailNorm=String(email).trim().toLowerCase();
   const existing=await getClientByAuthentikEmail(env, emailNorm);
   if(existing) return json({error:'This email is already linked to an account.'}, 409);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
 
   const createR=await authentikApiFetch(env, '/core/users/', {
     method:'POST',
@@ -343,7 +371,19 @@ async function handleTeamCreateUser(request, env){
     const pwData=await pwR.json().catch(()=>({}));
     return json({error:'Failed to set password: '+(pwData?.password?.[0]||pwData?.detail||'HTTP '+pwR.status)}, 502);
   }
-  return json({ok:true, email:emailNorm});
+
+  let chatwoot=null;
+  if(c.chatwoot_account_id && env.CHATWOOT_PLATFORM_TOKEN){
+    chatwoot=await createChatwootAgent(env, c, {name:String(name||username).trim(), email:emailNorm, password});
+    if(chatwoot.ok && chatwoot.user_id){
+      // Persists which Chatwoot user belongs to this email so handleChannelsChatwootSso can mint
+      // this specific teammate their own SSO link later, not just at creation time.
+      let teamUsers={}; try{ teamUsers=JSON.parse(c.team_chatwoot_users||'{}'); }catch(e){}
+      teamUsers[emailNorm]=chatwoot.user_id;
+      await patchClientFields(env, payload.cid, {team_chatwoot_users:JSON.stringify(teamUsers)}).catch(()=>{});
+    }
+  }
+  return json({ok:true, email:emailNorm, chatwoot});
 }
 
 async function handleNocodbPassthrough(request, env, upstreamPath){
@@ -1292,15 +1332,29 @@ async function handleChannelsStatus(request, env){
 // Shopify (and any other Chatwoot-native OAuth integration) is configured at the Chatwoot
 // instance level (SHOPIFY_CLIENT_ID/SECRET) and connected per-account via Chatwoot's own
 // Settings -> Integrations page — that OAuth hop has to run on Chatwoot's own domain/callback,
-// it can't be done from this Worker. This route just gets the client into Chatwoot already
+// it can't be done from this Worker. This route just gets the caller into Chatwoot already
 // logged in (via the Platform API's one-time SSO link) so they land on that page with zero
 // credential friction, instead of hitting a login wall for a password they were never shown.
+//
+// Also used by the "Log in to Chatwoot" link in the Chats tab — an optional ?email= (the
+// caller's own verified Authentik email, from dashboard.html's `myEmail`) picks that specific
+// person's own Chatwoot agent (team_chatwoot_users, populated by createChatwootAgent above) so
+// each teammate lands in Chatwoot as themselves, not borrowing the account owner's identity.
+// Falls back to the owner's chatwoot_user_id when no email is given or no per-user agent exists
+// for it (e.g. they were added via "Add Existing Authentik User", which never provisions one).
 async function handleChannelsChatwootSso(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_user_id) return json({error:'Connect a Chatwoot account first.'}, 400);
-  const r=await chatwootPlatformFetch(env, `/platform/api/v1/users/${c.chatwoot_user_id}/login`);
+  const requestedEmail=(new URL(request.url).searchParams.get('email')||'').trim().toLowerCase();
+  let chatwootUserId=c?.chatwoot_user_id;
+  if(requestedEmail && requestedEmail!==String(c?.authentik_email||'').toLowerCase()){
+    let teamUsers={}; try{ teamUsers=JSON.parse(c?.team_chatwoot_users||'{}'); }catch(e){}
+    const key=Object.keys(teamUsers).find(k=>k.toLowerCase()===requestedEmail);
+    if(key) chatwootUserId=teamUsers[key];
+  }
+  if(!chatwootUserId) return json({error:'Connect a Chatwoot account first.'}, 400);
+  const r=await chatwootPlatformFetch(env, `/platform/api/v1/users/${chatwootUserId}/login`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok||!data?.url) return json({error:'Failed to generate a Chatwoot login link: '+(data?.message||('HTTP '+r.status))}, 502);
   return json({ok:true, url:data.url});
@@ -1325,7 +1379,7 @@ const SHOPIFY_SCOPES='read_orders,read_fulfillments,read_checkouts';
 // id here — same pattern as EMAIL_CAMPAIGNS_TABLE/EMAIL_SENDS_TABLE above.
 const SHOPIFY_CHECKOUTS_TABLE='REPLACE_SHOPIFY_CHECKOUTS_TABLE_ID';
 // Sent via WhatsApp when each event fires — 'abandoned' is swept in by cron, the rest by webhook.
-const SHOPIFY_EVENT_KINDS=['received','shipped','delivered','abandoned'];
+const SHOPIFY_EVENT_KINDS=['received','paid','shipped','delivered','abandoned'];
 
 function isValidShopDomain(shop){ return /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(String(shop||'')); }
 
@@ -1429,7 +1483,7 @@ async function handleShopifyOauthCallback(request, env){
 
   // Best-effort — registers the webhooks this module depends on. A client re-connecting after a
   // revoke can just disconnect and connect again to re-register them.
-  const topics=['orders/create','fulfillments/create','fulfillments/update','checkouts/create','checkouts/update','app/uninstalled'];
+  const topics=['orders/create','orders/paid','orders/cancelled','fulfillments/create','fulfillments/update','checkouts/create','checkouts/update','app/uninstalled'];
   const webhookUri=`${env.WORKER_BASE_URL}/shopify/webhook`;
   await Promise.all(topics.map(topic=>
     shopifyFetch(env, shop, access_token, '/webhooks.json', {method:'POST', body:JSON.stringify({webhook:{topic, address:webhookUri, format:'json'}})}).catch(()=>{})
@@ -1506,6 +1560,40 @@ async function markShopifyCheckoutCompleted(env, clientId, token){
   if(existing) await ncFetch(env, `api/v2/tables/${SHOPIFY_CHECKOUTS_TABLE}/records`, {method:'PATCH', body:{Id:existing.Id, completed:'Yes'}});
 }
 
+async function findEcomOrderByShopifyId(env, tableId, clientId, shopifyOrderId){
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})~and(shopify_order_id,eq,${shopifyOrderId})&limit=1`);
+  if(!r.ok) return null;
+  const data=await r.json().catch(()=>({}));
+  return data?.list?.[0]||null;
+}
+
+// Mirrors upsertShopifyCheckout's find-then-patch-or-create pattern, keeping the client's own
+// Ecommerce module Orders page (ecom.html — ORDER_FIELDS there is the authoritative column list
+// this must match) in sync with Shopify's order lifecycle, not just the WhatsApp notifications
+// sendShopifyNotification fires. Matched on `shopify_order_id` (Shopify's own numeric order id,
+// stable across every webhook for that order) rather than `order_id`/name, which a merchant could
+// edit in Shopify after the fact. Requires a `shopify_order_id` column on the orders table (both
+// the shared default and any client's own — see SETUP.md); silently no-ops if the client has no
+// orders table resolvable at all (ecomResolveTable falls back to the shared default, so in
+// practice this only skips if that default table id itself is ever cleared).
+async function syncShopifyOrderToEcom(env, c, order, status){
+  const tableId=await ecomResolveTable(env, c.Id, 'orders');
+  if(!tableId||!order?.id) return;
+  const fields={
+    client_id:c.Id, shopify_order_id:String(order.id), status,
+    order_id:order.name||('#'+(order.order_number||order.id)),
+    customer_name:[order.customer?.first_name, order.customer?.last_name].filter(Boolean).join(' '),
+    customer_phone:order.phone||order.shipping_address?.phone||order.customer?.phone||'',
+    order_date:(order.created_at||'').slice(0,10),
+    items:(order.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
+    total:order.total_price||'', currency:order.currency||'',
+    delivery_address:[order.shipping_address?.address1, order.shipping_address?.city, order.shipping_address?.country].filter(Boolean).join(', '),
+  };
+  const existing=await findEcomOrderByShopifyId(env, tableId, c.Id, fields.shopify_order_id);
+  if(existing) await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:existing.Id, ...fields}});
+  else await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:fields});
+}
+
 // Webhook receiver — server-to-server from Shopify, so auth is the HMAC header, not a session.
 // Reads the raw body first and verifies before touching it as JSON (order matters: the HMAC is
 // computed over the exact bytes Shopify sent).
@@ -1528,6 +1616,19 @@ async function handleShopifyWebhook(request, env){
       store_name:c.client_name||''
     }, {phone, order:data.name||''});
     await markShopifyCheckoutCompleted(env, c.Id, data.checkout_token||data.cart_token);
+    await syncShopifyOrderToEcom(env, c, data, 'received');
+  }
+  else if(topic==='orders/paid'){
+    const phone=data.phone||data.shipping_address?.phone||data.customer?.phone||'';
+    await sendShopifyNotification(env, c, 'paid', {
+      customer_name:data.customer?.first_name||'', order_number:String(data.name||data.order_number||''),
+      total:data.total_price||'', items:(data.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
+      store_name:c.client_name||''
+    }, {phone, order:data.name||''});
+    await syncShopifyOrderToEcom(env, c, data, 'processing');
+  }
+  else if(topic==='orders/cancelled'){
+    await syncShopifyOrderToEcom(env, c, data, 'cancelled');
   }
   else if(topic==='fulfillments/create'){
     const orderR=await shopifyFetch(env, shop, c.shopify_access_token, `/orders/${data.order_id}.json`);
@@ -1537,6 +1638,7 @@ async function handleShopifyWebhook(request, env){
       customer_name:order?.order?.customer?.first_name||'', order_number:String(order?.order?.name||''),
       tracking_number:data.tracking_number||'', tracking_url:(data.tracking_urls||[])[0]||'', store_name:c.client_name||''
     }, {phone, order:order?.order?.name||''});
+    if(order?.order) await syncShopifyOrderToEcom(env, c, order.order, 'shipped');
   }
   else if(topic==='fulfillments/update'){
     // Shopify only reports 'delivered' when the carrier is one it tracks natively — best-effort,
@@ -1549,6 +1651,7 @@ async function handleShopifyWebhook(request, env){
         customer_name:order?.order?.customer?.first_name||'', order_number:String(order?.order?.name||''),
         review_link:c.review_link||'', store_name:c.client_name||''
       }, {phone, order:order?.order?.name||''});
+      if(order?.order) await syncShopifyOrderToEcom(env, c, order.order, 'delivered');
     }
   }
   else if(topic==='checkouts/create'||topic==='checkouts/update'){
@@ -1997,6 +2100,58 @@ async function handleEcomWaTemplatesGet(request, env){
   return json(data);
 }
 
+// Ready-made WhatsApp templates for the Shopify Notifications module's most common
+// order-lifecycle events, so a client with no templates yet isn't stuck hand-writing one in Meta
+// Business Manager before this module can send anything. `params` is the vars key for each
+// {{n}} placeholder, in order — matches the `vars` object sendShopifyNotification already builds
+// for each event (see handleShopifyWebhook), and becomes that event's saved `params` config
+// directly, no manual mapping needed once Meta approves the template. UTILITY for genuine
+// post-purchase confirmations (cheapest per-conversation pricing tier); `abandoned` is MARKETING
+// since it's a re-engagement nudge, not a transactional confirmation — Meta's own category
+// guidelines, and miscategorizing it risks template rejection.
+const SHOPIFY_TEMPLATE_PRESETS={
+  received:{
+    name:'order_received_leadvyne', category:'UTILITY', language:'en_US',
+    body:'Hi {{1}}, thanks for your order {{2}}! Total: {{3}}. Items: {{4}}. We will notify you when it ships.',
+    params:['customer_name','order_number','total','items']
+  },
+  paid:{
+    name:'order_payment_received_leadvyne', category:'UTILITY', language:'en_US',
+    body:'Hi {{1}}, we have received your payment for order {{2}} ({{3}}). Thank you for your purchase!',
+    params:['customer_name','order_number','total']
+  },
+  shipped:{
+    name:'order_shipped_leadvyne', category:'UTILITY', language:'en_US',
+    body:'Hi {{1}}, your order {{2}} has shipped! Tracking number: {{3}}. Track it here: {{4}}',
+    params:['customer_name','order_number','tracking_number','tracking_url']
+  },
+  delivered:{
+    name:'order_delivered_leadvyne', category:'UTILITY', language:'en_US',
+    body:'Hi {{1}}, your order {{2}} has been delivered. We would love your feedback: {{3}}',
+    params:['customer_name','order_number','review_link']
+  },
+  abandoned:{
+    name:'cart_reminder_leadvyne', category:'MARKETING', language:'en_US',
+    body:'Hi {{1}}, you left some items in your cart at {{2}}. Complete your order here: {{3}}',
+    params:['customer_name','store_name','checkout_url']
+  },
+};
+async function handleEcomWaTemplatesCreatePreset(request, env){
+  const {client_id, kind}=await request.json().catch(()=>({}));
+  if(!client_id||!kind) return json({error:'client_id and kind required'}, 400);
+  const preset=SHOPIFY_TEMPLATE_PRESETS[kind];
+  if(!preset) return json({error:'Unknown template kind'}, 400);
+  const c=await getClientById(env, client_id);
+  if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({name:preset.name, category:preset.category, language:preset.language, components:[{type:'BODY', text:preset.body}]})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  return json({ok:true, name:preset.name, language:preset.language, params:preset.params, status:data?.status||'PENDING'});
+}
+
 // Sort is a small whitelist mapped to real NocoDB sort strings, not passed through raw — this
 // endpoint has no session of its own (see ecomResolveTable's comment above), so an arbitrary
 // caller-supplied sort field would be an unnecessary way to let a stranger probe column names.
@@ -2231,6 +2386,7 @@ export default {
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
       else if(url.pathname==='/ecom/wa-templates' && request.method==='GET'){ res=await handleEcomWaTemplatesGet(request, env); }
+      else if(url.pathname==='/ecom/wa-templates/create-preset' && request.method==='POST'){ res=await handleEcomWaTemplatesCreatePreset(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }

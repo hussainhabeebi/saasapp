@@ -220,6 +220,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <span class="save-msg" id="shopifyTemplatesMsg"></span>
     </div>
     <div id="shopifyTemplateReceived" style="margin-top:14px"></div>
+    <div id="shopifyTemplatePaid" style="margin-top:14px"></div>
     <div id="shopifyTemplateShipped" style="margin-top:14px"></div>
     <div id="shopifyTemplateDelivered" style="margin-top:14px"></div>
     <div id="shopifyTemplateAbandoned" style="margin-top:14px"></div>
@@ -231,9 +232,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     <div style="background:var(--accent-soft);border-radius:10px;padding:14px;font-size:13px;color:var(--accent-ink);margin-top:14px">
       <strong>How it works:</strong><br>
       • Shopify order created → sends the <em>Order Received</em> template<br>
+      • Order marked paid → sends the <em>Payment Received</em> template<br>
       • Fulfillment created (shipping label/tracking added) → sends the <em>Order Shipped</em> template<br>
       • Carrier reports delivered → sends the <em>Order Delivered</em> template (best-effort — only carriers Shopify tracks natively report this)<br>
-      • Checkout abandoned for 60+ minutes with no order → sends the <em>Abandoned Cart</em> template (checked every 20 min)
+      • Checkout abandoned for 60+ minutes with no order → sends the <em>Abandoned Cart</em> template (checked every 20 min)<br><br>
+      Don't have a template yet for one of these? Each block above has a <em>Create Suggested Template</em> button — submits a ready-made Meta Utility template for that event straight to your WhatsApp Business Account for review. It's usually approved within a few hours; this page will start sending it automatically the moment Meta approves it.
     </div>
   </div>
 
@@ -485,6 +488,7 @@ let waTemplateConfig = { received: null, shipped: null, delivered: null };
 // ── SHOPIFY NOTIFICATIONS ─────────────────────────
 const SHOPIFY_TEMPLATE_KINDS = [
   { key:'received',  label:'Order Received Template' },
+  { key:'paid',      label:'Payment Received Template' },
   { key:'shipped',   label:'Order Shipped Template' },
   { key:'delivered', label:'Order Delivered Template' },
   { key:'abandoned', label:'Abandoned Cart Template' }
@@ -501,7 +505,7 @@ const SHOPIFY_WA_VARS = [
   { key:'store_name',      label:'Store Name' }
 ];
 let shopifyTemplates = [];
-let shopifyNotifyConfig = { received: null, shipped: null, delivered: null, abandoned: null };
+let shopifyNotifyConfig = { received: null, paid: null, shipped: null, delivered: null, abandoned: null };
 
 // ── INIT ──────────────────────────────────────────
 async function init() {
@@ -1252,9 +1256,10 @@ async function loadShopifyTemplates() {
     const data = await r.json();
     if (data.error) { showMsg('shopifyTemplatesMsg', data.error, 6000); return; }
     shopifyTemplates = data.data || data.templates || [];
-    if (!shopifyTemplates.length) { showMsg('shopifyTemplatesMsg', 'No approved templates found'); return; }
+    // Render even with zero templates — that's exactly when "Create Suggested Template" (below)
+    // matters most, for a client who hasn't set any WhatsApp templates up yet.
     SHOPIFY_TEMPLATE_KINDS.forEach(k => renderShopifyTemplateBlock(k.key, k.label));
-    showMsg('shopifyTemplatesMsg', `Found ${shopifyTemplates.length} templates ✓`);
+    showMsg('shopifyTemplatesMsg', shopifyTemplates.length ? `Found ${shopifyTemplates.length} templates ✓` : 'No templates found yet — create one below.');
   } catch(e) {
     showMsg('shopifyTemplatesMsg', 'Error: ' + e.message, 6000);
   }
@@ -1264,13 +1269,42 @@ function renderShopifyTemplateBlock(kind, label) {
   const container = document.getElementById('shopifyTemplate' + kind.charAt(0).toUpperCase() + kind.slice(1));
   const cfg = shopifyNotifyConfig[kind] || {};
   const options = ['<option value="">— None —</option>']
-    .concat(shopifyTemplates.map(t => `<option value="${escAttr(t.name+'|'+t.language)}" ${cfg.name===t.name && cfg.lang===t.language ? 'selected':''}>${esc(t.name)} (${esc(t.language)})</option>`));
+    .concat(shopifyTemplates.map(t => `<option value="${escAttr(t.name+'|'+t.language)}" ${cfg.name===t.name && cfg.lang===t.language ? 'selected':''}>${esc(t.name)} (${esc(t.language)}) — ${esc(t.status||'')}</option>`));
   container.innerHTML = `
     <span class="s-lbl">${esc(label)}</span>
-    <select class="s-input" style="margin-bottom:8px" onchange="onShopifyTemplateSelect('${kind}', this.value)">${options.join('')}</select>
+    <div class="s-row" style="margin-bottom:8px">
+      <select class="s-input" style="margin-bottom:0" onchange="onShopifyTemplateSelect('${kind}', this.value)">${options.join('')}</select>
+      <button class="save-btn sec" onclick="createShopifyPresetTemplate('${kind}')" id="shopifyPreset_${kind}_btn">✨ Create Suggested Template</button>
+    </div>
     <div class="colmap-grid" id="shopifyParams_${kind}"></div>`;
   const selected = shopifyTemplates.find(t => t.name === cfg.name && t.language === cfg.lang);
   if (selected) renderShopifyParamMap(kind, selected, cfg.params || []);
+}
+
+// Submits a ready-made Meta Utility template (see SHOPIFY_TEMPLATE_PRESETS in worker.js — the
+// preset text/variable order is authored server-side, this just triggers it and reflects the
+// result) for this event straight to the client's WABA for review, then pre-selects it so the
+// param mapping is already correct once Meta approves it — nothing left to configure by hand.
+async function createShopifyPresetTemplate(kind) {
+  const btn = document.getElementById(`shopifyPreset_${kind}_btn`);
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/wa-templates/create-preset`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ client_id: clientId, kind })
+    });
+    const data = await r.json();
+    if (data.error) { showMsg('shopifyTemplatesMsg', data.error, 8000); return; }
+    shopifyNotifyConfig[kind] = { name: data.name, lang: data.language, params: data.params };
+    await saveShopifyTemplates();
+    await loadShopifyTemplates(); // pulls the new (PENDING) template in — may need one more manual refresh if Meta hasn't indexed it yet
+    showMsg('shopifyTemplatesMsg', `Submitted "${data.name}" to Meta for review — usually approved within a few hours. It'll start sending automatically once approved.`, 10000);
+  } catch(e) {
+    showMsg('shopifyTemplatesMsg', 'Error: ' + e.message, 6000);
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
 }
 
 function onShopifyTemplateSelect(kind, value) {

@@ -25,6 +25,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | chatwoot_inbox_id | Single line |
 | chatwoot_base | Single line |
 | chatwoot_token | Single line |
+| chatwoot_extra_accounts | Long text (JSON array, `[{id,label,chatwoot_base,chatwoot_account_id,chatwoot_token}]` — additional Chatwoot accounts linked for quick access only, see "Additional Chatwoot Accounts" below) |
 | nocodb_base | Single line |
 | leads_table_id | Single line |
 | nocodb_token | Single line |
@@ -56,6 +57,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
+| team_chatwoot_users | Long text (JSON, `{email: chatwoot_user_id}` — per-teammate Chatwoot Platform user ids, populated by User Management → Create New User — see "Matching Chatwoot agent" below) |
 | fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 | last_renewal_notice_sent | Single line (ISO datetime — set by `n8n/rbi-renewal-notice.json` so each renewal only gets one backup reminder email even though the workflow runs daily; see "RBI pre-debit notification" below) |
 | notification_email | Single line (email address `n8n/notifications.json` sends hot-lead/handover/SLA alerts to) |
@@ -219,6 +221,17 @@ land straight in the same dashboard with full access — same as the owner, no r
 no seat limit. If you want restricted roles or plan-tied seat limits later, that logic would live
 in this same matching function plus per-action permission checks in the UI.
 
+**Additional Chatwoot Accounts (Settings → Channels):** a client-owned CRM can only ever have one
+*primary* Chatwoot account (`chatwoot_base`/`chatwoot_account_id`/`chatwoot_token`/
+`chatwoot_inbox_id` — the one the Chats tab, AI bot, Quotation sending and Prospects all read).
+`chatwoot_extra_accounts` is a separate, unwired JSON array for linking *other* Chatwoot accounts
+the client already owns elsewhere (a second brand, another store) as a quick-access directory
+only — same "just another field, saved via `patchClient()`" pattern as `team_emails`, no new
+Worker route. "Open" just navigates to `{base}/app/accounts/{id}/dashboard` in a new tab; there's
+no SSO into these the way there is for the primary account (`handleChannelsChatwootSso`), since
+this Worker's `CHATWOOT_PLATFORM_TOKEN` only reaches accounts it created itself — an externally
+owned account needs its own normal Chatwoot login.
+
 **Creating users directly (User Management → Create New User):** `POST /team/create-user`
 (session-gated) calls Authentik's own Core API — `POST /api/v3/core/users/` to create the account
 (`username`/`email`/`name`/`is_active`), then `POST /api/v3/core/users/{id}/set_password/` to set
@@ -232,6 +245,32 @@ behind. On success, the frontend appends the new email to `team_emails` the same
 `authentik_core.reset_user_password` (a superuser token also works, simplest for a self-hosted
 single-tenant Authentik instance where this Worker is the only caller of the Admin API). Create
 it under **Directory → Tokens** (or a dedicated service account) in Authentik.
+
+**Matching Chatwoot agent (same request, best-effort):** if the client already has Chatwoot
+connected (`chatwoot_account_id` set — see "Channels module"), `handleTeamCreateUser` also calls
+`createChatwootAgent()`, which reuses `chatwootPlatformFetch` (the same Platform API helper
+`handleChannelsCreateAccount`/`handleChannelsChatwootSso` already use) to: create a Chatwoot
+Platform user with the *same* name/email/password, link them to the client's existing account via
+`POST /platform/api/v1/accounts/{id}/account_users` with `role:'agent'` (not `'administrator'` —
+that role is reserved for the account owner's own Chatwoot user), and generate a one-time SSO
+login link via `POST /platform/api/v1/users/{id}/login`. None of this can fail the overall
+`/team/create-user` request — Chatwoot may not be connected yet, or the email may already exist as
+a Chatwoot Platform user; either way the Authentik/dashboard account is still created and the
+response just carries `chatwoot:{ok:false, error}` instead. On success the frontend shows the new
+teammate's email/password plus two links: the one-time "Log in to Chatwoot now" SSO link, and a
+durable direct link to the connected inbox (`{chatwoot_base}/app/accounts/{account_id}/inbox/{inbox_id}`)
+for viewing conversation detail.
+
+**`team_chatwoot_users`** (Long text, JSON — new Clients field, e.g. `{"jane@x.com":42}`): the
+one-time SSO link shown at creation time is single-use, so `handleTeamCreateUser` also persists
+`{email: chatwoot_user_id}` here on success. That's what powers the always-available "Log in to
+Chatwoot ↗" link at the top of the Chats tab sidebar (`dashboard.html`'s `openChatwootSso()`) —
+it calls `GET /channels/chatwoot-sso?email=<myEmail>` (the caller's own verified email,
+`dashboard.html`'s `myEmail`, set at login), and `handleChannelsChatwootSso` looks up that
+specific person's Chatwoot user id here (falling back to the account owner's `chatwoot_user_id`
+if the email matches the owner, or if no per-user agent was ever created for them — e.g. they
+were added via "Add Existing Authentik User" instead of "Create New User") before minting a fresh
+one-time login link. Each click always mints a new link — none are stored or reused.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
@@ -401,7 +440,7 @@ notification template setup and send log living in the Ecommerce module's new **
 
 **New CLIENTS columns** (add alongside the Channels-module ones): `shopify_shop_domain`,
 `shopify_access_token`, `shopify_connected_at`, `shopify_notify_config` (Long text, JSON — same
-shape as `ecom_wa_templates`: `{config:{received,shipped,delivered,abandoned}, templates:[...]}`),
+shape as `ecom_wa_templates`: `{config:{received,paid,shipped,delivered,abandoned}, templates:[...]}`),
 `shopify_notify_log` (Long text, JSON array, capped at the last 30 entries).
 
 **New NocoDB table** `shopify_checkouts` (abandoned-cart tracking) — fields: `client_id`,
@@ -409,23 +448,46 @@ shape as `ecom_wa_templates`: `{config:{received,shipped,delivered,abandoned}, t
 `created_at`, `nudge_sent` (Yes/No), `completed` (Yes/No). Paste its table id into
 `SHOPIFY_CHECKOUTS_TABLE` in `worker.js` (same pattern as `EMAIL_CAMPAIGNS_TABLE` above it).
 
+**New Ecommerce Orders column** `shopify_order_id` (Single line text) — add this to whatever
+table `ecom_table_ids.orders` resolves to (the shared default `mjqaeatoe88gay6`, or a client's own
+override), alongside the existing `ORDER_FIELDS` columns (`order_id`, `customer_name`,
+`customer_phone`, `order_date`, `items`, `total`, `currency`, `status`, `delivery_address`,
+`notes` — see `ecom.html`). Every Shopify order webhook now also upserts a row into this same
+table via `syncShopifyOrderToEcom()`, matched on `shopify_order_id` (Shopify's own numeric order
+id, stable even if the merchant edits the order name) — so a Shopify order shows up in the
+Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp notification.
+`status` tracks the lifecycle: `received` (order created) → `processing` (paid) → `shipped`
+(fulfillment created) → `delivered` (best-effort, carrier-dependent) or `cancelled`.
+
 **Flow:**
 1. **Connect** — Settings → Integrations → Shopify → enter `yourstore.myshopify.com` → `POST
    /shopify/oauth/start` returns Shopify's authorize URL (client id + scopes + a signed `state`
    carrying the client id) and the browser navigates there directly (full-page redirect, not a
    popup — Shopify's authorize screen refuses to render in an iframe/popup on some plans).
 2. **Callback** — `GET /shopify/oauth/callback` verifies Shopify's query-param HMAC, verifies
-   `state`, exchanges `code` for a permanent access token, registers the six webhooks this module
-   needs (`orders/create`, `fulfillments/create`, `fulfillments/update`, `checkouts/create`,
-   `checkouts/update`, `app/uninstalled`) pointing at `/shopify/webhook`, writes
-   `shopify_shop_domain`/`shopify_access_token`/`shopify_connected_at`, then redirects back into
-   `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`).
+   `state`, exchanges `code` for a permanent access token, registers the eight webhooks this
+   module needs (`orders/create`, `orders/paid`, `orders/cancelled`, `fulfillments/create`,
+   `fulfillments/update`, `checkouts/create`, `checkouts/update`, `app/uninstalled`) pointing at `/shopify/webhook`,
+   writes `shopify_shop_domain`/`shopify_access_token`/`shopify_connected_at`, then redirects back
+   into `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`). This is the "automatic
+   webhook" — Settings → Integrations → Shopify shows the endpoint URL for reference/debugging
+   once connected, but there's nothing to paste into Shopify by hand; the OAuth callback registers
+   it directly via Shopify's Admin API. **Stores connected before `orders/paid` was added** won't
+   have that webhook registered — disconnect and reconnect (Settings → Integrations → Shopify) to
+   pick it up; reconnecting re-runs the full webhook registration step.
 3. **Notifications** — set up per-event WhatsApp templates in the Ecommerce module's Shopify tab
    (`GET /ecom/wa-templates` pulls approved templates straight from Meta's Graph API — no n8n
    hop, unlike the existing Order Delivery Notifications section which still uses the
    `leadvyne-ecom-wa-templates` n8n webhook). `POST /shopify/webhook` verifies each webhook's
    HMAC over the raw body, then sends the matching template via `sendShopifyNotification` and
    appends the attempt (sent/skipped/failed) to `shopify_notify_log`.
+   - **No template yet for an event?** Each event block has a "✨ Create Suggested Template"
+     button — `POST /ecom/wa-templates/create-preset` (`{client_id, kind}`) submits a ready-made
+     Meta Utility template from the server-side `SHOPIFY_TEMPLATE_PRESETS` map (`worker.js`) to
+     that client's WABA for review, and pre-selects it (with the correct `{{n}}` → vars mapping
+     already saved) so nothing else needs configuring once Meta approves it. `abandoned` is
+     submitted as `MARKETING` category (a re-engagement nudge, not a transactional confirmation)
+     — everything else is `UTILITY`.
 4. **Abandoned cart** — `checkouts/create`/`checkouts/update` upsert into `shopify_checkouts`;
    `orders/create` marks the matching checkout row `completed`. A second Cron Trigger
    (`*/20 * * * *` in `wrangler.toml`, dispatched to `sweepAbandonedShopifyCheckouts` in
