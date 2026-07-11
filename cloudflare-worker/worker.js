@@ -1483,7 +1483,7 @@ async function handleShopifyOauthCallback(request, env){
 
   // Best-effort — registers the webhooks this module depends on. A client re-connecting after a
   // revoke can just disconnect and connect again to re-register them.
-  const topics=['orders/create','orders/paid','fulfillments/create','fulfillments/update','checkouts/create','checkouts/update','app/uninstalled'];
+  const topics=['orders/create','orders/paid','orders/cancelled','fulfillments/create','fulfillments/update','checkouts/create','checkouts/update','app/uninstalled'];
   const webhookUri=`${env.WORKER_BASE_URL}/shopify/webhook`;
   await Promise.all(topics.map(topic=>
     shopifyFetch(env, shop, access_token, '/webhooks.json', {method:'POST', body:JSON.stringify({webhook:{topic, address:webhookUri, format:'json'}})}).catch(()=>{})
@@ -1560,6 +1560,40 @@ async function markShopifyCheckoutCompleted(env, clientId, token){
   if(existing) await ncFetch(env, `api/v2/tables/${SHOPIFY_CHECKOUTS_TABLE}/records`, {method:'PATCH', body:{Id:existing.Id, completed:'Yes'}});
 }
 
+async function findEcomOrderByShopifyId(env, tableId, clientId, shopifyOrderId){
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})~and(shopify_order_id,eq,${shopifyOrderId})&limit=1`);
+  if(!r.ok) return null;
+  const data=await r.json().catch(()=>({}));
+  return data?.list?.[0]||null;
+}
+
+// Mirrors upsertShopifyCheckout's find-then-patch-or-create pattern, keeping the client's own
+// Ecommerce module Orders page (ecom.html — ORDER_FIELDS there is the authoritative column list
+// this must match) in sync with Shopify's order lifecycle, not just the WhatsApp notifications
+// sendShopifyNotification fires. Matched on `shopify_order_id` (Shopify's own numeric order id,
+// stable across every webhook for that order) rather than `order_id`/name, which a merchant could
+// edit in Shopify after the fact. Requires a `shopify_order_id` column on the orders table (both
+// the shared default and any client's own — see SETUP.md); silently no-ops if the client has no
+// orders table resolvable at all (ecomResolveTable falls back to the shared default, so in
+// practice this only skips if that default table id itself is ever cleared).
+async function syncShopifyOrderToEcom(env, c, order, status){
+  const tableId=await ecomResolveTable(env, c.Id, 'orders');
+  if(!tableId||!order?.id) return;
+  const fields={
+    client_id:c.Id, shopify_order_id:String(order.id), status,
+    order_id:order.name||('#'+(order.order_number||order.id)),
+    customer_name:[order.customer?.first_name, order.customer?.last_name].filter(Boolean).join(' '),
+    customer_phone:order.phone||order.shipping_address?.phone||order.customer?.phone||'',
+    order_date:(order.created_at||'').slice(0,10),
+    items:(order.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
+    total:order.total_price||'', currency:order.currency||'',
+    delivery_address:[order.shipping_address?.address1, order.shipping_address?.city, order.shipping_address?.country].filter(Boolean).join(', '),
+  };
+  const existing=await findEcomOrderByShopifyId(env, tableId, c.Id, fields.shopify_order_id);
+  if(existing) await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:existing.Id, ...fields}});
+  else await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:fields});
+}
+
 // Webhook receiver — server-to-server from Shopify, so auth is the HMAC header, not a session.
 // Reads the raw body first and verifies before touching it as JSON (order matters: the HMAC is
 // computed over the exact bytes Shopify sent).
@@ -1582,6 +1616,7 @@ async function handleShopifyWebhook(request, env){
       store_name:c.client_name||''
     }, {phone, order:data.name||''});
     await markShopifyCheckoutCompleted(env, c.Id, data.checkout_token||data.cart_token);
+    await syncShopifyOrderToEcom(env, c, data, 'received');
   }
   else if(topic==='orders/paid'){
     const phone=data.phone||data.shipping_address?.phone||data.customer?.phone||'';
@@ -1590,6 +1625,10 @@ async function handleShopifyWebhook(request, env){
       total:data.total_price||'', items:(data.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
       store_name:c.client_name||''
     }, {phone, order:data.name||''});
+    await syncShopifyOrderToEcom(env, c, data, 'processing');
+  }
+  else if(topic==='orders/cancelled'){
+    await syncShopifyOrderToEcom(env, c, data, 'cancelled');
   }
   else if(topic==='fulfillments/create'){
     const orderR=await shopifyFetch(env, shop, c.shopify_access_token, `/orders/${data.order_id}.json`);
@@ -1599,6 +1638,7 @@ async function handleShopifyWebhook(request, env){
       customer_name:order?.order?.customer?.first_name||'', order_number:String(order?.order?.name||''),
       tracking_number:data.tracking_number||'', tracking_url:(data.tracking_urls||[])[0]||'', store_name:c.client_name||''
     }, {phone, order:order?.order?.name||''});
+    if(order?.order) await syncShopifyOrderToEcom(env, c, order.order, 'shipped');
   }
   else if(topic==='fulfillments/update'){
     // Shopify only reports 'delivered' when the carrier is one it tracks natively — best-effort,
@@ -1611,6 +1651,7 @@ async function handleShopifyWebhook(request, env){
         customer_name:order?.order?.customer?.first_name||'', order_number:String(order?.order?.name||''),
         review_link:c.review_link||'', store_name:c.client_name||''
       }, {phone, order:order?.order?.name||''});
+      if(order?.order) await syncShopifyOrderToEcom(env, c, order.order, 'delivered');
     }
   }
   else if(topic==='checkouts/create'||topic==='checkouts/update'){

@@ -448,15 +448,26 @@ shape as `ecom_wa_templates`: `{config:{received,paid,shipped,delivered,abandone
 `created_at`, `nudge_sent` (Yes/No), `completed` (Yes/No). Paste its table id into
 `SHOPIFY_CHECKOUTS_TABLE` in `worker.js` (same pattern as `EMAIL_CAMPAIGNS_TABLE` above it).
 
+**New Ecommerce Orders column** `shopify_order_id` (Single line text) — add this to whatever
+table `ecom_table_ids.orders` resolves to (the shared default `mjqaeatoe88gay6`, or a client's own
+override), alongside the existing `ORDER_FIELDS` columns (`order_id`, `customer_name`,
+`customer_phone`, `order_date`, `items`, `total`, `currency`, `status`, `delivery_address`,
+`notes` — see `ecom.html`). Every Shopify order webhook now also upserts a row into this same
+table via `syncShopifyOrderToEcom()`, matched on `shopify_order_id` (Shopify's own numeric order
+id, stable even if the merchant edits the order name) — so a Shopify order shows up in the
+Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp notification.
+`status` tracks the lifecycle: `received` (order created) → `processing` (paid) → `shipped`
+(fulfillment created) → `delivered` (best-effort, carrier-dependent) or `cancelled`.
+
 **Flow:**
 1. **Connect** — Settings → Integrations → Shopify → enter `yourstore.myshopify.com` → `POST
    /shopify/oauth/start` returns Shopify's authorize URL (client id + scopes + a signed `state`
    carrying the client id) and the browser navigates there directly (full-page redirect, not a
    popup — Shopify's authorize screen refuses to render in an iframe/popup on some plans).
 2. **Callback** — `GET /shopify/oauth/callback` verifies Shopify's query-param HMAC, verifies
-   `state`, exchanges `code` for a permanent access token, registers the seven webhooks this
-   module needs (`orders/create`, `orders/paid`, `fulfillments/create`, `fulfillments/update`,
-   `checkouts/create`, `checkouts/update`, `app/uninstalled`) pointing at `/shopify/webhook`,
+   `state`, exchanges `code` for a permanent access token, registers the eight webhooks this
+   module needs (`orders/create`, `orders/paid`, `orders/cancelled`, `fulfillments/create`,
+   `fulfillments/update`, `checkouts/create`, `checkouts/update`, `app/uninstalled`) pointing at `/shopify/webhook`,
    writes `shopify_shop_domain`/`shopify_access_token`/`shopify_connected_at`, then redirects back
    into `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`). This is the "automatic
    webhook" — Settings → Integrations → Shopify shows the endpoint URL for reference/debugging
