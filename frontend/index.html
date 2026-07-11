@@ -78,6 +78,9 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .flow-track{display:flex;gap:20px;position:relative;margin-top:44px}
 .flow-line{position:absolute;top:26px;left:26px;right:26px;height:2px;background:rgba(255,255,255,.1);z-index:0}
 .flow-line-fill{height:100%;width:100%;background:linear-gradient(90deg,#0D9C93,#3DD9C8)}
+/* The lead itself, riding the fill as it travels stage to stage — base state (no JS) matches
+   the fill's own no-JS fallback: already at the end, fully visible. */
+.flow-lead-marker{position:absolute;top:50%;left:100%;opacity:1;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;background:linear-gradient(135deg,#0D9C93,#3DD9C8);display:flex;align-items:center;justify-content:center;font-size:15px;z-index:2;box-shadow:0 4px 14px rgba(61,217,200,.5),0 0 0 4px var(--dark2)}
 .flow-dot{width:52px;height:52px;border-radius:50%;background:var(--dark2);border:2px solid #3DD9C8;box-shadow:0 0 0 6px rgba(61,217,200,.12);display:flex;align-items:center;justify-content:center;font-size:22px;margin:0 auto 16px}
 .flow-stage{position:relative;z-index:1;flex:1;text-align:center}
 .flow-label{font-family:var(--disp);font-weight:700;font-size:14px;color:#fff;margin-bottom:6px}
@@ -87,6 +90,8 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
    .reveal further down this file. */
 .flow-track.animate .flow-line-fill{width:0;transition:width 1.4s cubic-bezier(.22,.61,.36,1)}
 .flow-track.animate.in .flow-line-fill{width:100%}
+.flow-track.animate .flow-lead-marker{left:0%;opacity:0;transition:left 1.4s cubic-bezier(.22,.61,.36,1),opacity .3s ease .1s}
+.flow-track.animate.in .flow-lead-marker{left:100%;opacity:1}
 .flow-track.animate .flow-dot{border-color:rgba(255,255,255,.15);box-shadow:none;transition:border-color .4s,box-shadow .4s}
 .flow-track.animate.in .flow-stage .flow-dot{border-color:#3DD9C8;box-shadow:0 0 0 6px rgba(61,217,200,.12)}
 .flow-track.animate .flow-stage{opacity:0;transform:translateY(18px);transition:opacity .55s ease,transform .55s ease}
@@ -258,7 +263,7 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
     <h2>Watch a lead <span style="color:#3DD9C8">convert</span>, automatically</h2>
     <p class="section-sub">This is exactly what happens the moment a message comes in — no manual work, every step handled for you.</p>
     <div class="flow-track">
-      <div class="flow-line"><div class="flow-line-fill"></div></div>
+      <div class="flow-line"><div class="flow-line-fill"></div><div class="flow-lead-marker" aria-hidden="true">👤</div></div>
       <div class="flow-stage">
         <div class="flow-dot">💬</div>
         <div class="flow-label">New Lead</div>
@@ -328,8 +333,13 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
     </div>
     <div class="feat">
       <div class="feat-icon">🛍️</div>
-      <h3>Shopify Integration</h3>
-      <p>See a customer's orders, shipping status, and payment info right in the conversation — no tab-switching for your agents.</p>
+      <h3>Shopify Auto-Sync</h3>
+      <p>Orders, payments, and fulfillment sync the moment they happen in Shopify — WhatsApp notifications go out and every order lands in your own Orders dashboard, no manual entry.</p>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">📚</div>
+      <h3>WhatsApp Template Library</h3>
+      <p>Launch order and notification templates straight from Meta's own pre-approved library — skip the review queue entirely and start sending in minutes, not days.</p>
     </div>
     <div class="feat">
       <div class="feat-icon">📥</div>
@@ -340,6 +350,26 @@ nav{box-shadow:0 1px 0 rgba(255,255,255,.06),0 4px 24px rgba(0,0,0,.15)}
       <div class="feat-icon">👤</div>
       <h3>Human Handover</h3>
       <p>Detects when a customer needs a human and routes them instantly to your agent — with full conversation context, not a cold handoff.</p>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">👥</div>
+      <h3>Team Management</h3>
+      <p>Add teammates with their own real login in one click — Authentik account and matching Chatwoot agent provisioned together. No shared passwords, ever.</p>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">📈</div>
+      <h3>Team Performance Reports</h3>
+      <p>See exactly who's converting — leads assigned, win rate, hot leads, and task completion per agent, computed live from your own pipeline.</p>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">📌</div>
+      <h3>Tasks & Reminders</h3>
+      <p>Push any lead straight into a task with one click. Reminders surface on your Home screen and Tasks page the moment they're due — nothing falls through the cracks.</p>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">📡</div>
+      <h3>Meta Ads Conversion Tracking</h3>
+      <p>Feed real lead quality — not just chat volume — back into Meta's ad algorithm, so your campaigns learn to optimize for leads that actually convert.</p>
     </div>
     <div class="feat">
       <div class="feat-icon">💳</div>
