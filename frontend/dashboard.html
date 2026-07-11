@@ -1507,6 +1507,27 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
+        <!-- ADDITIONAL CHATWOOT ACCOUNTS — separate Chatwoot accounts this client already owns
+             elsewhere (e.g. a second brand/store), kept as a quick-access directory. These are
+             NOT wired into the Chats tab/AI bot — only the primary account above is. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🗂️ Additional Chatwoot Accounts</div>
+            <div class="s-note">Link other Chatwoot accounts you already have (a second brand, another store) for quick access. These stay separate from the primary account above — this dashboard's Chats tab and AI bot only ever use that one.</div>
+            <div id="extraCwList" style="margin:10px 0;display:flex;flex-direction:column;gap:8px"></div>
+            <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
+              <input class="form-input" id="cfgExtraCwLabel" type="text" placeholder="Label, e.g. Second Store">
+              <input class="form-input" id="cfgExtraCwBase" type="url" placeholder="https://app.chatwoot.com">
+              <input class="form-input" id="cfgExtraCwAccountId" type="text" placeholder="Account ID, e.g. 12345">
+              <input class="form-input" id="cfgExtraCwToken" type="text" placeholder="API access token (optional)">
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+              <button class="save-btn" onclick="addExtraChatwootAccount()">Add Account</button>
+              <span class="save-msg" id="extraCwMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <div class="card" style="margin-bottom:14px">
 
           <div class="settings-section">
@@ -1944,6 +1965,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div id="intShopifyConnectedActions" style="display:none;margin-top:8px">
               <button class="save-btn" style="background:var(--muted)" onclick="disconnectShopifyOAuth()">Disconnect</button>
               <span class="save-msg" id="intShopifyDisconnectMsg"></span>
+              <div class="s-note" style="margin-top:8px">Order placed, payment received, shipped and delivered all notify over WhatsApp automatically — Shopify webhooks were registered on your store the moment you connected, nothing to paste in manually. Webhook endpoint (for reference/debugging only): <span style="font-family:var(--mono)" id="shopifyWebhookEndpoint"></span></div>
             </div>
           </div>
         </div>
@@ -4061,6 +4083,61 @@ async function saveChatwootConfig(){
   }catch(e){msg.textContent='Save failed: '+e.message;msg.className='save-msg err';}
 }
 
+/* ── ADDITIONAL CHATWOOT ACCOUNTS — a plain JSON-array Clients field
+   (chatwoot_extra_accounts), same "just another field, saved via patchClient()" pattern as
+   team_emails. Pure directory/quick-access: unlike the primary account above, nothing here
+   is wired into the Chats tab or the AI bot — opening one just navigates to that account's own
+   Chatwoot login in a new tab (this app has no Platform-API/SSO access into accounts it didn't
+   create, so there's no one-click login for these the way there is for the primary account). ── */
+function getExtraChatwootAccounts(){
+  try{ return JSON.parse(clientRecord.chatwoot_extra_accounts||'[]'); }catch(e){ return []; }
+}
+function renderExtraChatwootAccounts(){
+  const accounts=getExtraChatwootAccounts();
+  $id('extraCwList').innerHTML=accounts.length
+    ? accounts.map(a=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 12px">
+        <div style="min-width:0">
+          <div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.label||a.chatwoot_base)}</div>
+          <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.chatwoot_base)} · Account ${esc(a.chatwoot_account_id)}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button class="save-btn" style="padding:5px 10px;font-size:12px" onclick="openExtraChatwootAccount('${esc(a.id)}')">Open</button>
+          <button class="save-btn" style="padding:5px 10px;font-size:12px;background:var(--muted)" onclick="removeExtraChatwootAccount('${esc(a.id)}')">Remove</button>
+        </div>
+      </div>`).join('')
+    : '<div style="color:var(--muted);font-size:13px">No additional accounts linked yet.</div>';
+}
+async function addExtraChatwootAccount(){
+  const msg=$id('extraCwMsg'); msg.textContent=''; msg.className='save-msg';
+  const label=$id('cfgExtraCwLabel').value.trim();
+  const base=$id('cfgExtraCwBase').value.trim().replace(/\/$/,'');
+  const accountId=$id('cfgExtraCwAccountId').value.trim();
+  const token=$id('cfgExtraCwToken').value.trim();
+  if(!base||!accountId){ msg.textContent='Base URL and Account ID are required.'; msg.className='save-msg err'; return; }
+  msg.textContent='Adding…';
+  try{
+    const accounts=getExtraChatwootAccounts();
+    accounts.push({id:crypto.randomUUID(), label:label||base, chatwoot_base:base, chatwoot_account_id:accountId, chatwoot_token:token});
+    await patchClient({chatwoot_extra_accounts:JSON.stringify(accounts)});
+    $id('cfgExtraCwLabel').value=''; $id('cfgExtraCwBase').value=''; $id('cfgExtraCwAccountId').value=''; $id('cfgExtraCwToken').value='';
+    msg.textContent='✓ Added'; msg.className='save-msg ok';
+    renderExtraChatwootAccounts();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function removeExtraChatwootAccount(id){
+  const msg=$id('extraCwMsg'); msg.textContent='Removing…'; msg.className='save-msg';
+  try{
+    const accounts=getExtraChatwootAccounts().filter(a=>a.id!==id);
+    await patchClient({chatwoot_extra_accounts:JSON.stringify(accounts)});
+    msg.textContent='Removed.'; msg.className='save-msg ok';
+    renderExtraChatwootAccounts();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+function openExtraChatwootAccount(id){
+  const a=getExtraChatwootAccounts().find(a=>a.id===id);
+  if(a) window.open(`${a.chatwoot_base}/app/accounts/${a.chatwoot_account_id}/dashboard`, '_blank', 'noopener');
+}
+
 async function saveGsheetConfig(){
   const url = $id('cfgGsheetUrl').value.trim();
   const cols = [...document.querySelectorAll('#gsheetColPicker input:checked')].map(i=>i.value);
@@ -4309,6 +4386,7 @@ async function removeTeamMember(email){
 function populateSettings(){
   if(!clientRecord)return;
   renderTeamMembers();
+  renderExtraChatwootAccounts();
   showWebhookUrl();
   // chatwoot config
   $id('cfgCwBase').value=clientRecord.chatwoot_base||'';
@@ -5270,6 +5348,7 @@ function renderShopifyStatus(){
   $id('intShopifyStatus').innerHTML=connected
     ? `✅ Connected — <b>${esc(clientRecord.shopify_shop_domain)}</b>`
     : 'Not connected.';
+  if(connected) $id('shopifyWebhookEndpoint').textContent=`${CONFIG.WORKER_BASE}/shopify/webhook`;
 }
 
 async function connectShopifyOAuth(){

@@ -25,6 +25,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | chatwoot_inbox_id | Single line |
 | chatwoot_base | Single line |
 | chatwoot_token | Single line |
+| chatwoot_extra_accounts | Long text (JSON array, `[{id,label,chatwoot_base,chatwoot_account_id,chatwoot_token}]` — additional Chatwoot accounts linked for quick access only, see "Additional Chatwoot Accounts" below) |
 | nocodb_base | Single line |
 | leads_table_id | Single line |
 | nocodb_token | Single line |
@@ -219,6 +220,17 @@ itself, no separate step required. Either way, the moment that email signs in vi
 land straight in the same dashboard with full access — same as the owner, no role restrictions,
 no seat limit. If you want restricted roles or plan-tied seat limits later, that logic would live
 in this same matching function plus per-action permission checks in the UI.
+
+**Additional Chatwoot Accounts (Settings → Channels):** a client-owned CRM can only ever have one
+*primary* Chatwoot account (`chatwoot_base`/`chatwoot_account_id`/`chatwoot_token`/
+`chatwoot_inbox_id` — the one the Chats tab, AI bot, Quotation sending and Prospects all read).
+`chatwoot_extra_accounts` is a separate, unwired JSON array for linking *other* Chatwoot accounts
+the client already owns elsewhere (a second brand, another store) as a quick-access directory
+only — same "just another field, saved via `patchClient()`" pattern as `team_emails`, no new
+Worker route. "Open" just navigates to `{base}/app/accounts/{id}/dashboard` in a new tab; there's
+no SSO into these the way there is for the primary account (`handleChannelsChatwootSso`), since
+this Worker's `CHATWOOT_PLATFORM_TOKEN` only reaches accounts it created itself — an externally
+owned account needs its own normal Chatwoot login.
 
 **Creating users directly (User Management → Create New User):** `POST /team/create-user`
 (session-gated) calls Authentik's own Core API — `POST /api/v3/core/users/` to create the account
@@ -428,7 +440,7 @@ notification template setup and send log living in the Ecommerce module's new **
 
 **New CLIENTS columns** (add alongside the Channels-module ones): `shopify_shop_domain`,
 `shopify_access_token`, `shopify_connected_at`, `shopify_notify_config` (Long text, JSON — same
-shape as `ecom_wa_templates`: `{config:{received,shipped,delivered,abandoned}, templates:[...]}`),
+shape as `ecom_wa_templates`: `{config:{received,paid,shipped,delivered,abandoned}, templates:[...]}`),
 `shopify_notify_log` (Long text, JSON array, capped at the last 30 entries).
 
 **New NocoDB table** `shopify_checkouts` (abandoned-cart tracking) — fields: `client_id`,
@@ -442,17 +454,29 @@ shape as `ecom_wa_templates`: `{config:{received,shipped,delivered,abandoned}, t
    carrying the client id) and the browser navigates there directly (full-page redirect, not a
    popup — Shopify's authorize screen refuses to render in an iframe/popup on some plans).
 2. **Callback** — `GET /shopify/oauth/callback` verifies Shopify's query-param HMAC, verifies
-   `state`, exchanges `code` for a permanent access token, registers the six webhooks this module
-   needs (`orders/create`, `fulfillments/create`, `fulfillments/update`, `checkouts/create`,
-   `checkouts/update`, `app/uninstalled`) pointing at `/shopify/webhook`, writes
-   `shopify_shop_domain`/`shopify_access_token`/`shopify_connected_at`, then redirects back into
-   `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`).
+   `state`, exchanges `code` for a permanent access token, registers the seven webhooks this
+   module needs (`orders/create`, `orders/paid`, `fulfillments/create`, `fulfillments/update`,
+   `checkouts/create`, `checkouts/update`, `app/uninstalled`) pointing at `/shopify/webhook`,
+   writes `shopify_shop_domain`/`shopify_access_token`/`shopify_connected_at`, then redirects back
+   into `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`). This is the "automatic
+   webhook" — Settings → Integrations → Shopify shows the endpoint URL for reference/debugging
+   once connected, but there's nothing to paste into Shopify by hand; the OAuth callback registers
+   it directly via Shopify's Admin API. **Stores connected before `orders/paid` was added** won't
+   have that webhook registered — disconnect and reconnect (Settings → Integrations → Shopify) to
+   pick it up; reconnecting re-runs the full webhook registration step.
 3. **Notifications** — set up per-event WhatsApp templates in the Ecommerce module's Shopify tab
    (`GET /ecom/wa-templates` pulls approved templates straight from Meta's Graph API — no n8n
    hop, unlike the existing Order Delivery Notifications section which still uses the
    `leadvyne-ecom-wa-templates` n8n webhook). `POST /shopify/webhook` verifies each webhook's
    HMAC over the raw body, then sends the matching template via `sendShopifyNotification` and
    appends the attempt (sent/skipped/failed) to `shopify_notify_log`.
+   - **No template yet for an event?** Each event block has a "✨ Create Suggested Template"
+     button — `POST /ecom/wa-templates/create-preset` (`{client_id, kind}`) submits a ready-made
+     Meta Utility template from the server-side `SHOPIFY_TEMPLATE_PRESETS` map (`worker.js`) to
+     that client's WABA for review, and pre-selects it (with the correct `{{n}}` → vars mapping
+     already saved) so nothing else needs configuring once Meta approves it. `abandoned` is
+     submitted as `MARKETING` category (a re-engagement nudge, not a transactional confirmation)
+     — everything else is `UTILITY`.
 4. **Abandoned cart** — `checkouts/create`/`checkouts/update` upsert into `shopify_checkouts`;
    `orders/create` marks the matching checkout row `completed`. A second Cron Trigger
    (`*/20 * * * *` in `wrangler.toml`, dispatched to `sweepAbandonedShopifyCheckouts` in

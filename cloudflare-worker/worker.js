@@ -1379,7 +1379,7 @@ const SHOPIFY_SCOPES='read_orders,read_fulfillments,read_checkouts';
 // id here — same pattern as EMAIL_CAMPAIGNS_TABLE/EMAIL_SENDS_TABLE above.
 const SHOPIFY_CHECKOUTS_TABLE='REPLACE_SHOPIFY_CHECKOUTS_TABLE_ID';
 // Sent via WhatsApp when each event fires — 'abandoned' is swept in by cron, the rest by webhook.
-const SHOPIFY_EVENT_KINDS=['received','shipped','delivered','abandoned'];
+const SHOPIFY_EVENT_KINDS=['received','paid','shipped','delivered','abandoned'];
 
 function isValidShopDomain(shop){ return /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(String(shop||'')); }
 
@@ -1483,7 +1483,7 @@ async function handleShopifyOauthCallback(request, env){
 
   // Best-effort — registers the webhooks this module depends on. A client re-connecting after a
   // revoke can just disconnect and connect again to re-register them.
-  const topics=['orders/create','fulfillments/create','fulfillments/update','checkouts/create','checkouts/update','app/uninstalled'];
+  const topics=['orders/create','orders/paid','fulfillments/create','fulfillments/update','checkouts/create','checkouts/update','app/uninstalled'];
   const webhookUri=`${env.WORKER_BASE_URL}/shopify/webhook`;
   await Promise.all(topics.map(topic=>
     shopifyFetch(env, shop, access_token, '/webhooks.json', {method:'POST', body:JSON.stringify({webhook:{topic, address:webhookUri, format:'json'}})}).catch(()=>{})
@@ -1582,6 +1582,14 @@ async function handleShopifyWebhook(request, env){
       store_name:c.client_name||''
     }, {phone, order:data.name||''});
     await markShopifyCheckoutCompleted(env, c.Id, data.checkout_token||data.cart_token);
+  }
+  else if(topic==='orders/paid'){
+    const phone=data.phone||data.shipping_address?.phone||data.customer?.phone||'';
+    await sendShopifyNotification(env, c, 'paid', {
+      customer_name:data.customer?.first_name||'', order_number:String(data.name||data.order_number||''),
+      total:data.total_price||'', items:(data.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
+      store_name:c.client_name||''
+    }, {phone, order:data.name||''});
   }
   else if(topic==='fulfillments/create'){
     const orderR=await shopifyFetch(env, shop, c.shopify_access_token, `/orders/${data.order_id}.json`);
@@ -2051,6 +2059,58 @@ async function handleEcomWaTemplatesGet(request, env){
   return json(data);
 }
 
+// Ready-made WhatsApp templates for the Shopify Notifications module's most common
+// order-lifecycle events, so a client with no templates yet isn't stuck hand-writing one in Meta
+// Business Manager before this module can send anything. `params` is the vars key for each
+// {{n}} placeholder, in order — matches the `vars` object sendShopifyNotification already builds
+// for each event (see handleShopifyWebhook), and becomes that event's saved `params` config
+// directly, no manual mapping needed once Meta approves the template. UTILITY for genuine
+// post-purchase confirmations (cheapest per-conversation pricing tier); `abandoned` is MARKETING
+// since it's a re-engagement nudge, not a transactional confirmation — Meta's own category
+// guidelines, and miscategorizing it risks template rejection.
+const SHOPIFY_TEMPLATE_PRESETS={
+  received:{
+    name:'order_received_leadvyne', category:'UTILITY', language:'en_US',
+    body:'Hi {{1}}, thanks for your order {{2}}! Total: {{3}}. Items: {{4}}. We will notify you when it ships.',
+    params:['customer_name','order_number','total','items']
+  },
+  paid:{
+    name:'order_payment_received_leadvyne', category:'UTILITY', language:'en_US',
+    body:'Hi {{1}}, we have received your payment for order {{2}} ({{3}}). Thank you for your purchase!',
+    params:['customer_name','order_number','total']
+  },
+  shipped:{
+    name:'order_shipped_leadvyne', category:'UTILITY', language:'en_US',
+    body:'Hi {{1}}, your order {{2}} has shipped! Tracking number: {{3}}. Track it here: {{4}}',
+    params:['customer_name','order_number','tracking_number','tracking_url']
+  },
+  delivered:{
+    name:'order_delivered_leadvyne', category:'UTILITY', language:'en_US',
+    body:'Hi {{1}}, your order {{2}} has been delivered. We would love your feedback: {{3}}',
+    params:['customer_name','order_number','review_link']
+  },
+  abandoned:{
+    name:'cart_reminder_leadvyne', category:'MARKETING', language:'en_US',
+    body:'Hi {{1}}, you left some items in your cart at {{2}}. Complete your order here: {{3}}',
+    params:['customer_name','store_name','checkout_url']
+  },
+};
+async function handleEcomWaTemplatesCreatePreset(request, env){
+  const {client_id, kind}=await request.json().catch(()=>({}));
+  if(!client_id||!kind) return json({error:'client_id and kind required'}, 400);
+  const preset=SHOPIFY_TEMPLATE_PRESETS[kind];
+  if(!preset) return json({error:'Unknown template kind'}, 400);
+  const c=await getClientById(env, client_id);
+  if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({name:preset.name, category:preset.category, language:preset.language, components:[{type:'BODY', text:preset.body}]})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  return json({ok:true, name:preset.name, language:preset.language, params:preset.params, status:data?.status||'PENDING'});
+}
+
 // Sort is a small whitelist mapped to real NocoDB sort strings, not passed through raw — this
 // endpoint has no session of its own (see ecomResolveTable's comment above), so an arbitrary
 // caller-supplied sort field would be an unnecessary way to let a stranger probe column names.
@@ -2285,6 +2345,7 @@ export default {
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
       else if(url.pathname==='/ecom/wa-templates' && request.method==='GET'){ res=await handleEcomWaTemplatesGet(request, env); }
+      else if(url.pathname==='/ecom/wa-templates/create-preset' && request.method==='POST'){ res=await handleEcomWaTemplatesCreatePreset(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }
