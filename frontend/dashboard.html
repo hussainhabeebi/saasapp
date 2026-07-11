@@ -265,11 +265,11 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .page.hidden{display:none}
 #pageAgency:not(.hidden){display:flex;flex-direction:column}
 .page-pad{padding:16px}
-@media(min-width:768px){.page-pad{max-width:1200px;margin:0 auto;padding:22px 28px}}
-/* Agency module uses the full page width instead of the app's default centered 1200px
-   column — its grids (packages, cars, bookings…) benefit from the extra room, and the
-   generic max-width was leaving large empty margins on wider screens. */
-#pageAgency .page-pad{max-width:none}
+/* Was capped at max-width:1200px, centered — left large empty margins on every desktop page
+   except Home (1800px) and Agency (which had its own max-width:none override), even though
+   nothing about the content needed the extra whitespace. Uncapped everywhere so the rest of the
+   app fills the viewport the way the Agency module already did. */
+@media(min-width:768px){.page-pad{padding:22px 28px}}
 @media(min-width:768px){#agencySubNav{padding:0 28px}}
 
 /* ── BOTTOM NAV (mobile) — pill-style ── */
