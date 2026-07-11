@@ -58,6 +58,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
 | team_chatwoot_users | Long text (JSON, `{email: chatwoot_user_id}` — per-teammate Chatwoot Platform user ids, populated by User Management → Create New User — see "Matching Chatwoot agent" below) |
+| team_names | Long text (JSON, `{email: name}` — display names for team_emails, populated by User Management → Create New User — see "Agents = Team Members = Users" below; the now-unused `agents` field it replaced was a plain newline-separated name list) |
 | fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 | last_renewal_notice_sent | Single line (ISO datetime — set by `n8n/rbi-renewal-notice.json` so each renewal only gets one backup reminder email even though the workflow runs daily; see "RBI pre-debit notification" below) |
 | notification_email | Single line (email address `n8n/notifications.json` sends hot-lead/handover/SLA alerts to) |
@@ -271,6 +272,35 @@ specific person's Chatwoot user id here (falling back to the account owner's `ch
 if the email matches the owner, or if no per-user agent was ever created for them — e.g. they
 were added via "Add Existing Authentik User" instead of "Create New User") before minting a fresh
 one-time login link. Each click always mints a new link — none are stored or reused.
+
+**Agents = Team Members = Users (`getTeamMembers()`, `dashboard.html`):** leads had a separate,
+disconnected "Owner" concept — a free-text name list on a now-removed `agents` Clients field
+(Settings had its own "Agents" textarea, `cfgAgents`), matching nothing else in the app. That's
+gone; `getTeamMembers()` is now the single source for "who can be assigned things" — the account
+owner plus everyone in `team_emails`, each `{email, name}` (name from the new `team_names` field,
+`{email: name}`, populated automatically by User Management → Create New User; falls back to the
+bare email for teammates added via "Add Existing Authentik User", which never collects a name).
+Every dropdown that used to read `getAgents()` (Lead Owner in the Add/Edit modal and detail pane,
+Recruitment candidate owner) now reads `getTeamMembers()` instead, and both **Lead.Owner** and
+**Task.assignee_email** store the same value — an email — so the two can finally be joined for
+reporting (see "Team Performance" below). `teamMemberOptions(currentValue)` renders the `<option>`
+list and, if `currentValue` doesn't match any current team member (an Owner set before this
+unification, or a since-removed teammate), still appends it as a selected-but-unlisted option
+rather than silently blanking the field on next save.
+
+**Team Performance (📊 Team nav tab, `renderTeamPerformance()`):** a per-agent report — leads
+assigned/active/won, win rate, hot leads, total won deal value (`DealValue`, summed), tasks
+assigned/done/overdue, task completion rate — computed entirely client-side from `allLeads` and
+the existing tasks state (`getTasksState()`), joined against `getTeamMembers()`'s email list. No
+new backend route; it's a straight filter/group over data the dashboard already loads.
+
+**Push Lead to Task (lead detail pane → "📌 Push to Task"):** calls the existing task modal
+(`openTaskModal(null, currentLead)`, a new second `prefillLead` parameter) pre-filled from the
+lead — title, due date (its `ReminderDate` if set, else today), lead link, and assignee (its
+`Owner`) all default from it but stay freely editable before saving, same modal/flow as any other
+task. Home's "Follow-ups" widget (`renderHomeFollowUps`) now merges lead `ReminderDate` items
+*and* manual tasks due today/overdue (both come from the same `computeAllTasks()` the Tasks page
+itself renders from), so a pushed task shows up on Home immediately, not only on the Tasks page.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/

@@ -972,6 +972,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="leads">👥 Leads</button>
     <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
     <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
+    <button class="dnTab" data-page="team">📊 Team</button>
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')">🛒 Ecommerce</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
@@ -1430,6 +1431,18 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
+    <!-- TEAM PERFORMANCE -->
+    <div class="page hidden" id="pageTeam">
+      <div class="page-pad">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+          <div class="card-title" style="margin-bottom:0">📊 Team Performance</div>
+        </div>
+        <div class="s-note" style="margin-bottom:14px">Every user in Settings → User Management is an agent here automatically — leads/tasks assigned to their email all roll up into this report, no separate agent list to keep in sync.</div>
+        <div id="teamPerfStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
+        <div class="card"><div id="teamPerfContent"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
+      </div>
+    </div>
+
     <!-- SETTINGS -->
     <div class="page hidden" id="pageSettings">
       <div class="page-pad">
@@ -1549,12 +1562,6 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
 
           <hr class="div">
-
-          <div class="settings-section">
-            <div class="s-head">Agents</div>
-            <div class="s-note">One agent name per line. Used for lead assignment.</div>
-            <textarea class="form-input" id="cfgAgents" rows="4" placeholder="Sarah&#10;John&#10;Ahmed"></textarea>
-          </div>
 
           <div class="settings-section">
             <div class="s-head">🔔 Notification Email</div>
@@ -2144,6 +2151,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <button class="more-item" data-page="quotation"><span class="bnIcon">🧾</span><span class="bnLabel">Quotation</span></button>
       <button class="more-item" data-page="prospects"><span class="bnIcon">🎯</span><span class="bnLabel">Prospects</span></button>
       <button class="more-item" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
+      <button class="more-item" data-page="team"><span class="bnIcon">📊</span><span class="bnLabel">Team</span></button>
       <button class="more-item industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank');closeMoreSheet()"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
       <button class="more-item" data-page="agency" id="moreAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
       <button class="more-item" data-page="recruit" id="moreRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
@@ -2928,7 +2936,6 @@ let _notifTimer=null, _notifSeen=[], _notifItems=[];
 let _reminderTimer=null;
 
 function getIndustry(){ return INDUSTRIES[clientRecord?.industry] || INDUSTRIES.general; }
-function getAgents(){ try{ return JSON.parse(clientRecord?.agents||'[]'); }catch(e){ return (clientRecord?.agents||'').split('\n').map(s=>s.trim()).filter(Boolean); } }
 
 
 function deriveBusinessName(email){
@@ -3172,7 +3179,7 @@ $id('hRefresh').addEventListener('click',()=>loadAll());
 const SETTINGS_GROUP=['settings','channels','integrations','billing']; // shown as one "Settings" tab with an internal sub-nav
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['quotation','prospects','broadcast','agency','recruit','settings','channels','integrations','billing'];
+const MORE_GROUP=['quotation','prospects','broadcast','team','agency','recruit','settings','channels','integrations','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -3193,6 +3200,7 @@ function navigate(page){
   if(page==='prospects') prospectInit();
   if(page==='pipeline') renderKanban();
   if(page==='leads'){if(_leadsTableView)renderLeadsTable();else renderLeadsList();}
+  if(page==='team') renderTeamPerformance();
   if(page==='agency') renderAgency();
   if(page==='recruit') renderRecruit();
   if(page==='settings') populateSettings();
@@ -3706,7 +3714,7 @@ function openAddLead(){
   $id('fLeadId').value='';
   $id('fName').value=''; $id('fPhone').value=''; $id('fEmail').value=''; $id('fNotes').value=''; $id('fTags').value=''; $id('fReminder').value='';
   if(clientRecord?.industry==='travel'){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';}
-  populateFormSelects();
+  populateFormSelects('');
   $id('fStage').value='new'; $id('fScore').value='Cold';
   openModal('modalLead');
 }
@@ -3728,17 +3736,16 @@ function openEditLead(lead){
     const paxMatch=(lead.PaxCount||'').match(/^(\d+)/);
     $id('fPaxAdults').value=paxMatch?paxMatch[1]:'';
   }
-  populateFormSelects();
-  $id('fStage').value=lead.Stage||'new'; $id('fOwner').value=lead.Owner||''; $id('fScore').value=lead.Score||'Cold';
+  populateFormSelects(lead.Owner||'');
+  $id('fStage').value=lead.Stage||'new'; $id('fScore').value=lead.Score||'Cold';
   openModal('modalLead');
 }
 
-function populateFormSelects(){
+function populateFormSelects(currentOwner){
   const flow=getFlow();
   const stages=['new',...Object.keys(flow.stages||{}).filter(k=>k!=='new')];
   $id('fStage').innerHTML=stages.map(s=>`<option value="${s}">${s}</option>`).join('');
-  const agents=getAgents();
-  $id('fOwner').innerHTML='<option value="">Unassigned</option>'+agents.map(a=>`<option value="${a}">${esc(a)}</option>`).join('');
+  $id('fOwner').innerHTML=teamMemberOptions(currentOwner||'');
 }
 
 async function saveLead(){
@@ -3800,6 +3807,7 @@ function openDetail(id){
     <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>
     <button class="action-btn" onclick="openEditLead(currentLead)"><span class="ab-icon">✏️</span>Edit</button>
     <button class="action-btn" onclick="openPushOrderModal()"><span class="ab-icon">🛒</span>Push to Order</button>
+    <button class="action-btn" onclick="openTaskModal(null,currentLead)"><span class="ab-icon">📌</span>Push to Task</button>
     <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
     ${TERMINAL.has(lead.Stage)?`<button class="action-btn" onclick="reopenLead()"><span class="ab-icon">🔄</span>Re-open</button>`:''}
     ${lead.IsDuplicate==='Yes'?`<button class="action-btn" onclick="openMerge()"><span class="ab-icon">🔀</span>Merge</button>`:''}
@@ -3810,9 +3818,7 @@ function openDetail(id){
   renderDetailTags(lead);
 
   // owner
-  const agents=getAgents();
-  $id('detailOwner').innerHTML='<option value="">Unassigned</option>'+agents.map(a=>`<option value="${a}"${lead.Owner===a?' selected':''}>${esc(a)}</option>`).join('');
-  $id('detailOwner').value=lead.Owner||'';
+  $id('detailOwner').innerHTML=teamMemberOptions(lead.Owner||'');
   $id('detailScore').value=lead.Score||'Cold';
   $id('detailReminder').value=lead.ReminderDate||'';
   $id('detailDealValue').value=lead.DealValue||'';
@@ -4201,8 +4207,9 @@ function populateCommandCenter(leads){
   $id('tsHot').textContent=hot;
   $id('tsConv').textContent=conv;
   $id('tsTotal').textContent=leads.length;
-  // New KPI: follow-ups due
-  const dueCount=leads.filter(l=>l.ReminderDate&&l.ReminderDate<=today).length;
+  // New KPI: follow-ups due (leads with a ReminderDate + manual tasks — same merged source
+  // renderHomeFollowUps below renders, so the count and the list always agree)
+  const dueCount=computeAllTasks().filter(t=>(t._type==='reminder'||t._type==='manual') && t.due && t.due.slice(0,10)<=today && t.status!=='done').length;
   const tsRem=$id('tsReminders');if(tsRem)tsRem.textContent=dueCount||'0';
   // Bot engaged %
   const botCount=leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]').length;
@@ -4235,17 +4242,25 @@ function populateCommandCenter(leads){
   }).join('');
 }
 
+// Merges lead ReminderDate follow-ups with manual tasks due today/overdue (reuses
+// computeAllTasks(), the same source the Tasks page itself renders from — so a task pushed via
+// the lead detail pane's "📌 Push to Task" shows up here too, not just on the Tasks page).
 function renderHomeFollowUps(leads,today){
   const el=$id('homeFollowUps');if(!el)return;
-  const due=leads.filter(l=>l.ReminderDate&&l.ReminderDate<=today).sort((a,b)=>a.ReminderDate.localeCompare(b.ReminderDate)).slice(0,8);
+  const due=computeAllTasks()
+    .filter(t=>(t._type==='reminder'||t._type==='manual') && t.due && t.due.slice(0,10)<=today && t.status!=='done')
+    .sort((a,b)=>(a.due||'').localeCompare(b.due||''))
+    .slice(0,8);
   if(!due.length){el.innerHTML='<div style="color:var(--muted);font-size:13px;padding:8px 0">No follow-ups due today 🎉</div>';return;}
-  el.innerHTML=due.map(l=>{
-    const overdue=l.ReminderDate<today;
-    return `<div class="follow-item" onclick="openDetail(${l.Id})">
-      <div class="fi-avatar">${(l.Name||'?')[0].toUpperCase()}</div>
+  el.innerHTML=due.map(t=>{
+    const overdue=t.due.slice(0,10)<today;
+    const label=t._type==='reminder' ? (leads.find(l=>l.Id===t.leadId)?.Name||'Lead') : t.title;
+    const clickHandler=t.leadId?`openDetail(${t.leadId})`:(t._type==='manual'?`openTaskModal('${esc(t.id)}')`:'');
+    return `<div class="follow-item" onclick="${clickHandler}">
+      <div class="fi-avatar">${(label||'?')[0].toUpperCase()}</div>
       <div class="fi-body">
-        <div class="fi-name">${esc(l.Name||'Unknown')}</div>
-        <div class="fi-meta">${esc(l.Stage||'new')} · ${l.ReminderDate}</div>
+        <div class="fi-name">${esc(label||'Untitled')}</div>
+        <div class="fi-meta">${esc(t.meta||'')}</div>
       </div>
       ${overdue?'<span class="fi-badge hot">Overdue</span>':'<span class="fi-badge">Due</span>'}
     </div>`;
@@ -4336,10 +4351,14 @@ async function createTeamUser(){
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
-    if(!current.includes(data.email)){
-      current.push(data.email);
-      await patchClient({team_emails:current.join(',')});
+    const fields={};
+    if(!current.includes(data.email)){ current.push(data.email); fields.team_emails=current.join(','); }
+    if(name){
+      let names={}; try{ names=JSON.parse(clientRecord.team_names||'{}'); }catch(e){}
+      names[data.email]=name;
+      fields.team_names=JSON.stringify(names);
     }
+    if(Object.keys(fields).length) await patchClient(fields);
     msg.textContent='✓ User created — they can sign in now'; msg.className='save-msg ok';
     renderTeamMembers();
     renderTeamCreateResult(email, password, data.chatwoot);
@@ -4404,11 +4423,6 @@ function populateSettings(){
   // industry
   const indEl=$id('cfgIndustry');
   indEl.innerHTML=Object.entries(INDUSTRIES).map(([k,v])=>`<option value="${k}"${clientRecord.industry===k?' selected':''}>${v.label}</option>`).join('');
-  // agents
-  try{
-    const agents=getAgents();
-    $id('cfgAgents').value=agents.join('\n');
-  }catch(e){$id('cfgAgents').value=clientRecord.agents||'';}
   // prompt / followup / test
   $id('cfgPrompt').value=clientRecord.main_prompt||'';
   $id('cfgFuCount').value=clientRecord.followup_count||'3';
@@ -4522,9 +4536,8 @@ $id('saveGeneral').addEventListener('click',async()=>{
   const btn=$id('saveGeneral'),msg=$id('saveGeneralMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   try{
-    const agents=$id('cfgAgents').value.trim().split('\n').map(s=>s.trim()).filter(Boolean);
     const ind=$id('cfgIndustry').value;
-    const patch={industry:ind,agents:JSON.stringify(agents)};
+    const patch={industry:ind};
     // Auto-enable matching module based on industry
     if(ind==='travel'){patch.ta_enabled='Yes';clientRecord.ta_enabled='Yes';taSaveLocal('ta_enabled','Yes');}
     else{patch.ta_enabled='No';clientRecord.ta_enabled='No';taSaveLocal('ta_enabled','No');}
@@ -6201,10 +6214,34 @@ async function saveTasksState(state){
   state.items=[...openItems,...doneItems];
   await patchClient({manual_tasks:JSON.stringify(state)});
 }
-function taskAssigneeEmails(){
-  const emails=(clientRecord?.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
+function taskAssigneeEmails(){ return getTeamMembers().map(m=>m.email); }
+
+// Single source of truth for "who can be assigned things" — the account owner plus everyone in
+// team_emails (User Management/Settings → Team). Used for both lead Owner and task assignee
+// dropdowns so the two are finally the same identity space instead of Owner being a disconnected
+// free-text name list (the old `agents`/`cfgAgents` field, now unused) that couldn't be cross
+// referenced with who's actually signed in. `name` comes from team_names (set automatically by
+// User Management → Create New User) or the account's own client_name for the owner; falls back
+// to the bare email when no name is on file (e.g. teammates added via "Add Existing Authentik
+// User", which never collects one).
+function getTeamMembers(){
   const owner=(clientRecord?.authentik_email||'').trim();
-  return [...new Set([owner,...emails].filter(Boolean))];
+  const teamEmails=(clientRecord?.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
+  let names={}; try{ names=JSON.parse(clientRecord?.team_names||'{}'); }catch(e){}
+  const emails=[...new Set([owner,...teamEmails].filter(Boolean))];
+  return emails.map(email=>({
+    email,
+    name: email.toLowerCase()===owner.toLowerCase() ? (clientRecord?.client_name||email) : (names[email]||email)
+  }));
+}
+// Renders <option> tags from getTeamMembers(), keeping `currentValue` visible even if it no
+// longer matches any current team member (a lead's Owner set before this unification shipped, or
+// a teammate who's since been removed) — better to show a stale value than silently blank it out.
+function teamMemberOptions(currentValue){
+  const members=getTeamMembers();
+  const opts=members.map(m=>`<option value="${esc(m.email)}"${m.email===currentValue?' selected':''}>${esc(m.name)}${m.email===myEmail?' (you)':''}</option>`);
+  if(currentValue && !members.some(m=>m.email===currentValue)) opts.push(`<option value="${esc(currentValue)}" selected>${esc(currentValue)}</option>`);
+  return '<option value="">Unassigned</option>'+opts.join('');
 }
 
 function computeAllTasks(){
@@ -6582,24 +6619,31 @@ async function sendTaskWaFollowUp(leadId,btn){
 }
 
 let _editingTaskId=null;
-function openTaskModal(id){
+// prefillLead (only ever passed alongside id=null, e.g. the lead detail pane's "📌 Push to
+// Task" button) seeds a brand-new task from that lead — title, due date (its ReminderDate if
+// set), lead link and assignee (its Owner, now the same email identity as everyone in
+// getTeamMembers()) all default from it, but everything stays freely editable before saving.
+function openTaskModal(id, prefillLead){
   _editingTaskId=id||null;
   const state=getTasksState();
   const t=id?state.items.find(x=>x.id===id):null;
   $id('taskModalTitle').textContent=t?'Edit Task':'New Task';
-  $id('taskTitle').value=t?.title||'';
+  $id('taskTitle').value=t?t.title||'':(prefillLead?`Follow up with ${prefillLead.Name||prefillLead.Phone||'lead'}`:'');
   $id('taskNotes').value=t?.notes||'';
-  $id('taskDueDate').value=t?.due_date||'';
+  $id('taskDueDate').value=t?t.due_date||'':(prefillLead?.ReminderDate||new Date().toISOString().slice(0,10));
   $id('taskDueTime').value=t?.due_time||'';
   $id('taskNotifyEmail').checked=false;
 
   const leadSel=$id('taskLeadSelect');
   const activeLeads=allLeads.filter(l=>!TERMINAL.has(l.Stage)).slice(0,500);
-  leadSel.innerHTML='<option value="">Not linked to a lead</option>'+activeLeads.map(l=>`<option value="${l.Id}"${t?.lead_id===l.Id?' selected':''}>${esc(l.Name||l.Phone||('Lead #'+l.Id))}</option>`).join('');
+  const linkedLeadId=t?t.lead_id:(prefillLead?prefillLead.Id:null);
+  const leadOptions=(prefillLead && !activeLeads.some(l=>l.Id===prefillLead.Id)) ? [prefillLead,...activeLeads] : activeLeads;
+  leadSel.innerHTML='<option value="">Not linked to a lead</option>'+leadOptions.map(l=>`<option value="${l.Id}"${linkedLeadId===l.Id?' selected':''}>${esc(l.Name||l.Phone||('Lead #'+l.Id))}</option>`).join('');
 
   const assigneeSel=$id('taskAssignee');
   const emails=taskAssigneeEmails();
-  assigneeSel.innerHTML='<option value="">Unassigned</option>'+emails.map(e=>`<option value="${esc(e)}"${t?.assignee_email===e?' selected':''}>${esc(e)}${e===myEmail?' (you)':''}</option>`).join('');
+  const assigneeDefault=t?(t.assignee_email||''):(prefillLead?.Owner||'');
+  assigneeSel.innerHTML='<option value="">Unassigned</option>'+emails.map(e=>`<option value="${esc(e)}"${assigneeDefault===e?' selected':''}>${esc(e)}${e===myEmail?' (you)':''}</option>`).join('');
 
   const catSel=$id('taskCategory');
   catSel.innerHTML='<option value="">No category</option>'+TASK_CATEGORIES.map(c=>`<option value="${esc(c.name)}"${t?.category===c.name?' selected':''}>${esc(c.name)}</option>`).join('');
@@ -6923,6 +6967,75 @@ function toggleConvSearch(){
   btn.style.color=_convSearchActive?'#fff':'';
   $id('leadSearch').placeholder=_convSearchActive?'Search name, phone or conversation…':'Search name or phone…';
   if(_leadsTableView)renderLeadsTable();else renderLeadsList();
+}
+
+/* ── TEAM PERFORMANCE ── */
+// Per-agent breakdown across leads (Owner) and tasks (assignee_email) — both now the same email
+// identity via getTeamMembers(), so this is a straight join, not a name-matching guess the way it
+// would have been against the old free-text `agents` field.
+function renderTeamPerformance(){
+  const el=$id('teamPerfContent'); const statsEl=$id('teamPerfStats');
+  if(!el) return;
+  const members=getTeamMembers();
+  const state=getTasksState();
+  const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
+  const today=TODAY;
+
+  const rows=members.map(m=>{
+    const ownedLeads=allLeads.filter(l=>l.Owner===m.email);
+    const won=ownedLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
+    const active=ownedLeads.filter(l=>!TERMINAL.has(l.Stage));
+    const hot=ownedLeads.filter(l=>l.Score==='Hot').length;
+    const winRate=ownedLeads.length?Math.round(won.length/ownedLeads.length*100):0;
+    const wonValue=won.reduce((s,l)=>s+(Number(l.DealValue)||0),0);
+
+    const myTasks=state.items.filter(t=>t.assignee_email===m.email);
+    const doneTasks=myTasks.filter(t=>t.status==='done');
+    const overdueTasks=myTasks.filter(t=>t.status!=='done'&&t.due_date&&t.due_date<today);
+    const taskRate=myTasks.length?Math.round(doneTasks.length/myTasks.length*100):0;
+
+    return {member:m, total:ownedLeads.length, won:won.length, active:active.length, hot, winRate, wonValue,
+      tasksTotal:myTasks.length, tasksDone:doneTasks.length, tasksOverdue:overdueTasks.length, taskRate};
+  }).sort((a,b)=>b.won-a.won || b.total-a.total);
+
+  const unassignedLeads=allLeads.filter(l=>!l.Owner).length;
+  const unassignedTasks=state.items.filter(t=>!t.assignee_email && t.status!=='done').length;
+  const totalWon=rows.reduce((s,r)=>s+r.won,0);
+  const totalOverdue=rows.reduce((s,r)=>s+r.tasksOverdue,0);
+
+  if(statsEl) statsEl.innerHTML=`
+    <div class="stat"><div class="stat-lbl">Agents</div><div class="stat-val">${members.length}</div></div>
+    <div class="stat accent"><div class="stat-lbl">Leads Won</div><div class="stat-val">${totalWon}</div></div>
+    <div class="stat"><div class="stat-lbl">Unassigned Leads</div><div class="stat-val">${unassignedLeads}</div></div>
+    <div class="stat"><div class="stat-lbl">Overdue Tasks</div><div class="stat-val"${totalOverdue?' style="color:var(--red)"':''}>${totalOverdue}</div></div>
+  `;
+
+  if(!members.length){
+    el.innerHTML='<div style="color:var(--muted);font-size:13px">No team members yet — add one in Settings → User Management.</div>';
+    return;
+  }
+  el.innerHTML=`
+    <div style="overflow-x:auto">
+    <table class="leads-tbl" style="width:100%;min-width:860px">
+      <thead><tr>
+        <th>Agent</th><th>Leads</th><th>Active</th><th>Won</th><th>Win Rate</th><th>Hot</th>
+        <th>Won Value</th><th>Tasks</th><th>Done</th><th>Overdue</th><th>Task Rate</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r=>`<tr>
+          <td><b>${esc(r.member.name)}</b>${r.member.email!==r.member.name?`<div style="font-size:11px;color:var(--muted)">${esc(r.member.email)}</div>`:''}</td>
+          <td>${r.total}</td><td>${r.active}</td><td>${r.won}</td>
+          <td>${r.winRate}%</td><td>${r.hot}</td>
+          <td>${r.wonValue?esc(dealCcy)+' '+r.wonValue.toLocaleString():'—'}</td>
+          <td>${r.tasksTotal}</td><td>${r.tasksDone}</td>
+          <td${r.tasksOverdue?' style="color:var(--red);font-weight:700"':''}>${r.tasksOverdue}</td>
+          <td>${r.taskRate}%</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>
+    ${(unassignedLeads||unassignedTasks)?`<div class="s-note" style="margin-top:10px">${unassignedLeads} unassigned lead${unassignedLeads===1?'':'s'}, ${unassignedTasks} unassigned open task${unassignedTasks===1?'':'s'} — not shown above.</div>`:''}
+  `;
 }
 
 /* ── PDF REPORT ── */
@@ -8945,7 +9058,7 @@ function renderRcCandidates(){
       </select>
       <select class="form-input" id="rcCandOwnerFilter" style="max-width:130px;padding:8px 10px" onchange="filterRcCandidates()">
         <option value="">All Owners</option>
-        ${getAgents().map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('')}
+        ${getTeamMembers().map(m=>`<option value="${esc(m.email)}">${esc(m.name)}</option>`).join('')}
       </select>
       <button class="btn btn-primary btn-sm" onclick="openAddCandidate()">+ Add Candidate</button>
     </div>
@@ -9105,7 +9218,7 @@ function openAddCandidate(){
   ['rcCandName','rcCandPhone','rcCandEmail','rcCandRole','rcCandSkills','rcCandResumeNotes','rcCandNotes','rcCandInterviewDate'].forEach(id=>{const el=$id(id);if(el)el.value='';});
   $id('rcCandYearsExp').value='';$id('rcCandAge').value='';$id('rcCandCurrentSalary').value='';$id('rcCandExpectedSalary').value='';
   $id('rcCandCurrency').value='AED';$id('rcCandStatus').value='new';$id('rcCandSource').value='whatsapp';
-  $id('rcCandOwner').innerHTML='<option value="">Unassigned</option>'+getAgents().map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('');
+  $id('rcCandOwner').innerHTML=teamMemberOptions('');
   _rcPopulateJobDropdown();
   $id('rcCandModalTitle').textContent='New Candidate';$id('saveRcCandMsg').textContent='';
   openModal('modalRcCand');
@@ -9120,8 +9233,8 @@ function openEditCandidate(id){
   $id('rcCandSkills').value=c.skills||'';$id('rcCandCurrentSalary').value=c.current_salary||'';
   $id('rcCandExpectedSalary').value=c.expected_salary||'';$id('rcCandCurrency').value=c.currency||'AED';
   $id('rcCandStatus').value=c.status||'new';$id('rcCandSource').value=c.source||'whatsapp';
-  $id('rcCandOwner').innerHTML='<option value="">Unassigned</option>'+getAgents().map(a=>`<option value="${esc(a)}"${a===c.owner?' selected':''}>${esc(a)}</option>`).join('');
-  $id('rcCandOwner').value=c.owner||'';$id('rcCandResumeNotes').value=c.resume_notes||'';
+  $id('rcCandOwner').innerHTML=teamMemberOptions(c.owner||'');
+  $id('rcCandResumeNotes').value=c.resume_notes||'';
   $id('rcCandNotes').value=c.notes||'';$id('rcCandInterviewDate').value=c.interview_date||'';
   _rcPopulateJobDropdown(c.job_id||'');
   $id('rcCandModalTitle').textContent='Edit Candidate';$id('saveRcCandMsg').textContent='';
