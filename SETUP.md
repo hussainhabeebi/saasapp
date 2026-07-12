@@ -539,6 +539,17 @@ correct, just shadowed. **Appointment Booking's row (`#apptModuleRow`) only show
 it on ensures `appt_enabled`/`appt_table_ids`/`calcom_webhook_secret` columns exist on CLIENTS and
 writes `appt_enabled`.
 
+**Fixed: the tab didn't reappear on next login.** `showApp()` (fires once per login, after
+`clientRecord` loads) already re-applies `updateAgencyTabVisibility()`/`updateRecruitTabVisibility()`
+so those tabs show up immediately — the equivalent `updateApptTabVisibility()` call was missing for
+Appointments, so the tab only appeared once the user happened to open Settings (the only place that
+was calling it, via `initApptSettings()`). Also added `apptMergeLocal()` — TA/Recruit already had
+this fallback (`taMergeLocal`/`rcMergeLocal`, both called from `showApp()`): `saveApptEnabled`/
+`apptSetupTables()` swallow `patchClient()`'s errors (so a failed save doesn't hard-fail the
+button), caching the value in `localStorage` as a backstop via `apptSaveLocal()` — but nothing ever
+read that cache back. `apptMergeLocal()` now does, same pattern as its siblings, called from
+`showApp()` right alongside them.
+
 **The module itself, 📅 Appointments tab (gated by `appt_enabled==='Yes'`, `updateApptTabVisibility()`):**
 - First visit prompts **"Create Tables Now"** (`apptSetupTables()`) — creates two per-client tables,
   `Appt_Services_<clientId>` and `Appt_Bookings_<clientId>`, and stores their ids as

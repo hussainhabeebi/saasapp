@@ -3410,9 +3410,11 @@ function showApp(){
   applyHeaderLogo();
   taMergeLocal();
   rcMergeLocal();
+  apptMergeLocal();
   applyTheme(clientRecord.industry||'general');
   updateAgencyTabVisibility();
   updateRecruitTabVisibility();
+  updateApptTabVisibility();
   loadAll();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
@@ -9841,6 +9843,13 @@ let _apptLoaded=false, _apptPage='dashboard', _apptServices=[], _apptBookings=[]
 function apptTableId(key){try{return JSON.parse(clientRecord?.appt_table_ids||'{}')[key]||null;}catch(e){return null;}}
 function apptTablesReady(){return !!(apptTableId('services')&&apptTableId('bookings'));}
 function apptSaveLocal(key,val){try{const k='lv_appt_'+clientId;const c=JSON.parse(localStorage.getItem(k)||'{}');c[key]=val;localStorage.setItem(k,JSON.stringify(c));}catch(e){}}
+function apptLoadLocal(){try{return JSON.parse(localStorage.getItem('lv_appt_'+clientId)||'{}');}catch(e){return{};}}
+// Same fallback showApp() already leans on for ta_enabled/recruit_table_ids (taMergeLocal/
+// rcMergeLocal) — if a save's server-side patch silently failed (patchClient's own errors are
+// swallowed by saveApptEnabled/apptSetupTables so the button doesn't hard-fail the whole page),
+// the locally-cached value still lets this session see the module as enabled without waiting on
+// the next successful server write.
+function apptMergeLocal(){const loc=apptLoadLocal();if(loc.appt_enabled&&!clientRecord.appt_enabled)clientRecord.appt_enabled=loc.appt_enabled;if(loc.appt_table_ids&&!clientRecord.appt_table_ids)clientRecord.appt_table_ids=loc.appt_table_ids;}
 
 function updateApptTabVisibility(){
   const enabled=(clientRecord.appt_enabled==='Yes');
