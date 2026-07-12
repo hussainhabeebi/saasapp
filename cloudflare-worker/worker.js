@@ -1718,10 +1718,18 @@ async function sweepAbandonedShopifyCheckouts(env){
 // pre-debit notice for it (see the trial_will_end handler in handleBillingWebhook below).
 const TRIAL_PERIOD_DAYS = 15;
 
+const EMAIL_RE=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// billing_email wins over authentik_email — the login address is whatever Authentik account the
+// client signed in with (sometimes a shared/ops address set up during provisioning, not
+// necessarily who should receive invoices/receipts/dunning), while billing_email is something the
+// client explicitly confirms on the Billing page. Falls back to authentik_email so a customer who
+// never touches that field still gets a working Stripe customer, just not necessarily the address
+// they'd have chosen.
 async function ensureStripeCustomer(env, c, clientId){
   if(c.stripe_customer_id) return c.stripe_customer_id;
   const {ok, data}=await stripeFetch(env, 'POST', 'customers', {
-    email:c.authentik_email||undefined,
+    email:c.billing_email||c.authentik_email||undefined,
     name:c.client_name||undefined,
     address:c.company_address?{line1:c.company_address}:undefined,
     metadata:{client_id:String(clientId)}
@@ -1734,19 +1742,22 @@ async function ensureStripeCustomer(env, c, clientId){
 async function handleBillingCompanyProfile(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {client_name, company_address}=await request.json().catch(()=>({}));
+  const {client_name, company_address, billing_email}=await request.json().catch(()=>({}));
   if(!client_name) return json({error:'Company name is required.'}, 400);
+  if(billing_email && !EMAIL_RE.test(billing_email)) return json({error:'That doesn\'t look like a valid email address.'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
 
-  await patchClientFields(env, payload.cid, {client_name, company_address:company_address||''});
+  await patchClientFields(env, payload.cid, {client_name, company_address:company_address||'', billing_email:billing_email||''});
 
-  // Best-effort — keeps Stripe's own invoices/receipts showing the right name+address for
-  // customers who update this after they already have a Stripe Customer record.
+  // Best-effort — keeps Stripe's own invoices/receipts/pre-debit notices going to the right
+  // name+address+email for customers who update this after they already have a Stripe Customer
+  // record (ensureStripeCustomer above only sets email at creation time, not on every checkout).
   if(c.stripe_customer_id){
     await stripeFetch(env, 'POST', `customers/${c.stripe_customer_id}`, {
       name:client_name,
-      address:company_address?{line1:company_address}:undefined
+      address:company_address?{line1:company_address}:undefined,
+      email:billing_email||undefined
     }).catch(()=>{});
   }
   return json({ok:true});

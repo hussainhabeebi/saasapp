@@ -56,6 +56,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | voice_addon_active | Single line ("Yes"/"No") |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
+| billing_email | Single line (optional — where invoices/receipts/renewal reminders go; falls back to `authentik_email` if unset, since that's the login address and not necessarily who should get billing mail — e.g. a shared/ops login) |
 | team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
 | team_chatwoot_users | Long text (JSON, `{email: chatwoot_user_id}` — per-teammate Chatwoot Platform user ids, populated by User Management → Create New User — see "Matching Chatwoot agent" below) |
 | team_names | Long text (JSON, `{email: name}` — display names for team_emails, populated by User Management → Create New User — see "Agents = Team Members = Users" below; the now-unused `agents` field it replaced was a plain newline-separated name list) |
@@ -752,9 +753,15 @@ we already know which CLIENTS row this is):
    actually ends — the webhook now captures that into `plan_cancel_at_period_end`, and the
    Billing page swaps the "Renews in N days" line for "Ends in N days — won't renew" plus a
    dedicated banner, instead of silently showing a normal-looking renewal date.
-7. **Company profile** — `POST /billing/company-profile` saves `client_name`/`company_address`
-   to the CLIENTS row and, if a `stripe_customer_id` already exists, best-effort pushes the same
-   name/address to the Stripe Customer so it shows correctly on future invoices/receipts.
+7. **Company profile** — `POST /billing/company-profile` saves `client_name`/`company_address`/
+   `billing_email` to the CLIENTS row and, if a `stripe_customer_id` already exists, best-effort
+   pushes the same name/address/email to the Stripe Customer so it shows correctly on future
+   invoices/receipts. `billing_email` is what `ensureStripeCustomer` uses when first creating the
+   Stripe Customer (falling back to `authentik_email` if never set) — this exists because
+   `authentik_email` is just whichever address was used to log in, which for some clients is a
+   shared/ops address rather than who should actually receive billing mail. The Billing page shows
+   which address is currently in effect right above the plan picker, before the customer ever
+   subscribes, so this doesn't silently default to the wrong inbox.
 8. **Usage dashboard** — computed client-side from leads already loaded into the dashboard
    (`ConvHistory` entries with `role:'assistant'` this calendar month = messages sent, lead count
    this month = leads captured, terminal-stage ratio = conversion rate). No new tracking needed.

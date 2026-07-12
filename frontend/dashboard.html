@@ -2052,6 +2052,9 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div class="s-note">Used on your Stripe invoices/receipts and as your account name.</div>
             <label class="form-label">Company Name</label>
             <input class="form-input" id="cfgCompanyName" type="text" placeholder="Your company name" style="margin-bottom:8px">
+            <label class="form-label">Billing Email</label>
+            <div class="s-note" style="margin-top:0">Where invoices, payment receipts and renewal reminders are sent — defaults to your login email, which may not be who should actually receive billing mail.</div>
+            <input class="form-input" id="cfgBillingEmail" type="email" placeholder="billing@yourcompany.com" style="margin-bottom:8px">
             <label class="form-label">Billing Address</label>
             <textarea class="form-input" id="cfgCompanyAddress" rows="2" placeholder="Street, city, state, PIN/postal code, country" style="margin-bottom:8px"></textarea>
             <button class="save-btn" onclick="saveCompanyProfile()">Save</button>
@@ -2069,6 +2072,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             </div>
             <div id="billingNoPlan">
               <div class="s-note">Choose a plan to get started.</div>
+              <div class="s-note" id="billingEmailNotice"></div>
               <div id="billingPricingTableWrap" style="margin-top:8px"></div>
             </div>
             <div id="billingHasPlan" style="display:none">
@@ -5768,6 +5772,10 @@ function renderBillingPage(){
     $id('billingPastDueBanner').style.display=pastDueCopy?'block':'none';
     if(pastDueCopy) $id('billingPastDueText').textContent=pastDueCopy;
   }else{
+    const billingEmail=clientRecord.billing_email||clientRecord.authentik_email||'';
+    $id('billingEmailNotice').innerHTML=billingEmail
+      ? `Invoices and receipts will go to <strong>${esc(billingEmail)}</strong> — wrong? Update it in Company Profile above before subscribing.`
+      : '';
     loadBillingPlans();
   }
   $id('billingWaCredits').textContent=clientRecord.wa_credits_balance||0;
@@ -5806,6 +5814,7 @@ async function billingInit(){
     await refreshClientRecord();
   }
   $id('cfgCompanyName').value=clientRecord.client_name||'';
+  $id('cfgBillingEmail').value=clientRecord.billing_email||clientRecord.authentik_email||'';
   $id('cfgCompanyAddress').value=clientRecord.company_address||'';
   renderBillingCurrencyToggle();
   renderBillingAddonList();
@@ -5815,14 +5824,17 @@ async function billingInit(){
 async function saveCompanyProfile(){
   const msg=$id('companyProfileMsg');
   const client_name=$id('cfgCompanyName').value.trim();
+  const billing_email=$id('cfgBillingEmail').value.trim();
   const company_address=$id('cfgCompanyAddress').value.trim();
   if(!client_name){ msg.textContent='Company name is required.'; return; }
+  if(billing_email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billing_email)){ msg.textContent='That doesn\'t look like a valid email address.'; return; }
   msg.textContent='Saving…';
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/company-profile`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({client_name, company_address})});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/company-profile`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({client_name, company_address, billing_email})});
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    Object.assign(clientRecord,{client_name, company_address});
+    Object.assign(clientRecord,{client_name, company_address, billing_email});
+    renderBillingPage();
     msg.textContent='Saved.';
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
