@@ -582,6 +582,22 @@ reply-risk tradeoff, same honest limits, same accepted-trust auth model.
 - `/ai/order-signal` and `/ai/booking-signal` (the n8n-callable HTTP endpoints) now also accept an
   optional `body.context` string, for n8n to pass its own recent-conversation text if it has one
   handy — the same underlying gap applies there too; this repo just can't fetch Chatwoot's history
+- **The fix above over-corrected**: instructing the model to resolve bare replies against "whichever
+  product was just discussed" made it reuse the *previous* product's sku even for a message that
+  names its own conflicting detail — observed live: "Green shirt" correctly matched the green linen
+  shirt just shown, then "Redshirt" (no such product in the catalog) got the exact same green
+  shirt's card sent back, because the prompt didn't distinguish "bare reference, use context" from
+  "names its own detail, match fresh." `detectOrderSignal`'s prompt now only falls back to recent
+  conversation for messages with no distinguishing detail of their own ("order it", "M size" alone,
+  "that one") — a message naming its own color/size/product name is matched against the catalog
+  fresh, and if it doesn't match anything, the reply falls back to `resolveOrderProductAndText`'s
+  generic "here's our full catalog" text (no sku) instead of reusing an unrelated product.
+- **`logPendingOrder` never checked whether its NocoDB write actually succeeded** — same silent-
+  failure shape as `ncPatchVerified` was written to fix elsewhere in this file. A rejected/failed
+  POST (bad field type, schema-cache lag right after a client's orders table was first configured,
+  etc.) still returned a fake `order_id` as if it had landed, so a customer could receive an order
+  link over WhatsApp with nothing ever appearing on the Orders page and no error anywhere to explain
+  it. Now checks the response and reports failures via `reportOpsError`.
   itself from those endpoints without knowing the conversation id, which n8n would need to supply.
 
 **Both booking links are also just shown on the Appointments tab itself** (`renderApptLinkBar()`,
