@@ -4669,7 +4669,7 @@ $id('saveKb').addEventListener('click',async()=>{
     const r=await fetch(n8nBase+'/webhook/leadvyne-kb-process',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({client_id:clientId,kb_text:txt})
+      body:JSON.stringify({client_id:clientId,kb_text:buildKbProcessorText(txt)})
     });
     const d=await r.json();
     msgEl.textContent=d.ok?`✓ Processed — ${(d.chars||0).toLocaleString()} chars summary`:'Saved (processor unavailable)';
@@ -7144,10 +7144,33 @@ function showToast(msg,type='ok'){
 }
 
 /* ── KB AUTO-REFRESH ── */
+// Enriches the raw kb_text with policy grounding, social proof and order-link instructions
+// before it is sent to the n8n KB processor webhook. This is additive to the *payload* only —
+// the stored kb_text field (what reps see/edit in Settings) is never mutated — so the bot picks
+// up trust-signal + order-link behavior purely through KB content, with zero n8n workflow edits.
+function buildKbProcessorText(rawText){
+  let extra='';
+  const pol=getBusinessPolicies();
+  if(pol.refund||pol.delivery||pol.cancellation){
+    extra+='\n\n## STORE POLICIES (ground objection-handling in these exact terms — never invent policy details)\n';
+    if(pol.refund)extra+=`Refund policy: ${pol.refund}\n`;
+    if(pol.delivery)extra+=`Delivery policy: ${pol.delivery}\n`;
+    if(pol.cancellation)extra+=`Cancellation policy: ${pol.cancellation}\n`;
+  }
+  const bookings=getRecentBookingsCount();
+  if(bookings>0){
+    extra+=`\n## SOCIAL PROOF\n${bookings} customers completed an order/booking in the last 7 days. When a customer is hesitating, you may naturally mention this to build trust (e.g. "${bookings} people booked this week").\n`;
+  }
+  if(Object.keys(getEcomTableIds()).length){
+    const link=buildStorefrontLink();
+    extra+=`\n## ORDER LINK\nWhen a customer shows clear buying intent (asks about size, color, price, stock, or says they want to buy/order), share this store link so they can complete the purchase: ${link}\n`;
+  }
+  return (rawText||'')+extra;
+}
 async function triggerKbRefresh(){
   try{
     const n8nBase=(clientRecord?.n8n_base||'https://apps.leadvyne.com').replace(/\/$/,'');
-    await fetch(n8nBase+'/webhook/leadvyne-kb-process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,kb_text:clientRecord.kb_text||''})});
+    await fetch(n8nBase+'/webhook/leadvyne-kb-process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,kb_text:buildKbProcessorText(clientRecord.kb_text||'')})});
   }catch(e){}
 }
 

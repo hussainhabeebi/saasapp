@@ -403,6 +403,32 @@ Cheap enough to call on every incoming message; n8n decides what to do with the 
 the existing order in its reply, skip re-pushing a link, etc.) — this repo only surfaces the data,
 same repo-boundary as everything else in this section.
 
+**Zero-n8n-edit alternative — controlling the bot purely through KB content:** the four routes
+above (`/ai/objection-reply`, `/ai/order-signal`, `/ecom/order-link`, `/ecom/order-lookup`) need at
+least one new HTTP Request node added to the n8n workflow each — real automation, but it does mean
+touching n8n. If that's not wanted yet, policy-grounding and "mention the order link" behavior can
+land with **no n8n node changes at all**, because the bot already reads `kb_text`'s AI-processed
+summary as grounding context every turn, and this repo already owns the one webhook call
+(`leadvyne-kb-process`) that feeds `kb_text` into that summary. `buildKbProcessorText()`
+(`dashboard.html`) appends a `## STORE POLICIES` block (from `business_policies`), a
+`## SOCIAL PROOF` line (`getRecentBookingsCount()`), and — if the client has any ecom tables
+configured (`getEcomTableIds()`) — a `## ORDER LINK` instruction block with the static storefront
+link and guidance on when to share it, onto the raw `kb_text` before POSTing to
+`/webhook/leadvyne-kb-process`. Both call sites (`$id('saveKb')`'s click handler and
+`triggerKbRefresh()`, fired whenever policies/KB text change) send this enriched text as the
+webhook's `kb_text` payload field — **the stored `kb_text` field itself, what a rep sees in
+Settings, is never rewritten**, only what's sent to the processor is enriched. Net effect: without
+touching engine.json, the bot's own grounding context gains real policy wording, a live booking
+count, and a standing instruction to surface the order link on buying signals — no per-message
+Cloudflare round trip required. The honest limits of this path: (1) it depends on the n8n workflow
+actually feeding `kb_text`'s processed summary into the live prompt every turn — true for the setup
+this repo was built against, but unverified here since engine.json isn't in this repo; (2) the
+order link this path teaches the bot to *say* is the generic client-wide storefront link, not a
+per-conversation trackable one, and nothing here makes the bot actually create an order row when a
+customer says yes — that half still needs a real call to `/ecom/order-link` (or a human clicking
+"Push to Order"), since a trackable link and a NocoDB row both require a server-side write that
+prompt content alone can't perform.
+
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
 write every client's row in every table via devtools — not just their own), plus each logged-in
