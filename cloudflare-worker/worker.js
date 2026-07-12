@@ -432,6 +432,21 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
     body
   });
   const data=await r.text();
+
+  // dashboard.html's Settings saves write most CLIENTS fields straight through this generic
+  // passthrough (no dedicated handler per field) — `industry` is one of them. If this write
+  // touched it, the client's primary Chatwoot webhook (n8n vs the Cloudflare ecom engine) may now
+  // be stale; re-sync it here rather than only at WhatsApp-connect time, so switching a client
+  // into/out of 'ecommerce' after they're already connected doesn't get silently missed.
+  if(r.ok && method==='PATCH' && upstreamPath.startsWith(`api/v2/tables/${CLIENTS_TABLE}/records`) && body){
+    try{
+      if('industry' in JSON.parse(body)){
+        const c=await getClientById(env, payload.cid);
+        if(c) await engineSyncChatwootWebhook(env, c);
+      }
+    }catch(e){}
+  }
+
   return new Response(data, {status:r.status, headers:{'Content-Type':'application/json'}});
 }
 
@@ -1479,14 +1494,11 @@ async function handleChannelsWhatsappConnect(request, env){
   const inbox=await inboxR.json().catch(()=>({}));
   if(!inboxR.ok||!inbox?.id) return json({error:'Chatwoot inbox creation failed: '+(inbox?.message||('HTTP '+inboxR.status))}, 502);
 
-  if(c.webhook_url){
-    // Best-effort — wires the bot's n8n webhook onto the new inbox so no manual paste-in-Chatwoot
-    // step is needed. If this fails, the client can still add it from Chatwoot's own UI.
-    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
-      method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
-      body:JSON.stringify({inbox_id:inbox.id, url:c.webhook_url, subscriptions:['message_created']})
-    }).catch(()=>{});
-  }
+  // Best-effort — wires the correct primary reply webhook onto the new inbox (n8n's c.webhook_url,
+  // or this Worker's /engine/webhook for industry==='ecommerce' clients — see
+  // engineSyncChatwootWebhook) so no manual paste-in-Chatwoot step is needed. If this fails, it can
+  // still be added/fixed from Chatwoot's own UI, or re-synced later by resaving the industry field.
+  await engineSyncChatwootWebhook(env, {...c, chatwoot_inbox_id:String(inbox.id)});
 
   // wa_phone_id is Meta's internal phone-number-id (needed for API calls), not something a
   // customer can dial — wa_display_phone is the actual number (e.g. "+91 94969 71950") and is
@@ -3926,6 +3938,54 @@ async function handleEngineWebhook(request, env){
   }
 
   return json({ok:true, route:routing.route, sent:!!sentText});
+}
+
+// Keeps the client's PRIMARY conversational-reply webhook (the one Chatwoot calls to decide who
+// replies to the customer — n8n's per-client wrapper URL, or this Worker's /engine/webhook) in
+// sync with `industry`, so a client that becomes (or stops being) 'ecommerce' after WhatsApp is
+// already connected doesn't silently keep the wrong one registered forever. Called from
+// handleChannelsWhatsappConnect (first connect) and handleNocodbPassthrough below (industry
+// changed afterward, e.g. in Settings). Only ever touches a webhook whose URL is exactly one of
+// the two known candidates below — the separate Auto-Order-Tracking webhook
+// (handleEcomEnableOrderTracking) and anything a client registered by hand in Chatwoot are left
+// alone. Best-effort throughout: a failure here never blocks the caller (WhatsApp connect /
+// Settings save), it just means the webhook may need fixing by hand later.
+async function engineSyncChatwootWebhook(env, c){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!c.chatwoot_inbox_id||!env.WORKER_BASE_URL) return;
+  const engineUrl=`${env.WORKER_BASE_URL}/engine/webhook`;
+  const n8nUrl=c.webhook_url||'';
+  const desiredUrl=c.industry==='ecommerce'?engineUrl:n8nUrl;
+  if(!desiredUrl) return;
+
+  try{
+    const listR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {headers:{api_access_token:c.chatwoot_token}});
+    if(!listR.ok) return;
+    const listD=await listR.json().catch(()=>null);
+    const existingList=Array.isArray(listD)?listD:(Array.isArray(listD?.payload)?listD.payload:[]);
+    const candidateUrls=[engineUrl, n8nUrl].filter(Boolean);
+
+    if(existingList.some(w=>w.url===desiredUrl)){
+      // Correct one is already registered — but if the OTHER candidate is still sitting there too
+      // (a leftover from before an industry change), drop it so n8n and the engine never both
+      // reply to the same message.
+      const stale=candidateUrls.filter(u=>u!==desiredUrl);
+      for(const w of existingList){
+        if(stale.includes(w.url)) await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${w.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
+      }
+      return;
+    }
+
+    // Remove whichever known candidate IS currently registered (the now-stale one) before adding
+    // the correct one — a brief window with neither registered is safe; a window with both is not.
+    const staleExisting=existingList.find(w=>candidateUrls.includes(w.url));
+    if(staleExisting){
+      await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${staleExisting.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
+    }
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
+      method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+      body:JSON.stringify({inbox_id:Number(c.chatwoot_inbox_id), url:desiredUrl, subscriptions:['message_created']})
+    });
+  }catch(e){}
 }
 
 /* ── ECOMMERCE PUBLIC STOREFRONT (store.html, and onshope.com's onshope-store.html /

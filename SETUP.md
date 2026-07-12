@@ -1910,19 +1910,37 @@ download/transcription fails, voice notes fall back to the same `"(sent a voice 
 text engine.json always sent instead (see below — that placeholder isn't new, only now it's a
 fallback rather than the only behavior).
 
-**Cutover, per ecom client:** in Chatwoot → the client's WhatsApp inbox → **Configuration →
-Webhooks**, change (or add) a "Message created" webhook pointed at
-`{WORKER_BASE_URL}/engine/webhook`, and remove the old webhook that pointed at n8n's
-`leadvyne-onboard`-provisioned wrapper URL for that client (leaving n8n's webhook in place
-alongside this one would mean the customer gets two independent replies to every message — this
-is a swap, not an addition). If the client previously had the **Settings → Auto Order-Tracking**
-webhook enabled (`POST /ecom/enable-order-tracking`, pointed at `/hooks/chatwoot-message`), that
-second webhook can be removed too — order-signal detection now happens inline on every turn here,
-so it's redundant once a client is on this engine.
+**Cutover is automatic, not a manual per-client Chatwoot step — `engineSyncChatwootWebhook`
+(`worker.js`) keeps a client's PRIMARY Chatwoot webhook (the one that decides who actually replies
+to the customer: n8n's `webhook_url`, or this Worker's `{WORKER_BASE_URL}/engine/webhook`) in sync
+with their `industry` field, called from two places:**
+- **`handleChannelsWhatsappConnect`** — the moment a client connects WhatsApp (signup wizard or
+  Settings → Channels), whichever URL is correct for their `industry` *at that moment* gets
+  registered — same "no manual paste-in-Chatwoot step" auto-wiring that already existed for n8n,
+  now industry-aware.
+- **`handleNocodbPassthrough`** — dashboard.html's Settings page saves most CLIENTS fields
+  (including `industry`) straight through this generic passthrough, with no dedicated per-field
+  handler. Any PATCH to the client's own CLIENTS row that touches `industry` triggers a re-sync —
+  this is what actually matters in practice, since a client's industry is very often decided or
+  changed *after* WhatsApp is already connected (during onboarding, or later in Settings), and
+  without this the webhook would silently keep pointing at whichever engine was correct only at
+  connect time.
 
-There is deliberately no CLIENTS-row flag gating this — the endpoint always runs the full engine
-for any client whose `industry` is `ecommerce`. Rolling a client back onto n8n is just re-pointing
-their Chatwoot webhook back to n8n's URL; nothing else here needs to change.
+Either way, `engineSyncChatwootWebhook` only ever touches a Chatwoot webhook whose URL is exactly
+one of the two known candidates (n8n's URL or this engine's URL) — it lists the account's webhooks,
+removes whichever of the two is currently wrong (if any), and adds the correct one if it's missing.
+The separate **Auto Order-Tracking** webhook (`handleEcomEnableOrderTracking`, pointed at
+`/hooks/chatwoot-message`) and anything a client registered by hand in Chatwoot are never touched.
+If a client had Auto-Order-Tracking enabled before moving to this engine, it's safe to leave
+enabled (redundant, since order-signal detection now happens inline on every engine turn too, but
+harmless) or disable it from Settings.
+
+There is deliberately no separate CLIENTS-row flag gating any of this — `industry` alone decides
+it, kept live by the sync above. Rolling a client back off the engine is just changing their
+`industry` away from `ecommerce` in Settings (or back, to move them onto it) — the correct webhook
+gets re-synced automatically either way. A client who was manually cut over before this automatic
+sync existed doesn't need any action — the next `industry` save (or WhatsApp reconnect) will
+reconcile them to the same state.
 
 **Fidelity to the source workflow, and where this deviates:** `handleEngineWebhook` and its
 `engine*` helper functions in `cloudflare-worker/worker.js` are a field-for-field port of
