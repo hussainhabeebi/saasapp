@@ -274,6 +274,16 @@ if the email matches the owner, or if no per-user agent was ever created for the
 were added via "Add Existing Authentik User" instead of "Create New User") before minting a fresh
 one-time login link. Each click always mints a new link — none are stored or reused.
 
+**Accounts connected the older, manual way have no `chatwoot_user_id` at all** (Settings →
+Channels' base/account/inbox/token paste-in fields — a fully working connection, chats and sends
+run fine off `chatwoot_token` alone, it just never went through `handleChannelsCreateAccount`'s
+Platform API call that would have set `chatwoot_user_id`). `handleChannelsChatwootSso` checks
+real connection state (`chatwoot_account_id`/`chatwoot_base` present) separately from SSO
+capability (`chatwoot_user_id` present) — a connected-but-no-user-id account gets a direct,
+not-pre-authenticated link to the Chatwoot dashboard (`{ok:true, sso:false, url}`) instead of the
+misleading "Connect a Chatwoot account first" error it used to return. Only a client with neither
+field set is treated as genuinely not connected.
+
 **Agents = Team Members = Users (`getTeamMembers()`, `dashboard.html`):** leads had a separate,
 disconnected "Owner" concept — a free-text name list on a now-removed `agents` Clients field
 (Settings had its own "Agents" textarea, `cfgAgents`), matching nothing else in the app. That's
