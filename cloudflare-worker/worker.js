@@ -3651,6 +3651,10 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
 // classifier ran on a dedicated Google Gemini model, not each client's own OpenRouter key), and
 // only falls back to the client's own OpenRouter key/model if GEMINI_API_KEY isn't configured on
 // this Worker or the Gemini call fails — so classification still works before that secret is set.
+// temperature 0.1 (was 0.3) — observed live, the identical message classified differently on two
+// separate deliveries a moment apart, one of which triggered a false-positive human handover (see
+// engineRouteFlow's humanReason for the actual fix); lower temperature won't make classification
+// perfectly deterministic, but reduces exactly this kind of unforced flip on unambiguous input.
 async function engineClassifyIntent(env, c, userText, activeHistory){
   const low=userText.trim().toLowerCase();
   const recent=(activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\n');
@@ -3659,7 +3663,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory){
 
   let aiResult=null;
   try{
-    const geminiRaw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.3, maxOutputTokens:200, json:true});
+    const geminiRaw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true});
     if(geminiRaw) aiResult=JSON.parse(geminiRaw);
   }catch(e){}
 
@@ -3668,7 +3672,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory){
       const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
         body:JSON.stringify({
-          model:c.model||'google/gemini-2.5-flash', temperature:0.3, max_tokens:200,
+          model:c.model||'google/gemini-2.5-flash', temperature:0.1, max_tokens:200,
           messages:[{role:'system', content:systemText}, {role:'user', content:userPrompt}]
         })
       });
@@ -3754,12 +3758,23 @@ function engineRouteFlow(c, state, userText, cls){
   const actionMsg=action.msg?(flow.messages?.[action.msg]||''):'';
   const wouldRepeat=actionMsg && lastBotMsg && lastBotMsg.includes(actionMsg.slice(0,40));
 
-  let reply='', videoUrl=null, route='stage';
+  let reply='', videoUrl=null, route='stage', humanReason=null;
   let next=action.next||state.stage;
 
-  if(effIntent==='WANTS_HUMAN' && botConfig.handover_enabled!==false) route='human';
+  // humanReason distinguishes a genuine "customer wants a human" moment (explicit ask, or real
+  // frustration) from the isFinalStage+POSITIVE branch below — an internal funnel-completion
+  // heuristic ("a positive reply on the last configured stage probably means ready to talk to
+  // someone"), not an actual signal the customer asked for a person. That heuristic can misfire on
+  // AI intent-classification noise: the exact same message ("Red Shirt small size") was observed
+  // live getting classified as AFFIRMATIVE on one delivery and QUESTION on an identical resend a
+  // moment later, sending the first copy to a human-handover reply instead of the product details
+  // the second copy correctly got. handleEngineWebhook's order-signal check (which runs before this
+  // whole dispatch) uses humanReason to still recognize an unambiguous product enquiry/order even
+  // when route ends up 'human' for this non-explicit reason, but never overrides an explicit ask or
+  // real frustration — see that check's own comment.
+  if(effIntent==='WANTS_HUMAN' && botConfig.handover_enabled!==false){ route='human'; humanReason='explicit'; }
   else if(isFinalStage && POSITIVE.has(effIntent) && botConfig.handover_enabled!==false){
-    route='human';
+    route='human'; humanReason='final_stage_positive';
     const tz=botConfig.timezone||'Asia/Kolkata';
     const nowLocal=new Date(new Date().toLocaleString('en-US',{timeZone:tz}));
     const hour=nowLocal.getHours(), day=nowLocal.getDay();
@@ -3790,7 +3805,7 @@ function engineRouteFlow(c, state, userText, cls){
   else if(!qualDone && qualStage!==null) route='qualify_next';
 
   if(sentiment==='Frustrated' && route!=='human' && botConfig.handover_enabled!==false){
-    route='human';
+    route='human'; humanReason='explicit';
     reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
   } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
     route='objection';
@@ -3826,7 +3841,7 @@ function engineRouteFlow(c, state, userText, cls){
     reply=(reply||'Great! You can book your slot here 📅')+'\n\n👉 '+c.cal_link;
   }
 
-  return {route, next, reply, videoUrl, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, isOptOut:false, isResub:false};
+  return {route, next, reply, videoUrl, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, isOptOut:false, isResub:false, humanReason};
 }
 
 // From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
@@ -4275,26 +4290,31 @@ async function handleEngineWebhook(request, env, secret){
 
     let sentText=null;
     let orderHandledInline=false;
-    // Order-readiness now overrides the flow_json state machine's own routing entirely, not just
+    // Order-readiness overrides the flow_json state machine's own routing entirely, not just
     // within the ecom_faq branch — observed real failure: a customer given a product's full detail
-    // card (a properly-matched FAQ answer) said "Order this" next, and instead of the order link
-    // got a scripted, unrelated flow-stage message ("Hi 👋") — because engineRouteFlow's own intent
-    // classification had already picked a different route (a flow-stage transition, a qualifying
-    // question, etc.) before this ever got a chance to run, so explicit purchase intent lost to
-    // whatever the generic flow router decided instead. Checked before the route dispatch below,
-    // for every route except 'human' (a genuine "connect me to a person" ask stays a human
-    // handover even if phrased alongside product talk) and 'drop' (opt-out/dedup-adjacent, nothing
-    // should reply). detectOrderSignal already resolves bare replies ("order this", "S size") via
-    // recent conversation on its own — see its own comment for the "names its own conflicting
-    // detail" fix that came with this.
-    // Enquiry vs. order intent are now handled differently, per an explicit product requirement:
-    // never share the order/checkout link until real order intent is detected — a size/color/
-    // stock/price question ("enquiry" mode) only ever gets product details + photo, no link,
-    // however confidently detectOrderSignal matched a product; only "order" mode (an explicit
-    // "order this"/"buy it"/confirmed yes) gets the checkout link, and only once a specific
-    // product is actually known — an ambiguous "order" with no resolvable product asks a
-    // clarifying question rather than sending a link to nothing in particular.
-    if(c.industry==='ecommerce' && c.openrouter_key && !['human','drop'].includes(routing.route)){
+    // card said "Order this" next, and instead of the order link got a scripted, unrelated
+    // flow-stage message, because engineRouteFlow's own intent classification had already picked a
+    // different route before this ever got a chance to run. Checked before the route dispatch
+    // below, for every route except 'drop' (opt-out/dedup-adjacent, nothing should reply) and a
+    // 'human' route caused by an explicit ask or real frustration (routing.humanReason==='explicit')
+    // — that stays a handover even if phrased alongside product talk. A 'human' route caused by the
+    // OTHER trigger (isFinalStage+POSITIVE, an internal "wrap up the funnel" heuristic, not an
+    // actual request for a person) does NOT block this check — observed live: the identical message
+    // "Red Shirt small size" got classified as AFFIRMATIVE on one delivery (triggering that
+    // heuristic → a false "connecting you to our advisor" reply) and correctly as a product
+    // question on an identical resend a moment later — the AI intent classifier isn't perfectly
+    // deterministic, so this heuristic alone isn't reliable enough to override an unambiguous
+    // product match from detectOrderSignal, a purpose-built, catalog-aware classifier.
+    //
+    // Enquiry vs. order intent are handled differently, per an explicit product requirement: never
+    // share the order/checkout link until real order intent is detected — a size/color/stock/price
+    // question ("enquiry" mode) only ever gets product details + photo, no link, however confidently
+    // detectOrderSignal matched a product; only "order" mode (an explicit "order this"/"buy it"/
+    // confirmed yes) gets the checkout link, and only once a specific product is actually known — an
+    // ambiguous "order" with no resolvable product asks a clarifying question instead of sending a
+    // link to nothing in particular.
+    const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
+    if(c.industry==='ecommerce' && c.openrouter_key && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       if(detection.signal){
@@ -4323,6 +4343,12 @@ async function handleEngineWebhook(request, env, secret){
         // below (no canned reply, no link) — the context-aware FAQ LLM can respond naturally,
         // e.g. "we don't carry that, but here's what we do have."
       }
+      // If this turn overrode a false-positive 'human' route (humanBlocksOrderCheck was false only
+      // because humanReason wasn't 'explicit'), routing.route is still 'human' at this point —
+      // engineBuildLeadUpsertBody's isHuman check would otherwise force Stage='human_handover'/
+      // Handover='Yes' onto the lead even though no actual handover happened this turn, just a
+      // product reply. Reset it so the lead record matches what was actually sent.
+      if(orderHandledInline && routing.route==='human') routing.route='ecom_faq';
     }
 
     if(orderHandledInline){

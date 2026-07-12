@@ -2045,11 +2045,34 @@ Observed live: a customer was correctly shown a product's full detail card in re
 question, then replied "Order this" — and got a scripted, unrelated flow-stage message ("Hi 👋")
 instead of the order link, because engine.json-style intent classification had already routed that
 turn to a flow-stage transition before order-signal detection ever ran. `detectOrderSignal` now runs
-before the whole route dispatch in `handleEngineWebhook`, for every route except `human` (a genuine
-"connect me to a person" ask still wins even if phrased alongside product talk) and `drop`. A
-detected signal short-circuits the entire dispatch and sends the order reply instead of whatever
-`engineRouteFlow` had decided — `Stage`/`QualAnswers` bookkeeping from that decision is left
-untouched so the flow/qualification funnel resumes normally on the next turn.
+before the whole route dispatch in `handleEngineWebhook`, for every route except `drop` (opt-out/
+dedup-adjacent, nothing should reply) and a `human` route caused by `routing.humanReason==='explicit'`
+— a genuine "connect me to a person" ask, or real frustration, still wins even if phrased alongside
+product talk. A detected signal short-circuits the entire dispatch and sends the order reply instead
+of whatever `engineRouteFlow` had decided — `Stage`/`QualAnswers` bookkeeping from that decision is
+left untouched (except see the `humanReason` note below), so the flow/qualification funnel resumes
+normally on the next turn.
+
+**`engineRouteFlow`'s `humanReason` distinguishes an actual request for a human from an internal
+funnel-completion heuristic that only looks like one.** `route='human'` can be set for two very
+different reasons: an explicit ask (`WANTS_HUMAN` intent, or `Frustrated` sentiment —
+`humanReason='explicit'`), or `isFinalStage && POSITIVE.has(effIntent)` (a positive reply on the
+last configured flow stage — `humanReason='final_stage_positive'`), a heuristic guess that a
+completed funnel plus a positive reply probably means "ready to talk to someone," not an actual
+signal the customer asked for a person. That heuristic is only as reliable as intent classification
+itself, which isn't perfectly deterministic — observed live: the identical message "Red Shirt small
+size" got classified as `AFFIRMATIVE` on one delivery (triggering a false "connecting you to our
+advisor" reply) and correctly as a product question on an identical resend moments later. The
+order-signal check above only lets a confident product match from `detectOrderSignal` (a dedicated,
+catalog-aware classifier) override the `final_stage_positive` case, never the `explicit` one. When it
+does override a `human` route, `routing.route` is reset to `ecom_faq` before
+`engineBuildLeadUpsertBody` runs — otherwise its `isHuman` check would still force
+`Stage='human_handover'`/`Handover='Yes'` onto the lead even though what was actually sent was a
+product reply, not a handover.
+- **`engineClassifyIntent`'s temperature was also lowered, 0.3 → 0.1**, for both the Gemini and
+  OpenRouter-fallback calls — a complementary mitigation, not a fix on its own; it reduces (doesn't
+  eliminate) exactly this kind of unforced classification flip between identical deliveries of the
+  same message.
 
 **A matched product's photo is now sent as a real WhatsApp image attachment, not just a text
 link.** `engineSendChatwootImageReply` (`worker.js`) downloads the product's `image_url` — resolving
