@@ -1963,6 +1963,31 @@ no longer gets an attacker anywhere near this endpoint.
   payload's own `account.id` against the matched client's `chatwoot_account_id` and drops anything
   that disagrees — catches a misconfigured/reused webhook, though the secret match is what's
   actually doing the security work.
+- **Backfilling existing clients:** `engineEnsureWebhookSecret`/`engineSyncChatwootWebhook` only
+  run when a client connects WhatsApp or saves a Settings field (`handleNocodbPassthrough`), so
+  any client that hasn't touched either since this engine shipped will have no
+  `engine_webhook_secret` yet. Rather than asking every such client to re-save a setting, admin.html
+  has a **"🔄 Sync engine webhooks"** button (top toolbar) that calls
+  `POST /admin/backfill-engine-webhooks` — walks every CLIENTS row and runs
+  `engineSyncChatwootWebhook` for each one that already has Chatwoot connected. Safe to click
+  repeatedly; it's the same idempotent sync, just triggered for all clients at once instead of one
+  at a time. **Does not touch Chatwoot's separate Agent Bots feature** (see next paragraph) — a
+  client whose bot is wired there still needs a manual fix.
+
+**Chatwoot "Agent Bots" is a different mechanism from the Webhooks this engine manages — and a
+trap left over from pre-migration setups.** Chatwoot has two unrelated ways to point an inbox at
+an external URL: (1) account-level **Webhooks** (`Settings → Webhooks`, `/api/v1/accounts/:id/webhooks`),
+which is everything `engineSyncChatwootWebhook` above manages, and (2) **Agent Bots**
+(`Settings → Bots`), a separate object with its own `Webhook URL` field that gets assigned to an
+inbox independently. If a client was set up before this engine existed (or had a bot wired up by
+hand), their inbox can have an Agent Bot pointed at the old n8n URL — Chatwoot will keep sending
+that bot's webhook the customer's messages regardless of what's registered under (1), so every fix
+in this engine silently never reaches that client's real traffic. Neither `engineSyncChatwootWebhook`
+nor the admin backfill button above touch Agent Bots at all today. To fix a client stuck like this:
+open **Settings → Bots** in Chatwoot, click into their bot, and replace its `Webhook URL` with
+`https://<WORKER_BASE_URL>/engine/webhook/<their engine_webhook_secret>` by hand. (Extending the
+sync to also manage Agent Bots via Chatwoot's `/platform/api/v1/agent_bots` API is a reasonable
+follow-up, not yet implemented.)
 
 **Industry-aware FAQ grounding (`engineRouteFlow`'s `industryFaqRoute`),
 matching engine.json's own `industry === 'ecommerce' ? 'ecom_faq' : (industry === 'travel' ?

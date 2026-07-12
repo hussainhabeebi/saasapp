@@ -1095,6 +1095,37 @@ async function runDailyHealthCheckForAllClients(env){
   }
 }
 
+// One-off/rerunnable admin action — walks every CLIENTS row and calls engineSyncChatwootWebhook
+// for any client with Chatwoot already connected, so engine_webhook_secret gets generated and the
+// /engine/webhook registration happens without each client needing to individually re-save a
+// Settings field first. Safe to run repeatedly: engineSyncChatwootWebhook is itself idempotent
+// (no-ops if already correct) and untouched for clients with no Chatwoot connection yet or with
+// engine_disabled='Yes'. Does NOT touch Chatwoot's separate Agent Bots feature (Settings → Bots) —
+// only the inbox-level Webhooks API; a bot wired there still needs its Webhook URL fixed by hand.
+async function handleAdminBackfillEngineWebhooks(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  let page=1, processed=0, synced=0, skipped=0;
+  const errors=[];
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      processed++;
+      if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!c.chatwoot_inbox_id){ skipped++; continue; }
+      try{
+        await engineSyncChatwootWebhook(env, c);
+        synced++;
+      }catch(e){ errors.push({client_id:c.Id, client_name:c.client_name||'', error:e.message}); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+  return json({ok:true, processed, synced, skipped, errors});
+}
+
 async function handleAiComplete(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -4558,6 +4589,7 @@ export default {
       else if(url.pathname==='/admin/login' && request.method==='POST'){ res=await handleAdminLogin(request, env); }
       else if(url.pathname.startsWith('/admin/nocodb/')){ res=await handleAdminNocodbPassthrough(request, env, url.pathname.slice('/admin/nocodb/'.length)); }
       else if(url.pathname==='/admin/clients-billing' && request.method==='GET'){ res=await handleAdminClientsBilling(request, env); }
+      else if(url.pathname==='/admin/backfill-engine-webhooks' && request.method==='POST'){ res=await handleAdminBackfillEngineWebhooks(request, env); }
       else if(url.pathname==='/admin/billing-refresh' && request.method==='POST'){ res=await handleAdminBillingRefresh(request, env); }
       else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }
       else if(url.pathname==='/admin/billing-reset-anchor' && request.method==='POST'){ res=await handleAdminBillingResetAnchor(request, env); }
