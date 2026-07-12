@@ -9904,16 +9904,18 @@ function initApptSettings(){
 $id('saveApptEnabled').addEventListener('click',async()=>{
   const btn=$id('saveApptEnabled'),msg=$id('saveApptEnabledMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgApptEnabled').value;
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     for(const f of [{column_name:'appt_enabled',title:'appt_enabled',uidt:'SingleLineText'},{column_name:'appt_table_ids',title:'appt_table_ids',uidt:'LongText'},{column_name:'calcom_webhook_secret',title:'calcom_webhook_secret',uidt:'SingleLineText'}]){
       if(!cols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
     }
-    const val=$id('cfgApptEnabled').value;
-    clientRecord.appt_enabled=val;
+    // No longer swallowed — patchClient() verifies the write actually stuck (re-fetches and
+    // compares) and throws a specific "Save didn't take effect for: X" error otherwise; that error
+    // needs to reach the user, not get hidden behind a false "✓ Saved".
+    await patchClient({appt_enabled:val});
     apptSaveLocal('appt_enabled',val);
-    await patchClient({appt_enabled:val}).catch(()=>{});
     updateApptTabVisibility();
     _renderModuleBadge('apptModuleStatusBadge',val==='Yes');
     const cc=$id('calcomCard'); if(cc) cc.style.display=(isBookingIndustry()&&val==='Yes')?'block':'none';
@@ -10008,10 +10010,14 @@ async function apptSetupTables(){
       tableIds[def.key]=r.id;
     }
 
+    // Tables themselves are already created at this point (the loop above throws if any create
+    // fails) — this just records their ids on the client row. No longer swallowed: if this write
+    // doesn't stick, apptTableId()/apptTablesReady() would silently see no tables at all despite
+    // them existing orphaned in NocoDB, and the user needs to know that happened, not see a false
+    // "✓ Tables created!".
     const tableIdsJson=JSON.stringify(tableIds);
+    await patchClient({appt_table_ids:tableIdsJson});
     apptSaveLocal('appt_table_ids',tableIdsJson);
-    clientRecord.appt_table_ids=tableIdsJson;
-    await patchClient({appt_table_ids:tableIdsJson}).catch(()=>{});
     msg.textContent='✓ Tables created! Loading…';
     await apptLoad();
     renderApptSubPage(_apptPage);
