@@ -41,6 +41,36 @@ function json(data, status, extraHeaders){
   return new Response(JSON.stringify(data), {status:status||200, headers:{'Content-Type':'application/json', ...extraHeaders}});
 }
 
+/* ── Platform-level error monitoring — deliberately NOT client-facing (see clients' own
+   slack_webhook_url, used by n8n/notifications.json for hot-lead/handover business alerts; this
+   is a separate, operator-facing channel for "the platform itself is broken"). Both destinations
+   are optional and independent — set either, both, or neither; every call site here is
+   best-effort and never throws, so a broken alert channel can't itself take anything down.
+   OPS_ALERT_WEBHOOK_URL: any URL accepting a JSON {text:"..."} POST (a Slack incoming webhook
+   works as-is). OPS_ALERT_EMAIL: requires RESEND_API_KEY (already used elsewhere in this file,
+   e.g. sendBillingEmail) to actually send. ── */
+async function reportOpsError(env, context, error, extra){
+  const detail=error?.stack||error?.message||String(error);
+  const message=`Leadvyne platform error — ${context}${extra?` (${JSON.stringify(extra)})`:''}\n${detail}`;
+  console.error(message);
+  try{
+    if(env.OPS_ALERT_WEBHOOK_URL){
+      await fetch(env.OPS_ALERT_WEBHOOK_URL, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:message})});
+    }
+  }catch(e){}
+  try{
+    if(env.RESEND_API_KEY && env.OPS_ALERT_EMAIL){
+      await fetch('https://api.resend.com/emails', {
+        method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({
+          from:env.RESEND_FROM_EMAIL||'Leadvyne Tasks <tasks@leadvyne.com>', to:[env.OPS_ALERT_EMAIL],
+          subject:`Leadvyne platform error — ${context}`, html:`<pre style="white-space:pre-wrap;font-family:monospace">${esc(message)}</pre>`
+        })
+      });
+    }
+  }catch(e){}
+}
+
 /* ── NocoDB helpers (master token, server-side only) ── */
 async function ncFetch(env, path, {method='GET', body}={}){
   const r=await fetch(`${env.NOCODB_BASE}/${path}`, {
@@ -3803,13 +3833,20 @@ async function engineCallLlm(c, systemPrompt, userText, maxTokens){
   }catch(e){ return 'One moment 🙏'; }
 }
 
-async function engineSendChatwootReply(c, convId, text){
+// The one delivery point a customer's reply actually depends on — a silent failure here means
+// the customer gets nothing and nobody finds out, so (unlike most best-effort sends elsewhere in
+// this file) this specifically reports to reportOpsError on both a thrown fetch and a non-OK
+// response (previously not even checked).
+async function engineSendChatwootReply(env, c, clientId, convId, text){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!text) return;
   try{
     const fd=new FormData();
     fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
-    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-  }catch(e){}
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok) await reportOpsError(env, 'engineSendChatwootReply — Chatwoot rejected the send', new Error('HTTP '+r.status), {clientId, convId});
+  }catch(e){
+    await reportOpsError(env, 'engineSendChatwootReply — send threw', e, {clientId, convId});
+  }
 }
 
 async function engineSendHandoverLabel(c, convId){
@@ -3824,8 +3861,11 @@ async function engineSendHandoverLabel(c, convId){
 
 // Mirrors "Code · Prep lead" — hot-moment/qual-score/win-probability/round-robin-owner
 // computation and the LEADS upsert body. See the file-header comment above for the ConvHistory
-// and human-handover-message fixes vs. the source workflow.
-function engineBuildLeadUpsertBody(c, clientId, state, routing, userText){
+// and human-handover-message fixes vs. the source workflow. `messageId` (Chatwoot's own message
+// id, when available) is persisted as LastProcessedMessageId for handleEngineWebhook's
+// idempotency check — written only here, as part of a normal successful turn, never earlier; see
+// that check's own comment for why.
+function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId){
   const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, isOptOut, isResub}=routing;
   const reply=routing.reply;
   let next=routeNext;
@@ -3840,6 +3880,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText){
     Date:new Date().toISOString(), Language:c.language||'en',
     ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString()
   };
+  if(messageId) body.LastProcessedMessageId=messageId;
   if(qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers=JSON.stringify(qualAnswers);
   if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
   else body.Stage=next;
@@ -3914,11 +3955,23 @@ async function engineLogAnalytics(env, entry){
 // (both are exposed in various places already) no longer gets an attacker anywhere.
 async function handleEngineWebhook(request, env, secret){
   const startMs=Date.now();
+  // Global kill switch — a config-only flag (wrangler.toml [vars], requires a redeploy to flip,
+  // not instant, but a one-line change is still far faster than debugging/reverting code under
+  // pressure). Intentionally goes silent everywhere rather than falling back to some other
+  // behavior: if the engine itself is suspected of causing harm (bad deploy, corrupted data),
+  // "stop replying" is the safer failure mode than "keep executing possibly-broken logic."
+  if(env.ENGINE_ENABLED==='false') return json({ok:true, skipped:'engine-disabled-global'});
   if(!secret) return json({ok:true, skipped:'no-secret'});
   const c=await findClientByField(env, 'engine_webhook_secret', secret);
   if(!c) return json({ok:true, skipped:'invalid-secret'});
   const clientId=String(c.Id);
   if(c.active==='No') return json({ok:true, skipped:'client-inactive'});
+  // Per-client kill switch (CLIENTS.engine_disabled, 'Yes'/'No') — same "go silent" reasoning as
+  // the global one, scoped to one client whose flow_json/data is causing a problem, without
+  // taking down every other client. engineSyncChatwootWebhook also respects this flag (leaves
+  // that client's webhooks alone entirely) so an admin can manually restore their old n8n webhook
+  // in Chatwoot without the next Settings-save sync immediately undoing it.
+  if(c.engine_disabled==='Yes') return json({ok:true, skipped:'engine-disabled-client'});
 
   const body=await request.json().catch(()=>({}));
   // Defense in depth, not the actual security boundary (the secret already is): if the payload's
@@ -3927,127 +3980,154 @@ async function handleEngineWebhook(request, env, secret){
   const accountId=String(body.account?.id||body.conversation?.account_id||'');
   if(accountId && c.chatwoot_account_id && accountId!==String(c.chatwoot_account_id)) return json({ok:true, skipped:'account-mismatch'});
 
-  const parsed=engineParseChatwootPayload(body);
-  if(!parsed) return json({ok:true, skipped:'not-actionable'});
-  const {convId, phone, name, text, mediaType, mediaUrl}=parsed;
+  let phone=null;
+  try{
+    const parsed=engineParseChatwootPayload(body);
+    if(!parsed) return json({ok:true, skipped:'not-actionable'});
+    const {convId, name, text, mediaType, mediaUrl}=parsed;
+    phone=parsed.phone;
 
-  if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')) return json({ok:true, skipped:'test-mode'});
-  if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
+    if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')) return json({ok:true, skipped:'test-mode'});
+    if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
 
-  const state=await engineGetLeadState(env, clientId, phone);
-  state.phone=phone; state.name=name; state.convId=convId;
+    const state=await engineGetLeadState(env, clientId, phone);
+    state.phone=phone; state.name=name; state.convId=convId;
 
-  // Matches engine.json's Code·State hard-stop — SETUP.md: "the bot stops writing to the lead
-  // entirely once handed over ... so it can never talk over a live agent."
-  if(state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover')) return json({ok:true, skipped:'handed-over'});
-  if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start') return json({ok:true, skipped:'opted-out'});
+    // Idempotency — Chatwoot may redeliver the same message_created event (timeout, network
+    // retry); without this, a redelivery after this turn already completed would generate and
+    // send a second reply. messageId is Chatwoot's own message id (unverified against a live
+    // payload from this specific Chatwoot version, same honest caveat as elsewhere this repo
+    // parses Chatwoot's shape) — if it's ever absent, dedup is simply skipped rather than falling
+    // back to a fragile content-based guess, since a false-positive skip would silently eat a real
+    // customer message. Persisted as part of the normal lead upsert at the end of a *successful*
+    // turn (engineBuildLeadUpsertBody), never written any earlier — so a genuine mid-processing
+    // crash (after the reply is sent, before the upsert completes) is NOT protected against and
+    // could still double-reply on retry. Accepted trade-off: the alternative (marking "processed"
+    // before work starts) risks silently dropping a real message if processing then fails, which
+    // is worse for a sales/support bot than an occasional duplicate reply.
+    const messageId=String(body.id||body.message?.id||'');
+    if(messageId && state.lead?.LastProcessedMessageId===messageId) return json({ok:true, skipped:'duplicate-delivery'});
 
-  const botConfig=engineParseJsonField(c.bot_config, {});
-  const rateLimitMs=parseInt(botConfig.rate_limit_ms)||4000;
-  const lastMsgAt=state.lastMsgAt?new Date(state.lastMsgAt).getTime():0;
-  if(Date.now()-lastMsgAt<rateLimitMs) return json({ok:true, skipped:'rate-limited'});
+    // Matches engine.json's Code·State hard-stop — SETUP.md: "the bot stops writing to the lead
+    // entirely once handed over ... so it can never talk over a live agent."
+    if(state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover')) return json({ok:true, skipped:'handed-over'});
+    if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start') return json({ok:true, skipped:'opted-out'});
 
-  const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
-  const cls=await engineClassifyIntent(env, c, userText, state.activeHistory);
-  const routing=engineRouteFlow(c, state, userText, cls);
+    const botConfig=engineParseJsonField(c.bot_config, {});
+    const rateLimitMs=parseInt(botConfig.rate_limit_ms)||4000;
+    const lastMsgAt=state.lastMsgAt?new Date(state.lastMsgAt).getTime():0;
+    if(Date.now()-lastMsgAt<rateLimitMs) return json({ok:true, skipped:'rate-limited'});
 
-  let sentText=null;
-  if(routing.route==='human'){
-    sentText=routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.';
-    routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
-    await engineSendChatwootReply(c, convId, sentText);
-    await engineSendHandoverLabel(c, convId);
-  } else if(routing.route==='drop'){
-    // no reply
-  } else if(routing.route==='qualify'){
-    const qualQuestions=engineParseJsonField(c.qual_questions, []);
-    routing.reply=qualQuestions[0]||'Could you tell me a bit more about what you are looking for?';
-    routing.next='qual_0';
-    sentText=routing.reply;
-    await engineSendChatwootReply(c, convId, sentText);
-  } else if(routing.route==='qualify_next'){
-    sentText=routing.reply||null;
-    if(sentText) await engineSendChatwootReply(c, convId, sentText);
-  } else if(['faq','ecom_faq','travel_faq'].includes(routing.route)){
-    let contextBlock=null;
-    if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
-    else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
-    const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general');
-    let reply=await engineCallLlm(c, sysPrompt, userText, 300);
-    if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
-    routing.reply=reply; sentText=reply;
-    await engineSendChatwootReply(c, convId, sentText);
-  } else if(routing.route==='objection'){
-    const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory);
-    let reply=await engineCallLlm(c, sysPrompt, userText, 300);
-    if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
-    routing.reply=reply; sentText=reply;
-    await engineSendChatwootReply(c, convId, sentText);
-  } else if(routing.route==='stage'){
-    sentText=routing.reply||null;
-    if(sentText) await engineSendChatwootReply(c, convId, sentText);
-  }
+    const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+    const cls=await engineClassifyIntent(env, c, userText, state.activeHistory);
+    const routing=engineRouteFlow(c, state, userText, cls);
 
-  const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText);
-  await engineUpsertLead(env, method, leadId, leadBody);
+    let sentText=null;
+    if(routing.route==='human'){
+      sentText=routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.';
+      routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
+      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineSendHandoverLabel(c, convId);
+    } else if(routing.route==='drop'){
+      // no reply
+    } else if(routing.route==='qualify'){
+      const qualQuestions=engineParseJsonField(c.qual_questions, []);
+      routing.reply=qualQuestions[0]||'Could you tell me a bit more about what you are looking for?';
+      routing.next='qual_0';
+      sentText=routing.reply;
+      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+    } else if(routing.route==='qualify_next'){
+      sentText=routing.reply||null;
+      if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
+    } else if(['faq','ecom_faq','travel_faq'].includes(routing.route)){
+      let contextBlock=null;
+      if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
+      else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
+      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general');
+      let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
+      routing.reply=reply; sentText=reply;
+      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+    } else if(routing.route==='objection'){
+      const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory);
+      let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
+      routing.reply=reply; sentText=reply;
+      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+    } else if(routing.route==='stage'){
+      sentText=routing.reply||null;
+      if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
+    }
 
-  // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
-  // background promise left running past the returned Response risks being cut off mid-flight.
-  await engineLogAnalytics(env, {
-    ClientId:clientId, ClientName:c.client_name||'', Phone:phone, Intent:routing.intent||'', Route:routing.route||'',
-    Stage:state.stage||'', NextStage:leadBody.Stage||'', ResponseMs:Date.now()-startMs, IsError:false, ErrorMsg:'',
-    Timestamp:new Date().toISOString()
-  });
-  await patchClientFields(env, clientId, {last_seen:new Date().toISOString()}).catch(()=>{});
+    const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId);
+    await engineUpsertLead(env, method, leadId, leadBody);
 
-  // Signal auto-send, folded into this same turn — previously a second, independent Chatwoot
-  // webhook (handleChatwootIncomingOrderSignal / handleChatwootIncomingBookingSignal above).
-  // Skipped for human/drop/opt-out/resub turns, none of which carry real intent to act on.
-  // Branches strictly on c.industry — NOT on whether ecomResolveTable(..., 'orders') resolves a
-  // table id, since that helper falls back to a shared default table id for every client
-  // regardless of industry (ECOM_DEFAULT_TABLE_IDS), so table-truthiness alone can't distinguish
-  // an actual ecom client from a booking-industry one the way handleChatwootMessageHook's own
-  // dispatch (elsewhere in this file) tries to.
-  if(!['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token){
-    if(c.industry==='ecommerce'){
-      const ordersTable=await ecomResolveTable(env, clientId, 'orders');
-      if(ordersTable){
-        const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,pending)&limit=1`);
-        const existD=await existR.json().catch(()=>({}));
-        if(!existD?.list?.length){
+    // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
+    // background promise left running past the returned Response risks being cut off mid-flight.
+    await engineLogAnalytics(env, {
+      ClientId:clientId, ClientName:c.client_name||'', Phone:phone, Intent:routing.intent||'', Route:routing.route||'',
+      Stage:state.stage||'', NextStage:leadBody.Stage||'', ResponseMs:Date.now()-startMs, IsError:false, ErrorMsg:'',
+      Timestamp:new Date().toISOString()
+    });
+    await patchClientFields(env, clientId, {last_seen:new Date().toISOString()}).catch(()=>{});
+
+    // Signal auto-send, folded into this same turn — previously a second, independent Chatwoot
+    // webhook (handleChatwootIncomingOrderSignal / handleChatwootIncomingBookingSignal above).
+    // Skipped for human/drop/opt-out/resub turns, none of which carry real intent to act on.
+    // Branches strictly on c.industry — NOT on whether ecomResolveTable(..., 'orders') resolves a
+    // table id, since that helper falls back to a shared default table id for every client
+    // regardless of industry (ECOM_DEFAULT_TABLE_IDS), so table-truthiness alone can't distinguish
+    // an actual ecom client from a booking-industry one the way handleChatwootMessageHook's own
+    // dispatch (elsewhere in this file) tries to.
+    if(!['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token){
+      if(c.industry==='ecommerce'){
+        const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+        if(ordersTable){
+          const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,pending)&limit=1`);
+          const existD=await existR.json().catch(()=>({}));
+          if(!existD?.list?.length){
+            const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+            const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+            if(detection.signal){
+              if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendOrderLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.sku);
+              else await sendOrderLinkNow(env, c, clientId, phone, name, detection.sku);
+            }
+          }
+        }
+      } else if((c.external_store_link||'').trim()){
+        // Booking-industry equivalent (healthcare/consultancy/travel/etc — everything but
+        // ecommerce, matching handleChatwootIncomingBookingSignal's own gating): only runs once a
+        // booking link is actually configured, and skips a lead already at a booking-terminal
+        // stage or one with a `requested` appointment already pending.
+        const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
+        let alreadyRequested=false;
+        const bookingsTable=apptResolveTable(c, 'bookings');
+        if(!alreadyBooked && bookingsTable){
+          const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+          const existD=await existR.json().catch(()=>({}));
+          alreadyRequested=!!existD?.list?.length;
+        }
+        if(!alreadyBooked && !alreadyRequested){
           const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
-          const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+          const detection=await detectBookingSignal(env, c, clientId, userText, contextText);
           if(detection.signal){
-            if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendOrderLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.sku);
-            else await sendOrderLinkNow(env, c, clientId, phone, name, detection.sku);
+            if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendBookingLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.service_id);
+            else await sendBookingLinkNow(env, c, clientId, phone, name, detection.service_id);
           }
         }
       }
-    } else if((c.external_store_link||'').trim()){
-      // Booking-industry equivalent (healthcare/consultancy/travel/etc — everything but
-      // ecommerce, matching handleChatwootIncomingBookingSignal's own gating): only runs once a
-      // booking link is actually configured, and skips a lead already at a booking-terminal
-      // stage or one with a `requested` appointment already pending.
-      const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
-      let alreadyRequested=false;
-      const bookingsTable=apptResolveTable(c, 'bookings');
-      if(!alreadyBooked && bookingsTable){
-        const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
-        const existD=await existR.json().catch(()=>({}));
-        alreadyRequested=!!existD?.list?.length;
-      }
-      if(!alreadyBooked && !alreadyRequested){
-        const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
-        const detection=await detectBookingSignal(env, c, clientId, userText, contextText);
-        if(detection.signal){
-          if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendBookingLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.service_id);
-          else await sendBookingLinkNow(env, c, clientId, phone, name, detection.service_id);
-        }
-      }
     }
-  }
 
-  return json({ok:true, route:routing.route, sent:!!sentText});
+    return json({ok:true, route:routing.route, sent:!!sentText});
+  }catch(e){
+    // Rich context (clientId, phone) beyond what the router's own global catch-all would have —
+    // caught here rather than left to propagate, so the alert carries useful debugging
+    // information and Chatwoot gets a clean 200 (a 500 could trigger a Chatwoot-side retry,
+    // interacting with the idempotency check above in ways worth avoiding on top of an already-
+    // failing turn).
+    await reportOpsError(env, 'handleEngineWebhook', e, {clientId, phone});
+    return json({ok:true, skipped:'internal-error'});
+  }
 }
 
 // 192 bits of randomness, hex-encoded — the actual security boundary for /engine/webhook (see the
@@ -4089,6 +4169,10 @@ async function engineEnsureWebhookSecret(env, c){
 // Settings save), it just means the webhook may need fixing by hand later.
 async function engineSyncChatwootWebhook(env, c){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!c.chatwoot_inbox_id||!env.WORKER_BASE_URL) return;
+  // Per-client kill switch (see handleEngineWebhook) — while disabled, leave this client's
+  // webhooks entirely alone, so an admin can manually restore their old n8n webhook in Chatwoot
+  // without the next Settings-save sync immediately deleting it again.
+  if(c.engine_disabled==='Yes') return;
   const secret=await engineEnsureWebhookSecret(env, c);
   if(!secret) return; // no secret to register safely under (e.g. the NocoDB column isn't set up yet)
   const engineUrl=`${env.WORKER_BASE_URL}/engine/webhook/${secret}`;
@@ -4379,6 +4463,7 @@ export default {
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);
+      await reportOpsError(env, `unhandled — ${request.method} ${url.pathname}`, e);
     }
 
     const headers=new Headers(res.headers);

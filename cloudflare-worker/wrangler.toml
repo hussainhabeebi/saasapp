@@ -23,6 +23,11 @@ APP_BASE_URL = "https://app.leadvyne.com/dashboard.html"
 # This Worker's own public base URL — used to build the Shopify OAuth redirect_uri and webhook
 # address (Shopify calls back into this Worker, so it needs to know its own address).
 WORKER_BASE_URL = "https://leadvyne-api-proxy.leadvyne.workers.dev"
+# Global kill switch for the Conversation Engine (SETUP.md "Conversation Engine") — set to
+# "false" to make /engine/webhook go silent for every client at once (an emergency stop, not a
+# fallback to n8n). Requires a redeploy to change; there's no live/dynamic toggle. Any value other
+# than the literal string "false" (including leaving this unset) means enabled.
+ENGINE_ENABLED = "true"
 # Starter and Pro (INR, AED) are live; Growth still needs a Product/Price created in Stripe.
 STRIPE_PLAN_PRICE_IDS = "price_1TWsQ1JWa5B2ayZgL5zPAf3U,price_1Tpv9nJWa5B2ayZgiCfm5jNo,REPLACE_STRIPE_PRICE_GROWTH_INR,REPLACE_STRIPE_PRICE_GROWTH_AED,price_1TpvODJWa5B2ayZg5kNKP689,price_1TpvNsJWa5B2ayZgDMLLFGj8"
 STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZghpfgBxli,price_1TpvPlJWa5B2ayZgHya1YHiK,price_1TpvPRJWa5B2ayZgWmPFKXvG"
@@ -44,9 +49,16 @@ STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZgh
 #   SHOPIFY_API_KEY         Shopify Partners app's Client ID — see SETUP.md "Shopify module"
 #   SHOPIFY_API_SECRET      Shopify Partners app's Client Secret (also verifies OAuth + webhook HMACs)
 #   GEMINI_API_KEY          Google Generative Language API key (Google AI Studio) — see SETUP.md
-#                           "Ecom Conversation Engine". One shared key for all clients, same as
+#                           "Conversation Engine". One shared key for all clients, same as
 #                           the n8n engine's single Gemini credential — not per-client. Powers the
 #                           /engine/webhook intent/sentiment classifier and voice transcription;
 #                           if unset, the classifier falls back to each client's own OpenRouter
 #                           key and voice notes fall back to a placeholder ("(sent a voice note)")
 #                           instead of a real transcript.
+#   OPS_ALERT_WEBHOOK_URL   optional — any URL accepting a JSON {text:"..."} POST (a Slack
+#                           incoming webhook works as-is). Platform-level failure alerts (engine
+#                           crashes, failed customer replies, any unhandled route error) — see
+#                           SETUP.md "Error monitoring". Distinct from clients' own per-client
+#                           slack_webhook_url (business alerts like hot leads).
+#   OPS_ALERT_EMAIL         optional — email address for the same alerts as OPS_ALERT_WEBHOOK_URL,
+#                           sent via Resend. Requires RESEND_API_KEY (above) to also be set.

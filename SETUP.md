@@ -2021,3 +2021,80 @@ tracing the source workflow's node wiring showed they were unintended:
   `"(sent a voice note)"` placeholder still exists here too, but only as the fallback when
   `GEMINI_API_KEY` isn't configured or transcription fails for a given note — not the only path.
 
+### Kill switches
+Two independent "go silent" levers, both deliberately silent rather than falling back to n8n or
+anything else — for an engine suspected of causing harm, "stop replying" is the safer failure mode
+than "keep executing possibly-broken logic," and neither n8n nor a Chatwoot-visible fallback is
+guaranteed reachable/correct at the moment you'd need one.
+- **Global — `ENGINE_ENABLED` (`wrangler.toml [vars]`).** Set to `"false"` to disable
+  `/engine/webhook` for every client at once. Config-only, so it needs a `wrangler deploy` to take
+  effect — not instant, but a one-line flip is far faster than debugging or reverting real code
+  under pressure. Any other value (including leaving it unset) means enabled.
+- **Per-client — `engine_disabled`** (new required CLIENTS column, Single line text, `'Yes'`/`'No'`).
+  Scopes the same "go silent" behavior to one client — useful when a single client's `flow_json`
+  or other data is causing a crash loop or bad behavior, without taking the whole platform down.
+  `engineSyncChatwootWebhook` also respects it: while `engine_disabled==='Yes'`, it leaves that
+  client's Chatwoot webhooks entirely alone (doesn't register, doesn't clean up), so an admin can
+  manually re-add the client's old n8n webhook in Chatwoot without the next Settings-save sync
+  immediately deleting it again. Turning `engine_disabled` back to `'No'` and re-triggering a sync
+  (any Settings save, or reconnecting WhatsApp) restores the engine, replacing whatever webhook
+  was manually added back.
+- **What this is not:** neither lever automatically fails a client back onto n8n — there's no code
+  path that re-registers a client's old `webhook_url` on its own. Restoring n8n for a specific
+  client during an incident is a manual Chatwoot step (re-add the webhook by hand) that only stays
+  in place while `engine_disabled==='Yes'` for that client.
+
+### Idempotency
+Chatwoot may redeliver the same `message_created` event (timeout, network retry) — without a
+guard, a redelivery arriving after a turn already completed would generate and send a second
+reply. `handleEngineWebhook` checks Chatwoot's own message id (`body.id`, read defensively —
+unverified against a live payload from this specific Chatwoot version, same honest caveat as
+elsewhere this repo parses Chatwoot's shape) against a new LEADS column,
+**`LastProcessedMessageId`** (Single line text, new required column), and skips the turn entirely
+if they match.
+- **If `body.id` is ever absent**, the dedup check is simply skipped (not replaced with a
+  content-based guess) — a false-positive duplicate-skip would silently eat a real customer
+  message, which is worse than the rare double-reply this check exists to prevent.
+- **`LastProcessedMessageId` is written only as part of a normal successful turn**
+  (`engineBuildLeadUpsertBody`, alongside `Stage`/`ConvHistory`/etc.), never any earlier. This is a
+  deliberate trade-off: marking a message "processed" *before* work starts would close the crash
+  window more tightly, but risks silently dropping a real message forever if processing then fails
+  partway — worse for a sales/support bot than the accepted gap here, where a genuine
+  mid-processing crash (after the reply is sent, before the upsert completes) is *not* fully
+  protected against and a Chatwoot retry in that exact window could still produce a duplicate
+  reply.
+
+### Error monitoring
+`reportOpsError(env, context, error, extra)` (`worker.js`) is a small, dependency-free alerting
+helper — deliberately not a full APM/Sentry integration, since this Worker ships as a single file
+with no npm build step (see the file's own top-of-file comment) and a real Sentry SDK needs both.
+Two optional, independent destinations (set either, both, or neither — every call site is
+best-effort and never throws):
+- **`OPS_ALERT_WEBHOOK_URL`** — any URL accepting a JSON `{text:"..."}` POST; a Slack incoming
+  webhook works with no adapter needed.
+- **`OPS_ALERT_EMAIL`** — requires `RESEND_API_KEY` (already used elsewhere in this file, e.g.
+  billing emails) to actually send.
+
+Both are **platform-level, operator-facing** channels for "the system itself is broken" — distinct
+from clients' own per-client `slack_webhook_url` field, which `n8n/notifications.json` uses for
+business alerts (hot leads, SLA breaches) aimed at *that client's* team, not you.
+
+Wired into two places:
+- **The global route dispatcher's catch-all** (`fetch()`'s outer `try/catch`) — reports every
+  otherwise-unhandled exception from *any* route, not just the engine, tagged with the method and
+  path.
+- **`handleEngineWebhook`'s own try/catch**, wrapping the whole turn once the client and payload
+  are resolved — reports with `clientId`/`phone` context the generic global handler wouldn't have,
+  and returns a clean `{ok:true, skipped:'internal-error'}` (HTTP 200) rather than letting the
+  error propagate to the global handler's 500 — avoids a Chatwoot-side retry racing the
+  idempotency check above on top of an already-failing turn.
+- **`engineSendChatwootReply`** — the one delivery point a customer's reply actually depends on;
+  reports on both a thrown fetch *and* a non-OK response (previously not even checked), since a
+  silent failure here means the customer gets nothing and nobody would otherwise know.
+
+**Known gap:** most other failures in the engine (an LLM call failing and falling back to a
+generic "One moment 🙏" reply, a signal-detection call erroring, an analytics-log write failing)
+are still swallowed silently by design — alerting on every best-effort fallback throughout this
+file would be noisy without much operational value. The three wiring points above were chosen as
+the highest-signal: total silence to a customer, or a fully unhandled crash.
+
