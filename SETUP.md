@@ -1882,3 +1882,219 @@ the n8n engine, outside this repo, so matching relies on the lead's phone/email 
 quality/attribution would improve if the n8n workflow captured `ctwa_clid` from the first-message
 webhook's referral payload and stored it on the Lead row for `sendMetaCapiEvent()` to forward
 (unhashed, per Meta's spec) alongside `user_data`.
+Note this limitation is specific to the n8n engine path — a client migrated onto the Cloudflare
+Ecom Conversation Engine (below) receives the raw Chatwoot webhook payload directly and could
+capture `ctwa_clid` the same way, if wired up; not done here since it's out of scope for the
+migration itself.
+
+## Conversation Engine (`POST /engine/webhook/<secret>`) — replaces the n8n engine for every industry
+Every client, regardless of `industry`, now runs on this one Worker endpoint instead of n8n — it
+does the entire job the external n8n workflow (`engine.json`, "Leadvyne · Engine v3" — not in this
+repo) used to do: resolve the tenant, look up/create the lead, turn media into text (including real
+voice transcription — see below), classify intent/sentiment/objection, run the `flow_json` state
+machine (FAQ / qualifying questions / objection handling / human handover), send the reply via
+Chatwoot, and upsert the LEADS row + analytics — plus the order/booking-signal auto-send that used
+to be a second, separate webhook (see "Industry-aware FAQ grounding" below). n8n is no longer in
+the loop for any client once they're cut over; `handleEngineWebhook` has no industry gate.
+
+**Gemini for classification + voice transcription (`GEMINI_API_KEY`):** intent/sentiment/
+objection classification (`engineClassifyIntent`) calls Google's Gemini API directly
+(`gemini-2.0-flash`, matching engine.json's actual "AI Agent · Sentiment & Intent" node, which ran
+on a dedicated shared Gemini credential — not each client's own OpenRouter key) via a Worker
+secret, `GEMINI_API_KEY` (see wrangler.toml). One key for every client and every industry, same as
+the n8n workflow's single Gemini credential. If this secret isn't set, classification falls back
+to the client's own `openrouter_key`/`model` instead of failing outright. Voice notes get a real
+transcript via the same Gemini key (`engineGeminiTranscribeVoice` — downloads the attachment,
+sends it to Gemini as inline audio data, asks for a plain-text transcription); without
+`GEMINI_API_KEY` set, or if the download/transcription fails, voice notes fall back to the same
+`"(sent a voice note)"` placeholder text engine.json always sent instead (that placeholder isn't
+new, only now it's a fallback rather than the only behavior).
+
+**Fully automatic on signup — no manual Chatwoot step, for any industry.**
+`engineSyncChatwootWebhook` (`worker.js`) keeps a client's PRIMARY Chatwoot webhook (the one that
+decides who actually replies to the customer) pointed at `{WORKER_BASE_URL}/engine/webhook/<their-secret>` (see "Webhook authentication" below),
+called from two places:
+- **`handleChannelsWhatsappConnect`** — the moment a client connects WhatsApp (signup wizard or
+  Settings → Channels), the engine URL gets registered on the new inbox immediately. This is the
+  path every new signup goes through, so a brand-new client — any industry — never has n8n wired
+  up at all.
+- **`handleNocodbPassthrough`** — dashboard.html's Settings page saves most CLIENTS fields
+  straight through this generic passthrough, with no dedicated per-field handler. Any successful
+  PATCH to the client's own CLIENTS row re-checks the webhook as a safety net (cheap no-op if
+  already correct), covering the case where `chatwoot_inbox_id` or a legacy `webhook_url` becomes
+  available slightly out of order relative to other Settings saves.
+
+`engineSyncChatwootWebhook` also cleans up: if a client still has their old n8n `webhook_url`
+registered (from before this migration, or an admin-created client that went through the old
+n8n-based onboarding), it's removed the moment the engine URL is confirmed present — so n8n can
+never reply to the same message a second time. The separate **Auto Order-Tracking** webhook
+(`handleEcomEnableOrderTracking`, pointed at `/hooks/chatwoot-message`) and anything a client
+registered by hand in Chatwoot are never touched by this sync. That older webhook (and the
+`/hooks/chatwoot-message` handler behind it) is now fully superseded for any client on this
+engine — order-signal and booking-signal detection both happen inline on every engine turn instead
+— so it's safe to leave enabled (redundant but harmless) or disable from Settings.
+
+**Webhook authentication (`engine_webhook_secret`):** Chatwoot has no built-in webhook signing —
+unlike Shopify and Cal.com (both verified elsewhere in this file, `verifyShopifyWebhookHmac`/
+`verifyCalcomWebhookHmac`, against a secret the client configures on *their* side), Chatwoot's
+webhook feature just POSTs JSON to whatever URL you give it: no signature header, no secret field
+in its own settings UI. So the equivalent protection here is a random 192-bit per-client token
+baked directly into the URL path — `/engine/webhook/<secret>` — the same URL-path-token pattern
+this codebase already uses for `/calcom/webhook/<clientId>`. `engineEnsureWebhookSecret` generates
+one (via `crypto.getRandomValues`, not `Math.random`) the first time `engineSyncChatwootWebhook`
+runs for a client and persists it to a new CLIENTS column, and `handleEngineWebhook` rejects any
+request whose path segment doesn't match a real client's stored secret before touching anything
+else — so knowing a client's numeric id or `chatwoot_account_id` (both surface elsewhere already)
+no longer gets an attacker anywhere near this endpoint.
+- **New required CLIENTS column: `engine_webhook_secret`** (Single line text) — add this to
+  NocoDB once, by hand, same as most other CLIENTS fields in this codebase; it isn't auto-created.
+  Until it exists, `engineEnsureWebhookSecret` returns null and `engineSyncChatwootWebhook`
+  declines to register any webhook at all (safer than registering one with a secret that can't
+  actually be saved).
+- **Never rotated automatically.** If you ever need to rotate a client's secret (suspected leak,
+  etc.), clear their `engine_webhook_secret` field by hand and re-trigger a sync (any Settings
+  save, or reconnect WhatsApp) — `engineSyncChatwootWebhook` also cleans up any stale
+  `/engine/webhook/` registration under the old secret when it finds one, so there's never a
+  window where both the old and new secret are simultaneously accepted... other than the accepted
+  gap between clearing the field and the next sync, during which the *old* secret still works
+  (nothing invalidates it server-side) — genuinely revoking a leaked secret immediately would need
+  an explicit deny-list, not implemented here.
+- **Defense in depth, not the actual boundary:** `handleEngineWebhook` also cross-checks the
+  payload's own `account.id` against the matched client's `chatwoot_account_id` and drops anything
+  that disagrees — catches a misconfigured/reused webhook, though the secret match is what's
+  actually doing the security work.
+
+**Industry-aware FAQ grounding (`engineRouteFlow`'s `industryFaqRoute`),
+matching engine.json's own `industry === 'ecommerce' ? 'ecom_faq' : (industry === 'travel' ?
+'travel_faq' : 'faq')` split:**
+- **`ecommerce`** → `engineBuildEcomContext` — live product catalog + this phone's recent order
+  status, off `/ecom/products` and `/ecom/orders`.
+- **`travel`** → `engineBuildTravelContext` — the Travel Agency module's own `packages`,
+  `umrah_groups`, and `cars` tables (`ta_table_ids`), a from-scratch equivalent of the
+  "Leadvyne · TA Context" n8n sub-workflow engine.json calls out to, which wasn't available to
+  port (it isn't in this repo either).
+- **Everything else** (`general`/`insurance`/`real_estate`/`healthcare`/`education`/`automotive`/
+  `consultancy`) → the plain `main_prompt` + `services` + `kb_summary` grounding, no extra table
+  lookups — matches what engine.json's generic "Code · FAQ prep" node already did for these
+  industries, since none of them have a dedicated per-client catalog table the way ecom/travel do.
+
+**Signal auto-send is also industry-branched**, at the bottom of `handleEngineWebhook` — and
+branches strictly on `c.industry`, not on whether `ecomResolveTable(..., 'orders')` resolves a
+table id. That distinction matters: `ecomResolveTable` falls back to a shared default table id
+(`ECOM_DEFAULT_TABLE_IDS`) for *every* client regardless of industry, so table-truthiness alone
+can't tell an actual ecom client from a booking-industry one — which is exactly the check
+`handleChatwootMessageHook`'s own dispatch (elsewhere in this file, now superseded) relies on, and
+appears to make it dispatch every client through the ecom order-signal path in practice, never the
+booking-signal one. Worth an independent look if `/hooks/chatwoot-message` keeps running for any
+client not yet on this engine — this port doesn't fix that function, only avoids inheriting the
+same bug in the new one:
+- **`ecommerce`** → order-signal detection (`detectOrderSignal`) against the product catalog, same
+  as before.
+- **Every other industry**, once `external_store_link` (Settings → Booking Link) is configured →
+  booking-signal detection (`detectBookingSignal`) against the Appointment module's services
+  catalog, skipping a lead already at a booking-terminal stage or with a `requested` appointment
+  already pending — the direct-Cloudflare-auto-send behavior `handleChatwootIncomingBookingSignal`
+  already had, just running inline here instead of via a second webhook delivery.
+
+**Fidelity to the source workflow, and where this deviates:** `handleEngineWebhook` and its
+`engine*` helper functions in `cloudflare-worker/worker.js` are a field-for-field port of
+engine.json, reusing this Worker's existing NocoDB/Chatwoot/OpenRouter helpers (same
+`CLIENTS_TABLE`/`DEFAULT_LEADS_TABLE` ids the n8n workflow was already reading/writing — both
+systems share one NocoDB). Three real behaviors were changed rather than reproduced, because
+tracing the source workflow's node wiring showed they were unintended:
+- **ConvHistory no longer gets silently capped at ~8 messages.** engine.json's `slim()` helper
+  drops the full `history` array (keeping only the trimmed `activeHistory`), but its own
+  Prep-lead node reads `sc.history` when rebuilding what gets saved — a field-name mismatch that
+  means every saved turn was built from `activeHistory`, not real history, so conversation history
+  never actually grew past ~8 messages in NocoDB. Also silently dead-coded the "Warm" score
+  fallback that depends on real history length. Both fixed here.
+- **The human-handover reply is now what actually gets sent.** In engine.json, the "human" route
+  wires straight to a fixed-text HTTP node ("Sure 🙏 connecting you to our advisor now...") — the
+  richer message the flow logic computes (a time-aware "we'll call you today/tomorrow at 9am", or
+  a Frustrated-specific apology) is calculated but discarded, and the saved ConvHistory disagreed
+  with what the customer actually received. Here the computed message is what's sent (falling
+  back to the fixed text only when nothing more specific was computed).
+- **Voice notes are now really transcribed** (via `GEMINI_API_KEY`, see above) — this one *is* a
+  genuine improvement over engine.json, not just a fix: the source workflow never had a
+  transcription node wired to its voice branch at all, despite this file's earlier "Media: text,
+  image (Gemini vision), voice (download + transcribe)" line describing one. The
+  `"(sent a voice note)"` placeholder still exists here too, but only as the fallback when
+  `GEMINI_API_KEY` isn't configured or transcription fails for a given note — not the only path.
+
+### Kill switches
+Two independent "go silent" levers, both deliberately silent rather than falling back to n8n or
+anything else — for an engine suspected of causing harm, "stop replying" is the safer failure mode
+than "keep executing possibly-broken logic," and neither n8n nor a Chatwoot-visible fallback is
+guaranteed reachable/correct at the moment you'd need one.
+- **Global — `ENGINE_ENABLED` (`wrangler.toml [vars]`).** Set to `"false"` to disable
+  `/engine/webhook` for every client at once. Config-only, so it needs a `wrangler deploy` to take
+  effect — not instant, but a one-line flip is far faster than debugging or reverting real code
+  under pressure. Any other value (including leaving it unset) means enabled.
+- **Per-client — `engine_disabled`** (new required CLIENTS column, Single line text, `'Yes'`/`'No'`).
+  Scopes the same "go silent" behavior to one client — useful when a single client's `flow_json`
+  or other data is causing a crash loop or bad behavior, without taking the whole platform down.
+  `engineSyncChatwootWebhook` also respects it: while `engine_disabled==='Yes'`, it leaves that
+  client's Chatwoot webhooks entirely alone (doesn't register, doesn't clean up), so an admin can
+  manually re-add the client's old n8n webhook in Chatwoot without the next Settings-save sync
+  immediately deleting it again. Turning `engine_disabled` back to `'No'` and re-triggering a sync
+  (any Settings save, or reconnecting WhatsApp) restores the engine, replacing whatever webhook
+  was manually added back.
+- **What this is not:** neither lever automatically fails a client back onto n8n — there's no code
+  path that re-registers a client's old `webhook_url` on its own. Restoring n8n for a specific
+  client during an incident is a manual Chatwoot step (re-add the webhook by hand) that only stays
+  in place while `engine_disabled==='Yes'` for that client.
+
+### Idempotency
+Chatwoot may redeliver the same `message_created` event (timeout, network retry) — without a
+guard, a redelivery arriving after a turn already completed would generate and send a second
+reply. `handleEngineWebhook` checks Chatwoot's own message id (`body.id`, read defensively —
+unverified against a live payload from this specific Chatwoot version, same honest caveat as
+elsewhere this repo parses Chatwoot's shape) against a new LEADS column,
+**`LastProcessedMessageId`** (Single line text, new required column), and skips the turn entirely
+if they match.
+- **If `body.id` is ever absent**, the dedup check is simply skipped (not replaced with a
+  content-based guess) — a false-positive duplicate-skip would silently eat a real customer
+  message, which is worse than the rare double-reply this check exists to prevent.
+- **`LastProcessedMessageId` is written only as part of a normal successful turn**
+  (`engineBuildLeadUpsertBody`, alongside `Stage`/`ConvHistory`/etc.), never any earlier. This is a
+  deliberate trade-off: marking a message "processed" *before* work starts would close the crash
+  window more tightly, but risks silently dropping a real message forever if processing then fails
+  partway — worse for a sales/support bot than the accepted gap here, where a genuine
+  mid-processing crash (after the reply is sent, before the upsert completes) is *not* fully
+  protected against and a Chatwoot retry in that exact window could still produce a duplicate
+  reply.
+
+### Error monitoring
+`reportOpsError(env, context, error, extra)` (`worker.js`) is a small, dependency-free alerting
+helper — deliberately not a full APM/Sentry integration, since this Worker ships as a single file
+with no npm build step (see the file's own top-of-file comment) and a real Sentry SDK needs both.
+Two optional, independent destinations (set either, both, or neither — every call site is
+best-effort and never throws):
+- **`OPS_ALERT_WEBHOOK_URL`** — any URL accepting a JSON `{text:"..."}` POST; a Slack incoming
+  webhook works with no adapter needed.
+- **`OPS_ALERT_EMAIL`** — requires `RESEND_API_KEY` (already used elsewhere in this file, e.g.
+  billing emails) to actually send.
+
+Both are **platform-level, operator-facing** channels for "the system itself is broken" — distinct
+from clients' own per-client `slack_webhook_url` field, which `n8n/notifications.json` uses for
+business alerts (hot leads, SLA breaches) aimed at *that client's* team, not you.
+
+Wired into two places:
+- **The global route dispatcher's catch-all** (`fetch()`'s outer `try/catch`) — reports every
+  otherwise-unhandled exception from *any* route, not just the engine, tagged with the method and
+  path.
+- **`handleEngineWebhook`'s own try/catch**, wrapping the whole turn once the client and payload
+  are resolved — reports with `clientId`/`phone` context the generic global handler wouldn't have,
+  and returns a clean `{ok:true, skipped:'internal-error'}` (HTTP 200) rather than letting the
+  error propagate to the global handler's 500 — avoids a Chatwoot-side retry racing the
+  idempotency check above on top of an already-failing turn.
+- **`engineSendChatwootReply`** — the one delivery point a customer's reply actually depends on;
+  reports on both a thrown fetch *and* a non-OK response (previously not even checked), since a
+  silent failure here means the customer gets nothing and nobody would otherwise know.
+
+**Known gap:** most other failures in the engine (an LLM call failing and falling back to a
+generic "One moment 🙏" reply, a signal-detection call erroring, an analytics-log write failing)
+are still swallowed silently by design — alerting on every best-effort fallback throughout this
+file would be noisy without much operational value. The three wiring points above were chosen as
+the highest-signal: total silence to a customer, or a fully unhandled crash.
+

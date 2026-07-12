@@ -41,6 +41,36 @@ function json(data, status, extraHeaders){
   return new Response(JSON.stringify(data), {status:status||200, headers:{'Content-Type':'application/json', ...extraHeaders}});
 }
 
+/* ── Platform-level error monitoring — deliberately NOT client-facing (see clients' own
+   slack_webhook_url, used by n8n/notifications.json for hot-lead/handover business alerts; this
+   is a separate, operator-facing channel for "the platform itself is broken"). Both destinations
+   are optional and independent — set either, both, or neither; every call site here is
+   best-effort and never throws, so a broken alert channel can't itself take anything down.
+   OPS_ALERT_WEBHOOK_URL: any URL accepting a JSON {text:"..."} POST (a Slack incoming webhook
+   works as-is). OPS_ALERT_EMAIL: requires RESEND_API_KEY (already used elsewhere in this file,
+   e.g. sendBillingEmail) to actually send. ── */
+async function reportOpsError(env, context, error, extra){
+  const detail=error?.stack||error?.message||String(error);
+  const message=`Leadvyne platform error — ${context}${extra?` (${JSON.stringify(extra)})`:''}\n${detail}`;
+  console.error(message);
+  try{
+    if(env.OPS_ALERT_WEBHOOK_URL){
+      await fetch(env.OPS_ALERT_WEBHOOK_URL, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:message})});
+    }
+  }catch(e){}
+  try{
+    if(env.RESEND_API_KEY && env.OPS_ALERT_EMAIL){
+      await fetch('https://api.resend.com/emails', {
+        method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({
+          from:env.RESEND_FROM_EMAIL||'Leadvyne Tasks <tasks@leadvyne.com>', to:[env.OPS_ALERT_EMAIL],
+          subject:`Leadvyne platform error — ${context}`, html:`<pre style="white-space:pre-wrap;font-family:monospace">${esc(message)}</pre>`
+        })
+      });
+    }
+  }catch(e){}
+}
+
 /* ── NocoDB helpers (master token, server-side only) ── */
 async function ncFetch(env, path, {method='GET', body}={}){
   const r=await fetch(`${env.NOCODB_BASE}/${path}`, {
@@ -432,6 +462,21 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
     body
   });
   const data=await r.text();
+
+  // dashboard.html's Settings saves write most CLIENTS fields straight through this generic
+  // passthrough (no dedicated handler per field). Any successful PATCH to the client's own row is
+  // a cheap opportunity to double-check their primary Chatwoot webhook still points at
+  // /engine/webhook — matters most right after WhatsApp gets connected during onboarding, since
+  // chatwoot_inbox_id (required by engineSyncChatwootWebhook) or a legacy webhook_url can become
+  // available/stale slightly out of order relative to other Settings saves. No-ops quickly if
+  // already correct, so this is safe to run on every save rather than sniffing for one field.
+  if(r.ok && method==='PATCH' && upstreamPath.startsWith(`api/v2/tables/${CLIENTS_TABLE}/records`) && body){
+    try{
+      const c=await getClientById(env, payload.cid);
+      if(c) await engineSyncChatwootWebhook(env, c);
+    }catch(e){}
+  }
+
   return new Response(data, {status:r.status, headers:{'Content-Type':'application/json'}});
 }
 
@@ -1479,14 +1524,11 @@ async function handleChannelsWhatsappConnect(request, env){
   const inbox=await inboxR.json().catch(()=>({}));
   if(!inboxR.ok||!inbox?.id) return json({error:'Chatwoot inbox creation failed: '+(inbox?.message||('HTTP '+inboxR.status))}, 502);
 
-  if(c.webhook_url){
-    // Best-effort — wires the bot's n8n webhook onto the new inbox so no manual paste-in-Chatwoot
-    // step is needed. If this fails, the client can still add it from Chatwoot's own UI.
-    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
-      method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
-      body:JSON.stringify({inbox_id:inbox.id, url:c.webhook_url, subscriptions:['message_created']})
-    }).catch(()=>{});
-  }
+  // Best-effort — wires this Worker's /engine/webhook onto the new inbox (see
+  // engineSyncChatwootWebhook) so no manual paste-in-Chatwoot step is needed, for every industry.
+  // If this fails, it can still be added/fixed from Chatwoot's own UI, or re-synced later by
+  // resaving any Settings field (handleNocodbPassthrough re-checks it on every CLIENTS PATCH).
+  await engineSyncChatwootWebhook(env, {...c, chatwoot_inbox_id:String(inbox.id)});
 
   // wa_phone_id is Meta's internal phone-number-id (needed for API calls), not something a
   // customer can dial — wa_display_phone is the actual number (e.g. "+91 94969 71950") and is
@@ -3293,6 +3335,879 @@ async function handleChatwootMessageHook(request, env){
   return json({ok:true, order_id});
 }
 
+/* ── CONVERSATION ENGINE, all industries (replaces n8n's engine.json entirely) ──
+   Point every client's Chatwoot inbox "message_created" webhook at POST
+   /engine/webhook/<their-secret> instead of n8n's own webhook URL (registered automatically —
+   see engineSyncChatwootWebhook), and this one endpoint does everything engine.json's n8n workflow did,
+   for every industry: tenant + lead lookup, media→text, AI intent/sentiment classification, the
+   flow_json state machine (FAQ/qualify/objection/human-handover routing), sending the reply via
+   Chatwoot, and upserting the LEADS row + analytics. The client is resolved the same way
+   handleChatwootMessageHook already does (chatwoot_account_id -> CLIENTS row), so there's no more
+   per-client "wrapper workflow" to stamp out in n8n — one URL serves every client, and
+   engineSyncChatwootWebhook (below) registers it automatically the moment a client connects
+   WhatsApp, so a brand-new signup never touches n8n at all. FAQ grounding is industry-aware
+   (engineRouteFlow's `industryFaqRoute`): 'ecommerce' gets the product/order-catalog context
+   (engineBuildEcomContext), 'travel' gets the Travel Agency module's packages/Umrah-groups/cars
+   context (engineBuildTravelContext), everything else (general/insurance/real_estate/healthcare/
+   education/automotive/consultancy) gets the plain main_prompt+services+kb_summary grounding —
+   matching engine.json's own three-way `industry === 'ecommerce' ? 'ecom_faq' : (industry ===
+   'travel' ? 'travel_faq' : 'faq')` split. Order-intent auto-send (ecommerce) and booking-intent
+   auto-send (every other industry, once a booking link is configured) are both folded into the
+   same turn — see the bottom of handleEngineWebhook.
+
+   Ported field-for-field from the supplied engine.json ("Leadvyne · Engine v3"), with these
+   deliberate deviations from what that workflow literally does today:
+   - Voice notes are still never transcribed — same "(sent a voice note)" placeholder text goes
+     to the AI. That's not a shortcut taken here; it's what engine.json itself actually does
+     (there's no transcription node wired to the voice branch despite docs describing one).
+   - Once a lead's Handover is 'Yes' or Stage is 'human_handover', the bot goes fully silent —
+     matches engine.json's own Code·State hard-stop and SETUP.md's documented "never talk over a
+     live agent" behavior. The HandoverFaqCount/_isPostHandover branch later in that workflow's
+     routing code is unreachable dead code as a result of that same hard-stop; not ported.
+   - ConvHistory is rebuilt from the lead's real accumulated history (state.history below), not
+     from the trimmed activeHistory the source workflow's Prep-lead node ends up using because of
+     a field-name mismatch (slim() drops `history`, keeping only `activeHistory`, but Prep-lead
+     reads `sc.history`) — that mismatch silently caps saved conversation history at ~8 messages
+     and, as a side effect, permanently dead-codes the "Warm" score fallback that depends on real
+     history length. Both are fixed here rather than reproduced, since neither is a documented
+     design choice — they read as an accidental regression, not intended behavior. Worth
+     independently patching in the n8n workflow too if it keeps running for non-ecom clients.
+   - For a human-handover reply, the customer is sent whichever message was actually computed
+     (the time-aware "we'll call you today/tomorrow at 9am" text, or the Frustrated-specific
+     apology) instead of a separate hardcoded "Sure 🙏 connecting you..." string — in engine.json
+     the Switch·Route "human" output wires straight to a fixed-text HTTP node, so that computed
+     message is built but never sent and the saved ConvHistory silently disagrees with what the
+     customer actually received. Falls back to the same fixed text only when nothing more
+     specific was computed (a plain "talk to a human" request with no final-stage/frustration
+     context), matching the one case where the original fixed string was actually the intent.
+   - The "Leadvyne · Ecom Context" n8n sub-workflow engine.json calls out to wasn't available to
+     port (it isn't in this repo). engineBuildEcomContext below is a from-scratch equivalent built
+     directly off this Worker's own product/order tables (top active products + this phone's
+     recent order status) rather than whatever that sub-workflow used to assemble.
+   Order-signal auto-send (previously a second, independent Chatwoot webhook —
+   handleChatwootIncomingOrderSignal above) is folded into this same turn instead of firing as a
+   separate webhook delivery, since this engine now generates the primary reply itself and no
+   longer needs to watch its own outgoing messages for a link pattern to detect what it just sent. ── */
+
+const ENGINE_ANALYTICS_TABLE='m2in19v8n7phitr';
+const ENGINE_OPT_OUT_WORDS=['stop','unsubscribe','opt out','opt-out','optout'];
+// Matches engine.json's "Google Gemini Chat Model" node (modelName: 'models/gemini-2.0-flash'),
+// which the "AI Agent · Sentiment & Intent" node ran on — a dedicated Gemini credential shared
+// across all clients (REPLACE_GEMINI_CRED), not each client's own per-tenant OpenRouter key.
+const ENGINE_GEMINI_MODEL='gemini-2.0-flash';
+
+// Direct Google Generative Language API call (env.GEMINI_API_KEY — a Worker secret, shared across
+// all clients, same as the n8n workflow's single Gemini credential). Returns the model's raw text
+// output, or null if the key isn't configured or the call fails — callers fall back accordingly.
+async function engineGeminiGenerate(env, systemText, userText, opts={}){
+  if(!env.GEMINI_API_KEY) return null;
+  try{
+    const reqBody={
+      contents:[{role:'user', parts:[{text:userText}]}],
+      generationConfig:{temperature:opts.temperature??0.3, maxOutputTokens:opts.maxOutputTokens||300, ...(opts.json?{responseMimeType:'application/json'}:{})}
+    };
+    if(systemText) reqBody.systemInstruction={parts:[{text:systemText}]};
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(reqBody)
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const outText=parts.map(p=>p.text||'').join('').trim();
+    return outText||null;
+  }catch(e){ return null; }
+}
+
+function engineArrayBufferToBase64(buf){
+  const bytes=new Uint8Array(buf);
+  let binary='';
+  const chunkSize=0x8000; // avoid a stack-overflowing single String.fromCharCode.apply call on large files
+  for(let i=0;i<bytes.length;i+=chunkSize) binary+=String.fromCharCode.apply(null, bytes.subarray(i,i+chunkSize));
+  return btoa(binary);
+}
+
+// Real voice transcription, via the same shared Gemini credential as the intent classifier —
+// engine.json never actually had this wired up (voice notes went to the AI as a literal
+// "(sent a voice note)" placeholder despite the docs describing transcription). Requires
+// GEMINI_API_KEY; falls back to the placeholder in engineResolveUserText below if unset, the
+// fetch fails, or the file is unexpectedly large.
+async function engineGeminiTranscribeVoice(env, mediaUrl){
+  if(!env.GEMINI_API_KEY || !mediaUrl) return null;
+  try{
+    const audioR=await fetch(mediaUrl);
+    if(!audioR.ok) return null;
+    const mimeType=audioR.headers.get('content-type')||'audio/ogg';
+    const buf=await audioR.arrayBuffer();
+    if(buf.byteLength>15*1024*1024) return null; // stay well under Gemini's inline-data request size limit
+    const base64=engineArrayBufferToBase64(buf);
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{role:'user', parts:[
+        {text:'Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription — no commentary, no quotes, no translation.'},
+        {inline_data:{mime_type:mimeType, data:base64}}
+      ]}]})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const text=parts.map(p=>p.text||'').join('').trim();
+    return text||null;
+  }catch(e){ return null; }
+}
+
+function engineParseJsonField(raw, fallback){ try{ const v=JSON.parse(raw||''); return v??fallback; }catch(e){ return fallback; } }
+function engineParseSalesReps(raw){
+  try{ const a=JSON.parse(raw||'[]'); if(Array.isArray(a)&&a.length) return a; }catch(e){}
+  return (raw||'').split('\n').map(s=>s.trim()).filter(Boolean);
+}
+
+function engineParseChatwootPayload(body){
+  if(body.message_type && body.message_type!=='incoming') return null;
+  if(body.private) return null;
+  const conv=body.conversation||{};
+  const sender=conv?.meta?.sender||body.sender||{};
+  let phone=(sender.phone_number||sender.identifier||'').replace(/[^0-9+]/g,'').replace(/^\+/,'');
+  if(phone.startsWith('00')) phone=phone.slice(2);
+  const atts=body.attachments||body.message?.attachments||[];
+  let mediaType='text', mediaUrl='';
+  if(atts.length){
+    const a=atts[0];
+    mediaUrl=a.data_url||a.file_url||'';
+    if((a.file_type||'').includes('audio')) mediaType='voice';
+    else if((a.file_type||'').includes('image')) mediaType='image';
+  }
+  const text=(body.content||body.message?.content||'').trim();
+  if(!phone) return null;
+  if(mediaType==='text' && !text) return null;
+  return {convId:conv?.id||null, phone, name:sender.name||'', text, mediaType, mediaUrl};
+}
+
+// Mirrors "HTTP · Get lead" + "Code · State": pulls every LEADS row for this phone across ALL
+// clients (not scoped by client_id — same as engine.json), so a phone that's already a lead for
+// a different client shows up as isDuplicate, matching the original's cross-tenant reporting.
+async function engineGetLeadState(env, clientId, phone){
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(Phone,eq,${encodeURIComponent(phone)})&limit=100`);
+  const d=await r.json().catch(()=>({}));
+  const rows=d?.list||[];
+  const lead=rows.find(l=>String(l.ClientId)===String(clientId))||null;
+  const isDuplicate=rows.some(l=>String(l.ClientId)!==String(clientId));
+  let history=[]; try{ history=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+  const botMsgs=history.filter(m=>m.role==='assistant').slice(-3).map(m=>m.content);
+  const looping=botMsgs.length===3 && botMsgs.every(m=>m===botMsgs[0]);
+  const activeHistory=history.length>20?history.slice(-6):history;
+  let qualAnswers={}; try{ qualAnswers=JSON.parse(lead?.QualAnswers||'{}'); }catch(e){}
+  return {
+    lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping,
+    qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
+    winProbabilityManual:lead?.WinProbabilityManual||'No', lastMsgAt:lead?.LastMsgAt||null
+  };
+}
+
+// Mirrors "HTTP · Vision" + "Code · image→text" / "Code · text→text" — resolves whatever the
+// customer sent into a single text string for the classifier + FAQ prompt to work with. Voice
+// notes now get real transcription (engineGeminiTranscribeVoice, shared Gemini key) instead of
+// engine.json's literal placeholder text; falls back to that same placeholder if transcription
+// isn't available (no GEMINI_API_KEY set, fetch failure, oversized file, etc.) so the turn still
+// completes instead of failing outright.
+async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
+  if(mediaType==='image' && mediaUrl){
+    try{
+      const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:100, messages:[{role:'user', content:[
+          {type:'text', text:'Describe what this image shows in one short sentence, focused on anything relevant to a product or order enquiry.'},
+          {type:'image_url', image_url:{url:mediaUrl}}
+        ]}]})
+      });
+      const data=await r.json().catch(()=>({}));
+      return data?.choices?.[0]?.message?.content||'(image received)';
+    }catch(e){ return '(image received)'; }
+  }
+  if(mediaType==='voice' && mediaUrl){
+    const transcript=await engineGeminiTranscribeVoice(env, mediaUrl);
+    return transcript || '(sent a voice note)';
+  }
+  return text || (mediaType==='voice'?'(sent a voice note)':'');
+}
+
+// Mirrors "AI Agent · Sentiment & Intent" + "Code · Intent classify" — structured
+// intent/sentiment/objection/win-probability classification, with the same deterministic regex
+// fast-paths/fallback ladder layered on top (instant, free, and safety-critical for WANTS_HUMAN,
+// so a lead can always reach a human even if the AI call fails, times out, or returns garbage).
+// Tries the shared Gemini credential first (matching engine.json's actual node setup — this
+// classifier ran on a dedicated Google Gemini model, not each client's own OpenRouter key), and
+// only falls back to the client's own OpenRouter key/model if GEMINI_API_KEY isn't configured on
+// this Worker or the Gemini call fails — so classification still works before that secret is set.
+async function engineClassifyIntent(env, c, userText, activeHistory){
+  const low=userText.trim().toLowerCase();
+  const recent=(activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\n');
+  const systemText='You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going).';
+  const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
+
+  let aiResult=null;
+  try{
+    const geminiRaw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.3, maxOutputTokens:200, json:true});
+    if(geminiRaw) aiResult=JSON.parse(geminiRaw);
+  }catch(e){}
+
+  if(!aiResult && c.openrouter_key){
+    try{
+      const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({
+          model:c.model||'google/gemini-2.5-flash', temperature:0.3, max_tokens:200,
+          messages:[{role:'system', content:systemText}, {role:'user', content:userPrompt}]
+        })
+      });
+      const data=await r.json().catch(()=>({}));
+      const raw=data?.choices?.[0]?.message?.content||'';
+      const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+      if(m) aiResult=JSON.parse(m[0]);
+    }catch(e){}
+  }
+
+  const VALID_INTENTS=new Set(['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL']);
+  const VALID_SENTIMENT=new Set(['Positive','Neutral','Negative','Frustrated']);
+  const VALID_OBJECTION=new Set(['none','price','competitor','timing','trust']);
+  let intent=null, intentData={};
+
+  if(/\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\b/.test(low)) intent='WANTS_HUMAN';
+  if(!intent){
+    const bookMatch=low.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\d{1,2}[:\/\-]\d{1,2}|\d{1,2}\s*(am|pm)|morning|afternoon|evening|tonight|next week)\b/);
+    if(bookMatch){ intent='BOOKING'; intentData={booking_time:userText}; }
+  }
+  if(!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence===undefined||aiResult.confidence>=0.5)){
+    intent=aiResult.intent;
+    if(intent==='BOOKING') intentData={booking_time:userText};
+  }
+  if(!intent && /\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\b/.test(low)) intent='WATCHED';
+  if(!intent && /\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\b/.test(low)) intent='FORM_DONE';
+  if(!intent && /\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\b/.test(low)) intent='DELAY';
+  if(!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\.!]*$/.test(low)) intent='SHORT_NEUTRAL';
+  if(!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\.!]*$/.test(low)) intent='AFFIRMATIVE';
+  if(!intent){ intent='QUESTION'; intentData={question:userText}; }
+
+  const sentiment=(aiResult && VALID_SENTIMENT.has(aiResult.sentiment))?aiResult.sentiment:'Neutral';
+  const objectionCategory=(aiResult && VALID_OBJECTION.has(aiResult.objection))?aiResult.objection:'none';
+  const wpRaw=Number(aiResult?.win_probability);
+  const aiWinProbability=Number.isFinite(wpRaw)?Math.max(0,Math.min(100,Math.round(wpRaw))):null;
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability};
+}
+
+// Mirrors "Code · Intent + flow" — the flow_json state machine that decides where this turn goes
+// (human handover / qualify / FAQ / objection / a scripted stage message) and what the next stage
+// is. FAQ routing is industry-aware (industryFaqRoute below), matching engine.json's own
+// industry-conditional routing rather than hardcoding one industry's behavior.
+function engineRouteFlow(c, state, userText, cls){
+  const {intent, intentData, sentiment, objectionCategory, aiWinProbability}=cls;
+  const lowText=userText.toLowerCase().trim();
+  const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
+  const isResub=lowText==='start' && state.leadOptOut==='Yes';
+  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, isOptOut:true, isResub:false};
+  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, isOptOut:false, isResub:true};
+
+  const botConfig=engineParseJsonField(c.bot_config, {});
+  const qualQuestions=engineParseJsonField(c.qual_questions, []);
+  const flow=engineParseJsonField(c.flow_json, {});
+  // Mirrors engine.json's `industry === 'ecommerce' ? 'ecom_faq' : (industry === 'travel' ?
+  // 'travel_faq' : 'faq')` — which industry-specific FAQ context (if any) this client's grounded
+  // answers should pull in.
+  const industry=c.industry||'general';
+  const industryFaqRoute=industry==='ecommerce'?'ecom_faq':(industry==='travel'?'travel_faq':'faq');
+  let effIntent=intent;
+  if(state.looping && botConfig.antiloop_enabled!==false) effIntent='WANTS_HUMAN';
+
+  const qualDone=!qualQuestions.length || botConfig.qual_enabled===false || (state.stage && !state.stage.startsWith('qual_') && state.stage!=='new');
+  const qualStage=state.stage?.startsWith('qual_')?parseInt(state.stage.replace('qual_','')):null;
+
+  const stageNode=flow.stages?.[state.stage];
+  const node=stageNode||((state.stage==='new'||!state.stage)?flow.stages?.['new']:null)||{};
+  const stageNotFound=!stageNode && state.stage && state.stage!=='new';
+  const action=node[effIntent]||node['*']||{next:state.stage, msg:null};
+
+  const POSITIVE=new Set(['AFFIRMATIVE','WATCHED','FORM_DONE','BOOKING','SHORT_NEUTRAL']);
+  const NEGATIVE=new Set(['DELAY','WANTS_MORE_INFO']);
+  const allStages=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  const isFinalStage=allStages.length>0 && state.stage===allStages[allStages.length-1];
+  const lastBotMsg=(state.history||[]).filter(m=>m.role==='assistant').slice(-1)[0]?.content||'';
+  const actionMsg=action.msg?(flow.messages?.[action.msg]||''):'';
+  const wouldRepeat=actionMsg && lastBotMsg && lastBotMsg.includes(actionMsg.slice(0,40));
+
+  let reply='', videoUrl=null, route='stage';
+  let next=action.next||state.stage;
+
+  if(effIntent==='WANTS_HUMAN' && botConfig.handover_enabled!==false) route='human';
+  else if(isFinalStage && POSITIVE.has(effIntent) && botConfig.handover_enabled!==false){
+    route='human';
+    const tz=botConfig.timezone||'Asia/Kolkata';
+    const nowLocal=new Date(new Date().toLocaleString('en-US',{timeZone:tz}));
+    const hour=nowLocal.getHours(), day=nowLocal.getDay();
+    let callLabel='tomorrow';
+    if(hour<9 && day>=1 && day<=5) callLabel='today';
+    else if(day===6) callLabel='on Monday';
+    else if(day===0) callLabel='tomorrow (Monday)';
+    reply=botConfig.callback_msg||`Thank you! 🙏 Our team will contact you ${callLabel} at 9am. We look forward to speaking with you!`;
+  } else if(wouldRepeat && POSITIVE.has(effIntent)) route='faq';
+  else if(state.stage==='human_handover') route='drop'; // unreachable — handleEngineWebhook hard-stops earlier, kept for parity
+  else if(stageNotFound || effIntent==='QUESTION' || NEGATIVE.has(effIntent)){
+    route=industryFaqRoute;
+    const flowIsActive=allStages.length>0 && !isFinalStage && state.stage!=='human_handover' && !stageNotFound;
+    if(flowIsActive && effIntent==='QUESTION' && action.msg){
+      const vars=flow.variables||{};
+      const stageMsg=(flow.messages?.[action.msg]||'').replace(/\[(\w+)\]/g,(_,k)=>vars[k.toLowerCase()]??vars[k]??'');
+      Object.assign(intentData, {_flowPendingMsg:stageMsg||null, _flowPendingNext:action.next||state.stage});
+    }
+  } else if(!qualDone && qualStage===null) route='qualify';
+  else if(!qualDone && qualStage!==null) route='qualify_next';
+
+  if(sentiment==='Frustrated' && route!=='human' && botConfig.handover_enabled!==false){
+    route='human';
+    reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
+  } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
+    route='objection';
+  }
+
+  let qualAnswers={...state.qualAnswers};
+  if(route==='qualify_next'){
+    const currentIdx=qualStage!==null?qualStage:0;
+    const nextIdx=currentIdx+1;
+    if(qualQuestions[currentIdx]) qualAnswers[qualQuestions[currentIdx]]=userText;
+    if(nextIdx<qualQuestions.length){
+      reply=qualQuestions[nextIdx];
+      next='qual_'+nextIdx;
+    } else {
+      const firstStage=Object.keys(flow.stages||{}).filter(k=>k!=='new')[0]||'new';
+      const firstAction=(flow.stages?.[firstStage]||{})['*']||{next:firstStage, msg:null};
+      const vars=flow.variables||{};
+      reply=(flow.messages?.[firstAction.msg]||'Great, thanks! Let me share some information 😊').replace(/\[(\w+)\]/g,(_,k)=>vars[k]??'');
+      next=firstAction.next||firstStage;
+    }
+  } else if(route==='stage' && action.msg){
+    const vars=flow.variables||{};
+    reply=(flow.messages?.[action.msg]||'').replace(/\[(\w+)\]/g,(_,k)=>vars[k.toLowerCase()]??vars[k]??'');
+    if(action.form && vars.form_link && !reply.includes(vars.form_link)) reply+='\n\n'+vars.form_link;
+    if(action.video) videoUrl=vars[action.video]||null;
+  }
+  if(route==='stage' && !action.msg) route=industryFaqRoute;
+
+  if(effIntent==='BOOKING' && c.cal_link && !reply.includes(c.cal_link)){
+    reply=(reply||'Great! You can book your slot here 📅')+'\n\n👉 '+c.cal_link;
+  }
+
+  return {route, next, reply, videoUrl, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, isOptOut:false, isResub:false};
+}
+
+// From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
+// live product catalog + this phone's recent order status, built off the same ecom tables
+// ecom.html and /ecom/* already read.
+async function engineBuildEcomContext(env, c, clientId, phone){
+  const lines=[];
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(productsTable){
+    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=30&fields=name,sku,price,currency,stock,color,size,category`);
+    const pd=await pr.json().catch(()=>({}));
+    const products=pd?.list||[];
+    if(products.length){
+      lines.push('## Product Catalog (partial — ask if something specific isn\'t listed)');
+      products.forEach(p=>lines.push(`- ${p.name}${p.sku?' [sku:'+p.sku+']':''} — ${p.currency||''} ${p.price??''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.category?' category:'+p.category:''} — ${(p.stock>0)?'in stock':'out of stock'}`));
+    }
+  }
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(ordersTable && phone){
+    const or=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})&limit=5&sort=-order_date`);
+    const od=await or.json().catch(()=>({}));
+    const orders=od?.list||[];
+    if(orders.length){
+      lines.push('## This customer\'s recent orders');
+      orders.forEach(o=>lines.push(`- ${o.order_id}: ${o.items||'(items unspecified)'} — ${o.currency||''} ${o.total??''} — status: ${o.status}`));
+    }
+  }
+  lines.push(`## Order Link\nWhen a customer is ready to buy, share this link: ${buildOrderLink(c, clientId)}`);
+  return lines.length?('\n\n'+lines.join('\n')):'';
+}
+
+// Same per-client per-kind lookup pattern as ecomResolveTable/apptResolveTable, for the Travel
+// Agency module's own tables (ta_table_ids — see TA_TABLE_TITLES in dashboard.html).
+function taResolveTable(c, kind){
+  try{ return (JSON.parse(c.ta_table_ids||'{}'))[kind]||null; }catch(e){ return null; }
+}
+
+// Travel-industry equivalent of engineBuildEcomContext, for the 'travel_faq' route — engine.json's
+// "Leadvyne · TA Context" sub-workflow wasn't available to port either, so this is the same
+// from-scratch approach: built directly off the Travel Agency module's own packages/Umrah-group/
+// car-rental tables instead of whatever that sub-workflow used to assemble.
+async function engineBuildTravelContext(env, c, clientId){
+  const lines=[];
+  const packagesTable=taResolveTable(c, 'packages');
+  if(packagesTable){
+    const pr=await ncFetch(env, `api/v2/tables/${packagesTable}/records?where=(client_id,eq,${clientId})&limit=25&fields=name,type,destination,nights,pax_min,pax_max,currency,sell_price,inclusions`);
+    const pd=await pr.json().catch(()=>({}));
+    const pkgs=pd?.list||[];
+    if(pkgs.length){
+      lines.push('## Travel Packages');
+      pkgs.forEach(p=>lines.push(`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${p.currency||''} ${p.sell_price??''}${p.inclusions?' — includes: '+String(p.inclusions).slice(0,150):''}`));
+    }
+  }
+  const umrahTable=taResolveTable(c, 'umrah_groups');
+  if(umrahTable){
+    const ur=await ncFetch(env, `api/v2/tables/${umrahTable}/records?where=(client_id,eq,${clientId})&limit=15&fields=name,departure_date,return_date,seats,makkah_hotel,madinah_hotel,price_per_pax,currency`);
+    const ud=await ur.json().catch(()=>({}));
+    const groups=ud?.list||[];
+    if(groups.length){
+      lines.push('## Umrah Groups');
+      groups.forEach(g=>lines.push(`- ${g.name} — departs ${g.departure_date||'TBA'}, returns ${g.return_date||'TBA'}, ${g.seats??''} seats — Makkah: ${g.makkah_hotel||''}, Madinah: ${g.madinah_hotel||''} — price ${g.currency||''} ${g.price_per_pax??''} per pax`));
+    }
+  }
+  const carsTable=taResolveTable(c, 'cars');
+  if(carsTable){
+    const cr=await ncFetch(env, `api/v2/tables/${carsTable}/records?where=(client_id,eq,${clientId})~and(status,eq,available)&limit=15&fields=name,make,model,year,category,seats,daily_rate,currency`);
+    const cd=await cr.json().catch(()=>({}));
+    const cars=cd?.list||[];
+    if(cars.length){
+      lines.push('## Rental Cars Available');
+      cars.forEach(car=>lines.push(`- ${car.name||(car.make+' '+car.model)} (${car.year??''}, ${car.category||''}, ${car.seats??''} seats) — ${car.currency||''} ${car.daily_rate??''}/day`));
+    }
+  }
+  return lines.length?('\n\n'+lines.join('\n')):'';
+}
+
+// Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
+// "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
+// (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
+function engineBuildFaqSystemPrompt(c, state, contextBlock, industry){
+  const history=state.activeHistory||[];
+  const lang=c.language||'en';
+  let sys=c.main_prompt||'';
+  const services=engineParseJsonField(c.services, []);
+  const defaultCurrency=industry==='ecommerce'?'INR':'AED';
+  const defaultUnit=industry==='ecommerce'?'item':'person';
+  if(services.length){
+    sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||defaultCurrency} ${s.price} per ${s.per||defaultUnit}`).join('\n');
+  }
+  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  if(contextBlock) sys+=contextBlock;
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
+
+  if(industry==='ecommerce'){
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above. If specific details are not available, politely say you will connect them with support.';
+  } else if(industry==='travel'){
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. If specific details are not available, politely say you will connect them with an advisor.';
+  } else {
+    sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
+  }
+  return sys;
+}
+
+// Mirrors "Code · Objection prep".
+function engineBuildObjectionSystemPrompt(c, state, objectionCategory){
+  const history=state.activeHistory||[];
+  const lang=c.language||'en';
+  const playbook=engineParseJsonField(c.objection_playbook, []);
+  const match=playbook.find(o=>(o.category||'').toLowerCase()===objectionCategory)||null;
+  let sys=c.main_prompt||'';
+  const services=engineParseJsonField(c.services, []);
+  if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`).join('\n');
+  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  sys+=`\n\n## Objection Handling\nThe lead just raised a "${objectionCategory}" objection.`;
+  if(match && match.approved_response) sys+=` Use this approved response strategy: ${match.approved_response}`;
+  else sys+=' Acknowledge the concern briefly and honestly, respond confidently without over-promising, and always end by proposing one concrete next step (a call, a demo, or answering one more question) rather than just apologising.';
+  if(objectionCategory==='price'){
+    sys+=c.quote_validity_days
+      ? ` Create gentle urgency: mention that this pricing is confirmed for the next ${c.quote_validity_days} day(s) and encourage a decision within that window.`
+      : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
+  }
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
+  sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Keep it to 2-4 sentences.';
+  return sys;
+}
+
+async function engineCallLlm(c, systemPrompt, userText, maxTokens){
+  try{
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:maxTokens||300, messages:[{role:'system',content:systemPrompt},{role:'user',content:userText}]})
+    });
+    const data=await r.json().catch(()=>({}));
+    return data?.choices?.[0]?.message?.content?.trim()||'One moment 🙏';
+  }catch(e){ return 'One moment 🙏'; }
+}
+
+// The one delivery point a customer's reply actually depends on — a silent failure here means
+// the customer gets nothing and nobody finds out, so (unlike most best-effort sends elsewhere in
+// this file) this specifically reports to reportOpsError on both a thrown fetch and a non-OK
+// response (previously not even checked).
+async function engineSendChatwootReply(env, c, clientId, convId, text){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!text) return;
+  try{
+    const fd=new FormData();
+    fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok) await reportOpsError(env, 'engineSendChatwootReply — Chatwoot rejected the send', new Error('HTTP '+r.status), {clientId, convId});
+  }catch(e){
+    await reportOpsError(env, 'engineSendChatwootReply — send threw', e, {clientId, convId});
+  }
+}
+
+async function engineSendHandoverLabel(c, convId){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
+  try{
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/labels`, {
+      method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+      body:JSON.stringify({labels:['human-requested']})
+    });
+  }catch(e){}
+}
+
+// Mirrors "Code · Prep lead" — hot-moment/qual-score/win-probability/round-robin-owner
+// computation and the LEADS upsert body. See the file-header comment above for the ConvHistory
+// and human-handover-message fixes vs. the source workflow. `messageId` (Chatwoot's own message
+// id, when available) is persisted as LastProcessedMessageId for handleEngineWebhook's
+// idempotency check — written only here, as part of a normal successful turn, never earlier; see
+// that check's own comment for why.
+function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId){
+  const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, isOptOut, isResub}=routing;
+  const reply=routing.reply;
+  let next=routeNext;
+  const isHuman=routing.route==='human';
+
+  const history=(state.history||[]).slice();
+  if(userText) history.push({role:'user', content:userText});
+  if(reply) history.push({role:'assistant', content:reply});
+
+  const body={
+    ClientId:String(clientId), Phone:state.phone, Name:state.name, ConversationID:state.convId,
+    Date:new Date().toISOString(), Language:c.language||'en',
+    ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString()
+  };
+  if(messageId) body.LastProcessedMessageId=messageId;
+  if(qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers=JSON.stringify(qualAnswers);
+  if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
+  else body.Stage=next;
+  if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; }
+  if(intentData?.booking_time) body.BookingTime=intentData.booking_time;
+
+  let score='Cold';
+  if(intent==='BOOKING' || intentData?.booking_time || body.Stage==='consultation_booked') score='Hot';
+  else if(['AFFIRMATIVE','WATCHED','FORM_DONE'].includes(intent) && state.stage!=='new') score='Warm';
+  else if(state.stage!=='new' && (state.history||[]).length>2) score='Warm';
+  body.Score=score;
+  if(state.isDuplicate) body.IsDuplicate='Yes';
+  if(isOptOut) body.OptOut='Yes';
+  if(isResub){ body.OptOut='No'; body.Stage='new'; }
+
+  const HOT_PHRASES=['how much','price','cost','available','when can','book','ready to','interested in','want to','sign up','start','confirm','deposit','payment','package','deal','offer','buy','purchase','enroll','register'];
+  const msgLower=(userText||'').toLowerCase();
+  const hotPhrase=HOT_PHRASES.find(p=>msgLower.includes(p));
+  if(hotPhrase){ body.HotMoment='Yes'; body.HotMomentText=(userText||'').slice(0,200); }
+
+  const flow=engineParseJsonField(c.flow_json, {});
+  const stageKeys=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  const stageIdx=stageKeys.indexOf(state.stage);
+  const stageProgress=stageKeys.length>0?(stageIdx+1)/stageKeys.length:0;
+  const histLen=(state.history||[]).length;
+  let qualScore=Math.round((stageProgress*4)+(score==='Hot'?3:score==='Warm'?2:0)+(hotPhrase?1.5:0)+Math.min(histLen/20,1.5));
+  qualScore=Math.max(1, Math.min(10, qualScore));
+  body.QualScore=qualScore;
+
+  if(state.winProbabilityManual!=='Yes'){
+    let wp=(typeof aiWinProbability==='number')?aiWinProbability:Math.round(stageProgress*80+(score==='Hot'?20:score==='Warm'?10:0));
+    if(isHuman) wp=Math.max(wp,55);
+    if(isOptOut) wp=0;
+    body.WinProbability=Math.max(0, Math.min(100, wp));
+  }
+  if(c.deal_currency && !state.leadId) body.DealCurrency=c.deal_currency;
+
+  if(!state.leadId && !state.owner){
+    const reps=engineParseSalesReps(c.agents);
+    if(reps.length){
+      let h=0; const phoneStr=String(state.phone||'');
+      for(let i=0;i<phoneStr.length;i++) h=(h*31+phoneStr.charCodeAt(i))|0;
+      body.Owner=reps[Math.abs(h)%reps.length];
+    }
+  }
+
+  if(sentiment) body.Sentiment=sentiment;
+  if(objectionCategory && objectionCategory!=='none') body.LastObjectionCategory=objectionCategory;
+  if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
+
+  return {body, method:state.leadId?'PATCH':'POST', leadId:state.leadId};
+}
+
+async function engineUpsertLead(env, method, leadId, body){
+  if(leadId) body.Id=leadId;
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
+}
+
+async function engineLogAnalytics(env, entry){
+  try{ await ncFetch(env, `api/v2/tables/${ENGINE_ANALYTICS_TABLE}/records`, {method:'POST', body:entry}); }catch(e){}
+}
+
+// Chatwoot has no built-in webhook signing (unlike Shopify/Cal.com, both verified elsewhere in
+// this file via verifyShopifyWebhookHmac/verifyCalcomWebhookHmac against a secret the client
+// configures on their side) — its webhook feature just POSTs JSON to whatever URL you give it, no
+// signature header, no secret field in its own UI. `secret` is this route's equivalent: a random
+// 192-bit per-client token baked into the URL path itself (`/engine/webhook/<secret>`, same
+// URL-path-token pattern already used by `/calcom/webhook/<clientId>`), registered by
+// engineSyncChatwootWebhook and never exposed anywhere a browser or a client sees it. Without the
+// exact secret, a request is rejected before any client data is touched — same practical
+// unforgeability as a bearer token, since knowing a client's numeric id or chatwoot_account_id
+// (both are exposed in various places already) no longer gets an attacker anywhere.
+async function handleEngineWebhook(request, env, secret){
+  const startMs=Date.now();
+  // Global kill switch — a config-only flag (wrangler.toml [vars], requires a redeploy to flip,
+  // not instant, but a one-line change is still far faster than debugging/reverting code under
+  // pressure). Intentionally goes silent everywhere rather than falling back to some other
+  // behavior: if the engine itself is suspected of causing harm (bad deploy, corrupted data),
+  // "stop replying" is the safer failure mode than "keep executing possibly-broken logic."
+  if(env.ENGINE_ENABLED==='false') return json({ok:true, skipped:'engine-disabled-global'});
+  if(!secret) return json({ok:true, skipped:'no-secret'});
+  const c=await findClientByField(env, 'engine_webhook_secret', secret);
+  if(!c) return json({ok:true, skipped:'invalid-secret'});
+  const clientId=String(c.Id);
+  if(c.active==='No') return json({ok:true, skipped:'client-inactive'});
+  // Per-client kill switch (CLIENTS.engine_disabled, 'Yes'/'No') — same "go silent" reasoning as
+  // the global one, scoped to one client whose flow_json/data is causing a problem, without
+  // taking down every other client. engineSyncChatwootWebhook also respects this flag (leaves
+  // that client's webhooks alone entirely) so an admin can manually restore their old n8n webhook
+  // in Chatwoot without the next Settings-save sync immediately undoing it.
+  if(c.engine_disabled==='Yes') return json({ok:true, skipped:'engine-disabled-client'});
+
+  const body=await request.json().catch(()=>({}));
+  // Defense in depth, not the actual security boundary (the secret already is): if the payload's
+  // own account id disagrees with this client's on-record chatwoot_account_id, something is
+  // wrong (a misconfigured/reused webhook, most likely) — safer to drop it than guess.
+  const accountId=String(body.account?.id||body.conversation?.account_id||'');
+  if(accountId && c.chatwoot_account_id && accountId!==String(c.chatwoot_account_id)) return json({ok:true, skipped:'account-mismatch'});
+
+  let phone=null;
+  try{
+    const parsed=engineParseChatwootPayload(body);
+    if(!parsed) return json({ok:true, skipped:'not-actionable'});
+    const {convId, name, text, mediaType, mediaUrl}=parsed;
+    phone=parsed.phone;
+
+    if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')) return json({ok:true, skipped:'test-mode'});
+    if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
+
+    const state=await engineGetLeadState(env, clientId, phone);
+    state.phone=phone; state.name=name; state.convId=convId;
+
+    // Idempotency — Chatwoot may redeliver the same message_created event (timeout, network
+    // retry); without this, a redelivery after this turn already completed would generate and
+    // send a second reply. messageId is Chatwoot's own message id (unverified against a live
+    // payload from this specific Chatwoot version, same honest caveat as elsewhere this repo
+    // parses Chatwoot's shape) — if it's ever absent, dedup is simply skipped rather than falling
+    // back to a fragile content-based guess, since a false-positive skip would silently eat a real
+    // customer message. Persisted as part of the normal lead upsert at the end of a *successful*
+    // turn (engineBuildLeadUpsertBody), never written any earlier — so a genuine mid-processing
+    // crash (after the reply is sent, before the upsert completes) is NOT protected against and
+    // could still double-reply on retry. Accepted trade-off: the alternative (marking "processed"
+    // before work starts) risks silently dropping a real message if processing then fails, which
+    // is worse for a sales/support bot than an occasional duplicate reply.
+    const messageId=String(body.id||body.message?.id||'');
+    if(messageId && state.lead?.LastProcessedMessageId===messageId) return json({ok:true, skipped:'duplicate-delivery'});
+
+    // Matches engine.json's Code·State hard-stop — SETUP.md: "the bot stops writing to the lead
+    // entirely once handed over ... so it can never talk over a live agent."
+    if(state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover')) return json({ok:true, skipped:'handed-over'});
+    if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start') return json({ok:true, skipped:'opted-out'});
+
+    const botConfig=engineParseJsonField(c.bot_config, {});
+    const rateLimitMs=parseInt(botConfig.rate_limit_ms)||4000;
+    const lastMsgAt=state.lastMsgAt?new Date(state.lastMsgAt).getTime():0;
+    if(Date.now()-lastMsgAt<rateLimitMs) return json({ok:true, skipped:'rate-limited'});
+
+    const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+    const cls=await engineClassifyIntent(env, c, userText, state.activeHistory);
+    const routing=engineRouteFlow(c, state, userText, cls);
+
+    let sentText=null;
+    if(routing.route==='human'){
+      sentText=routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.';
+      routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
+      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineSendHandoverLabel(c, convId);
+    } else if(routing.route==='drop'){
+      // no reply
+    } else if(routing.route==='qualify'){
+      const qualQuestions=engineParseJsonField(c.qual_questions, []);
+      routing.reply=qualQuestions[0]||'Could you tell me a bit more about what you are looking for?';
+      routing.next='qual_0';
+      sentText=routing.reply;
+      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+    } else if(routing.route==='qualify_next'){
+      sentText=routing.reply||null;
+      if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
+    } else if(['faq','ecom_faq','travel_faq'].includes(routing.route)){
+      let contextBlock=null;
+      if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
+      else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
+      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general');
+      let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
+      routing.reply=reply; sentText=reply;
+      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+    } else if(routing.route==='objection'){
+      const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory);
+      let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
+      routing.reply=reply; sentText=reply;
+      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+    } else if(routing.route==='stage'){
+      sentText=routing.reply||null;
+      if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
+    }
+
+    const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId);
+    await engineUpsertLead(env, method, leadId, leadBody);
+
+    // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
+    // background promise left running past the returned Response risks being cut off mid-flight.
+    await engineLogAnalytics(env, {
+      ClientId:clientId, ClientName:c.client_name||'', Phone:phone, Intent:routing.intent||'', Route:routing.route||'',
+      Stage:state.stage||'', NextStage:leadBody.Stage||'', ResponseMs:Date.now()-startMs, IsError:false, ErrorMsg:'',
+      Timestamp:new Date().toISOString()
+    });
+    await patchClientFields(env, clientId, {last_seen:new Date().toISOString()}).catch(()=>{});
+
+    // Signal auto-send, folded into this same turn — previously a second, independent Chatwoot
+    // webhook (handleChatwootIncomingOrderSignal / handleChatwootIncomingBookingSignal above).
+    // Skipped for human/drop/opt-out/resub turns, none of which carry real intent to act on.
+    // Branches strictly on c.industry — NOT on whether ecomResolveTable(..., 'orders') resolves a
+    // table id, since that helper falls back to a shared default table id for every client
+    // regardless of industry (ECOM_DEFAULT_TABLE_IDS), so table-truthiness alone can't distinguish
+    // an actual ecom client from a booking-industry one the way handleChatwootMessageHook's own
+    // dispatch (elsewhere in this file) tries to.
+    if(!['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token){
+      if(c.industry==='ecommerce'){
+        const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+        if(ordersTable){
+          const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,pending)&limit=1`);
+          const existD=await existR.json().catch(()=>({}));
+          if(!existD?.list?.length){
+            const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+            const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+            if(detection.signal){
+              if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendOrderLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.sku);
+              else await sendOrderLinkNow(env, c, clientId, phone, name, detection.sku);
+            }
+          }
+        }
+      } else if((c.external_store_link||'').trim()){
+        // Booking-industry equivalent (healthcare/consultancy/travel/etc — everything but
+        // ecommerce, matching handleChatwootIncomingBookingSignal's own gating): only runs once a
+        // booking link is actually configured, and skips a lead already at a booking-terminal
+        // stage or one with a `requested` appointment already pending.
+        const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
+        let alreadyRequested=false;
+        const bookingsTable=apptResolveTable(c, 'bookings');
+        if(!alreadyBooked && bookingsTable){
+          const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+          const existD=await existR.json().catch(()=>({}));
+          alreadyRequested=!!existD?.list?.length;
+        }
+        if(!alreadyBooked && !alreadyRequested){
+          const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+          const detection=await detectBookingSignal(env, c, clientId, userText, contextText);
+          if(detection.signal){
+            if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendBookingLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.service_id);
+            else await sendBookingLinkNow(env, c, clientId, phone, name, detection.service_id);
+          }
+        }
+      }
+    }
+
+    return json({ok:true, route:routing.route, sent:!!sentText});
+  }catch(e){
+    // Rich context (clientId, phone) beyond what the router's own global catch-all would have —
+    // caught here rather than left to propagate, so the alert carries useful debugging
+    // information and Chatwoot gets a clean 200 (a 500 could trigger a Chatwoot-side retry,
+    // interacting with the idempotency check above in ways worth avoiding on top of an already-
+    // failing turn).
+    await reportOpsError(env, 'handleEngineWebhook', e, {clientId, phone});
+    return json({ok:true, skipped:'internal-error'});
+  }
+}
+
+// 192 bits of randomness, hex-encoded — the actual security boundary for /engine/webhook (see the
+// comment on handleEngineWebhook above). crypto.getRandomValues is the standard Workers/Web Crypto
+// API, not Math.random, so this is genuinely unguessable, not just "hard to guess."
+function engineGenerateWebhookSecret(){
+  const bytes=new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// Generates and persists a client's engine_webhook_secret on first use; a no-op read on every
+// call after that. Requires the `engine_webhook_secret` column to already exist on the CLIENTS
+// table in NocoDB (Single line text — added once by hand, see SETUP.md; not auto-created here,
+// same as most other CLIENTS fields in this codebase). Returns null (rather than throwing) if the
+// column doesn't exist yet or the write otherwise fails, so callers can skip registering a
+// webhook rather than register one with no working secret.
+async function engineEnsureWebhookSecret(env, c){
+  if(c.engine_webhook_secret) return c.engine_webhook_secret;
+  const secret=engineGenerateWebhookSecret();
+  try{ await patchClientFields(env, c.Id, {engine_webhook_secret:secret}); }catch(e){ return null; }
+  c.engine_webhook_secret=secret;
+  return secret;
+}
+
+// Keeps the client's PRIMARY conversational-reply webhook pointed at this Worker's
+// /engine/webhook/<their-secret> — every industry now runs on the Cloudflare engine
+// (handleEngineWebhook has no industry gate), so there's no branching left to do here; this just
+// guarantees the correct URL is registered and cleans up n8n's old per-client webhook_url if it's
+// still sitting there from before migration, so n8n can never reply to the same message a second
+// time. Called from handleChannelsWhatsappConnect (first WhatsApp connect — the normal signup
+// path, fully automatic, no manual Chatwoot step) and handleNocodbPassthrough below (as a safety
+// net after any Settings save that touches this client's own CLIENTS row, in case
+// chatwoot_inbox_id or webhook_url only became available after connect time). Only ever touches a
+// webhook whose URL is under this Worker's own /engine/webhook/ prefix or exactly the client's own
+// (legacy) n8n webhook_url — the separate Auto Order-Tracking webhook
+// (handleEcomEnableOrderTracking) and anything a client registered by hand in Chatwoot are left
+// alone. Best-effort throughout: a failure here never blocks the caller (WhatsApp connect /
+// Settings save), it just means the webhook may need fixing by hand later.
+async function engineSyncChatwootWebhook(env, c){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!c.chatwoot_inbox_id||!env.WORKER_BASE_URL) return;
+  // Per-client kill switch (see handleEngineWebhook) — while disabled, leave this client's
+  // webhooks entirely alone, so an admin can manually restore their old n8n webhook in Chatwoot
+  // without the next Settings-save sync immediately deleting it again.
+  if(c.engine_disabled==='Yes') return;
+  const secret=await engineEnsureWebhookSecret(env, c);
+  if(!secret) return; // no secret to register safely under (e.g. the NocoDB column isn't set up yet)
+  const engineUrl=`${env.WORKER_BASE_URL}/engine/webhook/${secret}`;
+  const engineUrlPrefix=`${env.WORKER_BASE_URL}/engine/webhook/`;
+  const n8nUrl=c.webhook_url||'';
+
+  try{
+    const listR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {headers:{api_access_token:c.chatwoot_token}});
+    if(!listR.ok) return;
+    const listD=await listR.json().catch(()=>null);
+    const existingList=Array.isArray(listD)?listD:(Array.isArray(listD?.payload)?listD.payload:[]);
+
+    // Drop a leftover n8n webhook (pre-migration) so it never replies alongside the engine.
+    if(n8nUrl){
+      const staleN8n=existingList.find(w=>w.url===n8nUrl);
+      if(staleN8n) await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${staleN8n.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
+    }
+
+    // Drop any stale engine registration under a since-rotated secret — only relevant if
+    // engine_webhook_secret is ever changed by hand later; harmless no-op otherwise.
+    for(const w of existingList){
+      if(w.url.startsWith(engineUrlPrefix) && w.url!==engineUrl){
+        await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${w.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
+      }
+    }
+
+    if(!existingList.some(w=>w.url===engineUrl)){
+      await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
+        method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+        body:JSON.stringify({inbox_id:Number(c.chatwoot_inbox_id), url:engineUrl, subscriptions:['message_created']})
+      });
+    }
+  }catch(e){}
+}
+
 /* ── ECOMMERCE PUBLIC STOREFRONT (store.html, and onshope.com's onshope-store.html /
    onshope-home.html) — unlike every /ecom/* route above, these are meant to be opened directly
    by end customers (shared as a WhatsApp link), so they must not give a customer any of what a
@@ -3502,6 +4417,7 @@ export default {
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
+      else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhook(request, env, url.pathname.slice('/engine/webhook/'.length)); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
@@ -3547,6 +4463,7 @@ export default {
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);
+      await reportOpsError(env, `unhandled — ${request.method} ${url.pathname}`, e);
     }
 
     const headers=new Headers(res.headers);
