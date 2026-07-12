@@ -3794,6 +3794,14 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry){
   // 3 turns was tight enough to occasionally push it just out of frame.
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-5).map(m=>m.role+': '+m.content).join('\n');
 
+  // Observed real failure: with no concrete data to answer from (e.g. an unconfigured product/
+  // package catalog), the model didn't just say it would connect the customer with support — it
+  // fabricated "our human agent is ALREADY looking into this and will be in touch shortly," when
+  // no handover of any kind had actually happened. That's a trust problem independent of whatever
+  // data gap caused it: never imply a human is already engaged unless one genuinely is (this route
+  // only runs pre-handover in the first place — see engineRouteFlow — so it never legitimately is).
+  sys+='\n\nNever claim a human agent, advisor, or your team is "already" looking into something or has been notified — that has not happened. If you cannot answer from the data above, say plainly that you do not have that specific information and will find out / connect them with the team, as something you are about to do, not something already in progress.';
+
   if(industry==='ecommerce'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
     // Closes an observed real failure: a customer replied "Order M size" to a product the
