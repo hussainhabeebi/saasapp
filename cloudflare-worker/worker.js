@@ -1232,8 +1232,11 @@ async function detectOrderSignal(env, c, clientId, message, contextText){
   }
 
   const system=`You are screening one incoming WhatsApp message for a business selling physical products, to decide if it's an order-readiness signal — either an explicit request to buy, OR a specific-variant question about a product (size, color, stock/availability, price of one specific item) that shows they're close to ordering. General browsing questions, greetings, or unrelated questions are NOT signals.
-If it is a signal, try to match it to exactly one product from the catalog below by name — include its sku only if you're confident of the match, otherwise omit sku (don't guess). A short reply like "order M size" or "the green one" with no product name still counts as a signal and should be matched using the recent conversation below, if given — it very likely refers to whichever product was just discussed. Respond with ONLY valid JSON: {"signal":true,"sku":"..."} or {"signal":true} (no confident match) or {"signal":false}.
-${contextText?`\nRecent conversation (oldest first — use this to resolve references like "M size" or "that one" back to a specific product):\n${contextText}\n`:''}
+If it is a signal, try to match it to exactly one product from the catalog below by name — include its sku only if you're confident of the match, otherwise omit sku (don't guess).
+- A message with NO distinguishing detail of its own — "order it", "M size" (no color/name), "that one", "yes please" — should be matched using the recent conversation below, if given: it very likely refers to whichever product was just discussed.
+- A message that DOES name its own distinguishing detail (a color, size, or product name) — like "red shirt" or "green shirt" — must be matched fresh against the catalog by that detail, even if a different product was just discussed. Do NOT reuse the previously discussed product's sku just because the conversation was recently about it. If that detail doesn't match anything in the catalog, this is not a confident match — omit sku (or return {"signal":false} if it reads as asking for something you don't carry at all, not genuine interest in what's actually on offer).
+Respond with ONLY valid JSON: {"signal":true,"sku":"..."} or {"signal":true} (no confident match) or {"signal":false}.
+${contextText?`\nRecent conversation (oldest first — use this only to resolve bare references with no distinguishing detail of their own back to a specific product):\n${contextText}\n`:''}
 Product catalog:
 ${productList||'(no products listed)'}`;
 
@@ -2897,18 +2900,29 @@ function buildOrderLink(c, clientId, sku){
 
 // Shared by both order-link senders below — resolves the optional matched product and logs the
 // `pending` order row, the one part that happens regardless of how the WhatsApp message gets sent.
+// Previously never checked whether the write actually succeeded (same silent-failure shape found
+// and fixed elsewhere this file, e.g. ncPatchVerified) — a rejected/failed POST (bad field type,
+// NocoDB schema-cache lag right after the client's orders table was first configured, etc.) still
+// returned a fake order_id as if it had landed, so an order could be sent to the customer over
+// WhatsApp and never appear on the Orders page at all, with nothing in the logs to explain why.
 async function logPendingOrder(env, c, clientId, phone, name, product){
   const ordersTable=await ecomResolveTable(env, clientId, 'orders');
   if(!ordersTable) return null;
   const order_id='ORD-'+Date.now();
-  await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:{
+  const body={
     client_id:clientId, order_id,
     customer_name:name||'', customer_phone:phone,
     order_date:new Date().toISOString().slice(0,10),
     items:product?product.name:'Catalog link sent',
     total:product?.price||0, currency:product?.currency||'',
     status:'pending', notes:'Order intent detected — link sent automatically'
-  }});
+  };
+  const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
+  if(!r.ok){
+    const data=await r.json().catch(()=>({}));
+    await reportOpsError(env, 'logPendingOrder', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId, phone, ordersTable});
+    return null;
+  }
   return order_id;
 }
 
