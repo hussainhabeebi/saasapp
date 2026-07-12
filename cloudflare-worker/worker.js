@@ -1156,6 +1156,56 @@ ${productList||'(no products listed)'}`;
   return json({signal:!!parsed.signal, sku:parsed.signal?(parsed.sku||undefined):undefined});
 }
 
+// Booking-industry equivalent of handleAiOrderSignal above — same n8n-calls-Cloudflare shape
+// (client_id-based, no session, pure detection, no side effects), but screens for booking
+// readiness (wants to schedule/book, or asks about availability/duration/price of a specific
+// service) instead of purchase readiness, and matches against the Appointment module's Services
+// catalog (apptResolveTable(c,'services')) instead of an ecom product catalog — the two aren't the
+// same table, so handleAiOrderSignal can't be reused as-is for a services business. Completes the
+// same two-step pattern /ai/order-signal + /ecom/order-link already gives ecom clients: n8n calls
+// this on incoming messages, and on signal:true calls POST /leads/booking-link (passing service_id
+// if matched) to actually send the link — kept as two calls, not merged into one, so n8n stays in
+// control of whether its own bot also replies to the same message (the same double-reply-risk
+// reasoning that kept detection and action separate for /ai/order-signal).
+async function handleAiBookingSignal(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const message=String(body.message||'').trim();
+  if(!clientId||!message) return json({error:'client_id and message required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!c.openrouter_key) return json({error:'No OpenRouter API key set for this account.'}, 400);
+
+  const servicesTable=apptResolveTable(c, 'services');
+  let serviceList='';
+  if(servicesTable){
+    const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&fields=Id,name,duration_minutes,price,currency`);
+    const sd=await sr.json().catch(()=>({}));
+    serviceList=(sd?.list||[]).map(s=>`- ${s.name} [service_id:${s.Id}]${s.duration_minutes?' ('+s.duration_minutes+' min)':''}${s.price?' '+((s.currency||'')+' '+s.price):''}`).join('\n');
+  }
+
+  const system=`You are screening one incoming WhatsApp message for a services business (healthcare, consultancy, salon, etc), to decide if it's a booking-readiness signal — either an explicit request to book/schedule an appointment, OR a specific question about availability, duration, or price of one particular service that shows they're close to booking. General browsing questions, greetings, or unrelated questions are NOT signals.
+If it is a signal, try to match it to exactly one service from the list below by name — include its service_id only if you're confident of the match, otherwise omit it (don't guess). Respond with ONLY valid JSON: {"signal":true,"service_id":"..."} or {"signal":true} (no confident match) or {"signal":false}.
+
+Services offered:
+${serviceList||'(no services listed)'}`;
+
+  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method:'POST',
+    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({
+      model:c.model||'google/gemini-2.5-flash', temperature:0.2, max_tokens:150,
+      messages:[{role:'system',content:system},{role:'user',content:message}]
+    })
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  const raw=data?.choices?.[0]?.message?.content?.trim()||'{"signal":false}';
+  let parsed={signal:false};
+  try{ parsed=JSON.parse(raw); }catch(e){}
+  return json({signal:!!parsed.signal, service_id:parsed.signal?(parsed.service_id||undefined):undefined});
+}
+
 // Plain lookup, no AI — "has this phone number ordered before, and what's the status" — so a
 // returning customer ("where's my order?", "I already paid") gets recognized instead of the bot
 // starting a fresh sales pitch. Cheap enough to call on every incoming message; n8n decides what
@@ -2680,6 +2730,21 @@ async function handleEcomDelete(request, env, kind){
 // handleWaSend), and always logs a 'pending' row in the client's ecom orders table — so "order
 // intent" leaves a paper trail even if the WhatsApp send itself fails (e.g. outside the 24h
 // free-form-message window) or the customer never finishes checking out.
+// Shared by handleEcomOrderLink and the KB-payload guidance's server-side equivalents — a client's
+// own external_store_link (Shopify or any other storefront they actually sell through, set in
+// Settings → Order Link) always wins; the built-in Ecommerce module's own storefront link
+// (onshope.com/<slug> or store.html?client=<id>) is only the fallback when it's blank. sku
+// deep-linking only applies to the built-in link — an external URL has no known query-param
+// scheme to append one to, so it's returned as-is.
+function buildOrderLink(c, clientId, sku){
+  const ext=(c.external_store_link||'').trim();
+  if(ext) return ext;
+  const slug=c.client_slug;
+  const base=slug?`https://onshope.com/${slug}`:`https://app.leadvyne.com/store.html?client=${clientId}`;
+  if(!sku) return base;
+  return slug?`${base}?sku=${encodeURIComponent(sku)}`:`${base}&sku=${encodeURIComponent(sku)}`;
+}
+
 async function handleEcomOrderLink(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
@@ -2698,9 +2763,7 @@ async function handleEcomOrderLink(request, env){
       product=pd?.list?.[0]||null;
     }
   }
-  const slug=c.client_slug;
-  const base=slug?`https://onshope.com/${slug}`:`https://app.leadvyne.com/store.html?client=${clientId}`;
-  const link=body.sku?(slug?`${base}?sku=${encodeURIComponent(body.sku)}`:`${base}&sku=${encodeURIComponent(body.sku)}`):base;
+  const link=buildOrderLink(c, clientId, body.sku);
   const name=body.name||'there';
   const text=product
     ? `Hi ${name}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
@@ -2726,6 +2789,173 @@ async function handleEcomOrderLink(request, env){
     }});
   }
   return json({ok:true, link, order_id, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status)});
+}
+
+// Non-ecom equivalent of /ecom/order-link, for healthcare/services/consultancy-style clients
+// where the conversion event is a booking, not a purchase — there's no product/order to log, so
+// instead of writing to the ecom orders table this advances the matching lead and drops a
+// follow-up task. Reuses external_store_link (Settings -> Order Link) as the booking link — same
+// field ecom clients use for their storefront override, here holding a Calendly/Cal.com/booking
+// page URL instead; and reuses manual_tasks, the same JSON-on-CLIENTS field the dashboard's Tasks
+// page already reads/writes, so no new table for either.
+const BOOKING_TERMINAL_STAGES=['appt_booked','consultation_booked','visit_booked'];
+
+// A client's own Appointment Booking module tables (Settings -> Modules -> Appointment Booking),
+// created on demand by apptSetupTables() in dashboard.html — same per-client-tables model as
+// Travel/Recruit, not the shared-table-with-client_id model Ecommerce uses, so there's no default
+// table id to fall back to here.
+function apptResolveTable(c, kind){
+  try{ return (JSON.parse(c.appt_table_ids||'{}'))[kind]||null; }catch(e){ return null; }
+}
+
+// Shared by handleLeadBookingLink and handleChatwootMessageHook's non-ecom fallback below — finds
+// the lead by phone, advances it to a booking-terminal stage (only one the client has actually
+// defined in their own flow_json — never writes a stage value they haven't configured), drops a
+// follow-up task via manual_tasks (the same JSON-on-CLIENTS field the Tasks page itself uses), and
+// — if the client has set up the Appointment Booking module — logs a `requested` row there too
+// (no date/time yet, since the customer hasn't picked one; source:'bot' distinguishes it from a
+// rep's manual entry or a Cal.com sync). Returns {lead_id, stage_advanced} for the caller to report back.
+async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service){
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+  const leadD=await leadR.json().catch(()=>({}));
+  const lead=leadD?.list?.[0]||null;
+
+  let stage_advanced=null;
+  if(lead){
+    let flow={}; try{ flow=JSON.parse(c.flow_json||'{}'); }catch(e){}
+    const stageKeys=Object.keys(flow.stages||{});
+    const target=BOOKING_TERMINAL_STAGES.find(s=>stageKeys.includes(s));
+    if(target && lead.Stage!==target){
+      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, Stage:target}});
+      stage_advanced=target;
+    }
+  }
+
+  let manual={items:[],dismissed:[],projects:[]};
+  try{ manual={...manual, ...JSON.parse(c.manual_tasks||'{}')}; }catch(e){}
+  if(!Array.isArray(manual.items)) manual.items=[];
+  manual.items.push({
+    id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    title:`Confirm booking — ${name||phone}${service?.name?' ('+service.name+')':''}`,
+    notes:'Booking link sent — confirm the appointment landed.',
+    due_date:new Date().toISOString().slice(0,10), due_time:'',
+    lead_id:lead?lead.Id:null, lead_name:lead?.Name||name||'',
+    assignee_email:'', category:'', project_id:'', status:'open', created_at:new Date().toISOString()
+  });
+  await patchClientFields(env, clientId, {manual_tasks:JSON.stringify(manual)});
+
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(bookingsTable){
+    // Dedupe on "this phone already has a requested row" — matters most for the auto-tracking
+    // webhook, which can call this helper repeatedly if the bot repeats the booking link across
+    // several turns of the same conversation before a human confirms an actual date/time.
+    const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+    const existD=await existR.json().catch(()=>({}));
+    if(!existD?.list?.length){
+      await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{
+        client_id:clientId, customer_name:name||'', customer_phone:phone,
+        service_id:service?String(service.Id):'', service_name:service?.name||'', appt_date:'', appt_time:'',
+        status:'requested', source:'bot', lead_id:lead?String(lead.Id):'', calcom_uid:'',
+        notes:'Booking link sent — awaiting confirmed date/time.', created_at:new Date().toISOString()
+      }}).catch(()=>{});
+    }
+  }
+
+  return {lead_id:lead?.Id||null, stage_advanced};
+}
+
+async function handleLeadBookingLink(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!clientId||!phone) return json({error:'client_id and phone required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  const link=(c.external_store_link||'').trim();
+  if(!link) return json({error:'No booking link configured — set one in Settings → Order Link.'}, 400);
+  if(!c.wa_phone_id||!c.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
+
+  // Optional service_id (from /ai/booking-signal's match, or n8n/a rep already knowing which
+  // service the customer wants) — only resolved if the Appointment module is actually set up;
+  // a client without it just gets the plain booking-link message, same as before.
+  let service=null;
+  if(body.service_id){
+    const servicesTable=apptResolveTable(c, 'services');
+    if(servicesTable){
+      const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(Id,eq,${Number(body.service_id)})&limit=1`);
+      const sd=await sr.json().catch(()=>({}));
+      service=sd?.list?.[0]||null;
+    }
+  }
+
+  const name=body.name||'there';
+  const text=service
+    ? `Hi ${name}! Here's the link to book your *${service.name}*${service.duration_minutes?' ('+service.duration_minutes+' min)':''}: ${link}`
+    : `Hi ${name}! Here's the link to book: ${link}`;
+  const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
+  });
+  const waData=await waR.json().catch(()=>({}));
+
+  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, body.name, service);
+  return json({ok:true, link, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), lead_id, stage_advanced});
+}
+
+// Cal.com's HMAC is hex-encoded (X-Cal-Signature-256), unlike Shopify's base64
+// (verifyShopifyWebhookHmac above) — and the secret is per-client, not one app-wide secret, since
+// each client creates their own webhook in their own Cal.com account (Settings -> Developer ->
+// Webhooks) and picks the secret themselves, pasted into Settings -> Cal.com Sync.
+async function verifyCalcomWebhookHmac(secret, rawBody, sigHeader){
+  if(!secret||!sigHeader) return false;
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawBody));
+  const expected=Array.from(new Uint8Array(sig)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  if(expected.length!==sigHeader.length) return false;
+  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
+  return diff===0;
+}
+
+// Receives Cal.com's booking webhooks (client_id comes from the URL path they pasted into their
+// own Cal.com webhook config — see Settings -> Cal.com Sync). Upserts into the client's own
+// Appointment Booking module (appt_table_ids.bookings — apptSetupTables() in dashboard.html),
+// keyed by Cal.com's own booking uid so BOOKING_RESCHEDULED/BOOKING_CANCELLED update the same row
+// instead of creating duplicates.
+async function handleCalcomWebhook(request, env, clientId){
+  const rawBody=await request.text();
+  const c=await getClientById(env, clientId);
+  // Unknown/removed client — ack with 200 so Cal.com doesn't keep retrying; nothing to act on.
+  if(!c) return json({ok:true});
+  const sig=request.headers.get('X-Cal-Signature-256');
+  if(!(await verifyCalcomWebhookHmac(c.calcom_webhook_secret, rawBody, sig))) return json({error:'Invalid signature'}, 401);
+
+  let data; try{ data=JSON.parse(rawBody); }catch(e){ return json({ok:true}); }
+  const trigger=data.triggerEvent||'';
+  const b=data.payload||{};
+  const uid=b.uid||b.uuid||'';
+  if(!uid) return json({ok:true});
+
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(!bookingsTable) return json({ok:true, skipped:'no-bookings-table'});
+
+  const attendee=(b.attendees||[])[0]||{};
+  const start=b.startTime||'';
+  const statusMap={BOOKING_CREATED:'confirmed', BOOKING_RESCHEDULED:'confirmed', BOOKING_CANCELLED:'cancelled', BOOKING_REQUESTED:'requested'};
+  const fields={
+    client_id:clientId, calcom_uid:uid,
+    customer_name:attendee.name||'', customer_phone:attendee.phone||attendee.phoneNumber||'',
+    service_name:b.title||b.eventType?.title||'',
+    appt_date:start?start.slice(0,10):'', appt_time:start?start.slice(11,16):'',
+    status:statusMap[trigger]||'confirmed', source:'calcom', notes:b.description||'',
+  };
+
+  const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(calcom_uid,eq,${encodeURIComponent(uid)})&limit=1`);
+  const existD=await existR.json().catch(()=>({}));
+  const existing=existD?.list?.[0]||null;
+  if(existing) await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'PATCH', body:{Id:existing.Id, ...fields}});
+  else await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{...fields, created_at:new Date().toISOString()}});
+
+  return json({ok:true});
 }
 
 // One-time setup (dashboard "Enable Auto Order-Tracking" button): registers a *second*,
@@ -2762,6 +2992,10 @@ async function handleEcomEnableOrderTracking(request, env){
 // so it can never race or double-reply against n8n's own bot response to the same conversation.
 // The link it looks for is exactly the one buildKbProcessorText() (dashboard.html) already
 // instructs the bot to share in its own words, so detecting it needs no n8n/engine.json changes.
+// Two shapes: the built-in module's own onshope.com/store.html link (sku extractable from it), or
+// — once external_store_link is set (Settings → Order Link) — that client's own Shopify/other
+// storefront URL, matched as a plain substring since an arbitrary external domain has no known sku
+// query-param scheme to parse out.
 const CHATWOOT_HOOK_LINK_RE=/https:\/\/(?:onshope\.com\/([a-z0-9-]+)|app\.leadvyne\.com\/store\.html\?client=(\d+))(?:[?&]sku=([^\s&"']+))?/i;
 async function handleChatwootMessageHook(request, env){
   const body=await request.json().catch(()=>({}));
@@ -2771,14 +3005,15 @@ async function handleChatwootMessageHook(request, env){
   const accountId=String(body.account?.id||'');
   if(!accountId||!content) return json({ok:true, skipped:'no-account-or-content'});
 
-  const m=content.match(CHATWOOT_HOOK_LINK_RE);
-  if(!m) return json({ok:true, skipped:'no-link-in-message'});
-
   const c=await findClientByField(env, 'chatwoot_account_id', accountId);
   if(!c) return json({ok:true, skipped:'client-not-found'});
   const clientId=String(c.Id);
 
-  const sku=m[3]?decodeURIComponent(m[3]):null;
+  const ext=(c.external_store_link||'').trim();
+  const m=content.match(CHATWOOT_HOOK_LINK_RE);
+  if(!m && !(ext && content.includes(ext))) return json({ok:true, skipped:'no-link-in-message'});
+
+  const sku=m?.[3]?decodeURIComponent(m[3]):null;
   const phone=String(
     body.conversation?.meta?.sender?.phone_number ||
     body.conversation?.contact_inbox?.source_id ||
@@ -2787,7 +3022,19 @@ async function handleChatwootMessageHook(request, env){
   if(!phone) return json({ok:true, skipped:'no-phone'});
 
   const ordersTable=await ecomResolveTable(env, clientId, 'orders');
-  if(!ordersTable) return json({ok:true, skipped:'no-orders-table'});
+  // No ecom module configured for this client at all — treat it as a booking-style client
+  // (healthcare/services/consultancy) instead: advance the lead + drop a follow-up task, same
+  // action handleLeadBookingLink performs, just triggered by the bot's own reply instead of an
+  // explicit n8n call. Dedupe here is "lead already at a booking-terminal stage" rather than a
+  // pending-order check, since there's no orders table to check against.
+  if(!ordersTable){
+    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+    const leadD=await leadR.json().catch(()=>({}));
+    const lead=leadD?.list?.[0]||null;
+    if(lead && BOOKING_TERMINAL_STAGES.includes(lead.Stage)) return json({ok:true, skipped:'already-booked'});
+    const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, body.conversation?.meta?.sender?.name);
+    return json({ok:true, lead_id, stage_advanced});
+  }
 
   // Dedupe — skip if this phone already has an auto-logged order still pending, so a bot that
   // repeats the link across several turns of the same conversation doesn't spam duplicate rows.
@@ -2940,6 +3187,8 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
       else if(url.pathname==='/ecom/order-link' && request.method==='POST'){ res=await handleEcomOrderLink(request, env); }
+      else if(url.pathname==='/leads/booking-link' && request.method==='POST'){ res=await handleLeadBookingLink(request, env); }
+      else if(url.pathname.startsWith('/calcom/webhook/') && request.method==='POST'){ res=await handleCalcomWebhook(request, env, url.pathname.slice('/calcom/webhook/'.length)); }
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
@@ -2952,6 +3201,7 @@ export default {
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/ai/objection-reply' && request.method==='POST'){ res=await handleAiObjectionReply(request, env); }
       else if(url.pathname==='/ai/order-signal' && request.method==='POST'){ res=await handleAiOrderSignal(request, env); }
+      else if(url.pathname==='/ai/booking-signal' && request.method==='POST'){ res=await handleAiBookingSignal(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }
       else if(url.pathname==='/broadcast/templates/sync' && request.method==='POST'){ res=await handleBroadcastTemplatesSync(request, env); }
