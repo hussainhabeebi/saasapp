@@ -1114,22 +1114,38 @@ ${reviewLink?`Review link: ${reviewLink}`:''}`;
   return json({handled:!!parsed.handled, reply:parsed.handled?String(parsed.reply||'').trim():undefined});
 }
 
-// Classifies one incoming message for order-readiness — same n8n-calls-Cloudflare shape as
-// handleAiObjectionReply above (client_id-based, no session; n8n orchestrates, this only
-// classifies). A "signal" isn't just an explicit "I want to buy X" — a specific-variant question
-// (size, color, stock, price of one item) is just as strong a buying signal for a physical-goods
-// business, so those count too. When the model can confidently match the message to one product
-// in the catalog, its `sku` comes back too — n8n should then call POST /ecom/order-link with that
-// sku (and the customer's phone) to actually build+send+log the link; this endpoint only decides
-// *whether* and *for what*, it never sends anything itself.
-async function handleAiOrderSignal(request, env){
-  const body=await request.json().catch(()=>({}));
-  const clientId=String(body.client_id||'');
-  const message=String(body.message||'').trim();
-  if(!clientId||!message) return json({error:'client_id and message required'}, 400);
-  const c=await getClientById(env, clientId);
-  if(!c) return json({error:'Client not found'}, 404);
-  if(!c.openrouter_key) return json({error:'No OpenRouter API key set for this account.'}, 400);
+// Fetches the last few messages on a Chatwoot conversation, formatted as plain "Customer: .../
+// Bot: ..." lines — used to resolve short replies that carry no signal on their own, like "Order
+// m size" or "the 30 min one", back to whichever specific product/service was actually being
+// discussed. Without this, a detector looking only at the single incoming message has no way to
+// connect "M size" to a product name it was never told — exactly the gap that let a real customer
+// reply "Order m size" to a shown product and get "we don't have anything matching" back instead
+// of an order link, because the classifier had no idea a product had just been shown at all.
+// Assumes Chatwoot's messages-list response is oldest-first (`payload`, ascending by created_at) —
+// the standard REST-list convention, but unverified against a live payload from this specific
+// Chatwoot instance/version, same honest caveat as elsewhere this repo parses Chatwoot's API shape.
+async function fetchRecentChatwootContext(c, conversationId, limit){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!conversationId) return '';
+  try{
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conversationId}/messages`, {headers:{api_access_token:c.chatwoot_token}});
+    if(!r.ok) return '';
+    const data=await r.json().catch(()=>({}));
+    const msgs=(data?.payload||[]).slice(-limit);
+    return msgs.map(m=>`${m.message_type==='incoming'?'Customer':'Bot'}: ${String(m.content||'').slice(0,300)}`).join('\n');
+  }catch(e){ return ''; }
+}
+
+// Core detection logic, shared by the HTTP endpoint below (handleAiOrderSignal, for n8n to call)
+// and handleChatwootIncomingOrderSignal's own direct auto-send path (no n8n involved — see that
+// function for why). A "signal" isn't just an explicit "I want to buy X" — a specific-variant
+// question (size, color, stock, price of one item) is just as strong a buying signal for a
+// physical-goods business, so those count too. `contextText` (recent conversation, see
+// fetchRecentChatwootContext above) is optional but important: it's what lets a bare reply like
+// "M size" resolve back to whichever product was actually just shown, instead of matching nothing.
+// When the model can confidently match to one product, `sku` comes back too. Never sends anything
+// — purely a screen.
+async function detectOrderSignal(env, c, clientId, message, contextText){
+  if(!c.openrouter_key) return {signal:false, error:'No OpenRouter API key set for this account.'};
 
   const productsTable=await ecomResolveTable(env, clientId, 'products');
   let productList='';
@@ -1140,8 +1156,8 @@ async function handleAiOrderSignal(request, env){
   }
 
   const system=`You are screening one incoming WhatsApp message for a business selling physical products, to decide if it's an order-readiness signal — either an explicit request to buy, OR a specific-variant question about a product (size, color, stock/availability, price of one specific item) that shows they're close to ordering. General browsing questions, greetings, or unrelated questions are NOT signals.
-If it is a signal, try to match it to exactly one product from the catalog below by name — include its sku only if you're confident of the match, otherwise omit sku (don't guess). Respond with ONLY valid JSON: {"signal":true,"sku":"..."} or {"signal":true} (no confident match) or {"signal":false}.
-
+If it is a signal, try to match it to exactly one product from the catalog below by name — include its sku only if you're confident of the match, otherwise omit sku (don't guess). A short reply like "order M size" or "the green one" with no product name still counts as a signal and should be matched using the recent conversation below, if given — it very likely refers to whichever product was just discussed. Respond with ONLY valid JSON: {"signal":true,"sku":"..."} or {"signal":true} (no confident match) or {"signal":false}.
+${contextText?`\nRecent conversation (oldest first — use this to resolve references like "M size" or "that one" back to a specific product):\n${contextText}\n`:''}
 Product catalog:
 ${productList||'(no products listed)'}`;
 
@@ -1154,11 +1170,30 @@ ${productList||'(no products listed)'}`;
     })
   });
   const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  if(!r.ok) return {signal:false, error:data?.error?.message||'HTTP '+r.status};
   const raw=data?.choices?.[0]?.message?.content?.trim()||'{"signal":false}';
   let parsed={signal:false};
   try{ parsed=JSON.parse(raw); }catch(e){}
-  return json({signal:!!parsed.signal, sku:parsed.signal?(parsed.sku||undefined):undefined});
+  return {signal:!!parsed.signal, sku:parsed.signal?(parsed.sku||undefined):undefined};
+}
+
+// Classifies one incoming message for order-readiness — same n8n-calls-Cloudflare shape as
+// handleAiObjectionReply above (client_id-based, no session; n8n orchestrates, this only
+// classifies). n8n should then call POST /ecom/order-link with the returned sku (and the
+// customer's phone) to actually build+send+log the link; this endpoint only decides *whether* and
+// *for what*, it never sends anything itself. Optional body.context lets n8n pass its own recent-
+// conversation text if it has one handy; otherwise there's none here (n8n calls this standalone,
+// with just the one message) — see detectOrderSignal's comment for why context matters.
+async function handleAiOrderSignal(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const message=String(body.message||'').trim();
+  if(!clientId||!message) return json({error:'client_id and message required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  const result=await detectOrderSignal(env, c, clientId, message, String(body.context||''));
+  if(result.error) return json({error:result.error}, result.error.startsWith('No OpenRouter')?400:502);
+  return json({signal:result.signal, sku:result.sku});
 }
 
 // Booking-industry equivalent of handleAiOrderSignal above — same n8n-calls-Cloudflare shape
@@ -1174,8 +1209,10 @@ ${productList||'(no products listed)'}`;
 // reasoning that kept detection and action separate for /ai/order-signal).
 // Core detection logic, shared by the HTTP endpoint below (handleAiBookingSignal, for n8n to call)
 // and handleChatwootMessageHook's own direct auto-send path (no n8n involved at all — see that
-// function for why). Returns {signal, service_id?} — never sends anything, purely a screen.
-async function detectBookingSignal(env, c, clientId, message){
+// function for why). `contextText` (fetchRecentChatwootContext, above) resolves bare replies like
+// "the 30 min one" back to whichever service was actually just discussed. Returns
+// {signal, service_id?} — never sends anything, purely a screen.
+async function detectBookingSignal(env, c, clientId, message, contextText){
   if(!c.openrouter_key) return {signal:false, error:'No OpenRouter API key set for this account.'};
 
   const servicesTable=apptResolveTable(c, 'services');
@@ -1187,8 +1224,8 @@ async function detectBookingSignal(env, c, clientId, message){
   }
 
   const system=`You are screening one incoming WhatsApp message for a services business (healthcare, consultancy, salon, etc), to decide if it's a booking-readiness signal — either an explicit request to book/schedule an appointment, OR a specific question about availability, duration, or price of one particular service that shows they're close to booking. General browsing questions, greetings, or unrelated questions are NOT signals.
-If it is a signal, try to match it to exactly one service from the list below by name — include its service_id only if you're confident of the match, otherwise omit it (don't guess). Respond with ONLY valid JSON: {"signal":true,"service_id":"..."} or {"signal":true} (no confident match) or {"signal":false}.
-
+If it is a signal, try to match it to exactly one service from the list below by name — include its service_id only if you're confident of the match, otherwise omit it (don't guess). A short reply like "the 30 min one" or "yes book it" with no service name still counts as a signal and should be matched using the recent conversation below, if given. Respond with ONLY valid JSON: {"signal":true,"service_id":"..."} or {"signal":true} (no confident match) or {"signal":false}.
+${contextText?`\nRecent conversation (oldest first — use this to resolve references back to a specific service):\n${contextText}\n`:''}
 Services offered:
 ${serviceList||'(no services listed)'}`;
 
@@ -1208,6 +1245,8 @@ ${serviceList||'(no services listed)'}`;
   return {signal:!!parsed.signal, service_id:parsed.signal?(parsed.service_id||undefined):undefined};
 }
 
+// Optional body.context lets n8n pass its own recent-conversation text if it has one handy — see
+// detectBookingSignal's comment for why context matters for bare replies like "yes, the 30 min one".
 async function handleAiBookingSignal(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
@@ -1215,7 +1254,7 @@ async function handleAiBookingSignal(request, env){
   if(!clientId||!message) return json({error:'client_id and message required'}, 400);
   const c=await getClientById(env, clientId);
   if(!c) return json({error:'Client not found'}, 404);
-  const result=await detectBookingSignal(env, c, clientId, message);
+  const result=await detectBookingSignal(env, c, clientId, message, String(body.context||''));
   if(result.error) return json({error:result.error}, result.error.startsWith('No OpenRouter')?400:502);
   return json({signal:result.signal, service_id:result.service_id});
 }
@@ -2759,6 +2798,71 @@ function buildOrderLink(c, clientId, sku){
   return slug?`${base}?sku=${encodeURIComponent(sku)}`:`${base}&sku=${encodeURIComponent(sku)}`;
 }
 
+// Shared by both order-link senders below — resolves the optional matched product and logs the
+// `pending` order row, the one part that happens regardless of how the WhatsApp message gets sent.
+async function logPendingOrder(env, c, clientId, phone, name, product){
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return null;
+  const order_id='ORD-'+Date.now();
+  await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:{
+    client_id:clientId, order_id,
+    customer_name:name||'', customer_phone:phone,
+    order_date:new Date().toISOString().slice(0,10),
+    items:product?product.name:'Catalog link sent',
+    total:product?.price||0, currency:product?.currency||'',
+    status:'pending', notes:'Order intent detected — link sent automatically'
+  }});
+  return order_id;
+}
+
+async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
+  let product=null;
+  if(sku){
+    const productsTable=await ecomResolveTable(env, clientId, 'products');
+    if(productsTable){
+      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(sku,eq,${encodeURIComponent(sku)})&limit=1`);
+      const pd=await pr.json().catch(()=>({}));
+      product=pd?.list?.[0]||null;
+    }
+  }
+  const displayName=name||'there';
+  const text=product
+    ? `Hi ${displayName}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
+    : `Hi ${displayName}! Here's our full catalog — order directly from here:\n${link}`;
+  return {product, text};
+}
+
+// Core "actually send the order link" logic — direct Meta Graph API, bypassing Chatwoot. Kept as
+// the implementation POST /ecom/order-link uses, and as sendOrderLinkViaChatwoot's fallback below.
+async function sendOrderLinkNow(env, c, clientId, phone, name, sku){
+  if(!c.wa_phone_id||!c.wa_token) return {error:'WhatsApp phone / token not configured.'};
+  const link=buildOrderLink(c, clientId, sku);
+  const {product, text}=await resolveOrderProductAndText(env, c, clientId, name, sku, link);
+  const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
+  });
+  const waData=await waR.json().catch(()=>({}));
+  const order_id=await logPendingOrder(env, c, clientId, phone, name, product);
+  return {ok:true, link, order_id, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), via:'graph'};
+}
+
+// Used only by the ecom auto-send path (handleChatwootIncomingOrderSignal below) — same reasoning
+// as sendBookingLinkViaChatwoot: this webhook fires because of a real message on a real Chatwoot
+// conversation, so its id is already known, and routing the reply through Chatwoot's own message
+// endpoint means it shows up in the rep's inbox and Chatwoot's own WhatsApp channel does the relay,
+// instead of this repo hand-building a Graph API payload for a path Chatwoot never learns about.
+async function sendOrderLinkViaChatwoot(env, c, clientId, conversationId, phone, name, sku){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return {error:'Chatwoot is not configured for this account.'};
+  const link=buildOrderLink(c, clientId, sku);
+  const {product, text}=await resolveOrderProductAndText(env, c, clientId, name, sku, link);
+  const fd=new FormData();
+  fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conversationId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+  const order_id=await logPendingOrder(env, c, clientId, phone, name, product);
+  return {ok:true, link, order_id, whatsapp_sent:r.ok, whatsapp_error:r.ok?undefined:('HTTP '+r.status), via:'chatwoot'};
+}
+
 async function handleEcomOrderLink(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
@@ -2766,43 +2870,9 @@ async function handleEcomOrderLink(request, env){
   if(!clientId||!phone) return json({error:'client_id and phone required'}, 400);
   const c=await getClientById(env, clientId);
   if(!c) return json({error:'Client not found'}, 404);
-  if(!c.wa_phone_id||!c.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
-
-  let product=null;
-  if(body.sku){
-    const productsTable=await ecomResolveTable(env, clientId, 'products');
-    if(productsTable){
-      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(sku,eq,${encodeURIComponent(body.sku)})&limit=1`);
-      const pd=await pr.json().catch(()=>({}));
-      product=pd?.list?.[0]||null;
-    }
-  }
-  const link=buildOrderLink(c, clientId, body.sku);
-  const name=body.name||'there';
-  const text=product
-    ? `Hi ${name}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
-    : `Hi ${name}! Here's our full catalog — order directly from here:\n${link}`;
-
-  const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
-  });
-  const waData=await waR.json().catch(()=>({}));
-
-  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
-  let order_id=null;
-  if(ordersTable){
-    order_id='ORD-'+Date.now();
-    await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:{
-      client_id:clientId, order_id,
-      customer_name:body.name||'', customer_phone:phone,
-      order_date:new Date().toISOString().slice(0,10),
-      items:product?product.name:'Catalog link sent',
-      total:product?.price||0, currency:product?.currency||'',
-      status:'pending', notes:'Order intent detected — link sent automatically'
-    }});
-  }
-  return json({ok:true, link, order_id, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status)});
+  const result=await sendOrderLinkNow(env, c, clientId, phone, body.name, body.sku);
+  if(result.error) return json({error:result.error}, 400);
+  return json(result);
 }
 
 // Non-ecom equivalent of /ecom/order-link, for healthcare/services/consultancy-style clients
@@ -3100,17 +3170,54 @@ async function handleChatwootIncomingBookingSignal(env, c, clientId, content, bo
     if(existD?.list?.length) return json({ok:true, skipped:'duplicate-requested'});
   }
 
-  const detection=await detectBookingSignal(env, c, clientId, content);
+  const conversationId=body.conversation?.id;
+  const contextText=await fetchRecentChatwootContext(c, conversationId, 8);
+  const detection=await detectBookingSignal(env, c, clientId, content, contextText);
   if(!detection.signal) return json({ok:true, skipped:'no-signal'});
 
   const name=body.conversation?.meta?.sender?.name;
-  const conversationId=body.conversation?.id;
   // Prefer routing through Chatwoot — this webhook fired because of a message on an existing
   // conversation, so conversationId should always be present; sendBookingLinkNow (direct Graph
   // API) is only a fallback for the unlikely case Chatwoot's payload omits it or isn't configured.
   const result=(conversationId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token)
     ? await sendBookingLinkViaChatwoot(env, c, clientId, conversationId, phone, name, detection.service_id)
     : await sendBookingLinkNow(env, c, clientId, phone, name, detection.service_id);
+  return json({ok:true, auto_sent:true, ...result});
+}
+
+// Ecom counterpart of handleChatwootIncomingBookingSignal above — same direct, Cloudflare-only
+// auto-send exception to "n8n stays in control," same double-reply-risk tradeoff, just for clients
+// with an ecom orders table instead of booking-industry ones. Built specifically to close a real,
+// observed gap: a customer replying "Order M size" to a product the bot had just shown got "we
+// don't have anything matching your preferences" back — the client's own n8n flow wasn't
+// connecting the size reply to the product it had itself just displayed. This path uses
+// fetchRecentChatwootContext so the same short reply resolves correctly against what was actually
+// just discussed, instead of depending on whatever matching logic n8n's own flow has.
+async function handleChatwootIncomingOrderSignal(env, c, clientId, content, body, ordersTable){
+  if(!c.wa_phone_id||!c.wa_token) return json({ok:true, skipped:'whatsapp-not-configured'});
+  if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
+
+  const phone=String(
+    body.conversation?.meta?.sender?.phone_number ||
+    body.conversation?.contact_inbox?.source_id ||
+    ''
+  ).replace(/[^0-9+]/g,'');
+  if(!phone) return json({ok:true, skipped:'no-phone'});
+
+  // Dedupe before spending an AI call — skip if this phone already has a pending auto-sent order.
+  const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,pending)&limit=1`);
+  const existD=await existR.json().catch(()=>({}));
+  if(existD?.list?.length) return json({ok:true, skipped:'duplicate-pending'});
+
+  const conversationId=body.conversation?.id;
+  const contextText=await fetchRecentChatwootContext(c, conversationId, 8);
+  const detection=await detectOrderSignal(env, c, clientId, content, contextText);
+  if(!detection.signal) return json({ok:true, skipped:'no-signal'});
+
+  const name=body.conversation?.meta?.sender?.name;
+  const result=(conversationId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token)
+    ? await sendOrderLinkViaChatwoot(env, c, clientId, conversationId, phone, name, detection.sku)
+    : await sendOrderLinkNow(env, c, clientId, phone, name, detection.sku);
   return json({ok:true, auto_sent:true, ...result});
 }
 
@@ -3125,7 +3232,12 @@ async function handleChatwootMessageHook(request, env){
   if(!c) return json({ok:true, skipped:'client-not-found'});
   const clientId=String(c.Id);
 
-  if(msgType==='incoming' || msgType==='0') return await handleChatwootIncomingBookingSignal(env, c, clientId, content, body);
+  if(msgType==='incoming' || msgType==='0'){
+    const incomingOrdersTable=await ecomResolveTable(env, clientId, 'orders');
+    return incomingOrdersTable
+      ? await handleChatwootIncomingOrderSignal(env, c, clientId, content, body, incomingOrdersTable)
+      : await handleChatwootIncomingBookingSignal(env, c, clientId, content, body);
+  }
   if(msgType!=='outgoing' && msgType!=='1') return json({ok:true, skipped:'not-outgoing'});
 
   const ext=(c.external_store_link||'').trim();

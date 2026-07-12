@@ -557,6 +557,33 @@ gap for services businesses: it screens the *customer's own* message with AI
   `POST /leads/booking-link` uses (no Chatwoot conversation context available there — it's called
   by n8n/a rep with just a phone number, not from inside a live Chatwoot webhook).
 
+**Ecom clients get the same direct auto-send, plus conversation context for resolving bare
+replies.** `handleChatwootIncomingOrderSignal` (`worker.js`, same dispatch point — clients *with*
+an ecom orders table go here instead of the booking path) mirrors everything above for ecom:
+screens the customer's own message with AI (`detectOrderSignal()`, shared with
+`/ai/order-signal`), and on a signal sends the order link directly — via `sendOrderLinkViaChatwoot()`
+when a Chatwoot `conversation.id` is available (same routing preference as booking), falling back
+to `sendOrderLinkNow()` (direct Graph API, also what `POST /ecom/order-link` uses). Same double-
+reply-risk tradeoff, same honest limits, same accepted-trust auth model.
+- **Built specifically to fix an observed failure**: a real customer replied "Order M size" to a
+  product the bot had just shown with sizes S/M/L/XL — and the client's own n8n flow answered "we
+  don't have any products currently matching your preferences" instead of recognizing the reply
+  as referring to the product it had itself just displayed. A signal like "M size" carries no
+  information on its own; it only means something in light of what was just discussed.
+- **`fetchRecentChatwootContext(c, conversationId, limit)`** (shared by both the order and
+  booking auto-send paths) fetches the last few messages on the Chatwoot conversation
+  (`GET .../conversations/:id/messages`) and formats them as plain `Customer: .../Bot: ...` lines,
+  passed into `detectOrderSignal()`/`detectBookingSignal()` as `contextText` so the model can
+  resolve "M size" or "the 30 min one" back to whichever product/service was actually just shown,
+  instead of trying to match a bare phrase against a catalog with no context at all. Assumes
+  Chatwoot's messages-list response is oldest-first — the standard REST-list convention, but
+  unverified against a live payload from this specific Chatwoot instance/version, same honest
+  caveat as the rest of this file's Chatwoot-shape assumptions.
+- `/ai/order-signal` and `/ai/booking-signal` (the n8n-callable HTTP endpoints) now also accept an
+  optional `body.context` string, for n8n to pass its own recent-conversation text if it has one
+  handy — the same underlying gap applies there too; this repo just can't fetch Chatwoot's history
+  itself from those endpoints without knowing the conversation id, which n8n would need to supply.
+
 **Both booking links are also just shown on the Appointments tab itself** (`renderApptLinkBar()`,
 `dashboard.html`) — a small bar under the sub-nav, visible on every Appointments sub-page, with a
 Copy button for each: the external link (`external_store_link` — Cal.com/Calendly/etc, if set) and
