@@ -3628,7 +3628,15 @@ function engineRouteFlow(c, state, userText, cls){
   const POSITIVE=new Set(['AFFIRMATIVE','WATCHED','FORM_DONE','BOOKING','SHORT_NEUTRAL']);
   const NEGATIVE=new Set(['DELAY','WANTS_MORE_INFO']);
   const allStages=Object.keys(flow.stages||{}).filter(k=>k!=='new');
-  const isFinalStage=allStages.length>0 && state.stage===allStages[allStages.length-1];
+  // Real observed failure: a client with only ONE stage configured (still finishing their
+  // funnel setup) had every lead auto-escalate to a human on the very first positive reply — a
+  // plain "ok" or even just a greeting — because with just one stage, it's trivially both the
+  // first AND the last stage, so engine.json's own "reached the final stage with a positive
+  // reply → handover" signal (correct for a real, completed multi-stage funnel) fired
+  // immediately for everyone. Requiring at least 2 real stages before honoring that signal means
+  // an unfinished/minimal funnel just gets normal FAQ/stage replies instead of blanket premature
+  // handover, while a genuinely completed funnel (2+ stages) keeps the original behavior exactly.
+  const isFinalStage=allStages.length>1 && state.stage===allStages[allStages.length-1];
   const lastBotMsg=(state.history||[]).filter(m=>m.role==='assistant').slice(-1)[0]?.content||'';
   const actionMsg=action.msg?(flow.messages?.[action.msg]||''):'';
   const wouldRepeat=actionMsg && lastBotMsg && lastBotMsg.includes(actionMsg.slice(0,40));
