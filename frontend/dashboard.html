@@ -3095,43 +3095,37 @@ async function handleAuthentikCallback(){
   const code=url.searchParams.get('code');
   const state=url.searchParams.get('state');
   if(!code) return false;
+  // Immediate feedback, before any async work — on mobile this is a full-page redirect back into
+  // a freshly-loaded dashboard.html, so without this the gate screen looks completely idle (a
+  // static "Secure Login" button) for however long the exchange below takes, even though work is
+  // already happening. Same loading visuals startAuthentikLogin() already uses.
+  setGBtnState(true, 'Verifying your login…');
   const savedState=sessionStorage.getItem('lv_oidc_state');
   const verifier=sessionStorage.getItem('lv_pkce_verifier');
   sessionStorage.removeItem('lv_oidc_state'); sessionStorage.removeItem('lv_pkce_verifier');
   window.history.replaceState({},'',window.location.pathname); // strip ?code=&state= either way
   if(!verifier||!state||state!==savedState){completeLoginError('Login session expired — try again.');return true;}
   try{
-    const r=await fetch(`${CONFIG.AUTHENTIK_BASE}/application/o/token/`,{
-      method:'POST',
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:new URLSearchParams({
-        grant_type:'authorization_code',
-        client_id:CONFIG.AUTHENTIK_CLIENT_ID,
-        redirect_uri:CONFIG.AUTHENTIK_REDIRECT_URI,
-        code, code_verifier:verifier
-      })
-    });
-    const tok=await r.json();
-    if(!r.ok||!tok.access_token) throw new Error(tok.error_description||'Login failed');
-    // Hand the Authentik access token to the Worker — it verifies it against Authentik's
-    // userinfo endpoint, looks up the matching CLIENTS row by authentik_email, and issues
-    // its own session token (Authentik's access tokens are short-lived; this avoids needing
-    // token-refresh logic in the browser for the rest of the session).
+    // One round trip instead of two sequential ones (browser→Authentik token endpoint, then
+    // browser→Worker) — the Worker exchanges the code for an access token itself (still a
+    // public-client PKCE exchange, nothing secret changes hands) before verifying it, see
+    // handleSessionExchange in cloudflare-worker/worker.js.
     const sr=await fetch(`${CONFIG.WORKER_BASE}/session/exchange`,{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({access_token:tok.access_token})
+      body:JSON.stringify({code, code_verifier:verifier, client_id:CONFIG.AUTHENTIK_CLIENT_ID, redirect_uri:CONFIG.AUTHENTIK_REDIRECT_URI})
     });
     const session=await sr.json().catch(()=>({}));
     if(!sr.ok||!session.session_token){
       // A verified Authentik identity with no matching CLIENTS row isn't an error —
       // it's what a brand-new signup looks like on first login. Auto-provision instead
       // of dead-ending on an error message.
-      if(session.error==='no_account'&&session.email){
-        await autoProvisionAndLogin(session.email, tok.access_token);
+      if(session.error==='no_account'&&session.email&&session.access_token){
+        await autoProvisionAndLogin(session.email, session.access_token);
         return true;
       }
       throw new Error(session.error||'Login failed');
     }
+    setGBtnState(true, 'Loading your dashboard…');
     completeLoginResult(session);
   }catch(e){
     completeLoginError(e.message||'Login failed.');
