@@ -557,12 +557,50 @@ gap for services businesses: it screens the *customer's own* message with AI
   `POST /leads/booking-link` uses (no Chatwoot conversation context available there — it's called
   by n8n/a rep with just a phone number, not from inside a live Chatwoot webhook).
 
-**The booking link is also just shown on the Appointments tab itself** (`renderApptLinkBar()`,
+**Both booking links are also just shown on the Appointments tab itself** (`renderApptLinkBar()`,
 `dashboard.html`) — a small bar under the sub-nav, visible on every Appointments sub-page, with a
-Copy button. Same value as Settings → Order/Booking Link (`external_store_link`); this is purely a
-convenience so a rep can grab it without leaving the tab — e.g. to paste into `main_prompt` by hand
-for a client who wants the bot's own base prompt to mention it directly, on top of (or instead of)
-the KB-injected guidance above.
+Copy button for each: the external link (`external_store_link` — Cal.com/Calendly/etc, if set) and
+this repo's own public booking page (`book.html`, see below — always available once the module's
+tables exist). Purely a convenience so a rep can grab either without leaving the tab — e.g. to paste
+into `main_prompt` by hand for a client who wants the bot's own base prompt to mention it directly,
+on top of (or instead of) the KB-injected guidance above, which now falls back to `book.html` too
+when `external_store_link` isn't set.
+
+## Public Booking Page (`frontend/book.html`)
+The manual, always-available counterpart to Cal.com sync and the AI auto-send — a client with no
+Cal.com account (or who just wants a simple link with zero external dependency) can hand out
+`book.html?client=<id>` directly: to customers, in a WhatsApp bio, on a website, or pasted into
+`main_prompt`/`kb_text` so the bot mentions it. A customer picks a service (if any are listed),
+enters name/phone, picks a preferred date/time, and submits — landing as a `requested` row in
+`appt_table_ids.bookings` for staff to confirm, exactly like a booking-intent detection would, just
+initiated by the customer directly instead of inferred from conversation.
+- Same security shape as the ecommerce public storefront (`store.html`/`onshope-store.html`): only
+  `/appt/public/*` endpoints (`worker.js`), a fixed field whitelist on both the client record
+  (`APPT_PUBLIC_CLIENT_FIELDS`) and each service row (`APPT_PUBLIC_SERVICE_FIELDS`), and exactly
+  one write path — submitting a booking — which can only ever create a `requested` row, never
+  read/update/delete anything. A spammed or malicious submission can only add noise for staff to
+  dismiss, not corrupt existing data.
+- **`GET /appt/public/client?client=<id>`** / **`GET /appt/public/services?client=<id>`** —
+  both 404 with a generic "Booking page not found" unless `appt_enabled==='Yes'`, so a client who's
+  turned the module off (or never turned it on) doesn't have a live public page sitting around.
+- **`POST /appt/public/book`** (`handleApptPublicBook`) — body:
+  `{client_id, name, phone, service_id?, date?, time?, notes?}`. Requires `phone` and a client with
+  the module actually set up (`appt_table_ids.bookings` resolvable); everything else is optional —
+  a customer can submit with just a phone number and no preferred time, and staff follows up. Calls
+  the same `advanceLeadBookingAndTask()` helper the rest of this feature uses, now passing an
+  `explicitWhen` `{date, time}` — see below.
+- **`advanceLeadBookingAndTask()` (`worker.js`) gained an optional `explicitWhen` parameter.**
+  Every other caller (the AI auto-send, the outgoing-message watch, `POST /leads/booking-link`)
+  only knows *intent* — no specific date/time yet — so they dedupe on "this phone already has a
+  `requested` row" to avoid spamming duplicates as intent gets re-detected across a conversation.
+  A public-page submission is a real, distinct booking with its own date/time, so it skips that
+  dedupe and always inserts — `source:'public'` distinguishes these rows from `'bot'` (intent-only)
+  and `'calcom'` (external sync) ones. The task it drops is worded "Review booking" instead of
+  "Confirm booking" to reflect that a specific slot was actually requested, not just hinted at.
+- The outgoing-message watch (`CHATWOOT_HOOK_LINK_RE`, part of the zero-n8n auto-tracking webhook)
+  now also recognizes `book.html?client=<id>` as a link shape, alongside the built-in ecom
+  storefront link — so if the bot mentions the public booking page in its own words (per the
+  KB-injection fallback above), that still gets picked up and logged the same way.
 
 ## Appointment Booking module (`frontend/dashboard.html` — Appointments tab)
 A full, detailed module for services businesses (healthcare, consultancy, and anything else

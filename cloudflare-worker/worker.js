@@ -2826,10 +2826,14 @@ function apptResolveTable(c, kind){
 // the lead by phone, advances it to a booking-terminal stage (only one the client has actually
 // defined in their own flow_json — never writes a stage value they haven't configured), drops a
 // follow-up task via manual_tasks (the same JSON-on-CLIENTS field the Tasks page itself uses), and
-// — if the client has set up the Appointment Booking module — logs a `requested` row there too
-// (no date/time yet, since the customer hasn't picked one; source:'bot' distinguishes it from a
-// rep's manual entry or a Cal.com sync). Returns {lead_id, stage_advanced} for the caller to report back.
-async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service){
+// — if the client has set up the Appointment Booking module — logs a `requested` row there too.
+// `explicitWhen` is optional {date, time} — set by handleApptPublicBook when a customer submits a
+// real date/time through the public booking page, vs. the other callers here which only know
+// *intent*, not a specific slot yet. When set: source is 'public' instead of 'bot', the row always
+// gets inserted (a real distinct booking, not just intent, so no "already has one requested"
+// dedupe), and the task is worded as "review", not "confirm the link landed". Returns
+// {lead_id, stage_advanced} for the caller to report back.
+async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service, explicitWhen){
   const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
   const leadD=await leadR.json().catch(()=>({}));
   const lead=leadD?.list?.[0]||null;
@@ -2845,13 +2849,14 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service)
     }
   }
 
+  const whenText=explicitWhen?.date?` on ${explicitWhen.date}${explicitWhen.time?' '+explicitWhen.time:''}`:'';
   let manual={items:[],dismissed:[],projects:[]};
   try{ manual={...manual, ...JSON.parse(c.manual_tasks||'{}')}; }catch(e){}
   if(!Array.isArray(manual.items)) manual.items=[];
   manual.items.push({
     id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
-    title:`Confirm booking — ${name||phone}${service?.name?' ('+service.name+')':''}`,
-    notes:'Booking link sent — confirm the appointment landed.',
+    title:`${explicitWhen?'Review booking':'Confirm booking'} — ${name||phone}${service?.name?' ('+service.name+')':''}${whenText}`,
+    notes:explicitWhen?'Booked via the public booking page — review and confirm.':'Booking link sent — confirm the appointment landed.',
     due_date:new Date().toISOString().slice(0,10), due_time:'',
     lead_id:lead?lead.Id:null, lead_name:lead?.Name||name||'',
     assignee_email:'', category:'', project_id:'', status:'open', created_at:new Date().toISOString()
@@ -2860,18 +2865,24 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service)
 
   const bookingsTable=apptResolveTable(c, 'bookings');
   if(bookingsTable){
-    // Dedupe on "this phone already has a requested row" — matters most for the auto-tracking
-    // webhook, which can call this helper repeatedly if the bot repeats the booking link across
-    // several turns of the same conversation before a human confirms an actual date/time.
-    const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
-    const existD=await existR.json().catch(()=>({}));
-    if(!existD?.list?.length){
-      await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{
-        client_id:clientId, customer_name:name||'', customer_phone:phone,
-        service_id:service?String(service.Id):'', service_name:service?.name||'', appt_date:'', appt_time:'',
-        status:'requested', source:'bot', lead_id:lead?String(lead.Id):'', calcom_uid:'',
-        notes:'Booking link sent — awaiting confirmed date/time.', created_at:new Date().toISOString()
-      }}).catch(()=>{});
+    const insert=async()=>ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{
+      client_id:clientId, customer_name:name||'', customer_phone:phone,
+      service_id:service?String(service.Id):'', service_name:service?.name||'',
+      appt_date:explicitWhen?.date||'', appt_time:explicitWhen?.time||'',
+      status:'requested', source:explicitWhen?'public':'bot', lead_id:lead?String(lead.Id):'', calcom_uid:'',
+      notes:explicitWhen?'Booked via the public booking page — awaiting confirmation.':'Booking link sent — awaiting confirmed date/time.',
+      created_at:new Date().toISOString()
+    }}).catch(()=>{});
+    if(explicitWhen){
+      // A real, distinct booking with its own date/time — always insert, no dedupe.
+      await insert();
+    }else{
+      // Intent only, no specific slot yet — dedupe on "this phone already has a requested row" so
+      // the auto-tracking webhook (which can call this repeatedly as the bot repeats the link
+      // across turns) doesn't spam duplicate rows.
+      const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+      const existD=await existR.json().catch(()=>({}));
+      if(!existD?.list?.length) await insert();
     }
   }
 
@@ -3044,11 +3055,11 @@ async function handleEcomEnableOrderTracking(request, env){
 // so it can never race or double-reply against n8n's own bot response to the same conversation.
 // The link it looks for is exactly the one buildKbProcessorText() (dashboard.html) already
 // instructs the bot to share in its own words, so detecting it needs no n8n/engine.json changes.
-// Two shapes: the built-in module's own onshope.com/store.html link (sku extractable from it), or
-// — once external_store_link is set (Settings → Order Link) — that client's own Shopify/other
-// storefront URL, matched as a plain substring since an arbitrary external domain has no known sku
-// query-param scheme to parse out.
-const CHATWOOT_HOOK_LINK_RE=/https:\/\/(?:onshope\.com\/([a-z0-9-]+)|app\.leadvyne\.com\/store\.html\?client=(\d+))(?:[?&]sku=([^\s&"']+))?/i;
+// Three shapes: the built-in ecom module's own onshope.com/store.html link (sku extractable from
+// it), this repo's own public booking page (book.html — no sku), or — once external_store_link is
+// set (Settings → Order Link) — that client's own Shopify/Cal.com/other URL, matched as a plain
+// substring since an arbitrary external domain has no known sku query-param scheme to parse out.
+const CHATWOOT_HOOK_LINK_RE=/https:\/\/(?:onshope\.com\/([a-z0-9-]+)|app\.leadvyne\.com\/store\.html\?client=(\d+)|app\.leadvyne\.com\/book\.html\?client=(\d+))(?:[?&]sku=([^\s&"']+))?/i;
 
 // Direct, Cloudflare-only auto-send for booking-industry clients: screens the customer's own
 // INCOMING message for booking intent and, if detected, sends the booking link itself right here
@@ -3121,7 +3132,7 @@ async function handleChatwootMessageHook(request, env){
   const m=content.match(CHATWOOT_HOOK_LINK_RE);
   if(!m && !(ext && content.includes(ext))) return json({ok:true, skipped:'no-link-in-message'});
 
-  const sku=m?.[3]?decodeURIComponent(m[3]):null;
+  const sku=m?.[4]?decodeURIComponent(m[4]):null;
   const phone=String(
     body.conversation?.meta?.sender?.phone_number ||
     body.conversation?.contact_inbox?.source_id ||
@@ -3247,6 +3258,85 @@ async function handleEcomPublicStores(request, env){
   return json({list:stores});
 }
 
+/* ── APPOINTMENT PUBLIC BOOKING PAGE (frontend/book.html) — same three cuts as the ecommerce
+   public storefront above: (1) only one write path exists at all, the booking submission itself,
+   and it can only ever create a `requested` row, never read/update/delete anything; (2) a fixed
+   field whitelist on both the client record and each service row; (3) no access to any other
+   table. This is the manual, customer-self-serve counterpart to the Cal.com sync and the AI
+   auto-send — a client with no Cal.com account (or who just wants a simple always-available link)
+   can hand out `book.html?client=<id>` directly. ── */
+const APPT_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug'];
+const APPT_PUBLIC_SERVICE_FIELDS=['Id','name','duration_minutes','price','currency','description'];
+
+async function apptPublicResolveClient(env, url){
+  const clientId=String(url.searchParams.get('client')||url.searchParams.get('client_id')||'');
+  if(clientId) return getClientById(env, clientId);
+  const slug=String(url.searchParams.get('slug')||'');
+  if(slug) return getClientBySlug(env, slug);
+  return null;
+}
+
+async function handleApptPublicClient(request, env){
+  const url=new URL(request.url);
+  const c=await apptPublicResolveClient(env, url);
+  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  return json(ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS));
+}
+
+async function handleApptPublicServices(request, env){
+  const url=new URL(request.url);
+  const c=await apptPublicResolveClient(env, url);
+  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  const servicesTable=apptResolveTable(c, 'services');
+  if(!servicesTable) return json({list:[]});
+  const r=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${c.Id})~and(status,neq,inactive)&limit=100`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({list:(data.list||[]).map(row=>ecomPublicPick(row, APPT_PUBLIC_SERVICE_FIELDS))});
+}
+
+// The one write path this whole public surface has — always creates a `requested` row (never
+// confirms/updates/deletes), so a spammed or malicious submission can only ever add noise for
+// staff to dismiss, not corrupt existing data.
+async function handleApptPublicBook(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(!bookingsTable) return json({error:'Appointment booking is not set up for this business yet.'}, 400);
+
+  const name=String(body.name||'').trim().slice(0,120);
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!phone) return json({error:'Phone is required.'}, 400);
+  const date=String(body.date||'').slice(0,10);
+  const time=String(body.time||'').slice(0,5);
+  const notes=String(body.notes||'').trim().slice(0,500);
+
+  let service=null;
+  if(body.service_id){
+    const servicesTable=apptResolveTable(c, 'services');
+    if(servicesTable){
+      const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(Id,eq,${Number(body.service_id)})&limit=1`);
+      const sd=await sr.json().catch(()=>({}));
+      service=sd?.list?.[0]||null;
+    }
+  }
+
+  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, name, service, {date, time});
+  // notes from the public form aren't in advanceLeadBookingAndTask's fixed shape — patch them
+  // onto the row it just inserted rather than threading a free-text field through that helper.
+  if(notes){
+    const r=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(source,eq,public)&sort=-created_at&limit=1`);
+    const d=await r.json().catch(()=>({}));
+    const row=d?.list?.[0];
+    if(row) await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'PATCH', body:{Id:row.Id, notes:`Booked via the public booking page — awaiting confirmation.\n\nCustomer notes: ${notes}`}}).catch(()=>{});
+  }
+
+  return json({ok:true, lead_id, stage_advanced});
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -3303,6 +3393,9 @@ export default {
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
+      else if(url.pathname==='/appt/public/client' && request.method==='GET'){ res=await handleApptPublicClient(request, env); }
+      else if(url.pathname==='/appt/public/services' && request.method==='GET'){ res=await handleApptPublicServices(request, env); }
+      else if(url.pathname==='/appt/public/book' && request.method==='POST'){ res=await handleApptPublicBook(request, env); }
       else if(url.pathname==='/ecom/wa-templates' && request.method==='GET'){ res=await handleEcomWaTemplatesGet(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-preset' && request.method==='POST'){ res=await handleEcomWaTemplatesCreatePreset(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-from-library' && request.method==='POST'){ res=await handleEcomWaTemplatesCreateFromLibrary(request, env); }

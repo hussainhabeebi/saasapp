@@ -2052,6 +2052,24 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
+        <!-- Public Booking Page (book.html) — the manual, always-available counterpart to Cal.com
+             sync and the AI auto-send: a plain link customers can use to submit a booking request
+             themselves (name, phone, service, preferred date/time), landing as a `requested` row
+             in the Appointment module (handleApptPublicBook, worker.js) for staff to confirm. No
+             external account needed on either side. Shown once the module + its tables are set up
+             (same gate as Cal.com Sync — see initApptSettings()). -->
+        <div class="card" style="margin-bottom:14px;display:none" id="apptPublicPageCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📖 Public Booking Page</div>
+            <div class="s-note">Share this link with customers so they can request an appointment themselves — no Cal.com or other account needed. Requests land in your Appointments tab as "requested" for you to confirm. Paste it into your bot's prompt, WhatsApp bio, website, wherever.</div>
+            <label class="form-label">Booking page link</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input class="form-input" id="apptPublicPageUrl" type="text" readonly style="font-family:var(--mono);font-size:12px" onclick="this.select()">
+              <button class="btn-ghost" onclick="copyApptPublicPageLink()">📋 Copy</button>
+            </div>
+          </div>
+        </div>
+
         <!-- Cal.com — optional automatic sync into the Appointment Booking module. Not OAuth (Cal.com
              doesn't offer a simple third-party OAuth flow) — the client creates a webhook in their
              own Cal.com account (Settings -> Developer -> Webhooks) pointing at the URL below, using
@@ -4714,7 +4732,9 @@ function populateSettings(){
   $id('autoTrackingNote').textContent=isBookingIndustry()
     ? 'When your bot shares your booking link, automatically advance the lead + create a follow-up task. For booking-industry clients this also actively screens customers\' own incoming messages and sends the booking link itself the moment it looks booking-ready — no n8n changes needed, but note: if your n8n bot also replies to that same message, the customer gets two messages. One-time setup per WhatsApp connection.'
     : 'When your bot shares your order link with a customer, automatically log a pending order — with no changes to your n8n workflow. One-time setup per WhatsApp connection.';
-  // cal.com sync — only worth showing once the Appointment module is actually on
+  // public booking page + cal.com sync — only worth showing once the Appointment module is actually on
+  $id('apptPublicPageCard').style.display=(isBookingIndustry()&&clientRecord.appt_enabled==='Yes')?'block':'none';
+  $id('apptPublicPageUrl').value=`https://app.leadvyne.com/book.html?client=${clientId}`;
   $id('calcomCard').style.display=(isBookingIndustry()&&clientRecord.appt_enabled==='Yes')?'block':'none';
   $id('calcomWebhookUrlDisplay').value=`${CONFIG.WORKER_BASE}/calcom/webhook/${clientId}`;
   $id('cfgCalcomSecret').value=clientRecord.calcom_webhook_secret||'';
@@ -7372,8 +7392,12 @@ function buildKbProcessorText(rawText){
   }
   const hasExt=(clientRecord?.external_store_link||'').trim();
   if(isBookingIndustry()){
-    if(hasExt){
-      extra+=`\n## BOOKING LINK\nWhen a customer shows clear intent to book (asks about availability, wants to schedule, or says they want to proceed), share this link so they can pick a time: ${hasExt}\n`;
+    // Prefer the client's own external link (Cal.com/Calendly/etc) if set; otherwise fall back to
+    // this repo's own public booking page (book.html) — available the moment the Appointment
+    // module's tables exist, no external account needed.
+    const bookingLink=hasExt||(apptTablesReady()?`https://app.leadvyne.com/book.html?client=${clientId}`:'');
+    if(bookingLink){
+      extra+=`\n## BOOKING LINK\nWhen a customer shows clear intent to book (asks about availability, wants to schedule, or says they want to proceed), share this link so they can pick a time: ${bookingLink}\n`;
     }
   }else if(hasExt||Object.keys(getEcomTableIds()).length){
     const link=buildStorefrontLink();
@@ -9893,6 +9917,7 @@ $id('saveApptEnabled').addEventListener('click',async()=>{
     updateApptTabVisibility();
     _renderModuleBadge('apptModuleStatusBadge',val==='Yes');
     const cc=$id('calcomCard'); if(cc) cc.style.display=(isBookingIndustry()&&val==='Yes')?'block':'none';
+    const ppc=$id('apptPublicPageCard'); if(ppc) ppc.style.display=(isBookingIndustry()&&val==='Yes')?'block':'none';
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
@@ -9906,18 +9931,27 @@ async function renderAppointments(){
   renderApptSubPage(_apptPage);
 }
 
-// Shows the same link Settings -> Order/Booking Link holds (external_store_link) so a rep can
-// grab it here without leaving the Appointments tab — e.g. to paste it into main_prompt by hand.
+// Shows both links a rep might want to grab without leaving the Appointments tab: the external
+// booking link (Settings -> Order/Booking Link, external_store_link — Cal.com/Calendly/etc, if
+// set) and this repo's own public booking page (book.html?client=<id> — always available once the
+// module's tables exist, no external account needed) — e.g. to paste either into main_prompt by hand.
 function renderApptLinkBar(){
   const bar=$id('apptLinkBar'); if(!bar) return;
   const link=(clientRecord?.external_store_link||'').trim();
-  bar.innerHTML=link
-    ? `<span style="color:var(--muted)">📅 Booking link:</span><code style="background:var(--bg);padding:3px 8px;border-radius:6px;font-family:var(--mono);overflow-wrap:anywhere">${esc(link)}</code><button class="btn-ghost" onclick="copyApptLink()">📋 Copy</button>`
+  const publicLink=apptTablesReady()?`https://app.leadvyne.com/book.html?client=${clientId}`:'';
+  const parts=[];
+  if(link) parts.push(`<span style="color:var(--muted)">🔗 External:</span><code style="background:var(--bg);padding:3px 8px;border-radius:6px;font-family:var(--mono);overflow-wrap:anywhere">${esc(link)}</code><button class="btn-ghost" onclick="copyApptLink()">📋 Copy</button>`);
+  if(publicLink) parts.push(`<span style="color:var(--muted)">📖 Public page:</span><code style="background:var(--bg);padding:3px 8px;border-radius:6px;font-family:var(--mono);overflow-wrap:anywhere">${esc(publicLink)}</code><button class="btn-ghost" onclick="copyApptPublicPageLink()">📋 Copy</button>`);
+  bar.innerHTML=parts.length?parts.join('<span style="width:100%"></span>')
     : `<span style="color:var(--muted)">No booking link set yet — add one in <a href="#" onclick="navigate('settings');return false" style="color:var(--accent-ink);font-weight:600">Settings → Booking Link</a> so it can be shared automatically and pasted into your prompt.</span>`;
 }
 function copyApptLink(){
   const link=(clientRecord?.external_store_link||'').trim();
   if(!link) return;
+  navigator.clipboard?.writeText(link).then(()=>showToast('✓ Link copied')).catch(()=>{});
+}
+function copyApptPublicPageLink(){
+  const link=`https://app.leadvyne.com/book.html?client=${clientId}`;
   navigator.clipboard?.writeText(link).then(()=>showToast('✓ Link copied')).catch(()=>{});
 }
 
