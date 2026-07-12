@@ -2598,8 +2598,8 @@ async function handleBillingWebhook(request, env){
    doesn't have today. ── */
 // shopify_shop_domain/connected_at are read-only here — only the OAuth callback sets them.
 // shopify_access_token is deliberately excluded (never reaches the browser).
-const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log'];
-const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config'];
+const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone'];
+const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone'];
 
 // Shared default tables used until a client explicitly saves their own table
 // ID in Settings — mirrors ecom.html's client-side DEFAULT_ECOM_IDS fallback.
@@ -3966,9 +3966,10 @@ async function engineSendHandoverLabel(c, convId){
 // computation and the LEADS upsert body. See the file-header comment above for the ConvHistory
 // and human-handover-message fixes vs. the source workflow. `messageId` (Chatwoot's own message
 // id, when available) is persisted as LastProcessedMessageId for handleEngineWebhook's
-// idempotency check — written only here, as part of a normal successful turn, never earlier; see
-// that check's own comment for why.
-function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId){
+// idempotency check. `isNewLead` must be the "did this lead already exist" snapshot taken before
+// engineClaimMessage ran (state.leadId itself is no longer reliable for that by this point — a
+// brand-new lead may already have a stub row and leadId from the claim).
+function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead){
   const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, isOptOut, isResub}=routing;
   const reply=routing.reply;
   let next=routeNext;
@@ -4019,9 +4020,9 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     if(isOptOut) wp=0;
     body.WinProbability=Math.max(0, Math.min(100, wp));
   }
-  if(c.deal_currency && !state.leadId) body.DealCurrency=c.deal_currency;
+  if(c.deal_currency && isNewLead) body.DealCurrency=c.deal_currency;
 
-  if(!state.leadId && !state.owner){
+  if(isNewLead && !state.owner){
     const reps=engineParseSalesReps(c.agents);
     if(reps.length){
       let h=0; const phoneStr=String(state.phone||'');
@@ -4040,6 +4041,22 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
 async function engineUpsertLead(env, method, leadId, body){
   if(leadId) body.Id=leadId;
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
+}
+
+// Called by handleEngineWebhook right before the slow classify/LLM work — see that call site's
+// comment for why. Best-effort: if this write fails for any reason, falls back to the original
+// leadId (or null) so the turn proceeds exactly as it would have before this existed, rather than
+// aborting a real customer message over a claim-step failure.
+async function engineClaimMessage(env, clientId, phone, leadId, messageId){
+  try{
+    if(leadId){
+      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, LastProcessedMessageId:messageId}});
+      return leadId;
+    }
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:{ClientId:String(clientId), Phone:phone, Stage:'new', LastProcessedMessageId:messageId}});
+    const d=await r.json().catch(()=>null);
+    return d?.Id||leadId||null;
+  }catch(e){ return leadId||null; }
 }
 
 async function engineLogAnalytics(env, entry){
@@ -4121,6 +4138,21 @@ async function handleEngineWebhook(request, env, secret){
     const lastMsgAt=state.lastMsgAt?new Date(state.lastMsgAt).getTime():0;
     if(Date.now()-lastMsgAt<rateLimitMs) return json({ok:true, skipped:'rate-limited'});
 
+    // Claim this message id now, before the slow classify/LLM/context work below — observed in
+    // production as a genuine duplicate reply (identical product-lookup message sent twice, ~1
+    // minute apart): Chatwoot's webhook delivery times out waiting for a response (this turn can
+    // run several LLM + NocoDB round-trips deep) and redelivers the same message_created event
+    // independently of whatever status this handler eventually returns, so the original
+    // end-of-turn-only idempotency write (engineBuildLeadUpsertBody, below) was still in flight
+    // when the redelivery's own idempotency check ran and found nothing to skip yet. Claiming here
+    // shrinks that race window down to the handful of fast, synchronous checks above instead of
+    // the whole turn. Still not a true atomic compare-and-swap (NocoDB has no such primitive
+    // available here), so it isn't airtight — just far smaller. isNewLead is captured before this
+    // can mutate state.leadId, since engineBuildLeadUpsertBody uses "no leadId yet" to decide
+    // Owner/DealCurrency assignment for a genuinely brand-new lead.
+    const isNewLead=!state.leadId;
+    if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
+
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory);
     const routing=engineRouteFlow(c, state, userText, cls);
@@ -4189,7 +4221,7 @@ async function handleEngineWebhook(request, env, secret){
       if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
     }
 
-    const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId);
+    const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
     await engineUpsertLead(env, method, leadId, leadBody);
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a

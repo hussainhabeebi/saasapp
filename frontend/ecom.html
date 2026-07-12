@@ -254,6 +254,19 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 <!-- SETTINGS TAB -->
 <div id="tabSettings" class="page">
   <div class="card">
+    <div class="card-title">Storefront Order Button</div>
+    <div class="s-sec">
+      <span class="s-lbl">WhatsApp Number for Orders</span>
+      <input class="s-input" id="cfgSupportPhone" type="text" placeholder="e.g. +91 94969 71950">
+      <div class="s-hint">Powers the "Order on WhatsApp" button on your public store page. If you connected WhatsApp under Settings → Channels, that number is used automatically and you can leave this blank — only set this if your storefront isn't showing an order button.</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveSupportPhone()">Save</button>
+      <span class="save-msg" id="supportPhoneMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">Ecommerce Table IDs (NocoDB)</div>
     <div class="s-sec">
       <span class="s-lbl">Products Table ID</span>
@@ -526,6 +539,10 @@ async function init() {
   document.getElementById('cfgOrdersTable').value   = ecomTableIds.orders   || '';
   if (clientRecord.ecom_orders_sheet)   document.getElementById('cfgOrdersSheet').value   = clientRecord.ecom_orders_sheet;
   if (clientRecord.review_link)         document.getElementById('cfgReviewLink').value    = clientRecord.review_link;
+  if (clientRecord.support_phone)       document.getElementById('cfgSupportPhone').value  = clientRecord.support_phone;
+  if (!clientRecord.wa_display_phone && !clientRecord.support_phone) {
+    document.getElementById('cfgSupportPhone').placeholder = '+91 94969 71950 — required, no order button will show without this or Channels WhatsApp';
+  }
 
   try {
     const om = JSON.parse(clientRecord.ecom_orders_column_map || '{}');
@@ -1396,6 +1413,14 @@ async function saveTableIds() {
     loadProducts();
     loadOrders();
   } catch (e) { showMsg('tableIdsMsg', 'Error: ' + e.message, 6000); }
+}
+
+async function saveSupportPhone() {
+  const phone = document.getElementById('cfgSupportPhone').value.trim();
+  try {
+    await patchClient({ support_phone: phone });
+    showMsg('supportPhoneMsg', 'Saved ✓');
+  } catch (e) { showMsg('supportPhoneMsg', 'Error: ' + e.message, 6000); }
 }
 
 async function saveReviewLink() {
