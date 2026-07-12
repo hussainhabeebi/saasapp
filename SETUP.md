@@ -61,6 +61,10 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | team_chatwoot_users | Long text (JSON, `{email: chatwoot_user_id}` — per-teammate Chatwoot Platform user ids, populated by User Management → Create New User — see "Matching Chatwoot agent" below) |
 | team_names | Long text (JSON, `{email: name}` — display names for team_emails, populated by User Management → Create New User — see "Agents = Team Members = Users" below; the now-unused `agents` field it replaced was a plain newline-separated name list) |
 | business_policies | Long text (JSON, `{refund, delivery, cancellation}` — structured objection-handling policy text, Settings → Trust & Policies — see "Trust Signals & grounded objection-handling" below) |
+| external_store_link | Single line text — Settings → Order Link. A client's own Shopify (or any other) storefront URL. Takes priority over the built-in Ecommerce module's own storefront link everywhere an order link is generated; see "Order-intent links" below. |
+| appt_enabled | Single line text (`Yes`/`No`) — Settings → Modules. Turns the Appointment Booking module on; adds the Appointments dashboard tab. See "Appointment Booking module" below. |
+| appt_table_ids | Long text (JSON, `{services, bookings}` NocoDB table ids) — this client's own per-client Appointment Booking tables, created by `apptSetupTables()`. |
+| calcom_webhook_secret | Single line text — Settings → Cal.com Sync. The shared secret used to verify Cal.com's webhook signature (`X-Cal-Signature-256`). |
 | fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 | billing_emails_sent | Long text (comma-separated `<event>:<stripe_object_id>` keys — dedupes the trial-ending/receipt/dunning/action-required emails below if Stripe redelivers a webhook; capped to the most recent 20; see "RBI pre-debit notification" below) |
 | notification_email | Single line (email address `n8n/notifications.json` sends hot-lead/handover/SLA alerts to) |
@@ -364,14 +368,13 @@ provide is the automation surface that detection should call, plus a rep-facing 
 the same thing:
 - **`POST /ecom/order-link`** (`cloudflare-worker/worker.js`, `handleEcomOrderLink`) — the
   automation entry point, client_id-based like the rest of `/ecom/*` (no Authentik session, since
-  n8n has none). Body: `{client_id, phone, name?, sku?}`. Builds the same storefront link a
-  product card's own "Order on WhatsApp" button already uses (`onshope.com/<slug>` if the client
-  has one, else `store.html?client=<id>`, with `&sku=` for a specific product), sends it directly
-  via Meta's Graph API (bypassing Chatwoot, same pattern as `handleWaSend`), and **always** logs a
-  `pending`-status row in the client's ecom orders table — even if the WhatsApp send itself fails
-  (e.g. the customer is outside Meta's 24h free-form-message window), so "order intent" leaves a
-  paper trail regardless. Returns `{ok, link, order_id, whatsapp_sent, whatsapp_error?}`. This is
-  the route the n8n bot should call the moment it decides a customer wants to buy something.
+  n8n has none). Body: `{client_id, phone, name?, sku?}`. Builds the order link via the shared
+  `buildOrderLink(c, clientId, sku)` helper (see below), sends it directly via Meta's Graph API
+  (bypassing Chatwoot, same pattern as `handleWaSend`), and **always** logs a `pending`-status row
+  in the client's ecom orders table — even if the WhatsApp send itself fails (e.g. the customer is
+  outside Meta's 24h free-form-message window), so "order intent" leaves a paper trail regardless.
+  Returns `{ok, link, order_id, whatsapp_sent, whatsapp_error?}`. This is the route the n8n bot
+  should call the moment it decides a customer wants to buy something.
 - **Dashboard version** (`dashboard.html`, lead detail pane → "🛒 Push to Order") — same modal
   that already created ecom order rows now also has a product picker
   (`loadPoProducts()`/`#poProduct`, populated from `GET /ecom/products`) and a "📲 Also send this
@@ -382,6 +385,57 @@ the same thing:
   up a `pending` option (matching `ORDER_STATUS_OPTIONS` in `ecom.html`, which already had it —
   this dropdown was just missing it) and now defaults to it, since a just-sent link is order
   intent, not a confirmed order.
+
+**External stores (Shopify or anything else) as the order link, Settings → 🔗 Order Link:** most
+clients don't actually sell through the built-in Ecommerce module — they already run a Shopify
+store (or something else) and just want the CRM/bot pointing customers at *that*. `external_store_link`
+(new CLIENTS field, plain text, e.g. a `https://yourstore.myshopify.com` URL) is a manual override
+clients set once; every order-link code path checks it first and only falls back to the built-in
+module's own `onshope.com/<slug>` / `store.html?client=<id>` link when it's blank:
+- `buildOrderLink(c, clientId, sku)` (`worker.js`) — the one place `handleEcomOrderLink` builds a
+  link, so the automation route picks this up automatically.
+- `buildStorefrontLink(sku)` (`dashboard.html`) — same fallback, used by "Push to Order"'s link
+  preview and, through it, everywhere else in the dashboard that shares a store link.
+- `buildKbProcessorText()`'s `## ORDER LINK` guidance (see "Zero-n8n-edit alternative" above) now
+  fires whenever *either* `external_store_link` is set *or* the client has ecom module tables
+  configured — previously it only fired for the built-in module, so a Shopify-only client's bot
+  never got told to share a link at all.
+- `handleChatwootMessageHook`'s auto order-tracking (see "Closing the loop on order-row creation"
+  below) resolves the client first now (previously it checked the link pattern before knowing which
+  client sent it), then matches either the built-in `onshope.com/store.html` pattern *or* a plain
+  substring match against that client's own `external_store_link` — an arbitrary external domain
+  has no known query-param scheme to extract a `sku` from, so sku goes unset (still logs the order,
+  just without a specific product attached) when the match comes from an external link.
+- Note this is a manual field, not a live read of the connected `shopify_shop_domain` — a client
+  who's connected Shopify via Settings → Integrations for order-notification webhooks still needs
+  to separately paste their store URL here if they want it used as the *order link* too; the two
+  aren't wired together.
+
+**Non-ecom industries (healthcare/services/consultancy/etc) — booking, not ordering:** every
+industry but Ecommerce (`INDUSTRIES` in `dashboard.html`) already converts leads via a *booking*
+(appointment, consultation, viewing, test drive, placement — `TERMINAL` already has
+`appt_booked`/`consultation_booked`/`visit_booked`), not a purchase, so there's no ecom order row
+to create. Settings → Order Link relabels itself "🔗 Booking Link" for these clients
+(`isBookingIndustry()`, `dashboard.html` — true for any industry except `ecommerce`) and
+`external_store_link` holds a scheduling URL (Calendly/Cal.com/etc) instead of a storefront.
+- **`POST /leads/booking-link`** (`worker.js`, `handleLeadBookingLink`) — the booking equivalent of
+  `/ecom/order-link`, same client_id-based/no-session shape for n8n to call. Body:
+  `{client_id, phone, name?}`. Sends the configured booking link over WhatsApp directly, then calls
+  the shared `advanceLeadBookingAndTask()` helper: finds the lead by phone, advances its `Stage` to
+  whichever of `appt_booked`/`consultation_booked`/`visit_booked` actually exists in that client's
+  own `flow_json` (never writes a stage the client hasn't defined in their stage builder — if none
+  of the three are present, the stage is left alone), and appends a follow-up task to
+  `manual_tasks` (the same JSON-on-CLIENTS field the Tasks page itself reads/writes — no new
+  table). Returns `{ok, link, whatsapp_sent, lead_id, stage_advanced}`.
+- **The zero-n8n auto-tracking webhook covers this too**: `handleChatwootMessageHook` (see "Closing
+  the loop" above) now branches on whether the client has an ecom orders table configured. If not
+  — i.e. a pure booking-industry client — it calls the same `advanceLeadBookingAndTask()` helper
+  instead of logging an ecom order, deduping on "lead already at a booking-terminal stage" rather
+  than a pending-order check. So a healthcare client gets the exact same zero-n8n-edit automation
+  ecom clients get, just pointed at the lead pipeline instead of an orders table.
+- No dashboard button calls `/leads/booking-link` directly, same as `/ai/order-signal` and
+  `/ai/objection-reply` — it's meant to be called from n8n once a booking signal is detected there,
+  the same n8n-calls-Cloudflare pattern as those two.
 
 **`POST /ai/order-signal`** (`handleAiOrderSignal`) — decides *whether* and *for what* to call
 `/ecom/order-link` above; it never sends anything itself. Same n8n-calls-Cloudflare shape as
@@ -463,6 +517,99 @@ for the *effect* of the KB-injected instruction instead of n8n calling anything.
   aren't authenticated by default here), same accepted client_id-based-trust tradeoff as the rest
   of `/ecom/*` — it only ever performs a `pending`-status insert, never a destructive action, which
   keeps the blast radius of a spoofed call low.
+
+## Appointment Booking module (`frontend/dashboard.html` — Appointments tab)
+A full, detailed module for services businesses (healthcare, consultancy, and anything else
+`isBookingIndustry()` covers — every industry but Ecommerce) to manage bookable services and the
+actual appointments, plus optional automatic sync from Cal.com. Follows the same architecture as
+the Travel Agency and Recruitment/Consultancy modules — **not** Ecommerce's: per-client NocoDB
+tables (not one shared table with a `client_id` column), created on demand, with CRUD going
+straight from the browser to NocoDB through the existing session-authed `/nocodb` passthrough
+(`handleNocodbPassthrough`, `worker.js`) rather than dedicated `/appt/*` worker routes.
+
+**Enabling it — Settings → 🧩 Modules:** this new consolidated section is also a bug fix in
+passing — Travel Agency's manual toggle never existed in the markup (only a hidden dead
+span/button), and Recruitment's toggle had a duplicate-id bug where `$id('cfgRecruitEnabled')`
+always resolved to a second, hidden, non-functional copy of the element, so the visible dropdown's
+clicks went nowhere. Both now have one real, working `<select>` + Save button here, same ids
+(`cfgTaEnabled`/`saveTaEnabled`, `cfgRecruitEnabled`/`saveRecruitEnabled`) so their existing JS
+(`initTaSettings`/`initRcSettings`, the click listeners) needed no changes — it was already
+correct, just shadowed. **Appointment Booking's row (`#apptModuleRow`) only shows for
+`isBookingIndustry()` clients** — an ecom client has no use for an appointments calendar. Toggling
+it on ensures `appt_enabled`/`appt_table_ids`/`calcom_webhook_secret` columns exist on CLIENTS and
+writes `appt_enabled`.
+
+**The module itself, 📅 Appointments tab (gated by `appt_enabled==='Yes'`, `updateApptTabVisibility()`):**
+- First visit prompts **"Create Tables Now"** (`apptSetupTables()`) — creates two per-client tables,
+  `Appt_Services_<clientId>` and `Appt_Bookings_<clientId>`, and stores their ids as
+  `appt_table_ids` JSON (`{services, bookings}`) on the client row. Idempotent re-run, same pattern
+  as `taSetupTables()`/`rcSetupTables()`.
+- **Dashboard sub-tab**: today/upcoming/completed/requested counts, upcoming-appointments list.
+- **Services sub-tab**: what the business offers — name, duration, price, currency, active/inactive
+  — a simple catalog, not tied to Ecommerce's `products` table at all.
+- **Appointments sub-tab**: the actual bookings — customer name/phone, linked service (optional),
+  date, time, status (`requested`/`confirmed`/`completed`/`cancelled`/`no_show`), notes, filterable
+  by status. `source` distinguishes how a row was created: `manual` (rep, via "+ New Appointment"),
+  `bot` (the booking-link automation below), `calcom` (Cal.com sync below).
+
+**Cal.com Sync (optional), Settings → 🗓️ Cal.com Sync (shown once the module is enabled):** not
+OAuth — Cal.com doesn't offer a simple third-party OAuth flow for this. Instead the client creates
+a webhook themselves in their own Cal.com account (Settings → Developer → Webhooks), pastes the
+URL shown here (`{WORKER_BASE}/calcom/webhook/{clientId}`) as the endpoint, picks "Booking
+Created"/"Booking Cancelled" (and optionally "Booking Rescheduled") as events, and sets a secret —
+the same secret gets pasted into `cfgCalcomSecret` here (`calcom_webhook_secret` on CLIENTS).
+- **`POST /calcom/webhook/<clientId>`** (`worker.js`, `handleCalcomWebhook`) — client_id comes from
+  the URL path itself (Cal.com webhooks don't carry any other client-identifying field), not a
+  session or a shared app secret. Verifies `X-Cal-Signature-256` — **hex**-encoded HMAC-SHA256,
+  unlike Shopify's base64 (`verifyCalcomWebhookHmac` vs `verifyShopifyWebhookHmac`) — against that
+  client's own `calcom_webhook_secret` (per-client, since each client's Cal.com webhook secret is
+  theirs, not one app-wide secret the way Shopify's `SHOPIFY_API_SECRET` works for an installed
+  app). Upserts into `appt_table_ids.bookings`, keyed by Cal.com's own booking `uid` so
+  `BOOKING_RESCHEDULED`/`BOOKING_CANCELLED` update the same row instead of duplicating it.
+- Cal.com's webhook payload shape (`payload.attendees[0]`, `payload.startTime`, `payload.title`,
+  event names like `BOOKING_CREATED`) is based on Cal.com's documented webhook format and
+  defensively parsed, but — same honest caveat as the Chatwoot webhook handler above — hasn't been
+  verified against a live payload from a specific client's Cal.com account/plan.
+
+**Booking-link automation now feeds this module too:** `advanceLeadBookingAndTask()` (`worker.js`,
+shared by `POST /leads/booking-link` and `handleChatwootMessageHook`'s non-ecom fallback — see
+"Non-ecom industries" above) now also inserts a `requested`-status row into
+`appt_table_ids.bookings` (source `bot`, no date/time yet since the customer hasn't picked one)
+whenever the client has the Appointment module set up — in addition to advancing the lead stage and
+dropping the follow-up task it already did. Deduped on "this phone already has a `requested` row"
+so a bot repeating the booking link across turns doesn't spam duplicate appointment rows. A client
+using the built-in Appointment module (rather than just the lead-stage/task fallback) now gets
+booking-intent detections landing directly in their Appointments list, same as a Cal.com sync would.
+
+**`POST /ai/booking-signal`** (`handleAiBookingSignal`) — the piece that was actually missing for a
+*fully automatic* "order intent found → booking link sent" loop for services clients.
+`/ai/order-signal` (above) exists for ecom, but it's hard-coded to ecom's product catalog and
+phrased for "a business selling physical products" — not reusable as-is for a services business
+with no product table. This is the booking-industry equivalent: client_id-based, no session, same
+n8n-calls-Cloudflare shape. Body: `{client_id, message}`. Screens one incoming message for booking
+readiness (explicit "I want to book/schedule", or a specific question about availability/duration/
+price of one service) using the client's own **Services** catalog from the Appointment Booking
+module (`apptResolveTable(c,'services')` — only services with `status!=='inactive'`). Returns
+`{signal:false}`, `{signal:true}` (no confident service match), or
+`{signal:true, service_id:"..."}`. **Kept as pure detection, not merged with sending the link**,
+same reasoning as `/ai/order-signal`: n8n calls this on incoming messages, and on `signal:true`
+calls `POST /leads/booking-link` (passing `service_id` through if matched) to actually send it —
+two calls, so n8n stays the one deciding whether its own bot also replies to that message, avoiding
+the double-reply risk a single combined detect-and-send call would reintroduce.
+- **`POST /leads/booking-link` now accepts an optional `service_id`** — when the Appointment
+  module has a matching, active service, the WhatsApp message names it specifically ("book your
+  *Initial Consultation* (30 min)" vs. the generic "here's the link to book"), and the
+  `requested`-status row `advanceLeadBookingAndTask()` logs into `appt_table_ids.bookings` carries
+  `service_id`/`service_name` instead of blank ones — same upgrade the appointment gets from a
+  Cal.com sync, just sourced from AI detection instead.
+- **For this whole loop to do anything useful, the Appointment Booking module needs to actually be
+  enabled** (Settings → 🧩 Modules, `appt_enabled==='Yes'`, tables created via "Create Tables Now")
+  — without it, `/ai/booking-signal` still works but always returns `{signal:true}` with no
+  `service_id` (empty services catalog), and the booking-link send/lead-advance/task-drop still all
+  work as before, just without a services catalog or an Appointments list to log into. n8n calling
+  `/ai/booking-signal` → `/leads/booking-link` is meaningful for any booking-industry client either
+  way; it's specifically the "which service, and does it show up in an Appointments tab" upgrade
+  that needs the module turned on.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
