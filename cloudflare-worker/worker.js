@@ -1109,6 +1109,70 @@ ${reviewLink?`Review link: ${reviewLink}`:''}`;
   return json({handled:!!parsed.handled, reply:parsed.handled?String(parsed.reply||'').trim():undefined});
 }
 
+// Classifies one incoming message for order-readiness — same n8n-calls-Cloudflare shape as
+// handleAiObjectionReply above (client_id-based, no session; n8n orchestrates, this only
+// classifies). A "signal" isn't just an explicit "I want to buy X" — a specific-variant question
+// (size, color, stock, price of one item) is just as strong a buying signal for a physical-goods
+// business, so those count too. When the model can confidently match the message to one product
+// in the catalog, its `sku` comes back too — n8n should then call POST /ecom/order-link with that
+// sku (and the customer's phone) to actually build+send+log the link; this endpoint only decides
+// *whether* and *for what*, it never sends anything itself.
+async function handleAiOrderSignal(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const message=String(body.message||'').trim();
+  if(!clientId||!message) return json({error:'client_id and message required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!c.openrouter_key) return json({error:'No OpenRouter API key set for this account.'}, 400);
+
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  let productList='';
+  if(productsTable){
+    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100&fields=name,sku,color,size,category`);
+    const pd=await pr.json().catch(()=>({}));
+    productList=(pd?.list||[]).map(p=>`- ${p.name}${p.sku?' [sku:'+p.sku+']':''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}`).join('\n');
+  }
+
+  const system=`You are screening one incoming WhatsApp message for a business selling physical products, to decide if it's an order-readiness signal — either an explicit request to buy, OR a specific-variant question about a product (size, color, stock/availability, price of one specific item) that shows they're close to ordering. General browsing questions, greetings, or unrelated questions are NOT signals.
+If it is a signal, try to match it to exactly one product from the catalog below by name — include its sku only if you're confident of the match, otherwise omit sku (don't guess). Respond with ONLY valid JSON: {"signal":true,"sku":"..."} or {"signal":true} (no confident match) or {"signal":false}.
+
+Product catalog:
+${productList||'(no products listed)'}`;
+
+  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method:'POST',
+    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({
+      model:c.model||'google/gemini-2.5-flash', temperature:0.2, max_tokens:150,
+      messages:[{role:'system',content:system},{role:'user',content:message}]
+    })
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  const raw=data?.choices?.[0]?.message?.content?.trim()||'{"signal":false}';
+  let parsed={signal:false};
+  try{ parsed=JSON.parse(raw); }catch(e){}
+  return json({signal:!!parsed.signal, sku:parsed.signal?(parsed.sku||undefined):undefined});
+}
+
+// Plain lookup, no AI — "has this phone number ordered before, and what's the status" — so a
+// returning customer ("where's my order?", "I already paid") gets recognized instead of the bot
+// starting a fresh sales pitch. Cheap enough to call on every incoming message; n8n decides what
+// to do with the result (reference the existing order, skip re-pushing an order link, etc.).
+async function handleEcomOrderLookup(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  const phone=String(url.searchParams.get('phone')||'').replace(/[^0-9+]/g,'');
+  if(!clientId||!phone) return json({error:'client_id and phone required'}, 400);
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return json({found:false, orders:[]});
+  const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})&sort=-order_date&limit=5`);
+  const data=await r.json().catch(()=>({}));
+  const orders=(data?.list||[]).map(o=>({order_id:o.order_id, status:o.status, items:o.items, total:o.total, currency:o.currency, order_date:o.order_date}));
+  return json({found:orders.length>0, orders});
+}
+
 /* ── Campaigns module (broadcast.html) — Chatwoot template list/create + send
    routes, so chatwoot_token never reaches the browser (previously broadcast.html
    embedded both the master NocoDB token and the client's own chatwoot_token
@@ -2789,6 +2853,7 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
       else if(url.pathname==='/ecom/order-link' && request.method==='POST'){ res=await handleEcomOrderLink(request, env); }
+      else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
@@ -2797,6 +2862,7 @@ export default {
       else if(url.pathname==='/ecom/wa-templates/create-from-library' && request.method==='POST'){ res=await handleEcomWaTemplatesCreateFromLibrary(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/ai/objection-reply' && request.method==='POST'){ res=await handleAiObjectionReply(request, env); }
+      else if(url.pathname==='/ai/order-signal' && request.method==='POST'){ res=await handleAiOrderSignal(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }
       else if(url.pathname==='/broadcast/templates/sync' && request.method==='POST'){ res=await handleBroadcastTemplatesSync(request, env); }

@@ -383,6 +383,26 @@ the same thing:
   this dropdown was just missing it) and now defaults to it, since a just-sent link is order
   intent, not a confirmed order.
 
+**`POST /ai/order-signal`** (`handleAiOrderSignal`) — decides *whether* and *for what* to call
+`/ecom/order-link` above; it never sends anything itself. Same n8n-calls-Cloudflare shape as
+`/ai/objection-reply`: client_id-based, no session. Body: `{client_id, message}`. A "signal" isn't
+only an explicit "I want to buy X" — a specific-variant question (size, color, stock, price of one
+item — `PRODUCT_FIELDS` in `ecom.html` already has `color`/`size` columns) is just as strong a
+buying signal for physical goods, so those count too; the prompt is built with the client's product
+catalog (`name`/`sku`/`color`/`size`/`category`, up to 100 rows) so the model can attempt to match
+the message to one specific product. Returns `{signal:false}`, `{signal:true}` (order-ready but no
+confident product match — push the general catalog link), or `{signal:true, sku:"..."}` (push that
+product's link specifically). n8n should call this on order-relevant messages, then call
+`POST /ecom/order-link` with the resulting `sku` (if any) when `signal:true`.
+
+**`GET /ecom/order-lookup?client_id=<id>&phone=<phone>`** (`handleEcomOrderLookup`) — plain lookup,
+no AI: does this phone number have prior orders, and what's their status (up to 5, most recent
+first)? So a returning customer ("where's my order?", "I already paid") gets recognized instead of
+the bot starting a fresh sales pitch or `/ai/order-signal` pushing a second, redundant order link.
+Cheap enough to call on every incoming message; n8n decides what to do with the result (reference
+the existing order in its reply, skip re-pushing a link, etc.) — this repo only surfaces the data,
+same repo-boundary as everything else in this section.
+
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
 write every client's row in every table via devtools — not just their own), plus each logged-in
