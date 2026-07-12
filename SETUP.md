@@ -592,6 +592,15 @@ reply-risk tradeoff, same honest limits, same accepted-trust auth model.
   "that one") — a message naming its own color/size/product name is matched against the catalog
   fresh, and if it doesn't match anything, the reply falls back to `resolveOrderProductAndText`'s
   generic "here's our full catalog" text (no sku) instead of reusing an unrelated product.
+- **That fix then over-corrected the other way**: telling the model to omit sku unless "confident"
+  about a fresh match made it too literal — "Looking for green shirt" and "Greenshirt small size"
+  (both genuinely matching the catalog's "Light Green" shirt) started falling back to the generic
+  catalog link too, the same failure mode as before, just for legitimate queries this time. The
+  prompt now explicitly calls out that customer wording won't match catalog fields exactly
+  ("green" vs "Light Green", "greenshirt" vs "green shirt", "S"/"small"/"S size" all the same
+  detail) and to match by everyday judgment, not string equality — while keeping the earlier fix's
+  actual point: a detail that *conflicts* with the just-discussed product means a new product, not
+  a reason to fall back to the generic link.
 - **`logPendingOrder` never checked whether its NocoDB write actually succeeded** — same silent-
   failure shape as `ncPatchVerified` was written to fix elsewhere in this file. A rejected/failed
   POST (bad field type, schema-cache lag right after a client's orders table was first configured,
