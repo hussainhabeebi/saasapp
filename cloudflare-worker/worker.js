@@ -3804,6 +3804,13 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry){
 
   if(industry==='ecommerce'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
+    // Observed real failure, paired with the routing change above: a product listed sizes "S, M,
+    // L, XL" (one row, no per-size stock breakdown in this data model — the size field just lists
+    // every size that product comes in), and the assistant still told the customer "we don't have
+    // any products in that size" — fabricating a specific-size stock answer the data can't
+    // actually support. Only the whole product's `stock` count is real; there is no per-size
+    // number to check.
+    sys+=' A product\'s size field lists every size it is made in — never claim a size listed there is out of stock or unavailable; only the product\'s overall stock count (available vs. not) is real data you have. If stock is 0 or the product genuinely is not in the catalog, say that honestly instead of guessing.';
     // Closes an observed real failure: a customer replied "Order M size" to a product the
     // assistant had just shown sizes for, and got "we don't have anything matching" back instead
     // of the shown product — because a bare size/color reply carries no signal on its own, only in
@@ -4074,14 +4081,40 @@ async function handleEngineWebhook(request, env, secret){
       sentText=routing.reply||null;
       if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
     } else if(['faq','ecom_faq','travel_faq'].includes(routing.route)){
-      let contextBlock=null;
-      if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
-      else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
-      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general');
-      let reply=await engineCallLlm(c, sysPrompt, userText, 300);
-      if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
-      routing.reply=reply; sentText=reply;
-      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      let orderHandledInline=false;
+      // For ecommerce, check order-readiness FIRST, before generating a generic reply — not
+      // after. Observed real failure: "Order pls" (referring to a shirt already shown earlier in
+      // the conversation) got a generic "what would you like to order today?" reply, discarding
+      // everything already discussed — because order-signal detection previously only ran as a
+      // bolt-on AFTER a generic LLM reply had already been generated and sent, so a confused
+      // reply reached the customer regardless of whether the follow-up signal check later got it
+      // right. detectOrderSignal already resolves short/bare replies ("order pls", "S size", "the
+      // green one") against recent conversation correctly on its own — the bug was architectural
+      // (running too late), not in that detection logic itself. Now: if it fires, the resolved
+      // product IS the primary reply, not a second message layered on top of a bad first one.
+      if(routing.route==='ecom_faq' && c.openrouter_key){
+        const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+        const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+        if(detection.signal){
+          const link=buildOrderLink(c, clientId, detection.sku);
+          const {product, text:orderReplyText}=await resolveOrderProductAndText(env, c, clientId, state.name, detection.sku, link);
+          routing.reply=orderReplyText; sentText=orderReplyText;
+          await engineSendChatwootReply(env, c, clientId, convId, sentText);
+          await logPendingOrder(env, c, clientId, phone, name, product);
+          orderHandledInline=true;
+        }
+      }
+      if(!orderHandledInline){
+        let contextBlock=null;
+        if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
+        else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
+        const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general');
+        let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+        if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
+        routing.reply=reply; sentText=reply;
+        await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      }
+      routing._orderHandledInline=orderHandledInline;
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
@@ -4107,13 +4140,15 @@ async function handleEngineWebhook(request, env, secret){
 
     // Signal auto-send, folded into this same turn — previously a second, independent Chatwoot
     // webhook (handleChatwootIncomingOrderSignal / handleChatwootIncomingBookingSignal above).
-    // Skipped for human/drop/opt-out/resub turns, none of which carry real intent to act on.
+    // Skipped for human/drop/opt-out/resub turns, none of which carry real intent to act on, and
+    // for ecom turns already handled inline above (routing._orderHandledInline) — otherwise this
+    // would re-run detectOrderSignal a second time and could send a duplicate order-link message.
     // Branches strictly on c.industry — NOT on whether ecomResolveTable(..., 'orders') resolves a
     // table id, since that helper falls back to a shared default table id for every client
     // regardless of industry (ECOM_DEFAULT_TABLE_IDS), so table-truthiness alone can't distinguish
     // an actual ecom client from a booking-industry one the way handleChatwootMessageHook's own
     // dispatch (elsewhere in this file) tries to.
-    if(!['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token){
+    if(!['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && !routing._orderHandledInline){
       if(c.industry==='ecommerce'){
         const ordersTable=await ecomResolveTable(env, clientId, 'orders');
         if(ordersTable){
