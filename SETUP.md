@@ -61,6 +61,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | team_chatwoot_users | Long text (JSON, `{email: chatwoot_user_id}` — per-teammate Chatwoot Platform user ids, populated by User Management → Create New User — see "Matching Chatwoot agent" below) |
 | team_names | Long text (JSON, `{email: name}` — display names for team_emails, populated by User Management → Create New User — see "Agents = Team Members = Users" below; the now-unused `agents` field it replaced was a plain newline-separated name list) |
 | business_policies | Long text (JSON, `{refund, delivery, cancellation}` — structured objection-handling policy text, Settings → Trust & Policies — see "Trust Signals & grounded objection-handling" below) |
+| external_store_link | Single line text — Settings → Order Link. A client's own Shopify (or any other) storefront URL. Takes priority over the built-in Ecommerce module's own storefront link everywhere an order link is generated; see "Order-intent links" below. |
 | fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 | billing_emails_sent | Long text (comma-separated `<event>:<stripe_object_id>` keys — dedupes the trial-ending/receipt/dunning/action-required emails below if Stripe redelivers a webhook; capped to the most recent 20; see "RBI pre-debit notification" below) |
 | notification_email | Single line (email address `n8n/notifications.json` sends hot-lead/handover/SLA alerts to) |
@@ -364,14 +365,13 @@ provide is the automation surface that detection should call, plus a rep-facing 
 the same thing:
 - **`POST /ecom/order-link`** (`cloudflare-worker/worker.js`, `handleEcomOrderLink`) — the
   automation entry point, client_id-based like the rest of `/ecom/*` (no Authentik session, since
-  n8n has none). Body: `{client_id, phone, name?, sku?}`. Builds the same storefront link a
-  product card's own "Order on WhatsApp" button already uses (`onshope.com/<slug>` if the client
-  has one, else `store.html?client=<id>`, with `&sku=` for a specific product), sends it directly
-  via Meta's Graph API (bypassing Chatwoot, same pattern as `handleWaSend`), and **always** logs a
-  `pending`-status row in the client's ecom orders table — even if the WhatsApp send itself fails
-  (e.g. the customer is outside Meta's 24h free-form-message window), so "order intent" leaves a
-  paper trail regardless. Returns `{ok, link, order_id, whatsapp_sent, whatsapp_error?}`. This is
-  the route the n8n bot should call the moment it decides a customer wants to buy something.
+  n8n has none). Body: `{client_id, phone, name?, sku?}`. Builds the order link via the shared
+  `buildOrderLink(c, clientId, sku)` helper (see below), sends it directly via Meta's Graph API
+  (bypassing Chatwoot, same pattern as `handleWaSend`), and **always** logs a `pending`-status row
+  in the client's ecom orders table — even if the WhatsApp send itself fails (e.g. the customer is
+  outside Meta's 24h free-form-message window), so "order intent" leaves a paper trail regardless.
+  Returns `{ok, link, order_id, whatsapp_sent, whatsapp_error?}`. This is the route the n8n bot
+  should call the moment it decides a customer wants to buy something.
 - **Dashboard version** (`dashboard.html`, lead detail pane → "🛒 Push to Order") — same modal
   that already created ecom order rows now also has a product picker
   (`loadPoProducts()`/`#poProduct`, populated from `GET /ecom/products`) and a "📲 Also send this
@@ -382,6 +382,31 @@ the same thing:
   up a `pending` option (matching `ORDER_STATUS_OPTIONS` in `ecom.html`, which already had it —
   this dropdown was just missing it) and now defaults to it, since a just-sent link is order
   intent, not a confirmed order.
+
+**External stores (Shopify or anything else) as the order link, Settings → 🔗 Order Link:** most
+clients don't actually sell through the built-in Ecommerce module — they already run a Shopify
+store (or something else) and just want the CRM/bot pointing customers at *that*. `external_store_link`
+(new CLIENTS field, plain text, e.g. a `https://yourstore.myshopify.com` URL) is a manual override
+clients set once; every order-link code path checks it first and only falls back to the built-in
+module's own `onshope.com/<slug>` / `store.html?client=<id>` link when it's blank:
+- `buildOrderLink(c, clientId, sku)` (`worker.js`) — the one place `handleEcomOrderLink` builds a
+  link, so the automation route picks this up automatically.
+- `buildStorefrontLink(sku)` (`dashboard.html`) — same fallback, used by "Push to Order"'s link
+  preview and, through it, everywhere else in the dashboard that shares a store link.
+- `buildKbProcessorText()`'s `## ORDER LINK` guidance (see "Zero-n8n-edit alternative" above) now
+  fires whenever *either* `external_store_link` is set *or* the client has ecom module tables
+  configured — previously it only fired for the built-in module, so a Shopify-only client's bot
+  never got told to share a link at all.
+- `handleChatwootMessageHook`'s auto order-tracking (see "Closing the loop on order-row creation"
+  below) resolves the client first now (previously it checked the link pattern before knowing which
+  client sent it), then matches either the built-in `onshope.com/store.html` pattern *or* a plain
+  substring match against that client's own `external_store_link` — an arbitrary external domain
+  has no known query-param scheme to extract a `sku` from, so sku goes unset (still logs the order,
+  just without a specific product attached) when the match comes from an external link.
+- Note this is a manual field, not a live read of the connected `shopify_shop_domain` — a client
+  who's connected Shopify via Settings → Integrations for order-notification webhooks still needs
+  to separately paste their store URL here if they want it used as the *order link* too; the two
+  aren't wired together.
 
 **`POST /ai/order-signal`** (`handleAiOrderSignal`) — decides *whether* and *for what* to call
 `/ecom/order-link` above; it never sends anything itself. Same n8n-calls-Cloudflare shape as

@@ -2008,6 +2008,24 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
+        <!-- Order Link — where "share a store link" (Deal Coach, Trust Signals, order-intent
+             automation, the KB-injected bot instruction) should actually point. Most clients sell
+             through Shopify or another storefront they already run, not the built-in Ecommerce
+             module — this field lets them say so. Falls back to the built-in module's own
+             storefront link (buildStorefrontLink()) whenever it's left blank. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🔗 Order Link</div>
+            <div class="s-note">If customers actually order from Shopify or another store you run — not the built-in Ecommerce module — paste that store's URL here. It's what gets shared whenever a rep or the bot pushes an order link (Push to Order, Trust Signals, order-intent automation). Leave blank to use the built-in Ecommerce module storefront instead.</div>
+            <label class="form-label">Store URL</label>
+            <input class="form-input" id="cfgExternalStoreLink" type="text" placeholder="e.g. https://yourstore.myshopify.com" style="margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveExternalStoreLink">Save</button>
+              <span class="save-msg" id="saveExternalStoreLinkMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- Resend (Email) -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -3937,7 +3955,13 @@ async function loadPoProducts(){
 // Same link a storefront product card's own "Order on WhatsApp" button points at — the client's
 // onshope.com slug if they have one, else the SaaS-branded store.html?client=<id>, both already
 // used verbatim elsewhere (see store.html/onshope-store.html) so this isn't a new URL scheme.
+// If the client has set an external store link (Settings → Order Link — Shopify or any other
+// storefront they actually sell through), that takes priority and this built-in link is only the
+// fallback. sku deep-linking only works for the built-in store — an arbitrary external URL has no
+// known query-param scheme to append one to, so it's returned as-is.
 function buildStorefrontLink(sku){
+  const ext=(clientRecord?.external_store_link||'').trim();
+  if(ext) return ext;
   const slug=clientRecord?.client_slug;
   const base=slug?`https://onshope.com/${slug}`:`https://app.leadvyne.com/store.html?client=${clientId}`;
   if(!sku) return base;
@@ -4559,6 +4583,8 @@ function populateSettings(){
   $id('cfgPolicyRefund').value=_pol.refund;
   $id('cfgPolicyDelivery').value=_pol.delivery;
   $id('cfgPolicyCancellation').value=_pol.cancellation;
+  // order link
+  $id('cfgExternalStoreLink').value=clientRecord.external_store_link||'';
   // services
   loadServices();
   // stages
@@ -4699,6 +4725,10 @@ $id('saveKb').addEventListener('click',async()=>{
   setTimeout(()=>msgEl.textContent='',5000);
 });
 $id('cfgKbText').addEventListener('input',kbUpdateCount);
+
+$id('saveExternalStoreLink').addEventListener('click',async()=>{
+  await saveField('saveExternalStoreLink','saveExternalStoreLinkMsg',{external_store_link:$id('cfgExternalStoreLink').value.trim()});
+});
 
 $id('savePolicies').addEventListener('click',async()=>{
   await saveField('savePolicies','savePoliciesMsg',{business_policies:JSON.stringify({
@@ -7192,7 +7222,7 @@ function buildKbProcessorText(rawText){
   if(bookings>0){
     extra+=`\n## SOCIAL PROOF\n${bookings} customers completed an order/booking in the last 7 days. When a customer is hesitating, you may naturally mention this to build trust (e.g. "${bookings} people booked this week").\n`;
   }
-  if(Object.keys(getEcomTableIds()).length){
+  if((clientRecord?.external_store_link||'').trim()||Object.keys(getEcomTableIds()).length){
     const link=buildStorefrontLink();
     extra+=`\n## ORDER LINK\nWhen a customer shows clear buying intent (asks about size, color, price, stock, or says they want to buy/order), share this store link so they can complete the purchase: ${link}\n`;
   }

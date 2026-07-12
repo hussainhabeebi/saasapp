@@ -2680,6 +2680,21 @@ async function handleEcomDelete(request, env, kind){
 // handleWaSend), and always logs a 'pending' row in the client's ecom orders table — so "order
 // intent" leaves a paper trail even if the WhatsApp send itself fails (e.g. outside the 24h
 // free-form-message window) or the customer never finishes checking out.
+// Shared by handleEcomOrderLink and the KB-payload guidance's server-side equivalents — a client's
+// own external_store_link (Shopify or any other storefront they actually sell through, set in
+// Settings → Order Link) always wins; the built-in Ecommerce module's own storefront link
+// (onshope.com/<slug> or store.html?client=<id>) is only the fallback when it's blank. sku
+// deep-linking only applies to the built-in link — an external URL has no known query-param
+// scheme to append one to, so it's returned as-is.
+function buildOrderLink(c, clientId, sku){
+  const ext=(c.external_store_link||'').trim();
+  if(ext) return ext;
+  const slug=c.client_slug;
+  const base=slug?`https://onshope.com/${slug}`:`https://app.leadvyne.com/store.html?client=${clientId}`;
+  if(!sku) return base;
+  return slug?`${base}?sku=${encodeURIComponent(sku)}`:`${base}&sku=${encodeURIComponent(sku)}`;
+}
+
 async function handleEcomOrderLink(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
@@ -2698,9 +2713,7 @@ async function handleEcomOrderLink(request, env){
       product=pd?.list?.[0]||null;
     }
   }
-  const slug=c.client_slug;
-  const base=slug?`https://onshope.com/${slug}`:`https://app.leadvyne.com/store.html?client=${clientId}`;
-  const link=body.sku?(slug?`${base}?sku=${encodeURIComponent(body.sku)}`:`${base}&sku=${encodeURIComponent(body.sku)}`):base;
+  const link=buildOrderLink(c, clientId, body.sku);
   const name=body.name||'there';
   const text=product
     ? `Hi ${name}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
@@ -2762,6 +2775,10 @@ async function handleEcomEnableOrderTracking(request, env){
 // so it can never race or double-reply against n8n's own bot response to the same conversation.
 // The link it looks for is exactly the one buildKbProcessorText() (dashboard.html) already
 // instructs the bot to share in its own words, so detecting it needs no n8n/engine.json changes.
+// Two shapes: the built-in module's own onshope.com/store.html link (sku extractable from it), or
+// — once external_store_link is set (Settings → Order Link) — that client's own Shopify/other
+// storefront URL, matched as a plain substring since an arbitrary external domain has no known sku
+// query-param scheme to parse out.
 const CHATWOOT_HOOK_LINK_RE=/https:\/\/(?:onshope\.com\/([a-z0-9-]+)|app\.leadvyne\.com\/store\.html\?client=(\d+))(?:[?&]sku=([^\s&"']+))?/i;
 async function handleChatwootMessageHook(request, env){
   const body=await request.json().catch(()=>({}));
@@ -2771,14 +2788,15 @@ async function handleChatwootMessageHook(request, env){
   const accountId=String(body.account?.id||'');
   if(!accountId||!content) return json({ok:true, skipped:'no-account-or-content'});
 
-  const m=content.match(CHATWOOT_HOOK_LINK_RE);
-  if(!m) return json({ok:true, skipped:'no-link-in-message'});
-
   const c=await findClientByField(env, 'chatwoot_account_id', accountId);
   if(!c) return json({ok:true, skipped:'client-not-found'});
   const clientId=String(c.Id);
 
-  const sku=m[3]?decodeURIComponent(m[3]):null;
+  const ext=(c.external_store_link||'').trim();
+  const m=content.match(CHATWOOT_HOOK_LINK_RE);
+  if(!m && !(ext && content.includes(ext))) return json({ok:true, skipped:'no-link-in-message'});
+
+  const sku=m?.[3]?decodeURIComponent(m[3]):null;
   const phone=String(
     body.conversation?.meta?.sender?.phone_number ||
     body.conversation?.contact_inbox?.source_id ||
