@@ -434,16 +434,16 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   const data=await r.text();
 
   // dashboard.html's Settings saves write most CLIENTS fields straight through this generic
-  // passthrough (no dedicated handler per field) — `industry` is one of them. If this write
-  // touched it, the client's primary Chatwoot webhook (n8n vs the Cloudflare ecom engine) may now
-  // be stale; re-sync it here rather than only at WhatsApp-connect time, so switching a client
-  // into/out of 'ecommerce' after they're already connected doesn't get silently missed.
+  // passthrough (no dedicated handler per field). Any successful PATCH to the client's own row is
+  // a cheap opportunity to double-check their primary Chatwoot webhook still points at
+  // /engine/webhook — matters most right after WhatsApp gets connected during onboarding, since
+  // chatwoot_inbox_id (required by engineSyncChatwootWebhook) or a legacy webhook_url can become
+  // available/stale slightly out of order relative to other Settings saves. No-ops quickly if
+  // already correct, so this is safe to run on every save rather than sniffing for one field.
   if(r.ok && method==='PATCH' && upstreamPath.startsWith(`api/v2/tables/${CLIENTS_TABLE}/records`) && body){
     try{
-      if('industry' in JSON.parse(body)){
-        const c=await getClientById(env, payload.cid);
-        if(c) await engineSyncChatwootWebhook(env, c);
-      }
+      const c=await getClientById(env, payload.cid);
+      if(c) await engineSyncChatwootWebhook(env, c);
     }catch(e){}
   }
 
@@ -1494,10 +1494,10 @@ async function handleChannelsWhatsappConnect(request, env){
   const inbox=await inboxR.json().catch(()=>({}));
   if(!inboxR.ok||!inbox?.id) return json({error:'Chatwoot inbox creation failed: '+(inbox?.message||('HTTP '+inboxR.status))}, 502);
 
-  // Best-effort — wires the correct primary reply webhook onto the new inbox (n8n's c.webhook_url,
-  // or this Worker's /engine/webhook for industry==='ecommerce' clients — see
-  // engineSyncChatwootWebhook) so no manual paste-in-Chatwoot step is needed. If this fails, it can
-  // still be added/fixed from Chatwoot's own UI, or re-synced later by resaving the industry field.
+  // Best-effort — wires this Worker's /engine/webhook onto the new inbox (see
+  // engineSyncChatwootWebhook) so no manual paste-in-Chatwoot step is needed, for every industry.
+  // If this fails, it can still be added/fixed from Chatwoot's own UI, or re-synced later by
+  // resaving any Settings field (handleNocodbPassthrough re-checks it on every CLIENTS PATCH).
   await engineSyncChatwootWebhook(env, {...c, chatwoot_inbox_id:String(inbox.id)});
 
   // wa_phone_id is Meta's internal phone-number-id (needed for API calls), not something a
@@ -3305,16 +3305,24 @@ async function handleChatwootMessageHook(request, env){
   return json({ok:true, order_id});
 }
 
-/* ── ECOM CONVERSATION ENGINE (replaces n8n's engine.json for industry==='ecommerce' clients) ──
-   Point an ecom client's Chatwoot inbox "message_created" webhook at POST /engine/webhook
-   instead of n8n's own webhook URL, and this one endpoint does everything engine.json's n8n
-   workflow did: tenant + lead lookup, media→text, AI intent/sentiment classification, the
+/* ── CONVERSATION ENGINE, all industries (replaces n8n's engine.json entirely) ──
+   Point every client's Chatwoot inbox "message_created" webhook at POST /engine/webhook instead
+   of n8n's own webhook URL, and this one endpoint does everything engine.json's n8n workflow did,
+   for every industry: tenant + lead lookup, media→text, AI intent/sentiment classification, the
    flow_json state machine (FAQ/qualify/objection/human-handover routing), sending the reply via
    Chatwoot, and upserting the LEADS row + analytics. The client is resolved the same way
    handleChatwootMessageHook already does (chatwoot_account_id -> CLIENTS row), so there's no more
-   per-client "wrapper workflow" to stamp out in n8n — one URL serves every ecom client. Gated to
-   industry==='ecommerce' only (per-request); every other client keeps running on n8n untouched —
-   pointing a non-ecom client's webhook here is a harmless no-op (see the industry check below).
+   per-client "wrapper workflow" to stamp out in n8n — one URL serves every client, and
+   engineSyncChatwootWebhook (below) registers it automatically the moment a client connects
+   WhatsApp, so a brand-new signup never touches n8n at all. FAQ grounding is industry-aware
+   (engineRouteFlow's `industryFaqRoute`): 'ecommerce' gets the product/order-catalog context
+   (engineBuildEcomContext), 'travel' gets the Travel Agency module's packages/Umrah-groups/cars
+   context (engineBuildTravelContext), everything else (general/insurance/real_estate/healthcare/
+   education/automotive/consultancy) gets the plain main_prompt+services+kb_summary grounding —
+   matching engine.json's own three-way `industry === 'ecommerce' ? 'ecom_faq' : (industry ===
+   'travel' ? 'travel_faq' : 'faq')` split. Order-intent auto-send (ecommerce) and booking-intent
+   auto-send (every other industry, once a booking link is configured) are both folded into the
+   same turn — see the bottom of handleEngineWebhook.
 
    Ported field-for-field from the supplied engine.json ("Leadvyne · Engine v3"), with these
    deliberate deviations from what that workflow literally does today:
@@ -3557,8 +3565,8 @@ async function engineClassifyIntent(env, c, userText, activeHistory){
 
 // Mirrors "Code · Intent + flow" — the flow_json state machine that decides where this turn goes
 // (human handover / qualify / FAQ / objection / a scripted stage message) and what the next stage
-// is. Hardcodes the ecom-specific routing engine.json only takes when industry==='ecommerce',
-// since this whole engine is gated to that industry (see handleEngineWebhook).
+// is. FAQ routing is industry-aware (industryFaqRoute below), matching engine.json's own
+// industry-conditional routing rather than hardcoding one industry's behavior.
 function engineRouteFlow(c, state, userText, cls){
   const {intent, intentData, sentiment, objectionCategory, aiWinProbability}=cls;
   const lowText=userText.toLowerCase().trim();
@@ -3570,6 +3578,11 @@ function engineRouteFlow(c, state, userText, cls){
   const botConfig=engineParseJsonField(c.bot_config, {});
   const qualQuestions=engineParseJsonField(c.qual_questions, []);
   const flow=engineParseJsonField(c.flow_json, {});
+  // Mirrors engine.json's `industry === 'ecommerce' ? 'ecom_faq' : (industry === 'travel' ?
+  // 'travel_faq' : 'faq')` — which industry-specific FAQ context (if any) this client's grounded
+  // answers should pull in.
+  const industry=c.industry||'general';
+  const industryFaqRoute=industry==='ecommerce'?'ecom_faq':(industry==='travel'?'travel_faq':'faq');
   let effIntent=intent;
   if(state.looping && botConfig.antiloop_enabled!==false) effIntent='WANTS_HUMAN';
 
@@ -3606,7 +3619,7 @@ function engineRouteFlow(c, state, userText, cls){
   } else if(wouldRepeat && POSITIVE.has(effIntent)) route='faq';
   else if(state.stage==='human_handover') route='drop'; // unreachable — handleEngineWebhook hard-stops earlier, kept for parity
   else if(stageNotFound || effIntent==='QUESTION' || NEGATIVE.has(effIntent)){
-    route='ecom_faq';
+    route=industryFaqRoute;
     const flowIsActive=allStages.length>0 && !isFinalStage && state.stage!=='human_handover' && !stageNotFound;
     if(flowIsActive && effIntent==='QUESTION' && action.msg){
       const vars=flow.variables||{};
@@ -3619,7 +3632,7 @@ function engineRouteFlow(c, state, userText, cls){
   if(sentiment==='Frustrated' && route!=='human' && botConfig.handover_enabled!==false){
     route='human';
     reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
-  } else if(objectionCategory!=='none' && ['faq','ecom_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
+  } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
     route='objection';
   }
 
@@ -3644,7 +3657,7 @@ function engineRouteFlow(c, state, userText, cls){
     if(action.form && vars.form_link && !reply.includes(vars.form_link)) reply+='\n\n'+vars.form_link;
     if(action.video) videoUrl=vars[action.video]||null;
   }
-  if(route==='stage' && !action.msg) route='ecom_faq';
+  if(route==='stage' && !action.msg) route=industryFaqRoute;
 
   if(effIntent==='BOOKING' && c.cal_link && !reply.includes(c.cal_link)){
     reply=(reply||'Great! You can book your slot here 📅')+'\n\n👉 '+c.cal_link;
@@ -3682,23 +3695,75 @@ async function engineBuildEcomContext(env, c, clientId, phone){
   return lines.length?('\n\n'+lines.join('\n')):'';
 }
 
-// Mirrors "Code · FAQ prep" (ecomContextBlock omitted) / "Code · Ecom FAQ prep" (block included).
-function engineBuildFaqSystemPrompt(c, state, ecomContextBlock){
+// Same per-client per-kind lookup pattern as ecomResolveTable/apptResolveTable, for the Travel
+// Agency module's own tables (ta_table_ids — see TA_TABLE_TITLES in dashboard.html).
+function taResolveTable(c, kind){
+  try{ return (JSON.parse(c.ta_table_ids||'{}'))[kind]||null; }catch(e){ return null; }
+}
+
+// Travel-industry equivalent of engineBuildEcomContext, for the 'travel_faq' route — engine.json's
+// "Leadvyne · TA Context" sub-workflow wasn't available to port either, so this is the same
+// from-scratch approach: built directly off the Travel Agency module's own packages/Umrah-group/
+// car-rental tables instead of whatever that sub-workflow used to assemble.
+async function engineBuildTravelContext(env, c, clientId){
+  const lines=[];
+  const packagesTable=taResolveTable(c, 'packages');
+  if(packagesTable){
+    const pr=await ncFetch(env, `api/v2/tables/${packagesTable}/records?where=(client_id,eq,${clientId})&limit=25&fields=name,type,destination,nights,pax_min,pax_max,currency,sell_price,inclusions`);
+    const pd=await pr.json().catch(()=>({}));
+    const pkgs=pd?.list||[];
+    if(pkgs.length){
+      lines.push('## Travel Packages');
+      pkgs.forEach(p=>lines.push(`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${p.currency||''} ${p.sell_price??''}${p.inclusions?' — includes: '+String(p.inclusions).slice(0,150):''}`));
+    }
+  }
+  const umrahTable=taResolveTable(c, 'umrah_groups');
+  if(umrahTable){
+    const ur=await ncFetch(env, `api/v2/tables/${umrahTable}/records?where=(client_id,eq,${clientId})&limit=15&fields=name,departure_date,return_date,seats,makkah_hotel,madinah_hotel,price_per_pax,currency`);
+    const ud=await ur.json().catch(()=>({}));
+    const groups=ud?.list||[];
+    if(groups.length){
+      lines.push('## Umrah Groups');
+      groups.forEach(g=>lines.push(`- ${g.name} — departs ${g.departure_date||'TBA'}, returns ${g.return_date||'TBA'}, ${g.seats??''} seats — Makkah: ${g.makkah_hotel||''}, Madinah: ${g.madinah_hotel||''} — price ${g.currency||''} ${g.price_per_pax??''} per pax`));
+    }
+  }
+  const carsTable=taResolveTable(c, 'cars');
+  if(carsTable){
+    const cr=await ncFetch(env, `api/v2/tables/${carsTable}/records?where=(client_id,eq,${clientId})~and(status,eq,available)&limit=15&fields=name,make,model,year,category,seats,daily_rate,currency`);
+    const cd=await cr.json().catch(()=>({}));
+    const cars=cd?.list||[];
+    if(cars.length){
+      lines.push('## Rental Cars Available');
+      cars.forEach(car=>lines.push(`- ${car.name||(car.make+' '+car.model)} (${car.year??''}, ${car.category||''}, ${car.seats??''} seats) — ${car.currency||''} ${car.daily_rate??''}/day`));
+    }
+  }
+  return lines.length?('\n\n'+lines.join('\n')):'';
+}
+
+// Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
+// "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
+// (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
+function engineBuildFaqSystemPrompt(c, state, contextBlock, industry){
   const history=state.activeHistory||[];
   const lang=c.language||'en';
   let sys=c.main_prompt||'';
   const services=engineParseJsonField(c.services, []);
+  const defaultCurrency=industry==='ecommerce'?'INR':'AED';
+  const defaultUnit=industry==='ecommerce'?'item':'person';
   if(services.length){
-    sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||(ecomContextBlock?'INR':'AED')} ${s.price} per ${s.per||(ecomContextBlock?'item':'person')}`).join('\n');
+    sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||defaultCurrency} ${s.price} per ${s.per||defaultUnit}`).join('\n');
   }
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
-  if(ecomContextBlock) sys+=ecomContextBlock;
+  if(contextBlock) sys+=contextBlock;
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
-  if(!ecomContextBlock){
+
+  if(industry==='ecommerce'){
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above. If specific details are not available, politely say you will connect them with support.';
+  } else if(industry==='travel'){
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. If specific details are not available, politely say you will connect them with an advisor.';
+  } else {
     sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
-  } else {
-    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above. If specific details are not available, politely say you will connect them with support.';
   }
   return sys;
 }
@@ -3844,7 +3909,6 @@ async function handleEngineWebhook(request, env){
   const c=await findClientByField(env, 'chatwoot_account_id', accountId);
   if(!c) return json({ok:true, skipped:'client-not-found'});
   const clientId=String(c.Id);
-  if(c.industry!=='ecommerce') return json({ok:true, skipped:'not-ecommerce-industry'});
   if(c.active==='No') return json({ok:true, skipped:'client-inactive'});
 
   const parsed=engineParseChatwootPayload(body);
@@ -3888,9 +3952,11 @@ async function handleEngineWebhook(request, env){
   } else if(routing.route==='qualify_next'){
     sentText=routing.reply||null;
     if(sentText) await engineSendChatwootReply(c, convId, sentText);
-  } else if(routing.route==='faq' || routing.route==='ecom_faq'){
-    const ecomContextBlock=routing.route==='ecom_faq' ? await engineBuildEcomContext(env, c, clientId, phone) : null;
-    const sysPrompt=engineBuildFaqSystemPrompt(c, state, ecomContextBlock);
+  } else if(['faq','ecom_faq','travel_faq'].includes(routing.route)){
+    let contextBlock=null;
+    if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
+    else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
+    const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general');
     let reply=await engineCallLlm(c, sysPrompt, userText, 300);
     if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
     routing.reply=reply; sentText=reply;
@@ -3918,20 +3984,48 @@ async function handleEngineWebhook(request, env){
   });
   await patchClientFields(env, clientId, {last_seen:new Date().toISOString()}).catch(()=>{});
 
-  // Order-signal auto-send, folded into this same turn — previously a second, independent
-  // Chatwoot webhook (handleChatwootIncomingOrderSignal above). Skipped for human/drop/opt-out/
-  // resub turns, none of which carry real order intent.
+  // Signal auto-send, folded into this same turn — previously a second, independent Chatwoot
+  // webhook (handleChatwootIncomingOrderSignal / handleChatwootIncomingBookingSignal above).
+  // Skipped for human/drop/opt-out/resub turns, none of which carry real intent to act on.
+  // Branches strictly on c.industry — NOT on whether ecomResolveTable(..., 'orders') resolves a
+  // table id, since that helper falls back to a shared default table id for every client
+  // regardless of industry (ECOM_DEFAULT_TABLE_IDS), so table-truthiness alone can't distinguish
+  // an actual ecom client from a booking-industry one the way handleChatwootMessageHook's own
+  // dispatch (elsewhere in this file) tries to.
   if(!['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token){
-    const ordersTable=await ecomResolveTable(env, clientId, 'orders');
-    if(ordersTable){
-      const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,pending)&limit=1`);
-      const existD=await existR.json().catch(()=>({}));
-      if(!existD?.list?.length){
+    if(c.industry==='ecommerce'){
+      const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+      if(ordersTable){
+        const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,pending)&limit=1`);
+        const existD=await existR.json().catch(()=>({}));
+        if(!existD?.list?.length){
+          const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+          const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+          if(detection.signal){
+            if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendOrderLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.sku);
+            else await sendOrderLinkNow(env, c, clientId, phone, name, detection.sku);
+          }
+        }
+      }
+    } else if((c.external_store_link||'').trim()){
+      // Booking-industry equivalent (healthcare/consultancy/travel/etc — everything but
+      // ecommerce, matching handleChatwootIncomingBookingSignal's own gating): only runs once a
+      // booking link is actually configured, and skips a lead already at a booking-terminal
+      // stage or one with a `requested` appointment already pending.
+      const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
+      let alreadyRequested=false;
+      const bookingsTable=apptResolveTable(c, 'bookings');
+      if(!alreadyBooked && bookingsTable){
+        const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+        const existD=await existR.json().catch(()=>({}));
+        alreadyRequested=!!existD?.list?.length;
+      }
+      if(!alreadyBooked && !alreadyRequested){
         const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
-        const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+        const detection=await detectBookingSignal(env, c, clientId, userText, contextText);
         if(detection.signal){
-          if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendOrderLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.sku);
-          else await sendOrderLinkNow(env, c, clientId, phone, name, detection.sku);
+          if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendBookingLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.service_id);
+          else await sendBookingLinkNow(env, c, clientId, phone, name, detection.service_id);
         }
       }
     }
@@ -3940,51 +4034,42 @@ async function handleEngineWebhook(request, env){
   return json({ok:true, route:routing.route, sent:!!sentText});
 }
 
-// Keeps the client's PRIMARY conversational-reply webhook (the one Chatwoot calls to decide who
-// replies to the customer — n8n's per-client wrapper URL, or this Worker's /engine/webhook) in
-// sync with `industry`, so a client that becomes (or stops being) 'ecommerce' after WhatsApp is
-// already connected doesn't silently keep the wrong one registered forever. Called from
-// handleChannelsWhatsappConnect (first connect) and handleNocodbPassthrough below (industry
-// changed afterward, e.g. in Settings). Only ever touches a webhook whose URL is exactly one of
-// the two known candidates below — the separate Auto-Order-Tracking webhook
-// (handleEcomEnableOrderTracking) and anything a client registered by hand in Chatwoot are left
-// alone. Best-effort throughout: a failure here never blocks the caller (WhatsApp connect /
-// Settings save), it just means the webhook may need fixing by hand later.
+// Keeps the client's PRIMARY conversational-reply webhook pointed at this Worker's
+// /engine/webhook — every industry now runs on the Cloudflare engine (handleEngineWebhook has no
+// industry gate), so there's no branching left to do here; this just guarantees the engine URL is
+// registered and cleans up n8n's old per-client webhook_url if it's still sitting there from
+// before migration, so n8n can never reply to the same message a second time. Called from
+// handleChannelsWhatsappConnect (first WhatsApp connect — the normal signup path, fully
+// automatic, no manual Chatwoot step) and handleNocodbPassthrough below (as a safety net after
+// any Settings save that touches this client's own CLIENTS row, in case chatwoot_inbox_id or
+// webhook_url only became available after connect time). Only ever touches a webhook whose URL is
+// exactly the engine URL or the client's own (legacy) n8n webhook_url — the separate Auto
+// Order-Tracking webhook (handleEcomEnableOrderTracking) and anything a client registered by hand
+// in Chatwoot are left alone. Best-effort throughout: a failure here never blocks the caller
+// (WhatsApp connect / Settings save), it just means the webhook may need fixing by hand later.
 async function engineSyncChatwootWebhook(env, c){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!c.chatwoot_inbox_id||!env.WORKER_BASE_URL) return;
   const engineUrl=`${env.WORKER_BASE_URL}/engine/webhook`;
   const n8nUrl=c.webhook_url||'';
-  const desiredUrl=c.industry==='ecommerce'?engineUrl:n8nUrl;
-  if(!desiredUrl) return;
 
   try{
     const listR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {headers:{api_access_token:c.chatwoot_token}});
     if(!listR.ok) return;
     const listD=await listR.json().catch(()=>null);
     const existingList=Array.isArray(listD)?listD:(Array.isArray(listD?.payload)?listD.payload:[]);
-    const candidateUrls=[engineUrl, n8nUrl].filter(Boolean);
 
-    if(existingList.some(w=>w.url===desiredUrl)){
-      // Correct one is already registered — but if the OTHER candidate is still sitting there too
-      // (a leftover from before an industry change), drop it so n8n and the engine never both
-      // reply to the same message.
-      const stale=candidateUrls.filter(u=>u!==desiredUrl);
-      for(const w of existingList){
-        if(stale.includes(w.url)) await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${w.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
-      }
-      return;
+    // Drop a leftover n8n webhook (pre-migration) so it never replies alongside the engine.
+    if(n8nUrl){
+      const staleN8n=existingList.find(w=>w.url===n8nUrl);
+      if(staleN8n) await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${staleN8n.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
     }
 
-    // Remove whichever known candidate IS currently registered (the now-stale one) before adding
-    // the correct one — a brief window with neither registered is safe; a window with both is not.
-    const staleExisting=existingList.find(w=>candidateUrls.includes(w.url));
-    if(staleExisting){
-      await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${staleExisting.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
+    if(!existingList.some(w=>w.url===engineUrl)){
+      await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
+        method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+        body:JSON.stringify({inbox_id:Number(c.chatwoot_inbox_id), url:engineUrl, subscriptions:['message_created']})
+      });
     }
-    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
-      method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
-      body:JSON.stringify({inbox_id:Number(c.chatwoot_inbox_id), url:desiredUrl, subscriptions:['message_created']})
-    });
   }catch(e){}
 }
 

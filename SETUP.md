@@ -1887,60 +1887,84 @@ Ecom Conversation Engine (below) receives the raw Chatwoot webhook payload direc
 capture `ctwa_clid` the same way, if wired up; not done here since it's out of scope for the
 migration itself.
 
-## Ecom Conversation Engine (`POST /engine/webhook`) — replaces the n8n engine for ecommerce clients
-For every CLIENTS row with `industry === 'ecommerce'`, this one Worker endpoint now does the
-entire job the external n8n workflow (`engine.json`, "Leadvyne · Engine v3" — not in this repo)
-used to do: resolve the tenant, look up/create the lead, turn media into text (including real
+## Conversation Engine (`POST /engine/webhook`) — replaces the n8n engine for every industry
+Every client, regardless of `industry`, now runs on this one Worker endpoint instead of n8n — it
+does the entire job the external n8n workflow (`engine.json`, "Leadvyne · Engine v3" — not in this
+repo) used to do: resolve the tenant, look up/create the lead, turn media into text (including real
 voice transcription — see below), classify intent/sentiment/objection, run the `flow_json` state
 machine (FAQ / qualifying questions / objection handling / human handover), send the reply via
-Chatwoot, and upsert the LEADS row + analytics — plus the order-signal auto-send that used to be a
-second, separate webhook. Non-ecommerce clients are untouched and keep running on n8n exactly as
-before; nothing here changes their behavior.
+Chatwoot, and upsert the LEADS row + analytics — plus the order/booking-signal auto-send that used
+to be a second, separate webhook (see "Industry-aware FAQ grounding" below). n8n is no longer in
+the loop for any client once they're cut over; `handleEngineWebhook` has no industry gate.
 
 **Gemini for classification + voice transcription (`GEMINI_API_KEY`):** intent/sentiment/
 objection classification (`engineClassifyIntent`) calls Google's Gemini API directly
 (`gemini-2.0-flash`, matching engine.json's actual "AI Agent · Sentiment & Intent" node, which ran
-on a dedicated shared Gemini credential — not each client's own OpenRouter key) via a new Worker
-secret, `GEMINI_API_KEY` (see wrangler.toml). One key for every client, same as the n8n workflow's
-single Gemini credential. If this secret isn't set, classification falls back to the client's own
-`openrouter_key`/`model` instead of failing outright. Voice notes get a real transcript via the
-same Gemini key (`engineGeminiTranscribeVoice` — downloads the attachment, sends it to Gemini as
-inline audio data, asks for a plain-text transcription); without `GEMINI_API_KEY` set, or if the
-download/transcription fails, voice notes fall back to the same `"(sent a voice note)"` placeholder
-text engine.json always sent instead (see below — that placeholder isn't new, only now it's a
-fallback rather than the only behavior).
+on a dedicated shared Gemini credential — not each client's own OpenRouter key) via a Worker
+secret, `GEMINI_API_KEY` (see wrangler.toml). One key for every client and every industry, same as
+the n8n workflow's single Gemini credential. If this secret isn't set, classification falls back
+to the client's own `openrouter_key`/`model` instead of failing outright. Voice notes get a real
+transcript via the same Gemini key (`engineGeminiTranscribeVoice` — downloads the attachment,
+sends it to Gemini as inline audio data, asks for a plain-text transcription); without
+`GEMINI_API_KEY` set, or if the download/transcription fails, voice notes fall back to the same
+`"(sent a voice note)"` placeholder text engine.json always sent instead (that placeholder isn't
+new, only now it's a fallback rather than the only behavior).
 
-**Cutover is automatic, not a manual per-client Chatwoot step — `engineSyncChatwootWebhook`
-(`worker.js`) keeps a client's PRIMARY Chatwoot webhook (the one that decides who actually replies
-to the customer: n8n's `webhook_url`, or this Worker's `{WORKER_BASE_URL}/engine/webhook`) in sync
-with their `industry` field, called from two places:**
+**Fully automatic on signup — no manual Chatwoot step, for any industry.**
+`engineSyncChatwootWebhook` (`worker.js`) keeps a client's PRIMARY Chatwoot webhook (the one that
+decides who actually replies to the customer) pointed at `{WORKER_BASE_URL}/engine/webhook`,
+called from two places:
 - **`handleChannelsWhatsappConnect`** — the moment a client connects WhatsApp (signup wizard or
-  Settings → Channels), whichever URL is correct for their `industry` *at that moment* gets
-  registered — same "no manual paste-in-Chatwoot step" auto-wiring that already existed for n8n,
-  now industry-aware.
+  Settings → Channels), the engine URL gets registered on the new inbox immediately. This is the
+  path every new signup goes through, so a brand-new client — any industry — never has n8n wired
+  up at all.
 - **`handleNocodbPassthrough`** — dashboard.html's Settings page saves most CLIENTS fields
-  (including `industry`) straight through this generic passthrough, with no dedicated per-field
-  handler. Any PATCH to the client's own CLIENTS row that touches `industry` triggers a re-sync —
-  this is what actually matters in practice, since a client's industry is very often decided or
-  changed *after* WhatsApp is already connected (during onboarding, or later in Settings), and
-  without this the webhook would silently keep pointing at whichever engine was correct only at
-  connect time.
+  straight through this generic passthrough, with no dedicated per-field handler. Any successful
+  PATCH to the client's own CLIENTS row re-checks the webhook as a safety net (cheap no-op if
+  already correct), covering the case where `chatwoot_inbox_id` or a legacy `webhook_url` becomes
+  available slightly out of order relative to other Settings saves.
 
-Either way, `engineSyncChatwootWebhook` only ever touches a Chatwoot webhook whose URL is exactly
-one of the two known candidates (n8n's URL or this engine's URL) — it lists the account's webhooks,
-removes whichever of the two is currently wrong (if any), and adds the correct one if it's missing.
-The separate **Auto Order-Tracking** webhook (`handleEcomEnableOrderTracking`, pointed at
-`/hooks/chatwoot-message`) and anything a client registered by hand in Chatwoot are never touched.
-If a client had Auto-Order-Tracking enabled before moving to this engine, it's safe to leave
-enabled (redundant, since order-signal detection now happens inline on every engine turn too, but
-harmless) or disable it from Settings.
+`engineSyncChatwootWebhook` also cleans up: if a client still has their old n8n `webhook_url`
+registered (from before this migration, or an admin-created client that went through the old
+n8n-based onboarding), it's removed the moment the engine URL is confirmed present — so n8n can
+never reply to the same message a second time. The separate **Auto Order-Tracking** webhook
+(`handleEcomEnableOrderTracking`, pointed at `/hooks/chatwoot-message`) and anything a client
+registered by hand in Chatwoot are never touched by this sync. That older webhook (and the
+`/hooks/chatwoot-message` handler behind it) is now fully superseded for any client on this
+engine — order-signal and booking-signal detection both happen inline on every engine turn instead
+— so it's safe to leave enabled (redundant but harmless) or disable from Settings.
 
-There is deliberately no separate CLIENTS-row flag gating any of this — `industry` alone decides
-it, kept live by the sync above. Rolling a client back off the engine is just changing their
-`industry` away from `ecommerce` in Settings (or back, to move them onto it) — the correct webhook
-gets re-synced automatically either way. A client who was manually cut over before this automatic
-sync existed doesn't need any action — the next `industry` save (or WhatsApp reconnect) will
-reconcile them to the same state.
+**Industry-aware FAQ grounding (`engineRouteFlow`'s `industryFaqRoute`),
+matching engine.json's own `industry === 'ecommerce' ? 'ecom_faq' : (industry === 'travel' ?
+'travel_faq' : 'faq')` split:**
+- **`ecommerce`** → `engineBuildEcomContext` — live product catalog + this phone's recent order
+  status, off `/ecom/products` and `/ecom/orders`.
+- **`travel`** → `engineBuildTravelContext` — the Travel Agency module's own `packages`,
+  `umrah_groups`, and `cars` tables (`ta_table_ids`), a from-scratch equivalent of the
+  "Leadvyne · TA Context" n8n sub-workflow engine.json calls out to, which wasn't available to
+  port (it isn't in this repo either).
+- **Everything else** (`general`/`insurance`/`real_estate`/`healthcare`/`education`/`automotive`/
+  `consultancy`) → the plain `main_prompt` + `services` + `kb_summary` grounding, no extra table
+  lookups — matches what engine.json's generic "Code · FAQ prep" node already did for these
+  industries, since none of them have a dedicated per-client catalog table the way ecom/travel do.
+
+**Signal auto-send is also industry-branched**, at the bottom of `handleEngineWebhook` — and
+branches strictly on `c.industry`, not on whether `ecomResolveTable(..., 'orders')` resolves a
+table id. That distinction matters: `ecomResolveTable` falls back to a shared default table id
+(`ECOM_DEFAULT_TABLE_IDS`) for *every* client regardless of industry, so table-truthiness alone
+can't tell an actual ecom client from a booking-industry one — which is exactly the check
+`handleChatwootMessageHook`'s own dispatch (elsewhere in this file, now superseded) relies on, and
+appears to make it dispatch every client through the ecom order-signal path in practice, never the
+booking-signal one. Worth an independent look if `/hooks/chatwoot-message` keeps running for any
+client not yet on this engine — this port doesn't fix that function, only avoids inheriting the
+same bug in the new one:
+- **`ecommerce`** → order-signal detection (`detectOrderSignal`) against the product catalog, same
+  as before.
+- **Every other industry**, once `external_store_link` (Settings → Booking Link) is configured →
+  booking-signal detection (`detectBookingSignal`) against the Appointment module's services
+  catalog, skipping a lead already at a booking-terminal stage or with a `requested` appointment
+  already pending — the direct-Cloudflare-auto-send behavior `handleChatwootIncomingBookingSignal`
+  already had, just running inline here instead of via a second webhook delivery.
 
 **Fidelity to the source workflow, and where this deviates:** `handleEngineWebhook` and its
 `engine*` helper functions in `cloudflare-worker/worker.js` are a field-for-field port of
@@ -1967,7 +1991,3 @@ tracing the source workflow's node wiring showed they were unintended:
   `"(sent a voice note)"` placeholder still exists here too, but only as the fallback when
   `GEMINI_API_KEY` isn't configured or transcription fails for a given note — not the only path.
 
-The "Leadvyne · Ecom Context" n8n sub-workflow engine.json calls out to for ecom-specific FAQ
-grounding wasn't available to port (it isn't in this repo) — `engineBuildEcomContext` is a
-from-scratch equivalent built directly off this Worker's own `/ecom/products` and `/ecom/orders`
-tables (top active products + this phone's own recent order status) instead.
