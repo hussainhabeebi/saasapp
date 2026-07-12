@@ -424,10 +424,45 @@ Cloudflare round trip required. The honest limits of this path: (1) it depends o
 actually feeding `kb_text`'s processed summary into the live prompt every turn — true for the setup
 this repo was built against, but unverified here since engine.json isn't in this repo; (2) the
 order link this path teaches the bot to *say* is the generic client-wide storefront link, not a
-per-conversation trackable one, and nothing here makes the bot actually create an order row when a
-customer says yes — that half still needs a real call to `/ecom/order-link` (or a human clicking
-"Push to Order"), since a trackable link and a NocoDB row both require a server-side write that
-prompt content alone can't perform.
+per-conversation trackable one.
+
+**Closing the loop on order-row creation too, still with zero n8n edits:** `/ecom/order-link`
+gets called by n8n on-purpose; `/hooks/chatwoot-message` gets there a different way — it watches
+for the *effect* of the KB-injected instruction instead of n8n calling anything.
+- **`POST /ecom/enable-order-tracking`** (session-authed, dashboard **Settings → Auto
+  Order-Tracking** button) registers a **second, independent Chatwoot webhook** on the client's
+  WhatsApp inbox — same `POST .../accounts/:id/webhooks` call Chatwoot already gets one of during
+  WhatsApp connect (that first one feeds `c.webhook_url`, i.e. n8n's own inbound webhook — see the
+  "Best-effort" registration in the WhatsApp-connect flow). Chatwoot supports multiple webhooks per
+  inbox and fires all of them on every event, so adding this one doesn't touch, replace, or even
+  need to know about the one already pointed at n8n. One click, no manual Chatwoot dashboard visit
+  needed either — it's registered via the Chatwoot API from this repo.
+- **`POST /hooks/chatwoot-message`** (`handleChatwootMessageHook`) is what that second webhook
+  points at. It receives every `message_created` event on the inbox and does exactly one thing:
+  if the message is **outgoing** (the bot's own reply) and its text contains the storefront link
+  pattern (`onshope.com/<slug>` or `store.html?client=<id>`, same regex either KB-injected
+  instructions or `/ecom/order-link` would produce), it resolves the client from
+  `chatwoot_account_id`, pulls the customer's phone off the conversation payload, and logs a
+  `pending` order row — same shape `/ecom/order-link` creates, `notes` marked
+  "auto-logged, no n8n changes". Deduped per phone (skips if a pending auto-logged order already
+  exists) so a bot repeating the link mid-conversation doesn't spam rows. **It never sends
+  anything to the customer** — only a silent DB write — which is exactly why this is safe to run
+  independently of n8n: there's no second reply that could race or duplicate the bot's own
+  message, the coordination risk that made `/ai/objection-reply` and `/ai/order-signal`
+  deliberately n8n-called instead. n8n's workflow doesn't know this webhook exists and needs no
+  changes for it to work.
+- **Honest limits:** this only fires when the bot's reply actually contains the literal link text
+  — it depends on the model reliably following the KB-injected instruction to include it verbatim,
+  same instruction-following caveat as the policy-grounding path above, not a guarantee the way a
+  real n8n → `/ecom/order-link` tool call would be. The Chatwoot webhook payload shape used here
+  (`message_type`, `content`, `account.id`, `conversation.meta.sender.phone_number` /
+  `conversation.contact_inbox.source_id`) is based on Chatwoot's documented `message_created`
+  event and defensively parsed, but hasn't been verified against a live payload from this specific
+  Chatwoot instance/version — if phone or account resolution comes back empty in practice, that's
+  the first place to check. And this endpoint has no request-signing/auth check (Chatwoot webhooks
+  aren't authenticated by default here), same accepted client_id-based-trust tradeoff as the rest
+  of `/ecom/*` — it only ever performs a `pending`-status insert, never a destructive action, which
+  keeps the blast radius of a spoofed call low.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/

@@ -2728,6 +2728,93 @@ async function handleEcomOrderLink(request, env){
   return json({ok:true, link, order_id, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status)});
 }
 
+// One-time setup (dashboard "Enable Auto Order-Tracking" button): registers a *second*,
+// independent Chatwoot webhook on the client's WhatsApp inbox, alongside whichever one already
+// feeds n8n's bot (see the c.webhook_url registration above, in the WhatsApp-connect flow). This
+// second webhook points at handleChatwootMessageHook below instead — n8n's own webhook/workflow
+// is completely untouched, it doesn't even know this one exists. Chatwoot fires both on every
+// message_created event.
+async function handleEcomEnableOrderTracking(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
+  if(!c?.chatwoot_inbox_id) return json({error:'Connect a WhatsApp inbox first.'}, 400);
+  if(!env.WORKER_BASE_URL) return json({error:'WORKER_BASE_URL is not configured on the server.'}, 500);
+  const hookUrl=`${env.WORKER_BASE_URL}/hooks/chatwoot-message`;
+
+  const listR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {headers:{api_access_token:c.chatwoot_token}}).catch(()=>null);
+  const listD=listR?await listR.json().catch(()=>null):null;
+  const existingList=Array.isArray(listD)?listD:(Array.isArray(listD?.payload)?listD.payload:null);
+  if(existingList?.some(w=>w.url===hookUrl)) return json({ok:true, already_enabled:true});
+
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({inbox_id:Number(c.chatwoot_inbox_id), url:hookUrl, subscriptions:['message_created']})
+  });
+  if(!r.ok) return json({error:'Chatwoot webhook registration failed: HTTP '+r.status}, 502);
+  return json({ok:true});
+}
+
+// Receives Chatwoot's message_created event for every message on the client's WhatsApp inbox
+// (registered by handleEcomEnableOrderTracking above). Only acts on the bot's own OUTGOING
+// replies, and only ever performs a silent DB write — it never sends anything to the customer —
+// so it can never race or double-reply against n8n's own bot response to the same conversation.
+// The link it looks for is exactly the one buildKbProcessorText() (dashboard.html) already
+// instructs the bot to share in its own words, so detecting it needs no n8n/engine.json changes.
+const CHATWOOT_HOOK_LINK_RE=/https:\/\/(?:onshope\.com\/([a-z0-9-]+)|app\.leadvyne\.com\/store\.html\?client=(\d+))(?:[?&]sku=([^\s&"']+))?/i;
+async function handleChatwootMessageHook(request, env){
+  const body=await request.json().catch(()=>({}));
+  const msgType=String(body.message_type ?? '');
+  if(msgType!=='outgoing' && msgType!=='1') return json({ok:true, skipped:'not-outgoing'});
+  const content=String(body.content||'');
+  const accountId=String(body.account?.id||'');
+  if(!accountId||!content) return json({ok:true, skipped:'no-account-or-content'});
+
+  const m=content.match(CHATWOOT_HOOK_LINK_RE);
+  if(!m) return json({ok:true, skipped:'no-link-in-message'});
+
+  const c=await findClientByField(env, 'chatwoot_account_id', accountId);
+  if(!c) return json({ok:true, skipped:'client-not-found'});
+  const clientId=String(c.Id);
+
+  const sku=m[3]?decodeURIComponent(m[3]):null;
+  const phone=String(
+    body.conversation?.meta?.sender?.phone_number ||
+    body.conversation?.contact_inbox?.source_id ||
+    ''
+  ).replace(/[^0-9+]/g,'');
+  if(!phone) return json({ok:true, skipped:'no-phone'});
+
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return json({ok:true, skipped:'no-orders-table'});
+
+  // Dedupe — skip if this phone already has an auto-logged order still pending, so a bot that
+  // repeats the link across several turns of the same conversation doesn't spam duplicate rows.
+  const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${phone})~and(status,eq,pending)&limit=1`);
+  const existD=await existR.json().catch(()=>({}));
+  if(existD?.list?.length) return json({ok:true, skipped:'duplicate-pending'});
+
+  let product=null;
+  if(sku){
+    const productsTable=await ecomResolveTable(env, clientId, 'products');
+    if(productsTable){
+      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(sku,eq,${encodeURIComponent(sku)})&limit=1`);
+      const pd=await pr.json().catch(()=>({}));
+      product=pd?.list?.[0]||null;
+    }
+  }
+  const order_id='ORD-'+Date.now();
+  await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:{
+    client_id:clientId, order_id,
+    customer_name:body.conversation?.meta?.sender?.name||'', customer_phone:phone,
+    order_date:new Date().toISOString().slice(0,10),
+    items:product?product.name:'Catalog link shared', total:product?.price||0, currency:product?.currency||'',
+    status:'pending', notes:'Order intent detected — bot shared store link (auto-logged, no n8n changes)'
+  }});
+  return json({ok:true, order_id});
+}
+
 /* ── ECOMMERCE PUBLIC STOREFRONT (store.html, and onshope.com's onshope-store.html /
    onshope-home.html) — unlike every /ecom/* route above, these are meant to be opened directly
    by end customers (shared as a WhatsApp link), so they must not give a customer any of what a
@@ -2854,6 +2941,8 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
       else if(url.pathname==='/ecom/order-link' && request.method==='POST'){ res=await handleEcomOrderLink(request, env); }
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
+      else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
+      else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }

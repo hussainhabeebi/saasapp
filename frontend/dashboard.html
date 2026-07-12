@@ -1690,6 +1690,25 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <hr class="div">
 
+          <!-- AUTO ORDER-TRACKING — a *second*, independent Chatwoot webhook (registered by
+               handleEcomEnableOrderTracking, cloudflare-worker/worker.js) that silently watches
+               your bot's own outgoing replies for the storefront link (which the Knowledge Base
+               payload already instructs it to share on buying signals — see the ORDER LINK
+               section injected by buildKbProcessorText()) and logs a pending ecom order the
+               moment it sees one. It never sends anything to the customer itself, so it can't
+               collide with the bot's own reply, and it needs zero changes to your n8n workflow —
+               n8n keeps doing exactly what it does today. -->
+          <div class="settings-section">
+            <div class="s-head">🛒 Auto Order-Tracking</div>
+            <div class="s-note">When your bot shares a store link with a customer (see the Order Link guidance above), automatically log it as a pending order — with no changes to your n8n workflow. One-time setup per WhatsApp connection.</div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="enableOrderTracking">Enable Auto Order-Tracking</button>
+              <span class="save-msg" id="enableOrderTrackingMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
           <div class="settings-section">
             <div class="s-head">Bot Persona &amp; System Prompt</div>
             <div class="s-note">The bot's voice, scope, and guardrails.</div>
@@ -4687,6 +4706,18 @@ $id('savePolicies').addEventListener('click',async()=>{
     delivery:$id('cfgPolicyDelivery').value.trim(),
     cancellation:$id('cfgPolicyCancellation').value.trim(),
   })});
+});
+
+$id('enableOrderTracking').addEventListener('click',async()=>{
+  const btn=$id('enableOrderTracking'),msgEl=$id('enableOrderTrackingMsg');
+  btn.disabled=true;msgEl.textContent='Enabling…';msgEl.className='save-msg';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/ecom/enable-order-tracking`,{method:'POST',headers:ncAuthHeaders()});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||'HTTP '+r.status);
+    msgEl.textContent=d.already_enabled?'✓ Already enabled':'✓ Enabled — no n8n changes needed';
+  }catch(e){msgEl.textContent='Error: '+e.message;msgEl.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>{msgEl.textContent='';msgEl.className='save-msg';},5000);}
 });
 
 $id('savePrompt').addEventListener('click',async()=>{
