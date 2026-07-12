@@ -3306,8 +3306,9 @@ async function handleChatwootMessageHook(request, env){
 }
 
 /* ── CONVERSATION ENGINE, all industries (replaces n8n's engine.json entirely) ──
-   Point every client's Chatwoot inbox "message_created" webhook at POST /engine/webhook instead
-   of n8n's own webhook URL, and this one endpoint does everything engine.json's n8n workflow did,
+   Point every client's Chatwoot inbox "message_created" webhook at POST
+   /engine/webhook/<their-secret> instead of n8n's own webhook URL (registered automatically —
+   see engineSyncChatwootWebhook), and this one endpoint does everything engine.json's n8n workflow did,
    for every industry: tenant + lead lookup, media→text, AI intent/sentiment classification, the
    flow_json state machine (FAQ/qualify/objection/human-handover routing), sending the reply via
    Chatwoot, and upserting the LEADS row + analytics. The client is resolved the same way
@@ -3901,15 +3902,30 @@ async function engineLogAnalytics(env, entry){
   try{ await ncFetch(env, `api/v2/tables/${ENGINE_ANALYTICS_TABLE}/records`, {method:'POST', body:entry}); }catch(e){}
 }
 
-async function handleEngineWebhook(request, env){
+// Chatwoot has no built-in webhook signing (unlike Shopify/Cal.com, both verified elsewhere in
+// this file via verifyShopifyWebhookHmac/verifyCalcomWebhookHmac against a secret the client
+// configures on their side) — its webhook feature just POSTs JSON to whatever URL you give it, no
+// signature header, no secret field in its own UI. `secret` is this route's equivalent: a random
+// 192-bit per-client token baked into the URL path itself (`/engine/webhook/<secret>`, same
+// URL-path-token pattern already used by `/calcom/webhook/<clientId>`), registered by
+// engineSyncChatwootWebhook and never exposed anywhere a browser or a client sees it. Without the
+// exact secret, a request is rejected before any client data is touched — same practical
+// unforgeability as a bearer token, since knowing a client's numeric id or chatwoot_account_id
+// (both are exposed in various places already) no longer gets an attacker anywhere.
+async function handleEngineWebhook(request, env, secret){
   const startMs=Date.now();
-  const body=await request.json().catch(()=>({}));
-  const accountId=String(body.account?.id||body.conversation?.account_id||'');
-  if(!accountId) return json({ok:true, skipped:'no-account-id'});
-  const c=await findClientByField(env, 'chatwoot_account_id', accountId);
-  if(!c) return json({ok:true, skipped:'client-not-found'});
+  if(!secret) return json({ok:true, skipped:'no-secret'});
+  const c=await findClientByField(env, 'engine_webhook_secret', secret);
+  if(!c) return json({ok:true, skipped:'invalid-secret'});
   const clientId=String(c.Id);
   if(c.active==='No') return json({ok:true, skipped:'client-inactive'});
+
+  const body=await request.json().catch(()=>({}));
+  // Defense in depth, not the actual security boundary (the secret already is): if the payload's
+  // own account id disagrees with this client's on-record chatwoot_account_id, something is
+  // wrong (a misconfigured/reused webhook, most likely) — safer to drop it than guess.
+  const accountId=String(body.account?.id||body.conversation?.account_id||'');
+  if(accountId && c.chatwoot_account_id && accountId!==String(c.chatwoot_account_id)) return json({ok:true, skipped:'account-mismatch'});
 
   const parsed=engineParseChatwootPayload(body);
   if(!parsed) return json({ok:true, skipped:'not-actionable'});
@@ -4034,22 +4050,49 @@ async function handleEngineWebhook(request, env){
   return json({ok:true, route:routing.route, sent:!!sentText});
 }
 
+// 192 bits of randomness, hex-encoded — the actual security boundary for /engine/webhook (see the
+// comment on handleEngineWebhook above). crypto.getRandomValues is the standard Workers/Web Crypto
+// API, not Math.random, so this is genuinely unguessable, not just "hard to guess."
+function engineGenerateWebhookSecret(){
+  const bytes=new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// Generates and persists a client's engine_webhook_secret on first use; a no-op read on every
+// call after that. Requires the `engine_webhook_secret` column to already exist on the CLIENTS
+// table in NocoDB (Single line text — added once by hand, see SETUP.md; not auto-created here,
+// same as most other CLIENTS fields in this codebase). Returns null (rather than throwing) if the
+// column doesn't exist yet or the write otherwise fails, so callers can skip registering a
+// webhook rather than register one with no working secret.
+async function engineEnsureWebhookSecret(env, c){
+  if(c.engine_webhook_secret) return c.engine_webhook_secret;
+  const secret=engineGenerateWebhookSecret();
+  try{ await patchClientFields(env, c.Id, {engine_webhook_secret:secret}); }catch(e){ return null; }
+  c.engine_webhook_secret=secret;
+  return secret;
+}
+
 // Keeps the client's PRIMARY conversational-reply webhook pointed at this Worker's
-// /engine/webhook — every industry now runs on the Cloudflare engine (handleEngineWebhook has no
-// industry gate), so there's no branching left to do here; this just guarantees the engine URL is
-// registered and cleans up n8n's old per-client webhook_url if it's still sitting there from
-// before migration, so n8n can never reply to the same message a second time. Called from
-// handleChannelsWhatsappConnect (first WhatsApp connect — the normal signup path, fully
-// automatic, no manual Chatwoot step) and handleNocodbPassthrough below (as a safety net after
-// any Settings save that touches this client's own CLIENTS row, in case chatwoot_inbox_id or
-// webhook_url only became available after connect time). Only ever touches a webhook whose URL is
-// exactly the engine URL or the client's own (legacy) n8n webhook_url — the separate Auto
-// Order-Tracking webhook (handleEcomEnableOrderTracking) and anything a client registered by hand
-// in Chatwoot are left alone. Best-effort throughout: a failure here never blocks the caller
-// (WhatsApp connect / Settings save), it just means the webhook may need fixing by hand later.
+// /engine/webhook/<their-secret> — every industry now runs on the Cloudflare engine
+// (handleEngineWebhook has no industry gate), so there's no branching left to do here; this just
+// guarantees the correct URL is registered and cleans up n8n's old per-client webhook_url if it's
+// still sitting there from before migration, so n8n can never reply to the same message a second
+// time. Called from handleChannelsWhatsappConnect (first WhatsApp connect — the normal signup
+// path, fully automatic, no manual Chatwoot step) and handleNocodbPassthrough below (as a safety
+// net after any Settings save that touches this client's own CLIENTS row, in case
+// chatwoot_inbox_id or webhook_url only became available after connect time). Only ever touches a
+// webhook whose URL is under this Worker's own /engine/webhook/ prefix or exactly the client's own
+// (legacy) n8n webhook_url — the separate Auto Order-Tracking webhook
+// (handleEcomEnableOrderTracking) and anything a client registered by hand in Chatwoot are left
+// alone. Best-effort throughout: a failure here never blocks the caller (WhatsApp connect /
+// Settings save), it just means the webhook may need fixing by hand later.
 async function engineSyncChatwootWebhook(env, c){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!c.chatwoot_inbox_id||!env.WORKER_BASE_URL) return;
-  const engineUrl=`${env.WORKER_BASE_URL}/engine/webhook`;
+  const secret=await engineEnsureWebhookSecret(env, c);
+  if(!secret) return; // no secret to register safely under (e.g. the NocoDB column isn't set up yet)
+  const engineUrl=`${env.WORKER_BASE_URL}/engine/webhook/${secret}`;
+  const engineUrlPrefix=`${env.WORKER_BASE_URL}/engine/webhook/`;
   const n8nUrl=c.webhook_url||'';
 
   try{
@@ -4062,6 +4105,14 @@ async function engineSyncChatwootWebhook(env, c){
     if(n8nUrl){
       const staleN8n=existingList.find(w=>w.url===n8nUrl);
       if(staleN8n) await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${staleN8n.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
+    }
+
+    // Drop any stale engine registration under a since-rotated secret — only relevant if
+    // engine_webhook_secret is ever changed by hand later; harmless no-op otherwise.
+    for(const w of existingList){
+      if(w.url.startsWith(engineUrlPrefix) && w.url!==engineUrl){
+        await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${w.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
+      }
     }
 
     if(!existingList.some(w=>w.url===engineUrl)){
@@ -4282,7 +4333,7 @@ export default {
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
-      else if(url.pathname==='/engine/webhook' && request.method==='POST'){ res=await handleEngineWebhook(request, env); }
+      else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhook(request, env, url.pathname.slice('/engine/webhook/'.length)); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }

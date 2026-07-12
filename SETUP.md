@@ -1887,7 +1887,7 @@ Ecom Conversation Engine (below) receives the raw Chatwoot webhook payload direc
 capture `ctwa_clid` the same way, if wired up; not done here since it's out of scope for the
 migration itself.
 
-## Conversation Engine (`POST /engine/webhook`) — replaces the n8n engine for every industry
+## Conversation Engine (`POST /engine/webhook/<secret>`) — replaces the n8n engine for every industry
 Every client, regardless of `industry`, now runs on this one Worker endpoint instead of n8n — it
 does the entire job the external n8n workflow (`engine.json`, "Leadvyne · Engine v3" — not in this
 repo) used to do: resolve the tenant, look up/create the lead, turn media into text (including real
@@ -1912,7 +1912,7 @@ new, only now it's a fallback rather than the only behavior).
 
 **Fully automatic on signup — no manual Chatwoot step, for any industry.**
 `engineSyncChatwootWebhook` (`worker.js`) keeps a client's PRIMARY Chatwoot webhook (the one that
-decides who actually replies to the customer) pointed at `{WORKER_BASE_URL}/engine/webhook`,
+decides who actually replies to the customer) pointed at `{WORKER_BASE_URL}/engine/webhook/<their-secret>` (see "Webhook authentication" below),
 called from two places:
 - **`handleChannelsWhatsappConnect`** — the moment a client connects WhatsApp (signup wizard or
   Settings → Channels), the engine URL gets registered on the new inbox immediately. This is the
@@ -1933,6 +1933,36 @@ registered by hand in Chatwoot are never touched by this sync. That older webhoo
 `/hooks/chatwoot-message` handler behind it) is now fully superseded for any client on this
 engine — order-signal and booking-signal detection both happen inline on every engine turn instead
 — so it's safe to leave enabled (redundant but harmless) or disable from Settings.
+
+**Webhook authentication (`engine_webhook_secret`):** Chatwoot has no built-in webhook signing —
+unlike Shopify and Cal.com (both verified elsewhere in this file, `verifyShopifyWebhookHmac`/
+`verifyCalcomWebhookHmac`, against a secret the client configures on *their* side), Chatwoot's
+webhook feature just POSTs JSON to whatever URL you give it: no signature header, no secret field
+in its own settings UI. So the equivalent protection here is a random 192-bit per-client token
+baked directly into the URL path — `/engine/webhook/<secret>` — the same URL-path-token pattern
+this codebase already uses for `/calcom/webhook/<clientId>`. `engineEnsureWebhookSecret` generates
+one (via `crypto.getRandomValues`, not `Math.random`) the first time `engineSyncChatwootWebhook`
+runs for a client and persists it to a new CLIENTS column, and `handleEngineWebhook` rejects any
+request whose path segment doesn't match a real client's stored secret before touching anything
+else — so knowing a client's numeric id or `chatwoot_account_id` (both surface elsewhere already)
+no longer gets an attacker anywhere near this endpoint.
+- **New required CLIENTS column: `engine_webhook_secret`** (Single line text) — add this to
+  NocoDB once, by hand, same as most other CLIENTS fields in this codebase; it isn't auto-created.
+  Until it exists, `engineEnsureWebhookSecret` returns null and `engineSyncChatwootWebhook`
+  declines to register any webhook at all (safer than registering one with a secret that can't
+  actually be saved).
+- **Never rotated automatically.** If you ever need to rotate a client's secret (suspected leak,
+  etc.), clear their `engine_webhook_secret` field by hand and re-trigger a sync (any Settings
+  save, or reconnect WhatsApp) — `engineSyncChatwootWebhook` also cleans up any stale
+  `/engine/webhook/` registration under the old secret when it finds one, so there's never a
+  window where both the old and new secret are simultaneously accepted... other than the accepted
+  gap between clearing the field and the next sync, during which the *old* secret still works
+  (nothing invalidates it server-side) — genuinely revoking a leaked secret immediately would need
+  an explicit deny-list, not implemented here.
+- **Defense in depth, not the actual boundary:** `handleEngineWebhook` also cross-checks the
+  payload's own `account.id` against the matched client's `chatwoot_account_id` and drops anything
+  that disagrees — catches a misconfigured/reused webhook, though the secret match is what's
+  actually doing the security work.
 
 **Industry-aware FAQ grounding (`engineRouteFlow`'s `industryFaqRoute`),
 matching engine.json's own `industry === 'ecommerce' ? 'ecom_faq' : (industry === 'travel' ?
