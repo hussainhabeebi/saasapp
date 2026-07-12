@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book an Appointment</title>
+<!-- Public customer-facing booking page — the Appointment Booking module's counterpart to
+     store.html. Read/write, but narrowly: it only ever calls /appt/public/* (cloudflare-worker/
+     worker.js), which return a fixed customer-safe field whitelist and have exactly one write
+     path (submitting a booking request, always landing as a `requested` row a staff member still
+     has to confirm) — no code path here can reach the dashboard's admin features, other clients'
+     data, or read/update/delete anything. -->
+<style>
+:root{
+  --bg:#F0FDFF;--card:#FFFFFF;--ink:#0C1B1E;--muted:#5B6B70;
+  --accent:#0891B2;--accent-ink:#0E7490;--accent-soft:#CFFAFE;
+  --line:#CFFAFE;--body:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+.hdr{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:16px 18px}
+.biz-name{font-size:19px;font-weight:700;letter-spacing:-.01em}
+.biz-sub{font-size:13px;color:var(--muted);margin-top:2px}
+.wrap{max-width:520px;margin:0 auto;padding:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:14px}
+.label{font-size:12.5px;font-weight:600;color:var(--muted);margin-bottom:6px;display:block}
+.field{margin-bottom:16px}
+input,select,textarea{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:11px 12px;font-family:var(--body);font-size:14.5px;color:var(--ink);background:var(--bg)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);background:#fff}
+textarea{resize:vertical;min-height:60px}
+.svc-opt{display:block;border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer;background:var(--bg)}
+.svc-opt.sel{border-color:var(--accent);background:var(--accent-soft)}
+.svc-name{font-weight:600;font-size:14px}
+.svc-meta{font-size:12.5px;color:var(--muted);margin-top:2px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.btn{width:100%;background:var(--accent);color:#fff;border:none;border-radius:10px;padding:13px;font-size:14.5px;font-weight:700;cursor:pointer;font-family:var(--body)}
+.btn:active{background:var(--accent-ink)}
+.btn:disabled{background:var(--line);color:var(--muted);cursor:not-allowed}
+.msg{text-align:center;font-size:13px;margin-top:10px;min-height:18px}
+.msg.err{color:#B42318}
+.msg.ok{color:var(--accent-ink)}
+.empty,.err-page{text-align:center;color:var(--muted);padding:60px 20px;font-size:14px}
+.success{text-align:center;padding:40px 20px}
+.success .ic{font-size:48px;margin-bottom:12px}
+.success h2{font-size:18px;margin:0 0 8px}
+.success p{color:var(--muted);font-size:14px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="biz-name" id="bizName">Book an Appointment</div>
+  <div class="biz-sub" id="bizSub">Select a service and pick a time that works for you.</div>
+</div>
+
+<div class="wrap">
+  <div id="formArea"></div>
+  <div class="empty" id="emptyMsg" style="display:none">No services listed yet — contact the business directly to book.</div>
+  <div class="err-page" id="errMsg" style="display:none">Sorry, this booking link isn't working right now.</div>
+</div>
+
+<script>
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const params = new URLSearchParams(location.search);
+const clientId = params.get('client') || params.get('client_id') || '';
+
+let bizInfo = {};
+let services = [];
+let selectedServiceId = '';
+
+function escHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function selectService(id){
+  selectedServiceId = String(id);
+  document.querySelectorAll('.svc-opt').forEach(el => el.classList.toggle('sel', el.dataset.id === selectedServiceId));
+}
+
+function renderForm(){
+  const today = new Date().toISOString().slice(0,10);
+  const svcHtml = services.length ? `
+    <div class="card">
+      <span class="label">Service</span>
+      ${services.map(s => `
+        <div class="svc-opt" data-id="${escHtml(s.Id)}" onclick="selectService('${escHtml(s.Id)}')">
+          <div class="svc-name">${escHtml(s.name||'Untitled')}</div>
+          <div class="svc-meta">${[s.duration_minutes?s.duration_minutes+' min':'', (s.price?((s.currency||'')+' '+s.price):'')].filter(Boolean).join(' · ')||'&nbsp;'}</div>
+        </div>`).join('')}
+    </div>` : '';
+
+  document.getElementById('formArea').innerHTML = `
+    ${svcHtml}
+    <div class="card">
+      <div class="field"><span class="label">Your Name</span><input id="fName" placeholder="Full name"></div>
+      <div class="field"><span class="label">Phone (with country code) *</span><input id="fPhone" placeholder="e.g. 971501234567"></div>
+      <div class="row2">
+        <div class="field"><span class="label">Preferred Date</span><input type="date" id="fDate" min="${today}"></div>
+        <div class="field"><span class="label">Preferred Time</span><input type="time" id="fTime"></div>
+      </div>
+      <div class="field"><span class="label">Notes (optional)</span><textarea id="fNotes" placeholder="Anything the business should know"></textarea></div>
+      <button class="btn" id="submitBtn" onclick="submitBooking()">Request Appointment</button>
+      <div class="msg" id="formMsg"></div>
+    </div>`;
+
+  if(services.length) selectService(services[0].Id);
+}
+
+async function submitBooking(){
+  const btn = document.getElementById('submitBtn');
+  const msg = document.getElementById('formMsg');
+  const name = document.getElementById('fName').value.trim();
+  const phone = document.getElementById('fPhone').value.trim();
+  if(!phone){ msg.textContent='Phone number is required.'; msg.className='msg err'; return; }
+
+  btn.disabled = true; msg.textContent = 'Sending your request…'; msg.className = 'msg';
+  try{
+    const r = await fetch(`${WORKER_BASE}/appt/public/book`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        client_id: clientId, name, phone,
+        service_id: selectedServiceId || undefined,
+        date: document.getElementById('fDate').value || '',
+        time: document.getElementById('fTime').value || '',
+        notes: document.getElementById('fNotes').value.trim(),
+      })
+    });
+    const data = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(data.error || 'Something went wrong');
+    document.getElementById('formArea').innerHTML = `
+      <div class="card success">
+        <div class="ic">✅</div>
+        <h2>Request sent!</h2>
+        <p>${escHtml(bizInfo.client_name||'The business')} will confirm your appointment shortly.</p>
+      </div>`;
+  }catch(e){
+    msg.textContent = 'Error: ' + e.message;
+    msg.className = 'msg err';
+    btn.disabled = false;
+  }
+}
+
+async function load(){
+  if(!clientId){ document.getElementById('errMsg').style.display = 'block'; return; }
+  try{
+    const [clientRes, servicesRes] = await Promise.all([
+      fetch(`${WORKER_BASE}/appt/public/client?client=${encodeURIComponent(clientId)}`),
+      fetch(`${WORKER_BASE}/appt/public/services?client=${encodeURIComponent(clientId)}`),
+    ]);
+    if(!clientRes.ok) throw new Error('not found');
+    bizInfo = await clientRes.json();
+    const svcData = await servicesRes.json().catch(() => ({list:[]}));
+    services = svcData.list || [];
+
+    document.title = 'Book with ' + (bizInfo.client_name || 'us');
+    document.getElementById('bizName').textContent = bizInfo.client_name || 'Book an Appointment';
+    renderForm();
+  }catch(e){
+    document.getElementById('errMsg').style.display = 'block';
+  }
+}
+load();
+</script>
+</body>
+</html>
