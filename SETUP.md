@@ -326,13 +326,22 @@ separate Coolify resources with no shared Docker network, so the browser couldn'
 without extra domain/DNS setup. A Worker is just a URL — no networking config, and the free
 tier (100K requests/day) covers this comfortably.
 
-**How login threads through it**: the browser still does the Authentik OIDC/PKCE exchange
-itself (public client, no secret) and gets a short-lived Authentik `access_token`. It hands
-that to the Worker's `/session/exchange`, which verifies it against Authentik's `/userinfo`
-endpoint, looks up the CLIENTS row by `authentik_email`, and issues its **own** signed session
-token (HMAC, `SESSION_SIGNING_KEY` secret) valid for 24h — this avoids needing OAuth
-refresh-token logic in the browser, since Authentik's access tokens are only valid a few
-minutes. Every subsequent call sends that session token as `Authorization: Bearer …`.
+**How login threads through it**: the browser hands the Worker's `/session/exchange` the raw
+authorization `code` + PKCE `code_verifier` straight off Authentik's redirect — the Worker does
+the code→access_token exchange itself (`POST {AUTHENTIK_BASE}/application/o/token/`, still a
+public-client PKCE exchange: `client_id`/`redirect_uri` travel in the request body since neither
+is secret, both already sit in `dashboard.html`'s own `CONFIG`) before verifying it against
+Authentik's `/userinfo` endpoint, looking up the CLIENTS row by `authentik_email`, and issuing its
+**own** signed session token (HMAC, `SESSION_SIGNING_KEY` secret) valid for 24h. Collapsing what
+used to be two sequential browser round trips (browser→Authentik token endpoint, then
+browser→Worker) into one matters most right after a mobile full-page redirect back from
+Authentik — that's the "waiting on the login screen again" part of the flow, and the
+Worker→Authentik hop now runs over Cloudflare's own network instead of the user's connection.
+`{access_token}` alone (the older shape) still works — `autoProvisionAndLogin`'s second call,
+after a brand-new signup finishes onboarding, still uses it directly since it already has a
+verified access token in hand from the first exchange. This avoids needing OAuth refresh-token
+logic in the browser altogether, since Authentik's access tokens are only valid a few minutes.
+Every subsequent call sends the Worker's own session token as `Authorization: Bearer …`.
 
 **Routes**: `/session/exchange`, `/session/me` (resume on page reload), `/nocodb/*` (generic
 passthrough — every existing `ncGet`/`ncPatch`/`ncPost`/`ncDelete` call site in `dashboard.html`

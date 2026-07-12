@@ -271,7 +271,29 @@ async function handleAdminClientsBilling(request, env){
 
 /* ── ROUTES ── */
 async function handleSessionExchange(request, env){
-  const {access_token}=await request.json().catch(()=>({}));
+  const body=await request.json().catch(()=>({}));
+  let access_token=body.access_token;
+  // Login-flow fast path: the browser hands over the authorization `code` + PKCE `code_verifier`
+  // directly instead of exchanging them for an access_token itself first. Doing the code→token
+  // exchange here (still a public-client PKCE exchange — client_id/redirect_uri aren't secrets,
+  // both already sit in dashboard.html's own CONFIG) collapses two sequential browser round trips
+  // (browser→Authentik token endpoint, then browser→Worker) into one, and lets the Worker→
+  // Authentik hops below run over Cloudflare's own network instead of the user's connection —
+  // this is the "waiting on the login screen again" gap on a mobile full-page redirect back from
+  // Authentik. `{access_token}` alone (the old shape) still works, used by autoProvisionAndLogin's
+  // second call after a brand-new signup finishes onboarding.
+  if(!access_token && body.code && body.code_verifier){
+    const tr=await fetch(`${env.AUTHENTIK_BASE}/application/o/token/`, {
+      method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({
+        grant_type:'authorization_code', client_id:body.client_id||'', redirect_uri:body.redirect_uri||'',
+        code:body.code, code_verifier:body.code_verifier
+      })
+    });
+    const tok=await tr.json().catch(()=>({}));
+    if(!tr.ok||!tok.access_token) return json({error:tok.error_description||'Login failed'}, 401);
+    access_token=tok.access_token;
+  }
   if(!access_token) return json({error:'access_token required'}, 400);
   const info=await fetch(`${env.AUTHENTIK_BASE}/application/o/userinfo/`, {headers:{Authorization:`Bearer ${access_token}`}});
   if(!info.ok) return json({error:'Invalid or expired Authentik session'}, 401);
@@ -281,9 +303,10 @@ async function handleSessionExchange(request, env){
   const rec=await getClientByAuthentikEmail(env, email);
   if(!rec||!rec.Id){
     // Not an error condition by itself — this is also what a brand-new signup looks like on
-    // first login. Return the verified email so the frontend can offer to finish provisioning
-    // this account instead of just showing a dead-end error.
-    return json({error:'no_account', email}, 403);
+    // first login. Return the verified email (and access_token, if this request arrived as a
+    // code+verifier — autoProvisionAndLogin's follow-up call needs it) so the frontend can offer
+    // to finish provisioning this account instead of just showing a dead-end error.
+    return json({error:'no_account', email, access_token:body.code?access_token:undefined}, 403);
   }
   const session_token=await signSession(env, rec.Id);
   // Individual verified email of whoever just logged in — distinct from the account's own
