@@ -2969,6 +2969,16 @@ async function sendOrderLinkViaChatwoot(env, c, clientId, conversationId, phone,
   const {product, text}=await resolveOrderProductAndText(env, c, clientId, name, sku, link);
   const fd=new FormData();
   fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+  // Attach the actual product photo, same as the primary inline-order path
+  // (engineSendChatwootImageReply) — best-effort, falls straight through to a text-only send if
+  // there's no image or the fetch fails.
+  const directUrl=product?.image_url?engineResolveDirectImageUrl(product.image_url):'';
+  if(directUrl){
+    try{
+      const imgR=await fetch(directUrl);
+      if(imgR.ok) fd.append('attachments[]', await imgR.blob(), 'product.jpg');
+    }catch(e){}
+  }
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conversationId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   const order_id=await logPendingOrder(env, c, clientId, phone, name, product);
   return {ok:true, link, order_id, whatsapp_sent:r.ok, whatsapp_error:r.ok?undefined:('HTTP '+r.status), via:'chatwoot'};
@@ -3966,6 +3976,50 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
   }
 }
 
+// Mirrors store.html's own toImageUrl() — a Google Drive "share" link
+// (drive.google.com/file/d/<id>/view or ?id=<id>) isn't directly fetchable as raw image bytes;
+// this resolves it to Drive's thumbnail endpoint, which is. Any non-Drive URL (Shopify CDN,
+// direct image host, etc.) passes through unchanged.
+function engineResolveDirectImageUrl(url){
+  if(!url) return '';
+  if(!/drive\.google\.com/.test(url)) return url;
+  const pathMatch=url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  const queryMatch=url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  const id=(pathMatch&&pathMatch[1])||(queryMatch&&queryMatch[1])||null;
+  return id?`https://drive.google.com/thumbnail?id=${id}&sz=w1000`:url;
+}
+
+// Sends a matched product's actual photo as a WhatsApp image attachment (via Chatwoot, the same
+// relay a human agent's own attachments use) with the reply text as its caption, instead of a
+// text-only message that just links to the storefront to see what it looks like. Real observed
+// ask: customers asking about a specific product should see the product, not just a name/price/
+// link. Falls back to a plain text reply (engineSendChatwootReply) whenever there's no image, or
+// fetching/attaching one fails for any reason — a customer getting the text-only reply they'd
+// have gotten before this existed is a far better failure mode than getting nothing at all.
+async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, captionText){
+  const directUrl=engineResolveDirectImageUrl(imageUrl);
+  if(!directUrl) return engineSendChatwootReply(env, c, clientId, convId, captionText);
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
+  try{
+    const imgR=await fetch(directUrl);
+    if(!imgR.ok) return engineSendChatwootReply(env, c, clientId, convId, captionText);
+    const blob=await imgR.blob();
+    const trimmed=(typeof captionText==='string'?captionText:'').trim();
+    const fd=new FormData();
+    fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', blob, 'product.jpg');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendChatwootImageReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+      return engineSendChatwootReply(env, c, clientId, convId, captionText);
+    }
+  }catch(e){
+    await reportOpsError(env, 'engineSendChatwootImageReply — send threw', e, {clientId, convId});
+    return engineSendChatwootReply(env, c, clientId, convId, captionText);
+  }
+}
+
 async function engineSendHandoverLabel(c, convId){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
   try{
@@ -4172,7 +4226,38 @@ async function handleEngineWebhook(request, env, secret){
     const routing=engineRouteFlow(c, state, userText, cls);
 
     let sentText=null;
-    if(routing.route==='human'){
+    let orderHandledInline=false;
+    // Order-readiness now overrides the flow_json state machine's own routing entirely, not just
+    // within the ecom_faq branch — observed real failure: a customer given a product's full detail
+    // card (a properly-matched FAQ answer) said "Order this" next, and instead of the order link
+    // got a scripted, unrelated flow-stage message ("Hi 👋") — because engineRouteFlow's own intent
+    // classification had already picked a different route (a flow-stage transition, a qualifying
+    // question, etc.) before this ever got a chance to run, so explicit purchase intent lost to
+    // whatever the generic flow router decided instead. Checked before the route dispatch below,
+    // for every route except 'human' (a genuine "connect me to a person" ask stays a human
+    // handover even if phrased alongside product talk) and 'drop' (opt-out/dedup-adjacent, nothing
+    // should reply). detectOrderSignal already resolves bare replies ("order this", "S size") via
+    // recent conversation on its own — see its own comment for the "names its own conflicting
+    // detail" fix that came with this.
+    if(c.industry==='ecommerce' && c.openrouter_key && !['human','drop'].includes(routing.route)){
+      const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+      const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+      if(detection.signal){
+        const link=buildOrderLink(c, clientId, detection.sku);
+        const {product, text:orderReplyText}=await resolveOrderProductAndText(env, c, clientId, state.name, detection.sku, link);
+        routing.reply=orderReplyText; sentText=orderReplyText;
+        if(product?.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
+        else await engineSendChatwootReply(env, c, clientId, convId, sentText);
+        await logPendingOrder(env, c, clientId, phone, name, product);
+        orderHandledInline=true;
+      }
+    }
+
+    if(orderHandledInline){
+      // Reply already sent above — Stage/qualAnswers bookkeeping from engineRouteFlow's own
+      // decision is left untouched so the flow/qualification funnel resumes from wherever it was
+      // on the next turn; only the reply actually sent to the customer this turn changes.
+    } else if(routing.route==='human'){
       sentText=routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.';
       routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
@@ -4190,40 +4275,14 @@ async function handleEngineWebhook(request, env, secret){
       sentText=routing.reply||null;
       if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
     } else if(['faq','ecom_faq','travel_faq'].includes(routing.route)){
-      let orderHandledInline=false;
-      // For ecommerce, check order-readiness FIRST, before generating a generic reply — not
-      // after. Observed real failure: "Order pls" (referring to a shirt already shown earlier in
-      // the conversation) got a generic "what would you like to order today?" reply, discarding
-      // everything already discussed — because order-signal detection previously only ran as a
-      // bolt-on AFTER a generic LLM reply had already been generated and sent, so a confused
-      // reply reached the customer regardless of whether the follow-up signal check later got it
-      // right. detectOrderSignal already resolves short/bare replies ("order pls", "S size", "the
-      // green one") against recent conversation correctly on its own — the bug was architectural
-      // (running too late), not in that detection logic itself. Now: if it fires, the resolved
-      // product IS the primary reply, not a second message layered on top of a bad first one.
-      if(routing.route==='ecom_faq' && c.openrouter_key){
-        const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
-        const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
-        if(detection.signal){
-          const link=buildOrderLink(c, clientId, detection.sku);
-          const {product, text:orderReplyText}=await resolveOrderProductAndText(env, c, clientId, state.name, detection.sku, link);
-          routing.reply=orderReplyText; sentText=orderReplyText;
-          await engineSendChatwootReply(env, c, clientId, convId, sentText);
-          await logPendingOrder(env, c, clientId, phone, name, product);
-          orderHandledInline=true;
-        }
-      }
-      if(!orderHandledInline){
-        let contextBlock=null;
-        if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
-        else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
-        const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general');
-        let reply=await engineCallLlm(c, sysPrompt, userText, 300);
-        if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
-        routing.reply=reply; sentText=reply;
-        await engineSendChatwootReply(env, c, clientId, convId, sentText);
-      }
-      routing._orderHandledInline=orderHandledInline;
+      let contextBlock=null;
+      if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
+      else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
+      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general');
+      let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
+      routing.reply=reply; sentText=reply;
+      await engineSendChatwootReply(env, c, clientId, convId, sentText);
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
@@ -4234,6 +4293,7 @@ async function handleEngineWebhook(request, env, secret){
       sentText=routing.reply||null;
       if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
     }
+    routing._orderHandledInline=orderHandledInline;
 
     const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
     await engineUpsertLead(env, method, leadId, leadBody);
