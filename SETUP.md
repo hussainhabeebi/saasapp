@@ -60,6 +60,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
 | team_chatwoot_users | Long text (JSON, `{email: chatwoot_user_id}` — per-teammate Chatwoot Platform user ids, populated by User Management → Create New User — see "Matching Chatwoot agent" below) |
 | team_names | Long text (JSON, `{email: name}` — display names for team_emails, populated by User Management → Create New User — see "Agents = Team Members = Users" below; the now-unused `agents` field it replaced was a plain newline-separated name list) |
+| business_policies | Long text (JSON, `{refund, delivery, cancellation}` — structured objection-handling policy text, Settings → Trust & Policies — see "Trust Signals & grounded objection-handling" below) |
 | fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 | billing_emails_sent | Long text (comma-separated `<event>:<stripe_object_id>` keys — dedupes the trial-ending/receipt/dunning/action-required emails below if Stripe redelivers a webhook; capped to the most recent 20; see "RBI pre-debit notification" below) |
 | notification_email | Single line (email address `n8n/notifications.json` sends hot-lead/handover/SLA alerts to) |
@@ -312,6 +313,156 @@ lead — title, due date (its `ReminderDate` if set, else today), lead link, and
 task. Home's "Follow-ups" widget (`renderHomeFollowUps`) now merges lead `ReminderDate` items
 *and* manual tasks due today/overdue (both come from the same `computeAllTasks()` the Tasks page
 itself renders from), so a pushed task shows up on Home immediately, not only on the Tasks page.
+
+**Trust Signals & grounded objection-handling:** the actual conversational WhatsApp bot (the one
+that replies to customers in real time) is **not part of this repo** — it runs entirely in an
+external n8n workflow (`engine.json`, plus the per-client wrapper `onboard.json` provisions;
+see "Thin API proxy" below and the top of this file). `main_prompt`/`kb_text`/`followup_count`
+etc. are just CLIENTS fields that workflow reads directly from NocoDB — `dashboard.html` and
+`worker.js` only ever write them, never build a bot reply themselves. So "make the bot answer
+refund/delivery/cancellation objections itself, mid-conversation" isn't something this repo can
+deliver end-to-end; that last mile is an n8n-side change, outside this codebase.
+
+What *is* fully built here, in the dashboard the sales rep actually uses:
+- **Settings → Trust & Policies** (`dashboard.html`) — three structured fields (Refund, Delivery,
+  Cancellation), stored as `business_policies` (JSON) on the Clients row, separate from the
+  freeform `kb_text` blob so there's a specific field to point at instead of a big pasted
+  document. Loaded/saved via `getBusinessPolicies()`/`$id('savePolicies')`'s click handler,
+  same `saveField()`/`patchClient()` pattern as every other Settings field.
+- **AI Deal Coach** (`generateDealCoach()`, lead detail pane) — its prompt to `/ai/complete` now
+  includes `getBusinessPolicies()`'s text and `getRecentBookingsCount()` (leads that reached a
+  booked/won `TERMINAL` stage in the last 7 days, using `Date` as a proxy for conversion time —
+  there's no dedicated stage-change timestamp tracked yet), with an explicit system-prompt
+  instruction to answer objections from the real policy text and cite the real booking count
+  instead of generic advice ("offer a quick call").
+- **Trust Signals widget** (same pane, "📣 Trust Signals" button, `renderTrustSignals()`) — a
+  non-AI, zero-hallucination list of ready-to-send snippets (the recent-bookings count, the
+  `review_link`, and each policy that's filled in), each with an "Insert" button that appends it
+  straight into the reply box (`#waReplyText`) so a rep can drop a real trust signal into a chat
+  with one click instead of typing it out.
+- **`business_policies` is already available to the external n8n bot**, the same way `main_prompt`/
+  `kb_text` are — it's just another field on the CLIENTS row that workflow already reads from
+  NocoDB directly. Wiring it into the bot's own system prompt (so it can answer these objections
+  live, not just the dashboard) is the n8n-side follow-up this repo can't do on its own.
+- **`POST /ai/objection-reply`** (`cloudflare-worker/worker.js`, `handleAiObjectionReply`) closes
+  that follow-up from the Cloudflare side, without touching the rest of n8n's conversation flow.
+  Client_id-based like `/ecom/order-link` above (no session — n8n has none). Body:
+  `{client_id, message}`. Screens the one incoming message against this client's
+  `business_policies`/`review_link` via OpenRouter (`c.openrouter_key`/`c.model`, same fields
+  `/ai/complete` uses) and returns either `{handled:false}` (not an objection/trust question —
+  n8n's own flow proceeds exactly as it does today) or `{handled:true, reply:"..."}` (a reply
+  grounded in the real policy text, ready for n8n to send). **Deliberately n8n-called, not an
+  independent Chatwoot webhook listener** — n8n stays the single point of truth for what actually
+  gets sent to the customer, so there's no risk of two systems replying to the same message. The
+  one remaining step is on the n8n side: add one HTTP Request node calling this endpoint at the
+  point where the engine decides how to respond, and send its `reply` when `handled:true` instead
+  of (or before) its own default response for that turn.
+
+**Order-intent links (ecom/physical products):** same repo-boundary as above — *detecting* order
+intent mid-conversation is the external bot's job, not something built here. What this repo does
+provide is the automation surface that detection should call, plus a rep-facing manual version of
+the same thing:
+- **`POST /ecom/order-link`** (`cloudflare-worker/worker.js`, `handleEcomOrderLink`) — the
+  automation entry point, client_id-based like the rest of `/ecom/*` (no Authentik session, since
+  n8n has none). Body: `{client_id, phone, name?, sku?}`. Builds the same storefront link a
+  product card's own "Order on WhatsApp" button already uses (`onshope.com/<slug>` if the client
+  has one, else `store.html?client=<id>`, with `&sku=` for a specific product), sends it directly
+  via Meta's Graph API (bypassing Chatwoot, same pattern as `handleWaSend`), and **always** logs a
+  `pending`-status row in the client's ecom orders table — even if the WhatsApp send itself fails
+  (e.g. the customer is outside Meta's 24h free-form-message window), so "order intent" leaves a
+  paper trail regardless. Returns `{ok, link, order_id, whatsapp_sent, whatsapp_error?}`. This is
+  the route the n8n bot should call the moment it decides a customer wants to buy something.
+- **Dashboard version** (`dashboard.html`, lead detail pane → "🛒 Push to Order") — same modal
+  that already created ecom order rows now also has a product picker
+  (`loadPoProducts()`/`#poProduct`, populated from `GET /ecom/products`) and a "📲 Also send this
+  order link via WhatsApp right now" checkbox (`updatePoLinkPreview()`/`buildStorefrontLink()`,
+  editable message preview, sent via the session-authed `POST /wa/send` — a different route from
+  `/ecom/order-link` above since this call already has a dashboard session). Same
+  send-can-fail-without-blocking-the-order-row behavior as the automation route. `poStatus` picked
+  up a `pending` option (matching `ORDER_STATUS_OPTIONS` in `ecom.html`, which already had it —
+  this dropdown was just missing it) and now defaults to it, since a just-sent link is order
+  intent, not a confirmed order.
+
+**`POST /ai/order-signal`** (`handleAiOrderSignal`) — decides *whether* and *for what* to call
+`/ecom/order-link` above; it never sends anything itself. Same n8n-calls-Cloudflare shape as
+`/ai/objection-reply`: client_id-based, no session. Body: `{client_id, message}`. A "signal" isn't
+only an explicit "I want to buy X" — a specific-variant question (size, color, stock, price of one
+item — `PRODUCT_FIELDS` in `ecom.html` already has `color`/`size` columns) is just as strong a
+buying signal for physical goods, so those count too; the prompt is built with the client's product
+catalog (`name`/`sku`/`color`/`size`/`category`, up to 100 rows) so the model can attempt to match
+the message to one specific product. Returns `{signal:false}`, `{signal:true}` (order-ready but no
+confident product match — push the general catalog link), or `{signal:true, sku:"..."}` (push that
+product's link specifically). n8n should call this on order-relevant messages, then call
+`POST /ecom/order-link` with the resulting `sku` (if any) when `signal:true`.
+
+**`GET /ecom/order-lookup?client_id=<id>&phone=<phone>`** (`handleEcomOrderLookup`) — plain lookup,
+no AI: does this phone number have prior orders, and what's their status (up to 5, most recent
+first)? So a returning customer ("where's my order?", "I already paid") gets recognized instead of
+the bot starting a fresh sales pitch or `/ai/order-signal` pushing a second, redundant order link.
+Cheap enough to call on every incoming message; n8n decides what to do with the result (reference
+the existing order in its reply, skip re-pushing a link, etc.) — this repo only surfaces the data,
+same repo-boundary as everything else in this section.
+
+**Zero-n8n-edit alternative — controlling the bot purely through KB content:** the four routes
+above (`/ai/objection-reply`, `/ai/order-signal`, `/ecom/order-link`, `/ecom/order-lookup`) need at
+least one new HTTP Request node added to the n8n workflow each — real automation, but it does mean
+touching n8n. If that's not wanted yet, policy-grounding and "mention the order link" behavior can
+land with **no n8n node changes at all**, because the bot already reads `kb_text`'s AI-processed
+summary as grounding context every turn, and this repo already owns the one webhook call
+(`leadvyne-kb-process`) that feeds `kb_text` into that summary. `buildKbProcessorText()`
+(`dashboard.html`) appends a `## STORE POLICIES` block (from `business_policies`), a
+`## SOCIAL PROOF` line (`getRecentBookingsCount()`), and — if the client has any ecom tables
+configured (`getEcomTableIds()`) — a `## ORDER LINK` instruction block with the static storefront
+link and guidance on when to share it, onto the raw `kb_text` before POSTing to
+`/webhook/leadvyne-kb-process`. Both call sites (`$id('saveKb')`'s click handler and
+`triggerKbRefresh()`, fired whenever policies/KB text change) send this enriched text as the
+webhook's `kb_text` payload field — **the stored `kb_text` field itself, what a rep sees in
+Settings, is never rewritten**, only what's sent to the processor is enriched. Net effect: without
+touching engine.json, the bot's own grounding context gains real policy wording, a live booking
+count, and a standing instruction to surface the order link on buying signals — no per-message
+Cloudflare round trip required. The honest limits of this path: (1) it depends on the n8n workflow
+actually feeding `kb_text`'s processed summary into the live prompt every turn — true for the setup
+this repo was built against, but unverified here since engine.json isn't in this repo; (2) the
+order link this path teaches the bot to *say* is the generic client-wide storefront link, not a
+per-conversation trackable one.
+
+**Closing the loop on order-row creation too, still with zero n8n edits:** `/ecom/order-link`
+gets called by n8n on-purpose; `/hooks/chatwoot-message` gets there a different way — it watches
+for the *effect* of the KB-injected instruction instead of n8n calling anything.
+- **`POST /ecom/enable-order-tracking`** (session-authed, dashboard **Settings → Auto
+  Order-Tracking** button) registers a **second, independent Chatwoot webhook** on the client's
+  WhatsApp inbox — same `POST .../accounts/:id/webhooks` call Chatwoot already gets one of during
+  WhatsApp connect (that first one feeds `c.webhook_url`, i.e. n8n's own inbound webhook — see the
+  "Best-effort" registration in the WhatsApp-connect flow). Chatwoot supports multiple webhooks per
+  inbox and fires all of them on every event, so adding this one doesn't touch, replace, or even
+  need to know about the one already pointed at n8n. One click, no manual Chatwoot dashboard visit
+  needed either — it's registered via the Chatwoot API from this repo.
+- **`POST /hooks/chatwoot-message`** (`handleChatwootMessageHook`) is what that second webhook
+  points at. It receives every `message_created` event on the inbox and does exactly one thing:
+  if the message is **outgoing** (the bot's own reply) and its text contains the storefront link
+  pattern (`onshope.com/<slug>` or `store.html?client=<id>`, same regex either KB-injected
+  instructions or `/ecom/order-link` would produce), it resolves the client from
+  `chatwoot_account_id`, pulls the customer's phone off the conversation payload, and logs a
+  `pending` order row — same shape `/ecom/order-link` creates, `notes` marked
+  "auto-logged, no n8n changes". Deduped per phone (skips if a pending auto-logged order already
+  exists) so a bot repeating the link mid-conversation doesn't spam rows. **It never sends
+  anything to the customer** — only a silent DB write — which is exactly why this is safe to run
+  independently of n8n: there's no second reply that could race or duplicate the bot's own
+  message, the coordination risk that made `/ai/objection-reply` and `/ai/order-signal`
+  deliberately n8n-called instead. n8n's workflow doesn't know this webhook exists and needs no
+  changes for it to work.
+- **Honest limits:** this only fires when the bot's reply actually contains the literal link text
+  — it depends on the model reliably following the KB-injected instruction to include it verbatim,
+  same instruction-following caveat as the policy-grounding path above, not a guarantee the way a
+  real n8n → `/ecom/order-link` tool call would be. The Chatwoot webhook payload shape used here
+  (`message_type`, `content`, `account.id`, `conversation.meta.sender.phone_number` /
+  `conversation.contact_inbox.source_id`) is based on Chatwoot's documented `message_created`
+  event and defensively parsed, but hasn't been verified against a live payload from this specific
+  Chatwoot instance/version — if phone or account resolution comes back empty in practice, that's
+  the first place to check. And this endpoint has no request-signing/auth check (Chatwoot webhooks
+  aren't authenticated by default here), same accepted client_id-based-trust tradeoff as the rest
+  of `/ecom/*` — it only ever performs a `pending`-status insert, never a destructive action, which
+  keeps the blast radius of a spoofed call low.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/

@@ -1666,6 +1666,49 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <hr class="div">
 
+          <!-- TRUST & POLICIES — structured, separate from the freeform Knowledge Base above so
+               objection-handling (refund/delivery/cancellation questions) can be answered from a
+               specific policy field instead of the bot having to find the right paragraph inside
+               a big pasted blob. Deal Coach and the lead detail pane's Trust Signals widget both
+               read this directly; it's also just another CLIENTS field, so it's already available
+               to your bot's own prompt-building logic to wire in the same way main_prompt/kb_text
+               are — see SETUP.md. -->
+          <div class="settings-section">
+            <div class="s-head">🛡️ Trust & Policies</div>
+            <div class="s-note">Real answers for the objections that actually stall a sale — what happens if they want a refund, when delivery arrives, what cancelling costs. Grounds Deal Coach's recommendations so they're specific to your actual policies, not generic advice.</div>
+            <label class="form-label">Refund Policy</label>
+            <textarea class="form-input" id="cfgPolicyRefund" rows="3" placeholder="e.g. Full refund within 7 days of booking, minus a 5% processing fee after 48 hours." style="margin-bottom:10px"></textarea>
+            <label class="form-label">Delivery / Fulfillment Policy</label>
+            <textarea class="form-input" id="cfgPolicyDelivery" rows="3" placeholder="e.g. Standard delivery 3-5 business days; express delivery available for AED 25, arrives next day." style="margin-bottom:10px"></textarea>
+            <label class="form-label">Cancellation Policy</label>
+            <textarea class="form-input" id="cfgPolicyCancellation" rows="3" placeholder="e.g. Free cancellation up to 24h before departure; 50% charge inside 24h, no-shows are non-refundable." style="margin-bottom:10px"></textarea>
+            <div style="display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="savePolicies">Save Policies</button>
+              <span class="save-msg" id="savePoliciesMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <!-- AUTO ORDER-TRACKING — a *second*, independent Chatwoot webhook (registered by
+               handleEcomEnableOrderTracking, cloudflare-worker/worker.js) that silently watches
+               your bot's own outgoing replies for the storefront link (which the Knowledge Base
+               payload already instructs it to share on buying signals — see the ORDER LINK
+               section injected by buildKbProcessorText()) and logs a pending ecom order the
+               moment it sees one. It never sends anything to the customer itself, so it can't
+               collide with the bot's own reply, and it needs zero changes to your n8n workflow —
+               n8n keeps doing exactly what it does today. -->
+          <div class="settings-section">
+            <div class="s-head">🛒 Auto Order-Tracking</div>
+            <div class="s-note">When your bot shares a store link with a customer (see the Order Link guidance above), automatically log it as a pending order — with no changes to your n8n workflow. One-time setup per WhatsApp connection.</div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="enableOrderTracking">Enable Auto Order-Tracking</button>
+              <span class="save-msg" id="enableOrderTrackingMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
           <div class="settings-section">
             <div class="s-head">Bot Persona &amp; System Prompt</div>
             <div class="s-note">The bot's voice, scope, and guardrails.</div>
@@ -2622,6 +2665,12 @@ const TODAY = new Date().toISOString().slice(0,10);
       <button class="btn btn-secondary btn-sm" onclick="generateDealCoach()">🤖 AI Deal Coach</button>
       <div id="dealCoachCard" class="coach-card" style="display:none;margin-top:10px"></div>
     </div>
+    <!-- Trust Signals — objection-handling snippets (recent bookings, review link, policies)
+         ready to insert into the reply box above, one click. -->
+    <div style="margin-top:12px">
+      <button class="btn btn-secondary btn-sm" onclick="toggleTrustSignals()">📣 Trust Signals</button>
+      <div id="trustSignalsCard" class="coach-card" style="display:none;margin-top:10px"></div>
+    </div>
   </div>
 </div>
 
@@ -2881,7 +2930,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <div class="modal-hd"><div class="modal-title">Push to Order</div><button class="icon-btn" onclick="closeModal('modalPushOrder')">✕</button></div>
   <div class="modal-body">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="poCustomerName"></div>
+      <div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="poCustomerName" oninput="updatePoLinkPreview()"></div>
       <div class="form-group"><label class="form-label">Customer Phone *</label><input class="form-input" id="poCustomerPhone"></div>
     </div>
     <div class="form-group"><label class="form-label">Items</label><textarea class="form-input" id="poItems" rows="2" placeholder="e.g. 2x Wireless Mouse, 1x Desk Lamp"></textarea></div>
@@ -2893,6 +2942,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div class="form-group"><label class="form-label">Order Date</label><input class="form-input" type="date" id="poOrderDate"></div>
       <div class="form-group"><label class="form-label">Status</label>
         <select class="form-input" id="poStatus">
+          <option value="pending">Pending (link sent)</option>
           <option value="received">Received</option>
           <option value="processing">Processing</option>
           <option value="shipped">Shipped</option>
@@ -2903,6 +2953,23 @@ const TODAY = new Date().toISOString().slice(0,10);
     </div>
     <div class="form-group"><label class="form-label">Delivery Address</label><textarea class="form-input" id="poAddress" rows="2"></textarea></div>
     <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="poNotes" rows="2"></textarea></div>
+
+    <hr class="div">
+    <!-- Order-intent link: builds a link into the client's own storefront (onshope.com/<slug> or
+         store.html?client=<id> — whichever this client uses, same as the storefront's own product
+         cards) and sends it straight to the lead's WhatsApp via /wa/send, bypassing Chatwoot. -->
+    <div class="form-group">
+      <label class="form-label">Product (optional — links straight to it, otherwise the full catalog)</label>
+      <select class="form-input" id="poProduct" onchange="updatePoLinkPreview()"><option value="">— Full catalog —</option></select>
+    </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="poSendLink" checked onchange="updatePoLinkPreview()" style="width:auto">
+      <label class="form-label" style="margin:0" for="poSendLink">📲 Also send this order link via WhatsApp right now</label>
+    </div>
+    <div class="form-group" id="poLinkPreviewWrap" style="display:none">
+      <label class="form-label">Message preview (editable)</label>
+      <textarea class="form-input" id="poLinkMessage" rows="3"></textarea>
+    </div>
   </div>
   <div class="modal-footer">
     <button class="btn btn-primary" id="savePushOrderBtn" onclick="submitPushOrder()">Create Order</button>
@@ -3837,6 +3904,7 @@ function openDetail(id){
 
   $id('detailSummary').style.display='none';
   $id('dealCoachCard').style.display='none';
+  $id('trustSignalsCard').style.display='none';
   renderNbaChip(lead);
   renderRecoveryChip(lead);
   renderLeadProfile(lead);
@@ -3851,6 +3919,44 @@ function getEcomTableIds(){
   try{return JSON.parse(clientRecord?.ecom_table_ids||'{}');}catch(e){return{};}
 }
 
+// Products for the order-link picker below — fetched fresh each time the modal opens via the
+// same client_id-based /ecom/products route ecom.html itself uses (no session required, but
+// dashboard.html's session doesn't hurt either).
+let _poProducts=[];
+async function loadPoProducts(){
+  const sel=$id('poProduct');
+  sel.innerHTML='<option value="">— Full catalog —</option>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/ecom/products?client_id=${encodeURIComponent(clientId)}&limit=200`);
+    const data=await r.json().catch(()=>({}));
+    _poProducts=(data.list||data.data||[]).filter(p=>p.status!=='inactive'&&p.status!=='hidden');
+    sel.innerHTML+=_poProducts.map(p=>`<option value="${esc(p.Id)}">${esc(p.name||'Untitled')}${p.price?' — '+esc(p.currency||'')+' '+p.price:''}</option>`).join('');
+  }catch(e){}
+}
+
+// Same link a storefront product card's own "Order on WhatsApp" button points at — the client's
+// onshope.com slug if they have one, else the SaaS-branded store.html?client=<id>, both already
+// used verbatim elsewhere (see store.html/onshope-store.html) so this isn't a new URL scheme.
+function buildStorefrontLink(sku){
+  const slug=clientRecord?.client_slug;
+  const base=slug?`https://onshope.com/${slug}`:`https://app.leadvyne.com/store.html?client=${clientId}`;
+  if(!sku) return base;
+  return slug?`${base}?sku=${encodeURIComponent(sku)}`:`${base}&sku=${encodeURIComponent(sku)}`;
+}
+
+function updatePoLinkPreview(){
+  const send=$id('poSendLink').checked;
+  $id('poLinkPreviewWrap').style.display=send?'block':'none';
+  if(!send) return;
+  const prodId=$id('poProduct').value;
+  const product=prodId?_poProducts.find(p=>String(p.Id)===prodId):null;
+  const link=buildStorefrontLink(product?.sku||'');
+  const name=$id('poCustomerName').value.trim()||'there';
+  $id('poLinkMessage').value=product
+    ? `Hi ${name}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
+    : `Hi ${name}! Here's our full catalog — order directly from here:\n${link}`;
+}
+
 function openPushOrderModal(){
   const lead=currentLead; if(!lead)return;
   if(!getEcomTableIds().orders){
@@ -3863,10 +3969,14 @@ function openPushOrderModal(){
   $id('poTotal').value=lead.DealValue||'';
   $id('poCurrency').value=lead.DealCurrency||clientRecord?.deal_currency||'INR';
   $id('poOrderDate').value=TODAY;
-  $id('poStatus').value='received';
+  $id('poStatus').value='pending';
   $id('poAddress').value='';
   $id('poNotes').value='';
+  $id('poProduct').value='';
+  $id('poSendLink').checked=true;
   $id('pushOrderMsg').textContent='';
+  loadPoProducts();
+  updatePoLinkPreview();
   openModal('modalPushOrder');
 }
 
@@ -3876,13 +3986,29 @@ async function submitPushOrder(){
   if(!ecomIds.orders){ $id('pushOrderMsg').textContent='Orders table not configured'; return; }
   const phone=$id('poCustomerPhone').value.trim();
   if(!phone){ $id('pushOrderMsg').textContent='Customer phone is required'; return; }
+  const sendLink=$id('poSendLink').checked;
+  // Send the WhatsApp link first, but never let a failed send (e.g. the customer is outside
+  // Meta's 24h free-form-message window) block logging the order itself — that's the one thing
+  // explicitly asked for regardless of whether delivery succeeded.
+  let linkWarning='';
+  if(sendLink){
+    $id('pushOrderMsg').textContent='Sending order link via WhatsApp…';
+    try{
+      const r=await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{
+        method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({phone:phone.replace(/[^0-9+]/g,''),text:$id('poLinkMessage').value.trim()})
+      });
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    }catch(e){ linkWarning=' (order link could not be sent: '+e.message+')'; }
+  }
   const body={
     client_id: clientId,
     order_id: 'ORD-'+Date.now(),
     customer_name: $id('poCustomerName').value.trim(),
     customer_phone: phone.replace(/[^0-9+]/g,''),
     order_date: $id('poOrderDate').value||TODAY,
-    items: $id('poItems').value.trim(),
+    items: $id('poItems').value.trim()||($id('poProduct').value?($id('poProduct').selectedOptions[0]?.textContent||''):''),
     total: parseFloat($id('poTotal').value)||0,
     currency: $id('poCurrency').value.trim()||'INR',
     status: $id('poStatus').value,
@@ -3894,6 +4020,7 @@ async function submitPushOrder(){
     await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${ecomIds.orders}/records`, body);
     closeModal('modalPushOrder');
     addTag('Order Pushed').catch(()=>{});
+    showToast('✓ Order created'+(sendLink?(linkWarning||' and link sent'):''));
   }catch(e){
     $id('pushOrderMsg').textContent='Error: '+e.message;
   }
@@ -4427,6 +4554,11 @@ function populateSettings(){
   kbUpdateCount();
   $id('kbFileList').innerHTML='';
   $id('kbStatus').textContent=_kbText?`${_kbText.length.toLocaleString()} characters loaded`:'';
+  // trust & policies
+  const _pol=getBusinessPolicies();
+  $id('cfgPolicyRefund').value=_pol.refund;
+  $id('cfgPolicyDelivery').value=_pol.delivery;
+  $id('cfgPolicyCancellation').value=_pol.cancellation;
   // services
   loadServices();
   // stages
@@ -4556,7 +4688,7 @@ $id('saveKb').addEventListener('click',async()=>{
     const r=await fetch(n8nBase+'/webhook/leadvyne-kb-process',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({client_id:clientId,kb_text:txt})
+      body:JSON.stringify({client_id:clientId,kb_text:buildKbProcessorText(txt)})
     });
     const d=await r.json();
     msgEl.textContent=d.ok?`✓ Processed — ${(d.chars||0).toLocaleString()} chars summary`:'Saved (processor unavailable)';
@@ -4567,6 +4699,26 @@ $id('saveKb').addEventListener('click',async()=>{
   setTimeout(()=>msgEl.textContent='',5000);
 });
 $id('cfgKbText').addEventListener('input',kbUpdateCount);
+
+$id('savePolicies').addEventListener('click',async()=>{
+  await saveField('savePolicies','savePoliciesMsg',{business_policies:JSON.stringify({
+    refund:$id('cfgPolicyRefund').value.trim(),
+    delivery:$id('cfgPolicyDelivery').value.trim(),
+    cancellation:$id('cfgPolicyCancellation').value.trim(),
+  })});
+});
+
+$id('enableOrderTracking').addEventListener('click',async()=>{
+  const btn=$id('enableOrderTracking'),msgEl=$id('enableOrderTrackingMsg');
+  btn.disabled=true;msgEl.textContent='Enabling…';msgEl.className='save-msg';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/ecom/enable-order-tracking`,{method:'POST',headers:ncAuthHeaders()});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||'HTTP '+r.status);
+    msgEl.textContent=d.already_enabled?'✓ Already enabled':'✓ Enabled — no n8n changes needed';
+  }catch(e){msgEl.textContent='Error: '+e.message;msgEl.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>{msgEl.textContent='';msgEl.className='save-msg';},5000);}
+});
 
 $id('savePrompt').addEventListener('click',async()=>{
   await saveField('savePrompt','savePromptMsg',{main_prompt:$id('cfgPrompt').value});
@@ -6228,6 +6380,25 @@ function taskAssigneeEmails(){ return getTeamMembers().map(m=>m.email); }
 // User Management → Create New User) or the account's own client_name for the owner; falls back
 // to the bare email when no name is on file (e.g. teammates added via "Add Existing Authentik
 // User", which never collects one).
+// Structured refund/delivery/cancellation policy text (business_policies CLIENTS field, JSON) —
+// separate from the freeform kb_text blob so objection-handling has a specific field to point at
+// instead of hunting through a big pasted document. Read by generateDealCoach() and the lead
+// detail pane's Trust Signals widget (renderTrustSignals below).
+function getBusinessPolicies(){
+  try{ return {refund:'', delivery:'', cancellation:'', ...JSON.parse(clientRecord?.business_policies||'{}')}; }
+  catch(e){ return {refund:'', delivery:'', cancellation:''}; }
+}
+
+// Social proof — count of leads that reached a booked/won stage in the last 7 days. Uses each
+// lead's Date (creation timestamp) as a proxy for "when they converted" since there's no
+// dedicated stage-change timestamp tracked; for these industries (travel/real estate/clinics/
+// recruitment) time-to-convert from first WhatsApp message is usually short enough that this
+// reads as accurate for "X people booked this week" without needing new backend tracking.
+function getRecentBookingsCount(){
+  const cutoff=Date.now()-7*86400000;
+  return allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover'&&l.Date&&new Date(l.Date).getTime()>=cutoff).length;
+}
+
 function getTeamMembers(){
   const owner=(clientRecord?.authentik_email||'').trim();
   const teamEmails=(clientRecord?.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
@@ -6778,12 +6949,23 @@ async function generateDealCoach(){
     const carsText=_taCars.filter(c=>c.status!=='inactive').length?'\nAvailable Cars:\n'+_taCars.filter(c=>c.status!=='inactive').slice(0,6).map(c=>`- ${c.name} | ${cap(c.category||'car')} | ${c.seats||'?'} seats | ${c.currency||'AED'} ${c.daily_rate||0}/day`).join('\n'):'';
     const qaText=Object.keys(qa).length?'\nQual answers: '+JSON.stringify(qa):'';
     const histText=hist.slice(-8).map(m=>m.role+': '+m.content).join('\n');
+    // Grounds recommendations in this client's actual policies and real recent activity —
+    // otherwise the model falls back to generic advice ("offer a quick call") instead of
+    // directly answering the refund/delivery/cancellation objection that's actually stalling
+    // this deal, or citing a real social-proof number.
+    const pol=getBusinessPolicies();
+    const policyText=(pol.refund||pol.delivery||pol.cancellation)
+      ? '\nPolicies (answer refund/delivery/cancellation objections directly from these, don\'t give generic advice):'
+        +(pol.refund?`\n- Refund: ${pol.refund}`:'')+(pol.delivery?`\n- Delivery: ${pol.delivery}`:'')+(pol.cancellation?`\n- Cancellation: ${pol.cancellation}`:'')
+      : '';
+    const bookingsCount=getRecentBookingsCount();
+    const socialProofText=bookingsCount>0?`\nSocial proof available: ${bookingsCount} customer(s) booked with us in the last 7 days — cite this real number if it helps build urgency or trust.`:'';
     const resp=await fetch(`${CONFIG.WORKER_BASE}/ai/complete`,{
       method:'POST',
       headers:ncAuthHeaders({'Content-Type':'application/json'}),
       body:JSON.stringify({max_tokens:400,messages:[
-        {role:'system',content:'You are a travel agency sales coach. Analyse the lead and give 3 concise, actionable recommendations to close the deal. If relevant packages or itineraries are listed, suggest specific ones by name. Format as: 1. [action] 2. [action] 3. [action]. Be specific and practical.'},
-        {role:'user',content:`Lead: ${lead.Name||'Unknown'}\nStage: ${lead.Stage||'new'}\nScore: ${lead.Score||'Cold'}\nQual Score: ${lead.QualScore||'N/A'}\nHot moment: ${lead.HotMoment==='Yes'?lead.HotMomentText:'No'}${qaText}${svcText}${pkgText}${itinText}${umrahText}${carsText}\nRecent conversation:\n${histText}`}
+        {role:'system',content:'You are a travel agency sales coach. Analyse the lead and give 3 concise, actionable recommendations to close the deal. If relevant packages or itineraries are listed, suggest specific ones by name. If the lead is stalling on (or likely to raise) a refund, delivery, or cancellation objection, answer it directly using the policies provided — quote the real terms, never a generic "offer a call" deflection. Use the social proof figure only if it genuinely strengthens a recommendation. Format as: 1. [action] 2. [action] 3. [action]. Be specific and practical, never generic.'},
+        {role:'user',content:`Lead: ${lead.Name||'Unknown'}\nStage: ${lead.Stage||'new'}\nScore: ${lead.Score||'Cold'}\nQual Score: ${lead.QualScore||'N/A'}\nHot moment: ${lead.HotMoment==='Yes'?lead.HotMomentText:'No'}${qaText}${svcText}${pkgText}${itinText}${umrahText}${carsText}${policyText}${socialProofText}\nRecent conversation:\n${histText}`}
       ]})
     });
     const data=await resp.json();
@@ -6793,6 +6975,44 @@ async function generateDealCoach(){
     card.innerHTML=`<div class="cc-head">🤖 Deal Coach Recommendations</div>${esc(text).replace(/\n/g,'<br>')}`;
   }catch(e){card.style.display='block';card.innerHTML='<div class="cc-head">Error</div>Could not generate recommendations.';}
   btn.disabled=false;btn.textContent='🤖 AI Deal Coach';
+}
+
+/* ── TRUST SIGNALS ── objection-handling snippets ready to drop into the reply box: real
+   recent-activity social proof, the review link, and the structured refund/delivery/cancellation
+   policies from Settings → Trust & Policies. Pure client-side, no AI call — these are exact
+   figures/policy text, not generated prose, so there's nothing to hallucinate. */
+let _trustSignalsList=[];
+function toggleTrustSignals(){
+  const card=$id('trustSignalsCard');
+  const opening=card.style.display==='none';
+  card.style.display=opening?'block':'none';
+  if(opening) renderTrustSignals();
+}
+function renderTrustSignals(){
+  const card=$id('trustSignalsCard');
+  const count=getRecentBookingsCount();
+  const pol=getBusinessPolicies();
+  const reviewLink=clientRecord?.review_link||'';
+  _trustSignalsList=[];
+  if(count>0) _trustSignalsList.push(`🔥 ${count} customer${count===1?'':'s'} booked with us this week!`);
+  if(reviewLink) _trustSignalsList.push(`⭐ See what our customers say: ${reviewLink}`);
+  if(pol.refund) _trustSignalsList.push(`Our refund policy: ${pol.refund}`);
+  if(pol.delivery) _trustSignalsList.push(`Delivery info: ${pol.delivery}`);
+  if(pol.cancellation) _trustSignalsList.push(`Cancellation policy: ${pol.cancellation}`);
+  if(!_trustSignalsList.length){
+    card.innerHTML='<div style="color:var(--muted);font-size:13px">No trust signals set up yet — add policies and a review link in Settings.</div>';
+    return;
+  }
+  card.innerHTML=`<div class="cc-head">📣 Trust Signals</div>`+_trustSignalsList.map((s,i)=>`<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)">
+    <div style="flex:1;font-size:13px;line-height:1.5">${esc(s)}</div>
+    <button class="btn btn-secondary btn-sm" style="flex-shrink:0" onclick="insertTrustSignal(${i})">Insert</button>
+  </div>`).join('');
+}
+function insertTrustSignal(i){
+  const text=_trustSignalsList[i]; if(!text) return;
+  const box=$id('waReplyText'); if(!box) return;
+  box.value=(box.value?box.value+'\n\n':'')+text;
+  box.focus();
 }
 
 /* ── INDUSTRY THEME ── */
@@ -6955,10 +7175,33 @@ function showToast(msg,type='ok'){
 }
 
 /* ── KB AUTO-REFRESH ── */
+// Enriches the raw kb_text with policy grounding, social proof and order-link instructions
+// before it is sent to the n8n KB processor webhook. This is additive to the *payload* only —
+// the stored kb_text field (what reps see/edit in Settings) is never mutated — so the bot picks
+// up trust-signal + order-link behavior purely through KB content, with zero n8n workflow edits.
+function buildKbProcessorText(rawText){
+  let extra='';
+  const pol=getBusinessPolicies();
+  if(pol.refund||pol.delivery||pol.cancellation){
+    extra+='\n\n## STORE POLICIES (ground objection-handling in these exact terms — never invent policy details)\n';
+    if(pol.refund)extra+=`Refund policy: ${pol.refund}\n`;
+    if(pol.delivery)extra+=`Delivery policy: ${pol.delivery}\n`;
+    if(pol.cancellation)extra+=`Cancellation policy: ${pol.cancellation}\n`;
+  }
+  const bookings=getRecentBookingsCount();
+  if(bookings>0){
+    extra+=`\n## SOCIAL PROOF\n${bookings} customers completed an order/booking in the last 7 days. When a customer is hesitating, you may naturally mention this to build trust (e.g. "${bookings} people booked this week").\n`;
+  }
+  if(Object.keys(getEcomTableIds()).length){
+    const link=buildStorefrontLink();
+    extra+=`\n## ORDER LINK\nWhen a customer shows clear buying intent (asks about size, color, price, stock, or says they want to buy/order), share this store link so they can complete the purchase: ${link}\n`;
+  }
+  return (rawText||'')+extra;
+}
 async function triggerKbRefresh(){
   try{
     const n8nBase=(clientRecord?.n8n_base||'https://apps.leadvyne.com').replace(/\/$/,'');
-    await fetch(n8nBase+'/webhook/leadvyne-kb-process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,kb_text:clientRecord.kb_text||''})});
+    await fetch(n8nBase+'/webhook/leadvyne-kb-process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,kb_text:buildKbProcessorText(clientRecord.kb_text||'')})});
   }catch(e){}
 }
 
