@@ -518,6 +518,39 @@ for the *effect* of the KB-injected instruction instead of n8n calling anything.
   of `/ecom/*` — it only ever performs a `pending`-status insert, never a destructive action, which
   keeps the blast radius of a spoofed call low.
 
+**Booking-industry clients get more than the passive watch above — a direct, Cloudflare-only
+auto-send.** The outgoing-message watch relied on the bot actually including the booking link in
+its own reply (best-effort, LLM instruction-following). `handleChatwootIncomingBookingSignal`
+(same file, called from `handleChatwootMessageHook` for `message_type==='incoming'`) closes that
+gap for services businesses: it screens the *customer's own* message with AI
+(`detectBookingSignal()`, shared with `/ai/booking-signal`) and, if it reads as booking-ready,
+**sends the booking link itself over WhatsApp right there** — no waiting on the bot, no n8n call.
+- Scoped to booking-industry clients only (`external_store_link` set, no ecom orders table —
+  ecom clients keep the passive-only behavior above) with WhatsApp and an OpenRouter key
+  configured. Skips a lead already at a booking-terminal stage, and dedupes on "this phone already
+  has a `requested` appointment" (once the Appointment module is set up) before spending an AI call
+  — so it fires once per lead's pre-booking window, not on every message.
+- **This is the one deliberate exception to "never sends anything to the customer" in this whole
+  section** — every other zero-n8n mechanism here (policy grounding, the outgoing-message watch)
+  was designed specifically to avoid double-reply risk by never generating a customer-facing
+  message on its own. This one does, because there's no other way to make "order intent found →
+  booking link sent" actually automatic without either an n8n workflow edit or a real risk: **if
+  the client's n8n bot also replies to that same incoming message with its own text, the customer
+  gets two messages.** Settings → Auto Order-Tracking's copy (`dashboard.html`) says this plainly
+  before a booking-industry client enables it. There's no way to detect from Cloudflare's side
+  whether n8n's bot is about to reply too — that visibility gap is inherent to n8n being a black
+  box to this repo, not something a smarter check here could close.
+- `sendBookingLinkNow()` (`worker.js`) is the actual send-and-log logic, factored out of
+  `handleLeadBookingLink` so both the n8n-callable HTTP route and this direct path share one
+  implementation instead of two copies that could drift.
+
+**The booking link is also just shown on the Appointments tab itself** (`renderApptLinkBar()`,
+`dashboard.html`) — a small bar under the sub-nav, visible on every Appointments sub-page, with a
+Copy button. Same value as Settings → Order/Booking Link (`external_store_link`); this is purely a
+convenience so a rep can grab it without leaving the tab — e.g. to paste into `main_prompt` by hand
+for a client who wants the bot's own base prompt to mention it directly, on top of (or instead of)
+the KB-injected guidance above.
+
 ## Appointment Booking module (`frontend/dashboard.html` — Appointments tab)
 A full, detailed module for services businesses (healthcare, consultancy, and anything else
 `isBookingIndustry()` covers — every industry but Ecommerce) to manage bookable services and the

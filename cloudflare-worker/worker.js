@@ -1167,14 +1167,11 @@ ${productList||'(no products listed)'}`;
 // if matched) to actually send the link — kept as two calls, not merged into one, so n8n stays in
 // control of whether its own bot also replies to the same message (the same double-reply-risk
 // reasoning that kept detection and action separate for /ai/order-signal).
-async function handleAiBookingSignal(request, env){
-  const body=await request.json().catch(()=>({}));
-  const clientId=String(body.client_id||'');
-  const message=String(body.message||'').trim();
-  if(!clientId||!message) return json({error:'client_id and message required'}, 400);
-  const c=await getClientById(env, clientId);
-  if(!c) return json({error:'Client not found'}, 404);
-  if(!c.openrouter_key) return json({error:'No OpenRouter API key set for this account.'}, 400);
+// Core detection logic, shared by the HTTP endpoint below (handleAiBookingSignal, for n8n to call)
+// and handleChatwootMessageHook's own direct auto-send path (no n8n involved at all — see that
+// function for why). Returns {signal, service_id?} — never sends anything, purely a screen.
+async function detectBookingSignal(env, c, clientId, message){
+  if(!c.openrouter_key) return {signal:false, error:'No OpenRouter API key set for this account.'};
 
   const servicesTable=apptResolveTable(c, 'services');
   let serviceList='';
@@ -1199,11 +1196,23 @@ ${serviceList||'(no services listed)'}`;
     })
   });
   const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  if(!r.ok) return {signal:false, error:data?.error?.message||'HTTP '+r.status};
   const raw=data?.choices?.[0]?.message?.content?.trim()||'{"signal":false}';
   let parsed={signal:false};
   try{ parsed=JSON.parse(raw); }catch(e){}
-  return json({signal:!!parsed.signal, service_id:parsed.signal?(parsed.service_id||undefined):undefined});
+  return {signal:!!parsed.signal, service_id:parsed.signal?(parsed.service_id||undefined):undefined};
+}
+
+async function handleAiBookingSignal(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const message=String(body.message||'').trim();
+  if(!clientId||!message) return json({error:'client_id and message required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  const result=await detectBookingSignal(env, c, clientId, message);
+  if(result.error) return json({error:result.error}, result.error.startsWith('No OpenRouter')?400:502);
+  return json({signal:result.signal, service_id:result.service_id});
 }
 
 // Plain lookup, no AI — "has this phone number ordered before, and what's the status" — so a
@@ -2864,6 +2873,39 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service)
   return {lead_id:lead?.Id||null, stage_advanced};
 }
 
+// Core "actually send the booking link" logic — shared by the HTTP endpoint below
+// (handleLeadBookingLink, for n8n or a rep-triggered flow to call) and
+// handleChatwootMessageHook's direct auto-send path. serviceId is optional and only resolved if
+// the Appointment module is set up; without it the message is just the plain booking-link text.
+async function sendBookingLinkNow(env, c, clientId, phone, name, serviceId){
+  const link=(c.external_store_link||'').trim();
+  if(!link) return {error:'No booking link configured — set one in Settings → Order Link.'};
+  if(!c.wa_phone_id||!c.wa_token) return {error:'WhatsApp phone / token not configured.'};
+
+  let service=null;
+  if(serviceId){
+    const servicesTable=apptResolveTable(c, 'services');
+    if(servicesTable){
+      const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(Id,eq,${Number(serviceId)})&limit=1`);
+      const sd=await sr.json().catch(()=>({}));
+      service=sd?.list?.[0]||null;
+    }
+  }
+
+  const displayName=name||'there';
+  const text=service
+    ? `Hi ${displayName}! Here's the link to book your *${service.name}*${service.duration_minutes?' ('+service.duration_minutes+' min)':''}: ${link}`
+    : `Hi ${displayName}! Here's the link to book: ${link}`;
+  const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
+  });
+  const waData=await waR.json().catch(()=>({}));
+
+  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, name, service);
+  return {ok:true, link, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), lead_id, stage_advanced};
+}
+
 async function handleLeadBookingLink(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
@@ -2871,35 +2913,9 @@ async function handleLeadBookingLink(request, env){
   if(!clientId||!phone) return json({error:'client_id and phone required'}, 400);
   const c=await getClientById(env, clientId);
   if(!c) return json({error:'Client not found'}, 404);
-  const link=(c.external_store_link||'').trim();
-  if(!link) return json({error:'No booking link configured — set one in Settings → Order Link.'}, 400);
-  if(!c.wa_phone_id||!c.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
-
-  // Optional service_id (from /ai/booking-signal's match, or n8n/a rep already knowing which
-  // service the customer wants) — only resolved if the Appointment module is actually set up;
-  // a client without it just gets the plain booking-link message, same as before.
-  let service=null;
-  if(body.service_id){
-    const servicesTable=apptResolveTable(c, 'services');
-    if(servicesTable){
-      const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(Id,eq,${Number(body.service_id)})&limit=1`);
-      const sd=await sr.json().catch(()=>({}));
-      service=sd?.list?.[0]||null;
-    }
-  }
-
-  const name=body.name||'there';
-  const text=service
-    ? `Hi ${name}! Here's the link to book your *${service.name}*${service.duration_minutes?' ('+service.duration_minutes+' min)':''}: ${link}`
-    : `Hi ${name}! Here's the link to book: ${link}`;
-  const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
-  });
-  const waData=await waR.json().catch(()=>({}));
-
-  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, body.name, service);
-  return json({ok:true, link, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), lead_id, stage_advanced});
+  const result=await sendBookingLinkNow(env, c, clientId, phone, body.name, body.service_id);
+  if(result.error) return json({error:result.error}, 400);
+  return json(result);
 }
 
 // Cal.com's HMAC is hex-encoded (X-Cal-Signature-256), unlike Shopify's base64
@@ -2997,10 +3013,56 @@ async function handleEcomEnableOrderTracking(request, env){
 // storefront URL, matched as a plain substring since an arbitrary external domain has no known sku
 // query-param scheme to parse out.
 const CHATWOOT_HOOK_LINK_RE=/https:\/\/(?:onshope\.com\/([a-z0-9-]+)|app\.leadvyne\.com\/store\.html\?client=(\d+))(?:[?&]sku=([^\s&"']+))?/i;
+
+// Direct, Cloudflare-only auto-send for booking-industry clients: screens the customer's own
+// INCOMING message for booking intent and, if detected, sends the booking link itself right here
+// — no n8n call involved. This is a deliberate, narrow exception to the "n8n calls Cloudflare, so
+// n8n stays in control of whether it also replies" rule the rest of this file follows for anything
+// that talks to the customer (see /ai/order-signal's and /ai/booking-signal's comments) — it
+// carries a real, accepted risk: if the client's n8n bot also replies to this same incoming
+// message with its own text, the customer gets two messages. Scoped tightly to limit that: only
+// clients with no ecom orders table (i.e. not an ecom client), only once the AI actually screens
+// the message as a signal, and only once per lead (dedupe below) so it can't fire repeatedly in
+// one conversation.
+async function handleChatwootIncomingBookingSignal(env, c, clientId, content, body){
+  const link=(c.external_store_link||'').trim();
+  if(!link) return json({ok:true, skipped:'no-booking-link'});
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(ordersTable) return json({ok:true, skipped:'ecom-client'});
+  if(!c.wa_phone_id||!c.wa_token) return json({ok:true, skipped:'whatsapp-not-configured'});
+  if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
+
+  const phone=String(
+    body.conversation?.meta?.sender?.phone_number ||
+    body.conversation?.contact_inbox?.source_id ||
+    ''
+  ).replace(/[^0-9+]/g,'');
+  if(!phone) return json({ok:true, skipped:'no-phone'});
+
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+  const leadD=await leadR.json().catch(()=>({}));
+  const lead=leadD?.list?.[0]||null;
+  if(lead && BOOKING_TERMINAL_STAGES.includes(lead.Stage)) return json({ok:true, skipped:'already-booked'});
+
+  // Dedupe before spending an AI call on every follow-up message — skip if this phone already has
+  // a requested appointment (only checkable once the Appointment module is set up).
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(bookingsTable){
+    const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+    const existD=await existR.json().catch(()=>({}));
+    if(existD?.list?.length) return json({ok:true, skipped:'duplicate-requested'});
+  }
+
+  const detection=await detectBookingSignal(env, c, clientId, content);
+  if(!detection.signal) return json({ok:true, skipped:'no-signal'});
+
+  const result=await sendBookingLinkNow(env, c, clientId, phone, body.conversation?.meta?.sender?.name, detection.service_id);
+  return json({ok:true, auto_sent:true, ...result});
+}
+
 async function handleChatwootMessageHook(request, env){
   const body=await request.json().catch(()=>({}));
   const msgType=String(body.message_type ?? '');
-  if(msgType!=='outgoing' && msgType!=='1') return json({ok:true, skipped:'not-outgoing'});
   const content=String(body.content||'');
   const accountId=String(body.account?.id||'');
   if(!accountId||!content) return json({ok:true, skipped:'no-account-or-content'});
@@ -3008,6 +3070,9 @@ async function handleChatwootMessageHook(request, env){
   const c=await findClientByField(env, 'chatwoot_account_id', accountId);
   if(!c) return json({ok:true, skipped:'client-not-found'});
   const clientId=String(c.Id);
+
+  if(msgType==='incoming' || msgType==='0') return await handleChatwootIncomingBookingSignal(env, c, clientId, content, body);
+  if(msgType!=='outgoing' && msgType!=='1') return json({ok:true, skipped:'not-outgoing'});
 
   const ext=(c.external_store_link||'').trim();
   const m=content.match(CHATWOOT_HOOK_LINK_RE);
