@@ -1062,6 +1062,53 @@ async function handleAiComplete(request, env){
   return json(data);
 }
 
+// Automation entry point for objection/trust-signal handling — meant to be called by the
+// external n8n bot as ONE step inside its own reply flow (not an independent Chatwoot webhook
+// listener), so n8n stays the single point of truth for what actually gets sent to the customer
+// and there's no risk of two systems replying to the same message. Client_id-based like
+// /ecom/order-link, since n8n has no Authentik session. Grounds its answer in the same
+// business_policies/review_link data the dashboard's Trust Signals widget and Deal Coach already
+// use — see SETUP.md's "Trust Signals & grounded objection-handling" section. Returns
+// {handled:false} for anything that isn't an objection/trust question, so n8n's own flow can
+// carry on normally — this never tries to handle a whole conversation turn, only this one
+// narrow slice of it.
+async function handleAiObjectionReply(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const message=String(body.message||'').trim();
+  if(!clientId||!message) return json({error:'client_id and message required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!c.openrouter_key) return json({error:'No OpenRouter API key set for this account.'}, 400);
+
+  let pol={}; try{ pol=JSON.parse(c.business_policies||'{}'); }catch(e){}
+  const policyLines=[];
+  if(pol.refund) policyLines.push(`Refund policy: ${pol.refund}`);
+  if(pol.delivery) policyLines.push(`Delivery policy: ${pol.delivery}`);
+  if(pol.cancellation) policyLines.push(`Cancellation policy: ${pol.cancellation}`);
+  const reviewLink=c.review_link||'';
+
+  const system=`You are screening one incoming WhatsApp message for a business named "${c.client_name||'this business'}" to decide if it raises an objection or trust concern (refund, delivery, cancellation, pricing doubt, "is this legit" etc.) that can be answered directly from the policies below. If it does, write a short, natural, on-brand WhatsApp reply that answers it directly using the real policy text — quote the actual terms, never invent anything not listed. You may mention the review link if it genuinely strengthens trust. If the message is NOT an objection/trust question (a normal question, a greeting, an order request with no objection, etc.), respond with exactly {"handled":false}. Respond with ONLY valid JSON: {"handled":true,"reply":"..."} or {"handled":false}.
+
+${policyLines.length?policyLines.join('\n'):'No policies configured yet — if the message is an objection you can\'t ground in a real policy, respond {"handled":false} rather than inventing one.'}
+${reviewLink?`Review link: ${reviewLink}`:''}`;
+
+  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method:'POST',
+    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({
+      model:c.model||'google/gemini-2.5-flash', temperature:0.3, max_tokens:250,
+      messages:[{role:'system',content:system},{role:'user',content:message}]
+    })
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  const raw=data?.choices?.[0]?.message?.content?.trim()||'{"handled":false}';
+  let parsed={handled:false};
+  try{ parsed=JSON.parse(raw); }catch(e){}
+  return json({handled:!!parsed.handled, reply:parsed.handled?String(parsed.reply||'').trim():undefined});
+}
+
 /* ── Campaigns module (broadcast.html) — Chatwoot template list/create + send
    routes, so chatwoot_token never reaches the browser (previously broadcast.html
    embedded both the master NocoDB token and the client's own chatwoot_token
@@ -2749,6 +2796,7 @@ export default {
       else if(url.pathname==='/ecom/wa-templates/create-preset' && request.method==='POST'){ res=await handleEcomWaTemplatesCreatePreset(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-from-library' && request.method==='POST'){ res=await handleEcomWaTemplatesCreateFromLibrary(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
+      else if(url.pathname==='/ai/objection-reply' && request.method==='POST'){ res=await handleAiObjectionReply(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }
       else if(url.pathname==='/broadcast/templates/sync' && request.method==='POST'){ res=await handleBroadcastTemplatesSync(request, env); }

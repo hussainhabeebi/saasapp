@@ -344,6 +344,19 @@ What *is* fully built here, in the dashboard the sales rep actually uses:
   `kb_text` are — it's just another field on the CLIENTS row that workflow already reads from
   NocoDB directly. Wiring it into the bot's own system prompt (so it can answer these objections
   live, not just the dashboard) is the n8n-side follow-up this repo can't do on its own.
+- **`POST /ai/objection-reply`** (`cloudflare-worker/worker.js`, `handleAiObjectionReply`) closes
+  that follow-up from the Cloudflare side, without touching the rest of n8n's conversation flow.
+  Client_id-based like `/ecom/order-link` above (no session — n8n has none). Body:
+  `{client_id, message}`. Screens the one incoming message against this client's
+  `business_policies`/`review_link` via OpenRouter (`c.openrouter_key`/`c.model`, same fields
+  `/ai/complete` uses) and returns either `{handled:false}` (not an objection/trust question —
+  n8n's own flow proceeds exactly as it does today) or `{handled:true, reply:"..."}` (a reply
+  grounded in the real policy text, ready for n8n to send). **Deliberately n8n-called, not an
+  independent Chatwoot webhook listener** — n8n stays the single point of truth for what actually
+  gets sent to the customer, so there's no risk of two systems replying to the same message. The
+  one remaining step is on the n8n side: add one HTTP Request node calling this endpoint at the
+  point where the engine decides how to respond, and send its `reply` when `handled:true` instead
+  of (or before) its own default response for that turn.
 
 **Order-intent links (ecom/physical products):** same repo-boundary as above — *detecting* order
 intent mid-conversation is the external bot's job, not something built here. What this repo does
