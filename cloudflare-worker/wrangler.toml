@@ -35,6 +35,11 @@ STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZgh
 #   META_APP_SECRET         Meta Tech Provider app secret (Embedded Signup token exchange)
 #   STRIPE_SECRET_KEY       Stripe secret key — see SETUP.md "Billing module"
 #   STRIPE_WEBHOOK_SECRET   Stripe webhook signing secret for /billing/webhook
+#   RESEND_API_KEY          Resend API key — task-notify emails (SETUP.md "Tasks") AND billing
+#                           receipts/dunning/trial-reminder emails (SETUP.md "Billing module")
+#   RESEND_FROM_EMAIL       optional, defaults to "Leadvyne Tasks <tasks@leadvyne.com>"
+#   BILLING_FROM_EMAIL      optional, defaults to "Leadvyne Billing <billing@leadvyne.com>" — set
+#                           this to a domain verified in Resend, or billing emails will be rejected
 #   ADMIN_PASSCODE          admin.html login passcode — see SETUP.md "Admin panel"
 #   SHOPIFY_API_KEY         Shopify Partners app's Client ID — see SETUP.md "Shopify module"
 #   SHOPIFY_API_SECRET      Shopify Partners app's Client Secret (also verifies OAuth + webhook HMACs)
