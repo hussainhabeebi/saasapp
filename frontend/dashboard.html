@@ -2911,7 +2911,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <div class="modal-hd"><div class="modal-title">Push to Order</div><button class="icon-btn" onclick="closeModal('modalPushOrder')">✕</button></div>
   <div class="modal-body">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="poCustomerName"></div>
+      <div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="poCustomerName" oninput="updatePoLinkPreview()"></div>
       <div class="form-group"><label class="form-label">Customer Phone *</label><input class="form-input" id="poCustomerPhone"></div>
     </div>
     <div class="form-group"><label class="form-label">Items</label><textarea class="form-input" id="poItems" rows="2" placeholder="e.g. 2x Wireless Mouse, 1x Desk Lamp"></textarea></div>
@@ -2923,6 +2923,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div class="form-group"><label class="form-label">Order Date</label><input class="form-input" type="date" id="poOrderDate"></div>
       <div class="form-group"><label class="form-label">Status</label>
         <select class="form-input" id="poStatus">
+          <option value="pending">Pending (link sent)</option>
           <option value="received">Received</option>
           <option value="processing">Processing</option>
           <option value="shipped">Shipped</option>
@@ -2933,6 +2934,23 @@ const TODAY = new Date().toISOString().slice(0,10);
     </div>
     <div class="form-group"><label class="form-label">Delivery Address</label><textarea class="form-input" id="poAddress" rows="2"></textarea></div>
     <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="poNotes" rows="2"></textarea></div>
+
+    <hr class="div">
+    <!-- Order-intent link: builds a link into the client's own storefront (onshope.com/<slug> or
+         store.html?client=<id> — whichever this client uses, same as the storefront's own product
+         cards) and sends it straight to the lead's WhatsApp via /wa/send, bypassing Chatwoot. -->
+    <div class="form-group">
+      <label class="form-label">Product (optional — links straight to it, otherwise the full catalog)</label>
+      <select class="form-input" id="poProduct" onchange="updatePoLinkPreview()"><option value="">— Full catalog —</option></select>
+    </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="poSendLink" checked onchange="updatePoLinkPreview()" style="width:auto">
+      <label class="form-label" style="margin:0" for="poSendLink">📲 Also send this order link via WhatsApp right now</label>
+    </div>
+    <div class="form-group" id="poLinkPreviewWrap" style="display:none">
+      <label class="form-label">Message preview (editable)</label>
+      <textarea class="form-input" id="poLinkMessage" rows="3"></textarea>
+    </div>
   </div>
   <div class="modal-footer">
     <button class="btn btn-primary" id="savePushOrderBtn" onclick="submitPushOrder()">Create Order</button>
@@ -3882,6 +3900,44 @@ function getEcomTableIds(){
   try{return JSON.parse(clientRecord?.ecom_table_ids||'{}');}catch(e){return{};}
 }
 
+// Products for the order-link picker below — fetched fresh each time the modal opens via the
+// same client_id-based /ecom/products route ecom.html itself uses (no session required, but
+// dashboard.html's session doesn't hurt either).
+let _poProducts=[];
+async function loadPoProducts(){
+  const sel=$id('poProduct');
+  sel.innerHTML='<option value="">— Full catalog —</option>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/ecom/products?client_id=${encodeURIComponent(clientId)}&limit=200`);
+    const data=await r.json().catch(()=>({}));
+    _poProducts=(data.list||data.data||[]).filter(p=>p.status!=='inactive'&&p.status!=='hidden');
+    sel.innerHTML+=_poProducts.map(p=>`<option value="${esc(p.Id)}">${esc(p.name||'Untitled')}${p.price?' — '+esc(p.currency||'')+' '+p.price:''}</option>`).join('');
+  }catch(e){}
+}
+
+// Same link a storefront product card's own "Order on WhatsApp" button points at — the client's
+// onshope.com slug if they have one, else the SaaS-branded store.html?client=<id>, both already
+// used verbatim elsewhere (see store.html/onshope-store.html) so this isn't a new URL scheme.
+function buildStorefrontLink(sku){
+  const slug=clientRecord?.client_slug;
+  const base=slug?`https://onshope.com/${slug}`:`https://app.leadvyne.com/store.html?client=${clientId}`;
+  if(!sku) return base;
+  return slug?`${base}?sku=${encodeURIComponent(sku)}`:`${base}&sku=${encodeURIComponent(sku)}`;
+}
+
+function updatePoLinkPreview(){
+  const send=$id('poSendLink').checked;
+  $id('poLinkPreviewWrap').style.display=send?'block':'none';
+  if(!send) return;
+  const prodId=$id('poProduct').value;
+  const product=prodId?_poProducts.find(p=>String(p.Id)===prodId):null;
+  const link=buildStorefrontLink(product?.sku||'');
+  const name=$id('poCustomerName').value.trim()||'there';
+  $id('poLinkMessage').value=product
+    ? `Hi ${name}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
+    : `Hi ${name}! Here's our full catalog — order directly from here:\n${link}`;
+}
+
 function openPushOrderModal(){
   const lead=currentLead; if(!lead)return;
   if(!getEcomTableIds().orders){
@@ -3894,10 +3950,14 @@ function openPushOrderModal(){
   $id('poTotal').value=lead.DealValue||'';
   $id('poCurrency').value=lead.DealCurrency||clientRecord?.deal_currency||'INR';
   $id('poOrderDate').value=TODAY;
-  $id('poStatus').value='received';
+  $id('poStatus').value='pending';
   $id('poAddress').value='';
   $id('poNotes').value='';
+  $id('poProduct').value='';
+  $id('poSendLink').checked=true;
   $id('pushOrderMsg').textContent='';
+  loadPoProducts();
+  updatePoLinkPreview();
   openModal('modalPushOrder');
 }
 
@@ -3907,13 +3967,29 @@ async function submitPushOrder(){
   if(!ecomIds.orders){ $id('pushOrderMsg').textContent='Orders table not configured'; return; }
   const phone=$id('poCustomerPhone').value.trim();
   if(!phone){ $id('pushOrderMsg').textContent='Customer phone is required'; return; }
+  const sendLink=$id('poSendLink').checked;
+  // Send the WhatsApp link first, but never let a failed send (e.g. the customer is outside
+  // Meta's 24h free-form-message window) block logging the order itself — that's the one thing
+  // explicitly asked for regardless of whether delivery succeeded.
+  let linkWarning='';
+  if(sendLink){
+    $id('pushOrderMsg').textContent='Sending order link via WhatsApp…';
+    try{
+      const r=await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{
+        method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({phone:phone.replace(/[^0-9+]/g,''),text:$id('poLinkMessage').value.trim()})
+      });
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    }catch(e){ linkWarning=' (order link could not be sent: '+e.message+')'; }
+  }
   const body={
     client_id: clientId,
     order_id: 'ORD-'+Date.now(),
     customer_name: $id('poCustomerName').value.trim(),
     customer_phone: phone.replace(/[^0-9+]/g,''),
     order_date: $id('poOrderDate').value||TODAY,
-    items: $id('poItems').value.trim(),
+    items: $id('poItems').value.trim()||($id('poProduct').value?($id('poProduct').selectedOptions[0]?.textContent||''):''),
     total: parseFloat($id('poTotal').value)||0,
     currency: $id('poCurrency').value.trim()||'INR',
     status: $id('poStatus').value,
@@ -3925,6 +4001,7 @@ async function submitPushOrder(){
     await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${ecomIds.orders}/records`, body);
     closeModal('modalPushOrder');
     addTag('Order Pushed').catch(()=>{});
+    showToast('✓ Order created'+(sendLink?(linkWarning||' and link sent'):''));
   }catch(e){
     $id('pushOrderMsg').textContent='Error: '+e.message;
   }

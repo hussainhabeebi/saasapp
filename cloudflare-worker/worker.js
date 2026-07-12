@@ -2559,6 +2559,64 @@ async function handleEcomDelete(request, env, kind){
   return json({deleted, requested:ids.length});
 }
 
+// Automation entry point for "order intent detected" — meant to be called by the client's own
+// conversational bot (the external n8n engine, not this repo — see SETUP.md's "Trust Signals"
+// section for why) the moment it decides a customer wants to buy, without a dashboard session:
+// same client_id-based auth model as the rest of /ecom/*, since n8n has no Authentik session.
+// Builds the same storefront link a product card's own "Order on WhatsApp" button already uses
+// (onshope.com/<slug> if the client has one, else store.html?client=<id>, with &sku= for a
+// specific product), sends it directly via Meta's Graph API (bypassing Chatwoot, same as
+// handleWaSend), and always logs a 'pending' row in the client's ecom orders table — so "order
+// intent" leaves a paper trail even if the WhatsApp send itself fails (e.g. outside the 24h
+// free-form-message window) or the customer never finishes checking out.
+async function handleEcomOrderLink(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!clientId||!phone) return json({error:'client_id and phone required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!c.wa_phone_id||!c.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
+
+  let product=null;
+  if(body.sku){
+    const productsTable=await ecomResolveTable(env, clientId, 'products');
+    if(productsTable){
+      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(sku,eq,${encodeURIComponent(body.sku)})&limit=1`);
+      const pd=await pr.json().catch(()=>({}));
+      product=pd?.list?.[0]||null;
+    }
+  }
+  const slug=c.client_slug;
+  const base=slug?`https://onshope.com/${slug}`:`https://app.leadvyne.com/store.html?client=${clientId}`;
+  const link=body.sku?(slug?`${base}?sku=${encodeURIComponent(body.sku)}`:`${base}&sku=${encodeURIComponent(body.sku)}`):base;
+  const name=body.name||'there';
+  const text=product
+    ? `Hi ${name}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
+    : `Hi ${name}! Here's our full catalog — order directly from here:\n${link}`;
+
+  const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
+  });
+  const waData=await waR.json().catch(()=>({}));
+
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  let order_id=null;
+  if(ordersTable){
+    order_id='ORD-'+Date.now();
+    await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:{
+      client_id:clientId, order_id,
+      customer_name:body.name||'', customer_phone:phone,
+      order_date:new Date().toISOString().slice(0,10),
+      items:product?product.name:'Catalog link sent',
+      total:product?.price||0, currency:product?.currency||'',
+      status:'pending', notes:'Order intent detected — link sent automatically'
+    }});
+  }
+  return json({ok:true, link, order_id, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status)});
+}
+
 /* ── ECOMMERCE PUBLIC STOREFRONT (store.html, and onshope.com's onshope-store.html /
    onshope-home.html) — unlike every /ecom/* route above, these are meant to be opened directly
    by end customers (shared as a WhatsApp link), so they must not give a customer any of what a
@@ -2683,6 +2741,7 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='POST'){ res=await handleEcomCreate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
+      else if(url.pathname==='/ecom/order-link' && request.method==='POST'){ res=await handleEcomOrderLink(request, env); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }

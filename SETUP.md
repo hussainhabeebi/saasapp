@@ -345,6 +345,31 @@ What *is* fully built here, in the dashboard the sales rep actually uses:
   NocoDB directly. Wiring it into the bot's own system prompt (so it can answer these objections
   live, not just the dashboard) is the n8n-side follow-up this repo can't do on its own.
 
+**Order-intent links (ecom/physical products):** same repo-boundary as above — *detecting* order
+intent mid-conversation is the external bot's job, not something built here. What this repo does
+provide is the automation surface that detection should call, plus a rep-facing manual version of
+the same thing:
+- **`POST /ecom/order-link`** (`cloudflare-worker/worker.js`, `handleEcomOrderLink`) — the
+  automation entry point, client_id-based like the rest of `/ecom/*` (no Authentik session, since
+  n8n has none). Body: `{client_id, phone, name?, sku?}`. Builds the same storefront link a
+  product card's own "Order on WhatsApp" button already uses (`onshope.com/<slug>` if the client
+  has one, else `store.html?client=<id>`, with `&sku=` for a specific product), sends it directly
+  via Meta's Graph API (bypassing Chatwoot, same pattern as `handleWaSend`), and **always** logs a
+  `pending`-status row in the client's ecom orders table — even if the WhatsApp send itself fails
+  (e.g. the customer is outside Meta's 24h free-form-message window), so "order intent" leaves a
+  paper trail regardless. Returns `{ok, link, order_id, whatsapp_sent, whatsapp_error?}`. This is
+  the route the n8n bot should call the moment it decides a customer wants to buy something.
+- **Dashboard version** (`dashboard.html`, lead detail pane → "🛒 Push to Order") — same modal
+  that already created ecom order rows now also has a product picker
+  (`loadPoProducts()`/`#poProduct`, populated from `GET /ecom/products`) and a "📲 Also send this
+  order link via WhatsApp right now" checkbox (`updatePoLinkPreview()`/`buildStorefrontLink()`,
+  editable message preview, sent via the session-authed `POST /wa/send` — a different route from
+  `/ecom/order-link` above since this call already has a dashboard session). Same
+  send-can-fail-without-blocking-the-order-row behavior as the automation route. `poStatus` picked
+  up a `pending` option (matching `ORDER_STATUS_OPTIONS` in `ecom.html`, which already had it —
+  this dropdown was just missing it) and now defaults to it, since a just-sent link is order
+  intent, not a confirmed order.
+
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
 write every client's row in every table via devtools — not just their own), plus each logged-in
