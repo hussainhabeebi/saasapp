@@ -8953,6 +8953,7 @@ function _renderModuleBadge(badgeId,enabled){
   el.style.color=enabled?'#166534':'#64748B';
 }
 function initTaSettings(){
+  const sel=$id('cfgTaEnabled'); if(sel) sel.value=(clientRecord.ta_enabled==='Yes')?'Yes':'No';
   _renderModuleBadge('taModuleStatusBadge',clientRecord.ta_enabled==='Yes');
   updateAgencyTabVisibility();
 }
@@ -9844,6 +9845,7 @@ function renderRcPipeline(){
 
 /* ── RC: SETTINGS ── */
 function initRcSettings(){
+  const sel=$id('cfgRecruitEnabled'); if(sel) sel.value=(clientRecord.recruit_enabled==='Yes')?'Yes':'No';
   _renderModuleBadge('rcModuleStatusBadge',clientRecord.recruit_enabled==='Yes');
   updateRecruitTabVisibility();
 }
@@ -9898,6 +9900,7 @@ function updateApptTabVisibility(){
 // no use for an appointments calendar.
 function initApptSettings(){
   const row=$id('apptModuleRow'); if(row) row.style.display=isBookingIndustry()?'flex':'none';
+  const sel=$id('cfgApptEnabled'); if(sel) sel.value=(clientRecord.appt_enabled==='Yes')?'Yes':'No';
   _renderModuleBadge('apptModuleStatusBadge',clientRecord.appt_enabled==='Yes');
   updateApptTabVisibility();
 }
