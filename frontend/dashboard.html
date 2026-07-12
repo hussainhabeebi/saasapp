@@ -5579,16 +5579,32 @@ async function ncDelete(url,body){
   if(!r.ok)throw new Error('HTTP '+r.status);
   return r.json().catch(()=>({}));
 }
+// Retries on a verified-stuck write before giving up — root-caused from two real incidents
+// (Appointments' appt_table_ids, then Travel Agency's ta_table_ids) where "Save didn't take
+// effect" fired reliably right after *SetupTables() created the column the very same field write
+// depends on: NocoDB's own schema cache hadn't caught up yet, so the PATCH silently no-op'd for
+// that field even though the column genuinely existed a moment later. Previously this just threw
+// immediately, and the only recovery was a human manually re-running setup (or worse, hand-typing
+// the JSON into NocoDB directly, which is how both incidents actually got resolved). A normal,
+// already-existing-column save still returns on the first attempt with zero added latency — the
+// backoff only ever engages once a mismatch is actually detected.
 async function patchClient(fields){
-  const res=await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId),...fields});
-  if(Array.isArray(res)&&res.length===0) throw new Error('Save did not match the client record');
-  // NocoDB's bulk PATCH only echoes back the Id, not the saved fields, so a field that
-  // silently no-ops (e.g. the column doesn't exist yet) looks identical to a real save.
-  // Re-fetch and compare so that case surfaces as a clear error instead of "looks saved".
-  const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${Number(clientId)}`);
-  const stuck=Object.keys(fields).filter(k=>String(fresh[k]??'')!==String(fields[k]??''));
-  if(stuck.length) throw new Error(`Save didn't take effect for: ${stuck.join(', ')} — check these columns exist in NocoDB (see SETUP.md)`);
-  Object.assign(clientRecord,fresh);
+  const MAX_ATTEMPTS=3;
+  let lastError=null;
+  for(let attempt=1; attempt<=MAX_ATTEMPTS; attempt++){
+    const res=await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId),...fields});
+    if(Array.isArray(res)&&res.length===0) throw new Error('Save did not match the client record');
+    // NocoDB's bulk PATCH only echoes back the Id, not the saved fields, so a field that
+    // silently no-ops (e.g. the column doesn't exist yet, or exists but the schema cache hasn't
+    // caught up — see above) looks identical to a real save. Re-fetch and compare so that case
+    // surfaces as a clear error (after retrying) instead of "looks saved".
+    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${Number(clientId)}`);
+    const stuck=Object.keys(fields).filter(k=>String(fresh[k]??'')!==String(fields[k]??''));
+    if(!stuck.length){ Object.assign(clientRecord,fresh); return; }
+    lastError=new Error(`Save didn't take effect for: ${stuck.join(', ')} — check these columns exist in NocoDB (see SETUP.md)`);
+    if(attempt<MAX_ATTEMPTS) await new Promise(r=>setTimeout(r,900*attempt));
+  }
+  throw lastError;
 }
 
 /* ── CHANNELS MODULE (Chatwoot account signup, WhatsApp Embedded Signup, other inboxes) ── */
@@ -7745,9 +7761,16 @@ async function taRepairTableIds(){
     if(existingTableMap[title]) ids[key]=existingTableMap[title];
   });
   const tableIdsJson=JSON.stringify(ids);
+  // Same bug class already fixed for Appointments (see SETUP.md "Fixed: 'Enabled' not actually
+  // saving") but never actually applied here: writing to the local cache unconditionally, before
+  // confirming the server write landed, lets apptMergeLocal()'s TA equivalent (taMergeLocal) paper
+  // over a real save failure with a value that was never actually persisted. Only cache locally
+  // after patchClient() (which itself now retries through NocoDB's schema-cache lag — see its own
+  // comment) confirms the write actually stuck; let a genuine failure propagate to this function's
+  // caller (taWithRepair already has its own .catch(()=>({})) around this specific call).
+  await patchClient({ta_table_ids:tableIdsJson});
   taSaveLocal('ta_table_ids',tableIdsJson);
   clientRecord.ta_table_ids=tableIdsJson;
-  await patchClient({ta_table_ids:tableIdsJson}).catch(()=>{});
   return ids;
 }
 
@@ -8045,9 +8068,17 @@ async function taSetupTables(){
       }
     }
     const tableIdsJson=JSON.stringify(tableIds);
+    // Same bug already fixed for Appointments (SETUP.md "Fixed: 'Enabled' not actually saving")
+    // but never applied here — this exact gap is the most likely cause of a real observed
+    // failure: a Travel Agency client's bot couldn't answer real package questions at all despite
+    // "✓ All tables created!" having shown success, because ta_table_ids never actually reached
+    // the server (this .catch(()=>{}) was hiding a "Save didn't take effect" every time, this
+    // session only papering over it with a local-cache value real customers' conversations never
+    // benefited from). Caught here, not swallowed — the try/catch around this whole function
+    // already surfaces e.message to the user via msg.textContent below.
+    await patchClient({ta_table_ids:tableIdsJson});
     taSaveLocal('ta_table_ids',tableIdsJson);
     clientRecord.ta_table_ids=tableIdsJson;
-    await patchClient({ta_table_ids:tableIdsJson}).catch(()=>{});
     msg.textContent='✓ All tables created! Loading…';
     await taLoad();
     renderAgencySubPage(_taPage);
@@ -8977,9 +9008,11 @@ $id('saveTaEnabled').addEventListener('click',async()=>{
       await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ta_table_ids',title:'ta_table_ids',uidt:'LongText'}).catch(()=>{});
     }
     const val=$id('cfgTaEnabled').value;
+    // Same bug class as ta_table_ids above (and Appointments' already-fixed equivalent) — only
+    // cache/apply locally after a confirmed-successful server write.
+    await patchClient({ta_enabled:val});
     clientRecord.ta_enabled=val;
     taSaveLocal('ta_enabled',val);
-    await patchClient({ta_enabled:val}).catch(()=>{});
     updateAgencyTabVisibility();
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
@@ -9290,9 +9323,12 @@ async function rcSetupTables(){
     }
 
     const tableIdsJson=JSON.stringify(tableIds);
+    // Same bug class already found and fixed for Appointments and Travel Agency (see their own
+    // comments) — third and last instance of it across the three module-setup flows that share
+    // this exact pattern. Only cache locally after a confirmed-successful server write.
+    await patchClient({recruit_table_ids:tableIdsJson});
     rcSaveLocal('recruit_table_ids',tableIdsJson);
     clientRecord.recruit_table_ids=tableIdsJson;
-    await patchClient({recruit_table_ids:tableIdsJson}).catch(()=>{});
     msg.textContent='✓ Tables created! Loading…';
     await rcLoad();
     renderRcSubPage(_rcPage);
@@ -9860,9 +9896,11 @@ $id('saveRecruitEnabled').addEventListener('click',async()=>{
       if(!cols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
     }
     const val=$id('cfgRecruitEnabled').value;
+    // Same bug class as recruit_table_ids above (and Appointments' already-fixed equivalent) —
+    // only cache/apply locally after a confirmed-successful server write.
+    await patchClient({recruit_enabled:val});
     clientRecord.recruit_enabled=val;
     rcSaveLocal('recruit_enabled',val);
-    await patchClient({recruit_enabled:val}).catch(()=>{});
     updateRecruitTabVisibility();
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
