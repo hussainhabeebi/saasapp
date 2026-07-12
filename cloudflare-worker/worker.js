@@ -1156,6 +1156,56 @@ ${productList||'(no products listed)'}`;
   return json({signal:!!parsed.signal, sku:parsed.signal?(parsed.sku||undefined):undefined});
 }
 
+// Booking-industry equivalent of handleAiOrderSignal above — same n8n-calls-Cloudflare shape
+// (client_id-based, no session, pure detection, no side effects), but screens for booking
+// readiness (wants to schedule/book, or asks about availability/duration/price of a specific
+// service) instead of purchase readiness, and matches against the Appointment module's Services
+// catalog (apptResolveTable(c,'services')) instead of an ecom product catalog — the two aren't the
+// same table, so handleAiOrderSignal can't be reused as-is for a services business. Completes the
+// same two-step pattern /ai/order-signal + /ecom/order-link already gives ecom clients: n8n calls
+// this on incoming messages, and on signal:true calls POST /leads/booking-link (passing service_id
+// if matched) to actually send the link — kept as two calls, not merged into one, so n8n stays in
+// control of whether its own bot also replies to the same message (the same double-reply-risk
+// reasoning that kept detection and action separate for /ai/order-signal).
+async function handleAiBookingSignal(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const message=String(body.message||'').trim();
+  if(!clientId||!message) return json({error:'client_id and message required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!c.openrouter_key) return json({error:'No OpenRouter API key set for this account.'}, 400);
+
+  const servicesTable=apptResolveTable(c, 'services');
+  let serviceList='';
+  if(servicesTable){
+    const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&fields=Id,name,duration_minutes,price,currency`);
+    const sd=await sr.json().catch(()=>({}));
+    serviceList=(sd?.list||[]).map(s=>`- ${s.name} [service_id:${s.Id}]${s.duration_minutes?' ('+s.duration_minutes+' min)':''}${s.price?' '+((s.currency||'')+' '+s.price):''}`).join('\n');
+  }
+
+  const system=`You are screening one incoming WhatsApp message for a services business (healthcare, consultancy, salon, etc), to decide if it's a booking-readiness signal — either an explicit request to book/schedule an appointment, OR a specific question about availability, duration, or price of one particular service that shows they're close to booking. General browsing questions, greetings, or unrelated questions are NOT signals.
+If it is a signal, try to match it to exactly one service from the list below by name — include its service_id only if you're confident of the match, otherwise omit it (don't guess). Respond with ONLY valid JSON: {"signal":true,"service_id":"..."} or {"signal":true} (no confident match) or {"signal":false}.
+
+Services offered:
+${serviceList||'(no services listed)'}`;
+
+  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method:'POST',
+    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({
+      model:c.model||'google/gemini-2.5-flash', temperature:0.2, max_tokens:150,
+      messages:[{role:'system',content:system},{role:'user',content:message}]
+    })
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  const raw=data?.choices?.[0]?.message?.content?.trim()||'{"signal":false}';
+  let parsed={signal:false};
+  try{ parsed=JSON.parse(raw); }catch(e){}
+  return json({signal:!!parsed.signal, service_id:parsed.signal?(parsed.service_id||undefined):undefined});
+}
+
 // Plain lookup, no AI — "has this phone number ordered before, and what's the status" — so a
 // returning customer ("where's my order?", "I already paid") gets recognized instead of the bot
 // starting a fresh sales pitch. Cheap enough to call on every incoming message; n8n decides what
@@ -2765,7 +2815,7 @@ function apptResolveTable(c, kind){
 // — if the client has set up the Appointment Booking module — logs a `requested` row there too
 // (no date/time yet, since the customer hasn't picked one; source:'bot' distinguishes it from a
 // rep's manual entry or a Cal.com sync). Returns {lead_id, stage_advanced} for the caller to report back.
-async function advanceLeadBookingAndTask(env, c, clientId, phone, name){
+async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service){
   const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
   const leadD=await leadR.json().catch(()=>({}));
   const lead=leadD?.list?.[0]||null;
@@ -2786,7 +2836,7 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name){
   if(!Array.isArray(manual.items)) manual.items=[];
   manual.items.push({
     id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
-    title:`Confirm booking — ${name||phone}`,
+    title:`Confirm booking — ${name||phone}${service?.name?' ('+service.name+')':''}`,
     notes:'Booking link sent — confirm the appointment landed.',
     due_date:new Date().toISOString().slice(0,10), due_time:'',
     lead_id:lead?lead.Id:null, lead_name:lead?.Name||name||'',
@@ -2804,7 +2854,7 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name){
     if(!existD?.list?.length){
       await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{
         client_id:clientId, customer_name:name||'', customer_phone:phone,
-        service_id:'', service_name:'', appt_date:'', appt_time:'',
+        service_id:service?String(service.Id):'', service_name:service?.name||'', appt_date:'', appt_time:'',
         status:'requested', source:'bot', lead_id:lead?String(lead.Id):'', calcom_uid:'',
         notes:'Booking link sent — awaiting confirmed date/time.', created_at:new Date().toISOString()
       }}).catch(()=>{});
@@ -2825,14 +2875,30 @@ async function handleLeadBookingLink(request, env){
   if(!link) return json({error:'No booking link configured — set one in Settings → Order Link.'}, 400);
   if(!c.wa_phone_id||!c.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
 
+  // Optional service_id (from /ai/booking-signal's match, or n8n/a rep already knowing which
+  // service the customer wants) — only resolved if the Appointment module is actually set up;
+  // a client without it just gets the plain booking-link message, same as before.
+  let service=null;
+  if(body.service_id){
+    const servicesTable=apptResolveTable(c, 'services');
+    if(servicesTable){
+      const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(Id,eq,${Number(body.service_id)})&limit=1`);
+      const sd=await sr.json().catch(()=>({}));
+      service=sd?.list?.[0]||null;
+    }
+  }
+
   const name=body.name||'there';
+  const text=service
+    ? `Hi ${name}! Here's the link to book your *${service.name}*${service.duration_minutes?' ('+service.duration_minutes+' min)':''}: ${link}`
+    : `Hi ${name}! Here's the link to book: ${link}`;
   const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
     method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:`Hi ${name}! Here's the link to book: ${link}`}})
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
   });
   const waData=await waR.json().catch(()=>({}));
 
-  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, body.name);
+  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, body.name, service);
   return json({ok:true, link, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), lead_id, stage_advanced});
 }
 
@@ -3135,6 +3201,7 @@ export default {
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
       else if(url.pathname==='/ai/objection-reply' && request.method==='POST'){ res=await handleAiObjectionReply(request, env); }
       else if(url.pathname==='/ai/order-signal' && request.method==='POST'){ res=await handleAiOrderSignal(request, env); }
+      else if(url.pathname==='/ai/booking-signal' && request.method==='POST'){ res=await handleAiBookingSignal(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='GET'){ res=await handleBroadcastTemplatesGet(request, env); }
       else if(url.pathname==='/broadcast/templates' && request.method==='POST'){ res=await handleBroadcastTemplatesCreate(request, env); }
       else if(url.pathname==='/broadcast/templates/sync' && request.method==='POST'){ res=await handleBroadcastTemplatesSync(request, env); }

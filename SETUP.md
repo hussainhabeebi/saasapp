@@ -581,6 +581,36 @@ so a bot repeating the booking link across turns doesn't spam duplicate appointm
 using the built-in Appointment module (rather than just the lead-stage/task fallback) now gets
 booking-intent detections landing directly in their Appointments list, same as a Cal.com sync would.
 
+**`POST /ai/booking-signal`** (`handleAiBookingSignal`) — the piece that was actually missing for a
+*fully automatic* "order intent found → booking link sent" loop for services clients.
+`/ai/order-signal` (above) exists for ecom, but it's hard-coded to ecom's product catalog and
+phrased for "a business selling physical products" — not reusable as-is for a services business
+with no product table. This is the booking-industry equivalent: client_id-based, no session, same
+n8n-calls-Cloudflare shape. Body: `{client_id, message}`. Screens one incoming message for booking
+readiness (explicit "I want to book/schedule", or a specific question about availability/duration/
+price of one service) using the client's own **Services** catalog from the Appointment Booking
+module (`apptResolveTable(c,'services')` — only services with `status!=='inactive'`). Returns
+`{signal:false}`, `{signal:true}` (no confident service match), or
+`{signal:true, service_id:"..."}`. **Kept as pure detection, not merged with sending the link**,
+same reasoning as `/ai/order-signal`: n8n calls this on incoming messages, and on `signal:true`
+calls `POST /leads/booking-link` (passing `service_id` through if matched) to actually send it —
+two calls, so n8n stays the one deciding whether its own bot also replies to that message, avoiding
+the double-reply risk a single combined detect-and-send call would reintroduce.
+- **`POST /leads/booking-link` now accepts an optional `service_id`** — when the Appointment
+  module has a matching, active service, the WhatsApp message names it specifically ("book your
+  *Initial Consultation* (30 min)" vs. the generic "here's the link to book"), and the
+  `requested`-status row `advanceLeadBookingAndTask()` logs into `appt_table_ids.bookings` carries
+  `service_id`/`service_name` instead of blank ones — same upgrade the appointment gets from a
+  Cal.com sync, just sourced from AI detection instead.
+- **For this whole loop to do anything useful, the Appointment Booking module needs to actually be
+  enabled** (Settings → 🧩 Modules, `appt_enabled==='Yes'`, tables created via "Create Tables Now")
+  — without it, `/ai/booking-signal` still works but always returns `{signal:true}` with no
+  `service_id` (empty services catalog), and the booking-link send/lead-advance/task-drop still all
+  work as before, just without a services catalog or an Appointments list to log into. n8n calling
+  `/ai/booking-signal` → `/leads/booking-link` is meaningful for any booking-industry client either
+  way; it's specifically the "which service, and does it show up in an Appointments tab" upgrade
+  that needs the module turned on.
+
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/
 write every client's row in every table via devtools — not just their own), plus each logged-in
