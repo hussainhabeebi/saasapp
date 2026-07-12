@@ -2027,6 +2027,33 @@ matching engine.json's own `industry === 'ecommerce' ? 'ecom_faq' : (industry ==
   lookups — matches what engine.json's generic "Code · FAQ prep" node already did for these
   industries, since none of them have a dedicated per-client catalog table the way ecom/travel do.
 
+**Order-readiness now overrides the flow_json state machine's own routing entirely, not just
+inside the ecom_faq branch.** Originally `detectOrderSignal` only ran once `engineRouteFlow` had
+already decided the route was `ecom_faq` — meaning if the flow's own intent classification picked a
+*different* route first (a scripted flow-stage transition, a qualifying question, a wouldRepeat/
+POSITIVE→`faq` branch, etc.), explicit purchase intent never got a chance to be recognized at all.
+Observed live: a customer was correctly shown a product's full detail card in response to a
+question, then replied "Order this" — and got a scripted, unrelated flow-stage message ("Hi 👋")
+instead of the order link, because engine.json-style intent classification had already routed that
+turn to a flow-stage transition before order-signal detection ever ran. `detectOrderSignal` now runs
+before the whole route dispatch in `handleEngineWebhook`, for every route except `human` (a genuine
+"connect me to a person" ask still wins even if phrased alongside product talk) and `drop`. A
+detected signal short-circuits the entire dispatch and sends the order reply instead of whatever
+`engineRouteFlow` had decided — `Stage`/`QualAnswers` bookkeeping from that decision is left
+untouched so the flow/qualification funnel resumes normally on the next turn.
+
+**A matched product's photo is now sent as a real WhatsApp image attachment, not just a text
+link.** `engineSendChatwootImageReply` (`worker.js`) downloads the product's `image_url` — resolving
+a Google Drive share link to Drive's thumbnail endpoint first via `engineResolveDirectImageUrl`,
+mirroring `store.html`'s own client-side `toImageUrl()` — and attaches it to the Chatwoot message
+with the reply text as its caption, the same relay path a human agent's own attachments use. Falls
+back to a plain text reply (`engineSendChatwootReply`) whenever there's no image, or fetching/
+attaching one fails for any reason. Wired into both the primary inline order-signal path and
+`sendOrderLinkViaChatwoot` (the ecom auto-send fallback at the bottom of `handleEngineWebhook`);
+`sendOrderLinkNow` (direct Meta Graph API, used by the legacy `/ecom/order-link` endpoint and as
+`sendOrderLinkViaChatwoot`'s own fallback when Chatwoot isn't configured) is unchanged — attaching
+media via the Graph API directly needs a separate upload-then-reference flow, not implemented here.
+
 **Signal auto-send is also industry-branched**, at the bottom of `handleEngineWebhook` — and
 branches strictly on `c.industry`, not on whether `ecomResolveTable(..., 'orders')` resolves a
 table id. That distinction matters: `ecomResolveTable` falls back to a shared default table id
