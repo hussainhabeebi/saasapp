@@ -1711,19 +1711,20 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <!-- AUTO ORDER-TRACKING — a *second*, independent Chatwoot webhook (registered by
                handleEcomEnableOrderTracking, cloudflare-worker/worker.js) pointed at
-               handleChatwootMessageHook, which now branches on message direction:
+               handleChatwootMessageHook, which branches on message direction:
                - OUTGOING (the bot's own reply): silently watches for the link (which the
                  Knowledge Base payload already instructs the bot to share — buildKbProcessorText())
                  and logs a pending order (ecom) or advances the lead + drops a task (booking
                  industries) — never sends anything itself, so no collision risk, zero n8n changes.
-               - INCOMING (booking-industry clients only, via handleChatwootIncomingBookingSignal):
-                 screens the customer's own message with AI and, if it reads as booking-ready,
-                 SENDS the booking link directly over WhatsApp right then — a deliberate exception
-                 to "never sends anything," since ecom clients only get the passive outgoing-watch
-                 behavior. This is the one part of this feature that carries real double-reply
-                 risk: if your n8n bot also replies to that same message, the customer gets two
-                 messages. Still zero n8n workflow changes either way — just an honest tradeoff to
-                 know about before enabling it for a booking-industry client. -->
+               - INCOMING, for BOTH ecom and booking-industry clients (handleChatwootIncomingOrder
+                 Signal / handleChatwootIncomingBookingSignal): screens the customer's own message
+                 with AI — using recent conversation context, so a bare reply like "M size" still
+                 resolves to whichever product/service was just discussed — and, if it reads as
+                 order/booking-ready, SENDS the link directly over WhatsApp right then. A deliberate
+                 exception to "never sends anything": this is the one part of this feature that
+                 carries real double-reply risk — if your n8n bot also replies to that same message,
+                 the customer gets two messages. Still zero n8n workflow changes either way — just
+                 an honest tradeoff to know about before enabling it. -->
           <div class="settings-section">
             <div class="s-head">🛒 Auto Order-Tracking</div>
             <div class="s-note" id="autoTrackingNote"></div>
@@ -4730,8 +4731,8 @@ function populateSettings(){
     $id('cfgExternalStoreLink').placeholder='e.g. https://yourstore.myshopify.com';
   }
   $id('autoTrackingNote').textContent=isBookingIndustry()
-    ? 'When your bot shares your booking link, automatically advance the lead + create a follow-up task. For booking-industry clients this also actively screens customers\' own incoming messages and sends the booking link itself the moment it looks booking-ready — no n8n changes needed, but note: if your n8n bot also replies to that same message, the customer gets two messages. One-time setup per WhatsApp connection.'
-    : 'When your bot shares your order link with a customer, automatically log a pending order — with no changes to your n8n workflow. One-time setup per WhatsApp connection.';
+    ? 'When your bot shares your booking link, automatically advance the lead + create a follow-up task. This also actively screens customers\' own incoming messages and sends the booking link itself the moment it looks booking-ready — no n8n changes needed, but note: if your n8n bot also replies to that same message, the customer gets two messages. One-time setup per WhatsApp connection.'
+    : 'When your bot shares your order link, automatically log a pending order. This also actively screens customers\' own incoming messages (using recent conversation context, so a bare reply like "M size" still resolves to the right product) and sends the order link itself the moment it looks order-ready — no n8n changes needed, but note: if your n8n bot also replies to that same message, the customer gets two messages. One-time setup per WhatsApp connection.';
   // public booking page + cal.com sync — only worth showing once the Appointment module is actually on
   $id('apptPublicPageCard').style.display=(isBookingIndustry()&&clientRecord.appt_enabled==='Yes')?'block':'none';
   $id('apptPublicPageUrl').value=`https://app.leadvyne.com/book.html?client=${clientId}`;
