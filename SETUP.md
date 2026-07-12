@@ -2057,15 +2057,65 @@ a Google Drive share link to Drive's thumbnail endpoint first via `engineResolve
 mirroring `store.html`'s own client-side `toImageUrl()` — and attaches it to the Chatwoot message
 with the reply text as its caption, the same relay path a human agent's own attachments use. Falls
 back to a plain text reply (`engineSendChatwootReply`) whenever there's no image, or fetching/
-attaching one fails for any reason. Wired into both the primary inline order-signal path and
-`sendOrderLinkViaChatwoot` (the ecom auto-send fallback at the bottom of `handleEngineWebhook`);
-`sendOrderLinkNow` (direct Meta Graph API, used by the legacy `/ecom/order-link` endpoint and as
+attaching one fails for any reason. Wired into the primary inline order-signal path and (separately)
+`sendOrderLinkViaChatwoot`, still used by the legacy `/ecom/order-link` n8n-callable endpoint.
+`sendOrderLinkNow` (direct Meta Graph API, used by that same endpoint and as
 `sendOrderLinkViaChatwoot`'s own fallback when Chatwoot isn't configured) is unchanged — attaching
 media via the Graph API directly needs a separate upload-then-reference flow, not implemented here.
 
-**Signal auto-send is also industry-branched**, at the bottom of `handleEngineWebhook` — and
-branches strictly on `c.industry`, not on whether `ecomResolveTable(..., 'orders')` resolves a
-table id. That distinction matters: `ecomResolveTable` falls back to a shared default table id
+**Enquiry vs. order intent are now handled completely differently — the order/checkout link is
+never sent until real order intent is detected.** `detectOrderSignal` previously treated "asking
+about a product" (a size/color/stock/price question) and "wanting to buy it" identically — both
+produced the same `resolveOrderProductAndText` reply, an order link included regardless. That
+conflated "interested" with "ready to buy," pushing a checkout link into every product question
+whether the customer asked for it or not. `detectOrderSignal` now also classifies a `mode`,
+`"enquiry"` or `"order"`, returned alongside `signal`/`sku`:
+- **`mode:"enquiry"` + a matched product** → `buildProductDetailText` sends the product's full
+  detail (name, price, color, size, category, stock) as a fixed template, with the photo attached
+  via `engineSendChatwootImageReply` — no link, no mention of ordering beyond an invitation to say
+  so if interested.
+- **`mode:"enquiry"` + no confident product match** → falls through to the normal FAQ/flow handling
+  untouched (no canned reply, no link) — the context-aware FAQ LLM can respond naturally, e.g. "we
+  don't carry that, but here's what we do have."
+- **`mode:"order"` + a matched product** → sends `buildCheckoutLink`'s URL (order.html, see below)
+  with the reply text and photo, and still calls `logPendingOrder` for a lightweight intent record.
+- **`mode:"order"` + no confident product match** → asks a clarifying question ("which item would
+  you like?") instead of sending a checkout link to nothing in particular.
+
+**`frontend/order.html` + `POST /ecom/public/order`** — a real checkout form, the built-in
+Ecommerce module's counterpart to `book.html`/`POST /appt/public/book` (same three cuts: GET-only
+elsewhere, one write path that only ever creates a `pending` row, a fixed customer-safe field
+whitelist). Reached via `buildCheckoutLink` (`?client=<id>&sku=<sku>`, always with a specific
+product already known — see the 'order' mode case above), it shows that one product's photo/price
+and collects size (a dropdown, split from the product's `size` field), name, phone, email, delivery
+address and notes, then `handleEcomPublicOrder` writes a full order row: `items` gets the
+product+color+size description, `delivery_address` and the new `customer_email` column get the
+rest. A client with `external_store_link` set (Shopify etc.) has no in-house checkout page for this
+to point at, so `buildCheckoutLink` returns that URL unchanged instead, same as `buildOrderLink`.
+- **New required ORDERS-table column: `customer_email`** (Single line text) — add this to both the
+  shared default orders table and any client's own, same as every other new column in this file;
+  until it exists the write still succeeds (NocoDB silently drops unknown fields rather than
+  rejecting the whole row), it just won't have the customer's email captured.
+- **A completed checkout produces two order rows, not one** — the bare `logPendingOrder` "intent
+  detected" row from the moment the checkout link was sent, and this fuller one from the actual
+  form submission. Accepted, not a bug: there's no reliable way from `handleEcomPublicOrder` to know
+  whether "the same" customer completing checkout is the same event as the intent row, so no attempt
+  is made to reconcile them — staff can tell them apart by `notes` ("Order intent detected — link
+  sent automatically" vs. "Placed via the order page").
+
+**Signal auto-send at the bottom of `handleEngineWebhook` is now booking-industry only.** It used
+to also branch on `c.industry==='ecommerce'`, re-running `detectOrderSignal` and sending an order
+link whenever the primary inline check above hadn't already handled the turn — but now that the
+inline check runs unconditionally for every non-human/drop route on every ecom turn, that branch
+was redundant (an extra LLM+NocoDB round-trip on every single message) and could re-introduce the
+exact "send a link without real order intent" case the paragraph above just eliminated (an enquiry
+with no confident product match). Removed; ecommerce clients are fully handled inline now. The
+booking-industry branch (healthcare/consultancy/travel/etc, gated on `external_store_link` being
+set) is unaffected — it doesn't have this problem since `detectBookingSignal` was never asked to
+distinguish enquiry from booking-readiness in the first place.
+
+Historical note on why this branched on `c.industry` at all rather than table-truthiness: that
+distinction matters because `ecomResolveTable` falls back to a shared default table id
 (`ECOM_DEFAULT_TABLE_IDS`) for *every* client regardless of industry, so table-truthiness alone
 can't tell an actual ecom client from a booking-industry one — which is exactly the check
 `handleChatwootMessageHook`'s own dispatch (elsewhere in this file, now superseded) relies on, and
@@ -2073,13 +2123,13 @@ appears to make it dispatch every client through the ecom order-signal path in p
 booking-signal one. Worth an independent look if `/hooks/chatwoot-message` keeps running for any
 client not yet on this engine — this port doesn't fix that function, only avoids inheriting the
 same bug in the new one:
-- **`ecommerce`** → order-signal detection (`detectOrderSignal`) against the product catalog, same
-  as before.
-- **Every other industry**, once `external_store_link` (Settings → Booking Link) is configured →
-  booking-signal detection (`detectBookingSignal`) against the Appointment module's services
-  catalog, skipping a lead already at a booking-terminal stage or with a `requested` appointment
-  already pending — the direct-Cloudflare-auto-send behavior `handleChatwootIncomingBookingSignal`
-  already had, just running inline here instead of via a second webhook delivery.
+Now only the second half of that dispatch remains at the bottom of `handleEngineWebhook` (the
+ecommerce branch moved to the primary inline check, described above): every industry except
+ecommerce, once `external_store_link` (Settings → Booking Link) is configured, gets booking-signal
+detection (`detectBookingSignal`) against the Appointment module's services catalog, skipping a
+lead already at a booking-terminal stage or with a `requested` appointment already pending — the
+direct-Cloudflare-auto-send behavior `handleChatwootIncomingBookingSignal` already had, just
+running inline here instead of via a second webhook delivery.
 
 **Fidelity to the source workflow, and where this deviates:** `handleEngineWebhook` and its
 `engine*` helper functions in `cloudflare-worker/worker.js` are a field-for-field port of
