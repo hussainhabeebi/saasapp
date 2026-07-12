@@ -628,11 +628,20 @@ writes `appt_enabled`.
 so those tabs show up immediately — the equivalent `updateApptTabVisibility()` call was missing for
 Appointments, so the tab only appeared once the user happened to open Settings (the only place that
 was calling it, via `initApptSettings()`). Also added `apptMergeLocal()` — TA/Recruit already had
-this fallback (`taMergeLocal`/`rcMergeLocal`, both called from `showApp()`): `saveApptEnabled`/
-`apptSetupTables()` swallow `patchClient()`'s errors (so a failed save doesn't hard-fail the
-button), caching the value in `localStorage` as a backstop via `apptSaveLocal()` — but nothing ever
-read that cache back. `apptMergeLocal()` now does, same pattern as its siblings, called from
-`showApp()` right alongside them.
+this fallback (`taMergeLocal`/`rcMergeLocal`, both called from `showApp()`), `apptSaveLocal()` had no
+matching read-back.
+
+**Fixed: "Enabled" not actually saving.** `saveApptEnabled`/`apptSetupTables()` originally had
+`await patchClient(...).catch(()=>{})` — `patchClient()` re-fetches after every write and throws a
+specific "Save didn't take effect for: X" error if a field didn't actually stick (e.g. the column
+doesn't exist, or a NocoDB schema-cache lag right after creating one), and that `.catch(()=>{})` was
+silently swallowing it. The UI showed "✓ Saved"/"✓ Tables created!" regardless of whether the write
+actually landed — a client could toggle the module on, see success, and the public booking page
+would still 404 with "Booking page not found" because `appt_enabled` never actually changed server-
+side. Both now let the real error surface instead of masking it. `apptSaveLocal()`'s local-cache
+write also moved to *after* a confirmed-successful `patchClient()` call (it was firing
+unconditionally before, which meant `apptMergeLocal()` — the fix directly above — could paper over
+a real failure with a value that was never actually saved, undermining its own point).
 
 **The module itself, 📅 Appointments tab (gated by `appt_enabled==='Yes'`, `updateApptTabVisibility()`):**
 - First visit prompts **"Create Tables Now"** (`apptSetupTables()`) — creates two per-client tables,
