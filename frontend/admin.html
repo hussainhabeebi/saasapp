@@ -344,6 +344,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
   <button class="tab-btn" id="tab-billing" onclick="switchTab('billing')">Billing</button>
   <span class="client-count-badge" id="count-badge">— clients</span>
   <input type="search" class="header-search" id="search-input" placeholder="Search clients…">
+  <button class="btn-mini" id="btn-backfill-webhooks" title="Generate engine_webhook_secret and register /engine/webhook for every client with Chatwoot connected">🔄 Sync engine webhooks</button>
   <div class="connected-badge"><span class="connected-dot"></span>Connected</div>
   <button class="btn-disconnect" id="btn-disconnect">Disconnect</button>
 </div>
@@ -552,6 +553,31 @@ document.getElementById('btn-disconnect').addEventListener('click', () => {
   main.classList.remove('visible');
   loginOverlay.classList.remove('hidden');
   document.getElementById('f-token').value = '';
+});
+
+document.getElementById('btn-backfill-webhooks').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-backfill-webhooks');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  try {
+    const res = await fetch(`${CONFIG.WORKER_BASE}/admin/backfill-engine-webhooks`, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + adminSessionToken },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    let msg = `Synced ${data.synced} of ${data.processed} clients (${data.skipped} skipped — no Chatwoot connected).`;
+    if (data.errors && data.errors.length) {
+      msg += `\n\nErrors:\n` + data.errors.map(e => `${e.client_name || e.client_id}: ${e.error}`).join('\n');
+    }
+    alert(msg);
+  } catch (e) {
+    alert('Sync failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 });
 
 // ── App init ──────────────────────────────────────────────────
