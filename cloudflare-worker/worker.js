@@ -1720,16 +1720,16 @@ const TRIAL_PERIOD_DAYS = 15;
 
 const EMAIL_RE=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// billing_email wins over authentik_email — the login address is whatever Authentik account the
-// client signed in with (sometimes a shared/ops address set up during provisioning, not
-// necessarily who should receive invoices/receipts/dunning), while billing_email is something the
-// client explicitly confirms on the Billing page. Falls back to authentik_email so a customer who
-// never touches that field still gets a working Stripe customer, just not necessarily the address
-// they'd have chosen.
+// Requires billing_email — deliberately no silent fallback to authentik_email (the login
+// address, which is sometimes a shared/ops account rather than who should actually own the
+// Stripe account/receive invoices). Callers (handleBillingCheckoutSubscription,
+// handleBillingCheckoutAddon) check this up front and return a clean 400 before ever reaching
+// here; the throw below is a safety net, not the primary guard.
 async function ensureStripeCustomer(env, c, clientId){
   if(c.stripe_customer_id) return c.stripe_customer_id;
+  if(!c.billing_email) throw new Error('A billing email is required before a Stripe account can be created.');
   const {ok, data}=await stripeFetch(env, 'POST', 'customers', {
-    email:c.billing_email||c.authentik_email||undefined,
+    email:c.billing_email,
     name:c.client_name||undefined,
     address:c.company_address?{line1:c.company_address}:undefined,
     metadata:{client_id:String(clientId)}
@@ -1798,6 +1798,7 @@ async function handleBillingCheckoutSubscription(request, env){
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   if(c.stripe_subscription_id) return json({error:'Already subscribed — manage your plan from the Billing Portal instead.'}, 400);
+  if(!c.billing_email) return json({error:'Set your Billing Email in Company Profile before subscribing.'}, 400);
 
   const customerId=await ensureStripeCustomer(env, c, payload.cid);
   const {ok, data}=await stripeFetch(env, 'POST', 'checkout/sessions', {
@@ -1809,8 +1810,16 @@ async function handleBillingCheckoutSubscription(request, env){
     // relying solely on the webhook (or the manual "Sync Subscription Now" button) to land in time.
     success_url:`${env.APP_BASE_URL}?billing=success&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url:`${env.APP_BASE_URL}?billing=cancel`,
+    // client_reference_id is what the checkout.session.completed/expired handlers below key off
+    // (also mirrored into metadata.client_id, which is what subscription_data.metadata carries
+    // onto the Subscription itself once created).
+    client_reference_id:String(payload.cid),
     metadata:{client_id:String(payload.cid)},
-    subscription_data:{trial_period_days:TRIAL_PERIOD_DAYS, metadata:{client_id:String(payload.cid)}}
+    subscription_data:{trial_period_days:TRIAL_PERIOD_DAYS, metadata:{client_id:String(payload.cid)}},
+    // Lets a customer who abandons Checkout (e.g. drops off mid-3DS) resume from where they left
+    // off via a link Stripe attaches to the expired Session — checkout.session.expired below emails
+    // it. Confirmed supported for mode=subscription, not just one-time payments.
+    after_expiration:{recovery:{enabled:true}}
   });
   if(!ok||!data?.url) return json({error:'Failed to start checkout: '+(data?.error?.message||'unknown error')}, 502);
   return json({ok:true, url:data.url});
@@ -1933,6 +1942,7 @@ async function handleBillingCheckoutAddon(request, env){
   if(!price_id||!allowed.includes(price_id)) return json({error:'Unknown add-on.'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
+  if(!c.billing_email) return json({error:'Set your Billing Email in Company Profile before buying an add-on.'}, 400);
 
   const customerId=await ensureStripeCustomer(env, c, payload.cid);
   const {ok, data}=await stripeFetch(env, 'POST', 'checkout/sessions', {
@@ -1941,7 +1951,8 @@ async function handleBillingCheckoutAddon(request, env){
     line_items:[{price:price_id, quantity:1}],
     success_url:`${env.APP_BASE_URL}?billing=success`,
     cancel_url:`${env.APP_BASE_URL}?billing=cancel`,
-    metadata:{client_id:String(payload.cid), price_id}
+    metadata:{client_id:String(payload.cid), price_id},
+    after_expiration:{recovery:{enabled:true}}
   });
   if(!ok||!data?.url) return json({error:'Failed to start checkout: '+(data?.error?.message||'unknown error')}, 502);
   return json({ok:true, url:data.url});
@@ -2129,7 +2140,7 @@ async function handleBillingWebhook(request, env){
   if(event.type==='customer.subscription.trial_will_end'){
     const clientId=await resolveClientIdForSubscription(env, obj);
     const c=clientId&&await getClientById(env, clientId);
-    if(c?.authentik_email){
+    if(c?.billing_email||c?.authentik_email){
       const key=`trial_will_end:${obj.id}`;
       if(!billingEmailAlreadySent(c, key)){
         const item=obj.items?.data?.[0];
@@ -2137,7 +2148,7 @@ async function handleBillingWebhook(request, env){
         const chargeDate=formatBillingDate(obj.trial_end);
         const {url:portalUrl}=obj.customer?await createBillingPortalSession(env, obj.customer):{};
         await sendBillingEmail(env, {
-          to:c.authentik_email,
+          to:c.billing_email||c.authentik_email,
           subject:'Your Leadvyne trial ends soon',
           heading:'Your free trial ends in a few days',
           bodyHtml:`<p>Your 15-day trial ends on <strong>${esc(chargeDate)}</strong>. After that, we'll
@@ -2154,13 +2165,13 @@ async function handleBillingWebhook(request, env){
   if(event.type==='invoice.payment_succeeded'){
     const clientId=await resolveClientIdForCustomer(env, obj.customer);
     const c=clientId&&await getClientById(env, clientId);
-    if(c?.authentik_email){
+    if(c?.billing_email||c?.authentik_email){
       const key=`payment_succeeded:${obj.id}`;
       if(!billingEmailAlreadySent(c, key)){
         const amount=formatBillingAmount(obj.amount_paid, obj.currency);
         const nextRenewal=formatBillingDate(obj.lines?.data?.[0]?.period?.end);
         await sendBillingEmail(env, {
-          to:c.authentik_email,
+          to:c.billing_email||c.authentik_email,
           subject:`Payment received — ${amount}`,
           heading:'Payment received, thank you',
           bodyHtml:`<p>We've charged <strong>${esc(amount)}</strong> to your payment method
@@ -2176,14 +2187,14 @@ async function handleBillingWebhook(request, env){
   if(event.type==='invoice.payment_failed'){
     const clientId=await resolveClientIdForCustomer(env, obj.customer);
     const c=clientId&&await getClientById(env, clientId);
-    if(c?.authentik_email){
+    if(c?.billing_email||c?.authentik_email){
       const key=`payment_failed:${obj.id}`;
       if(!billingEmailAlreadySent(c, key)){
         const amount=formatBillingAmount(obj.amount_due, obj.currency);
         const retryDate=formatBillingDate(obj.next_payment_attempt);
         const {url:portalUrl}=await createBillingPortalSession(env, obj.customer);
         await sendBillingEmail(env, {
-          to:c.authentik_email,
+          to:c.billing_email||c.authentik_email,
           subject:`Payment failed — action needed`,
           heading:'We couldn\'t process your payment',
           bodyHtml:`<p>A charge of <strong>${esc(amount)}</strong> for your Leadvyne subscription
@@ -2202,17 +2213,42 @@ async function handleBillingWebhook(request, env){
   if(event.type==='invoice.payment_action_required'){
     const clientId=await resolveClientIdForCustomer(env, obj.customer);
     const c=clientId&&await getClientById(env, clientId);
-    if(c?.authentik_email){
+    if(c?.billing_email||c?.authentik_email){
       const key=`payment_action_required:${obj.id}`;
       if(!billingEmailAlreadySent(c, key)){
         const amount=formatBillingAmount(obj.amount_due, obj.currency);
         await sendBillingEmail(env, {
-          to:c.authentik_email,
+          to:c.billing_email||c.authentik_email,
           subject:'Action needed to complete your payment',
           heading:'Your bank needs you to confirm this payment',
           bodyHtml:`<p>A charge of <strong>${esc(amount)}</strong> for your Leadvyne subscription
             needs one more step — your bank requires you to confirm it before it can go through.</p>`,
           ctaLabel:'Confirm payment', ctaUrl:obj.hosted_invoice_url
+        });
+        await markBillingEmailSent(env, clientId, c, key);
+      }
+    }
+  }
+
+  // Fires when a Checkout Session (subscription or add-on) expires without completing — e.g. the
+  // customer dropped off mid-3DS challenge. after_expiration.recovery.url (set because both
+  // checkout-creation routes pass after_expiration.recovery.enabled) resumes that exact session
+  // rather than making them start over from the plan picker.
+  if(event.type==='checkout.session.expired'){
+    const clientId=obj.client_reference_id||obj.metadata?.client_id;
+    const c=clientId&&await getClientById(env, clientId);
+    const recoveryUrl=obj.after_expiration?.recovery?.url;
+    if((c?.billing_email||c?.authentik_email)&&recoveryUrl){
+      const key=`checkout_expired:${obj.id}`;
+      if(!billingEmailAlreadySent(c, key)){
+        await sendBillingEmail(env, {
+          to:c.billing_email||c.authentik_email,
+          subject:'You left something in checkout',
+          heading:'Your checkout is still waiting for you',
+          bodyHtml:`<p>You started ${obj.mode==='subscription'?'subscribing to a Leadvyne plan':'a Leadvyne add-on purchase'}
+            but didn't finish — often this happens when a bank's OTP/authentication step times out.</p>
+            <p>Pick up right where you left off, no need to start over.</p>`,
+          ctaLabel:'Resume checkout', ctaUrl:recoveryUrl
         });
         await markBillingEmailSent(env, clientId, c, key);
       }

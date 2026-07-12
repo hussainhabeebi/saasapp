@@ -5718,8 +5718,21 @@ function renderBillingPlanList(){
     </div>`;
   }).join('');
 }
+// Blocks checkout client-side (the Worker enforces the same rule server-side — this is just to
+// avoid a round-trip and point the customer straight at the field) — a Stripe account should
+// never get created against a silently-inherited login email.
+function requireBillingEmailOrExplain(){
+  if(clientRecord.billing_email) return true;
+  const field=$id('cfgBillingEmail');
+  if(field) field.focus();
+  return false;
+}
 async function subscribeToPlan(price_id){
   const wrap=$id('billingPricingTableWrap');
+  if(!requireBillingEmailOrExplain()){
+    wrap.insertAdjacentHTML('beforeend', '<div class="s-note">Set your Billing Email in Company Profile above first — that\'s the address your Stripe account and invoices will use.</div>');
+    return;
+  }
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/billing/checkout-subscription`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({price_id})});
     const data=await r.json();
@@ -5865,7 +5878,12 @@ async function syncBillingNow(){
 }
 
 async function buyAddon(price_id){
-  const msg=$id('billingAddonMsg'); msg.textContent='Opening checkout…';
+  const msg=$id('billingAddonMsg');
+  if(!requireBillingEmailOrExplain()){
+    msg.textContent='Set your Billing Email in Company Profile above first — that\'s the address your Stripe account and invoices will use.';
+    return;
+  }
+  msg.textContent='Opening checkout…';
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/billing/checkout-addon`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({price_id})});
     const data=await r.json();

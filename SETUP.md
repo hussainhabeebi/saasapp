@@ -56,7 +56,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | voice_addon_active | Single line ("Yes"/"No") |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
-| billing_email | Single line (optional — where invoices/receipts/renewal reminders go; falls back to `authentik_email` if unset, since that's the login address and not necessarily who should get billing mail — e.g. a shared/ops login) |
+| billing_email | Single line (**required before a Stripe Customer is ever created** — `ensureStripeCustomer` refuses to create one without it; both `handleBillingCheckoutSubscription` and `handleBillingCheckoutAddon` return a 400 telling the customer to set it first, rather than silently falling back to `authentik_email`, since the login address is sometimes a shared/ops account, not who should receive billing mail. Once a `stripe_customer_id` already exists this field can still be edited/updated freely — the "required" check only guards *creating* the Stripe account in the first place) |
 | team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
 | team_chatwoot_users | Long text (JSON, `{email: chatwoot_user_id}` — per-teammate Chatwoot Platform user ids, populated by User Management → Create New User — see "Matching Chatwoot agent" below) |
 | team_names | Long text (JSON, `{email: name}` — display names for team_emails, populated by User Management → Create New User — see "Agents = Team Members = Users" below; the now-unused `agents` field it replaced was a plain newline-separated name list) |
@@ -629,8 +629,9 @@ currency toggle (now scoped to just the Add-ons section) picks the matching Pric
 4. **Webhook endpoint** — add `{WORKER_BASE}/billing/webhook`, subscribe to `checkout.session.completed`,
    `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`,
    `customer.subscription.trial_will_end`, `invoice.payment_succeeded`, `invoice.payment_failed`,
-   `invoice.payment_action_required`. The last four drive the branded trial-reminder/receipt/dunning/
-   auth-required emails — see "RBI pre-debit notification" below.
+   `invoice.payment_action_required`, `checkout.session.expired`. The last five drive the branded
+   trial-reminder/receipt/dunning/auth-required/abandoned-checkout emails — see "RBI pre-debit
+   notification" and "Abandoned checkout recovery" below.
    Copy the signing secret into `STRIPE_WEBHOOK_SECRET`. Use the **Snapshot** payload style, not
    Thin — the Worker's handler expects the full object inline on `event.data.object`.
 5. **Customer emails** (Settings → Customer emails) — turn on "Successful payments" and "Failed
@@ -663,7 +664,7 @@ code — there's nothing to check in this repo for these):
 **2. Backup reminder layer (defense-in-depth / audit trail)** — lives in `cloudflare-worker/worker.js`
 itself now (an earlier `n8n/rbi-renewal-notice.json` workflow filled this role before the whole
 `n8n/` directory was removed from this repo; workflows are managed live in n8n going forward, not
-committed here). `handleBillingWebhook` sends four branded, Leadvyne-domain emails via Resend —
+committed here). `handleBillingWebhook` sends branded, Leadvyne-domain emails via Resend —
 independent of whether Stripe's own notification (step 1) actually fires, and each one is a real
 action, not just a notice:
 - **`customer.subscription.trial_will_end`** — Stripe fires this ~3 days before a trial converts
@@ -677,8 +678,9 @@ action, not just a notice:
   Authentication (RBI's AFA requirement for recurring debits above the auto-debit cap). Links
   straight to Stripe's hosted page to complete that authentication — this email unblocks the
   charge, it isn't just informational.
-- All four dedupe via `billing_emails_sent` on CLIENTS (see schema table above) so a redelivered
-  webhook — Stripe retries on any non-2xx response or timeout — never double-sends the same email.
+- All of these dedupe via `billing_emails_sent` on CLIENTS (see schema table above) so a
+  redelivered webhook — Stripe retries on any non-2xx response or timeout — never double-sends the
+  same email.
 - This is a **backup/audit-trail layer**, not the compliance mechanism itself — it doesn't carry
   Stripe's own e-mandate/AFA registration mechanics. Treat step 1 as what actually satisfies RBI's
   rule and this as the branded, always-on second touchpoint plus a record of what each customer
@@ -690,6 +692,26 @@ New plan subscriptions (`POST /billing/checkout-subscription`) start with a 15-d
 there (status starts `trialing`, already synced into `plan_status`; no charge until day 15). The
 `trial_will_end` email above is what tells the customer, ahead of time, exactly what they'll be
 charged and when — and gives them a one-click way to cancel first if they don't want to continue.
+
+### Abandoned checkout recovery
+Both `handleBillingCheckoutSubscription` and `handleBillingCheckoutAddon` set
+`after_expiration:{recovery:{enabled:true}}` on the Checkout Session they create — confirmed by
+Stripe to work for `mode:'subscription'` as well as `mode:'payment'`, not just one-time payments.
+Stripe does **not** email the recovery link itself; it only attaches a `after_expiration.recovery.url`
+to the Session once it expires unfinished (usable for 30 days), delivered via the
+`checkout.session.expired` webhook event. `handleBillingWebhook`'s handler for that event sends a
+branded "Resume checkout" email with that link — same Resend/dedupe pattern as everything else in
+this section. This is the actual fix for customers dropping off mid-3DS (a common India-card
+failure mode): instead of a dead end, they get a link back to the exact same Checkout Session
+rather than having to restart from the plan picker.
+- **Note:** there is no Stripe Dashboard toggle that makes this happen automatically — the
+  `after_expiration.recovery` API parameter plus a webhook-driven email (as built here) is the
+  actual mechanism, not an account-level setting.
+- Resolution uses `obj.client_reference_id||obj.metadata?.client_id` — both are now set at
+  Checkout Session creation (`client_reference_id` was previously *documented* but not actually
+  set on the subscription Checkout call; that's fixed as part of this change too, which also makes
+  `checkout.session.completed`'s primary resolution path — rather than its email-match fallback —
+  actually fire for subscriptions created through this app going forward).
 
 ### Worker config
 | Secret/var | What it is |
@@ -756,12 +778,14 @@ we already know which CLIENTS row this is):
 7. **Company profile** — `POST /billing/company-profile` saves `client_name`/`company_address`/
    `billing_email` to the CLIENTS row and, if a `stripe_customer_id` already exists, best-effort
    pushes the same name/address/email to the Stripe Customer so it shows correctly on future
-   invoices/receipts. `billing_email` is what `ensureStripeCustomer` uses when first creating the
-   Stripe Customer (falling back to `authentik_email` if never set) — this exists because
-   `authentik_email` is just whichever address was used to log in, which for some clients is a
-   shared/ops address rather than who should actually receive billing mail. The Billing page shows
-   which address is currently in effect right above the plan picker, before the customer ever
-   subscribes, so this doesn't silently default to the wrong inbox.
+   invoices/receipts. `billing_email` is **required** by `ensureStripeCustomer` — no Stripe Customer
+   (and therefore no subscription or add-on purchase) can be created without it, deliberately with
+   no fallback to `authentik_email`, since that's just whichever address was used to log in, which
+   for some clients is a shared/ops address rather than who should actually own the Stripe account.
+   Both `subscribeToPlan()` and `buyAddon()` in `dashboard.html` check `clientRecord.billing_email`
+   client-side before calling their respective checkout routes (and focus the field instead of
+   proceeding if it's blank) — the Worker enforces the same rule server-side regardless, so this
+   can't be bypassed by calling the API directly.
 8. **Usage dashboard** — computed client-side from leads already loaded into the dashboard
    (`ConvHistory` entries with `role:'assistant'` this calendar month = messages sent, lead count
    this month = leads captured, terminal-stage ratio = conversion rate). No new tracking needed.
