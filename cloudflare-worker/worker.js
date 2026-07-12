@@ -3789,12 +3789,21 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry){
   }
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
   if(contextBlock) sys+=contextBlock;
-  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
+  // 5, not 3 — a short attribute-only reply ("order M size") needs the assistant's own prior
+  // product-listing message to still be in view to resolve against (see the instruction below);
+  // 3 turns was tight enough to occasionally push it just out of frame.
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-5).map(m=>m.role+': '+m.content).join('\n');
 
   if(industry==='ecommerce'){
-    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above. If specific details are not available, politely say you will connect them with support.';
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
+    // Closes an observed real failure: a customer replied "Order M size" to a product the
+    // assistant had just shown sizes for, and got "we don't have anything matching" back instead
+    // of the shown product — because a bare size/color reply carries no signal on its own, only in
+    // light of what was just discussed. detectOrderSignal (the separate order-link auto-send) has
+    // its own version of this same instruction; this is the main conversational reply's version.
+    sys+=' A short reply that only mentions a size, color, quantity, or says something like "that one"/"the green one" — with no product name — almost always refers to whichever specific product you (the assistant) most recently described in the Recent Conversation above. Resolve it to that exact product (use its real SKU/price/stock from the catalog above) instead of treating it as a fresh, unscoped catalog search — only ask which product they mean if the recent conversation genuinely doesn\'t make it clear. If specific details are not available even after resolving the product, politely say you will connect them with support.';
   } else if(industry==='travel'){
-    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. If specific details are not available, politely say you will connect them with an advisor.';
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. A short reply like "the 30 min one" or "that package" with no name almost always refers to whichever specific package/service you most recently described in the Recent Conversation above — resolve it to that one rather than asking a fresh, unscoped question. If specific details are not available, politely say you will connect them with an advisor.';
   } else {
     sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
