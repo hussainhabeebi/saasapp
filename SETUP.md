@@ -1653,6 +1653,14 @@ frontend files, short URLs.
   never saved it — it's now persisted as **`wa_display_phone`**, and every public endpoint's
   `whatsapp_phone` output field prefers it over the older, manually-typed `support_phone`. This
   is what makes "order from the storefront" and "chat with the bot" the same WhatsApp thread.
+- **`support_phone` had no UI to actually set it** until ecom.html's "Storefront Order Button"
+  settings card was added — despite being documented and read here since this section was written,
+  any client without `wa_display_phone` (i.e. anyone whose WhatsApp inbox wasn't created through
+  `handleChannelsWhatsappConnect` — a client set up before self-service Channels existed, or wired
+  up by hand in Chatwoot) had no way to give the storefront a number at all, so `store.html`
+  rendered a disabled "Contact store to order" label instead of an order button for every one of
+  their products. `handleEcomClientUpdate`'s write whitelist (`ECOM_CLIENT_WRITE_FIELDS`) and read
+  whitelist (`ECOM_CLIENT_READ_FIELDS`) now both include `support_phone`.
 
 **Manual steps still needed outside this repo** (not achievable from a code change alone):
 1. Buy/point `onshope.com` (and `www.onshope.com`) DNS at the same host serving `app.leadvyne.com`.
@@ -2080,14 +2088,21 @@ if they match.
 - **If `body.id` is ever absent**, the dedup check is simply skipped (not replaced with a
   content-based guess) — a false-positive duplicate-skip would silently eat a real customer
   message, which is worse than the rare double-reply this check exists to prevent.
-- **`LastProcessedMessageId` is written only as part of a normal successful turn**
-  (`engineBuildLeadUpsertBody`, alongside `Stage`/`ConvHistory`/etc.), never any earlier. This is a
-  deliberate trade-off: marking a message "processed" *before* work starts would close the crash
-  window more tightly, but risks silently dropping a real message forever if processing then fails
-  partway — worse for a sales/support bot than the accepted gap here, where a genuine
-  mid-processing crash (after the reply is sent, before the upsert completes) is *not* fully
-  protected against and a Chatwoot retry in that exact window could still produce a duplicate
-  reply.
+- **`LastProcessedMessageId` is claimed early, then re-written at the end of a normal successful
+  turn.** Originally this was written only once, at the very end (`engineBuildLeadUpsertBody`,
+  alongside `Stage`/`ConvHistory`/etc.) — but that produced an observed real duplicate reply in
+  production (the exact same product-lookup message sent twice, ~1 minute apart): a single engine
+  turn can run several LLM + NocoDB round-trips deep, easily long enough for Chatwoot's webhook
+  delivery to time out and redeliver the same `message_created` event on its own schedule,
+  independent of whatever status this handler eventually returns — and the redelivery's own
+  idempotency check found nothing to skip yet, because the *first* turn's end-of-turn write hadn't
+  happened. `engineClaimMessage` now runs right after the fast synchronous checks (handover/opt-out/
+  rate-limit), before `engineResolveUserText`/`engineClassifyIntent`/the reply LLM call — for an
+  existing lead it's a one-field `PATCH`; for a brand-new lead it creates a minimal stub LEADS row
+  so the final upsert `PATCH`es it instead of creating a second row. This shrinks the redelivery
+  race window from "the whole turn" down to "the handful of synchronous checks before the claim" —
+  not a true atomic compare-and-swap (NocoDB has no such primitive available here), so it isn't
+  airtight, just far smaller than before.
 
 ### Error monitoring
 `reportOpsError(env, context, error, extra)` (`worker.js`) is a small, dependency-free alerting
