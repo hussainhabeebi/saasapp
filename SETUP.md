@@ -60,6 +60,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | team_emails | Long text (comma-separated additional Authentik emails with full access to this same account — see "Multi-user support" below) |
 | team_chatwoot_users | Long text (JSON, `{email: chatwoot_user_id}` — per-teammate Chatwoot Platform user ids, populated by User Management → Create New User — see "Matching Chatwoot agent" below) |
 | team_names | Long text (JSON, `{email: name}` — display names for team_emails, populated by User Management → Create New User — see "Agents = Team Members = Users" below; the now-unused `agents` field it replaced was a plain newline-separated name list) |
+| business_policies | Long text (JSON, `{refund, delivery, cancellation}` — structured objection-handling policy text, Settings → Trust & Policies — see "Trust Signals & grounded objection-handling" below) |
 | fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 | billing_emails_sent | Long text (comma-separated `<event>:<stripe_object_id>` keys — dedupes the trial-ending/receipt/dunning/action-required emails below if Stripe redelivers a webhook; capped to the most recent 20; see "RBI pre-debit notification" below) |
 | notification_email | Single line (email address `n8n/notifications.json` sends hot-lead/handover/SLA alerts to) |
@@ -312,6 +313,37 @@ lead — title, due date (its `ReminderDate` if set, else today), lead link, and
 task. Home's "Follow-ups" widget (`renderHomeFollowUps`) now merges lead `ReminderDate` items
 *and* manual tasks due today/overdue (both come from the same `computeAllTasks()` the Tasks page
 itself renders from), so a pushed task shows up on Home immediately, not only on the Tasks page.
+
+**Trust Signals & grounded objection-handling:** the actual conversational WhatsApp bot (the one
+that replies to customers in real time) is **not part of this repo** — it runs entirely in an
+external n8n workflow (`engine.json`, plus the per-client wrapper `onboard.json` provisions;
+see "Thin API proxy" below and the top of this file). `main_prompt`/`kb_text`/`followup_count`
+etc. are just CLIENTS fields that workflow reads directly from NocoDB — `dashboard.html` and
+`worker.js` only ever write them, never build a bot reply themselves. So "make the bot answer
+refund/delivery/cancellation objections itself, mid-conversation" isn't something this repo can
+deliver end-to-end; that last mile is an n8n-side change, outside this codebase.
+
+What *is* fully built here, in the dashboard the sales rep actually uses:
+- **Settings → Trust & Policies** (`dashboard.html`) — three structured fields (Refund, Delivery,
+  Cancellation), stored as `business_policies` (JSON) on the Clients row, separate from the
+  freeform `kb_text` blob so there's a specific field to point at instead of a big pasted
+  document. Loaded/saved via `getBusinessPolicies()`/`$id('savePolicies')`'s click handler,
+  same `saveField()`/`patchClient()` pattern as every other Settings field.
+- **AI Deal Coach** (`generateDealCoach()`, lead detail pane) — its prompt to `/ai/complete` now
+  includes `getBusinessPolicies()`'s text and `getRecentBookingsCount()` (leads that reached a
+  booked/won `TERMINAL` stage in the last 7 days, using `Date` as a proxy for conversion time —
+  there's no dedicated stage-change timestamp tracked yet), with an explicit system-prompt
+  instruction to answer objections from the real policy text and cite the real booking count
+  instead of generic advice ("offer a quick call").
+- **Trust Signals widget** (same pane, "📣 Trust Signals" button, `renderTrustSignals()`) — a
+  non-AI, zero-hallucination list of ready-to-send snippets (the recent-bookings count, the
+  `review_link`, and each policy that's filled in), each with an "Insert" button that appends it
+  straight into the reply box (`#waReplyText`) so a rep can drop a real trust signal into a chat
+  with one click instead of typing it out.
+- **`business_policies` is already available to the external n8n bot**, the same way `main_prompt`/
+  `kb_text` are — it's just another field on the CLIENTS row that workflow already reads from
+  NocoDB directly. Wiring it into the bot's own system prompt (so it can answer these objections
+  live, not just the dashboard) is the n8n-side follow-up this repo can't do on its own.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/

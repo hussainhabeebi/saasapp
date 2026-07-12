@@ -1666,6 +1666,30 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <hr class="div">
 
+          <!-- TRUST & POLICIES — structured, separate from the freeform Knowledge Base above so
+               objection-handling (refund/delivery/cancellation questions) can be answered from a
+               specific policy field instead of the bot having to find the right paragraph inside
+               a big pasted blob. Deal Coach and the lead detail pane's Trust Signals widget both
+               read this directly; it's also just another CLIENTS field, so it's already available
+               to your bot's own prompt-building logic to wire in the same way main_prompt/kb_text
+               are — see SETUP.md. -->
+          <div class="settings-section">
+            <div class="s-head">🛡️ Trust & Policies</div>
+            <div class="s-note">Real answers for the objections that actually stall a sale — what happens if they want a refund, when delivery arrives, what cancelling costs. Grounds Deal Coach's recommendations so they're specific to your actual policies, not generic advice.</div>
+            <label class="form-label">Refund Policy</label>
+            <textarea class="form-input" id="cfgPolicyRefund" rows="3" placeholder="e.g. Full refund within 7 days of booking, minus a 5% processing fee after 48 hours." style="margin-bottom:10px"></textarea>
+            <label class="form-label">Delivery / Fulfillment Policy</label>
+            <textarea class="form-input" id="cfgPolicyDelivery" rows="3" placeholder="e.g. Standard delivery 3-5 business days; express delivery available for AED 25, arrives next day." style="margin-bottom:10px"></textarea>
+            <label class="form-label">Cancellation Policy</label>
+            <textarea class="form-input" id="cfgPolicyCancellation" rows="3" placeholder="e.g. Free cancellation up to 24h before departure; 50% charge inside 24h, no-shows are non-refundable." style="margin-bottom:10px"></textarea>
+            <div style="display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="savePolicies">Save Policies</button>
+              <span class="save-msg" id="savePoliciesMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
           <div class="settings-section">
             <div class="s-head">Bot Persona &amp; System Prompt</div>
             <div class="s-note">The bot's voice, scope, and guardrails.</div>
@@ -2621,6 +2645,12 @@ const TODAY = new Date().toISOString().slice(0,10);
     <div style="margin-top:12px">
       <button class="btn btn-secondary btn-sm" onclick="generateDealCoach()">🤖 AI Deal Coach</button>
       <div id="dealCoachCard" class="coach-card" style="display:none;margin-top:10px"></div>
+    </div>
+    <!-- Trust Signals — objection-handling snippets (recent bookings, review link, policies)
+         ready to insert into the reply box above, one click. -->
+    <div style="margin-top:12px">
+      <button class="btn btn-secondary btn-sm" onclick="toggleTrustSignals()">📣 Trust Signals</button>
+      <div id="trustSignalsCard" class="coach-card" style="display:none;margin-top:10px"></div>
     </div>
   </div>
 </div>
@@ -3837,6 +3867,7 @@ function openDetail(id){
 
   $id('detailSummary').style.display='none';
   $id('dealCoachCard').style.display='none';
+  $id('trustSignalsCard').style.display='none';
   renderNbaChip(lead);
   renderRecoveryChip(lead);
   renderLeadProfile(lead);
@@ -4427,6 +4458,11 @@ function populateSettings(){
   kbUpdateCount();
   $id('kbFileList').innerHTML='';
   $id('kbStatus').textContent=_kbText?`${_kbText.length.toLocaleString()} characters loaded`:'';
+  // trust & policies
+  const _pol=getBusinessPolicies();
+  $id('cfgPolicyRefund').value=_pol.refund;
+  $id('cfgPolicyDelivery').value=_pol.delivery;
+  $id('cfgPolicyCancellation').value=_pol.cancellation;
   // services
   loadServices();
   // stages
@@ -4567,6 +4603,14 @@ $id('saveKb').addEventListener('click',async()=>{
   setTimeout(()=>msgEl.textContent='',5000);
 });
 $id('cfgKbText').addEventListener('input',kbUpdateCount);
+
+$id('savePolicies').addEventListener('click',async()=>{
+  await saveField('savePolicies','savePoliciesMsg',{business_policies:JSON.stringify({
+    refund:$id('cfgPolicyRefund').value.trim(),
+    delivery:$id('cfgPolicyDelivery').value.trim(),
+    cancellation:$id('cfgPolicyCancellation').value.trim(),
+  })});
+});
 
 $id('savePrompt').addEventListener('click',async()=>{
   await saveField('savePrompt','savePromptMsg',{main_prompt:$id('cfgPrompt').value});
@@ -6228,6 +6272,25 @@ function taskAssigneeEmails(){ return getTeamMembers().map(m=>m.email); }
 // User Management → Create New User) or the account's own client_name for the owner; falls back
 // to the bare email when no name is on file (e.g. teammates added via "Add Existing Authentik
 // User", which never collects one).
+// Structured refund/delivery/cancellation policy text (business_policies CLIENTS field, JSON) —
+// separate from the freeform kb_text blob so objection-handling has a specific field to point at
+// instead of hunting through a big pasted document. Read by generateDealCoach() and the lead
+// detail pane's Trust Signals widget (renderTrustSignals below).
+function getBusinessPolicies(){
+  try{ return {refund:'', delivery:'', cancellation:'', ...JSON.parse(clientRecord?.business_policies||'{}')}; }
+  catch(e){ return {refund:'', delivery:'', cancellation:''}; }
+}
+
+// Social proof — count of leads that reached a booked/won stage in the last 7 days. Uses each
+// lead's Date (creation timestamp) as a proxy for "when they converted" since there's no
+// dedicated stage-change timestamp tracked; for these industries (travel/real estate/clinics/
+// recruitment) time-to-convert from first WhatsApp message is usually short enough that this
+// reads as accurate for "X people booked this week" without needing new backend tracking.
+function getRecentBookingsCount(){
+  const cutoff=Date.now()-7*86400000;
+  return allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover'&&l.Date&&new Date(l.Date).getTime()>=cutoff).length;
+}
+
 function getTeamMembers(){
   const owner=(clientRecord?.authentik_email||'').trim();
   const teamEmails=(clientRecord?.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
@@ -6778,12 +6841,23 @@ async function generateDealCoach(){
     const carsText=_taCars.filter(c=>c.status!=='inactive').length?'\nAvailable Cars:\n'+_taCars.filter(c=>c.status!=='inactive').slice(0,6).map(c=>`- ${c.name} | ${cap(c.category||'car')} | ${c.seats||'?'} seats | ${c.currency||'AED'} ${c.daily_rate||0}/day`).join('\n'):'';
     const qaText=Object.keys(qa).length?'\nQual answers: '+JSON.stringify(qa):'';
     const histText=hist.slice(-8).map(m=>m.role+': '+m.content).join('\n');
+    // Grounds recommendations in this client's actual policies and real recent activity —
+    // otherwise the model falls back to generic advice ("offer a quick call") instead of
+    // directly answering the refund/delivery/cancellation objection that's actually stalling
+    // this deal, or citing a real social-proof number.
+    const pol=getBusinessPolicies();
+    const policyText=(pol.refund||pol.delivery||pol.cancellation)
+      ? '\nPolicies (answer refund/delivery/cancellation objections directly from these, don\'t give generic advice):'
+        +(pol.refund?`\n- Refund: ${pol.refund}`:'')+(pol.delivery?`\n- Delivery: ${pol.delivery}`:'')+(pol.cancellation?`\n- Cancellation: ${pol.cancellation}`:'')
+      : '';
+    const bookingsCount=getRecentBookingsCount();
+    const socialProofText=bookingsCount>0?`\nSocial proof available: ${bookingsCount} customer(s) booked with us in the last 7 days — cite this real number if it helps build urgency or trust.`:'';
     const resp=await fetch(`${CONFIG.WORKER_BASE}/ai/complete`,{
       method:'POST',
       headers:ncAuthHeaders({'Content-Type':'application/json'}),
       body:JSON.stringify({max_tokens:400,messages:[
-        {role:'system',content:'You are a travel agency sales coach. Analyse the lead and give 3 concise, actionable recommendations to close the deal. If relevant packages or itineraries are listed, suggest specific ones by name. Format as: 1. [action] 2. [action] 3. [action]. Be specific and practical.'},
-        {role:'user',content:`Lead: ${lead.Name||'Unknown'}\nStage: ${lead.Stage||'new'}\nScore: ${lead.Score||'Cold'}\nQual Score: ${lead.QualScore||'N/A'}\nHot moment: ${lead.HotMoment==='Yes'?lead.HotMomentText:'No'}${qaText}${svcText}${pkgText}${itinText}${umrahText}${carsText}\nRecent conversation:\n${histText}`}
+        {role:'system',content:'You are a travel agency sales coach. Analyse the lead and give 3 concise, actionable recommendations to close the deal. If relevant packages or itineraries are listed, suggest specific ones by name. If the lead is stalling on (or likely to raise) a refund, delivery, or cancellation objection, answer it directly using the policies provided — quote the real terms, never a generic "offer a call" deflection. Use the social proof figure only if it genuinely strengthens a recommendation. Format as: 1. [action] 2. [action] 3. [action]. Be specific and practical, never generic.'},
+        {role:'user',content:`Lead: ${lead.Name||'Unknown'}\nStage: ${lead.Stage||'new'}\nScore: ${lead.Score||'Cold'}\nQual Score: ${lead.QualScore||'N/A'}\nHot moment: ${lead.HotMoment==='Yes'?lead.HotMomentText:'No'}${qaText}${svcText}${pkgText}${itinText}${umrahText}${carsText}${policyText}${socialProofText}\nRecent conversation:\n${histText}`}
       ]})
     });
     const data=await resp.json();
@@ -6793,6 +6867,44 @@ async function generateDealCoach(){
     card.innerHTML=`<div class="cc-head">🤖 Deal Coach Recommendations</div>${esc(text).replace(/\n/g,'<br>')}`;
   }catch(e){card.style.display='block';card.innerHTML='<div class="cc-head">Error</div>Could not generate recommendations.';}
   btn.disabled=false;btn.textContent='🤖 AI Deal Coach';
+}
+
+/* ── TRUST SIGNALS ── objection-handling snippets ready to drop into the reply box: real
+   recent-activity social proof, the review link, and the structured refund/delivery/cancellation
+   policies from Settings → Trust & Policies. Pure client-side, no AI call — these are exact
+   figures/policy text, not generated prose, so there's nothing to hallucinate. */
+let _trustSignalsList=[];
+function toggleTrustSignals(){
+  const card=$id('trustSignalsCard');
+  const opening=card.style.display==='none';
+  card.style.display=opening?'block':'none';
+  if(opening) renderTrustSignals();
+}
+function renderTrustSignals(){
+  const card=$id('trustSignalsCard');
+  const count=getRecentBookingsCount();
+  const pol=getBusinessPolicies();
+  const reviewLink=clientRecord?.review_link||'';
+  _trustSignalsList=[];
+  if(count>0) _trustSignalsList.push(`🔥 ${count} customer${count===1?'':'s'} booked with us this week!`);
+  if(reviewLink) _trustSignalsList.push(`⭐ See what our customers say: ${reviewLink}`);
+  if(pol.refund) _trustSignalsList.push(`Our refund policy: ${pol.refund}`);
+  if(pol.delivery) _trustSignalsList.push(`Delivery info: ${pol.delivery}`);
+  if(pol.cancellation) _trustSignalsList.push(`Cancellation policy: ${pol.cancellation}`);
+  if(!_trustSignalsList.length){
+    card.innerHTML='<div style="color:var(--muted);font-size:13px">No trust signals set up yet — add policies and a review link in Settings.</div>';
+    return;
+  }
+  card.innerHTML=`<div class="cc-head">📣 Trust Signals</div>`+_trustSignalsList.map((s,i)=>`<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)">
+    <div style="flex:1;font-size:13px;line-height:1.5">${esc(s)}</div>
+    <button class="btn btn-secondary btn-sm" style="flex-shrink:0" onclick="insertTrustSignal(${i})">Insert</button>
+  </div>`).join('');
+}
+function insertTrustSignal(i){
+  const text=_trustSignalsList[i]; if(!text) return;
+  const box=$id('waReplyText'); if(!box) return;
+  box.value=(box.value?box.value+'\n\n':'')+text;
+  box.focus();
 }
 
 /* ── INDUSTRY THEME ── */
