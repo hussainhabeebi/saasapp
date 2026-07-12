@@ -62,6 +62,9 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | team_names | Long text (JSON, `{email: name}` — display names for team_emails, populated by User Management → Create New User — see "Agents = Team Members = Users" below; the now-unused `agents` field it replaced was a plain newline-separated name list) |
 | business_policies | Long text (JSON, `{refund, delivery, cancellation}` — structured objection-handling policy text, Settings → Trust & Policies — see "Trust Signals & grounded objection-handling" below) |
 | external_store_link | Single line text — Settings → Order Link. A client's own Shopify (or any other) storefront URL. Takes priority over the built-in Ecommerce module's own storefront link everywhere an order link is generated; see "Order-intent links" below. |
+| appt_enabled | Single line text (`Yes`/`No`) — Settings → Modules. Turns the Appointment Booking module on; adds the Appointments dashboard tab. See "Appointment Booking module" below. |
+| appt_table_ids | Long text (JSON, `{services, bookings}` NocoDB table ids) — this client's own per-client Appointment Booking tables, created by `apptSetupTables()`. |
+| calcom_webhook_secret | Single line text — Settings → Cal.com Sync. The shared secret used to verify Cal.com's webhook signature (`X-Cal-Signature-256`). |
 | fulfilled_addon_events | Long text (comma-separated Checkout Session ids already fulfilled — dedupes add-on delivery if Stripe redelivers a `checkout.session.completed` webhook; capped to the most recent 20) |
 | billing_emails_sent | Long text (comma-separated `<event>:<stripe_object_id>` keys — dedupes the trial-ending/receipt/dunning/action-required emails below if Stripe redelivers a webhook; capped to the most recent 20; see "RBI pre-debit notification" below) |
 | notification_email | Single line (email address `n8n/notifications.json` sends hot-lead/handover/SLA alerts to) |
@@ -514,6 +517,69 @@ for the *effect* of the KB-injected instruction instead of n8n calling anything.
   aren't authenticated by default here), same accepted client_id-based-trust tradeoff as the rest
   of `/ecom/*` — it only ever performs a `pending`-status insert, never a destructive action, which
   keeps the blast radius of a spoofed call low.
+
+## Appointment Booking module (`frontend/dashboard.html` — Appointments tab)
+A full, detailed module for services businesses (healthcare, consultancy, and anything else
+`isBookingIndustry()` covers — every industry but Ecommerce) to manage bookable services and the
+actual appointments, plus optional automatic sync from Cal.com. Follows the same architecture as
+the Travel Agency and Recruitment/Consultancy modules — **not** Ecommerce's: per-client NocoDB
+tables (not one shared table with a `client_id` column), created on demand, with CRUD going
+straight from the browser to NocoDB through the existing session-authed `/nocodb` passthrough
+(`handleNocodbPassthrough`, `worker.js`) rather than dedicated `/appt/*` worker routes.
+
+**Enabling it — Settings → 🧩 Modules:** this new consolidated section is also a bug fix in
+passing — Travel Agency's manual toggle never existed in the markup (only a hidden dead
+span/button), and Recruitment's toggle had a duplicate-id bug where `$id('cfgRecruitEnabled')`
+always resolved to a second, hidden, non-functional copy of the element, so the visible dropdown's
+clicks went nowhere. Both now have one real, working `<select>` + Save button here, same ids
+(`cfgTaEnabled`/`saveTaEnabled`, `cfgRecruitEnabled`/`saveRecruitEnabled`) so their existing JS
+(`initTaSettings`/`initRcSettings`, the click listeners) needed no changes — it was already
+correct, just shadowed. **Appointment Booking's row (`#apptModuleRow`) only shows for
+`isBookingIndustry()` clients** — an ecom client has no use for an appointments calendar. Toggling
+it on ensures `appt_enabled`/`appt_table_ids`/`calcom_webhook_secret` columns exist on CLIENTS and
+writes `appt_enabled`.
+
+**The module itself, 📅 Appointments tab (gated by `appt_enabled==='Yes'`, `updateApptTabVisibility()`):**
+- First visit prompts **"Create Tables Now"** (`apptSetupTables()`) — creates two per-client tables,
+  `Appt_Services_<clientId>` and `Appt_Bookings_<clientId>`, and stores their ids as
+  `appt_table_ids` JSON (`{services, bookings}`) on the client row. Idempotent re-run, same pattern
+  as `taSetupTables()`/`rcSetupTables()`.
+- **Dashboard sub-tab**: today/upcoming/completed/requested counts, upcoming-appointments list.
+- **Services sub-tab**: what the business offers — name, duration, price, currency, active/inactive
+  — a simple catalog, not tied to Ecommerce's `products` table at all.
+- **Appointments sub-tab**: the actual bookings — customer name/phone, linked service (optional),
+  date, time, status (`requested`/`confirmed`/`completed`/`cancelled`/`no_show`), notes, filterable
+  by status. `source` distinguishes how a row was created: `manual` (rep, via "+ New Appointment"),
+  `bot` (the booking-link automation below), `calcom` (Cal.com sync below).
+
+**Cal.com Sync (optional), Settings → 🗓️ Cal.com Sync (shown once the module is enabled):** not
+OAuth — Cal.com doesn't offer a simple third-party OAuth flow for this. Instead the client creates
+a webhook themselves in their own Cal.com account (Settings → Developer → Webhooks), pastes the
+URL shown here (`{WORKER_BASE}/calcom/webhook/{clientId}`) as the endpoint, picks "Booking
+Created"/"Booking Cancelled" (and optionally "Booking Rescheduled") as events, and sets a secret —
+the same secret gets pasted into `cfgCalcomSecret` here (`calcom_webhook_secret` on CLIENTS).
+- **`POST /calcom/webhook/<clientId>`** (`worker.js`, `handleCalcomWebhook`) — client_id comes from
+  the URL path itself (Cal.com webhooks don't carry any other client-identifying field), not a
+  session or a shared app secret. Verifies `X-Cal-Signature-256` — **hex**-encoded HMAC-SHA256,
+  unlike Shopify's base64 (`verifyCalcomWebhookHmac` vs `verifyShopifyWebhookHmac`) — against that
+  client's own `calcom_webhook_secret` (per-client, since each client's Cal.com webhook secret is
+  theirs, not one app-wide secret the way Shopify's `SHOPIFY_API_SECRET` works for an installed
+  app). Upserts into `appt_table_ids.bookings`, keyed by Cal.com's own booking `uid` so
+  `BOOKING_RESCHEDULED`/`BOOKING_CANCELLED` update the same row instead of duplicating it.
+- Cal.com's webhook payload shape (`payload.attendees[0]`, `payload.startTime`, `payload.title`,
+  event names like `BOOKING_CREATED`) is based on Cal.com's documented webhook format and
+  defensively parsed, but — same honest caveat as the Chatwoot webhook handler above — hasn't been
+  verified against a live payload from a specific client's Cal.com account/plan.
+
+**Booking-link automation now feeds this module too:** `advanceLeadBookingAndTask()` (`worker.js`,
+shared by `POST /leads/booking-link` and `handleChatwootMessageHook`'s non-ecom fallback — see
+"Non-ecom industries" above) now also inserts a `requested`-status row into
+`appt_table_ids.bookings` (source `bot`, no date/time yet since the customer hasn't picked one)
+whenever the client has the Appointment module set up — in addition to advancing the lead stage and
+dropping the follow-up task it already did. Deduped on "this phone already has a `requested` row"
+so a bot repeating the booking link across turns doesn't spam duplicate appointment rows. A client
+using the built-in Appointment module (rather than just the lead-stage/task fallback) now gets
+booking-intent detections landing directly in their Appointments list, same as a Cal.com sync would.
 
 ## Thin API proxy (Cloudflare Worker — cloudflare-worker/worker.js)
 `dashboard.html` used to embed the **master NocoDB token** directly (any visitor could read/

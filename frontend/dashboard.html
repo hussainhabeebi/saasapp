@@ -624,6 +624,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 @media(max-width:600px){.recruit-stat-row{grid-template-columns:repeat(2,1fr)}}
 .rc-tab{font-family:var(--disp);font-size:12px;font-weight:600;padding:11px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
 .rc-tab.active{color:#1D4ED8;border-bottom-color:#2563EB}
+.appt-tab{font-family:var(--disp);font-size:12px;font-weight:600;padding:11px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
+.appt-tab.active{color:#0891B2;border-bottom-color:#0891B2}
 .job-card{background:var(--card);border-radius:var(--r);padding:18px;box-shadow:var(--shadow);margin-bottom:12px;border:1.5px solid var(--line);cursor:pointer;transition:box-shadow .15s,border-color .15s}
 .job-card:hover{box-shadow:var(--shadow-md);border-color:#2563EB}
 .job-title{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:2px}
@@ -976,6 +978,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')">🛒 Ecommerce</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
+    <button class="dnTab" data-page="appointments" id="dnApptTab" style="display:none">📅 Appointments</button>
     <button class="dnTab" data-page="quotation">🧾 Quotation</button>
     <button class="dnTab" data-page="prospects">🎯 Prospects</button>
     <button class="dnTab" data-page="broadcast">📢 Campaigns</button>
@@ -1382,6 +1385,18 @@ const TODAY = new Date().toISOString().slice(0,10);
         <button class="rc-tab" data-rc="pipeline">🔄 Pipeline</button>
       </div>
       <div class="page-pad" id="recruitContent">
+        <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
+      </div>
+    </div>
+
+    <!-- APPOINTMENT BOOKING MODULE -->
+    <div class="page hidden" id="pageAppointments">
+      <div id="apptSubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
+        <button class="appt-tab active" data-appt="dashboard">📊 Dashboard</button>
+        <button class="appt-tab" data-appt="bookings">📅 Appointments</button>
+        <button class="appt-tab" data-appt="services">🧾 Services</button>
+      </div>
+      <div class="page-pad" id="appointmentsContent">
         <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
       </div>
     </div>
@@ -1800,42 +1815,39 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <hr class="div">
 
+          <!-- MODULES — one place to enable/disable every optional module and its dashboard tab.
+               Consolidates what used to be three separate settings-section blocks (Travel Agency,
+               and Recruitment duplicated twice with a hidden dead toggle shadowing the visible
+               one — $id() always resolved to the first DOM match, so the visible Recruit select
+               silently did nothing). Same ids, same initTaSettings()/initRcSettings()/existing
+               click listeners — this fix is just correct, non-duplicated markup; Appointments is
+               the only genuinely new module/toggle here. -->
           <div class="settings-section">
-            <div class="s-head">🏢 Travel Agency Module</div>
-            <div class="s-note">Automatically enabled when Industry is set to <b>Travel &amp; Tourism</b>. Includes packages, itineraries, service cases, Umrah/Hajj groups, bookings, and finance.</div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <span id="cfgTaEnabled" style="display:none"></span>
-              <span id="saveTaEnabledMsg" class="save-msg"></span>
-              <button id="saveTaEnabled" style="display:none"></button>
+            <div class="s-head">🧩 Modules</div>
+            <div class="s-note">Enable or disable optional modules — each adds its own dashboard tab when on. Industry (General tab above) auto-enables the matching module, but every module can also be toggled manually here.</div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>🏢 Travel Agency</b><div class="s-note" style="margin:2px 0 0">Packages, itineraries, Umrah/Hajj groups, bookings, finance.</div></div>
+              <select class="form-input" id="cfgTaEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveTaEnabled">Save</button>
+              <span class="save-msg" id="saveTaEnabledMsg"></span>
               <span id="taModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
-          </div>
 
-          <hr class="div">
-
-          <div class="settings-section">
-            <div class="s-head">💼 Recruitment &amp; Consultancy Module</div>
-            <div class="s-note">Automatically enabled when Industry is set to <b>Consultancy / Recruitment</b>. Includes job postings, candidate pipeline, AI screening, placements, and fee tracking.</div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <span id="cfgRecruitEnabled" style="display:none"></span>
-              <span id="saveRecruitEnabledMsg" class="save-msg"></span>
-              <button id="saveRecruitEnabled" style="display:none"></button>
-              <span id="rcModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
-            </div>
-          </div>
-
-          <hr class="div">
-
-          <div class="settings-section">
-            <div class="s-head">💼 Recruitment &amp; Consultancy Module</div>
-            <div class="s-note">Enable the full Recruitment &amp; Job Consultancy suite — job postings, candidate pipeline, placements, and fee tracking. Adds a dedicated <b>Recruit</b> tab to the dashboard.</div>
-            <div style="display:flex;align-items:center;gap:12px">
-              <select class="form-input" id="cfgRecruitEnabled" style="max-width:200px">
-                <option value="No">Disabled</option>
-                <option value="Yes">Enabled</option>
-              </select>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>💼 Recruitment &amp; Consultancy</b><div class="s-note" style="margin:2px 0 0">Job postings, candidate pipeline, AI screening, placements, fees.</div></div>
+              <select class="form-input" id="cfgRecruitEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
               <button class="save-btn" id="saveRecruitEnabled">Save</button>
               <span class="save-msg" id="saveRecruitEnabledMsg"></span>
+              <span id="rcModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div id="apptModuleRow" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
+              <div style="flex:1;min-width:180px"><b>📅 Appointment Booking</b><div class="s-note" style="margin:2px 0 0">Services, bookings calendar, and optional Cal.com sync — for healthcare, consultancy, and other services businesses.</div></div>
+              <select class="form-input" id="cfgApptEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveApptEnabled">Save</button>
+              <span class="save-msg" id="saveApptEnabledMsg"></span>
+              <span id="apptModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
           </div>
 
@@ -2031,6 +2043,27 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
+        <!-- Cal.com — optional automatic sync into the Appointment Booking module. Not OAuth (Cal.com
+             doesn't offer a simple third-party OAuth flow) — the client creates a webhook in their
+             own Cal.com account (Settings -> Developer -> Webhooks) pointing at the URL below, using
+             the secret they choose here, and every booking created/cancelled on Cal.com lands in
+             their Appointments list automatically (handleCalcomWebhook, worker.js). Only shown for
+             booking-industry clients with the Appointment module enabled — see initApptSettings(). -->
+        <div class="card" style="margin-bottom:14px;display:none" id="calcomCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🗓️ Cal.com Sync (optional)</div>
+            <div class="s-note">Already using Cal.com for scheduling? Connect it so bookings made there show up in your Appointments module automatically — no manual entry. In Cal.com: Settings → Developer → Webhooks → Add, paste the URL below as the endpoint, choose "Booking Created" and "Booking Cancelled" events, and set a secret (paste the same secret in both places).</div>
+            <label class="form-label">Webhook URL (paste into Cal.com)</label>
+            <input class="form-input" id="calcomWebhookUrlDisplay" type="text" readonly style="margin-bottom:8px;font-family:var(--mono);font-size:12px" onclick="this.select()">
+            <label class="form-label">Webhook Secret</label>
+            <input class="form-input" id="cfgCalcomSecret" type="text" placeholder="Same secret you set in Cal.com's webhook" style="margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveCalcomSecret">Save</button>
+              <span class="save-msg" id="saveCalcomSecretMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- Resend (Email) -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -2213,6 +2246,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <button class="more-item industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank');closeMoreSheet()"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
       <button class="more-item" data-page="agency" id="moreAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
       <button class="more-item" data-page="recruit" id="moreRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
+      <button class="more-item" data-page="appointments" id="moreApptTab" style="display:none"><span class="bnIcon">📅</span><span class="bnLabel">Appointments</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
     </div>
   </div>
@@ -3001,6 +3035,65 @@ const TODAY = new Date().toISOString().slice(0,10);
   </div>
 </div>
 
+<!-- MODAL: Appointment Booking module — New/Edit Appointment -->
+<div class="modal" id="modalAppt" style="width:520px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="apptModalTitle">New Appointment</div><button class="icon-btn" onclick="closeModal('modalAppt')">✕</button></div>
+  <div class="modal-body">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Customer Name</label><input class="form-input" id="apCustomerName"></div>
+      <div class="form-group"><label class="form-label">Customer Phone *</label><input class="form-input" id="apCustomerPhone"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Service</label>
+      <select class="form-input" id="apService"><option value="">— No specific service —</option></select>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="apDate"></div>
+      <div class="form-group"><label class="form-label">Time</label><input class="form-input" type="time" id="apTime"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Status</label>
+      <select class="form-input" id="apStatus">
+        <option value="requested">Requested</option>
+        <option value="confirmed">Confirmed</option>
+        <option value="completed">Completed</option>
+        <option value="cancelled">Cancelled</option>
+        <option value="no_show">No-show</option>
+      </select>
+    </div>
+    <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="apNotes" rows="2"></textarea></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="saveApptBtn" onclick="saveApptFromModal()">Save Appointment</button>
+    <span class="save-msg" id="apptModalMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalAppt')">Cancel</button>
+  </div>
+</div>
+
+<!-- MODAL: Appointment Booking module — New/Edit Service -->
+<div class="modal" id="modalApptService" style="width:460px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="apptSvcModalTitle">New Service</div><button class="icon-btn" onclick="closeModal('modalApptService')">✕</button></div>
+  <div class="modal-body">
+    <div class="form-group"><label class="form-label">Name *</label><input class="form-input" id="asName" placeholder="e.g. Initial Consultation"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Duration (minutes)</label><input class="form-input" type="number" id="asDuration" placeholder="30"></div>
+      <div class="form-group"><label class="form-label">Status</label>
+        <select class="form-input" id="asStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Price</label><input class="form-input" type="number" step="0.01" id="asPrice"></div>
+      <div class="form-group"><label class="form-label">Currency</label><input class="form-input" id="asCurrency" placeholder="AED"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Description</label><textarea class="form-input" id="asDescription" rows="2"></textarea></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="saveApptSvcBtn" onclick="saveApptServiceFromModal()">Save Service</button>
+    <span class="save-msg" id="apptSvcModalMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalApptService')">Cancel</button>
+  </div>
+</div>
+
 <script>
 'use strict';
 
@@ -3255,7 +3348,7 @@ $id('hRefresh').addEventListener('click',()=>loadAll());
 const SETTINGS_GROUP=['settings','channels','integrations','billing']; // shown as one "Settings" tab with an internal sub-nav
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['quotation','prospects','broadcast','team','agency','recruit','settings','channels','integrations','billing'];
+const MORE_GROUP=['quotation','prospects','broadcast','team','agency','recruit','appointments','settings','channels','integrations','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -3279,6 +3372,7 @@ function navigate(page){
   if(page==='team') renderTeamPerformance();
   if(page==='agency') renderAgency();
   if(page==='recruit') renderRecruit();
+  if(page==='appointments') renderAppointments();
   if(page==='settings') populateSettings();
   if(page==='chats') openChatsTab();
   if(page==='channels') channelsInit();
@@ -4606,6 +4700,10 @@ function populateSettings(){
     $id('orderLinkFieldLabel').textContent='Store URL';
     $id('cfgExternalStoreLink').placeholder='e.g. https://yourstore.myshopify.com';
   }
+  // cal.com sync — only worth showing once the Appointment module is actually on
+  $id('calcomCard').style.display=(isBookingIndustry()&&clientRecord.appt_enabled==='Yes')?'block':'none';
+  $id('calcomWebhookUrlDisplay').value=`${CONFIG.WORKER_BASE}/calcom/webhook/${clientId}`;
+  $id('cfgCalcomSecret').value=clientRecord.calcom_webhook_secret||'';
   // services
   loadServices();
   // stages
@@ -4616,6 +4714,8 @@ function populateSettings(){
   initTaSettings();
   // recruitment
   initRcSettings();
+  // appointment booking — only offered as a module for services-style industries (isBookingIndustry())
+  initApptSettings();
 }
 
 /* ── SERVICES ── */
@@ -4749,6 +4849,19 @@ $id('cfgKbText').addEventListener('input',kbUpdateCount);
 
 $id('saveExternalStoreLink').addEventListener('click',async()=>{
   await saveField('saveExternalStoreLink','saveExternalStoreLinkMsg',{external_store_link:$id('cfgExternalStoreLink').value.trim()});
+});
+
+$id('saveCalcomSecret').addEventListener('click',async()=>{
+  const btn=$id('saveCalcomSecret'),msg=$id('saveCalcomSecretMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('calcom_webhook_secret')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'calcom_webhook_secret',title:'calcom_webhook_secret',uidt:'SingleLineText'}).catch(()=>{});
+    await patchClient({calcom_webhook_secret:$id('cfgCalcomSecret').value.trim()});
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
 
 $id('savePolicies').addEventListener('click',async()=>{
@@ -9714,6 +9827,339 @@ $id('saveRecruitEnabled').addEventListener('click',async()=>{
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
+
+/* ── APPOINTMENT BOOKING MODULE ──
+   Per-client tables (same model as Travel/Recruit, not the shared-table-with-client_id-column
+   model Ecommerce uses) created on demand via apptSetupTables(); CRUD goes straight from the
+   browser to NocoDB through the session-authed /nocodb passthrough (handleNocodbPassthrough,
+   worker.js), same as TA/Recruit — no dedicated /appt/* worker routes needed for the dashboard
+   side. worker.js only gets involved for the Cal.com webhook and the existing booking-link
+   automation (POST /leads/booking-link, handleChatwootMessageHook's fallback), both of which read
+   appt_table_ids directly since they run server-side with no browser session. */
+let _apptLoaded=false, _apptPage='dashboard', _apptServices=[], _apptBookings=[], _editApptId=null, _editApptSvcId=null;
+
+function apptTableId(key){try{return JSON.parse(clientRecord?.appt_table_ids||'{}')[key]||null;}catch(e){return null;}}
+function apptTablesReady(){return !!(apptTableId('services')&&apptTableId('bookings'));}
+function apptSaveLocal(key,val){try{const k='lv_appt_'+clientId;const c=JSON.parse(localStorage.getItem(k)||'{}');c[key]=val;localStorage.setItem(k,JSON.stringify(c));}catch(e){}}
+
+function updateApptTabVisibility(){
+  const enabled=(clientRecord.appt_enabled==='Yes');
+  [$id('dnApptTab'),$id('bnApptTab'),$id('moreApptTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+}
+
+// The module toggle itself is only offered to services-style industries (isBookingIndustry() —
+// every industry except Ecommerce, same gate as Settings → Booking Link) since an ecom client has
+// no use for an appointments calendar.
+function initApptSettings(){
+  const row=$id('apptModuleRow'); if(row) row.style.display=isBookingIndustry()?'flex':'none';
+  _renderModuleBadge('apptModuleStatusBadge',clientRecord.appt_enabled==='Yes');
+  updateApptTabVisibility();
+}
+
+$id('saveApptEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveApptEnabled'),msg=$id('saveApptEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    for(const f of [{column_name:'appt_enabled',title:'appt_enabled',uidt:'SingleLineText'},{column_name:'appt_table_ids',title:'appt_table_ids',uidt:'LongText'},{column_name:'calcom_webhook_secret',title:'calcom_webhook_secret',uidt:'SingleLineText'}]){
+      if(!cols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
+    }
+    const val=$id('cfgApptEnabled').value;
+    clientRecord.appt_enabled=val;
+    apptSaveLocal('appt_enabled',val);
+    await patchClient({appt_enabled:val}).catch(()=>{});
+    updateApptTabVisibility();
+    _renderModuleBadge('apptModuleStatusBadge',val==='Yes');
+    const cc=$id('calcomCard'); if(cc) cc.style.display=(isBookingIndustry()&&val==='Yes')?'block':'none';
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+async function renderAppointments(){
+  const el=$id('appointmentsContent');
+  if(!apptTablesReady()){el.innerHTML=renderApptSetupNeeded();document.querySelectorAll('.appt-tab').forEach(t=>t.classList.remove('active'));return;}
+  if(!_apptLoaded){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';await apptLoad();}
+  renderApptSubPage(_apptPage);
+}
+
+function renderApptSetupNeeded(){
+  return`<div style="text-align:center;padding:60px 24px;max-width:480px;margin:0 auto">
+    <div style="font-size:52px;margin-bottom:16px">📅</div>
+    <div style="font-family:var(--disp);font-size:20px;font-weight:700;margin-bottom:8px">Set Up Appointment Booking</div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:24px;line-height:1.7">Create the tables for Services and Appointments. This only takes a few seconds.</div>
+    <button class="btn btn-primary" id="apptSetupBtn" onclick="apptSetupTables()" style="padding:12px 28px;font-size:14px">🚀 Create Tables Now</button>
+    <span class="save-msg" id="apptSetupMsg" style="display:block;margin-top:12px;min-height:18px"></span>
+  </div>`;
+}
+
+async function apptSetupTables(){
+  const btn=$id('apptSetupBtn'),msg=$id('apptSetupMsg');
+  if(!btn)return;
+  btn.disabled=true;msg.textContent='Creating tables…';msg.className='save-msg';
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const baseId=info.base_id;
+    if(!baseId)throw new Error('Could not determine base_id');
+    const existingCols=(info.columns||[]).map(c=>c.title);
+    for(const f of [{column_name:'appt_table_ids',title:'appt_table_ids',uidt:'LongText'},{column_name:'appt_enabled',title:'appt_enabled',uidt:'SingleLineText'},{column_name:'calcom_webhook_secret',title:'calcom_webhook_secret',uidt:'SingleLineText'}]){
+      if(!existingCols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
+    }
+
+    const tableDefs=[
+      {key:'services',title:`Appt_Services_${clientId}`,columns:[
+        {column_name:'name',title:'name',uidt:'SingleLineText'},{column_name:'duration_minutes',title:'duration_minutes',uidt:'Number'},
+        {column_name:'price',title:'price',uidt:'Number'},{column_name:'currency',title:'currency',uidt:'SingleLineText'},
+        {column_name:'description',title:'description',uidt:'LongText'},{column_name:'status',title:'status',uidt:'SingleLineText'},
+        {column_name:'created_at',title:'created_at',uidt:'SingleLineText'},
+      ]},
+      {key:'bookings',title:`Appt_Bookings_${clientId}`,columns:[
+        {column_name:'customer_name',title:'customer_name',uidt:'SingleLineText'},{column_name:'customer_phone',title:'customer_phone',uidt:'SingleLineText'},
+        {column_name:'service_id',title:'service_id',uidt:'SingleLineText'},{column_name:'service_name',title:'service_name',uidt:'SingleLineText'},
+        {column_name:'appt_date',title:'appt_date',uidt:'SingleLineText'},{column_name:'appt_time',title:'appt_time',uidt:'SingleLineText'},
+        {column_name:'status',title:'status',uidt:'SingleLineText'},{column_name:'source',title:'source',uidt:'SingleLineText'},
+        {column_name:'lead_id',title:'lead_id',uidt:'SingleLineText'},{column_name:'calcom_uid',title:'calcom_uid',uidt:'SingleLineText'},
+        {column_name:'notes',title:'notes',uidt:'LongText'},{column_name:'created_at',title:'created_at',uidt:'SingleLineText'},
+      ]},
+    ];
+
+    const tableIds={};
+    let existingTables=[];
+    try{const tablesRes=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`);existingTables=tablesRes.list||[];}catch(e){}
+
+    for(const def of tableDefs){
+      msg.textContent=`Creating ${def.key} table…`;
+      const existing=existingTables.find(t=>t.title===def.title);
+      if(existing){tableIds[def.key]=existing.id;continue;}
+      const r=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`,{title:def.title,columns:def.columns});
+      if(!r.id)throw new Error(`Failed to create ${def.title}`);
+      tableIds[def.key]=r.id;
+    }
+
+    const tableIdsJson=JSON.stringify(tableIds);
+    apptSaveLocal('appt_table_ids',tableIdsJson);
+    clientRecord.appt_table_ids=tableIdsJson;
+    await patchClient({appt_table_ids:tableIdsJson}).catch(()=>{});
+    msg.textContent='✓ Tables created! Loading…';
+    await apptLoad();
+    renderApptSubPage(_apptPage);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';btn.disabled=false;}
+}
+
+async function apptLoad(){
+  const [services,bookings]=await Promise.all([
+    ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${apptTableId('services')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
+    ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${apptTableId('bookings')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
+  ]);
+  _apptServices=services.list||[];
+  _apptBookings=bookings.list||[];
+  _apptLoaded=true;
+}
+
+async function apptCreate(key,body){return ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${apptTableId(key)}/records`,body);}
+async function apptUpdate(key,id,body){return ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${apptTableId(key)}/records`,{Id:id,...body});}
+async function apptDeleteRow(key,id){return ncDelete(`${CONFIG.NOCODB_BASE}/api/v2/tables/${apptTableId(key)}/records`,{Id:id});}
+
+function renderApptSubPage(page){
+  _apptPage=page;
+  document.querySelectorAll('.appt-tab').forEach(t=>t.classList.toggle('active',t.dataset.appt===page));
+  switch(page){
+    case'dashboard':renderApptDashboard();break;
+    case'bookings':renderApptBookings();break;
+    case'services':renderApptServices();break;
+  }
+}
+
+document.addEventListener('click',e=>{
+  const t=e.target.closest('.appt-tab');
+  if(t&&t.dataset.appt)renderApptSubPage(t.dataset.appt);
+});
+
+function apptStatusBadge(s){
+  const m={requested:['#FEF3C7','#92400E'],confirmed:['#DBEAFE','#1E40AF'],completed:['#DCFCE7','#166534'],cancelled:['#FEE2E2','#991B1B'],no_show:['#F1F5F9','#64748B']};
+  const [bg,fg]=m[s]||m.requested;
+  return`<span style="background:${bg};color:${fg};font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;font-family:var(--disp);white-space:nowrap">${(s||'requested').replace('_',' ')}</span>`;
+}
+
+function renderApptDashboard(){
+  const el=$id('appointmentsContent');
+  const today=_apptBookings.filter(b=>b.appt_date===TODAY&&b.status!=='cancelled').length;
+  const upcoming=_apptBookings.filter(b=>b.appt_date>=TODAY&&!['cancelled','completed','no_show'].includes(b.status)).length;
+  const completed=_apptBookings.filter(b=>b.status==='completed').length;
+  const requested=_apptBookings.filter(b=>b.status==='requested').length;
+
+  const upcomingRows=_apptBookings.filter(b=>b.appt_date>=TODAY&&!['cancelled','completed','no_show'].includes(b.status))
+    .sort((a,b)=>(a.appt_date+a.appt_time).localeCompare(b.appt_date+b.appt_time)).slice(0,8);
+  const rows=upcomingRows.length?upcomingRows.map(b=>`
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer" onclick="openEditAppt('${b.Id}')">
+      <div style="width:34px;height:34px;border-radius:50%;background:#CFFAFE;color:#0891B2;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">${(b.customer_name||'?').charAt(0).toUpperCase()}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px">${esc(b.customer_name||b.customer_phone||'Unknown')}</div>
+        <div style="font-size:12px;color:var(--muted)">${esc(b.service_name||'—')} · ${fmtDate(b.appt_date)}${b.appt_time?' '+b.appt_time:''}</div>
+      </div>
+      ${apptStatusBadge(b.status)}
+    </div>`).join('')
+    :'<div style="color:var(--muted);font-size:13px;padding:12px 0">No upcoming appointments.</div>';
+
+  el.innerHTML=`
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px">
+      <div class="card" style="text-align:center;padding:16px"><div style="font-size:24px;font-weight:800;font-family:var(--disp);color:#0891B2">${today}</div><div style="font-size:12px;color:var(--muted);margin-top:2px">Today</div></div>
+      <div class="card" style="text-align:center;padding:16px"><div style="font-size:24px;font-weight:800;font-family:var(--disp);color:#0891B2">${upcoming}</div><div style="font-size:12px;color:var(--muted);margin-top:2px">Upcoming</div></div>
+      <div class="card" style="text-align:center;padding:16px"><div style="font-size:24px;font-weight:800;font-family:var(--disp);color:#0891B2">${completed}</div><div style="font-size:12px;color:var(--muted);margin-top:2px">Completed</div></div>
+      <div class="card" style="text-align:center;padding:16px"><div style="font-size:24px;font-weight:800;font-family:var(--disp);color:#0891B2">${requested}</div><div style="font-size:12px;color:var(--muted);margin-top:2px">Requested</div></div>
+    </div>
+    <div class="card"><div class="card-title">📅 Upcoming Appointments <button class="btn btn-primary btn-sm" onclick="renderApptSubPage('bookings')" style="margin-left:auto">View All</button></div>${rows}</div>`;
+}
+
+function renderApptBookings(filter=''){
+  const el=$id('appointmentsContent');
+  const bookings=filter?_apptBookings.filter(b=>b.status===filter):_apptBookings;
+  el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">📅 Appointments <span style="color:var(--muted);font-size:13px;font-weight:500">(${_apptBookings.length})</span></div>
+      <select class="form-input" style="max-width:150px;padding:8px 10px" onchange="renderApptBookings(this.value)">
+        <option value=""${!filter?' selected':''}>All Status</option>
+        <option value="requested"${filter==='requested'?' selected':''}>Requested</option>
+        <option value="confirmed"${filter==='confirmed'?' selected':''}>Confirmed</option>
+        <option value="completed"${filter==='completed'?' selected':''}>Completed</option>
+        <option value="cancelled"${filter==='cancelled'?' selected':''}>Cancelled</option>
+        <option value="no_show"${filter==='no_show'?' selected':''}>No-show</option>
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="openAddAppt()">+ New Appointment</button>
+    </div>
+    ${bookings.length?`<div class="card" style="padding:0;overflow:hidden">${bookings.map(b=>`
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer" onclick="openEditAppt('${b.Id}')">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px">${esc(b.customer_name||'Unknown')} <span style="color:var(--muted);font-weight:500">${esc(b.customer_phone||'')}</span></div>
+          <div style="font-size:12px;color:var(--muted)">${esc(b.service_name||'—')} · ${fmtDate(b.appt_date)}${b.appt_time?' '+b.appt_time:''}${b.source&&b.source!=='manual'?' · via '+esc(b.source):''}</div>
+        </div>
+        ${apptStatusBadge(b.status)}
+        <button class="btn-ghost" onclick="event.stopPropagation();deleteAppt('${b.Id}')">🗑</button>
+      </div>`).join('')}</div>`
+    :'<div class="empty-state"><div class="ei">📅</div>No appointments yet.</div>'}`;
+}
+
+function openAddAppt(){
+  _editApptId=null;
+  $id('apptModalTitle').textContent='New Appointment';
+  ['apCustomerName','apCustomerPhone','apNotes'].forEach(id=>$id(id).value='');
+  $id('apDate').value=TODAY; $id('apTime').value=''; $id('apStatus').value='requested';
+  const sel=$id('apService');
+  sel.innerHTML='<option value="">— No specific service —</option>'+_apptServices.filter(s=>s.status!=='inactive').map(s=>`<option value="${s.Id}">${esc(s.name||'Untitled')}</option>`).join('');
+  $id('apptModalMsg').textContent='';
+  openModal('modalAppt');
+}
+
+function openEditAppt(id){
+  const b=_apptBookings.find(x=>String(x.Id)===String(id)); if(!b) return;
+  _editApptId=id;
+  $id('apptModalTitle').textContent='Edit Appointment';
+  $id('apCustomerName').value=b.customer_name||''; $id('apCustomerPhone').value=b.customer_phone||'';
+  $id('apDate').value=b.appt_date||''; $id('apTime').value=b.appt_time||'';
+  $id('apStatus').value=b.status||'requested'; $id('apNotes').value=b.notes||'';
+  const sel=$id('apService');
+  sel.innerHTML='<option value="">— No specific service —</option>'+_apptServices.filter(s=>s.status!=='inactive'||String(s.Id)===String(b.service_id)).map(s=>`<option value="${s.Id}"${String(s.Id)===String(b.service_id)?' selected':''}>${esc(s.name||'Untitled')}</option>`).join('');
+  $id('apptModalMsg').textContent='';
+  openModal('modalAppt');
+}
+
+async function saveApptFromModal(){
+  const phone=$id('apCustomerPhone').value.trim();
+  const msg=$id('apptModalMsg');
+  if(!phone){ msg.textContent='Customer phone is required.'; msg.className='save-msg err'; return; }
+  const svcId=$id('apService').value;
+  const svc=svcId?_apptServices.find(s=>String(s.Id)===svcId):null;
+  const body={
+    customer_name:$id('apCustomerName').value.trim(), customer_phone:phone,
+    service_id:svcId||'', service_name:svc?.name||'',
+    appt_date:$id('apDate').value||'', appt_time:$id('apTime').value||'',
+    status:$id('apStatus').value, notes:$id('apNotes').value.trim(),
+  };
+  const btn=$id('saveApptBtn'); btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+  try{
+    if(_editApptId) await apptUpdate('bookings',Number(_editApptId),body);
+    else await apptCreate('bookings',{...body,source:'manual',created_at:new Date().toISOString()});
+    await apptLoad();
+    closeModal('modalAppt');
+    renderApptSubPage(_apptPage);
+    showToast('✓ Appointment saved');
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; }
+}
+
+async function deleteAppt(id){
+  if(!confirm('Delete this appointment?')) return;
+  await apptDeleteRow('bookings',Number(id));
+  await apptLoad();
+  renderApptSubPage(_apptPage);
+}
+
+function renderApptServices(){
+  const el=$id('appointmentsContent');
+  el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center">
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🧾 Services <span style="color:var(--muted);font-size:13px;font-weight:500">(${_apptServices.length})</span></div>
+      <button class="btn btn-primary btn-sm" onclick="openAddApptService()">+ New Service</button>
+    </div>
+    ${_apptServices.length?`<div class="card" style="padding:0;overflow:hidden">${_apptServices.map(s=>`
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer" onclick="openEditApptService('${s.Id}')">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px">${esc(s.name||'Untitled')}</div>
+          <div style="font-size:12px;color:var(--muted)">${s.duration_minutes?s.duration_minutes+' min':'—'}${s.price?' · '+esc(s.currency||'')+' '+s.price:''}</div>
+        </div>
+        <span style="background:${s.status==='inactive'?'#F1F5F9':'#DCFCE7'};color:${s.status==='inactive'?'#64748B':'#166534'};font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;font-family:var(--disp)">${s.status==='inactive'?'Inactive':'Active'}</span>
+        <button class="btn-ghost" onclick="event.stopPropagation();deleteApptService('${s.Id}')">🗑</button>
+      </div>`).join('')}</div>`
+    :'<div class="empty-state"><div class="ei">🧾</div>No services yet. Add what you offer — e.g. "Initial Consultation, 30 min".</div>'}`;
+}
+
+function openAddApptService(){
+  _editApptSvcId=null;
+  $id('apptSvcModalTitle').textContent='New Service';
+  ['asName','asDuration','asPrice','asCurrency','asDescription'].forEach(id=>$id(id).value='');
+  $id('asStatus').value='active';
+  $id('apptSvcModalMsg').textContent='';
+  openModal('modalApptService');
+}
+
+function openEditApptService(id){
+  const s=_apptServices.find(x=>String(x.Id)===String(id)); if(!s) return;
+  _editApptSvcId=id;
+  $id('apptSvcModalTitle').textContent='Edit Service';
+  $id('asName').value=s.name||''; $id('asDuration').value=s.duration_minutes||'';
+  $id('asPrice').value=s.price||''; $id('asCurrency').value=s.currency||'';
+  $id('asDescription').value=s.description||''; $id('asStatus').value=s.status||'active';
+  $id('apptSvcModalMsg').textContent='';
+  openModal('modalApptService');
+}
+
+async function saveApptServiceFromModal(){
+  const name=$id('asName').value.trim();
+  const msg=$id('apptSvcModalMsg');
+  if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
+  const body={
+    name, duration_minutes:Number($id('asDuration').value)||0, price:Number($id('asPrice').value)||0,
+    currency:$id('asCurrency').value.trim(), description:$id('asDescription').value.trim(), status:$id('asStatus').value,
+  };
+  const btn=$id('saveApptSvcBtn'); btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+  try{
+    if(_editApptSvcId) await apptUpdate('services',Number(_editApptSvcId),body);
+    else await apptCreate('services',{...body,created_at:new Date().toISOString()});
+    await apptLoad();
+    closeModal('modalApptService');
+    renderApptSubPage(_apptPage);
+    showToast('✓ Service saved');
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; }
+}
+
+async function deleteApptService(id){
+  if(!confirm('Delete this service?')) return;
+  await apptDeleteRow('services',Number(id));
+  await apptLoad();
+  renderApptSubPage(_apptPage);
+}
 
 /* ── NBA DISPLAY ── */
 function renderNbaStrip(leads){

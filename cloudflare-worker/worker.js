@@ -2750,11 +2750,21 @@ async function handleEcomOrderLink(request, env){
 // page already reads/writes, so no new table for either.
 const BOOKING_TERMINAL_STAGES=['appt_booked','consultation_booked','visit_booked'];
 
+// A client's own Appointment Booking module tables (Settings -> Modules -> Appointment Booking),
+// created on demand by apptSetupTables() in dashboard.html — same per-client-tables model as
+// Travel/Recruit, not the shared-table-with-client_id model Ecommerce uses, so there's no default
+// table id to fall back to here.
+function apptResolveTable(c, kind){
+  try{ return (JSON.parse(c.appt_table_ids||'{}'))[kind]||null; }catch(e){ return null; }
+}
+
 // Shared by handleLeadBookingLink and handleChatwootMessageHook's non-ecom fallback below — finds
 // the lead by phone, advances it to a booking-terminal stage (only one the client has actually
-// defined in their own flow_json — never writes a stage value they haven't configured), and drops
-// a follow-up task via manual_tasks, the same JSON-on-CLIENTS field the Tasks page itself uses.
-// Returns {lead_id, stage_advanced} for the caller to report back.
+// defined in their own flow_json — never writes a stage value they haven't configured), drops a
+// follow-up task via manual_tasks (the same JSON-on-CLIENTS field the Tasks page itself uses), and
+// — if the client has set up the Appointment Booking module — logs a `requested` row there too
+// (no date/time yet, since the customer hasn't picked one; source:'bot' distinguishes it from a
+// rep's manual entry or a Cal.com sync). Returns {lead_id, stage_advanced} for the caller to report back.
 async function advanceLeadBookingAndTask(env, c, clientId, phone, name){
   const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
   const leadD=await leadR.json().catch(()=>({}));
@@ -2783,6 +2793,24 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name){
     assignee_email:'', category:'', project_id:'', status:'open', created_at:new Date().toISOString()
   });
   await patchClientFields(env, clientId, {manual_tasks:JSON.stringify(manual)});
+
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(bookingsTable){
+    // Dedupe on "this phone already has a requested row" — matters most for the auto-tracking
+    // webhook, which can call this helper repeatedly if the bot repeats the booking link across
+    // several turns of the same conversation before a human confirms an actual date/time.
+    const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+    const existD=await existR.json().catch(()=>({}));
+    if(!existD?.list?.length){
+      await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{
+        client_id:clientId, customer_name:name||'', customer_phone:phone,
+        service_id:'', service_name:'', appt_date:'', appt_time:'',
+        status:'requested', source:'bot', lead_id:lead?String(lead.Id):'', calcom_uid:'',
+        notes:'Booking link sent — awaiting confirmed date/time.', created_at:new Date().toISOString()
+      }}).catch(()=>{});
+    }
+  }
+
   return {lead_id:lead?.Id||null, stage_advanced};
 }
 
@@ -2806,6 +2834,62 @@ async function handleLeadBookingLink(request, env){
 
   const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, body.name);
   return json({ok:true, link, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), lead_id, stage_advanced});
+}
+
+// Cal.com's HMAC is hex-encoded (X-Cal-Signature-256), unlike Shopify's base64
+// (verifyShopifyWebhookHmac above) — and the secret is per-client, not one app-wide secret, since
+// each client creates their own webhook in their own Cal.com account (Settings -> Developer ->
+// Webhooks) and picks the secret themselves, pasted into Settings -> Cal.com Sync.
+async function verifyCalcomWebhookHmac(secret, rawBody, sigHeader){
+  if(!secret||!sigHeader) return false;
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawBody));
+  const expected=Array.from(new Uint8Array(sig)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  if(expected.length!==sigHeader.length) return false;
+  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
+  return diff===0;
+}
+
+// Receives Cal.com's booking webhooks (client_id comes from the URL path they pasted into their
+// own Cal.com webhook config — see Settings -> Cal.com Sync). Upserts into the client's own
+// Appointment Booking module (appt_table_ids.bookings — apptSetupTables() in dashboard.html),
+// keyed by Cal.com's own booking uid so BOOKING_RESCHEDULED/BOOKING_CANCELLED update the same row
+// instead of creating duplicates.
+async function handleCalcomWebhook(request, env, clientId){
+  const rawBody=await request.text();
+  const c=await getClientById(env, clientId);
+  // Unknown/removed client — ack with 200 so Cal.com doesn't keep retrying; nothing to act on.
+  if(!c) return json({ok:true});
+  const sig=request.headers.get('X-Cal-Signature-256');
+  if(!(await verifyCalcomWebhookHmac(c.calcom_webhook_secret, rawBody, sig))) return json({error:'Invalid signature'}, 401);
+
+  let data; try{ data=JSON.parse(rawBody); }catch(e){ return json({ok:true}); }
+  const trigger=data.triggerEvent||'';
+  const b=data.payload||{};
+  const uid=b.uid||b.uuid||'';
+  if(!uid) return json({ok:true});
+
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(!bookingsTable) return json({ok:true, skipped:'no-bookings-table'});
+
+  const attendee=(b.attendees||[])[0]||{};
+  const start=b.startTime||'';
+  const statusMap={BOOKING_CREATED:'confirmed', BOOKING_RESCHEDULED:'confirmed', BOOKING_CANCELLED:'cancelled', BOOKING_REQUESTED:'requested'};
+  const fields={
+    client_id:clientId, calcom_uid:uid,
+    customer_name:attendee.name||'', customer_phone:attendee.phone||attendee.phoneNumber||'',
+    service_name:b.title||b.eventType?.title||'',
+    appt_date:start?start.slice(0,10):'', appt_time:start?start.slice(11,16):'',
+    status:statusMap[trigger]||'confirmed', source:'calcom', notes:b.description||'',
+  };
+
+  const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(calcom_uid,eq,${encodeURIComponent(uid)})&limit=1`);
+  const existD=await existR.json().catch(()=>({}));
+  const existing=existD?.list?.[0]||null;
+  if(existing) await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'PATCH', body:{Id:existing.Id, ...fields}});
+  else await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{...fields, created_at:new Date().toISOString()}});
+
+  return json({ok:true});
 }
 
 // One-time setup (dashboard "Enable Auto Order-Tracking" button): registers a *second*,
@@ -3038,6 +3122,7 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
       else if(url.pathname==='/ecom/order-link' && request.method==='POST'){ res=await handleEcomOrderLink(request, env); }
       else if(url.pathname==='/leads/booking-link' && request.method==='POST'){ res=await handleLeadBookingLink(request, env); }
+      else if(url.pathname.startsWith('/calcom/webhook/') && request.method==='POST'){ res=await handleCalcomWebhook(request, env, url.pathname.slice('/calcom/webhook/'.length)); }
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
