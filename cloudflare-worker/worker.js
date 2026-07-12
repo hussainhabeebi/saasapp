@@ -3340,6 +3340,69 @@ async function handleChatwootMessageHook(request, env){
 
 const ENGINE_ANALYTICS_TABLE='m2in19v8n7phitr';
 const ENGINE_OPT_OUT_WORDS=['stop','unsubscribe','opt out','opt-out','optout'];
+// Matches engine.json's "Google Gemini Chat Model" node (modelName: 'models/gemini-2.0-flash'),
+// which the "AI Agent · Sentiment & Intent" node ran on — a dedicated Gemini credential shared
+// across all clients (REPLACE_GEMINI_CRED), not each client's own per-tenant OpenRouter key.
+const ENGINE_GEMINI_MODEL='gemini-2.0-flash';
+
+// Direct Google Generative Language API call (env.GEMINI_API_KEY — a Worker secret, shared across
+// all clients, same as the n8n workflow's single Gemini credential). Returns the model's raw text
+// output, or null if the key isn't configured or the call fails — callers fall back accordingly.
+async function engineGeminiGenerate(env, systemText, userText, opts={}){
+  if(!env.GEMINI_API_KEY) return null;
+  try{
+    const reqBody={
+      contents:[{role:'user', parts:[{text:userText}]}],
+      generationConfig:{temperature:opts.temperature??0.3, maxOutputTokens:opts.maxOutputTokens||300, ...(opts.json?{responseMimeType:'application/json'}:{})}
+    };
+    if(systemText) reqBody.systemInstruction={parts:[{text:systemText}]};
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(reqBody)
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const outText=parts.map(p=>p.text||'').join('').trim();
+    return outText||null;
+  }catch(e){ return null; }
+}
+
+function engineArrayBufferToBase64(buf){
+  const bytes=new Uint8Array(buf);
+  let binary='';
+  const chunkSize=0x8000; // avoid a stack-overflowing single String.fromCharCode.apply call on large files
+  for(let i=0;i<bytes.length;i+=chunkSize) binary+=String.fromCharCode.apply(null, bytes.subarray(i,i+chunkSize));
+  return btoa(binary);
+}
+
+// Real voice transcription, via the same shared Gemini credential as the intent classifier —
+// engine.json never actually had this wired up (voice notes went to the AI as a literal
+// "(sent a voice note)" placeholder despite the docs describing transcription). Requires
+// GEMINI_API_KEY; falls back to the placeholder in engineResolveUserText below if unset, the
+// fetch fails, or the file is unexpectedly large.
+async function engineGeminiTranscribeVoice(env, mediaUrl){
+  if(!env.GEMINI_API_KEY || !mediaUrl) return null;
+  try{
+    const audioR=await fetch(mediaUrl);
+    if(!audioR.ok) return null;
+    const mimeType=audioR.headers.get('content-type')||'audio/ogg';
+    const buf=await audioR.arrayBuffer();
+    if(buf.byteLength>15*1024*1024) return null; // stay well under Gemini's inline-data request size limit
+    const base64=engineArrayBufferToBase64(buf);
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{role:'user', parts:[
+        {text:'Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription — no commentary, no quotes, no translation.'},
+        {inline_data:{mime_type:mimeType, data:base64}}
+      ]}]})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const text=parts.map(p=>p.text||'').join('').trim();
+    return text||null;
+  }catch(e){ return null; }
+}
 
 function engineParseJsonField(raw, fallback){ try{ const v=JSON.parse(raw||''); return v??fallback; }catch(e){ return fallback; } }
 function engineParseSalesReps(raw){
@@ -3390,8 +3453,12 @@ async function engineGetLeadState(env, clientId, phone){
 }
 
 // Mirrors "HTTP · Vision" + "Code · image→text" / "Code · text→text" — resolves whatever the
-// customer sent into a single text string for the classifier + FAQ prompt to work with.
-async function engineResolveUserText(c, mediaType, mediaUrl, text){
+// customer sent into a single text string for the classifier + FAQ prompt to work with. Voice
+// notes now get real transcription (engineGeminiTranscribeVoice, shared Gemini key) instead of
+// engine.json's literal placeholder text; falls back to that same placeholder if transcription
+// isn't available (no GEMINI_API_KEY set, fetch failure, oversized file, etc.) so the turn still
+// completes instead of failing outright.
+async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
   if(mediaType==='image' && mediaUrl){
     try{
       const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -3405,33 +3472,48 @@ async function engineResolveUserText(c, mediaType, mediaUrl, text){
       return data?.choices?.[0]?.message?.content||'(image received)';
     }catch(e){ return '(image received)'; }
   }
+  if(mediaType==='voice' && mediaUrl){
+    const transcript=await engineGeminiTranscribeVoice(env, mediaUrl);
+    return transcript || '(sent a voice note)';
+  }
   return text || (mediaType==='voice'?'(sent a voice note)':'');
 }
 
-// Mirrors "AI Agent · Sentiment & Intent" + "Code · Intent classify": one OpenRouter call for
-// structured intent/sentiment/objection/win-probability, with the same deterministic regex
+// Mirrors "AI Agent · Sentiment & Intent" + "Code · Intent classify" — structured
+// intent/sentiment/objection/win-probability classification, with the same deterministic regex
 // fast-paths/fallback ladder layered on top (instant, free, and safety-critical for WANTS_HUMAN,
 // so a lead can always reach a human even if the AI call fails, times out, or returns garbage).
-async function engineClassifyIntent(c, userText, activeHistory){
+// Tries the shared Gemini credential first (matching engine.json's actual node setup — this
+// classifier ran on a dedicated Google Gemini model, not each client's own OpenRouter key), and
+// only falls back to the client's own OpenRouter key/model if GEMINI_API_KEY isn't configured on
+// this Worker or the Gemini call fails — so classification still works before that secret is set.
+async function engineClassifyIntent(env, c, userText, activeHistory){
   const low=userText.trim().toLowerCase();
+  const recent=(activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\n');
+  const systemText='You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going).';
+  const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
+
   let aiResult=null;
   try{
-    const recent=(activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\n');
-    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:c.model||'google/gemini-2.5-flash', temperature:0.3, max_tokens:200,
-        messages:[
-          {role:'system', content:'You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going).'},
-          {role:'user', content:`Recent conversation:\n${recent}\n\nLatest message: ${userText}`}
-        ]
-      })
-    });
-    const data=await r.json().catch(()=>({}));
-    const raw=data?.choices?.[0]?.message?.content||'';
-    const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
-    if(m) aiResult=JSON.parse(m[0]);
+    const geminiRaw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.3, maxOutputTokens:200, json:true});
+    if(geminiRaw) aiResult=JSON.parse(geminiRaw);
   }catch(e){}
+
+  if(!aiResult && c.openrouter_key){
+    try{
+      const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({
+          model:c.model||'google/gemini-2.5-flash', temperature:0.3, max_tokens:200,
+          messages:[{role:'system', content:systemText}, {role:'user', content:userPrompt}]
+        })
+      });
+      const data=await r.json().catch(()=>({}));
+      const raw=data?.choices?.[0]?.message?.content||'';
+      const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+      if(m) aiResult=JSON.parse(m[0]);
+    }catch(e){}
+  }
 
   const VALID_INTENTS=new Set(['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL']);
   const VALID_SENTIMENT=new Set(['Positive','Neutral','Negative','Frustrated']);
@@ -3773,8 +3855,8 @@ async function handleEngineWebhook(request, env){
   const lastMsgAt=state.lastMsgAt?new Date(state.lastMsgAt).getTime():0;
   if(Date.now()-lastMsgAt<rateLimitMs) return json({ok:true, skipped:'rate-limited'});
 
-  const userText=await engineResolveUserText(c, mediaType, mediaUrl, text);
-  const cls=await engineClassifyIntent(c, userText, state.activeHistory);
+  const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+  const cls=await engineClassifyIntent(env, c, userText, state.activeHistory);
   const routing=engineRouteFlow(c, state, userText, cls);
 
   let sentText=null;

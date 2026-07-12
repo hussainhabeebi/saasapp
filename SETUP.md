@@ -1890,12 +1890,25 @@ migration itself.
 ## Ecom Conversation Engine (`POST /engine/webhook`) — replaces the n8n engine for ecommerce clients
 For every CLIENTS row with `industry === 'ecommerce'`, this one Worker endpoint now does the
 entire job the external n8n workflow (`engine.json`, "Leadvyne · Engine v3" — not in this repo)
-used to do: resolve the tenant, look up/create the lead, turn media into text, classify
-intent/sentiment/objection via OpenRouter, run the `flow_json` state machine (FAQ / qualifying
-questions / objection handling / human handover), send the reply via Chatwoot, and upsert the
-LEADS row + analytics — plus the order-signal auto-send that used to be a second, separate
-webhook. Non-ecommerce clients are untouched and keep running on n8n exactly as before; nothing
-here changes their behavior.
+used to do: resolve the tenant, look up/create the lead, turn media into text (including real
+voice transcription — see below), classify intent/sentiment/objection, run the `flow_json` state
+machine (FAQ / qualifying questions / objection handling / human handover), send the reply via
+Chatwoot, and upsert the LEADS row + analytics — plus the order-signal auto-send that used to be a
+second, separate webhook. Non-ecommerce clients are untouched and keep running on n8n exactly as
+before; nothing here changes their behavior.
+
+**Gemini for classification + voice transcription (`GEMINI_API_KEY`):** intent/sentiment/
+objection classification (`engineClassifyIntent`) calls Google's Gemini API directly
+(`gemini-2.0-flash`, matching engine.json's actual "AI Agent · Sentiment & Intent" node, which ran
+on a dedicated shared Gemini credential — not each client's own OpenRouter key) via a new Worker
+secret, `GEMINI_API_KEY` (see wrangler.toml). One key for every client, same as the n8n workflow's
+single Gemini credential. If this secret isn't set, classification falls back to the client's own
+`openrouter_key`/`model` instead of failing outright. Voice notes get a real transcript via the
+same Gemini key (`engineGeminiTranscribeVoice` — downloads the attachment, sends it to Gemini as
+inline audio data, asks for a plain-text transcription); without `GEMINI_API_KEY` set, or if the
+download/transcription fails, voice notes fall back to the same `"(sent a voice note)"` placeholder
+text engine.json always sent instead (see below — that placeholder isn't new, only now it's a
+fallback rather than the only behavior).
 
 **Cutover, per ecom client:** in Chatwoot → the client's WhatsApp inbox → **Configuration →
 Webhooks**, change (or add) a "Message created" webhook pointed at
@@ -1929,10 +1942,12 @@ tracing the source workflow's node wiring showed they were unintended:
   a Frustrated-specific apology) is calculated but discarded, and the saved ConvHistory disagreed
   with what the customer actually received. Here the computed message is what's sent (falling
   back to the fixed text only when nothing more specific was computed).
-- **Voice notes are still not transcribed** (same "(sent a voice note)" placeholder sent to the
-  AI) — this one is *not* a change, just calling out that it's not a regression either: engine.json
-  itself never had a transcription node wired to the voice branch, despite this file's earlier
-  "Media: text, image (Gemini vision), voice (download + transcribe)" line describing one.
+- **Voice notes are now really transcribed** (via `GEMINI_API_KEY`, see above) — this one *is* a
+  genuine improvement over engine.json, not just a fix: the source workflow never had a
+  transcription node wired to its voice branch at all, despite this file's earlier "Media: text,
+  image (Gemini vision), voice (download + transcribe)" line describing one. The
+  `"(sent a voice note)"` placeholder still exists here too, but only as the fallback when
+  `GEMINI_API_KEY` isn't configured or transcription fails for a given note — not the only path.
 
 The "Leadvyne · Ecom Context" n8n sub-workflow engine.json calls out to for ecom-specific FAQ
 grounding wasn't available to port (it isn't in this repo) — `engineBuildEcomContext` is a
