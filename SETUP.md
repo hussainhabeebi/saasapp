@@ -2179,6 +2179,25 @@ guaranteed reachable/correct at the moment you'd need one.
   client during an incident is a manual Chatwoot step (re-add the webhook by hand) that only stays
   in place while `engine_disabled==='Yes'` for that client.
 
+### Reply after human handover (optional, off by default)
+By design, `handleEngineWebhook` hard-stops on any lead with `Handover==='Yes'` or
+`Stage==='human_handover'` (matching engine.json's own Code·State hard-stop — see "Human
+handover" elsewhere in this file for what actually triggers the handover itself) — the bot never
+sends another message once a human's involved, so it can't talk over a live agent. Some clients
+want the opposite: keep the bot replying (e.g. outside business hours, or while waiting for a rep
+to actually pick up the conversation) until a human genuinely steps in.
+- **`reply_after_handover`** (new CLIENTS column, Single line text, `'Yes'`/`'No'`, defaults to the
+  existing silent behavior when unset) — toggle in dashboard.html Settings → "🤝 Human Handover".
+  When `'Yes'`, two things change together (both are required — see their own comments for why
+  one alone isn't enough): `handleEngineWebhook`'s hard-stop is skipped, and `engineRouteFlow`'s
+  matching `state.stage==='human_handover'` → `route='drop'` branch is skipped too, letting a
+  handed-over turn fall through to ordinary FAQ-style routing (`human_handover` is never a real
+  `flow_json` stage, so it lands in the `stageNotFound` branch) instead of getting silenced twice.
+- **The lead's own record is unaffected** — `Handover` stays `'Yes'` and `Stage` stays
+  `'human_handover'` regardless of this toggle, so the CRM/dashboard still correctly shows the lead
+  as escalated; only whether the bot keeps sending replies changes. A staff member can still take
+  over the conversation in Chatwoot at any point, same as always.
+
 ### Idempotency
 Chatwoot may redeliver the same `message_created` event (timeout, network retry) — without a
 guard, a redelivery arriving after a turn already completed would generate and send a second
