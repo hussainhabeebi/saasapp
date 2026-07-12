@@ -543,6 +543,19 @@ gap for services businesses: it screens the *customer's own* message with AI
 - `sendBookingLinkNow()` (`worker.js`) is the actual send-and-log logic, factored out of
   `handleLeadBookingLink` so both the n8n-callable HTTP route and this direct path share one
   implementation instead of two copies that could drift.
+- **Routes through Chatwoot, not straight to Meta.** This webhook fires because of a real message
+  on a real Chatwoot conversation, so `body.conversation.id` is already known —
+  `sendBookingLinkViaChatwoot()` uses it to POST the reply to Chatwoot's own
+  `.../conversations/:id/messages` endpoint (same FormData/`content` pattern
+  `handleWaReplyChatwoot` already uses) instead of building a Meta Graph API payload by hand.
+  Chatwoot's own WhatsApp Cloud API channel (configured with this same `wa_token`/`wa_phone_id`
+  during WhatsApp connect) does the actual relay to the customer. Two wins: the message shows up in
+  the rep's Chatwoot inbox like any other reply instead of being invisible to Chatwoot entirely, and
+  there's no more hand-built `text.body` payload for this path to get wrong. `sendBookingLinkNow()`
+  (the direct-Graph-API version) is kept as the fallback for the unlikely case Chatwoot's payload
+  omits `conversation.id` or Chatwoot isn't configured, and remains the only path
+  `POST /leads/booking-link` uses (no Chatwoot conversation context available there — it's called
+  by n8n/a rep with just a phone number, not from inside a live Chatwoot webhook).
 
 **The booking link is also just shown on the Appointments tab itself** (`renderApptLinkBar()`,
 `dashboard.html`) — a small bar under the sub-nav, visible on every Appointments sub-page, with a
