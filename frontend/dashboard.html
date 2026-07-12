@@ -5636,6 +5636,10 @@ async function openChatwootSso(){
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     window.open(data.url, '_blank', 'noopener');
+    // sso:false means the Worker couldn't mint a one-time login link (no Platform-API user on
+    // file — e.g. an account connected via the manual base/account/inbox/token fields) and fell
+    // back to a direct link instead; that still opens the right place, just not pre-logged-in.
+    if(data.sso===false) showToast('Opened Chatwoot — sign in with your Chatwoot password (this account was connected manually, so one-click login isn\'t available).');
   }catch(e){ alert('Could not open Chatwoot: '+e.message); }
   finally{ link.textContent=original; }
 }

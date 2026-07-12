@@ -1346,6 +1346,14 @@ async function handleChannelsChatwootSso(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
+  // Real connection state (same check renderChannelsStatus/hasAccount uses elsewhere) — distinct
+  // from chatwoot_user_id below, which only exists for accounts this Worker itself provisioned
+  // via handleChannelsCreateAccount's Platform API call. A client connected the older way
+  // (Settings → Channels' manual base/account/inbox/token paste — still a fully working
+  // connection, chats/sends work fine off chatwoot_token alone) has no chatwoot_user_id at all,
+  // so it must not be treated as "not connected" just because SSO isn't available for it.
+  if(!c?.chatwoot_account_id||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
+
   const requestedEmail=(new URL(request.url).searchParams.get('email')||'').trim().toLowerCase();
   let chatwootUserId=c?.chatwoot_user_id;
   if(requestedEmail && requestedEmail!==String(c?.authentik_email||'').toLowerCase()){
@@ -1353,11 +1361,17 @@ async function handleChannelsChatwootSso(request, env){
     const key=Object.keys(teamUsers).find(k=>k.toLowerCase()===requestedEmail);
     if(key) chatwootUserId=teamUsers[key];
   }
-  if(!chatwootUserId) return json({error:'Connect a Chatwoot account first.'}, 400);
+  // No Platform-API user on file for this identity — most likely a manually-connected account,
+  // or a teammate added via "Add Existing Authentik User" (which never provisions a Chatwoot
+  // agent). Can't mint a one-time SSO link without a Platform-API user id, so fall back to a
+  // direct (not-pre-authenticated) link — still gets them to the right place, just requires
+  // their own Chatwoot login, instead of a misleading "not connected" error.
+  if(!chatwootUserId) return json({ok:true, sso:false, url:`${c.chatwoot_base}/app/accounts/${c.chatwoot_account_id}/dashboard`});
+
   const r=await chatwootPlatformFetch(env, `/platform/api/v1/users/${chatwootUserId}/login`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok||!data?.url) return json({error:'Failed to generate a Chatwoot login link: '+(data?.message||('HTTP '+r.status))}, 502);
-  return json({ok:true, url:data.url});
+  return json({ok:true, sso:true, url:data.url});
 }
 
 /* ── Shopify module (Integrations tab connect + order/fulfillment/checkout webhooks) ────────
