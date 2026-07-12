@@ -497,11 +497,16 @@ async function handleWaSend(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {phone, text}=await request.json().catch(()=>({}));
   if(!phone||!text) return json({error:'phone and text required'}, 400);
+  // Meta rejects a non-string text.body with a cryptic JSON-schema error instead of a clear one —
+  // catch it here so a caller that (accidentally) sends {"text":{"body":"..."}} instead of a plain
+  // string gets a readable error, and unwrap that one common accidental shape rather than failing.
+  const textBody=typeof text==='string'?text:(text&&typeof text==='object'&&typeof text.body==='string'?text.body:null);
+  if(!textBody) return json({error:'text must be a non-empty string'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
   const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
     method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:textBody}})
   });
   const data=await r.json();
   if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
@@ -2873,15 +2878,10 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service)
   return {lead_id:lead?.Id||null, stage_advanced};
 }
 
-// Core "actually send the booking link" logic — shared by the HTTP endpoint below
-// (handleLeadBookingLink, for n8n or a rep-triggered flow to call) and
-// handleChatwootMessageHook's direct auto-send path. serviceId is optional and only resolved if
-// the Appointment module is set up; without it the message is just the plain booking-link text.
-async function sendBookingLinkNow(env, c, clientId, phone, name, serviceId){
-  const link=(c.external_store_link||'').trim();
-  if(!link) return {error:'No booking link configured — set one in Settings → Order Link.'};
-  if(!c.wa_phone_id||!c.wa_token) return {error:'WhatsApp phone / token not configured.'};
-
+// Shared by both senders below — resolves the optional matched service (only if the Appointment
+// module is set up) and builds the message text. Split out so sendBookingLinkNow (direct Graph
+// API) and sendBookingLinkViaChatwoot (routes through Chatwoot instead) don't duplicate it.
+async function resolveApptServiceAndText(env, c, clientId, name, serviceId, link){
   let service=null;
   if(serviceId){
     const servicesTable=apptResolveTable(c, 'services');
@@ -2891,11 +2891,24 @@ async function sendBookingLinkNow(env, c, clientId, phone, name, serviceId){
       service=sd?.list?.[0]||null;
     }
   }
-
   const displayName=name||'there';
   const text=service
     ? `Hi ${displayName}! Here's the link to book your *${service.name}*${service.duration_minutes?' ('+service.duration_minutes+' min)':''}: ${link}`
     : `Hi ${displayName}! Here's the link to book: ${link}`;
+  return {service, text};
+}
+
+// Core "actually send the booking link" logic — shared by the HTTP endpoint below
+// (handleLeadBookingLink, for n8n or a rep-triggered flow to call) and used as the fallback when
+// sendBookingLinkViaChatwoot below has no Chatwoot conversation to send through. serviceId is
+// optional and only resolved if the Appointment module is set up; without it the message is just
+// the plain booking-link text.
+async function sendBookingLinkNow(env, c, clientId, phone, name, serviceId){
+  const link=(c.external_store_link||'').trim();
+  if(!link) return {error:'No booking link configured — set one in Settings → Order Link.'};
+  if(!c.wa_phone_id||!c.wa_token) return {error:'WhatsApp phone / token not configured.'};
+
+  const {service, text}=await resolveApptServiceAndText(env, c, clientId, name, serviceId, link);
   const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
     method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
@@ -2903,7 +2916,30 @@ async function sendBookingLinkNow(env, c, clientId, phone, name, serviceId){
   const waData=await waR.json().catch(()=>({}));
 
   const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, name, service);
-  return {ok:true, link, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), lead_id, stage_advanced};
+  return {ok:true, link, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), via:'graph', lead_id, stage_advanced};
+}
+
+// Used only by the auto-send path (handleChatwootIncomingBookingSignal), which is triggered by a
+// Chatwoot webhook that already tells us which conversation the customer's message is in — sends
+// the reply through Chatwoot's own message endpoint (same FormData/content pattern as
+// handleWaReplyChatwoot above) instead of building a Meta Graph API payload directly. Two wins
+// over the direct-Graph-API path: (1) the message actually shows up in the rep's Chatwoot inbox,
+// instead of only existing as a raw API call this repo made that Chatwoot never learns about; (2)
+// Chatwoot's own WhatsApp Cloud API channel config (set up with this same wa_token/wa_phone_id
+// during WhatsApp connect — see handleChannelsWhatsappConnect) does the actual Meta relay, so this
+// path never has to hand-build a Graph API text payload at all.
+async function sendBookingLinkViaChatwoot(env, c, clientId, conversationId, phone, name, serviceId){
+  const link=(c.external_store_link||'').trim();
+  if(!link) return {error:'No booking link configured — set one in Settings → Order Link.'};
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return {error:'Chatwoot is not configured for this account.'};
+
+  const {service, text}=await resolveApptServiceAndText(env, c, clientId, name, serviceId, link);
+  const fd=new FormData();
+  fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conversationId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+
+  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, name, service);
+  return {ok:true, link, whatsapp_sent:r.ok, whatsapp_error:r.ok?undefined:('HTTP '+r.status), via:'chatwoot', lead_id, stage_advanced};
 }
 
 async function handleLeadBookingLink(request, env){
@@ -3056,7 +3092,14 @@ async function handleChatwootIncomingBookingSignal(env, c, clientId, content, bo
   const detection=await detectBookingSignal(env, c, clientId, content);
   if(!detection.signal) return json({ok:true, skipped:'no-signal'});
 
-  const result=await sendBookingLinkNow(env, c, clientId, phone, body.conversation?.meta?.sender?.name, detection.service_id);
+  const name=body.conversation?.meta?.sender?.name;
+  const conversationId=body.conversation?.id;
+  // Prefer routing through Chatwoot — this webhook fired because of a message on an existing
+  // conversation, so conversationId should always be present; sendBookingLinkNow (direct Graph
+  // API) is only a fallback for the unlikely case Chatwoot's payload omits it or isn't configured.
+  const result=(conversationId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token)
+    ? await sendBookingLinkViaChatwoot(env, c, clientId, conversationId, phone, name, detection.service_id)
+    : await sendBookingLinkNow(env, c, clientId, phone, name, detection.service_id);
   return json({ok:true, auto_sent:true, ...result});
 }
 
