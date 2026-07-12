@@ -1780,11 +1780,11 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <div class="settings-section">
             <div class="s-head">🤝 Human Handover</div>
-            <div class="s-note">By default the bot stops replying entirely once a lead is handed over to a human, so it never talks over your team. Turn this on if you'd rather the bot keep replying (e.g. outside business hours) until a human actually steps in — the lead still shows as handed over either way.</div>
+            <div class="s-note">By default the bot keeps replying even after a lead is handed over to a human (e.g. outside business hours, or while waiting for a rep to pick up) — the lead still shows as handed over either way. Turn this on if you'd rather the bot go fully silent the moment a human takes over, so it can never talk over your team.</div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-              <div><label class="form-label">Reply after handover</label><select class="form-input" id="cfgReplyAfterHandover"><option value="No">Off — bot goes silent</option><option value="Yes">On — bot keeps replying</option></select></div>
-              <button class="save-btn" id="saveReplyAfterHandover">Save</button>
-              <span class="save-msg" id="saveReplyAfterHandoverMsg"></span>
+              <div><label class="form-label">Silence bot after handover</label><select class="form-input" id="cfgHandoverSilence"><option value="No">Off — bot keeps replying</option><option value="Yes">On — bot goes silent</option></select></div>
+              <button class="save-btn" id="saveHandoverSilence">Save</button>
+              <span class="save-msg" id="saveHandoverSilenceMsg"></span>
             </div>
           </div>
 
@@ -4713,7 +4713,7 @@ function populateSettings(){
   $id('cfgFuMsgs').value=clientRecord.followup_messages||'';
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
-  $id('cfgReplyAfterHandover').value=clientRecord.reply_after_handover||'No';
+  $id('cfgHandoverSilence').value=clientRecord.handover_silence_enabled||'No';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -5457,7 +5457,7 @@ function renderProspectLog(){
 
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
-$id('saveReplyAfterHandover').addEventListener('click',async()=>saveField('saveReplyAfterHandover','saveReplyAfterHandoverMsg',{reply_after_handover:$id('cfgReplyAfterHandover').value}));
+$id('saveHandoverSilence').addEventListener('click',async()=>saveField('saveHandoverSilence','saveHandoverSilenceMsg',{handover_silence_enabled:$id('cfgHandoverSilence').value}));
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
 
