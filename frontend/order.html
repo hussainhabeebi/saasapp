@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Complete Your Order</title>
+<!-- Public customer-facing checkout page — the Ecommerce module's counterpart to book.html.
+     Read/write, but narrowly: it only ever calls /ecom/public/* (cloudflare-worker/worker.js),
+     which return a fixed customer-safe field whitelist and have exactly one write path (submitting
+     an order, always landing as a `pending` row a staff member still has to move forward) — no
+     code path here can reach the dashboard's admin features, other clients' data, or read/update/
+     delete anything. Reached from the checkout link the bot sends once real order intent is
+     detected (see SETUP.md's "Conversation Engine" — detectOrderSignal's 'order' mode), always
+     with a specific ?sku= already known; this page exists to actually collect what that chat
+     message never had room for — size, delivery address, email. -->
+<style>
+:root{
+  --bg:#FFF7ED;--card:#FFFFFF;--ink:#1C1410;--muted:#78716C;
+  --accent:#EA580C;--accent-ink:#C2410C;--accent-soft:#FFEDD5;
+  --line:#FDE1C4;--body:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+.hdr{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:16px 18px}
+.biz-name{font-size:19px;font-weight:700;letter-spacing:-.01em}
+.biz-sub{font-size:13px;color:var(--muted);margin-top:2px}
+.wrap{max-width:520px;margin:0 auto;padding:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:14px}
+.product-card{display:flex;gap:14px;align-items:center}
+.product-card img{width:76px;height:76px;border-radius:10px;object-fit:cover;flex:none;background:var(--accent-soft)}
+.product-card .thumb-empty{width:76px;height:76px;border-radius:10px;flex:none;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted)}
+.product-name{font-weight:700;font-size:15px}
+.product-meta{font-size:12.5px;color:var(--muted);margin-top:3px}
+.product-price{font-weight:700;color:var(--accent-ink);margin-top:6px;font-size:15px}
+.label{font-size:12.5px;font-weight:600;color:var(--muted);margin-bottom:6px;display:block}
+.field{margin-bottom:16px}
+input,select,textarea{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:11px 12px;font-family:var(--body);font-size:14.5px;color:var(--ink);background:var(--bg)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);background:#fff}
+textarea{resize:vertical;min-height:60px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.btn{width:100%;background:var(--accent);color:#fff;border:none;border-radius:10px;padding:13px;font-size:14.5px;font-weight:700;cursor:pointer;font-family:var(--body)}
+.btn:active{background:var(--accent-ink)}
+.btn:disabled{background:var(--line);color:var(--muted);cursor:not-allowed}
+.msg{text-align:center;font-size:13px;margin-top:10px;min-height:18px}
+.msg.err{color:#B42318}
+.msg.ok{color:var(--accent-ink)}
+.empty,.err-page{text-align:center;color:var(--muted);padding:60px 20px;font-size:14px}
+.success{text-align:center;padding:40px 20px}
+.success .ic{font-size:48px;margin-bottom:12px}
+.success h2{font-size:18px;margin:0 0 8px}
+.success p{color:var(--muted);font-size:14px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="biz-name" id="bizName">Complete Your Order</div>
+  <div class="biz-sub" id="bizSub">Just a few details and we'll get this to you.</div>
+</div>
+
+<div class="wrap">
+  <div id="formArea"></div>
+  <div class="err-page" id="errMsg" style="display:none">Sorry, this order link isn't working right now — please contact the business directly.</div>
+</div>
+
+<script>
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const params = new URLSearchParams(location.search);
+const clientId = params.get('client') || params.get('client_id') || '';
+const sku = params.get('sku') || '';
+
+let bizInfo = {};
+let product = null;
+
+function escHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function toImageUrl(url){
+  if(!url) return '';
+  if(!/drive\.google\.com/.test(url)) return url;
+  const pathMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  const queryMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  const id = (pathMatch && pathMatch[1]) || (queryMatch && queryMatch[1]) || null;
+  return id ? `https://drive.google.com/thumbnail?id=${id}&sz=w600` : url;
+}
+
+function renderForm(){
+  const img = toImageUrl(product.image_url);
+  const sizes = String(product.size||'').split(',').map(s => s.trim()).filter(Boolean);
+
+  document.getElementById('formArea').innerHTML = `
+    <div class="card">
+      <div class="product-card">
+        ${img ? `<img src="${escHtml(img)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb-empty',textContent:'No photo'}))">` : `<div class="thumb-empty">No photo</div>`}
+        <div>
+          <div class="product-name">${escHtml(product.name||'Item')}</div>
+          <div class="product-meta">${[product.color,product.size].filter(Boolean).map(escHtml).join(' · ')}</div>
+          <div class="product-price">${escHtml(product.currency||'INR')} ${Number(product.price||0).toLocaleString()}</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      ${sizes.length ? `
+      <div class="field">
+        <span class="label">Size *</span>
+        <select id="fSize">${sizes.map(s => `<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('')}</select>
+      </div>` : ''}
+      <div class="field"><span class="label">Your Name</span><input id="fName" placeholder="Full name"></div>
+      <div class="row2">
+        <div class="field"><span class="label">Phone (with country code) *</span><input id="fPhone" placeholder="e.g. 971501234567"></div>
+        <div class="field"><span class="label">Email</span><input type="email" id="fEmail" placeholder="you@example.com"></div>
+      </div>
+      <div class="field"><span class="label">Delivery Address *</span><textarea id="fAddress" placeholder="Full address, including city and pincode"></textarea></div>
+      <div class="field"><span class="label">Notes (optional)</span><textarea id="fNotes" placeholder="Anything else we should know"></textarea></div>
+      <button class="btn" id="submitBtn" onclick="submitOrder()">Place Order</button>
+      <div class="msg" id="formMsg"></div>
+    </div>`;
+}
+
+async function submitOrder(){
+  const btn = document.getElementById('submitBtn');
+  const msg = document.getElementById('formMsg');
+  const phone = document.getElementById('fPhone').value.trim();
+  const address = document.getElementById('fAddress').value.trim();
+  if(!phone){ msg.textContent='Phone number is required.'; msg.className='msg err'; return; }
+  if(!address){ msg.textContent='Delivery address is required.'; msg.className='msg err'; return; }
+
+  btn.disabled = true; msg.textContent = 'Placing your order…'; msg.className = 'msg';
+  try{
+    const r = await fetch(`${WORKER_BASE}/ecom/public/order`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        client_id: clientId, sku,
+        name: document.getElementById('fName').value.trim(),
+        phone, address,
+        email: document.getElementById('fEmail').value.trim(),
+        size: document.getElementById('fSize')?.value || '',
+        notes: document.getElementById('fNotes').value.trim(),
+      })
+    });
+    const data = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(data.error || 'Something went wrong');
+    document.getElementById('formArea').innerHTML = `
+      <div class="card success">
+        <div class="ic">✅</div>
+        <h2>Order placed!</h2>
+        <p>${escHtml(bizInfo.client_name||'The business')} has received your order and will be in touch shortly.</p>
+      </div>`;
+  }catch(e){
+    msg.textContent = 'Error: ' + e.message;
+    msg.className = 'msg err';
+    btn.disabled = false;
+  }
+}
+
+async function load(){
+  if(!clientId || !sku){ document.getElementById('errMsg').style.display = 'block'; return; }
+  try{
+    const [clientRes, productsRes] = await Promise.all([
+      fetch(`${WORKER_BASE}/ecom/public/client?client_id=${encodeURIComponent(clientId)}`),
+      fetch(`${WORKER_BASE}/ecom/public/products?client_id=${encodeURIComponent(clientId)}`),
+    ]);
+    if(!clientRes.ok) throw new Error('not found');
+    bizInfo = await clientRes.json();
+    const productsData = await productsRes.json().catch(() => ({list:[]}));
+    product = (productsData.list||[]).find(p => p.sku === sku);
+    if(!product) throw new Error('product not found');
+
+    document.title = 'Order from ' + (bizInfo.client_name || 'us');
+    document.getElementById('bizName').textContent = bizInfo.client_name || 'Complete Your Order';
+    renderForm();
+  }catch(e){
+    document.getElementById('errMsg').style.display = 'block';
+  }
+}
+load();
+</script>
+</body>
+</html>

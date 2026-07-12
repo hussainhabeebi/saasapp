@@ -1231,12 +1231,15 @@ async function detectOrderSignal(env, c, clientId, message, contextText){
     productList=(pd?.list||[]).map(p=>`- ${p.name}${p.sku?' [sku:'+p.sku+']':''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}`).join('\n');
   }
 
-  const system=`You are screening one incoming WhatsApp message for a business selling physical products, to decide if it's an order-readiness signal — either an explicit request to buy, OR a specific-variant question about a product (size, color, stock/availability, price of one specific item) that shows they're close to ordering. General browsing questions, greetings, or unrelated questions are NOT signals.
-If it is a signal, try to match it to exactly one product from the catalog below.
+  const system=`You are screening one incoming WhatsApp message for a business selling physical products. Classify it into exactly one of:
+- "order": the customer clearly wants to buy/order right now — "order this", "I'll take it", "buy it", "yes place my order", "order pls", confirming they want to proceed after being shown a product.
+- "enquiry": genuine interest in a specific product without yet committing to buy — a size/color/stock/price question about one item, "tell me more", "give me the details", "do you have it in red".
+- neither (not a signal at all) — general browsing, greetings, or unrelated questions.
+If "order" or "enquiry", try to match it to exactly one product from the catalog below.
 - Match by reasonable everyday judgment, not exact string equality — a customer writes informally, the catalog doesn't. "Green shirt" should match a catalog color of "Light Green" or "Bottle Green"; "greenshirt" and "green shirt" are the same query; a size like "S"/"small"/"S size" are the same detail. Don't withhold sku just because the wording isn't identical to the catalog fields — withhold it only when you genuinely can't tell which product (or no product) is meant.
 - A message with NO distinguishing detail of its own — "order it", "M size" alone, "that one", "yes please" — should be resolved using the recent conversation below, if given: it very likely refers to whichever product was just discussed.
-- A message that names its own distinguishing detail (a color, size, or product name) should be matched against the catalog by that detail. If it's consistent with the product just discussed (e.g. "size M" right after that same shirt was shown), match to that one. If it conflicts with the product just discussed (e.g. "red shirt" right after a green shirt was shown), treat it as asking about a NEW product and match fresh by the new detail — don't keep reusing the old product's sku just because it was recently discussed. Only omit sku (or return {"signal":false} if it's clearly asking for something not carried at all) when the named detail truly doesn't correspond to anything in the catalog.
-Respond with ONLY valid JSON: {"signal":true,"sku":"..."} or {"signal":true} (no confident match) or {"signal":false}.
+- A message that names its own distinguishing detail (a color, size, or product name) should be matched against the catalog by that detail. If it's consistent with the product just discussed (e.g. "size M" right after that same shirt was shown), match to that one. If it conflicts with the product just discussed (e.g. "red shirt" right after a green shirt was shown), treat it as asking about a NEW product and match fresh by the new detail — don't keep reusing the old product's sku just because it was recently discussed. Only omit sku (or classify as neither, if it's clearly asking for something not carried at all) when the named detail truly doesn't correspond to anything in the catalog.
+Respond with ONLY valid JSON: {"signal":true,"mode":"order","sku":"..."} or {"signal":true,"mode":"enquiry","sku":"..."} (sku omitted if no confident match) or {"signal":false}.
 ${contextText?`\nRecent conversation (oldest first — use this to resolve references back to a specific product):\n${contextText}\n`:''}
 Product catalog:
 ${productList||'(no products listed)'}`;
@@ -1254,7 +1257,8 @@ ${productList||'(no products listed)'}`;
   const raw=data?.choices?.[0]?.message?.content?.trim()||'{"signal":false}';
   let parsed={signal:false};
   try{ parsed=JSON.parse(raw); }catch(e){}
-  return {signal:!!parsed.signal, sku:parsed.signal?(parsed.sku||undefined):undefined};
+  const mode=parsed.mode==='order'?'order':'enquiry'; // defaults to the more conservative 'enquiry' (no link sent) if the model omits mode or returns something unrecognized
+  return {signal:!!parsed.signal, mode, sku:parsed.signal?(parsed.sku||undefined):undefined};
 }
 
 // Classifies one incoming message for order-readiness — same n8n-calls-Cloudflare shape as
@@ -2927,21 +2931,50 @@ async function logPendingOrder(env, c, clientId, phone, name, product){
   return order_id;
 }
 
+async function ecomFindProductBySku(env, clientId, sku){
+  if(!sku) return null;
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return null;
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(sku,eq,${encodeURIComponent(sku)})&limit=1`);
+  const pd=await pr.json().catch(()=>({}));
+  return pd?.list?.[0]||null;
+}
+
 async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
-  let product=null;
-  if(sku){
-    const productsTable=await ecomResolveTable(env, clientId, 'products');
-    if(productsTable){
-      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(sku,eq,${encodeURIComponent(sku)})&limit=1`);
-      const pd=await pr.json().catch(()=>({}));
-      product=pd?.list?.[0]||null;
-    }
-  }
+  const product=await ecomFindProductBySku(env, clientId, sku);
   const displayName=name||'there';
   const text=product
     ? `Hi ${displayName}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
     : `Hi ${displayName}! Here's our full catalog — order directly from here:\n${link}`;
   return {product, text};
+}
+
+// The "just asking" reply — full product detail, no order/checkout link. Deliberately never
+// mentions ordering or includes a link: SETUP.md/user-observed requirement is that a customer
+// asking about a product (size, color, stock, price) should get the details and photo, and only
+// see an order link once they've actually said they want to order (detectOrderSignal's separate
+// 'order' mode, handled elsewhere) — conflating "interested" with "ready to buy" was pushing a
+// checkout link into every product question, whether the customer had asked for it or not.
+function buildProductDetailText(displayName, product){
+  const lines=[`*${product.name}*`];
+  if(product.price) lines.push(`Price: ${product.currency||''} ${product.price}`.trim());
+  if(product.color) lines.push(`Color: ${product.color}`);
+  if(product.size) lines.push(`Size: ${product.size}`);
+  if(product.category) lines.push(`Category: ${product.category}`);
+  const stockNum=Number(product.stock);
+  lines.push(Number.isFinite(stockNum) && stockNum<=0 ? 'Currently out of stock' : 'In stock ✅');
+  return `Hi ${displayName||'there'}! Here are the details:\n\n${lines.join('\n')}\n\nWant to order this? Just let me know 🙂`;
+}
+
+// order.html's checkout form (frontend/order.html) — collects size, delivery address, phone and
+// email and creates a full order row (handleEcomPublicOrder), unlike the bare "intent detected"
+// row logPendingOrder writes here. Only used for the built-in Ecommerce module's own storefront; a
+// client selling through their own external_store_link (Shopify etc.) has no in-house checkout
+// page for this to point at, so that link is used unchanged, same as buildOrderLink above.
+function buildCheckoutLink(c, clientId, sku){
+  const ext=(c.external_store_link||'').trim();
+  if(ext) return ext;
+  return `https://app.leadvyne.com/order.html?client=${clientId}&sku=${encodeURIComponent(sku)}`;
 }
 
 // Core "actually send the order link" logic — direct Meta Graph API, bypassing Chatwoot. Kept as
@@ -4240,17 +4273,41 @@ async function handleEngineWebhook(request, env, secret){
     // should reply). detectOrderSignal already resolves bare replies ("order this", "S size") via
     // recent conversation on its own — see its own comment for the "names its own conflicting
     // detail" fix that came with this.
+    // Enquiry vs. order intent are now handled differently, per an explicit product requirement:
+    // never share the order/checkout link until real order intent is detected — a size/color/
+    // stock/price question ("enquiry" mode) only ever gets product details + photo, no link,
+    // however confidently detectOrderSignal matched a product; only "order" mode (an explicit
+    // "order this"/"buy it"/confirmed yes) gets the checkout link, and only once a specific
+    // product is actually known — an ambiguous "order" with no resolvable product asks a
+    // clarifying question rather than sending a link to nothing in particular.
     if(c.industry==='ecommerce' && c.openrouter_key && !['human','drop'].includes(routing.route)){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       if(detection.signal){
-        const link=buildOrderLink(c, clientId, detection.sku);
-        const {product, text:orderReplyText}=await resolveOrderProductAndText(env, c, clientId, state.name, detection.sku, link);
-        routing.reply=orderReplyText; sentText=orderReplyText;
-        if(product?.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
-        else await engineSendChatwootReply(env, c, clientId, convId, sentText);
-        await logPendingOrder(env, c, clientId, phone, name, product);
-        orderHandledInline=true;
+        const product=await ecomFindProductBySku(env, clientId, detection.sku);
+        if(detection.mode==='order' && product){
+          const link=buildCheckoutLink(c, clientId, detection.sku);
+          sentText=`Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`;
+          routing.reply=sentText;
+          if(product.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
+          else await engineSendChatwootReply(env, c, clientId, convId, sentText);
+          await logPendingOrder(env, c, clientId, phone, name, product);
+          orderHandledInline=true;
+        } else if(detection.mode==='order' && !product){
+          sentText='Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?';
+          routing.reply=sentText;
+          await engineSendChatwootReply(env, c, clientId, convId, sentText);
+          orderHandledInline=true;
+        } else if(detection.mode==='enquiry' && product){
+          sentText=buildProductDetailText(state.name, product);
+          routing.reply=sentText;
+          if(product.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
+          else await engineSendChatwootReply(env, c, clientId, convId, sentText);
+          orderHandledInline=true;
+        }
+        // enquiry with no confident product match falls through to the normal FAQ/flow handling
+        // below (no canned reply, no link) — the context-aware FAQ LLM can respond naturally,
+        // e.g. "we don't carry that, but here's what we do have."
       }
     }
 
@@ -4294,7 +4351,6 @@ async function handleEngineWebhook(request, env, secret){
       sentText=routing.reply||null;
       if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
     }
-    routing._orderHandledInline=orderHandledInline;
 
     const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
     await engineUpsertLead(env, method, leadId, leadBody);
@@ -4310,49 +4366,29 @@ async function handleEngineWebhook(request, env, secret){
 
     // Signal auto-send, folded into this same turn — previously a second, independent Chatwoot
     // webhook (handleChatwootIncomingOrderSignal / handleChatwootIncomingBookingSignal above).
-    // Skipped for human/drop/opt-out/resub turns, none of which carry real intent to act on, and
-    // for ecom turns already handled inline above (routing._orderHandledInline) — otherwise this
-    // would re-run detectOrderSignal a second time and could send a duplicate order-link message.
-    // Branches strictly on c.industry — NOT on whether ecomResolveTable(..., 'orders') resolves a
-    // table id, since that helper falls back to a shared default table id for every client
-    // regardless of industry (ECOM_DEFAULT_TABLE_IDS), so table-truthiness alone can't distinguish
-    // an actual ecom client from a booking-industry one the way handleChatwootMessageHook's own
-    // dispatch (elsewhere in this file) tries to.
-    if(!['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && !routing._orderHandledInline){
-      if(c.industry==='ecommerce'){
-        const ordersTable=await ecomResolveTable(env, clientId, 'orders');
-        if(ordersTable){
-          const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,pending)&limit=1`);
-          const existD=await existR.json().catch(()=>({}));
-          if(!existD?.list?.length){
-            const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
-            const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
-            if(detection.signal){
-              if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendOrderLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.sku);
-              else await sendOrderLinkNow(env, c, clientId, phone, name, detection.sku);
-            }
-          }
-        }
-      } else if((c.external_store_link||'').trim()){
-        // Booking-industry equivalent (healthcare/consultancy/travel/etc — everything but
-        // ecommerce, matching handleChatwootIncomingBookingSignal's own gating): only runs once a
-        // booking link is actually configured, and skips a lead already at a booking-terminal
-        // stage or one with a `requested` appointment already pending.
-        const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
-        let alreadyRequested=false;
-        const bookingsTable=apptResolveTable(c, 'bookings');
-        if(!alreadyBooked && bookingsTable){
-          const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
-          const existD=await existR.json().catch(()=>({}));
-          alreadyRequested=!!existD?.list?.length;
-        }
-        if(!alreadyBooked && !alreadyRequested){
-          const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
-          const detection=await detectBookingSignal(env, c, clientId, userText, contextText);
-          if(detection.signal){
-            if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendBookingLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.service_id);
-            else await sendBookingLinkNow(env, c, clientId, phone, name, detection.service_id);
-          }
+    // Ecommerce clients are fully handled by the order-check above now (it runs for every
+    // non-human/drop route, not just after other routing already happened), so this block is only
+    // the booking-industry equivalent (healthcare/consultancy/travel/etc) — running it again for
+    // ecommerce here would just re-call detectOrderSignal a second, redundant time, and could
+    // violate the "never send a link before order intent" rule for the one case the order-check
+    // above deliberately leaves unhandled (an enquiry with no confident product match).
+    if(c.industry!=='ecommerce' && !['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && (c.external_store_link||'').trim()){
+      // Only runs once a booking link is actually configured, and skips a lead already at a
+      // booking-terminal stage or one with a `requested` appointment already pending.
+      const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
+      let alreadyRequested=false;
+      const bookingsTable=apptResolveTable(c, 'bookings');
+      if(!alreadyBooked && bookingsTable){
+        const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+        const existD=await existR.json().catch(()=>({}));
+        alreadyRequested=!!existD?.list?.length;
+      }
+      if(!alreadyBooked && !alreadyRequested){
+        const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+        const detection=await detectBookingSignal(env, c, clientId, userText, contextText);
+        if(detection.signal){
+          if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendBookingLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.service_id);
+          else await sendBookingLinkNow(env, c, clientId, phone, name, detection.service_id);
         }
       }
     }
@@ -4511,6 +4547,57 @@ async function handleEcomPublicProducts(request, env){
   return json({list});
 }
 
+// The one write path this public surface has for orders — order.html's checkout form. Same shape
+// as handleApptPublicBook below: always creates a `pending` row, never reads/updates/deletes
+// anything else, so a spammed/malicious submission can only ever add order-page noise for staff to
+// review, not corrupt existing data. This is what actually captures size, delivery address and
+// email — logPendingOrder (handleEngineWebhook's own "order intent detected" row, written the
+// moment the bot sends this checkout link) only ever had product name/price, no space for any of
+// that, by design (it exists so intent leaves a trail even if the customer never opens the link at
+// all). A customer who does complete checkout ends up with two order rows: the bare intent one and
+// this fuller one — an accepted duplicate, not a bug, since staff can tell them apart by `notes`
+// and there's no reliable way to know from here whether they're "the same" order.
+async function handleEcomPublicOrder(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Store not found'}, 404);
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return json({error:'Ordering is not set up for this business yet — please contact us directly.'}, 400);
+
+  const name=String(body.name||'').trim().slice(0,120);
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!phone) return json({error:'Phone number is required.'}, 400);
+  const email=String(body.email||'').trim().slice(0,200);
+  const address=String(body.address||'').trim().slice(0,500);
+  if(!address) return json({error:'Delivery address is required.'}, 400);
+  const size=String(body.size||'').trim().slice(0,40);
+  const notes=String(body.notes||'').trim().slice(0,500);
+  const sku=String(body.sku||'').trim();
+
+  const product=await ecomFindProductBySku(env, clientId, sku);
+  if(!product) return json({error:'That product could not be found — please go back and try again.'}, 404);
+
+  const order_id='ORD-'+Date.now();
+  const items=`${product.name}${product.color?' — '+product.color:''}${size?', Size '+size:''}`;
+  const orderBody={
+    client_id:clientId, order_id,
+    customer_name:name||'', customer_phone:phone, customer_email:email,
+    order_date:new Date().toISOString().slice(0,10),
+    items, total:product.price||0, currency:product.currency||'',
+    delivery_address:address, status:'pending',
+    notes:notes?`Placed via the order page.\n\nCustomer notes: ${notes}`:'Placed via the order page.'
+  };
+  const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:orderBody});
+  if(!r.ok){
+    const data=await r.json().catch(()=>({}));
+    await reportOpsError(env, 'handleEcomPublicOrder', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId, ordersTable});
+    return json({error:'Something went wrong saving your order — please try again or contact us directly.'}, 502);
+  }
+  return json({ok:true, order_id});
+}
+
 // Directory/homepage listing for onshope.com — every client that has published a store (has a
 // client_slug set) and has the ecommerce module on. Same whitelist discipline as the two
 // handlers above; still no leads/orders/internal fields.
@@ -4659,6 +4746,7 @@ export default {
       else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhook(request, env, url.pathname.slice('/engine/webhook/'.length)); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
+      else if(url.pathname==='/ecom/public/order' && request.method==='POST'){ res=await handleEcomPublicOrder(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
       else if(url.pathname==='/appt/public/client' && request.method==='GET'){ res=await handleApptPublicClient(request, env); }
       else if(url.pathname==='/appt/public/services' && request.method==='GET'){ res=await handleApptPublicServices(request, env); }
