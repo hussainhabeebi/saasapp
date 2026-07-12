@@ -1882,3 +1882,59 @@ the n8n engine, outside this repo, so matching relies on the lead's phone/email 
 quality/attribution would improve if the n8n workflow captured `ctwa_clid` from the first-message
 webhook's referral payload and stored it on the Lead row for `sendMetaCapiEvent()` to forward
 (unhashed, per Meta's spec) alongside `user_data`.
+Note this limitation is specific to the n8n engine path — a client migrated onto the Cloudflare
+Ecom Conversation Engine (below) receives the raw Chatwoot webhook payload directly and could
+capture `ctwa_clid` the same way, if wired up; not done here since it's out of scope for the
+migration itself.
+
+## Ecom Conversation Engine (`POST /engine/webhook`) — replaces the n8n engine for ecommerce clients
+For every CLIENTS row with `industry === 'ecommerce'`, this one Worker endpoint now does the
+entire job the external n8n workflow (`engine.json`, "Leadvyne · Engine v3" — not in this repo)
+used to do: resolve the tenant, look up/create the lead, turn media into text, classify
+intent/sentiment/objection via OpenRouter, run the `flow_json` state machine (FAQ / qualifying
+questions / objection handling / human handover), send the reply via Chatwoot, and upsert the
+LEADS row + analytics — plus the order-signal auto-send that used to be a second, separate
+webhook. Non-ecommerce clients are untouched and keep running on n8n exactly as before; nothing
+here changes their behavior.
+
+**Cutover, per ecom client:** in Chatwoot → the client's WhatsApp inbox → **Configuration →
+Webhooks**, change (or add) a "Message created" webhook pointed at
+`{WORKER_BASE_URL}/engine/webhook`, and remove the old webhook that pointed at n8n's
+`leadvyne-onboard`-provisioned wrapper URL for that client (leaving n8n's webhook in place
+alongside this one would mean the customer gets two independent replies to every message — this
+is a swap, not an addition). If the client previously had the **Settings → Auto Order-Tracking**
+webhook enabled (`POST /ecom/enable-order-tracking`, pointed at `/hooks/chatwoot-message`), that
+second webhook can be removed too — order-signal detection now happens inline on every turn here,
+so it's redundant once a client is on this engine.
+
+There is deliberately no CLIENTS-row flag gating this — the endpoint always runs the full engine
+for any client whose `industry` is `ecommerce`. Rolling a client back onto n8n is just re-pointing
+their Chatwoot webhook back to n8n's URL; nothing else here needs to change.
+
+**Fidelity to the source workflow, and where this deviates:** `handleEngineWebhook` and its
+`engine*` helper functions in `cloudflare-worker/worker.js` are a field-for-field port of
+engine.json, reusing this Worker's existing NocoDB/Chatwoot/OpenRouter helpers (same
+`CLIENTS_TABLE`/`DEFAULT_LEADS_TABLE` ids the n8n workflow was already reading/writing — both
+systems share one NocoDB). Three real behaviors were changed rather than reproduced, because
+tracing the source workflow's node wiring showed they were unintended:
+- **ConvHistory no longer gets silently capped at ~8 messages.** engine.json's `slim()` helper
+  drops the full `history` array (keeping only the trimmed `activeHistory`), but its own
+  Prep-lead node reads `sc.history` when rebuilding what gets saved — a field-name mismatch that
+  means every saved turn was built from `activeHistory`, not real history, so conversation history
+  never actually grew past ~8 messages in NocoDB. Also silently dead-coded the "Warm" score
+  fallback that depends on real history length. Both fixed here.
+- **The human-handover reply is now what actually gets sent.** In engine.json, the "human" route
+  wires straight to a fixed-text HTTP node ("Sure 🙏 connecting you to our advisor now...") — the
+  richer message the flow logic computes (a time-aware "we'll call you today/tomorrow at 9am", or
+  a Frustrated-specific apology) is calculated but discarded, and the saved ConvHistory disagreed
+  with what the customer actually received. Here the computed message is what's sent (falling
+  back to the fixed text only when nothing more specific was computed).
+- **Voice notes are still not transcribed** (same "(sent a voice note)" placeholder sent to the
+  AI) — this one is *not* a change, just calling out that it's not a regression either: engine.json
+  itself never had a transcription node wired to the voice branch, despite this file's earlier
+  "Media: text, image (Gemini vision), voice (download + transcribe)" line describing one.
+
+The "Leadvyne · Ecom Context" n8n sub-workflow engine.json calls out to for ecom-specific FAQ
+grounding wasn't available to port (it isn't in this repo) — `engineBuildEcomContext` is a
+from-scratch equivalent built directly off this Worker's own `/ecom/products` and `/ecom/orders`
+tables (top active products + this phone's own recent order status) instead.

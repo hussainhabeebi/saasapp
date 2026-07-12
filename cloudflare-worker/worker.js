@@ -3293,6 +3293,559 @@ async function handleChatwootMessageHook(request, env){
   return json({ok:true, order_id});
 }
 
+/* ── ECOM CONVERSATION ENGINE (replaces n8n's engine.json for industry==='ecommerce' clients) ──
+   Point an ecom client's Chatwoot inbox "message_created" webhook at POST /engine/webhook
+   instead of n8n's own webhook URL, and this one endpoint does everything engine.json's n8n
+   workflow did: tenant + lead lookup, media→text, AI intent/sentiment classification, the
+   flow_json state machine (FAQ/qualify/objection/human-handover routing), sending the reply via
+   Chatwoot, and upserting the LEADS row + analytics. The client is resolved the same way
+   handleChatwootMessageHook already does (chatwoot_account_id -> CLIENTS row), so there's no more
+   per-client "wrapper workflow" to stamp out in n8n — one URL serves every ecom client. Gated to
+   industry==='ecommerce' only (per-request); every other client keeps running on n8n untouched —
+   pointing a non-ecom client's webhook here is a harmless no-op (see the industry check below).
+
+   Ported field-for-field from the supplied engine.json ("Leadvyne · Engine v3"), with these
+   deliberate deviations from what that workflow literally does today:
+   - Voice notes are still never transcribed — same "(sent a voice note)" placeholder text goes
+     to the AI. That's not a shortcut taken here; it's what engine.json itself actually does
+     (there's no transcription node wired to the voice branch despite docs describing one).
+   - Once a lead's Handover is 'Yes' or Stage is 'human_handover', the bot goes fully silent —
+     matches engine.json's own Code·State hard-stop and SETUP.md's documented "never talk over a
+     live agent" behavior. The HandoverFaqCount/_isPostHandover branch later in that workflow's
+     routing code is unreachable dead code as a result of that same hard-stop; not ported.
+   - ConvHistory is rebuilt from the lead's real accumulated history (state.history below), not
+     from the trimmed activeHistory the source workflow's Prep-lead node ends up using because of
+     a field-name mismatch (slim() drops `history`, keeping only `activeHistory`, but Prep-lead
+     reads `sc.history`) — that mismatch silently caps saved conversation history at ~8 messages
+     and, as a side effect, permanently dead-codes the "Warm" score fallback that depends on real
+     history length. Both are fixed here rather than reproduced, since neither is a documented
+     design choice — they read as an accidental regression, not intended behavior. Worth
+     independently patching in the n8n workflow too if it keeps running for non-ecom clients.
+   - For a human-handover reply, the customer is sent whichever message was actually computed
+     (the time-aware "we'll call you today/tomorrow at 9am" text, or the Frustrated-specific
+     apology) instead of a separate hardcoded "Sure 🙏 connecting you..." string — in engine.json
+     the Switch·Route "human" output wires straight to a fixed-text HTTP node, so that computed
+     message is built but never sent and the saved ConvHistory silently disagrees with what the
+     customer actually received. Falls back to the same fixed text only when nothing more
+     specific was computed (a plain "talk to a human" request with no final-stage/frustration
+     context), matching the one case where the original fixed string was actually the intent.
+   - The "Leadvyne · Ecom Context" n8n sub-workflow engine.json calls out to wasn't available to
+     port (it isn't in this repo). engineBuildEcomContext below is a from-scratch equivalent built
+     directly off this Worker's own product/order tables (top active products + this phone's
+     recent order status) rather than whatever that sub-workflow used to assemble.
+   Order-signal auto-send (previously a second, independent Chatwoot webhook —
+   handleChatwootIncomingOrderSignal above) is folded into this same turn instead of firing as a
+   separate webhook delivery, since this engine now generates the primary reply itself and no
+   longer needs to watch its own outgoing messages for a link pattern to detect what it just sent. ── */
+
+const ENGINE_ANALYTICS_TABLE='m2in19v8n7phitr';
+const ENGINE_OPT_OUT_WORDS=['stop','unsubscribe','opt out','opt-out','optout'];
+
+function engineParseJsonField(raw, fallback){ try{ const v=JSON.parse(raw||''); return v??fallback; }catch(e){ return fallback; } }
+function engineParseSalesReps(raw){
+  try{ const a=JSON.parse(raw||'[]'); if(Array.isArray(a)&&a.length) return a; }catch(e){}
+  return (raw||'').split('\n').map(s=>s.trim()).filter(Boolean);
+}
+
+function engineParseChatwootPayload(body){
+  if(body.message_type && body.message_type!=='incoming') return null;
+  if(body.private) return null;
+  const conv=body.conversation||{};
+  const sender=conv?.meta?.sender||body.sender||{};
+  let phone=(sender.phone_number||sender.identifier||'').replace(/[^0-9+]/g,'').replace(/^\+/,'');
+  if(phone.startsWith('00')) phone=phone.slice(2);
+  const atts=body.attachments||body.message?.attachments||[];
+  let mediaType='text', mediaUrl='';
+  if(atts.length){
+    const a=atts[0];
+    mediaUrl=a.data_url||a.file_url||'';
+    if((a.file_type||'').includes('audio')) mediaType='voice';
+    else if((a.file_type||'').includes('image')) mediaType='image';
+  }
+  const text=(body.content||body.message?.content||'').trim();
+  if(!phone) return null;
+  if(mediaType==='text' && !text) return null;
+  return {convId:conv?.id||null, phone, name:sender.name||'', text, mediaType, mediaUrl};
+}
+
+// Mirrors "HTTP · Get lead" + "Code · State": pulls every LEADS row for this phone across ALL
+// clients (not scoped by client_id — same as engine.json), so a phone that's already a lead for
+// a different client shows up as isDuplicate, matching the original's cross-tenant reporting.
+async function engineGetLeadState(env, clientId, phone){
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(Phone,eq,${encodeURIComponent(phone)})&limit=100`);
+  const d=await r.json().catch(()=>({}));
+  const rows=d?.list||[];
+  const lead=rows.find(l=>String(l.ClientId)===String(clientId))||null;
+  const isDuplicate=rows.some(l=>String(l.ClientId)!==String(clientId));
+  let history=[]; try{ history=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+  const botMsgs=history.filter(m=>m.role==='assistant').slice(-3).map(m=>m.content);
+  const looping=botMsgs.length===3 && botMsgs.every(m=>m===botMsgs[0]);
+  const activeHistory=history.length>20?history.slice(-6):history;
+  let qualAnswers={}; try{ qualAnswers=JSON.parse(lead?.QualAnswers||'{}'); }catch(e){}
+  return {
+    lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping,
+    qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
+    winProbabilityManual:lead?.WinProbabilityManual||'No', lastMsgAt:lead?.LastMsgAt||null
+  };
+}
+
+// Mirrors "HTTP · Vision" + "Code · image→text" / "Code · text→text" — resolves whatever the
+// customer sent into a single text string for the classifier + FAQ prompt to work with.
+async function engineResolveUserText(c, mediaType, mediaUrl, text){
+  if(mediaType==='image' && mediaUrl){
+    try{
+      const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:100, messages:[{role:'user', content:[
+          {type:'text', text:'Describe what this image shows in one short sentence, focused on anything relevant to a product or order enquiry.'},
+          {type:'image_url', image_url:{url:mediaUrl}}
+        ]}]})
+      });
+      const data=await r.json().catch(()=>({}));
+      return data?.choices?.[0]?.message?.content||'(image received)';
+    }catch(e){ return '(image received)'; }
+  }
+  return text || (mediaType==='voice'?'(sent a voice note)':'');
+}
+
+// Mirrors "AI Agent · Sentiment & Intent" + "Code · Intent classify": one OpenRouter call for
+// structured intent/sentiment/objection/win-probability, with the same deterministic regex
+// fast-paths/fallback ladder layered on top (instant, free, and safety-critical for WANTS_HUMAN,
+// so a lead can always reach a human even if the AI call fails, times out, or returns garbage).
+async function engineClassifyIntent(c, userText, activeHistory){
+  const low=userText.trim().toLowerCase();
+  let aiResult=null;
+  try{
+    const recent=(activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\n');
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:c.model||'google/gemini-2.5-flash', temperature:0.3, max_tokens:200,
+        messages:[
+          {role:'system', content:'You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going).'},
+          {role:'user', content:`Recent conversation:\n${recent}\n\nLatest message: ${userText}`}
+        ]
+      })
+    });
+    const data=await r.json().catch(()=>({}));
+    const raw=data?.choices?.[0]?.message?.content||'';
+    const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+    if(m) aiResult=JSON.parse(m[0]);
+  }catch(e){}
+
+  const VALID_INTENTS=new Set(['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL']);
+  const VALID_SENTIMENT=new Set(['Positive','Neutral','Negative','Frustrated']);
+  const VALID_OBJECTION=new Set(['none','price','competitor','timing','trust']);
+  let intent=null, intentData={};
+
+  if(/\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\b/.test(low)) intent='WANTS_HUMAN';
+  if(!intent){
+    const bookMatch=low.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\d{1,2}[:\/\-]\d{1,2}|\d{1,2}\s*(am|pm)|morning|afternoon|evening|tonight|next week)\b/);
+    if(bookMatch){ intent='BOOKING'; intentData={booking_time:userText}; }
+  }
+  if(!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence===undefined||aiResult.confidence>=0.5)){
+    intent=aiResult.intent;
+    if(intent==='BOOKING') intentData={booking_time:userText};
+  }
+  if(!intent && /\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\b/.test(low)) intent='WATCHED';
+  if(!intent && /\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\b/.test(low)) intent='FORM_DONE';
+  if(!intent && /\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\b/.test(low)) intent='DELAY';
+  if(!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\.!]*$/.test(low)) intent='SHORT_NEUTRAL';
+  if(!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\.!]*$/.test(low)) intent='AFFIRMATIVE';
+  if(!intent){ intent='QUESTION'; intentData={question:userText}; }
+
+  const sentiment=(aiResult && VALID_SENTIMENT.has(aiResult.sentiment))?aiResult.sentiment:'Neutral';
+  const objectionCategory=(aiResult && VALID_OBJECTION.has(aiResult.objection))?aiResult.objection:'none';
+  const wpRaw=Number(aiResult?.win_probability);
+  const aiWinProbability=Number.isFinite(wpRaw)?Math.max(0,Math.min(100,Math.round(wpRaw))):null;
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability};
+}
+
+// Mirrors "Code · Intent + flow" — the flow_json state machine that decides where this turn goes
+// (human handover / qualify / FAQ / objection / a scripted stage message) and what the next stage
+// is. Hardcodes the ecom-specific routing engine.json only takes when industry==='ecommerce',
+// since this whole engine is gated to that industry (see handleEngineWebhook).
+function engineRouteFlow(c, state, userText, cls){
+  const {intent, intentData, sentiment, objectionCategory, aiWinProbability}=cls;
+  const lowText=userText.toLowerCase().trim();
+  const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
+  const isResub=lowText==='start' && state.leadOptOut==='Yes';
+  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, isOptOut:true, isResub:false};
+  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, isOptOut:false, isResub:true};
+
+  const botConfig=engineParseJsonField(c.bot_config, {});
+  const qualQuestions=engineParseJsonField(c.qual_questions, []);
+  const flow=engineParseJsonField(c.flow_json, {});
+  let effIntent=intent;
+  if(state.looping && botConfig.antiloop_enabled!==false) effIntent='WANTS_HUMAN';
+
+  const qualDone=!qualQuestions.length || botConfig.qual_enabled===false || (state.stage && !state.stage.startsWith('qual_') && state.stage!=='new');
+  const qualStage=state.stage?.startsWith('qual_')?parseInt(state.stage.replace('qual_','')):null;
+
+  const stageNode=flow.stages?.[state.stage];
+  const node=stageNode||((state.stage==='new'||!state.stage)?flow.stages?.['new']:null)||{};
+  const stageNotFound=!stageNode && state.stage && state.stage!=='new';
+  const action=node[effIntent]||node['*']||{next:state.stage, msg:null};
+
+  const POSITIVE=new Set(['AFFIRMATIVE','WATCHED','FORM_DONE','BOOKING','SHORT_NEUTRAL']);
+  const NEGATIVE=new Set(['DELAY','WANTS_MORE_INFO']);
+  const allStages=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  const isFinalStage=allStages.length>0 && state.stage===allStages[allStages.length-1];
+  const lastBotMsg=(state.history||[]).filter(m=>m.role==='assistant').slice(-1)[0]?.content||'';
+  const actionMsg=action.msg?(flow.messages?.[action.msg]||''):'';
+  const wouldRepeat=actionMsg && lastBotMsg && lastBotMsg.includes(actionMsg.slice(0,40));
+
+  let reply='', videoUrl=null, route='stage';
+  let next=action.next||state.stage;
+
+  if(effIntent==='WANTS_HUMAN' && botConfig.handover_enabled!==false) route='human';
+  else if(isFinalStage && POSITIVE.has(effIntent) && botConfig.handover_enabled!==false){
+    route='human';
+    const tz=botConfig.timezone||'Asia/Kolkata';
+    const nowLocal=new Date(new Date().toLocaleString('en-US',{timeZone:tz}));
+    const hour=nowLocal.getHours(), day=nowLocal.getDay();
+    let callLabel='tomorrow';
+    if(hour<9 && day>=1 && day<=5) callLabel='today';
+    else if(day===6) callLabel='on Monday';
+    else if(day===0) callLabel='tomorrow (Monday)';
+    reply=botConfig.callback_msg||`Thank you! 🙏 Our team will contact you ${callLabel} at 9am. We look forward to speaking with you!`;
+  } else if(wouldRepeat && POSITIVE.has(effIntent)) route='faq';
+  else if(state.stage==='human_handover') route='drop'; // unreachable — handleEngineWebhook hard-stops earlier, kept for parity
+  else if(stageNotFound || effIntent==='QUESTION' || NEGATIVE.has(effIntent)){
+    route='ecom_faq';
+    const flowIsActive=allStages.length>0 && !isFinalStage && state.stage!=='human_handover' && !stageNotFound;
+    if(flowIsActive && effIntent==='QUESTION' && action.msg){
+      const vars=flow.variables||{};
+      const stageMsg=(flow.messages?.[action.msg]||'').replace(/\[(\w+)\]/g,(_,k)=>vars[k.toLowerCase()]??vars[k]??'');
+      Object.assign(intentData, {_flowPendingMsg:stageMsg||null, _flowPendingNext:action.next||state.stage});
+    }
+  } else if(!qualDone && qualStage===null) route='qualify';
+  else if(!qualDone && qualStage!==null) route='qualify_next';
+
+  if(sentiment==='Frustrated' && route!=='human' && botConfig.handover_enabled!==false){
+    route='human';
+    reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
+  } else if(objectionCategory!=='none' && ['faq','ecom_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
+    route='objection';
+  }
+
+  let qualAnswers={...state.qualAnswers};
+  if(route==='qualify_next'){
+    const currentIdx=qualStage!==null?qualStage:0;
+    const nextIdx=currentIdx+1;
+    if(qualQuestions[currentIdx]) qualAnswers[qualQuestions[currentIdx]]=userText;
+    if(nextIdx<qualQuestions.length){
+      reply=qualQuestions[nextIdx];
+      next='qual_'+nextIdx;
+    } else {
+      const firstStage=Object.keys(flow.stages||{}).filter(k=>k!=='new')[0]||'new';
+      const firstAction=(flow.stages?.[firstStage]||{})['*']||{next:firstStage, msg:null};
+      const vars=flow.variables||{};
+      reply=(flow.messages?.[firstAction.msg]||'Great, thanks! Let me share some information 😊').replace(/\[(\w+)\]/g,(_,k)=>vars[k]??'');
+      next=firstAction.next||firstStage;
+    }
+  } else if(route==='stage' && action.msg){
+    const vars=flow.variables||{};
+    reply=(flow.messages?.[action.msg]||'').replace(/\[(\w+)\]/g,(_,k)=>vars[k.toLowerCase()]??vars[k]??'');
+    if(action.form && vars.form_link && !reply.includes(vars.form_link)) reply+='\n\n'+vars.form_link;
+    if(action.video) videoUrl=vars[action.video]||null;
+  }
+  if(route==='stage' && !action.msg) route='ecom_faq';
+
+  if(effIntent==='BOOKING' && c.cal_link && !reply.includes(c.cal_link)){
+    reply=(reply||'Great! You can book your slot here 📅')+'\n\n👉 '+c.cal_link;
+  }
+
+  return {route, next, reply, videoUrl, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, isOptOut:false, isResub:false};
+}
+
+// From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
+// live product catalog + this phone's recent order status, built off the same ecom tables
+// ecom.html and /ecom/* already read.
+async function engineBuildEcomContext(env, c, clientId, phone){
+  const lines=[];
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(productsTable){
+    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=30&fields=name,sku,price,currency,stock,color,size,category`);
+    const pd=await pr.json().catch(()=>({}));
+    const products=pd?.list||[];
+    if(products.length){
+      lines.push('## Product Catalog (partial — ask if something specific isn\'t listed)');
+      products.forEach(p=>lines.push(`- ${p.name}${p.sku?' [sku:'+p.sku+']':''} — ${p.currency||''} ${p.price??''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.category?' category:'+p.category:''} — ${(p.stock>0)?'in stock':'out of stock'}`));
+    }
+  }
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(ordersTable && phone){
+    const or=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})&limit=5&sort=-order_date`);
+    const od=await or.json().catch(()=>({}));
+    const orders=od?.list||[];
+    if(orders.length){
+      lines.push('## This customer\'s recent orders');
+      orders.forEach(o=>lines.push(`- ${o.order_id}: ${o.items||'(items unspecified)'} — ${o.currency||''} ${o.total??''} — status: ${o.status}`));
+    }
+  }
+  lines.push(`## Order Link\nWhen a customer is ready to buy, share this link: ${buildOrderLink(c, clientId)}`);
+  return lines.length?('\n\n'+lines.join('\n')):'';
+}
+
+// Mirrors "Code · FAQ prep" (ecomContextBlock omitted) / "Code · Ecom FAQ prep" (block included).
+function engineBuildFaqSystemPrompt(c, state, ecomContextBlock){
+  const history=state.activeHistory||[];
+  const lang=c.language||'en';
+  let sys=c.main_prompt||'';
+  const services=engineParseJsonField(c.services, []);
+  if(services.length){
+    sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||(ecomContextBlock?'INR':'AED')} ${s.price} per ${s.per||(ecomContextBlock?'item':'person')}`).join('\n');
+  }
+  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  if(ecomContextBlock) sys+=ecomContextBlock;
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
+  if(!ecomContextBlock){
+    sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
+  } else {
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above. If specific details are not available, politely say you will connect them with support.';
+  }
+  return sys;
+}
+
+// Mirrors "Code · Objection prep".
+function engineBuildObjectionSystemPrompt(c, state, objectionCategory){
+  const history=state.activeHistory||[];
+  const lang=c.language||'en';
+  const playbook=engineParseJsonField(c.objection_playbook, []);
+  const match=playbook.find(o=>(o.category||'').toLowerCase()===objectionCategory)||null;
+  let sys=c.main_prompt||'';
+  const services=engineParseJsonField(c.services, []);
+  if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`).join('\n');
+  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  sys+=`\n\n## Objection Handling\nThe lead just raised a "${objectionCategory}" objection.`;
+  if(match && match.approved_response) sys+=` Use this approved response strategy: ${match.approved_response}`;
+  else sys+=' Acknowledge the concern briefly and honestly, respond confidently without over-promising, and always end by proposing one concrete next step (a call, a demo, or answering one more question) rather than just apologising.';
+  if(objectionCategory==='price'){
+    sys+=c.quote_validity_days
+      ? ` Create gentle urgency: mention that this pricing is confirmed for the next ${c.quote_validity_days} day(s) and encourage a decision within that window.`
+      : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
+  }
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
+  sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Keep it to 2-4 sentences.';
+  return sys;
+}
+
+async function engineCallLlm(c, systemPrompt, userText, maxTokens){
+  try{
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:maxTokens||300, messages:[{role:'system',content:systemPrompt},{role:'user',content:userText}]})
+    });
+    const data=await r.json().catch(()=>({}));
+    return data?.choices?.[0]?.message?.content?.trim()||'One moment 🙏';
+  }catch(e){ return 'One moment 🙏'; }
+}
+
+async function engineSendChatwootReply(c, convId, text){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!text) return;
+  try{
+    const fd=new FormData();
+    fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+  }catch(e){}
+}
+
+async function engineSendHandoverLabel(c, convId){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
+  try{
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/labels`, {
+      method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+      body:JSON.stringify({labels:['human-requested']})
+    });
+  }catch(e){}
+}
+
+// Mirrors "Code · Prep lead" — hot-moment/qual-score/win-probability/round-robin-owner
+// computation and the LEADS upsert body. See the file-header comment above for the ConvHistory
+// and human-handover-message fixes vs. the source workflow.
+function engineBuildLeadUpsertBody(c, clientId, state, routing, userText){
+  const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, isOptOut, isResub}=routing;
+  const reply=routing.reply;
+  let next=routeNext;
+  const isHuman=routing.route==='human';
+
+  const history=(state.history||[]).slice();
+  if(userText) history.push({role:'user', content:userText});
+  if(reply) history.push({role:'assistant', content:reply});
+
+  const body={
+    ClientId:String(clientId), Phone:state.phone, Name:state.name, ConversationID:state.convId,
+    Date:new Date().toISOString(), Language:c.language||'en',
+    ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString()
+  };
+  if(qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers=JSON.stringify(qualAnswers);
+  if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
+  else body.Stage=next;
+  if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; }
+  if(intentData?.booking_time) body.BookingTime=intentData.booking_time;
+
+  let score='Cold';
+  if(intent==='BOOKING' || intentData?.booking_time || body.Stage==='consultation_booked') score='Hot';
+  else if(['AFFIRMATIVE','WATCHED','FORM_DONE'].includes(intent) && state.stage!=='new') score='Warm';
+  else if(state.stage!=='new' && (state.history||[]).length>2) score='Warm';
+  body.Score=score;
+  if(state.isDuplicate) body.IsDuplicate='Yes';
+  if(isOptOut) body.OptOut='Yes';
+  if(isResub){ body.OptOut='No'; body.Stage='new'; }
+
+  const HOT_PHRASES=['how much','price','cost','available','when can','book','ready to','interested in','want to','sign up','start','confirm','deposit','payment','package','deal','offer','buy','purchase','enroll','register'];
+  const msgLower=(userText||'').toLowerCase();
+  const hotPhrase=HOT_PHRASES.find(p=>msgLower.includes(p));
+  if(hotPhrase){ body.HotMoment='Yes'; body.HotMomentText=(userText||'').slice(0,200); }
+
+  const flow=engineParseJsonField(c.flow_json, {});
+  const stageKeys=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  const stageIdx=stageKeys.indexOf(state.stage);
+  const stageProgress=stageKeys.length>0?(stageIdx+1)/stageKeys.length:0;
+  const histLen=(state.history||[]).length;
+  let qualScore=Math.round((stageProgress*4)+(score==='Hot'?3:score==='Warm'?2:0)+(hotPhrase?1.5:0)+Math.min(histLen/20,1.5));
+  qualScore=Math.max(1, Math.min(10, qualScore));
+  body.QualScore=qualScore;
+
+  if(state.winProbabilityManual!=='Yes'){
+    let wp=(typeof aiWinProbability==='number')?aiWinProbability:Math.round(stageProgress*80+(score==='Hot'?20:score==='Warm'?10:0));
+    if(isHuman) wp=Math.max(wp,55);
+    if(isOptOut) wp=0;
+    body.WinProbability=Math.max(0, Math.min(100, wp));
+  }
+  if(c.deal_currency && !state.leadId) body.DealCurrency=c.deal_currency;
+
+  if(!state.leadId && !state.owner){
+    const reps=engineParseSalesReps(c.agents);
+    if(reps.length){
+      let h=0; const phoneStr=String(state.phone||'');
+      for(let i=0;i<phoneStr.length;i++) h=(h*31+phoneStr.charCodeAt(i))|0;
+      body.Owner=reps[Math.abs(h)%reps.length];
+    }
+  }
+
+  if(sentiment) body.Sentiment=sentiment;
+  if(objectionCategory && objectionCategory!=='none') body.LastObjectionCategory=objectionCategory;
+  if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
+
+  return {body, method:state.leadId?'PATCH':'POST', leadId:state.leadId};
+}
+
+async function engineUpsertLead(env, method, leadId, body){
+  if(leadId) body.Id=leadId;
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
+}
+
+async function engineLogAnalytics(env, entry){
+  try{ await ncFetch(env, `api/v2/tables/${ENGINE_ANALYTICS_TABLE}/records`, {method:'POST', body:entry}); }catch(e){}
+}
+
+async function handleEngineWebhook(request, env){
+  const startMs=Date.now();
+  const body=await request.json().catch(()=>({}));
+  const accountId=String(body.account?.id||body.conversation?.account_id||'');
+  if(!accountId) return json({ok:true, skipped:'no-account-id'});
+  const c=await findClientByField(env, 'chatwoot_account_id', accountId);
+  if(!c) return json({ok:true, skipped:'client-not-found'});
+  const clientId=String(c.Id);
+  if(c.industry!=='ecommerce') return json({ok:true, skipped:'not-ecommerce-industry'});
+  if(c.active==='No') return json({ok:true, skipped:'client-inactive'});
+
+  const parsed=engineParseChatwootPayload(body);
+  if(!parsed) return json({ok:true, skipped:'not-actionable'});
+  const {convId, phone, name, text, mediaType, mediaUrl}=parsed;
+
+  if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')) return json({ok:true, skipped:'test-mode'});
+  if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
+
+  const state=await engineGetLeadState(env, clientId, phone);
+  state.phone=phone; state.name=name; state.convId=convId;
+
+  // Matches engine.json's Code·State hard-stop — SETUP.md: "the bot stops writing to the lead
+  // entirely once handed over ... so it can never talk over a live agent."
+  if(state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover')) return json({ok:true, skipped:'handed-over'});
+  if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start') return json({ok:true, skipped:'opted-out'});
+
+  const botConfig=engineParseJsonField(c.bot_config, {});
+  const rateLimitMs=parseInt(botConfig.rate_limit_ms)||4000;
+  const lastMsgAt=state.lastMsgAt?new Date(state.lastMsgAt).getTime():0;
+  if(Date.now()-lastMsgAt<rateLimitMs) return json({ok:true, skipped:'rate-limited'});
+
+  const userText=await engineResolveUserText(c, mediaType, mediaUrl, text);
+  const cls=await engineClassifyIntent(c, userText, state.activeHistory);
+  const routing=engineRouteFlow(c, state, userText, cls);
+
+  let sentText=null;
+  if(routing.route==='human'){
+    sentText=routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.';
+    routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
+    await engineSendChatwootReply(c, convId, sentText);
+    await engineSendHandoverLabel(c, convId);
+  } else if(routing.route==='drop'){
+    // no reply
+  } else if(routing.route==='qualify'){
+    const qualQuestions=engineParseJsonField(c.qual_questions, []);
+    routing.reply=qualQuestions[0]||'Could you tell me a bit more about what you are looking for?';
+    routing.next='qual_0';
+    sentText=routing.reply;
+    await engineSendChatwootReply(c, convId, sentText);
+  } else if(routing.route==='qualify_next'){
+    sentText=routing.reply||null;
+    if(sentText) await engineSendChatwootReply(c, convId, sentText);
+  } else if(routing.route==='faq' || routing.route==='ecom_faq'){
+    const ecomContextBlock=routing.route==='ecom_faq' ? await engineBuildEcomContext(env, c, clientId, phone) : null;
+    const sysPrompt=engineBuildFaqSystemPrompt(c, state, ecomContextBlock);
+    let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+    if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
+    routing.reply=reply; sentText=reply;
+    await engineSendChatwootReply(c, convId, sentText);
+  } else if(routing.route==='objection'){
+    const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory);
+    let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+    if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
+    routing.reply=reply; sentText=reply;
+    await engineSendChatwootReply(c, convId, sentText);
+  } else if(routing.route==='stage'){
+    sentText=routing.reply||null;
+    if(sentText) await engineSendChatwootReply(c, convId, sentText);
+  }
+
+  const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText);
+  await engineUpsertLead(env, method, leadId, leadBody);
+
+  // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
+  // background promise left running past the returned Response risks being cut off mid-flight.
+  await engineLogAnalytics(env, {
+    ClientId:clientId, ClientName:c.client_name||'', Phone:phone, Intent:routing.intent||'', Route:routing.route||'',
+    Stage:state.stage||'', NextStage:leadBody.Stage||'', ResponseMs:Date.now()-startMs, IsError:false, ErrorMsg:'',
+    Timestamp:new Date().toISOString()
+  });
+  await patchClientFields(env, clientId, {last_seen:new Date().toISOString()}).catch(()=>{});
+
+  // Order-signal auto-send, folded into this same turn — previously a second, independent
+  // Chatwoot webhook (handleChatwootIncomingOrderSignal above). Skipped for human/drop/opt-out/
+  // resub turns, none of which carry real order intent.
+  if(!['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token){
+    const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+    if(ordersTable){
+      const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,pending)&limit=1`);
+      const existD=await existR.json().catch(()=>({}));
+      if(!existD?.list?.length){
+        const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+        const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+        if(detection.signal){
+          if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendOrderLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.sku);
+          else await sendOrderLinkNow(env, c, clientId, phone, name, detection.sku);
+        }
+      }
+    }
+  }
+
+  return json({ok:true, route:routing.route, sent:!!sentText});
+}
+
 /* ── ECOMMERCE PUBLIC STOREFRONT (store.html, and onshope.com's onshope-store.html /
    onshope-home.html) — unlike every /ecom/* route above, these are meant to be opened directly
    by end customers (shared as a WhatsApp link), so they must not give a customer any of what a
@@ -3502,6 +4055,7 @@ export default {
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
+      else if(url.pathname==='/engine/webhook' && request.method==='POST'){ res=await handleEngineWebhook(request, env); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
