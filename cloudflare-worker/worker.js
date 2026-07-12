@@ -3673,7 +3673,10 @@ function engineRouteFlow(c, state, userText, cls){
     const nextIdx=currentIdx+1;
     if(qualQuestions[currentIdx]) qualAnswers[qualQuestions[currentIdx]]=userText;
     if(nextIdx<qualQuestions.length){
-      reply=qualQuestions[nextIdx];
+      // qual_questions is documented/expected as an array of plain strings, but it's client-
+      // editable JSON with no schema enforcement — coerce defensively so a malformed entry (an
+      // object, a number, etc.) can never reach the Chatwoot/WhatsApp send as a non-string value.
+      reply=typeof qualQuestions[nextIdx]==='string'?qualQuestions[nextIdx]:String(qualQuestions[nextIdx]??'');
       next='qual_'+nextIdx;
     } else {
       const firstStage=Object.keys(flow.stages||{}).filter(k=>k!=='new')[0]||'new';
@@ -3836,14 +3839,27 @@ async function engineCallLlm(c, systemPrompt, userText, maxTokens){
 // The one delivery point a customer's reply actually depends on — a silent failure here means
 // the customer gets nothing and nobody finds out, so (unlike most best-effort sends elsewhere in
 // this file) this specifically reports to reportOpsError on both a thrown fetch and a non-OK
-// response (previously not even checked).
+// response. Coerces/trims `text` defensively — a non-string value (e.g. a malformed qual_questions
+// entry) or a whitespace-only string would both pass a bare `!text` truthiness check but shouldn't
+// be forwarded as real content. NOTE a real limit this can't close: Chatwoot accepts a message
+// (200 OK here) and relays it to WhatsApp *asynchronously* — a downstream Meta rejection (e.g.
+// "text.body" schema errors) happens after this function has already returned successfully, and
+// only shows up in Chatwoot's own UI as "Failed to send." That class of failure is invisible to
+// this synchronous check by construction; it isn't something r.ok can catch.
 async function engineSendChatwootReply(env, c, clientId, convId, text){
-  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!text) return;
+  const trimmed=(typeof text==='string'?text:(text==null?'':String(text))).trim();
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return;
+  if(typeof text!=='string'){
+    await reportOpsError(env, 'engineSendChatwootReply — reply was not a string', new Error(`typeof=${typeof text} value=${JSON.stringify(text)?.slice(0,300)}`), {clientId, convId});
+  }
   try{
     const fd=new FormData();
-    fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-    if(!r.ok) await reportOpsError(env, 'engineSendChatwootReply — Chatwoot rejected the send', new Error('HTTP '+r.status), {clientId, convId});
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendChatwootReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+    }
   }catch(e){
     await reportOpsError(env, 'engineSendChatwootReply — send threw', e, {clientId, convId});
   }
@@ -4032,7 +4048,8 @@ async function handleEngineWebhook(request, env, secret){
       // no reply
     } else if(routing.route==='qualify'){
       const qualQuestions=engineParseJsonField(c.qual_questions, []);
-      routing.reply=qualQuestions[0]||'Could you tell me a bit more about what you are looking for?';
+      const firstQ=typeof qualQuestions[0]==='string'?qualQuestions[0]:'';
+      routing.reply=firstQ||'Could you tell me a bit more about what you are looking for?';
       routing.next='qual_0';
       sentText=routing.reply;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
