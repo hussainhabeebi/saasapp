@@ -2592,6 +2592,31 @@ async function handleEcomClientGet(request, env){
   return json(out);
 }
 
+// Verifies a PATCH actually stuck before returning success, retrying through NocoDB's schema-
+// cache lag right after a column was just created — the same root cause found (and fixed, in
+// dashboard.html's patchClient) for Appointments/Travel Agency/Recruitment's setup flows. This
+// route's own caller (ecom.html's patchClient) doesn't even check the HTTP response, let alone
+// verify the field landed, so — unlike those three — a failure here has been silently invisible
+// on both ends: ecom_table_ids could fail to save with literally no error anywhere, leaving
+// ecomResolveTable() falling back to the shared default products table instead of this client's
+// own, which reads as "the bot can't find a product that's clearly in the catalog" with no clue
+// why. Fixing it here, server-side, covers ecom.html without needing a matching frontend change.
+async function ncPatchVerified(env, clientId, fields){
+  const MAX_ATTEMPTS=3;
+  let lastResp=null;
+  for(let attempt=1; attempt<=MAX_ATTEMPTS; attempt++){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), ...fields}});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) return {ok:false, status:r.status, data};
+    const fresh=await getClientById(env, clientId);
+    const stuck=fresh?Object.keys(fields).filter(k=>String(fresh[k]??'')!==String(fields[k]??'')):Object.keys(fields);
+    if(!stuck.length) return {ok:true, status:r.status, data};
+    lastResp={ok:false, status:502, data:{error:`Save didn't take effect for: ${stuck.join(', ')} — check these columns exist in NocoDB (see SETUP.md)`}};
+    if(attempt<MAX_ATTEMPTS) await new Promise(res=>setTimeout(res, 900*attempt));
+  }
+  return lastResp;
+}
+
 async function handleEcomClientUpdate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
@@ -2599,9 +2624,8 @@ async function handleEcomClientUpdate(request, env){
   const fields={};
   ECOM_CLIENT_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=body[k]; });
   if(!Object.keys(fields).length) return json({error:'No valid fields to update'},400);
-  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), ...fields}});
-  const data=await r.json().catch(()=>({}));
-  return json(data, r.status);
+  const result=await ncPatchVerified(env, clientId, fields);
+  return json(result.data, result.status);
 }
 
 // client_id-based like the rest of /ecom/* (see the comment on handleEcomList below) — ecom.html

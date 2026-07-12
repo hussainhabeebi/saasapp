@@ -1241,8 +1241,10 @@ function updateWaParam(kind, idx, value) {
 }
 
 async function saveWaTemplates() {
-  await patchClient({ ecom_wa_templates: JSON.stringify({ config: waTemplateConfig, templates: waTemplates }) });
-  showMsg('waTemplatesSaveMsg', 'Saved ✓');
+  try {
+    await patchClient({ ecom_wa_templates: JSON.stringify({ config: waTemplateConfig, templates: waTemplates }) });
+    showMsg('waTemplatesSaveMsg', 'Saved ✓');
+  } catch (e) { showMsg('waTemplatesSaveMsg', 'Error: ' + e.message, 6000); }
 }
 
 // ── SHOPIFY NOTIFICATION TEMPLATES ────────────────
@@ -1371,34 +1373,48 @@ function updateShopifyParam(kind, idx, value) {
 }
 
 async function saveShopifyTemplates() {
-  await patchClient({ shopify_notify_config: JSON.stringify({ config: shopifyNotifyConfig, templates: shopifyTemplates }) });
-  showMsg('shopifyTemplatesSaveMsg', 'Saved ✓');
+  try {
+    await patchClient({ shopify_notify_config: JSON.stringify({ config: shopifyNotifyConfig, templates: shopifyTemplates }) });
+    showMsg('shopifyTemplatesSaveMsg', 'Saved ✓');
+  } catch (e) { showMsg('shopifyTemplatesSaveMsg', 'Error: ' + e.message, 6000); }
 }
 
 // ── SETTINGS SAVE ─────────────────────────────────
 async function saveTableIds() {
   const products = document.getElementById('cfgProductsTable').value.trim();
   const orders   = document.getElementById('cfgOrdersTable').value.trim();
-  ecomTableIds = { products, orders };
-  await patchClient({ ecom_table_ids: JSON.stringify(ecomTableIds) });
-  showMsg('tableIdsMsg', 'Saved ✓');
-  loadProducts();
-  loadOrders();
+  const next = { products, orders };
+  try {
+    // Real observed failure: this silently not sticking (see patchClient's own comment) meant
+    // ecomResolveTable() kept falling back to the shared default products table instead of this
+    // client's own — the bot could describe a product from its knowledge-base text but never
+    // actually find it in a structured lookup (order-signal detection, stock/SKU matching),
+    // because it was searching a different, wrong table the whole time.
+    await patchClient({ ecom_table_ids: JSON.stringify(next) });
+    ecomTableIds = next;
+    showMsg('tableIdsMsg', 'Saved ✓');
+    loadProducts();
+    loadOrders();
+  } catch (e) { showMsg('tableIdsMsg', 'Error: ' + e.message, 6000); }
 }
 
 async function saveReviewLink() {
   const url = document.getElementById('cfgReviewLink').value.trim();
-  await patchClient({ review_link: url });
-  showMsg('reviewLinkMsg', 'Saved ✓');
+  try {
+    await patchClient({ review_link: url });
+    showMsg('reviewLinkMsg', 'Saved ✓');
+  } catch (e) { showMsg('reviewLinkMsg', 'Error: ' + e.message, 6000); }
 }
 
 async function saveOrdersSheet() {
   const url = document.getElementById('cfgOrdersSheet').value.trim();
-  await patchClient({
-    ecom_orders_sheet: url,
-    ecom_orders_column_map: JSON.stringify({ map: columnMaps.orders, headers: sheetHeaders.orders })
-  });
-  showMsg('ordSheetMsg', 'Saved ✓');
+  try {
+    await patchClient({
+      ecom_orders_sheet: url,
+      ecom_orders_column_map: JSON.stringify({ map: columnMaps.orders, headers: sheetHeaders.orders })
+    });
+    showMsg('ordSheetMsg', 'Saved ✓');
+  } catch (e) { showMsg('ordSheetMsg', 'Error: ' + e.message, 6000); }
 }
 
 async function syncSheet(type) {
@@ -1424,12 +1440,20 @@ async function syncSheet(type) {
 }
 
 // ── HELPERS ───────────────────────────────────────
+// Previously fired-and-forgot — no response check at all, so a failed save (including the
+// server-side "didn't actually stick" case /ecom/client now detects and retries through, a real
+// NocoDB schema-cache-lag race found via Appointments/Travel Agency/Recruitment hitting the same
+// thing) was completely invisible: every caller below shows "Saved ✓" unconditionally right
+// after this returns. Now throws with the real error so callers can show it instead.
 async function patchClient(body) {
-  await fetch(`${WORKER_BASE}/ecom/client`, {
+  const r = await fetch(`${WORKER_BASE}/ecom/client`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ client_id: clientId, ...body })
   });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
+  return data;
 }
 
 function showMsg(id, msg, duration = 3000) {
