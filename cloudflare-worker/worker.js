@@ -2741,6 +2741,73 @@ async function handleEcomOrderLink(request, env){
   return json({ok:true, link, order_id, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status)});
 }
 
+// Non-ecom equivalent of /ecom/order-link, for healthcare/services/consultancy-style clients
+// where the conversion event is a booking, not a purchase — there's no product/order to log, so
+// instead of writing to the ecom orders table this advances the matching lead and drops a
+// follow-up task. Reuses external_store_link (Settings -> Order Link) as the booking link — same
+// field ecom clients use for their storefront override, here holding a Calendly/Cal.com/booking
+// page URL instead; and reuses manual_tasks, the same JSON-on-CLIENTS field the dashboard's Tasks
+// page already reads/writes, so no new table for either.
+const BOOKING_TERMINAL_STAGES=['appt_booked','consultation_booked','visit_booked'];
+
+// Shared by handleLeadBookingLink and handleChatwootMessageHook's non-ecom fallback below — finds
+// the lead by phone, advances it to a booking-terminal stage (only one the client has actually
+// defined in their own flow_json — never writes a stage value they haven't configured), and drops
+// a follow-up task via manual_tasks, the same JSON-on-CLIENTS field the Tasks page itself uses.
+// Returns {lead_id, stage_advanced} for the caller to report back.
+async function advanceLeadBookingAndTask(env, c, clientId, phone, name){
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+  const leadD=await leadR.json().catch(()=>({}));
+  const lead=leadD?.list?.[0]||null;
+
+  let stage_advanced=null;
+  if(lead){
+    let flow={}; try{ flow=JSON.parse(c.flow_json||'{}'); }catch(e){}
+    const stageKeys=Object.keys(flow.stages||{});
+    const target=BOOKING_TERMINAL_STAGES.find(s=>stageKeys.includes(s));
+    if(target && lead.Stage!==target){
+      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, Stage:target}});
+      stage_advanced=target;
+    }
+  }
+
+  let manual={items:[],dismissed:[],projects:[]};
+  try{ manual={...manual, ...JSON.parse(c.manual_tasks||'{}')}; }catch(e){}
+  if(!Array.isArray(manual.items)) manual.items=[];
+  manual.items.push({
+    id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    title:`Confirm booking — ${name||phone}`,
+    notes:'Booking link sent — confirm the appointment landed.',
+    due_date:new Date().toISOString().slice(0,10), due_time:'',
+    lead_id:lead?lead.Id:null, lead_name:lead?.Name||name||'',
+    assignee_email:'', category:'', project_id:'', status:'open', created_at:new Date().toISOString()
+  });
+  await patchClientFields(env, clientId, {manual_tasks:JSON.stringify(manual)});
+  return {lead_id:lead?.Id||null, stage_advanced};
+}
+
+async function handleLeadBookingLink(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!clientId||!phone) return json({error:'client_id and phone required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  const link=(c.external_store_link||'').trim();
+  if(!link) return json({error:'No booking link configured — set one in Settings → Order Link.'}, 400);
+  if(!c.wa_phone_id||!c.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
+
+  const name=body.name||'there';
+  const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:`Hi ${name}! Here's the link to book: ${link}`}})
+  });
+  const waData=await waR.json().catch(()=>({}));
+
+  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, body.name);
+  return json({ok:true, link, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), lead_id, stage_advanced});
+}
+
 // One-time setup (dashboard "Enable Auto Order-Tracking" button): registers a *second*,
 // independent Chatwoot webhook on the client's WhatsApp inbox, alongside whichever one already
 // feeds n8n's bot (see the c.webhook_url registration above, in the WhatsApp-connect flow). This
@@ -2805,7 +2872,19 @@ async function handleChatwootMessageHook(request, env){
   if(!phone) return json({ok:true, skipped:'no-phone'});
 
   const ordersTable=await ecomResolveTable(env, clientId, 'orders');
-  if(!ordersTable) return json({ok:true, skipped:'no-orders-table'});
+  // No ecom module configured for this client at all — treat it as a booking-style client
+  // (healthcare/services/consultancy) instead: advance the lead + drop a follow-up task, same
+  // action handleLeadBookingLink performs, just triggered by the bot's own reply instead of an
+  // explicit n8n call. Dedupe here is "lead already at a booking-terminal stage" rather than a
+  // pending-order check, since there's no orders table to check against.
+  if(!ordersTable){
+    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+    const leadD=await leadR.json().catch(()=>({}));
+    const lead=leadD?.list?.[0]||null;
+    if(lead && BOOKING_TERMINAL_STAGES.includes(lead.Stage)) return json({ok:true, skipped:'already-booked'});
+    const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, body.conversation?.meta?.sender?.name);
+    return json({ok:true, lead_id, stage_advanced});
+  }
 
   // Dedupe — skip if this phone already has an auto-logged order still pending, so a bot that
   // repeats the link across several turns of the same conversation doesn't spam duplicate rows.
@@ -2958,6 +3037,7 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
       else if(url.pathname==='/ecom/order-link' && request.method==='POST'){ res=await handleEcomOrderLink(request, env); }
+      else if(url.pathname==='/leads/booking-link' && request.method==='POST'){ res=await handleLeadBookingLink(request, env); }
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }

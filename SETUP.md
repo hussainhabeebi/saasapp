@@ -408,6 +408,32 @@ module's own `onshope.com/<slug>` / `store.html?client=<id>` link when it's blan
   to separately paste their store URL here if they want it used as the *order link* too; the two
   aren't wired together.
 
+**Non-ecom industries (healthcare/services/consultancy/etc) — booking, not ordering:** every
+industry but Ecommerce (`INDUSTRIES` in `dashboard.html`) already converts leads via a *booking*
+(appointment, consultation, viewing, test drive, placement — `TERMINAL` already has
+`appt_booked`/`consultation_booked`/`visit_booked`), not a purchase, so there's no ecom order row
+to create. Settings → Order Link relabels itself "🔗 Booking Link" for these clients
+(`isBookingIndustry()`, `dashboard.html` — true for any industry except `ecommerce`) and
+`external_store_link` holds a scheduling URL (Calendly/Cal.com/etc) instead of a storefront.
+- **`POST /leads/booking-link`** (`worker.js`, `handleLeadBookingLink`) — the booking equivalent of
+  `/ecom/order-link`, same client_id-based/no-session shape for n8n to call. Body:
+  `{client_id, phone, name?}`. Sends the configured booking link over WhatsApp directly, then calls
+  the shared `advanceLeadBookingAndTask()` helper: finds the lead by phone, advances its `Stage` to
+  whichever of `appt_booked`/`consultation_booked`/`visit_booked` actually exists in that client's
+  own `flow_json` (never writes a stage the client hasn't defined in their stage builder — if none
+  of the three are present, the stage is left alone), and appends a follow-up task to
+  `manual_tasks` (the same JSON-on-CLIENTS field the Tasks page itself reads/writes — no new
+  table). Returns `{ok, link, whatsapp_sent, lead_id, stage_advanced}`.
+- **The zero-n8n auto-tracking webhook covers this too**: `handleChatwootMessageHook` (see "Closing
+  the loop" above) now branches on whether the client has an ecom orders table configured. If not
+  — i.e. a pure booking-industry client — it calls the same `advanceLeadBookingAndTask()` helper
+  instead of logging an ecom order, deduping on "lead already at a booking-terminal stage" rather
+  than a pending-order check. So a healthcare client gets the exact same zero-n8n-edit automation
+  ecom clients get, just pointed at the lead pipeline instead of an orders table.
+- No dashboard button calls `/leads/booking-link` directly, same as `/ai/order-signal` and
+  `/ai/objection-reply` — it's meant to be called from n8n once a booking signal is detected there,
+  the same n8n-calls-Cloudflare pattern as those two.
+
 **`POST /ai/order-signal`** (`handleAiOrderSignal`) — decides *whether* and *for what* to call
 `/ecom/order-link` above; it never sends anything itself. Same n8n-calls-Cloudflare shape as
 `/ai/objection-reply`: client_id-based, no session. Body: `{client_id, message}`. A "signal" isn't

@@ -1692,15 +1692,17 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <!-- AUTO ORDER-TRACKING — a *second*, independent Chatwoot webhook (registered by
                handleEcomEnableOrderTracking, cloudflare-worker/worker.js) that silently watches
-               your bot's own outgoing replies for the storefront link (which the Knowledge Base
-               payload already instructs it to share on buying signals — see the ORDER LINK
-               section injected by buildKbProcessorText()) and logs a pending ecom order the
-               moment it sees one. It never sends anything to the customer itself, so it can't
+               your bot's own outgoing replies for the link (which the Knowledge Base payload
+               already instructs it to share — see buildKbProcessorText()) and acts the moment it
+               sees one: for ecom clients, logs a pending order; for booking-industry clients
+               (healthcare/services/consultancy/etc — see handleChatwootMessageHook's no-orders-
+               table fallback), advances the matching lead to a booking stage and drops a
+               follow-up task instead. It never sends anything to the customer itself, so it can't
                collide with the bot's own reply, and it needs zero changes to your n8n workflow —
                n8n keeps doing exactly what it does today. -->
           <div class="settings-section">
             <div class="s-head">🛒 Auto Order-Tracking</div>
-            <div class="s-note">When your bot shares a store link with a customer (see the Order Link guidance above), automatically log it as a pending order — with no changes to your n8n workflow. One-time setup per WhatsApp connection.</div>
+            <div class="s-note">When your bot shares your link with a customer (see the Order/Booking Link guidance above), automatically log a pending order or advance the lead + create a follow-up task — with no changes to your n8n workflow. One-time setup per WhatsApp connection.</div>
             <div style="display:flex;align-items:center;gap:10px">
               <button class="save-btn" id="enableOrderTracking">Enable Auto Order-Tracking</button>
               <span class="save-msg" id="enableOrderTrackingMsg"></span>
@@ -2008,16 +2010,19 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
-        <!-- Order Link — where "share a store link" (Deal Coach, Trust Signals, order-intent
-             automation, the KB-injected bot instruction) should actually point. Most clients sell
-             through Shopify or another storefront they already run, not the built-in Ecommerce
-             module — this field lets them say so. Falls back to the built-in module's own
-             storefront link (buildStorefrontLink()) whenever it's left blank. -->
+        <!-- Order/Booking Link — where "share a link" (Deal Coach, Trust Signals, order-intent
+             automation, the KB-injected bot instruction) should actually point. For ecom clients
+             it's usually Shopify or another storefront, not the built-in Ecommerce module; for
+             healthcare/services/consultancy-style clients it's a scheduling link (Calendly/
+             Cal.com/etc) — same field either way, buildOrderLinkNote()/buildOrderLinkLabel()
+             below just swap the copy. Falls back to the built-in module's own storefront link
+             (buildStorefrontLink()) when blank, for ecom clients only — there's no "built-in"
+             fallback for a booking link. -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🔗 Order Link</div>
-            <div class="s-note">If customers actually order from Shopify or another store you run — not the built-in Ecommerce module — paste that store's URL here. It's what gets shared whenever a rep or the bot pushes an order link (Push to Order, Trust Signals, order-intent automation). Leave blank to use the built-in Ecommerce module storefront instead.</div>
-            <label class="form-label">Store URL</label>
+            <div class="s-head" id="orderLinkHead">🔗 Order Link</div>
+            <div class="s-note" id="orderLinkNote"></div>
+            <label class="form-label" id="orderLinkFieldLabel">Store URL</label>
             <input class="form-input" id="cfgExternalStoreLink" type="text" placeholder="e.g. https://yourstore.myshopify.com" style="margin-bottom:8px">
             <div style="display:flex;align-items:center;gap:10px">
               <button class="save-btn" id="saveExternalStoreLink">Save</button>
@@ -3952,6 +3957,11 @@ async function loadPoProducts(){
   }catch(e){}
 }
 
+// Every non-ecommerce industry's conversion event is a booking (appointment/consultation/viewing/
+// test drive/placement), not a purchase — drives Settings → Order Link's copy and, server-side,
+// which of /ecom/order-link vs /leads/booking-link (worker.js) actually applies to this client.
+function isBookingIndustry(){ return !!clientRecord?.industry && clientRecord.industry!=='ecommerce'; }
+
 // Same link a storefront product card's own "Order on WhatsApp" button points at — the client's
 // onshope.com slug if they have one, else the SaaS-branded store.html?client=<id>, both already
 // used verbatim elsewhere (see store.html/onshope-store.html) so this isn't a new URL scheme.
@@ -4585,6 +4595,17 @@ function populateSettings(){
   $id('cfgPolicyCancellation').value=_pol.cancellation;
   // order link
   $id('cfgExternalStoreLink').value=clientRecord.external_store_link||'';
+  if(isBookingIndustry()){
+    $id('orderLinkHead').textContent='🔗 Booking Link';
+    $id('orderLinkNote').textContent="Where customers actually book — Calendly, Cal.com, your own scheduling page. It's what gets shared whenever a rep or the bot pushes a booking link (Push to Order, Trust Signals, order-intent automation), and what /leads/booking-link sends when it detects booking intent.";
+    $id('orderLinkFieldLabel').textContent='Booking URL';
+    $id('cfgExternalStoreLink').placeholder='e.g. https://calendly.com/yourbusiness';
+  }else{
+    $id('orderLinkHead').textContent='🔗 Order Link';
+    $id('orderLinkNote').textContent='If customers actually order from Shopify or another store you run — not the built-in Ecommerce module — paste that store\'s URL here. It\'s what gets shared whenever a rep or the bot pushes an order link (Push to Order, Trust Signals, order-intent automation). Leave blank to use the built-in Ecommerce module storefront instead.';
+    $id('orderLinkFieldLabel').textContent='Store URL';
+    $id('cfgExternalStoreLink').placeholder='e.g. https://yourstore.myshopify.com';
+  }
   // services
   loadServices();
   // stages
@@ -7222,7 +7243,12 @@ function buildKbProcessorText(rawText){
   if(bookings>0){
     extra+=`\n## SOCIAL PROOF\n${bookings} customers completed an order/booking in the last 7 days. When a customer is hesitating, you may naturally mention this to build trust (e.g. "${bookings} people booked this week").\n`;
   }
-  if((clientRecord?.external_store_link||'').trim()||Object.keys(getEcomTableIds()).length){
+  const hasExt=(clientRecord?.external_store_link||'').trim();
+  if(isBookingIndustry()){
+    if(hasExt){
+      extra+=`\n## BOOKING LINK\nWhen a customer shows clear intent to book (asks about availability, wants to schedule, or says they want to proceed), share this link so they can pick a time: ${hasExt}\n`;
+    }
+  }else if(hasExt||Object.keys(getEcomTableIds()).length){
     const link=buildStorefrontLink();
     extra+=`\n## ORDER LINK\nWhen a customer shows clear buying intent (asks about size, color, price, stock, or says they want to buy/order), share this store link so they can complete the purchase: ${link}\n`;
   }
