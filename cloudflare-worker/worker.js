@@ -3769,15 +3769,15 @@ function engineRouteFlow(c, state, userText, cls){
     else if(day===0) callLabel='tomorrow (Monday)';
     reply=botConfig.callback_msg||`Thank you! 🙏 Our team will contact you ${callLabel} at 9am. We look forward to speaking with you!`;
   } else if(wouldRepeat && POSITIVE.has(effIntent)) route='faq';
-  // Normally unreachable — handleEngineWebhook's own hard-stop already returns before routing is
-  // computed at all for a handed-over lead (SETUP.md: "the bot stops writing to the lead entirely
-  // once handed over ... so it can never talk over a live agent"). Reachable only when a client has
-  // opted into CLIENTS.reply_after_handover='Yes' (Settings → Human Handover — off by default),
-  // in which case that hard-stop is skipped and the bot keeps replying even after handover; without
-  // this exception every such reply would still get forced to 'drop' right here regardless of the
-  // toggle. Falls through to the stageNotFound branch just below (human_handover is never a real
-  // flow_json stage) rather than picking a route itself, so it gets ordinary FAQ-style replies.
-  else if(state.stage==='human_handover' && c.reply_after_handover!=='Yes') route='drop';
+  // Reachable only when a client has opted into CLIENTS.handover_silence_enabled='Yes' (Settings →
+  // Human Handover — off by default, so the bot keeps replying after handover unless a client
+  // explicitly wants it silenced). handleEngineWebhook's own hard-stop already returns before
+  // routing is computed at all in the default (silence-off) case; when that hard-stop IS skipped
+  // (handover_silence_enabled='No'), without this exception every such reply would still get
+  // forced to 'drop' right here regardless. Falls through to the stageNotFound branch just below
+  // (human_handover is never a real flow_json stage) rather than picking a route itself, so a
+  // handed-over lead gets ordinary FAQ-style replies once silencing is off.
+  else if(state.stage==='human_handover' && c.handover_silence_enabled==='Yes') route='drop';
   else if(stageNotFound || effIntent==='QUESTION' || NEGATIVE.has(effIntent)){
     route=industryFaqRoute;
     const flowIsActive=allStages.length>0 && !isFinalStage && state.stage!=='human_handover' && !stageNotFound;
@@ -4238,13 +4238,15 @@ async function handleEngineWebhook(request, env, secret){
     const messageId=String(body.id||body.message?.id||'');
     if(messageId && state.lead?.LastProcessedMessageId===messageId) return json({ok:true, skipped:'duplicate-delivery'});
 
-    // Matches engine.json's Code·State hard-stop — SETUP.md: "the bot stops writing to the lead
-    // entirely once handed over ... so it can never talk over a live agent." Skippable per-client
-    // via CLIENTS.reply_after_handover='Yes' (Settings → Human Handover, off by default) — the
-    // lead still shows Handover='Yes'/Stage='human_handover' in the CRM either way; only whether
-    // the bot keeps replying changes. See engineRouteFlow's own matching exception for why this
-    // alone isn't enough — its human_handover→'drop' branch needs the same gate.
-    if(state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover') && c.reply_after_handover!=='Yes') return json({ok:true, skipped:'handed-over'});
+    // engine.json's own Code·State hard-stop ("the bot stops writing to the lead entirely once
+    // handed over ... so it can never talk over a live agent") is now opt-in, not the default — set
+    // CLIENTS.handover_silence_enabled='Yes' (Settings → Human Handover, off by default) for a
+    // client who wants that. Left off, the bot keeps replying (ordinary FAQ-style, via
+    // engineRouteFlow's own matching exception — its human_handover→'drop' branch needs the same
+    // gate, since this check alone isn't enough) even after handover; the lead still shows
+    // Handover='Yes'/Stage='human_handover' in the CRM either way — only whether the bot keeps
+    // replying changes.
+    if(state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover') && c.handover_silence_enabled==='Yes') return json({ok:true, skipped:'handed-over'});
     if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start') return json({ok:true, skipped:'opted-out'});
 
     const botConfig=engineParseJsonField(c.bot_config, {});
