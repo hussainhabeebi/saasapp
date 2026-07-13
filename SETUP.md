@@ -2093,10 +2093,18 @@ produced the same `resolveOrderProductAndText` reply, an order link included reg
 conflated "interested" with "ready to buy," pushing a checkout link into every product question
 whether the customer asked for it or not. `detectOrderSignal` now also classifies a `mode`,
 `"enquiry"` or `"order"`, returned alongside `signal`/`sku`:
-- **`mode:"enquiry"` + a matched product** → `buildProductDetailText` sends the product's full
-  detail (name, price, color, size, category, stock) as a fixed template, with the photo attached
-  via `engineSendChatwootImageReply` — no link, no mention of ordering beyond an invitation to say
-  so if interested.
+- **`mode:"enquiry"` + a matched product** → `engineBuildProductEnquirySystemPrompt` +
+  `engineCallLlm` generate a natural reply from the product's full detail (name, price, color,
+  size, category, stock) as context, with the photo attached via `engineSendChatwootImageReply` —
+  no link, no mention of ordering beyond what the model naturally includes. Originally a fixed
+  template (`buildProductDetailText`, since removed) that always recited every field regardless of
+  what was actually asked — observed live: a plain "Hi" got a long, salesy paragraph covering
+  sizes/colors nobody asked about, and price was always volunteered even for a pure availability
+  question. The system prompt now explicitly tells the model to answer only what was asked, match
+  the customer's own message length, never volunteer price unless asked or genuinely needed, and
+  sound like a real person texting rather than a scripted pitch — the same three instructions
+  (length, price, tone) were also added to `engineBuildFaqSystemPrompt` for the general FAQ/greeting
+  reply path, which had the identical "Hi" → long-pitch failure.
 - **`mode:"enquiry"` + no confident product match** → falls through to the normal FAQ/flow handling
   untouched (no canned reply, no link) — the context-aware FAQ LLM can respond naturally, e.g. "we
   don't carry that, but here's what we do have."
