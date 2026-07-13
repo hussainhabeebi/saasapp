@@ -3661,10 +3661,33 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
 // separate deliveries a moment apart, one of which triggered a false-positive human handover (see
 // engineRouteFlow's humanReason for the actual fix); lower temperature won't make classification
 // perfectly deterministic, but reduces exactly this kind of unforced flip on unambiguous input.
-async function engineClassifyIntent(env, c, userText, activeHistory){
+// Serializes flow_json's configured stages into one consistent block, shared by
+// engineClassifyIntent (asks the model which stage the conversation is now at) and the FAQ/
+// objection reply prompts (lets the model naturally work toward the current stage's point in its
+// own words) — one view of this data feeding whichever LLM call needs it, instead of a separate
+// deterministic dispatcher that owned it exclusively (see SETUP.md's "Conversation Engine" for the
+// designs that preceded this one). Empty string when the client hasn't configured any stages, so
+// a client not using this feature pays nothing extra for it.
+function engineFlowStagesBlock(c, currentStage){
+  const flow=engineParseJsonField(c.flow_json, {});
+  const stageIds=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  if(!stageIds.length) return '';
+  const lines=stageIds.map((id,i)=>`${i+1}. "${id}": ${flow.messages?.['msg_'+id]||''}`).join('\n');
+  return `\n\nSales stages configured for this business, in order:\n${lines}\n\nCurrently at stage: "${currentStage||stageIds[0]}".`;
+}
+
+async function engineClassifyIntent(env, c, userText, activeHistory, currentStage){
   const low=userText.trim().toLowerCase();
   const recent=(activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\n');
-  const systemText='You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead).';
+  const flow=engineParseJsonField(c.flow_json, {});
+  const stageIds=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  // Folds flow_json's stage progression into this same classification call as one more judgment
+  // call — the model reports next_stage the same way it already reports intent/sentiment/language
+  // — instead of a separate rigid state-machine lookup with its own message-sending path. Same
+  // reliability trade-off the rest of this classifier already lives with: a judgment call, not a
+  // deterministic lookup, validated against the real configured stage ids below before use.
+  const stageInstruction=stageIds.length?', next_stage (see Sales stages below — whichever listed stage id best reflects where this conversation stands after the latest message; usually unchanged unless it has clearly progressed toward or past the next one; must be exactly one of the listed ids, quoted exactly as given)':'';
+  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
   const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
 
   let aiResult=null;
@@ -3722,15 +3745,23 @@ async function engineClassifyIntent(env, c, userText, activeHistory){
   // callers fall back to CLIENTS.language themselves.
   const rawLang=typeof aiResult?.language==='string'?aiResult.language.trim().toLowerCase():'';
   const customerLanguage=/^[a-z]{2}$/.test(rawLang)?rawLang:null;
-  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage};
+  const rawStage=typeof aiResult?.next_stage==='string'?aiResult.next_stage.trim():'';
+  const nextStage=stageIds.includes(rawStage)?rawStage:null;
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage};
 }
 
-// Mirrors "Code · Intent + flow" — the flow_json state machine that decides where this turn goes
-// (human handover / qualify / FAQ / objection / a scripted stage message) and what the next stage
-// is. FAQ routing is industry-aware (industryFaqRoute below), matching engine.json's own
-// industry-conditional routing rather than hardcoding one industry's behavior.
+// Mirrors "Code · Intent + flow" — decides where this turn goes (human handover / qualify / FAQ /
+// objection) and what the next stage is. FAQ routing is industry-aware (industryFaqRoute below),
+// matching engine.json's own industry-conditional routing rather than hardcoding one industry's
+// behavior. flow_json's configured stages no longer own a dispatch path of their own — see
+// engineFlowStagesBlock/engineClassifyIntent's own comments for why (two designs that gave stage
+// content its own message-sending path both caused real, observed bugs: a glued-together bubble,
+// then a verbatim message repeating itself every single question a prospect asked in a row).
+// Stage progression is now `cls.nextStage`, the classifier's own judgment call (same reliability
+// trade-off as intent/sentiment/language already are), and stage content only ever reaches the
+// customer as guidance inside the same FAQ/objection reply — see engineBuildFaqSystemPrompt.
 function engineRouteFlow(c, state, userText, cls){
-  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage}=cls;
+  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage}=cls;
   const lowText=userText.toLowerCase().trim();
   const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
   const isResub=lowText==='start' && state.leadOptOut==='Yes';
@@ -3751,11 +3782,6 @@ function engineRouteFlow(c, state, userText, cls){
   const qualDone=!qualQuestions.length || botConfig.qual_enabled===false || (state.stage && !state.stage.startsWith('qual_') && state.stage!=='new');
   const qualStage=state.stage?.startsWith('qual_')?parseInt(state.stage.replace('qual_','')):null;
 
-  const stageNode=flow.stages?.[state.stage];
-  const node=stageNode||((state.stage==='new'||!state.stage)?flow.stages?.['new']:null)||{};
-  const stageNotFound=!stageNode && state.stage && state.stage!=='new';
-  const action=node[effIntent]||node['*']||{next:state.stage, msg:null};
-
   const POSITIVE=new Set(['AFFIRMATIVE','WATCHED','FORM_DONE','BOOKING','SHORT_NEUTRAL']);
   const NEGATIVE=new Set(['DELAY','WANTS_MORE_INFO']);
   const allStages=Object.keys(flow.stages||{}).filter(k=>k!=='new');
@@ -3765,15 +3791,12 @@ function engineRouteFlow(c, state, userText, cls){
   // first AND the last stage, so engine.json's own "reached the final stage with a positive
   // reply → handover" signal (correct for a real, completed multi-stage funnel) fired
   // immediately for everyone. Requiring at least 2 real stages before honoring that signal means
-  // an unfinished/minimal funnel just gets normal FAQ/stage replies instead of blanket premature
+  // an unfinished/minimal funnel just gets normal FAQ replies instead of blanket premature
   // handover, while a genuinely completed funnel (2+ stages) keeps the original behavior exactly.
   const isFinalStage=allStages.length>1 && state.stage===allStages[allStages.length-1];
-  const lastBotMsg=(state.history||[]).filter(m=>m.role==='assistant').slice(-1)[0]?.content||'';
-  const actionMsg=action.msg?(flow.messages?.[action.msg]||''):'';
-  const wouldRepeat=actionMsg && lastBotMsg && lastBotMsg.includes(actionMsg.slice(0,40));
 
-  let reply='', videoUrl=null, route='stage', humanReason=null;
-  let next=action.next||state.stage;
+  let reply='', route='', humanReason=null;
+  let next=nextStage||state.stage;
 
   // humanReason distinguishes a genuine "customer wants a human" moment (explicit ask, or real
   // frustration) from the isFinalStage+POSITIVE branch below — an internal funnel-completion
@@ -3797,28 +3820,21 @@ function engineRouteFlow(c, state, userText, cls){
     else if(day===6) callLabel='on Monday';
     else if(day===0) callLabel='tomorrow (Monday)';
     reply=botConfig.callback_msg||`Thank you! 🙏 Our team will contact you ${callLabel} at 9am. We look forward to speaking with you!`;
-  } else if(wouldRepeat && POSITIVE.has(effIntent)) route='faq';
+  }
   // Reachable only when a client has opted into CLIENTS.handover_silence_enabled='Yes' (Settings →
   // Human Handover — off by default, so the bot keeps replying after handover unless a client
   // explicitly wants it silenced). handleEngineWebhook's own hard-stop already returns before
   // routing is computed at all in the default (silence-off) case; when that hard-stop IS skipped
   // (handover_silence_enabled='No'), without this exception every such reply would still get
-  // forced to 'drop' right here regardless. Falls through to the stageNotFound branch just below
-  // (human_handover is never a real flow_json stage) rather than picking a route itself, so a
-  // handed-over lead gets ordinary FAQ-style replies once silencing is off.
+  // forced to 'drop' right here regardless.
   else if(state.stage==='human_handover' && c.handover_silence_enabled==='Yes') route='drop';
-  // A QUESTION (or NEGATIVE, or a stage no longer in flow_json) always gets a clean FAQ answer and
-  // nothing else — scripted flow_json stage content (action.msg) is deliberately never folded in
-  // here. Two designs were tried and both caused real, observed bugs: concatenating it onto the
-  // FAQ reply produced an obviously two-different-authors bubble; sending it as its own message
-  // had no guard against repeating itself verbatim on every single QUESTION turn a prospect asked
-  // in a row (see SETUP.md's "Conversation Engine" for both). Stage progression/messages now only
-  // ever happen through the dedicated 'stage' route below, which only fires for a genuine
-  // flow-relevant reply (AFFIRMATIVE, BOOKING, etc.) — not every time a customer asks something.
-  // The bot fully owns answering FAQs; the flow fully owns stage progression; the two no longer mix.
-  else if(stageNotFound || effIntent==='QUESTION' || NEGATIVE.has(effIntent)) route=industryFaqRoute;
+  // A QUESTION (or NEGATIVE) always gets a clean FAQ answer before qualification even gets a
+  // chance to run — matches the original precedence (a customer asking something mid-qualification
+  // still gets answered, not another qualifying question).
+  else if(effIntent==='QUESTION' || NEGATIVE.has(effIntent)) route=industryFaqRoute;
   else if(!qualDone && qualStage===null) route='qualify';
   else if(!qualDone && qualStage!==null) route='qualify_next';
+  else route=industryFaqRoute;
 
   if(sentiment==='Frustrated' && route!=='human' && botConfig.handover_enabled!==false){
     route='human'; humanReason='explicit';
@@ -3839,25 +3855,24 @@ function engineRouteFlow(c, state, userText, cls){
       reply=typeof qualQuestions[nextIdx]==='string'?qualQuestions[nextIdx]:String(qualQuestions[nextIdx]??'');
       next='qual_'+nextIdx;
     } else {
+      // The one place flow_json content is still sent verbatim — the single, one-time transition
+      // from "just finished qualifying" to "now starting the sales stages." Unlike the old
+      // per-question stage dispatch this doesn't re-fire on every turn (it only happens once per
+      // lead, the moment qualification completes), so the verbatim-repetition bug class this file
+      // moved away from elsewhere doesn't apply here.
       const firstStage=Object.keys(flow.stages||{}).filter(k=>k!=='new')[0]||'new';
       const firstAction=(flow.stages?.[firstStage]||{})['*']||{next:firstStage, msg:null};
       const vars=flow.variables||{};
       reply=(flow.messages?.[firstAction.msg]||'Great, thanks! Let me share some information 😊').replace(/\[(\w+)\]/g,(_,k)=>vars[k]??'');
       next=firstAction.next||firstStage;
     }
-  } else if(route==='stage' && action.msg){
-    const vars=flow.variables||{};
-    reply=(flow.messages?.[action.msg]||'').replace(/\[(\w+)\]/g,(_,k)=>vars[k.toLowerCase()]??vars[k]??'');
-    if(action.form && vars.form_link && !reply.includes(vars.form_link)) reply+='\n\n'+vars.form_link;
-    if(action.video) videoUrl=vars[action.video]||null;
   }
-  if(route==='stage' && !action.msg) route=industryFaqRoute;
 
   if(effIntent==='BOOKING' && c.cal_link && !reply.includes(c.cal_link)){
     reply=(reply||'Great! You can book your slot here 📅')+'\n\n👉 '+c.cal_link;
   }
 
-  return {route, next, reply, videoUrl, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, isOptOut:false, isResub:false, humanReason};
+  return {route, next, reply, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, isOptOut:false, isResub:false, humanReason};
 }
 
 // From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
@@ -3990,6 +4005,12 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang)
     sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
   }
+
+  // Folds flow_json's configured stages into this same reply as guidance instead of a separate
+  // dispatcher with its own message-sending path — see engineFlowStagesBlock/engineClassifyIntent's
+  // own comments for the two prior designs this replaced and the real bugs each one caused.
+  const stagesBlock=engineFlowStagesBlock(c, state.stage);
+  if(stagesBlock) sys+=stagesBlock+'\n\nIf the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, do not force it if the customer is still asking unrelated questions, and do not repeat something you have already substantially covered (check Recent Conversation above).';
   return sys;
 }
 
@@ -4013,6 +4034,9 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   }
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Keep it to 2-4 sentences.';
+  // See engineBuildFaqSystemPrompt's matching comment.
+  const stagesBlock=engineFlowStagesBlock(c, state.stage);
+  if(stagesBlock) sys+=stagesBlock+'\n\nAfter addressing the objection, if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, and do not repeat something already substantially covered (check Recent Conversation above).';
   return sys;
 }
 
@@ -4345,7 +4369,7 @@ async function handleEngineWebhook(request, env, secret){
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
 
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
-    const cls=await engineClassifyIntent(env, c, userText, state.activeHistory);
+    const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls);
     // Per-message detected language for THIS customer (engineClassifyIntent), not
     // CLIENTS.language (a fixed client-wide default used only as the fallback when detection
@@ -4452,10 +4476,6 @@ async function handleEngineWebhook(request, env, secret){
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
       routing.reply=reply; sentText=reply;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
-    } else if(routing.route==='stage'){
-      sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
-      routing.reply=sentText;
-      if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
     }
 
     const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);

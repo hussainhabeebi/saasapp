@@ -2125,28 +2125,56 @@ active flow carry both an LLM-generated FAQ answer AND a pending scripted stage 
    instruction** — better, but still relied on the model's judgment to actually skip it, and still
    coupled two conceptually separate things (answering a question, advancing a sales stage) into
    one reply.
-4. **Current design: a `QUESTION` (or a stage no longer in `flow_json`, or `NEGATIVE`) always gets a
-   clean FAQ answer and nothing else.** No `action.msg` is read, no nudge is built, no
-   `_flowPendingMsg`/`_flowPendingNext`/`flowNudge` exist anywhere in the code anymore. Stage
-   messages now only ever happen through the dedicated `route==='stage'` branch, which only fires
-   for a genuine flow-relevant reply (`AFFIRMATIVE`, `BOOKING`, etc.) — never for a question. The
-   bot fully owns answering FAQs; the flow fully owns stage progression; the two no longer mix,
-   which is what actually closes this bug class rather than continuing to manage it.
+4. **A `QUESTION` (or a stage no longer in `flow_json`, or `NEGATIVE`) always gets a clean FAQ
+   answer and nothing else** — this step removed `_flowPendingMsg`/`_flowPendingNext`/`flowNudge`
+   entirely and sent scripted stage content only through a dedicated `route==='stage'` branch that
+   fired for a genuine flow-relevant reply (`AFFIRMATIVE`, `BOOKING`, etc.), never a question. This
+   was itself later superseded by step 5, below — `route==='stage'` no longer exists in the code.
+5. **Current design: `flow_json`'s deterministic state-machine dispatch is removed entirely.**
+   There is no `stageNode`/`node`/`action`/`stageNotFound`/`wouldRepeat`/`videoUrl` anymore, and no
+   route named `'stage'`. Stage progression is now `engineClassifyIntent`'s own judgment call —
+   `engineFlowStagesBlock` serializes the client's configured stages (id + message, in order) into
+   the *same* classification call that already reports intent/sentiment/language every turn, asking
+   for one more field, `next_stage` (validated against the real configured stage ids; falls back to
+   the unchanged current stage if the model returns anything else or a client has no stages
+   configured). The *content* of a stage message is folded into the FAQ/objection reply as guidance
+   the same way (`engineBuildFaqSystemPrompt`/`engineBuildObjectionSystemPrompt` both call
+   `engineFlowStagesBlock` too) — "if the conversation is naturally ready for it, work toward the
+   current stage's point in your own words... don't repeat something already covered" — rather than
+   ever being sent verbatim. Every turn now goes through the FAQ/objection reply generator
+   regardless of intent (`AFFIRMATIVE`/`BOOKING`/etc. all fall through to `industryFaqRoute` now,
+   the same as a `QUESTION` always did), informed by whatever stage guidance applies; there is no
+   separate dispatcher left to fight it for control of the reply. The trade-off, accepted
+   deliberately: stage transitions are no longer a guaranteed deterministic lookup, they're a
+   judgment call — the same reliability trade-off the rest of this classifier already lives with
+   for intent/sentiment/language, and the direct fix for the actual bug (a second, rigid mechanism
+   competing with the LLM path), not a new kind of risk introduced.
+   - **One place still sends `flow_json` content verbatim, deliberately**: the one-time transition
+     from "just finished the `qual_questions` qualification flow" to "now entering stage 1" (inside
+     `engineRouteFlow`'s `qualify_next` completion branch). This only fires once per lead — never
+     repeated on every turn the way the old per-question dispatch did — so the bug class this whole
+     rewrite exists to close doesn't apply to it, and a clean, guaranteed opening line for stage 1
+     is a reasonable thing to want verbatim.
+   - **The `Stage` field (CRM pipeline reporting) still exists and still means the same thing** — a
+     client's Stage Builder UI (Settings → Conversation Stages) is completely unchanged; this was
+     purely a backend dispatch-mechanism change, not a data-model or authoring-UI change.
+   - **Real cost, not just a trade-off note**: a turn that used to be an instant, free, deterministic
+     text send (`AFFIRMATIVE`/`BOOKING`/etc. hitting the old `'stage'` route) now costs an LLM
+     reply-generation call (plus, for ecom/travel clients, a catalog-context fetch) every time,
+     since everything now funnels through the same FAQ/objection generator.
 
 **Stage messages should stay product/service-agnostic for a client selling more than one thing —
 this is an authoring convention, not a code constraint.** A client with multiple products/services
 might reasonably worry a single linear stage funnel can't represent them all. It doesn't need to:
 stage messages (`flow_json`) and product/service specifics (the ecom/travel context block injected
-into the FAQ prompt, `engineBuildEcomContext`/`engineBuildTravelContext`) are two separate,
-already-decoupled systems (see above) — a stage message is pipeline progress ("would you like to
-see pricing?"), not product content, and a customer asking about any specific item already gets
-live, per-item detail from the catalog-aware FAQ/enquiry path regardless of what stage they're on.
-The failure mode this avoids: a stage message that hardcodes one specific product's name reads
-oddly to a customer who's actually asking about a different one. `dashboard.html`'s Stage Builder
-(Settings → Conversation Stages) now says this directly in its own hint text and each stage
-textarea's placeholder, rather than leaving it to be discovered the hard way. No backend change was
-needed — the routing already keeps these two systems apart; this is purely a content-authoring
-guidance fix.
+into the FAQ prompt, `engineBuildEcomContext`/`engineBuildTravelContext`) are two separate systems —
+a stage message is pipeline progress ("would you like to see pricing?"), not product content, and a
+customer asking about any specific item already gets live, per-item detail from the catalog-aware
+FAQ/enquiry path regardless of what stage they're on. The failure mode this avoids: a stage message
+that hardcodes one specific product's name reads oddly to a customer who's actually asking about a
+different one. `dashboard.html`'s Stage Builder (Settings → Conversation Stages) says this directly
+in its own hint text and each stage textarea's placeholder, rather than leaving it to be discovered
+the hard way.
 
 **Every reply now follows the customer's own detected language, not a single fixed
 `CLIENTS.language` setting.** Before this, every prompt-builder used `c.language||'en'` directly —
