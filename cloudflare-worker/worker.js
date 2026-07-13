@@ -4191,6 +4191,115 @@ async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, 
 }
 
 
+// Sends a Sarvam AI-generated voice note (female speaker) as the customer's reply attachment,
+// same Chatwoot-attachment relay engineSendChatwootImageReply already uses for product photos.
+// Falls back to a plain text reply (engineSendChatwootReply) on any failure — a customer getting
+// the text-only reply they'd have gotten before this existed is a far better failure mode than
+// getting nothing at all, same reasoning as the image-reply fallback above.
+async function engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, captionText, fallbackText){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!audioBuf) return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+  try{
+    const blob=new Blob([audioBuf], {type:'audio/wav'});
+    const trimmed=(typeof captionText==='string'?captionText:'').trim();
+    const fd=new FormData();
+    fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', blob, 'reply.wav');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendChatwootAudioReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+      return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+    }
+  }catch(e){
+    await reportOpsError(env, 'engineSendChatwootAudioReply — send threw', e, {clientId, convId});
+    return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+  }
+}
+
+// ISO 639-1 (engineClassifyIntent's `customerLanguage`) → Sarvam's BCP-47 target_language_code.
+// Sarvam AI's TTS is Indic-language-focused — deliberately not a general-purpose fallback for
+// every language this engine can detect (e.g. Arabic customers, common in this product's UAE
+// client base, get a normal text reply instead of voice, not a mistranslated/unsupported one).
+// Exact supported-language list should be re-checked against Sarvam's current docs before launch —
+// this session's outbound network policy blocked docs.sarvam.ai/api.sarvam.ai, so this list and
+// engineSarvamTts's request/response shape below are built from Sarvam's published Python SDK
+// description (PyPI), not a live-verified API reference.
+const ENGINE_TTS_LANG_MAP={en:'en-IN', ml:'ml-IN', hi:'hi-IN', ta:'ta-IN', te:'te-IN', kn:'kn-IN', bn:'bn-IN', gu:'gu-IN', mr:'mr-IN', pa:'pa-IN', or:'od-IN'};
+const ENGINE_TTS_SPEAKER='meera'; // female voice — verify against Sarvam's current bulbul:v2 speaker list
+
+// Real TTS call — env.SARVAM_API_KEY (Worker secret, see wrangler.toml). Returns a decoded audio
+// ArrayBuffer (Sarvam returns a base64-encoded WAV), or null on any failure so callers fall back
+// to text. Text is capped defensively — a long FAQ paragraph shouldn't become a multi-minute
+// voice note even after engineBuildSpokenReply's own shortening.
+async function engineSarvamTts(env, text, targetLangCode){
+  if(!env.SARVAM_API_KEY || !text || !targetLangCode) return null;
+  try{
+    const r=await fetch('https://api.sarvam.ai/text-to-speech', {
+      method:'POST',
+      headers:{'api-subscription-key':env.SARVAM_API_KEY, 'Content-Type':'application/json'},
+      body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:22050})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const b64=data?.audios?.[0];
+    if(!b64) return null;
+    const bin=atob(b64);
+    const bytes=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    return bytes.buffer;
+  }catch(e){ return null; }
+}
+
+// Rewrites an already-composed reply into a short, natural, spoken sentence — never the literal
+// reply text, which may be a multi-sentence FAQ answer full of links/prices unsuitable to read
+// aloud. Same shared Gemini credential as the intent classifier/transcriber. Explicitly told to
+// drop links/prices/long numbers rather than speak them — those are preserved separately as a
+// text caption by engineExtractLinkPriceCaption instead.
+async function engineBuildSpokenReply(env, c, replyText, langCode){
+  const sys='Rewrite the following customer-service reply as ONE short, natural sentence the way a friendly person would actually say it out loud on a voice note — real spoken style, not written text. Keep the exact same language and meaning. Never speak a URL, link, price, currency amount, or long number — if the reply mainly exists to share one of those, say something short and natural instead (for example, that the details are shared below/above in text). Respond with ONLY the spoken sentence — no quotes, no commentary, no markdown.';
+  const spoken=await engineGeminiGenerate(env, sys, replyText, {temperature:0.4, maxOutputTokens:120});
+  if(spoken) return spoken;
+  // Fallback if Gemini is unavailable: best-effort strip links/prices instead of speaking them,
+  // and cap length, rather than failing the voice reply outright.
+  return replyText.replace(/https?:\/\/\S+/g,'').replace(/(?:AED|USD|INR|EUR|GBP|₹|\$|€|£)\s?[\d,]+(?:\.\d+)?/gi,'').replace(/\s{2,}/g,' ').trim().slice(0,220);
+}
+
+// Pulls any link/price out of the real reply text so it still reaches the customer as a short
+// one-line text caption on the voice message, even though the voice itself is instructed to never
+// say them out loud (engineBuildSpokenReply above). Empty string when the reply has neither.
+function engineExtractLinkPriceCaption(replyText){
+  const links=[...new Set(replyText.match(/https?:\/\/\S+/g)||[])];
+  const prices=[...new Set(replyText.match(/(?:AED|USD|INR|EUR|GBP|₹|\$|€|£)\s?[\d,]+(?:\.\d+)?/gi)||[])];
+  const parts=[];
+  if(prices.length) parts.push('💰 '+prices.join(', '));
+  if(links.length) parts.push('🔗 '+links.join(' '));
+  return parts.join('  ');
+}
+
+// Single reply-delivery dispatcher for handleEngineWebhook — every route (human/qualify/FAQ/
+// objection/order-detected) sends its final reply through here instead of calling
+// engineSendChatwootReply/engineSendChatwootImageReply directly, so voice-to-voice is one code
+// path instead of eight near-duplicate branches. Voice-to-voice reply: when the customer sent a
+// voice note and this client has the paid voice add-on (voice_addon_active), reply with a
+// WhatsApp voice note instead of text — mirrors the customer's own input modality, which is the
+// point of the feature. Falls back to the normal text/image reply whenever voice isn't possible
+// (no add-on, no Sarvam key, unsupported/undetected language, a product-image reply already in
+// play, or the TTS call itself fails) so a voice hiccup never costs the customer a reply outright.
+// Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
+// out of scope for now, this only covers live conversational replies.
+async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl}={}){
+  const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
+  if(!trimmed) return;
+  const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
+  if(mediaType==='voice' && c.voice_addon_active==='Yes' && !imageUrl && bcp47){
+    const spokenText=await engineBuildSpokenReply(env, c, trimmed, langCode);
+    const audioBuf=await engineSarvamTts(env, spokenText, bcp47);
+    if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
+  }
+  if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
+  return engineSendChatwootReply(env, c, clientId, convId, trimmed);
+}
+
 async function engineSendHandoverLabel(c, convId){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
   try{
@@ -4442,21 +4551,19 @@ async function handleEngineWebhook(request, env, secret){
           const link=buildCheckoutLink(c, clientId, detection.sku);
           sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
           routing.reply=sentText;
-          if(product.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
-          else await engineSendChatwootReply(env, c, clientId, convId, sentText);
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           await logPendingOrder(env, c, clientId, phone, name, product);
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product){
           sentText=await engineLocalizeReply(env, c, 'Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?', replyLang);
           routing.reply=sentText;
-          await engineSendChatwootReply(env, c, clientId, convId, sentText);
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
           const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang);
           sentText=await engineCallLlm(c, sysPrompt, userText, 200);
           routing.reply=sentText;
-          if(product.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
-          else await engineSendChatwootReply(env, c, clientId, convId, sentText);
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           orderHandledInline=true;
         }
         // enquiry with no confident product match falls through to the normal FAQ/flow handling
@@ -4478,7 +4585,7 @@ async function handleEngineWebhook(request, env, secret){
     } else if(routing.route==='human'){
       sentText=await engineLocalizeReply(env, c, routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.', replyLang);
       routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
-      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
       await engineSendHandoverLabel(c, convId);
     } else if(routing.route==='drop'){
       // no reply
@@ -4488,11 +4595,11 @@ async function handleEngineWebhook(request, env, secret){
       routing.next='qual_0';
       sentText=await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
       routing.reply=sentText;
-      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     } else if(routing.route==='qualify_next'){
       sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
       routing.reply=sentText;
-      if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      if(sentText) await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     } else if(['faq','ecom_faq','travel_faq'].includes(routing.route)){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
@@ -4500,12 +4607,12 @@ async function handleEngineWebhook(request, env, secret){
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
       routing.reply=reply; sentText=reply;
-      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
       routing.reply=reply; sentText=reply;
-      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     }
 
     const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);

@@ -1943,6 +1943,42 @@ sends it to Gemini as inline audio data, asks for a plain-text transcription); w
 `"(sent a voice note)"` placeholder text engine.json always sent instead (that placeholder isn't
 new, only now it's a fallback rather than the only behavior).
 
+**Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the paid voice add-on
+(`voice_addon_active='Yes'` — see the Billing module), a customer who sends a voice note gets a
+WhatsApp voice note back instead of text, mirroring their own input modality — `engineDeliverReply`
+is the single dispatcher every route (human handover / qualify / FAQ / objection / order-detected)
+now sends its final reply through, instead of each of those eight call sites calling
+`engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
+- **Language-aware, reusing detection you already have.** `engineClassifyIntent` already returns a
+  per-message `customerLanguage` (ISO 639-1) for every turn, voice or text — this feature doesn't
+  run a second detection pass, it just maps that code to Sarvam's BCP-47 `target_language_code`
+  (`ENGINE_TTS_LANG_MAP`: `en`→`en-IN`, `ml`→`ml-IN`, `hi`→`hi-IN`, `ta`→`ta-IN`, `te`→`te-IN`,
+  `kn`→`kn-IN`, `bn`→`bn-IN`, `gu`→`gu-IN`, `mr`→`mr-IN`, `pa`→`pa-IN`, `or`→`od-IN`). Sarvam's TTS
+  is Indic-language-focused, deliberately not treated as a catch-all — a customer whose detected
+  language isn't in that map (Arabic, for instance, common in this product's UAE client base) gets
+  a normal text reply instead of voice in an unsupported/mistranslated language.
+- **Never speaks a link or price.** The real reply text (whatever the FAQ/objection/order-detection
+  logic already composed) is never spoken verbatim — `engineBuildSpokenReply` asks Gemini to
+  rewrite it as one short, natural spoken sentence, explicitly instructed to never say a URL, link,
+  price, or long number out loud. Any link/price found in the real reply is instead preserved as a
+  short one-line text caption on the same voice message (`engineExtractLinkPriceCaption`, simple
+  regex extraction — no second AI call) — so a checkout link or a price the FAQ answer needed to
+  share still reaches the customer in a form they can actually tap/copy.
+- **Female voice, via Sarvam's `bulbul:v2` model** (`ENGINE_TTS_SPEAKER='meera'`) — `engineSarvamTts`
+  calls `POST https://api.sarvam.ai/text-to-speech` with the `api-subscription-key` header, returns
+  a base64-encoded WAV per Sarvam's own SDK docs. **Not live-verified against Sarvam's REST
+  reference** — this session's network policy blocked `docs.sarvam.ai`/`api.sarvam.ai` outright, so
+  the endpoint path, header name, and response shape here are built from Sarvam's published Python
+  SDK description (PyPI), not a fetched API reference. Worth a real test call before relying on
+  this in production.
+- **Follow-up messages are explicitly out of scope for now** — `followup-template.json` and the
+  dashboard's Follow-ups feature are untouched; this only covers live conversational replies inside
+  `handleEngineWebhook`, not scheduled nudges.
+- **Falls back to text at every failure point** — no `SARVAM_API_KEY` configured, an unsupported
+  language, a product-image reply already in play (image and voice aren't combined), or the TTS
+  call itself failing all fall straight back to `engineSendChatwootReply`/`engineSendChatwootImageReply`,
+  same "customer never gets nothing" principle as the existing image-reply fallback.
+
 **Fully automatic on signup — no manual Chatwoot step, for any industry.**
 `engineSyncChatwootWebhook` (`worker.js`) keeps a client's PRIMARY Chatwoot webhook (the one that
 decides who actually replies to the customer) pointed at `{WORKER_BASE_URL}/engine/webhook/<their-secret>` (see "Webhook authentication" below),
