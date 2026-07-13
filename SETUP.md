@@ -1931,18 +1931,42 @@ Chatwoot, and upsert the LEADS row + analytics — plus the order/booking-signal
 to be a second, separate webhook (see "Industry-aware FAQ grounding" below). n8n is no longer in
 the loop for any client once they're cut over; `handleEngineWebhook` has no industry gate.
 
-**Gemini for classification + voice transcription (`GEMINI_API_KEY`):** intent/sentiment/
-objection classification (`engineClassifyIntent`) calls Google's Gemini API directly
-(`gemini-2.0-flash`, matching engine.json's actual "AI Agent · Sentiment & Intent" node, which ran
-on a dedicated shared Gemini credential — not each client's own OpenRouter key) via a Worker
-secret, `GEMINI_API_KEY` (see wrangler.toml). One key for every client and every industry, same as
-the n8n workflow's single Gemini credential. If this secret isn't set, classification falls back
-to the client's own `openrouter_key`/`model` instead of failing outright. Voice notes get a real
-transcript via the same Gemini key (`engineGeminiTranscribeVoice` — downloads the attachment,
-sends it to Gemini as inline audio data, asks for a plain-text transcription); without
-`GEMINI_API_KEY` set, or if the download/transcription fails, voice notes fall back to the same
-`"(sent a voice note)"` placeholder text engine.json always sent instead (that placeholder isn't
-new, only now it's a fallback rather than the only behavior).
+**Gemini-first, OpenRouter-fallback — every LLM call in the engine (`GEMINI_API_KEY`):** every
+step of a turn that calls an LLM now tries the shared Gemini credential first and only falls back
+to the client's own `openrouter_key`/`model` if Gemini is unset or fails — intent/sentiment/
+objection classification (`engineClassifyIntent`), voice transcription
+(`engineGeminiTranscribeVoice`/`engineOpenRouterTranscribeVoice`), image description
+(`engineGeminiDescribeImage`), and — the one that used to be the exception — **the main reply
+agent itself, `engineCallLlm`**, which generates every FAQ/objection/product-enquiry reply across
+every client and industry.
+- `engineCallLlm` was OpenRouter-only until this change: no Gemini path at all, so it was a single
+  shared point of failure for every client's core reply text, and — worse — any failure there
+  (a thrown fetch, a non-OK response, an empty response body) was swallowed completely silently,
+  collapsing to a generic `"One moment 🙏"` placeholder with **zero logging**, indistinguishable in
+  Chatwoot from a real "let me check" delay. A real production incident (every client's bot
+  replying "One moment 🙏" simultaneously, with no way to tell why) is what prompted this fix.
+  `engineCallLlm` now: tries Gemini (`engineGeminiGenerate`) first, then falls back to OpenRouter
+  using the client's own key/model exactly as before (deliberately *not* forced onto a hardcoded
+  Gemini-via-OpenRouter call the way `engineGeminiGenerateWithFallback`'s fallback leg is — a
+  client who chose a specific model on purpose still gets it as the safety net), and only logs via
+  `reportOpsError` if **both** layers fail — the one moment a real customer is actually about to
+  receive the generic fallback, matching this file's existing principle (see "Error monitoring"
+  below) that total failure is worth alerting on even though single-layer fallbacks elsewhere
+  aren't.
+- Image descriptions (`engineResolveUserText`'s image branch) are the same fix, same shape:
+  `engineGeminiDescribeImage` (direct Gemini vision) tried first, the existing OpenRouter vision
+  call (client's own key/model) as fallback — closing the last OpenRouter-only LLM call in the
+  turn-processing path.
+- **Not yet covered by this pass** (still OpenRouter-only, same single-point-of-failure shape,
+  just not touched by this change): `handleAiComplete` (`POST /ai/complete`, the dashboard's AI
+  Deal Coach and other assistant features), `handleAiObjectionReply` (`POST /ai/objection-reply`),
+  `detectOrderSignal`, and `detectBookingSignal`. These weren't part of the incident that prompted
+  this fix (none of them generate the primary customer-facing reply) and are shaped differently
+  (JSON-classifier calls, not free-text generation), so converting them would be a separate,
+  deliberate follow-up rather than a mechanical copy of this pattern.
+- Voice notes without `GEMINI_API_KEY` set, or where both transcription attempts fail, still fall
+  back to the same `"(sent a voice note)"` placeholder text engine.json always sent instead (that
+  placeholder isn't new, only now it's a fallback rather than the only behavior).
 
 **Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the paid voice add-on
 (`voice_addon_active='Yes'` — see the Billing module) **and** the Settings → Voice Replies toggle

@@ -3717,13 +3717,44 @@ async function engineGetLeadState(env, clientId, phone){
 // engine.json's literal placeholder text; falls back to that same placeholder if transcription
 // isn't available (no GEMINI_API_KEY set, fetch failure, oversized file, etc.) so the turn still
 // completes instead of failing outright.
+const ENGINE_IMAGE_DESCRIBE_PROMPT='Describe what this image shows in one short sentence, focused on anything relevant to a product or order enquiry.';
+
+// Direct Gemini vision call (shared GEMINI_API_KEY), tried first — same Gemini-first-with-
+// OpenRouter-fallback pattern as every other LLM call in this engine now uses. Null on any
+// failure so engineResolveUserText falls back to the client's own OpenRouter key/model below.
+async function engineGeminiDescribeImage(env, mediaUrl){
+  if(!env.GEMINI_API_KEY || !mediaUrl) return null;
+  try{
+    const imgR=await fetch(mediaUrl);
+    if(!imgR.ok) return null;
+    const mimeType=imgR.headers.get('content-type')||'image/jpeg';
+    const buf=await imgR.arrayBuffer();
+    if(buf.byteLength>15*1024*1024) return null;
+    const base64=engineArrayBufferToBase64(buf);
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{role:'user', parts:[
+        {text:ENGINE_IMAGE_DESCRIBE_PROMPT},
+        {inline_data:{mime_type:mimeType, data:base64}}
+      ]}]})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const t=parts.map(p=>p.text||'').join('').trim();
+    return t||null;
+  }catch(e){ return null; }
+}
+
 async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
   if(mediaType==='image' && mediaUrl){
+    const geminiDesc=await engineGeminiDescribeImage(env, mediaUrl);
+    if(geminiDesc) return geminiDesc;
     try{
       const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
         body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:100, messages:[{role:'user', content:[
-          {type:'text', text:'Describe what this image shows in one short sentence, focused on anything relevant to a product or order enquiry.'},
+          {type:'text', text:ENGINE_IMAGE_DESCRIBE_PROMPT},
           {type:'image_url', image_url:{url:mediaUrl}}
         ]}]})
       });
@@ -4134,15 +4165,37 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   return sys;
 }
 
-async function engineCallLlm(c, systemPrompt, userText, maxTokens){
+// The main conversational agent — every FAQ/objection/product-enquiry reply across every client,
+// any industry, goes through this one function. Gemini-first (shared GEMINI_API_KEY, same pattern
+// as the rest of this engine), falling back to OpenRouter with the client's own openrouter_key/
+// model — deliberately the client's own configured model on this fallback (not a hardcoded Gemini
+// model the way engineGeminiGenerateWithFallback's OpenRouter leg is) so a client who chose a
+// specific model for a reason still gets it as the safety net, not a second Gemini-shaped attempt
+// that would fail the same way during a real Gemini-side outage. Previously OpenRouter-only with
+// no Gemini path at all — a single shared point of failure for every client's core reply text, and
+// on top of that any failure (thrown fetch, non-OK response, empty response body) was swallowed
+// completely silently, collapsing to the same generic "One moment 🙏" with zero logging regardless
+// of client or cause — indistinguishable from a real "let me check" delay to whoever's reading
+// Chatwoot. Only logs (reportOpsError) when BOTH Gemini and OpenRouter have failed, i.e. when a
+// real customer is actually about to receive that generic fallback — matches this file's existing
+// principle that a customer getting nothing/genuinely-wrong is worth alerting on, ordinary
+// single-layer fallbacks elsewhere aren't (see SETUP.md "Error monitoring").
+async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
+  const geminiReply=await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300});
+  if(geminiReply) return geminiReply;
   try{
     const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
       body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:maxTokens||300, messages:[{role:'system',content:systemPrompt},{role:'user',content:userText}]})
     });
     const data=await r.json().catch(()=>({}));
-    return data?.choices?.[0]?.message?.content?.trim()||'One moment 🙏';
-  }catch(e){ return 'One moment 🙏'; }
+    const text=data?.choices?.[0]?.message?.content?.trim();
+    if(text) return text;
+    await reportOpsError(env, 'engineCallLlm — Gemini and OpenRouter both returned no usable reply', new Error(JSON.stringify(data).slice(0,500)), {clientId:c?.Id});
+  }catch(e){
+    await reportOpsError(env, 'engineCallLlm — Gemini failed and the OpenRouter fallback threw', e, {clientId:c?.Id});
+  }
+  return 'One moment 🙏';
 }
 
 // flow_json stage messages, qual_questions, and callback_msg/callback_msg_frustrated are static
@@ -4629,7 +4682,7 @@ async function handleEngineWebhook(request, env, secret){
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
           const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang);
-          sentText=await engineCallLlm(c, sysPrompt, userText, 200);
+          sentText=await engineCallLlm(env, c, sysPrompt, userText, 200);
           routing.reply=sentText;
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           orderHandledInline=true;
@@ -4673,12 +4726,12 @@ async function handleEngineWebhook(request, env, secret){
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang);
-      let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       routing.reply=reply; sentText=reply;
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
-      let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       routing.reply=reply; sentText=reply;
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     }
