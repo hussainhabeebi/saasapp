@@ -3935,7 +3935,7 @@ async function engineBuildTravelContext(env, c, clientId){
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
-function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang){
+function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, flowNudge){
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
   let sys=c.main_prompt||'';
@@ -3988,11 +3988,22 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang)
     sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
   }
+
+  // Folds the flow_json stage's own scripted nudge into this SAME reply instead of sending it as a
+  // separate, rigid, verbatim second message (engineSendFlowPendingMsg, removed) — that mechanism
+  // had no guard against repeating itself: as long as the flow stays on one stage (typical while a
+  // prospect keeps asking questions instead of giving a positive/negative reply), it fired again on
+  // every single QUESTION turn. Observed live, repeatedly, in the same conversation: the identical
+  // canned self-introduction pitch sent verbatim after every one of several different questions in
+  // a row. An LLM asked to paraphrase and skip it "if already covered" naturally varies its wording
+  // and can actually recognize (from Recent Conversation above) that it already made this point —
+  // a rigid string genuinely cannot.
+  if(flowNudge) sys+=`\n\nAfter answering, naturally steer the conversation toward this next point, in your own words — do not quote it verbatim, and skip it entirely if Recent Conversation above shows you already made essentially this same point recently: "${flowNudge}"`;
   return sys;
 }
 
 // Mirrors "Code · Objection prep".
-function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang){
+function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang, flowNudge){
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
   const playbook=engineParseJsonField(c.objection_playbook, []);
@@ -4011,6 +4022,9 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   }
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Keep it to 2-4 sentences.';
+  // See engineBuildFaqSystemPrompt's matching comment — folds the flow_json stage's own scripted
+  // nudge into this reply instead of a separate, unguarded, verbatim second message.
+  if(flowNudge) sys+=`\n\nAfter addressing the objection, naturally steer the conversation toward this next point, in your own words — do not quote it verbatim, and skip it entirely if Recent Conversation above shows you already made essentially this same point recently: "${flowNudge}"`;
   return sys;
 }
 
@@ -4134,23 +4148,6 @@ async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, 
   }
 }
 
-// A FAQ/objection answer generated during an active flow can also have a scripted stage message
-// pending (engineRouteFlow's `intentData._flowPendingMsg`) — previously glued onto the LLM's own
-// reply with '\n\n' and sent as ONE WhatsApp message, producing an obviously two-different-authors
-// bubble. Observed live: a direct FAQ answer (in the client's configured language) ran straight
-// into an unrelated, differently-toned scripted pitch mid-message, with no visual break at all.
-// Sent as its own separate message instead — reads like two natural consecutive texts, the way a
-// real person would answer the question and then ask a follow-up, not one disjointed paragraph.
-// `routing.reply`/`routing.next` are still updated so ConvHistory and Stage bookkeeping reflect
-// both parts of the turn even though the customer received them as two bubbles.
-async function engineSendFlowPendingMsg(env, c, clientId, convId, routing, replyLang){
-  const rawPending=routing.intentData?._flowPendingMsg;
-  if(!rawPending) return;
-  routing.next=routing.intentData._flowPendingNext||routing.next;
-  const pending=await engineLocalizeReply(env, c, rawPending, replyLang);
-  await engineSendChatwootReply(env, c, clientId, convId, pending);
-  routing.reply=(routing.reply?routing.reply+'\n\n':'')+pending;
-}
 
 async function engineSendHandoverLabel(c, convId){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
@@ -4458,17 +4455,19 @@ async function handleEngineWebhook(request, env, secret){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
-      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang);
+      const flowNudge=routing.intentData?._flowPendingMsg||null;
+      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, flowNudge);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      if(flowNudge) routing.next=routing.intentData._flowPendingNext||routing.next;
       routing.reply=reply; sentText=reply;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
-      await engineSendFlowPendingMsg(env, c, clientId, convId, routing, replyLang);
     } else if(routing.route==='objection'){
-      const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
+      const flowNudge=routing.intentData?._flowPendingMsg||null;
+      const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang, flowNudge);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      if(flowNudge) routing.next=routing.intentData._flowPendingNext||routing.next;
       routing.reply=reply; sentText=reply;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
-      await engineSendFlowPendingMsg(env, c, clientId, convId, routing, replyLang);
     } else if(routing.route==='stage'){
       sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
       routing.reply=sentText;

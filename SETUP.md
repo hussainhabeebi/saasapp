@@ -2106,20 +2106,32 @@ whether the customer asked for it or not. `detectOrderSignal` now also classifie
   (length, price, tone) were also added to `engineBuildFaqSystemPrompt` for the general FAQ/greeting
   reply path, which had the identical "Hi" → long-pitch failure.
 
-**A FAQ/objection answer with a scripted flow message also pending is now sent as two separate
-WhatsApp messages, not one glued-together paragraph.** During an active flow, a `QUESTION` intent
-can carry both an LLM-generated answer AND a pending scripted stage message
+**A FAQ/objection answer with a scripted flow message also pending is now folded into ONE
+LLM-generated reply, not sent as a separate, rigid, unguarded message.** During an active flow, a
+`QUESTION` intent can carry both an LLM-generated answer AND a pending scripted stage message
 (`engineRouteFlow`'s `intentData._flowPendingMsg`/`_flowPendingNext` — set when `flowIsActive` and
-the matched flow action has its own `msg`). This used to be concatenated onto the LLM reply with
-`'\n\n'` and sent as a single message — observed live: a direct FAQ answer (in the client's
-configured language) ran straight into an unrelated, differently-toned scripted pitch mid-message,
-reading like two different people had written one bubble. `engineSendFlowPendingMsg` (`worker.js`,
-called from both the FAQ and objection branches in `handleEngineWebhook` right after the main
-reply is sent) now sends the pending message as its own separate message instead — two natural
-consecutive texts, the way a real person answers a question and then asks a follow-up, rather than
-one disjointed paragraph. `routing.reply`/`routing.next` are still updated with both parts
-afterward so ConvHistory and Stage bookkeeping reflect the whole turn, even though the customer
-received it as two bubbles.
+the matched flow action has its own `msg`). This went through two failed designs before landing
+here:
+1. **Concatenated onto the LLM reply with `'\n\n'`, sent as one message.** Observed live: a direct
+   FAQ answer (in the client's configured language) ran straight into an unrelated,
+   differently-toned scripted pitch mid-message, reading like two different people had written one
+   bubble.
+2. **Sent as its own separate WhatsApp message** (`engineSendFlowPendingMsg`, since removed) — fixed
+   the glued-bubble problem, but exposed a worse one: nothing gated `_flowPendingMsg` against
+   having already been sent. As long as the flow stayed on one stage — the normal case whenever a
+   prospect keeps asking questions instead of giving a positive/negative reply — it fired again on
+   *every single* `QUESTION` turn. Observed live, repeatedly, in the same conversation: the
+   identical canned self-introduction pitch sent verbatim after several different questions in a
+   row, alongside Chatwoot occasionally auto-reopening the conversation flagging a bot error.
+3. **Current design: folded into the same LLM call as an instruction, not sent as separate text at
+   all.** `engineBuildFaqSystemPrompt`/`engineBuildObjectionSystemPrompt` both gained a `flowNudge`
+   parameter (`routing.intentData?._flowPendingMsg`) — when present, the system prompt tells the
+   model to "naturally steer the conversation toward this next point, in your own words... skip it
+   entirely if Recent Conversation above shows you already made essentially this same point
+   recently." One coherent, correctly-languaged (via the existing `replyLang` plumbing), genuinely
+   non-repetitive reply, instead of a rigid string that couldn't tell it had already spoken.
+   `routing.next` still advances to `_flowPendingNext` whenever `flowNudge` was present, same as
+   before — only how the nudge reaches the customer changed, not the Stage bookkeeping.
 
 **Every reply now follows the customer's own detected language, not a single fixed
 `CLIENTS.language` setting.** Before this, every prompt-builder used `c.language||'en'` directly —
