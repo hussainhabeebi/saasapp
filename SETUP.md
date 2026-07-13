@@ -2105,6 +2105,21 @@ whether the customer asked for it or not. `detectOrderSignal` now also classifie
   sound like a real person texting rather than a scripted pitch — the same three instructions
   (length, price, tone) were also added to `engineBuildFaqSystemPrompt` for the general FAQ/greeting
   reply path, which had the identical "Hi" → long-pitch failure.
+
+**A FAQ/objection answer with a scripted flow message also pending is now sent as two separate
+WhatsApp messages, not one glued-together paragraph.** During an active flow, a `QUESTION` intent
+can carry both an LLM-generated answer AND a pending scripted stage message
+(`engineRouteFlow`'s `intentData._flowPendingMsg`/`_flowPendingNext` — set when `flowIsActive` and
+the matched flow action has its own `msg`). This used to be concatenated onto the LLM reply with
+`'\n\n'` and sent as a single message — observed live: a direct FAQ answer (in the client's
+configured language) ran straight into an unrelated, differently-toned scripted pitch mid-message,
+reading like two different people had written one bubble. `engineSendFlowPendingMsg` (`worker.js`,
+called from both the FAQ and objection branches in `handleEngineWebhook` right after the main
+reply is sent) now sends the pending message as its own separate message instead — two natural
+consecutive texts, the way a real person answers a question and then asks a follow-up, rather than
+one disjointed paragraph. `routing.reply`/`routing.next` are still updated with both parts
+afterward so ConvHistory and Stage bookkeeping reflect the whole turn, even though the customer
+received it as two bubbles.
 - **`mode:"enquiry"` + no confident product match** → falls through to the normal FAQ/flow handling
   untouched (no canned reply, no link) — the context-aware FAQ LLM can respond naturally, e.g. "we
   don't carry that, but here's what we do have."
