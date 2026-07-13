@@ -2949,21 +2949,27 @@ async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
   return {product, text};
 }
 
-// The "just asking" reply — full product detail, no order/checkout link. Deliberately never
-// mentions ordering or includes a link: SETUP.md/user-observed requirement is that a customer
-// asking about a product (size, color, stock, price) should get the details and photo, and only
-// see an order link once they've actually said they want to order (detectOrderSignal's separate
-// 'order' mode, handled elsewhere) — conflating "interested" with "ready to buy" was pushing a
-// checkout link into every product question, whether the customer had asked for it or not.
-function buildProductDetailText(displayName, product){
-  const lines=[`*${product.name}*`];
+// The "just asking" reply — full product detail available as context, no order/checkout link.
+// Deliberately never mentions ordering or includes a link: a customer asking about a product
+// (size, color, stock, price) should get an answer and the photo, and only see an order link once
+// they've actually said they want to order (detectOrderSignal's separate 'order' mode, handled
+// elsewhere) — conflating "interested" with "ready to buy" was pushing a checkout link into every
+// product question, whether the customer had asked for it or not.
+// LLM-generated rather than a fixed name/price/color/size/stock template that always dumped every
+// field regardless of what was actually asked — observed live: a plain "Hi" got a long, salesy
+// paragraph reciting sizes/colors nobody asked about, and price was always volunteered even when
+// the customer only asked about availability. This tells the model everything it's allowed to say
+// but leaves *what to actually say* up to what the customer asked.
+function engineBuildProductEnquirySystemPrompt(c, product){
+  const lang=c.language||'en';
+  const lines=[`Name: ${product.name}`];
   if(product.price) lines.push(`Price: ${product.currency||''} ${product.price}`.trim());
   if(product.color) lines.push(`Color: ${product.color}`);
-  if(product.size) lines.push(`Size: ${product.size}`);
+  if(product.size) lines.push(`Size options: ${product.size}`);
   if(product.category) lines.push(`Category: ${product.category}`);
   const stockNum=Number(product.stock);
-  lines.push(Number.isFinite(stockNum) && stockNum<=0 ? 'Currently out of stock' : 'In stock ✅');
-  return `Hi ${displayName||'there'}! Here are the details:\n\n${lines.join('\n')}\n\nWant to order this? Just let me know 🙂`;
+  lines.push(Number.isFinite(stockNum) && stockNum<=0 ? 'Currently out of stock' : 'In stock');
+  return `You are a friendly, human WhatsApp sales assistant replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Do not mention the price unless the customer's message is about price/cost, or you genuinely need it to answer their question. Keep your reply roughly as short as their message — a one-line question deserves a one- or two-line answer, not a paragraph. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond ONLY in ${lang}. Never switch languages.`;
 }
 
 // order.html's checkout form (frontend/order.html) — collects size, delivery address, phone and
@@ -3946,6 +3952,13 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry){
   // only runs pre-handover in the first place — see engineRouteFlow — so it never legitimately is).
   sys+='\n\nNever claim a human agent, advisor, or your team is "already" looking into something or has been notified — that has not happened. If you cannot answer from the data above, say plainly that you do not have that specific information and will find out / connect them with the team, as something you are about to do, not something already in progress.';
 
+  // Observed real failure: a customer's plain "Hi" got a long, salesy paragraph back — a full
+  // "welcome to the store, what are you looking for, let me know your size and color" pitch nobody
+  // asked for. Match the customer's own effort/length instead of maximizing how much gets said in
+  // one reply, and never volunteer price unless it's actually asked about or genuinely needed to
+  // answer — a real salesperson doesn't open with a price list either.
+  sys+='\n\nKeep your reply roughly as short as the customer\'s own message — a short greeting or a one-line question deserves a short, natural reply, not a long pitch covering everything you could possibly say. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message.';
+
   if(industry==='ecommerce'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
     // Observed real failure, paired with the routing change above: a product listed sizes "S, M,
@@ -4333,7 +4346,8 @@ async function handleEngineWebhook(request, env, secret){
           await engineSendChatwootReply(env, c, clientId, convId, sentText);
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
-          sentText=buildProductDetailText(state.name, product);
+          const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product);
+          sentText=await engineCallLlm(c, sysPrompt, userText, 200);
           routing.reply=sentText;
           if(product.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
           else await engineSendChatwootReply(env, c, clientId, convId, sentText);
