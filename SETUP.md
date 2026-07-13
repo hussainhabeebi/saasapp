@@ -2120,6 +2120,37 @@ consecutive texts, the way a real person answers a question and then asks a foll
 one disjointed paragraph. `routing.reply`/`routing.next` are still updated with both parts
 afterward so ConvHistory and Stage bookkeeping reflect the whole turn, even though the customer
 received it as two bubbles.
+
+**Every reply now follows the customer's own detected language, not a single fixed
+`CLIENTS.language` setting.** Before this, every prompt-builder used `c.language||'en'` directly —
+one language for every customer of a given client, regardless of what language that particular
+customer was actually writing in. Observed live in that same "glued-together paragraph" screenshot:
+the FAQ half of the reply was in Malayalam even though the customer's own message was in English —
+`c.language` had simply been configured to Malayalam for that client, and every AI reply obeyed it
+unconditionally.
+- **`engineClassifyIntent`** now also asks for `language` (ISO 639-1, e.g. `"en"`/`"ml"`/`"hi"`) in
+  its existing classifier call — one extra field on a call this engine already makes every turn, no
+  new request. Returned as `customerLanguage`, `null` if the model didn't return a recognizable
+  2-letter code (a very short/ambiguous message, for instance) — callers fall back to
+  `CLIENTS.language` themselves in that case, so there's always a sane default.
+  `customerLanguage` flows through `engineRouteFlow`'s return value into `routing.customerLanguage`.
+- **`replyLang` (`handleEngineWebhook`)** = `routing.customerLanguage||c.language||'en'` — computed
+  once per turn, passed into `engineBuildFaqSystemPrompt`, `engineBuildObjectionSystemPrompt`, and
+  `engineBuildProductEnquirySystemPrompt` (each gained a `replyLang` parameter, still falling back
+  to `c.language` internally if ever called without one), so every AI-generated reply now targets
+  the actual customer's language instead of the client's fixed default.
+- **`engineLocalizeReply`** — the equivalent fix for *static* content: `flow_json` stage messages,
+  `qual_questions`, `callback_msg`/`callback_msg_frustrated`, and this engine's own hardcoded
+  checkout-link/clarifying-question strings are all text that can't dynamically adapt the way an
+  LLM-generated reply can. Translates that text into `replyLang` via a small dedicated LLM call
+  (skipped entirely — no-op, no extra call — when `replyLang` is `'en'` or wasn't confidently
+  detected, so the common English-conversation case never pays for it), explicitly instructed to
+  leave URLs/SKUs/numbers/emoji untouched so a checkout link or product code never gets mangled in
+  translation. No caching, same trade-off as every other per-turn LLM call in this engine. Wired
+  into the `human`/`qualify`/`qualify_next`/`stage` routes and `engineSendFlowPendingMsg`.
+- **`LEADS.Language`** now reflects the detected customer language (`routing.customerLanguage`),
+  falling back to `CLIENTS.language` only when detection didn't return one — previously always just
+  mirrored the client's fixed setting regardless of what language the customer actually used.
 - **`mode:"enquiry"` + no confident product match** → falls through to the normal FAQ/flow handling
   untouched (no canned reply, no link) — the context-aware FAQ LLM can respond naturally, e.g. "we
   don't carry that, but here's what we do have."

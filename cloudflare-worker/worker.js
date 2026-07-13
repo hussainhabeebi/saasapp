@@ -2960,8 +2960,8 @@ async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
 // paragraph reciting sizes/colors nobody asked about, and price was always volunteered even when
 // the customer only asked about availability. This tells the model everything it's allowed to say
 // but leaves *what to actually say* up to what the customer asked.
-function engineBuildProductEnquirySystemPrompt(c, product){
-  const lang=c.language||'en';
+function engineBuildProductEnquirySystemPrompt(c, product, replyLang){
+  const lang=replyLang||c.language||'en';
   const lines=[`Name: ${product.name}`];
   if(product.price) lines.push(`Price: ${product.currency||''} ${product.price}`.trim());
   if(product.color) lines.push(`Color: ${product.color}`);
@@ -3664,7 +3664,7 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
 async function engineClassifyIntent(env, c, userText, activeHistory){
   const low=userText.trim().toLowerCase();
   const recent=(activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\n');
-  const systemText='You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going).';
+  const systemText='You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead).';
   const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
 
   let aiResult=null;
@@ -3714,7 +3714,15 @@ async function engineClassifyIntent(env, c, userText, activeHistory){
   const objectionCategory=(aiResult && VALID_OBJECTION.has(aiResult.objection))?aiResult.objection:'none';
   const wpRaw=Number(aiResult?.win_probability);
   const aiWinProbability=Number.isFinite(wpRaw)?Math.max(0,Math.min(100,Math.round(wpRaw))):null;
-  return {intent, intentData, sentiment, objectionCategory, aiWinProbability};
+  // Per-message detected language, not the client's fixed CLIENTS.language setting — a client
+  // configures one default language for their own scripted content (flow_json, qual_questions),
+  // but an actual customer can write in any language, and both the AI-generated replies and (via
+  // engineLocalizeReply) the client's static scripted text should follow the customer, not a
+  // one-size-fits-all default. Null when the model didn't return a recognizable 2-letter code —
+  // callers fall back to CLIENTS.language themselves.
+  const rawLang=typeof aiResult?.language==='string'?aiResult.language.trim().toLowerCase():'';
+  const customerLanguage=/^[a-z]{2}$/.test(rawLang)?rawLang:null;
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage};
 }
 
 // Mirrors "Code · Intent + flow" — the flow_json state machine that decides where this turn goes
@@ -3722,12 +3730,12 @@ async function engineClassifyIntent(env, c, userText, activeHistory){
 // is. FAQ routing is industry-aware (industryFaqRoute below), matching engine.json's own
 // industry-conditional routing rather than hardcoding one industry's behavior.
 function engineRouteFlow(c, state, userText, cls){
-  const {intent, intentData, sentiment, objectionCategory, aiWinProbability}=cls;
+  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage}=cls;
   const lowText=userText.toLowerCase().trim();
   const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
   const isResub=lowText==='start' && state.leadOptOut==='Yes';
-  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, isOptOut:true, isResub:false};
-  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, isOptOut:false, isResub:true};
+  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, isOptOut:true, isResub:false};
+  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, isOptOut:false, isResub:true};
 
   const botConfig=engineParseJsonField(c.bot_config, {});
   const qualQuestions=engineParseJsonField(c.qual_questions, []);
@@ -3847,7 +3855,7 @@ function engineRouteFlow(c, state, userText, cls){
     reply=(reply||'Great! You can book your slot here 📅')+'\n\n👉 '+c.cal_link;
   }
 
-  return {route, next, reply, videoUrl, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, isOptOut:false, isResub:false, humanReason};
+  return {route, next, reply, videoUrl, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, isOptOut:false, isResub:false, humanReason};
 }
 
 // From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
@@ -3927,9 +3935,9 @@ async function engineBuildTravelContext(env, c, clientId){
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
-function engineBuildFaqSystemPrompt(c, state, contextBlock, industry){
+function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang){
   const history=state.activeHistory||[];
-  const lang=c.language||'en';
+  const lang=replyLang||c.language||'en';
   let sys=c.main_prompt||'';
   const services=engineParseJsonField(c.services, []);
   const defaultCurrency=industry==='ecommerce'?'INR':'AED';
@@ -3984,9 +3992,9 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry){
 }
 
 // Mirrors "Code · Objection prep".
-function engineBuildObjectionSystemPrompt(c, state, objectionCategory){
+function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang){
   const history=state.activeHistory||[];
-  const lang=c.language||'en';
+  const lang=replyLang||c.language||'en';
   const playbook=engineParseJsonField(c.objection_playbook, []);
   const match=playbook.find(o=>(o.category||'').toLowerCase()===objectionCategory)||null;
   let sys=c.main_prompt||'';
@@ -4015,6 +4023,42 @@ async function engineCallLlm(c, systemPrompt, userText, maxTokens){
     const data=await r.json().catch(()=>({}));
     return data?.choices?.[0]?.message?.content?.trim()||'One moment 🙏';
   }catch(e){ return 'One moment 🙏'; }
+}
+
+// flow_json stage messages, qual_questions, and callback_msg/callback_msg_frustrated are static
+// text a client typed once (usually in whatever language they themselves work in) — unlike the
+// LLM-generated FAQ/objection/enquiry replies (which take a language directly in their own system
+// prompt), these can't dynamically adapt to whichever language a given customer is actually
+// writing in. Observed live: a customer's FAQ answer correctly matched their language, but the
+// flow's own scripted follow-up stayed in a different one, reading like two different people —
+// this is the same fix applied to scripted content instead of AI-generated content. `targetLang`
+// is the per-message language engineClassifyIntent detected for the CUSTOMER (not
+// CLIENTS.language, a fixed client-wide default) — a no-op when it's English or wasn't confidently
+// detected, so the common English-conversation case never pays for an extra LLM call. No caching:
+// same trade-off as every other per-turn LLM call in this engine — a fixed message translated
+// repeatedly costs a small amount of extra latency/spend, accepted over adding cache
+// infrastructure this file doesn't otherwise have. Always falls back to the original text on any
+// failure — a message in the "wrong" language is a far better outcome than no message at all.
+async function engineLocalizeReply(env, c, text, targetLang){
+  const trimmed=(typeof text==='string'?text:'').trim();
+  if(!trimmed || !targetLang || targetLang==='en') return text;
+  const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
+  try{
+    const geminiRaw=await engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400});
+    if(geminiRaw) return geminiRaw;
+  }catch(e){}
+  if(c.openrouter_key){
+    try{
+      const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', temperature:0.2, max_tokens:400, messages:[{role:'system',content:system},{role:'user',content:trimmed}]})
+      });
+      const data=await r.json().catch(()=>({}));
+      const out=data?.choices?.[0]?.message?.content?.trim();
+      if(out) return out;
+    }catch(e){}
+  }
+  return text;
 }
 
 // The one delivery point a customer's reply actually depends on — a silent failure here means
@@ -4099,10 +4143,11 @@ async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, 
 // real person would answer the question and then ask a follow-up, not one disjointed paragraph.
 // `routing.reply`/`routing.next` are still updated so ConvHistory and Stage bookkeeping reflect
 // both parts of the turn even though the customer received them as two bubbles.
-async function engineSendFlowPendingMsg(env, c, clientId, convId, routing){
-  const pending=routing.intentData?._flowPendingMsg;
-  if(!pending) return;
+async function engineSendFlowPendingMsg(env, c, clientId, convId, routing, replyLang){
+  const rawPending=routing.intentData?._flowPendingMsg;
+  if(!rawPending) return;
   routing.next=routing.intentData._flowPendingNext||routing.next;
+  const pending=await engineLocalizeReply(env, c, rawPending, replyLang);
   await engineSendChatwootReply(env, c, clientId, convId, pending);
   routing.reply=(routing.reply?routing.reply+'\n\n':'')+pending;
 }
@@ -4136,7 +4181,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
 
   const body={
     ClientId:String(clientId), Phone:state.phone, Name:state.name, ConversationID:state.convId,
-    Date:new Date().toISOString(), Language:c.language||'en',
+    Date:new Date().toISOString(), Language:routing.customerLanguage||c.language||'en',
     ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString()
   };
   if(messageId) body.LastProcessedMessageId=messageId;
@@ -4317,6 +4362,11 @@ async function handleEngineWebhook(request, env, secret){
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory);
     const routing=engineRouteFlow(c, state, userText, cls);
+    // Per-message detected language for THIS customer (engineClassifyIntent), not
+    // CLIENTS.language (a fixed client-wide default used only as the fallback when detection
+    // isn't confident) — see engineLocalizeReply's own comment for the scripted-content half of
+    // this; the AI-generated branches below pass this straight into their own system prompt.
+    const replyLang=routing.customerLanguage||c.language||'en';
 
     let sentText=null;
     let orderHandledInline=false;
@@ -4351,19 +4401,19 @@ async function handleEngineWebhook(request, env, secret){
         const product=await ecomFindProductBySku(env, clientId, detection.sku);
         if(detection.mode==='order' && product){
           const link=buildCheckoutLink(c, clientId, detection.sku);
-          sentText=`Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`;
+          sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
           routing.reply=sentText;
           if(product.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
           else await engineSendChatwootReply(env, c, clientId, convId, sentText);
           await logPendingOrder(env, c, clientId, phone, name, product);
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product){
-          sentText='Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?';
+          sentText=await engineLocalizeReply(env, c, 'Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?', replyLang);
           routing.reply=sentText;
           await engineSendChatwootReply(env, c, clientId, convId, sentText);
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
-          const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product);
+          const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang);
           sentText=await engineCallLlm(c, sysPrompt, userText, 200);
           routing.reply=sentText;
           if(product.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
@@ -4387,7 +4437,7 @@ async function handleEngineWebhook(request, env, secret){
       // decision is left untouched so the flow/qualification funnel resumes from wherever it was
       // on the next turn; only the reply actually sent to the customer this turn changes.
     } else if(routing.route==='human'){
-      sentText=routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.';
+      sentText=await engineLocalizeReply(env, c, routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.', replyLang);
       routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
       await engineSendHandoverLabel(c, convId);
@@ -4396,30 +4446,32 @@ async function handleEngineWebhook(request, env, secret){
     } else if(routing.route==='qualify'){
       const qualQuestions=engineParseJsonField(c.qual_questions, []);
       const firstQ=typeof qualQuestions[0]==='string'?qualQuestions[0]:'';
-      routing.reply=firstQ||'Could you tell me a bit more about what you are looking for?';
       routing.next='qual_0';
-      sentText=routing.reply;
+      sentText=await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
+      routing.reply=sentText;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
     } else if(routing.route==='qualify_next'){
-      sentText=routing.reply||null;
+      sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
+      routing.reply=sentText;
       if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
     } else if(['faq','ecom_faq','travel_faq'].includes(routing.route)){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
-      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general');
+      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
       routing.reply=reply; sentText=reply;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
-      await engineSendFlowPendingMsg(env, c, clientId, convId, routing);
+      await engineSendFlowPendingMsg(env, c, clientId, convId, routing, replyLang);
     } else if(routing.route==='objection'){
-      const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory);
+      const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
       routing.reply=reply; sentText=reply;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
-      await engineSendFlowPendingMsg(env, c, clientId, convId, routing);
+      await engineSendFlowPendingMsg(env, c, clientId, convId, routing, replyLang);
     } else if(routing.route==='stage'){
-      sentText=routing.reply||null;
+      sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
+      routing.reply=sentText;
       if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
     }
 
