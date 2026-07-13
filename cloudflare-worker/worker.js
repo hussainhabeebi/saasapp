@@ -4090,6 +4090,23 @@ async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, 
   }
 }
 
+// A FAQ/objection answer generated during an active flow can also have a scripted stage message
+// pending (engineRouteFlow's `intentData._flowPendingMsg`) — previously glued onto the LLM's own
+// reply with '\n\n' and sent as ONE WhatsApp message, producing an obviously two-different-authors
+// bubble. Observed live: a direct FAQ answer (in the client's configured language) ran straight
+// into an unrelated, differently-toned scripted pitch mid-message, with no visual break at all.
+// Sent as its own separate message instead — reads like two natural consecutive texts, the way a
+// real person would answer the question and then ask a follow-up, not one disjointed paragraph.
+// `routing.reply`/`routing.next` are still updated so ConvHistory and Stage bookkeeping reflect
+// both parts of the turn even though the customer received them as two bubbles.
+async function engineSendFlowPendingMsg(env, c, clientId, convId, routing){
+  const pending=routing.intentData?._flowPendingMsg;
+  if(!pending) return;
+  routing.next=routing.intentData._flowPendingNext||routing.next;
+  await engineSendChatwootReply(env, c, clientId, convId, pending);
+  routing.reply=(routing.reply?routing.reply+'\n\n':'')+pending;
+}
+
 async function engineSendHandoverLabel(c, convId){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
   try{
@@ -4392,15 +4409,15 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general');
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
-      if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
       routing.reply=reply; sentText=reply;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineSendFlowPendingMsg(env, c, clientId, convId, routing);
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
-      if(routing.intentData?._flowPendingMsg){ reply+='\n\n'+routing.intentData._flowPendingMsg; routing.next=routing.intentData._flowPendingNext||routing.next; }
       routing.reply=reply; sentText=reply;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineSendFlowPendingMsg(env, c, clientId, convId, routing);
     } else if(routing.route==='stage'){
       sentText=routing.reply||null;
       if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
