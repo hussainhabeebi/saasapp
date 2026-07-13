@@ -54,6 +54,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_message_limit | Number (optional, from the Price's `message_limit` metadata) |
 | wa_credits_balance | Number (running balance from WhatsApp-credit add-on purchases) |
 | voice_addon_active | Single line ("Yes"/"No") |
+| voice_reply_enabled | Single line ("Yes"/"No", default Yes when blank) — Settings → Voice Replies. Client-controlled on/off switch for the voice-to-voice reply feature, layered on top of `voice_addon_active` (the paid gate); only shown in the dashboard once the add-on is active. See "Voice-to-voice replies" below. |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | billing_email | Single line (**required before a Stripe Customer is ever created** — `ensureStripeCustomer` refuses to create one without it; both `handleBillingCheckoutSubscription` and `handleBillingCheckoutAddon` return a 400 telling the customer to set it first, rather than silently falling back to `authentik_email`, since the login address is sometimes a shared/ops account, not who should receive billing mail. Once a `stripe_customer_id` already exists this field can still be edited/updated freely — the "required" check only guards *creating* the Stripe account in the first place) |
@@ -1944,11 +1945,14 @@ sends it to Gemini as inline audio data, asks for a plain-text transcription); w
 new, only now it's a fallback rather than the only behavior).
 
 **Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the paid voice add-on
-(`voice_addon_active='Yes'` — see the Billing module), a customer who sends a voice note gets a
-WhatsApp voice note back instead of text, mirroring their own input modality — `engineDeliverReply`
-is the single dispatcher every route (human handover / qualify / FAQ / objection / order-detected)
-now sends its final reply through, instead of each of those eight call sites calling
-`engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
+(`voice_addon_active='Yes'` — see the Billing module) **and** the Settings → Voice Replies toggle
+left on (`voice_reply_enabled`, CLIENTS field, default Yes when blank — the toggle only appears in
+the dashboard once the add-on is active, and setting it to `'No'` lets a client keep the paid
+add-on but always get text replies, without touching billing), a customer who sends a voice note
+gets a WhatsApp voice note back instead of text, mirroring their own input modality —
+`engineDeliverReply` is the single dispatcher every route (human handover / qualify / FAQ /
+objection / order-detected) now sends its final reply through, instead of each of those eight call
+sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
 - **Language-aware, reusing detection you already have.** `engineClassifyIntent` already returns a
   per-message `customerLanguage` (ISO 639-1) for every turn, voice or text — this feature doesn't
   run a second detection pass, it just maps that code to Sarvam's BCP-47 `target_language_code`
@@ -1974,10 +1978,29 @@ now sends its final reply through, instead of each of those eight call sites cal
 - **Follow-up messages are explicitly out of scope for now** — `followup-template.json` and the
   dashboard's Follow-ups feature are untouched; this only covers live conversational replies inside
   `handleEngineWebhook`, not scheduled nudges.
-- **Falls back to text at every failure point** — no `SARVAM_API_KEY` configured, an unsupported
-  language, a product-image reply already in play (image and voice aren't combined), or the TTS
-  call itself failing all fall straight back to `engineSendChatwootReply`/`engineSendChatwootImageReply`,
-  same "customer never gets nothing" principle as the existing image-reply fallback.
+- **Falls back to text at every failure point** — no `SARVAM_API_KEY` configured, `voice_reply_enabled`
+  off, an unsupported language, a product-image reply already in play (image and voice aren't
+  combined), or the TTS call itself failing all fall straight back to
+  `engineSendChatwootReply`/`engineSendChatwootImageReply`, same "customer never gets nothing"
+  principle as the existing image-reply fallback.
+- **Gemini backup via OpenRouter, for both voice-reply steps that call Gemini.** Direct Gemini
+  (`GEMINI_API_KEY`) is always tried first; if it's unset or the call fails, both steps now retry
+  once through OpenRouter routed to a Gemini model, using the client's own `openrouter_key` (there's
+  no shared OpenRouter credential the way `GEMINI_API_KEY` is shared, so this backup is unavailable
+  for a client who hasn't set one) — deliberately hardcoded to a Gemini model on OpenRouter rather
+  than the client's own configured `model`, since the point is "still get a Gemini-quality result",
+  not "fall back to whatever model this client happens to use elsewhere":
+  - **Voice-note transcription** — `engineGeminiTranscribeVoice` (direct) → `engineOpenRouterTranscribeVoice`
+    (backup, same downloaded audio bytes reused, no second fetch). The backup uses the OpenAI-
+    compatible `input_audio` content part OpenRouter mirrors for audio-capable models — like the
+    Sarvam TTS shape above, **not independently verified against a live call** in this session
+    (network policy blocked outbound docs lookups); test with a real voice note before relying on
+    it. If both attempts fail, transcription falls back to the same `"(sent a voice note)"`
+    placeholder text as before.
+  - **Spoken-reply rewrite** — `engineBuildSpokenReply` now calls `engineGeminiGenerateWithFallback`
+    (tries direct Gemini, then OpenRouter/Gemini) instead of direct Gemini alone. If both fail, it
+    falls back to a plain regex strip of links/prices from the real reply text rather than failing
+    the voice reply outright.
 
 **Fully automatic on signup — no manual Chatwoot step, for any industry.**
 `engineSyncChatwootWebhook` (`worker.js`) keeps a client's PRIMARY Chatwoot webhook (the one that

@@ -1782,6 +1782,18 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <hr class="div">
 
+          <div class="settings-section" id="voiceReplySettingsRow" style="display:none">
+            <div class="s-head">🎙️ Voice Replies</div>
+            <div class="s-note">When a customer sends a voice note, the bot can reply with a voice note back instead of text — same language as the customer, spoken naturally, with any link or price sent as a short text note alongside it instead of being read aloud. Requires the Voice add-on (Settings → Billing); this just turns it on or off for your account.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div><label class="form-label">Reply to voice notes with voice</label><select class="form-input" id="cfgVoiceReplyEnabled"><option value="Yes">On — reply with voice</option><option value="No">Off — always reply with text</option></select></div>
+              <button class="save-btn" id="saveVoiceReplyEnabled">Save</button>
+              <span class="save-msg" id="saveVoiceReplyEnabledMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
           <div class="settings-section">
             <div class="s-head">🤝 Human Handover</div>
             <div class="s-note">By default the bot keeps replying even after a lead is handed over to a human (e.g. outside business hours, or while waiting for a rep to pick up) — the lead still shows as handed over either way. Turn this on if you'd rather the bot go fully silent the moment a human takes over, so it can never talk over your team.</div>
@@ -4719,6 +4731,8 @@ function populateSettings(){
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
   $id('cfgHandoverSilence').value=clientRecord.handover_silence_enabled||'No';
+  $id('cfgVoiceReplyEnabled').value=clientRecord.voice_reply_enabled||'Yes';
+  updateVoiceReplySettingsVisibility();
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -5463,6 +5477,10 @@ function renderProspectLog(){
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
 $id('saveHandoverSilence').addEventListener('click',async()=>saveField('saveHandoverSilence','saveHandoverSilenceMsg',{handover_silence_enabled:$id('cfgHandoverSilence').value}));
+$id('saveVoiceReplyEnabled').addEventListener('click',async()=>saveField('saveVoiceReplyEnabled','saveVoiceReplyEnabledMsg',{voice_reply_enabled:$id('cfgVoiceReplyEnabled').value}));
+function updateVoiceReplySettingsVisibility(){
+  const row=$id('voiceReplySettingsRow'); if(row) row.style.display=clientRecord?.voice_addon_active==='Yes'?'block':'none';
+}
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
 

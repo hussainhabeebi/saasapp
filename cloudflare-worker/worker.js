@@ -3575,24 +3575,34 @@ function engineArrayBufferToBase64(buf){
   return btoa(binary);
 }
 
-// Real voice transcription, via the same shared Gemini credential as the intent classifier —
-// engine.json never actually had this wired up (voice notes went to the AI as a literal
-// "(sent a voice note)" placeholder despite the docs describing transcription). Requires
-// GEMINI_API_KEY; falls back to the placeholder in engineResolveUserText below if unset, the
-// fetch fails, or the file is unexpectedly large.
-async function engineGeminiTranscribeVoice(env, mediaUrl){
-  if(!env.GEMINI_API_KEY || !mediaUrl) return null;
+const ENGINE_TRANSCRIBE_PROMPT='Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription — no commentary, no quotes, no translation.';
+
+// Downloads the voice note once (shared by both transcription attempts below, so a Gemini failure
+// followed by the OpenRouter fallback doesn't re-fetch the same file from Meta/Chatwoot a second
+// time) and base64-encodes it. Null on any fetch failure or an unexpectedly large file.
+async function engineFetchAudioBase64(mediaUrl){
   try{
     const audioR=await fetch(mediaUrl);
     if(!audioR.ok) return null;
     const mimeType=audioR.headers.get('content-type')||'audio/ogg';
     const buf=await audioR.arrayBuffer();
     if(buf.byteLength>15*1024*1024) return null; // stay well under Gemini's inline-data request size limit
-    const base64=engineArrayBufferToBase64(buf);
+    return {mimeType, base64:engineArrayBufferToBase64(buf)};
+  }catch(e){ return null; }
+}
+
+// Real voice transcription, via the same shared Gemini credential as the intent classifier —
+// engine.json never actually had this wired up (voice notes went to the AI as a literal
+// "(sent a voice note)" placeholder despite the docs describing transcription). Requires
+// GEMINI_API_KEY; falls back to engineOpenRouterTranscribeVoice below if unset or the call fails,
+// and to the literal placeholder in engineResolveUserText if that fails too.
+async function engineGeminiTranscribeVoice(env, mimeType, base64){
+  if(!env.GEMINI_API_KEY || !base64) return null;
+  try{
     const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({contents:[{role:'user', parts:[
-        {text:'Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription — no commentary, no quotes, no translation.'},
+        {text:ENGINE_TRANSCRIBE_PROMPT},
         {inline_data:{mime_type:mimeType, data:base64}}
       ]}]})
     });
@@ -3601,6 +3611,55 @@ async function engineGeminiTranscribeVoice(env, mediaUrl){
     const parts=data?.candidates?.[0]?.content?.parts||[];
     const text=parts.map(p=>p.text||'').join('').trim();
     return text||null;
+  }catch(e){ return null; }
+}
+
+// Backup transcription path when the direct Gemini call above is unavailable (no GEMINI_API_KEY)
+// or fails — routes through OpenRouter to a Gemini model instead, using the client's own
+// openrouter_key (there's no shared OpenRouter credential the way GEMINI_API_KEY is shared, so
+// this fallback is unavailable for a client who hasn't set one). Uses the OpenAI-compatible
+// `input_audio` content part that OpenRouter mirrors for audio-capable models — NOT independently
+// verified against a live call in this session (docs.sarvam.ai/api.sarvam.ai/OpenRouter's own docs
+// were all unreachable under this session's network policy — see the Sarvam TTS caveat elsewhere
+// in this file for the same reason), so this is worth a real test call before relying on it.
+async function engineOpenRouterTranscribeVoice(c, mimeType, base64){
+  if(!c?.openrouter_key || !base64) return null;
+  try{
+    const format=/mp3|mpeg/.test(mimeType)?'mp3':/wav/.test(mimeType)?'wav':'ogg';
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({model:'google/gemini-2.5-flash', max_tokens:300, messages:[{role:'user', content:[
+        {type:'text', text:ENGINE_TRANSCRIBE_PROMPT},
+        {type:'input_audio', input_audio:{data:base64, format}}
+      ]}]})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    return data?.choices?.[0]?.message?.content?.trim()||null;
+  }catch(e){ return null; }
+}
+
+// Direct Gemini text generation (engineGeminiGenerate) with an OpenRouter-routed Gemini model as
+// backup when it's unavailable or fails — same "backup if Gemini is failing, use an OpenRouter
+// Gemini model" pattern as engineOpenRouterTranscribeVoice above, for plain-text (non-audio)
+// generation calls. Deliberately hardcodes a Gemini model here rather than using the client's own
+// `c.model` — the point of this fallback is specifically "still get a Gemini-quality answer", not
+// "fall back to whatever model this client happens to have configured".
+async function engineGeminiGenerateWithFallback(env, c, systemText, userText, opts={}){
+  const direct=await engineGeminiGenerate(env, systemText, userText, opts);
+  if(direct) return direct;
+  if(!c?.openrouter_key) return null;
+  try{
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'google/gemini-2.5-flash', temperature:opts.temperature??0.3, max_tokens:opts.maxOutputTokens||300,
+        messages:[...(systemText?[{role:'system', content:systemText}]:[]), {role:'user', content:userText}]
+      })
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    return data?.choices?.[0]?.message?.content?.trim()||null;
   }catch(e){ return null; }
 }
 
@@ -3673,7 +3732,12 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
     }catch(e){ return '(image received)'; }
   }
   if(mediaType==='voice' && mediaUrl){
-    const transcript=await engineGeminiTranscribeVoice(env, mediaUrl);
+    const audio=await engineFetchAudioBase64(mediaUrl);
+    let transcript=null;
+    if(audio){
+      transcript=await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64);
+      if(!transcript) transcript=await engineOpenRouterTranscribeVoice(c, audio.mimeType, audio.base64);
+    }
     return transcript || '(sent a voice note)';
   }
   return text || (mediaType==='voice'?'(sent a voice note)':'');
@@ -4257,7 +4321,7 @@ async function engineSarvamTts(env, text, targetLangCode){
 // text caption by engineExtractLinkPriceCaption instead.
 async function engineBuildSpokenReply(env, c, replyText, langCode){
   const sys='Rewrite the following customer-service reply as ONE short, natural sentence the way a friendly person would actually say it out loud on a voice note — real spoken style, not written text. Keep the exact same language and meaning. Never speak a URL, link, price, currency amount, or long number — if the reply mainly exists to share one of those, say something short and natural instead (for example, that the details are shared below/above in text). Respond with ONLY the spoken sentence — no quotes, no commentary, no markdown.';
-  const spoken=await engineGeminiGenerate(env, sys, replyText, {temperature:0.4, maxOutputTokens:120});
+  const spoken=await engineGeminiGenerateWithFallback(env, c, sys, replyText, {temperature:0.4, maxOutputTokens:120});
   if(spoken) return spoken;
   // Fallback if Gemini is unavailable: best-effort strip links/prices instead of speaking them,
   // and cap length, rather than failing the voice reply outright.
@@ -4291,7 +4355,11 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
   if(!trimmed) return;
   const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
-  if(mediaType==='voice' && c.voice_addon_active==='Yes' && !imageUrl && bcp47){
+  // voice_reply_enabled — Settings → Voice Replies toggle (dashboard.html). Only meaningful once
+  // the client actually has the paid add-on; defaults to enabled (must be explicitly 'No') so a
+  // client who's had the add-on since before this toggle existed doesn't silently lose the
+  // feature just because the field itself has never been set.
+  if(mediaType==='voice' && c.voice_addon_active==='Yes' && c.voice_reply_enabled!=='No' && !imageUrl && bcp47){
     const spokenText=await engineBuildSpokenReply(env, c, trimmed, langCode);
     const audioBuf=await engineSarvamTts(env, spokenText, bcp47);
     if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
