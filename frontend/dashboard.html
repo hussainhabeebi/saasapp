@@ -4,7 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Leadvyne · CRM</title>
-<link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#0D9C93">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <!-- Login hits these two hosts first — start DNS/TLS during page load instead of at first fetch -->
@@ -3226,6 +3230,7 @@ function completeLoginResult(session){
   sessionStorage.setItem('lv_session',sessionToken);
   sessionStorage.setItem('lv_me_email',myEmail);
   showApp();
+  setTimeout(maybeShowInstallBanner,2000);
 }
 function completeLoginError(message){
   if(window.opener && !window.opener.closed){
@@ -10514,6 +10519,65 @@ function renderChatEmpty(){
     <div class="chat-empty-icon">💬</div>
     <div>Select a contact to view their conversation</div>
   </div>`;
+}
+
+/* ── PWA install prompt ──
+   There's no App Store/Play Store app — installing this as a PWA (Add to Home Screen/desktop) is
+   the only "app icon" experience available, so it's worth prompting for rather than leaving to
+   chance. beforeinstallprompt only fires once per page load and is lost forever if no listener is
+   attached before it does, so this runs as an early top-level statement, not inside the async BOOT
+   IIFE below. Only ever triggered right after a fresh signup/login (completeLoginResult calls
+   maybeShowInstallBanner) — never on an ordinary page reload/session-resume (resumeSession does
+   not), so a returning user isn't renagged every time they open the tab. */
+let _deferredInstallPrompt=null;
+window.addEventListener('beforeinstallprompt', e=>{
+  e.preventDefault();
+  _deferredInstallPrompt=e;
+});
+function pwaIsStandalone(){
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true;
+}
+function pwaIsIOS(){
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+}
+function maybeShowInstallBanner(){
+  if(pwaIsStandalone()) return; // already installed/running as an app — nothing to prompt
+  if(localStorage.getItem('lv_install_dismissed')==='1') return;
+  if(pwaIsIOS()){
+    // No programmatic install API exists on iOS Safari — the only option is a manual instruction.
+    showInstallBanner({text:'Add Leadvyne to your Home Screen — tap Share, then "Add to Home Screen".', showInstallBtn:false});
+  } else if(_deferredInstallPrompt){
+    showInstallBanner({text:'Install Leadvyne for quick, one-tap access from your desktop or home screen.', showInstallBtn:true});
+  }
+  // Otherwise (an unsupported browser, or beforeinstallprompt just hasn't fired yet this load) —
+  // show nothing rather than a button that can't actually do anything.
+}
+function showInstallBanner({text, showInstallBtn}){
+  if($id('_installBanner')) return;
+  const bar=document.createElement('div');
+  bar.id='_installBanner';
+  bar.style.cssText='position:fixed;left:16px;right:16px;bottom:16px;max-width:420px;margin:0 auto;background:#0F2C4C;color:#fff;border-radius:14px;padding:14px 16px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:9998;display:flex;align-items:center;gap:12px;font-family:var(--body)';
+  bar.innerHTML=`
+    <div style="flex:1;font-size:13px;line-height:1.4">${text}</div>
+    <div style="display:flex;gap:8px;flex:none;align-items:center">
+      ${showInstallBtn?'<button id="_installBtn" style="background:#0D9C93;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Install</button>':''}
+      <button id="_installDismiss" style="background:transparent;color:#9FB4C7;border:none;font-size:13px;cursor:pointer;padding:8px;white-space:nowrap">Not now</button>
+    </div>`;
+  document.body.appendChild(bar);
+  $id('_installDismiss').addEventListener('click', ()=>{
+    localStorage.setItem('lv_install_dismissed','1');
+    bar.remove();
+  });
+  if(showInstallBtn){
+    $id('_installBtn').addEventListener('click', async ()=>{
+      bar.remove();
+      if(!_deferredInstallPrompt) return;
+      _deferredInstallPrompt.prompt();
+      await _deferredInstallPrompt.userChoice;
+      _deferredInstallPrompt=null;
+      localStorage.setItem('lv_install_dismissed','1'); // don't ask again regardless of the choice made
+    });
+  }
 }
 
 /* ── BOOT ── */

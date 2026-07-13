@@ -2283,3 +2283,47 @@ are still swallowed silently by design — alerting on every best-effort fallbac
 file would be noisy without much operational value. The three wiring points above were chosen as
 the highest-signal: total silence to a customer, or a fully unhandled crash.
 
+## PWA install prompt (`frontend/dashboard.html`, `manifest.json`, `sw.js`, `icons/`)
+There's no App Store/Play Store app — installing the dashboard as a PWA (Add to Home Screen on
+mobile, "Install app" on desktop Chrome/Edge) is the only "app icon" experience available, so it's
+worth prompting for rather than leaving to chance/discovery.
+- **`frontend/sw.js`** already existed before this (registered at `dashboard.html`'s boot, `/sw.js`)
+  — cache-first for a short static-asset allowlist (pinned CDN script URLs, `dashboard.html` itself
+  for an offline fallback), network-first for navigation, and explicitly never caches NocoDB/API
+  calls. What was actually missing for real installability was **`frontend/manifest.json`** (name,
+  icons, `display:"standalone"`, theme color) — a service worker alone doesn't make a page
+  installable without one. Both need to be deployed at the app's root (same level as
+  `dashboard.html`) for their paths (`/sw.js`, `manifest.json`, `icons/...`) to resolve.
+- **`frontend/icons/`** — generated from the existing chat-bubble brand mark (the same base64 PNG
+  already embedded in `admin.html`'s header), upscaled to `icon-192.png`/`icon-512.png` (transparent
+  background, "any" purpose) and composited onto the brand's navy (`#0F2C4C`) background for
+  `apple-touch-icon.png` and the `-maskable` variants (logo sized to ~65% of canvas, inside the safe
+  zone OS-applied icon masks need) — a maskable icon needs full-bleed background content, unlike the
+  transparent "any" ones, or Android can clip it unpredictably.
+- **`beforeinstallprompt` capture** (`dashboard.html`) is a top-level statement, not inside the async
+  boot IIFE — the event fires once per page load and is lost forever if no listener is attached
+  before it does, so it can't wait on anything.
+- **Only triggered right after a fresh signup/login** — `maybeShowInstallBanner()` is called from
+  `completeLoginResult` (the one function every signup/login path converges on: direct OIDC
+  callback, the popup-relayed flow, and auto-provisioning a brand-new signup), never from
+  `resumeSession` (an ordinary page reload/tab reopen with an existing session) — so a returning
+  user isn't renagged on every visit, only actual sign-in moments.
+- **Custom banner, not the raw browser dialog** — `showInstallBanner()` is a small dismissible
+  bottom bar, on-brand instead of Chrome's own generic install popup. "Not now" sets
+  `localStorage.lv_install_dismissed='1'`, permanently skipping the banner on this device/browser
+  after that (there's no "ask me later" tier — a dismiss is a dismiss).
+- **iOS Safari has no programmatic install API at all** (no `beforeinstallprompt` equivalent) — the
+  banner falls back to a manual instruction ("tap Share, then Add to Home Screen") instead of an
+  Install button, detected by user-agent (`pwaIsIOS()`) rather than feature-testing, since there's
+  no feature to test for.
+- **Already-installed/running standalone is detected and skipped** — `pwaIsStandalone()` checks
+  `matchMedia('(display-mode: standalone)')` (desktop/Android) and `navigator.standalone` (iOS)
+  before ever showing the banner.
+- **Known gap, not addressed here:** session state (`sessionStorage`) doesn't carry over into a
+  freshly-launched standalone PWA window — a new top-level browsing context gets its own empty
+  `sessionStorage`, so a user who installs the app will likely see the login gate again the first
+  time they open it from the home screen/desktop icon, rather than landing straight in. Fixing that
+  would mean moving session persistence to `localStorage` (survives across browsing contexts), which
+  is a separate change with its own security tradeoff (a session token that outlives the tab, until
+  explicit logout, instead of clearing when the tab closes) — not made as part of this.
+
