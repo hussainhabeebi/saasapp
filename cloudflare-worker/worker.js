@@ -1239,7 +1239,8 @@ If "order" or "enquiry", try to match it to exactly one product from the catalog
 - Match by reasonable everyday judgment, not exact string equality — a customer writes informally, the catalog doesn't. "Green shirt" should match a catalog color of "Light Green" or "Bottle Green"; "greenshirt" and "green shirt" are the same query; a size like "S"/"small"/"S size" are the same detail. Don't withhold sku just because the wording isn't identical to the catalog fields — withhold it only when you genuinely can't tell which product (or no product) is meant.
 - A message with NO distinguishing detail of its own — "order it", "M size" alone, "that one", "yes please" — should be resolved using the recent conversation below, if given: it very likely refers to whichever product was just discussed.
 - A message that names its own distinguishing detail (a color, size, or product name) should be matched against the catalog by that detail. If it's consistent with the product just discussed (e.g. "size M" right after that same shirt was shown), match to that one. If it conflicts with the product just discussed (e.g. "red shirt" right after a green shirt was shown), treat it as asking about a NEW product and match fresh by the new detail — don't keep reusing the old product's sku just because it was recently discussed. Only omit sku (or classify as neither, if it's clearly asking for something not carried at all) when the named detail truly doesn't correspond to anything in the catalog.
-Respond with ONLY valid JSON: {"signal":true,"mode":"order","sku":"..."} or {"signal":true,"mode":"enquiry","sku":"..."} (sku omitted if no confident match) or {"signal":false}.
+- Always also include product_name (the catalog product's plain name) whenever you include sku, or whenever you're confident which product is meant even if you're not 100% sure you copied the sku exactly right — copying a product's name correctly is much more reliable than copying an alphanumeric code, and product_name lets a name-based lookup succeed even if the sku string doesn't match exactly.
+Respond with ONLY valid JSON: {"signal":true,"mode":"order","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","sku":"...","product_name":"..."} (sku/product_name omitted if no confident match) or {"signal":false}.
 ${contextText?`\nRecent conversation (oldest first — use this to resolve references back to a specific product):\n${contextText}\n`:''}
 Product catalog:
 ${productList||'(no products listed)'}`;
@@ -1258,7 +1259,11 @@ ${productList||'(no products listed)'}`;
   let parsed={signal:false};
   try{ parsed=JSON.parse(raw); }catch(e){}
   const mode=parsed.mode==='order'?'order':'enquiry'; // defaults to the more conservative 'enquiry' (no link sent) if the model omits mode or returns something unrecognized
-  return {signal:!!parsed.signal, mode, sku:parsed.signal?(parsed.sku||undefined):undefined};
+  return {
+    signal:!!parsed.signal, mode,
+    sku:parsed.signal?(parsed.sku||undefined):undefined,
+    productName:parsed.signal?(parsed.product_name||undefined):undefined
+  };
 }
 
 // Classifies one incoming message for order-readiness — same n8n-calls-Cloudflare shape as
@@ -2940,6 +2945,31 @@ async function ecomFindProductBySku(env, clientId, sku){
   return pd?.list?.[0]||null;
 }
 
+// Fuzzy fallback for when detectOrderSignal is confident WHICH product but didn't reproduce its
+// exact sku string closely enough for ecomFindProductBySku's exact match — an LLM copying a
+// natural-language product name is far more reliable than copying an alphanumeric code. Observed
+// live: a customer confirmed "Yes" right after the bot itself named a specific product in its own
+// immediately-prior message; detectOrderSignal correctly classified mode:'order' but the sku it
+// returned didn't match any real product, so the customer got "which item would you like?"
+// immediately after the bot had just told them. Case-insensitive substring match either direction
+// (catalog name contains the guess, or the guess contains the catalog name) against the same
+// client's products, capped the same as detectOrderSignal's own catalog scan.
+async function ecomResolveProduct(env, clientId, sku, productName){
+  const bySku=await ecomFindProductBySku(env, clientId, sku);
+  if(bySku) return bySku;
+  const guess=(productName||'').trim().toLowerCase();
+  if(!guess) return null;
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return null;
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+  const pd=await pr.json().catch(()=>({}));
+  const products=pd?.list||[];
+  return products.find(p=>{
+    const name=(p.name||'').trim().toLowerCase();
+    return name && (name.includes(guess) || guess.includes(name));
+  })||null;
+}
+
 async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
   const product=await ecomFindProductBySku(env, clientId, sku);
   const displayName=name||'there';
@@ -4407,7 +4437,7 @@ async function handleEngineWebhook(request, env, secret){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       if(detection.signal){
-        const product=await ecomFindProductBySku(env, clientId, detection.sku);
+        const product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
         if(detection.mode==='order' && product){
           const link=buildCheckoutLink(c, clientId, detection.sku);
           sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);

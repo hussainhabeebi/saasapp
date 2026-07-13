@@ -2106,6 +2106,23 @@ whether the customer asked for it or not. `detectOrderSignal` now also classifie
   (length, price, tone) were also added to `engineBuildFaqSystemPrompt` for the general FAQ/greeting
   reply path, which had the identical "Hi" → long-pitch failure.
 
+**Product resolution now falls back to a fuzzy name match when the sku doesn't exactly match.**
+`detectOrderSignal` asks the model to copy a real product's `sku` string verbatim from the catalog
+it was given — reliable when the product is unambiguous, but an LLM reproducing an exact
+alphanumeric code is inherently less trustworthy than an LLM reproducing a natural-language name.
+Observed live: a customer replied bare "Yes" immediately after the bot's own prior message had
+named a specific product by name and price — `detectOrderSignal` correctly classified `mode:"order"`
+(confirmed by the exact fallback wording that reached the customer), but the `sku` it returned
+didn't match any real product, so `ecomFindProductBySku`'s exact lookup failed and the customer got
+"which item would you like?" immediately after the bot had just told them. `detectOrderSignal` now
+also asks for `product_name` (the plain catalog name) whenever it names a `sku`, or whenever it's
+confident which product is meant even without being sure of the exact sku spelling.
+`ecomResolveProduct` (replacing direct `ecomFindProductBySku` calls in `handleEngineWebhook`'s
+order-check) tries the exact sku match first, then falls back to a case-insensitive substring match
+against `product_name` over the same client's catalog — the same content-with-a-fallback pattern
+used for the sku-vs-context conflict fix above, applied to a different failure mode of the same
+underlying problem (trusting an LLM's exact-string reproduction more than its judgment).
+
 **FAQ answers and flow_json stage progression are now fully decoupled — a `QUESTION` never carries
 scripted stage content, ever.** engine.json's original design had a `QUESTION` intent during an
 active flow carry both an LLM-generated FAQ answer AND a pending scripted stage message
