@@ -3807,15 +3807,17 @@ function engineRouteFlow(c, state, userText, cls){
   // (human_handover is never a real flow_json stage) rather than picking a route itself, so a
   // handed-over lead gets ordinary FAQ-style replies once silencing is off.
   else if(state.stage==='human_handover' && c.handover_silence_enabled==='Yes') route='drop';
-  else if(stageNotFound || effIntent==='QUESTION' || NEGATIVE.has(effIntent)){
-    route=industryFaqRoute;
-    const flowIsActive=allStages.length>0 && !isFinalStage && state.stage!=='human_handover' && !stageNotFound;
-    if(flowIsActive && effIntent==='QUESTION' && action.msg){
-      const vars=flow.variables||{};
-      const stageMsg=(flow.messages?.[action.msg]||'').replace(/\[(\w+)\]/g,(_,k)=>vars[k.toLowerCase()]??vars[k]??'');
-      Object.assign(intentData, {_flowPendingMsg:stageMsg||null, _flowPendingNext:action.next||state.stage});
-    }
-  } else if(!qualDone && qualStage===null) route='qualify';
+  // A QUESTION (or NEGATIVE, or a stage no longer in flow_json) always gets a clean FAQ answer and
+  // nothing else — scripted flow_json stage content (action.msg) is deliberately never folded in
+  // here. Two designs were tried and both caused real, observed bugs: concatenating it onto the
+  // FAQ reply produced an obviously two-different-authors bubble; sending it as its own message
+  // had no guard against repeating itself verbatim on every single QUESTION turn a prospect asked
+  // in a row (see SETUP.md's "Conversation Engine" for both). Stage progression/messages now only
+  // ever happen through the dedicated 'stage' route below, which only fires for a genuine
+  // flow-relevant reply (AFFIRMATIVE, BOOKING, etc.) — not every time a customer asks something.
+  // The bot fully owns answering FAQs; the flow fully owns stage progression; the two no longer mix.
+  else if(stageNotFound || effIntent==='QUESTION' || NEGATIVE.has(effIntent)) route=industryFaqRoute;
+  else if(!qualDone && qualStage===null) route='qualify';
   else if(!qualDone && qualStage!==null) route='qualify_next';
 
   if(sentiment==='Frustrated' && route!=='human' && botConfig.handover_enabled!==false){
@@ -3935,7 +3937,7 @@ async function engineBuildTravelContext(env, c, clientId){
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
-function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, flowNudge){
+function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang){
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
   let sys=c.main_prompt||'';
@@ -3988,22 +3990,11 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
     sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
   }
-
-  // Folds the flow_json stage's own scripted nudge into this SAME reply instead of sending it as a
-  // separate, rigid, verbatim second message (engineSendFlowPendingMsg, removed) — that mechanism
-  // had no guard against repeating itself: as long as the flow stays on one stage (typical while a
-  // prospect keeps asking questions instead of giving a positive/negative reply), it fired again on
-  // every single QUESTION turn. Observed live, repeatedly, in the same conversation: the identical
-  // canned self-introduction pitch sent verbatim after every one of several different questions in
-  // a row. An LLM asked to paraphrase and skip it "if already covered" naturally varies its wording
-  // and can actually recognize (from Recent Conversation above) that it already made this point —
-  // a rigid string genuinely cannot.
-  if(flowNudge) sys+=`\n\nAfter answering, naturally steer the conversation toward this next point, in your own words — do not quote it verbatim, and skip it entirely if Recent Conversation above shows you already made essentially this same point recently: "${flowNudge}"`;
   return sys;
 }
 
 // Mirrors "Code · Objection prep".
-function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang, flowNudge){
+function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang){
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
   const playbook=engineParseJsonField(c.objection_playbook, []);
@@ -4022,9 +4013,6 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   }
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Keep it to 2-4 sentences.';
-  // See engineBuildFaqSystemPrompt's matching comment — folds the flow_json stage's own scripted
-  // nudge into this reply instead of a separate, unguarded, verbatim second message.
-  if(flowNudge) sys+=`\n\nAfter addressing the objection, naturally steer the conversation toward this next point, in your own words — do not quote it verbatim, and skip it entirely if Recent Conversation above shows you already made essentially this same point recently: "${flowNudge}"`;
   return sys;
 }
 
@@ -4455,17 +4443,13 @@ async function handleEngineWebhook(request, env, secret){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
-      const flowNudge=routing.intentData?._flowPendingMsg||null;
-      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, flowNudge);
+      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
-      if(flowNudge) routing.next=routing.intentData._flowPendingNext||routing.next;
       routing.reply=reply; sentText=reply;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
     } else if(routing.route==='objection'){
-      const flowNudge=routing.intentData?._flowPendingMsg||null;
-      const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang, flowNudge);
+      const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlm(c, sysPrompt, userText, 300);
-      if(flowNudge) routing.next=routing.intentData._flowPendingNext||routing.next;
       routing.reply=reply; sentText=reply;
       await engineSendChatwootReply(env, c, clientId, convId, sentText);
     } else if(routing.route==='stage'){
