@@ -1796,7 +1796,7 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <div class="settings-section">
             <div class="s-head">Conversation Stages</div>
-            <div class="s-note">Exact messages the bot sends at each stage.</div>
+            <div class="s-note">Exact messages the bot sends at each stage — sent only when the customer gives a genuine reply that moves the conversation forward (e.g. "yes", a booking time), never mixed into an answer to a question. Keep these generic ("Would you like to see pricing?") rather than naming a specific product or service — if you sell multiple, the bot already pulls in live details for whichever one the customer is actually asking about when they ask, from your Products/Services data. A stage message naming one specific product will read oddly to a customer asking about a different one.</div>
             <div id="stageList" style="margin-bottom:12px"></div>
             <button type="button" onclick="addStage()" style="width:100%;padding:10px;border:2px dashed var(--ls);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px">+ Add Stage</button>
             <div style="color:#B23A2E;font-size:12px;margin-top:6px;min-height:16px" id="flowErr"></div>
@@ -5524,7 +5524,7 @@ function renderStages(stages){
       <span style="font-family:var(--mono);font-size:10px;color:var(--accent-ink);background:var(--accent-soft);padding:2px 8px;border-radius:5px;display:inline-block;margin-bottom:8px">Stage ${i+1}</span>
       <button class="stage-del" onclick="removeStage(${i})">✕</button>
       <label class="form-label">Message</label>
-      <textarea class="form-input" oninput="_stages[${i}].message=this.value" rows="3">${s.message}</textarea>
+      <textarea class="form-input" oninput="_stages[${i}].message=this.value" rows="3" placeholder="e.g. Would you like to see our pricing? — avoid naming one specific product/service">${s.message}</textarea>
     </div>`).join('');
 }
 function addStage(){_stages.push({id:'stage_'+(_stages.length+1),message:''});renderStages(_stages);}

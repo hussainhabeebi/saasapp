@@ -2133,6 +2133,21 @@ active flow carry both an LLM-generated FAQ answer AND a pending scripted stage 
    bot fully owns answering FAQs; the flow fully owns stage progression; the two no longer mix,
    which is what actually closes this bug class rather than continuing to manage it.
 
+**Stage messages should stay product/service-agnostic for a client selling more than one thing —
+this is an authoring convention, not a code constraint.** A client with multiple products/services
+might reasonably worry a single linear stage funnel can't represent them all. It doesn't need to:
+stage messages (`flow_json`) and product/service specifics (the ecom/travel context block injected
+into the FAQ prompt, `engineBuildEcomContext`/`engineBuildTravelContext`) are two separate,
+already-decoupled systems (see above) — a stage message is pipeline progress ("would you like to
+see pricing?"), not product content, and a customer asking about any specific item already gets
+live, per-item detail from the catalog-aware FAQ/enquiry path regardless of what stage they're on.
+The failure mode this avoids: a stage message that hardcodes one specific product's name reads
+oddly to a customer who's actually asking about a different one. `dashboard.html`'s Stage Builder
+(Settings → Conversation Stages) now says this directly in its own hint text and each stage
+textarea's placeholder, rather than leaving it to be discovered the hard way. No backend change was
+needed — the routing already keeps these two systems apart; this is purely a content-authoring
+guidance fix.
+
 **Every reply now follows the customer's own detected language, not a single fixed
 `CLIENTS.language` setting.** Before this, every prompt-builder used `c.language||'en'` directly —
 one language for every customer of a given client, regardless of what language that particular
