@@ -62,3 +62,9 @@ STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZgh
 #                           slack_webhook_url (business alerts like hot leads).
 #   OPS_ALERT_EMAIL         optional — email address for the same alerts as OPS_ALERT_WEBHOOK_URL,
 #                           sent via Resend. Requires RESEND_API_KEY (above) to also be set.
+#   SARVAM_API_KEY          Sarvam AI API key — see SETUP.md "Voice-to-voice replies". Powers the
+#                           /engine/webhook voice-note reply (female TTS, Indic languages incl.
+#                           Malayalam/Hindi/Tamil/etc). One shared key for all clients, same pattern
+#                           as GEMINI_API_KEY. If unset, or the customer's detected language isn't a
+#                           supported Indic language, the engine falls back to a normal text reply
+#                           even for clients with voice_addon_active='Yes'.

@@ -3575,24 +3575,34 @@ function engineArrayBufferToBase64(buf){
   return btoa(binary);
 }
 
-// Real voice transcription, via the same shared Gemini credential as the intent classifier —
-// engine.json never actually had this wired up (voice notes went to the AI as a literal
-// "(sent a voice note)" placeholder despite the docs describing transcription). Requires
-// GEMINI_API_KEY; falls back to the placeholder in engineResolveUserText below if unset, the
-// fetch fails, or the file is unexpectedly large.
-async function engineGeminiTranscribeVoice(env, mediaUrl){
-  if(!env.GEMINI_API_KEY || !mediaUrl) return null;
+const ENGINE_TRANSCRIBE_PROMPT='Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription — no commentary, no quotes, no translation.';
+
+// Downloads the voice note once (shared by both transcription attempts below, so a Gemini failure
+// followed by the OpenRouter fallback doesn't re-fetch the same file from Meta/Chatwoot a second
+// time) and base64-encodes it. Null on any fetch failure or an unexpectedly large file.
+async function engineFetchAudioBase64(mediaUrl){
   try{
     const audioR=await fetch(mediaUrl);
     if(!audioR.ok) return null;
     const mimeType=audioR.headers.get('content-type')||'audio/ogg';
     const buf=await audioR.arrayBuffer();
     if(buf.byteLength>15*1024*1024) return null; // stay well under Gemini's inline-data request size limit
-    const base64=engineArrayBufferToBase64(buf);
+    return {mimeType, base64:engineArrayBufferToBase64(buf)};
+  }catch(e){ return null; }
+}
+
+// Real voice transcription, via the same shared Gemini credential as the intent classifier —
+// engine.json never actually had this wired up (voice notes went to the AI as a literal
+// "(sent a voice note)" placeholder despite the docs describing transcription). Requires
+// GEMINI_API_KEY; falls back to engineOpenRouterTranscribeVoice below if unset or the call fails,
+// and to the literal placeholder in engineResolveUserText if that fails too.
+async function engineGeminiTranscribeVoice(env, mimeType, base64){
+  if(!env.GEMINI_API_KEY || !base64) return null;
+  try{
     const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({contents:[{role:'user', parts:[
-        {text:'Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription — no commentary, no quotes, no translation.'},
+        {text:ENGINE_TRANSCRIBE_PROMPT},
         {inline_data:{mime_type:mimeType, data:base64}}
       ]}]})
     });
@@ -3601,6 +3611,55 @@ async function engineGeminiTranscribeVoice(env, mediaUrl){
     const parts=data?.candidates?.[0]?.content?.parts||[];
     const text=parts.map(p=>p.text||'').join('').trim();
     return text||null;
+  }catch(e){ return null; }
+}
+
+// Backup transcription path when the direct Gemini call above is unavailable (no GEMINI_API_KEY)
+// or fails — routes through OpenRouter to a Gemini model instead, using the client's own
+// openrouter_key (there's no shared OpenRouter credential the way GEMINI_API_KEY is shared, so
+// this fallback is unavailable for a client who hasn't set one). Uses the OpenAI-compatible
+// `input_audio` content part that OpenRouter mirrors for audio-capable models — NOT independently
+// verified against a live call in this session (docs.sarvam.ai/api.sarvam.ai/OpenRouter's own docs
+// were all unreachable under this session's network policy — see the Sarvam TTS caveat elsewhere
+// in this file for the same reason), so this is worth a real test call before relying on it.
+async function engineOpenRouterTranscribeVoice(c, mimeType, base64){
+  if(!c?.openrouter_key || !base64) return null;
+  try{
+    const format=/mp3|mpeg/.test(mimeType)?'mp3':/wav/.test(mimeType)?'wav':'ogg';
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({model:'google/gemini-2.5-flash', max_tokens:300, messages:[{role:'user', content:[
+        {type:'text', text:ENGINE_TRANSCRIBE_PROMPT},
+        {type:'input_audio', input_audio:{data:base64, format}}
+      ]}]})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    return data?.choices?.[0]?.message?.content?.trim()||null;
+  }catch(e){ return null; }
+}
+
+// Direct Gemini text generation (engineGeminiGenerate) with an OpenRouter-routed Gemini model as
+// backup when it's unavailable or fails — same "backup if Gemini is failing, use an OpenRouter
+// Gemini model" pattern as engineOpenRouterTranscribeVoice above, for plain-text (non-audio)
+// generation calls. Deliberately hardcodes a Gemini model here rather than using the client's own
+// `c.model` — the point of this fallback is specifically "still get a Gemini-quality answer", not
+// "fall back to whatever model this client happens to have configured".
+async function engineGeminiGenerateWithFallback(env, c, systemText, userText, opts={}){
+  const direct=await engineGeminiGenerate(env, systemText, userText, opts);
+  if(direct) return direct;
+  if(!c?.openrouter_key) return null;
+  try{
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'google/gemini-2.5-flash', temperature:opts.temperature??0.3, max_tokens:opts.maxOutputTokens||300,
+        messages:[...(systemText?[{role:'system', content:systemText}]:[]), {role:'user', content:userText}]
+      })
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    return data?.choices?.[0]?.message?.content?.trim()||null;
   }catch(e){ return null; }
 }
 
@@ -3658,13 +3717,44 @@ async function engineGetLeadState(env, clientId, phone){
 // engine.json's literal placeholder text; falls back to that same placeholder if transcription
 // isn't available (no GEMINI_API_KEY set, fetch failure, oversized file, etc.) so the turn still
 // completes instead of failing outright.
+const ENGINE_IMAGE_DESCRIBE_PROMPT='Describe what this image shows in one short sentence, focused on anything relevant to a product or order enquiry.';
+
+// Direct Gemini vision call (shared GEMINI_API_KEY), tried first — same Gemini-first-with-
+// OpenRouter-fallback pattern as every other LLM call in this engine now uses. Null on any
+// failure so engineResolveUserText falls back to the client's own OpenRouter key/model below.
+async function engineGeminiDescribeImage(env, mediaUrl){
+  if(!env.GEMINI_API_KEY || !mediaUrl) return null;
+  try{
+    const imgR=await fetch(mediaUrl);
+    if(!imgR.ok) return null;
+    const mimeType=imgR.headers.get('content-type')||'image/jpeg';
+    const buf=await imgR.arrayBuffer();
+    if(buf.byteLength>15*1024*1024) return null;
+    const base64=engineArrayBufferToBase64(buf);
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{role:'user', parts:[
+        {text:ENGINE_IMAGE_DESCRIBE_PROMPT},
+        {inline_data:{mime_type:mimeType, data:base64}}
+      ]}]})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const t=parts.map(p=>p.text||'').join('').trim();
+    return t||null;
+  }catch(e){ return null; }
+}
+
 async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
   if(mediaType==='image' && mediaUrl){
+    const geminiDesc=await engineGeminiDescribeImage(env, mediaUrl);
+    if(geminiDesc) return geminiDesc;
     try{
       const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
         body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:100, messages:[{role:'user', content:[
-          {type:'text', text:'Describe what this image shows in one short sentence, focused on anything relevant to a product or order enquiry.'},
+          {type:'text', text:ENGINE_IMAGE_DESCRIBE_PROMPT},
           {type:'image_url', image_url:{url:mediaUrl}}
         ]}]})
       });
@@ -3673,7 +3763,12 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
     }catch(e){ return '(image received)'; }
   }
   if(mediaType==='voice' && mediaUrl){
-    const transcript=await engineGeminiTranscribeVoice(env, mediaUrl);
+    const audio=await engineFetchAudioBase64(mediaUrl);
+    let transcript=null;
+    if(audio){
+      transcript=await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64);
+      if(!transcript) transcript=await engineOpenRouterTranscribeVoice(c, audio.mimeType, audio.base64);
+    }
     return transcript || '(sent a voice note)';
   }
   return text || (mediaType==='voice'?'(sent a voice note)':'');
@@ -4070,15 +4165,37 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   return sys;
 }
 
-async function engineCallLlm(c, systemPrompt, userText, maxTokens){
+// The main conversational agent — every FAQ/objection/product-enquiry reply across every client,
+// any industry, goes through this one function. Gemini-first (shared GEMINI_API_KEY, same pattern
+// as the rest of this engine), falling back to OpenRouter with the client's own openrouter_key/
+// model — deliberately the client's own configured model on this fallback (not a hardcoded Gemini
+// model the way engineGeminiGenerateWithFallback's OpenRouter leg is) so a client who chose a
+// specific model for a reason still gets it as the safety net, not a second Gemini-shaped attempt
+// that would fail the same way during a real Gemini-side outage. Previously OpenRouter-only with
+// no Gemini path at all — a single shared point of failure for every client's core reply text, and
+// on top of that any failure (thrown fetch, non-OK response, empty response body) was swallowed
+// completely silently, collapsing to the same generic "One moment 🙏" with zero logging regardless
+// of client or cause — indistinguishable from a real "let me check" delay to whoever's reading
+// Chatwoot. Only logs (reportOpsError) when BOTH Gemini and OpenRouter have failed, i.e. when a
+// real customer is actually about to receive that generic fallback — matches this file's existing
+// principle that a customer getting nothing/genuinely-wrong is worth alerting on, ordinary
+// single-layer fallbacks elsewhere aren't (see SETUP.md "Error monitoring").
+async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
+  const geminiReply=await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300});
+  if(geminiReply) return geminiReply;
   try{
     const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
       body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:maxTokens||300, messages:[{role:'system',content:systemPrompt},{role:'user',content:userText}]})
     });
     const data=await r.json().catch(()=>({}));
-    return data?.choices?.[0]?.message?.content?.trim()||'One moment 🙏';
-  }catch(e){ return 'One moment 🙏'; }
+    const text=data?.choices?.[0]?.message?.content?.trim();
+    if(text) return text;
+    await reportOpsError(env, 'engineCallLlm — Gemini and OpenRouter both returned no usable reply', new Error(JSON.stringify(data).slice(0,500)), {clientId:c?.Id});
+  }catch(e){
+    await reportOpsError(env, 'engineCallLlm — Gemini failed and the OpenRouter fallback threw', e, {clientId:c?.Id});
+  }
+  return 'One moment 🙏';
 }
 
 // flow_json stage messages, qual_questions, and callback_msg/callback_msg_frustrated are static
@@ -4190,6 +4307,119 @@ async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, 
   }
 }
 
+
+// Sends a Sarvam AI-generated voice note (female speaker) as the customer's reply attachment,
+// same Chatwoot-attachment relay engineSendChatwootImageReply already uses for product photos.
+// Falls back to a plain text reply (engineSendChatwootReply) on any failure — a customer getting
+// the text-only reply they'd have gotten before this existed is a far better failure mode than
+// getting nothing at all, same reasoning as the image-reply fallback above.
+async function engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, captionText, fallbackText){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!audioBuf) return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+  try{
+    const blob=new Blob([audioBuf], {type:'audio/wav'});
+    const trimmed=(typeof captionText==='string'?captionText:'').trim();
+    const fd=new FormData();
+    fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', blob, 'reply.wav');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendChatwootAudioReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+      return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+    }
+  }catch(e){
+    await reportOpsError(env, 'engineSendChatwootAudioReply — send threw', e, {clientId, convId});
+    return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+  }
+}
+
+// ISO 639-1 (engineClassifyIntent's `customerLanguage`) → Sarvam's BCP-47 target_language_code.
+// Sarvam AI's TTS is Indic-language-focused — deliberately not a general-purpose fallback for
+// every language this engine can detect (e.g. Arabic customers, common in this product's UAE
+// client base, get a normal text reply instead of voice, not a mistranslated/unsupported one).
+// Exact supported-language list should be re-checked against Sarvam's current docs before launch —
+// this session's outbound network policy blocked docs.sarvam.ai/api.sarvam.ai, so this list and
+// engineSarvamTts's request/response shape below are built from Sarvam's published Python SDK
+// description (PyPI), not a live-verified API reference.
+const ENGINE_TTS_LANG_MAP={en:'en-IN', ml:'ml-IN', hi:'hi-IN', ta:'ta-IN', te:'te-IN', kn:'kn-IN', bn:'bn-IN', gu:'gu-IN', mr:'mr-IN', pa:'pa-IN', or:'od-IN'};
+const ENGINE_TTS_SPEAKER='meera'; // female voice — verify against Sarvam's current bulbul:v2 speaker list
+
+// Real TTS call — env.SARVAM_API_KEY (Worker secret, see wrangler.toml). Returns a decoded audio
+// ArrayBuffer (Sarvam returns a base64-encoded WAV), or null on any failure so callers fall back
+// to text. Text is capped defensively — a long FAQ paragraph shouldn't become a multi-minute
+// voice note even after engineBuildSpokenReply's own shortening.
+async function engineSarvamTts(env, text, targetLangCode){
+  if(!env.SARVAM_API_KEY || !text || !targetLangCode) return null;
+  try{
+    const r=await fetch('https://api.sarvam.ai/text-to-speech', {
+      method:'POST',
+      headers:{'api-subscription-key':env.SARVAM_API_KEY, 'Content-Type':'application/json'},
+      body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:22050})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const b64=data?.audios?.[0];
+    if(!b64) return null;
+    const bin=atob(b64);
+    const bytes=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    return bytes.buffer;
+  }catch(e){ return null; }
+}
+
+// Rewrites an already-composed reply into a short, natural, spoken sentence — never the literal
+// reply text, which may be a multi-sentence FAQ answer full of links/prices unsuitable to read
+// aloud. Same shared Gemini credential as the intent classifier/transcriber. Explicitly told to
+// drop links/prices/long numbers rather than speak them — those are preserved separately as a
+// text caption by engineExtractLinkPriceCaption instead.
+async function engineBuildSpokenReply(env, c, replyText, langCode){
+  const sys='Rewrite the following customer-service reply as ONE short, natural sentence the way a friendly person would actually say it out loud on a voice note — real spoken style, not written text. Keep the exact same language and meaning. Never speak a URL, link, price, currency amount, or long number — if the reply mainly exists to share one of those, say something short and natural instead (for example, that the details are shared below/above in text). Respond with ONLY the spoken sentence — no quotes, no commentary, no markdown.';
+  const spoken=await engineGeminiGenerateWithFallback(env, c, sys, replyText, {temperature:0.4, maxOutputTokens:120});
+  if(spoken) return spoken;
+  // Fallback if Gemini is unavailable: best-effort strip links/prices instead of speaking them,
+  // and cap length, rather than failing the voice reply outright.
+  return replyText.replace(/https?:\/\/\S+/g,'').replace(/(?:AED|USD|INR|EUR|GBP|₹|\$|€|£)\s?[\d,]+(?:\.\d+)?/gi,'').replace(/\s{2,}/g,' ').trim().slice(0,220);
+}
+
+// Pulls any link/price out of the real reply text so it still reaches the customer as a short
+// one-line text caption on the voice message, even though the voice itself is instructed to never
+// say them out loud (engineBuildSpokenReply above). Empty string when the reply has neither.
+function engineExtractLinkPriceCaption(replyText){
+  const links=[...new Set(replyText.match(/https?:\/\/\S+/g)||[])];
+  const prices=[...new Set(replyText.match(/(?:AED|USD|INR|EUR|GBP|₹|\$|€|£)\s?[\d,]+(?:\.\d+)?/gi)||[])];
+  const parts=[];
+  if(prices.length) parts.push('💰 '+prices.join(', '));
+  if(links.length) parts.push('🔗 '+links.join(' '));
+  return parts.join('  ');
+}
+
+// Single reply-delivery dispatcher for handleEngineWebhook — every route (human/qualify/FAQ/
+// objection/order-detected) sends its final reply through here instead of calling
+// engineSendChatwootReply/engineSendChatwootImageReply directly, so voice-to-voice is one code
+// path instead of eight near-duplicate branches. Voice-to-voice reply: when the customer sent a
+// voice note and this client has the paid voice add-on (voice_addon_active), reply with a
+// WhatsApp voice note instead of text — mirrors the customer's own input modality, which is the
+// point of the feature. Falls back to the normal text/image reply whenever voice isn't possible
+// (no add-on, no Sarvam key, unsupported/undetected language, a product-image reply already in
+// play, or the TTS call itself fails) so a voice hiccup never costs the customer a reply outright.
+// Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
+// out of scope for now, this only covers live conversational replies.
+async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl}={}){
+  const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
+  if(!trimmed) return;
+  const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
+  // voice_reply_enabled — Settings → Voice Replies toggle (dashboard.html). Only meaningful once
+  // the client actually has the paid add-on; defaults to enabled (must be explicitly 'No') so a
+  // client who's had the add-on since before this toggle existed doesn't silently lose the
+  // feature just because the field itself has never been set.
+  if(mediaType==='voice' && c.voice_addon_active==='Yes' && c.voice_reply_enabled!=='No' && !imageUrl && bcp47){
+    const spokenText=await engineBuildSpokenReply(env, c, trimmed, langCode);
+    const audioBuf=await engineSarvamTts(env, spokenText, bcp47);
+    if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
+  }
+  if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
+  return engineSendChatwootReply(env, c, clientId, convId, trimmed);
+}
 
 async function engineSendHandoverLabel(c, convId){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
@@ -4442,21 +4672,19 @@ async function handleEngineWebhook(request, env, secret){
           const link=buildCheckoutLink(c, clientId, detection.sku);
           sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
           routing.reply=sentText;
-          if(product.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
-          else await engineSendChatwootReply(env, c, clientId, convId, sentText);
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           await logPendingOrder(env, c, clientId, phone, name, product);
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product){
           sentText=await engineLocalizeReply(env, c, 'Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?', replyLang);
           routing.reply=sentText;
-          await engineSendChatwootReply(env, c, clientId, convId, sentText);
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
           const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang);
-          sentText=await engineCallLlm(c, sysPrompt, userText, 200);
+          sentText=await engineCallLlm(env, c, sysPrompt, userText, 200);
           routing.reply=sentText;
-          if(product.image_url) await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, sentText);
-          else await engineSendChatwootReply(env, c, clientId, convId, sentText);
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           orderHandledInline=true;
         }
         // enquiry with no confident product match falls through to the normal FAQ/flow handling
@@ -4478,7 +4706,7 @@ async function handleEngineWebhook(request, env, secret){
     } else if(routing.route==='human'){
       sentText=await engineLocalizeReply(env, c, routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.', replyLang);
       routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
-      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
       await engineSendHandoverLabel(c, convId);
     } else if(routing.route==='drop'){
       // no reply
@@ -4488,24 +4716,24 @@ async function handleEngineWebhook(request, env, secret){
       routing.next='qual_0';
       sentText=await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
       routing.reply=sentText;
-      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     } else if(routing.route==='qualify_next'){
       sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
       routing.reply=sentText;
-      if(sentText) await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      if(sentText) await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     } else if(['faq','ecom_faq','travel_faq'].includes(routing.route)){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang);
-      let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       routing.reply=reply; sentText=reply;
-      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
-      let reply=await engineCallLlm(c, sysPrompt, userText, 300);
+      let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       routing.reply=reply; sentText=reply;
-      await engineSendChatwootReply(env, c, clientId, convId, sentText);
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     }
 
     const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);

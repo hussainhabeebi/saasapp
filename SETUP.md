@@ -54,6 +54,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_message_limit | Number (optional, from the Price's `message_limit` metadata) |
 | wa_credits_balance | Number (running balance from WhatsApp-credit add-on purchases) |
 | voice_addon_active | Single line ("Yes"/"No") |
+| voice_reply_enabled | Single line ("Yes"/"No", default Yes when blank) — Settings → Voice Replies. Client-controlled on/off switch for the voice-to-voice reply feature, layered on top of `voice_addon_active` (the paid gate); only shown in the dashboard once the add-on is active. See "Voice-to-voice replies" below. |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | billing_email | Single line (**required before a Stripe Customer is ever created** — `ensureStripeCustomer` refuses to create one without it; both `handleBillingCheckoutSubscription` and `handleBillingCheckoutAddon` return a 400 telling the customer to set it first, rather than silently falling back to `authentik_email`, since the login address is sometimes a shared/ops account, not who should receive billing mail. Once a `stripe_customer_id` already exists this field can still be edited/updated freely — the "required" check only guards *creating* the Stripe account in the first place) |
@@ -1930,18 +1931,100 @@ Chatwoot, and upsert the LEADS row + analytics — plus the order/booking-signal
 to be a second, separate webhook (see "Industry-aware FAQ grounding" below). n8n is no longer in
 the loop for any client once they're cut over; `handleEngineWebhook` has no industry gate.
 
-**Gemini for classification + voice transcription (`GEMINI_API_KEY`):** intent/sentiment/
-objection classification (`engineClassifyIntent`) calls Google's Gemini API directly
-(`gemini-2.0-flash`, matching engine.json's actual "AI Agent · Sentiment & Intent" node, which ran
-on a dedicated shared Gemini credential — not each client's own OpenRouter key) via a Worker
-secret, `GEMINI_API_KEY` (see wrangler.toml). One key for every client and every industry, same as
-the n8n workflow's single Gemini credential. If this secret isn't set, classification falls back
-to the client's own `openrouter_key`/`model` instead of failing outright. Voice notes get a real
-transcript via the same Gemini key (`engineGeminiTranscribeVoice` — downloads the attachment,
-sends it to Gemini as inline audio data, asks for a plain-text transcription); without
-`GEMINI_API_KEY` set, or if the download/transcription fails, voice notes fall back to the same
-`"(sent a voice note)"` placeholder text engine.json always sent instead (that placeholder isn't
-new, only now it's a fallback rather than the only behavior).
+**Gemini-first, OpenRouter-fallback — every LLM call in the engine (`GEMINI_API_KEY`):** every
+step of a turn that calls an LLM now tries the shared Gemini credential first and only falls back
+to the client's own `openrouter_key`/`model` if Gemini is unset or fails — intent/sentiment/
+objection classification (`engineClassifyIntent`), voice transcription
+(`engineGeminiTranscribeVoice`/`engineOpenRouterTranscribeVoice`), image description
+(`engineGeminiDescribeImage`), and — the one that used to be the exception — **the main reply
+agent itself, `engineCallLlm`**, which generates every FAQ/objection/product-enquiry reply across
+every client and industry.
+- `engineCallLlm` was OpenRouter-only until this change: no Gemini path at all, so it was a single
+  shared point of failure for every client's core reply text, and — worse — any failure there
+  (a thrown fetch, a non-OK response, an empty response body) was swallowed completely silently,
+  collapsing to a generic `"One moment 🙏"` placeholder with **zero logging**, indistinguishable in
+  Chatwoot from a real "let me check" delay. A real production incident (every client's bot
+  replying "One moment 🙏" simultaneously, with no way to tell why) is what prompted this fix.
+  `engineCallLlm` now: tries Gemini (`engineGeminiGenerate`) first, then falls back to OpenRouter
+  using the client's own key/model exactly as before (deliberately *not* forced onto a hardcoded
+  Gemini-via-OpenRouter call the way `engineGeminiGenerateWithFallback`'s fallback leg is — a
+  client who chose a specific model on purpose still gets it as the safety net), and only logs via
+  `reportOpsError` if **both** layers fail — the one moment a real customer is actually about to
+  receive the generic fallback, matching this file's existing principle (see "Error monitoring"
+  below) that total failure is worth alerting on even though single-layer fallbacks elsewhere
+  aren't.
+- Image descriptions (`engineResolveUserText`'s image branch) are the same fix, same shape:
+  `engineGeminiDescribeImage` (direct Gemini vision) tried first, the existing OpenRouter vision
+  call (client's own key/model) as fallback — closing the last OpenRouter-only LLM call in the
+  turn-processing path.
+- **Not yet covered by this pass** (still OpenRouter-only, same single-point-of-failure shape,
+  just not touched by this change): `handleAiComplete` (`POST /ai/complete`, the dashboard's AI
+  Deal Coach and other assistant features), `handleAiObjectionReply` (`POST /ai/objection-reply`),
+  `detectOrderSignal`, and `detectBookingSignal`. These weren't part of the incident that prompted
+  this fix (none of them generate the primary customer-facing reply) and are shaped differently
+  (JSON-classifier calls, not free-text generation), so converting them would be a separate,
+  deliberate follow-up rather than a mechanical copy of this pattern.
+- Voice notes without `GEMINI_API_KEY` set, or where both transcription attempts fail, still fall
+  back to the same `"(sent a voice note)"` placeholder text engine.json always sent instead (that
+  placeholder isn't new, only now it's a fallback rather than the only behavior).
+
+**Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the paid voice add-on
+(`voice_addon_active='Yes'` — see the Billing module) **and** the Settings → Voice Replies toggle
+left on (`voice_reply_enabled`, CLIENTS field, default Yes when blank — the toggle only appears in
+the dashboard once the add-on is active, and setting it to `'No'` lets a client keep the paid
+add-on but always get text replies, without touching billing), a customer who sends a voice note
+gets a WhatsApp voice note back instead of text, mirroring their own input modality —
+`engineDeliverReply` is the single dispatcher every route (human handover / qualify / FAQ /
+objection / order-detected) now sends its final reply through, instead of each of those eight call
+sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
+- **Language-aware, reusing detection you already have.** `engineClassifyIntent` already returns a
+  per-message `customerLanguage` (ISO 639-1) for every turn, voice or text — this feature doesn't
+  run a second detection pass, it just maps that code to Sarvam's BCP-47 `target_language_code`
+  (`ENGINE_TTS_LANG_MAP`: `en`→`en-IN`, `ml`→`ml-IN`, `hi`→`hi-IN`, `ta`→`ta-IN`, `te`→`te-IN`,
+  `kn`→`kn-IN`, `bn`→`bn-IN`, `gu`→`gu-IN`, `mr`→`mr-IN`, `pa`→`pa-IN`, `or`→`od-IN`). Sarvam's TTS
+  is Indic-language-focused, deliberately not treated as a catch-all — a customer whose detected
+  language isn't in that map (Arabic, for instance, common in this product's UAE client base) gets
+  a normal text reply instead of voice in an unsupported/mistranslated language.
+- **Never speaks a link or price.** The real reply text (whatever the FAQ/objection/order-detection
+  logic already composed) is never spoken verbatim — `engineBuildSpokenReply` asks Gemini to
+  rewrite it as one short, natural spoken sentence, explicitly instructed to never say a URL, link,
+  price, or long number out loud. Any link/price found in the real reply is instead preserved as a
+  short one-line text caption on the same voice message (`engineExtractLinkPriceCaption`, simple
+  regex extraction — no second AI call) — so a checkout link or a price the FAQ answer needed to
+  share still reaches the customer in a form they can actually tap/copy.
+- **Female voice, via Sarvam's `bulbul:v2` model** (`ENGINE_TTS_SPEAKER='meera'`) — `engineSarvamTts`
+  calls `POST https://api.sarvam.ai/text-to-speech` with the `api-subscription-key` header, returns
+  a base64-encoded WAV per Sarvam's own SDK docs. **Not live-verified against Sarvam's REST
+  reference** — this session's network policy blocked `docs.sarvam.ai`/`api.sarvam.ai` outright, so
+  the endpoint path, header name, and response shape here are built from Sarvam's published Python
+  SDK description (PyPI), not a fetched API reference. Worth a real test call before relying on
+  this in production.
+- **Follow-up messages are explicitly out of scope for now** — `followup-template.json` and the
+  dashboard's Follow-ups feature are untouched; this only covers live conversational replies inside
+  `handleEngineWebhook`, not scheduled nudges.
+- **Falls back to text at every failure point** — no `SARVAM_API_KEY` configured, `voice_reply_enabled`
+  off, an unsupported language, a product-image reply already in play (image and voice aren't
+  combined), or the TTS call itself failing all fall straight back to
+  `engineSendChatwootReply`/`engineSendChatwootImageReply`, same "customer never gets nothing"
+  principle as the existing image-reply fallback.
+- **Gemini backup via OpenRouter, for both voice-reply steps that call Gemini.** Direct Gemini
+  (`GEMINI_API_KEY`) is always tried first; if it's unset or the call fails, both steps now retry
+  once through OpenRouter routed to a Gemini model, using the client's own `openrouter_key` (there's
+  no shared OpenRouter credential the way `GEMINI_API_KEY` is shared, so this backup is unavailable
+  for a client who hasn't set one) — deliberately hardcoded to a Gemini model on OpenRouter rather
+  than the client's own configured `model`, since the point is "still get a Gemini-quality result",
+  not "fall back to whatever model this client happens to use elsewhere":
+  - **Voice-note transcription** — `engineGeminiTranscribeVoice` (direct) → `engineOpenRouterTranscribeVoice`
+    (backup, same downloaded audio bytes reused, no second fetch). The backup uses the OpenAI-
+    compatible `input_audio` content part OpenRouter mirrors for audio-capable models — like the
+    Sarvam TTS shape above, **not independently verified against a live call** in this session
+    (network policy blocked outbound docs lookups); test with a real voice note before relying on
+    it. If both attempts fail, transcription falls back to the same `"(sent a voice note)"`
+    placeholder text as before.
+  - **Spoken-reply rewrite** — `engineBuildSpokenReply` now calls `engineGeminiGenerateWithFallback`
+    (tries direct Gemini, then OpenRouter/Gemini) instead of direct Gemini alone. If both fail, it
+    falls back to a plain regex strip of links/prices from the real reply text rather than failing
+    the voice reply outright.
 
 **Fully automatic on signup — no manual Chatwoot step, for any industry.**
 `engineSyncChatwootWebhook` (`worker.js`) keeps a client's PRIMARY Chatwoot webhook (the one that
