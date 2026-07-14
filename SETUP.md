@@ -2637,3 +2637,30 @@ worth prompting for rather than leaving to chance/discovery.
   is a separate change with its own security tradeoff (a session token that outlives the tab, until
   explicit logout, instead of clearing when the tab closes) — not made as part of this.
 
+### Self-service "update available" prompt
+A client can leave the dashboard tab open for hours/days — the service worker picking up a new
+`sw.js` (browsers detect the byte-diff on their own) never reloads whatever HTML/JS is already
+sitting in that tab's memory, so without this a deployed fix silently never reaches an
+already-open tab until the user happens to hit refresh on their own.
+- `sw.js`'s `install` handler already called `self.skipWaiting()` and `activate` already called
+  `self.clients.claim()` before this — a new worker takes over quickly, it just doesn't reload the
+  page that's already loaded.
+- `initSwUpdatePrompt(registration)` (`dashboard.html`, wired right after `serviceWorker.register()`
+  in the boot IIFE) listens for `registration`'s `updatefound` event; when the newly-installing
+  worker reaches `state==='installed'` **and** `navigator.serviceWorker.controller` is already set
+  (i.e. this page was already being served by a previous worker — a real update, not the very
+  first install ever, which has nothing to prompt about), `showUpdateBanner()` fires.
+- Also calls `registration.update()` on `visibilitychange` (tab regaining focus) — the browser's
+  own background check can be lazy (up to ~24h by spec), so this shortens the gap for a client who
+  left a tab open and comes back to it.
+- `showUpdateBanner()` mirrors `showInstallBanner()`'s exact visual pattern (small dismissible
+  on-brand bottom bar, not the raw browser dialog or a jarring auto-reload) — "Refresh" just calls
+  `location.reload()` (the new worker + new `dashboard.html` are already in place by then); "Later"
+  dismisses for the current page load only, deliberately **not** a permanent
+  `localStorage`-backed dismiss like the install banner's, since a client silently running stale
+  code for days is a worse outcome than being asked again next time.
+- `CACHE` in `sw.js` is now version-suffixed (`lv-v2`, was `lv-v1`) — bump it on any future deploy
+  that changes the cached-asset list, so `activate`'s existing cleanup (`caches.keys()` → delete
+  anything not matching the current `CACHE` name) actually has a new name to diff against instead
+  of silently keeping the same cache alive forever.
+

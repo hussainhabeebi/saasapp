@@ -10947,11 +10947,55 @@ function showInstallBanner({text, showInstallBtn}){
   }
 }
 
+// A client can keep this tab open for hours/days — the service worker registering a new sw.js
+// (browsers detect the byte-diff on their own) doesn't reload whatever HTML/JS is already loaded
+// in memory, so without this a deployed fix/feature just silently never reaches an already-open
+// tab until the user happens to hit refresh on their own. Mirrors showInstallBanner()'s own
+// pattern: a small dismissible on-brand bar, not a jarring auto-reload or the raw browser dialog.
+function initSwUpdatePrompt(registration){
+  // Fires whenever a new sw.js has finished installing and taken control of this page — the
+  // `navigator.serviceWorker.controller` check is what distinguishes a real update (this page was
+  // already being served by a previous worker) from the very first install ever (nothing to
+  // prompt about, there's no "old version" the user was just using).
+  registration.addEventListener('updatefound', ()=>{
+    const newWorker=registration.installing;
+    if(!newWorker) return;
+    newWorker.addEventListener('statechange', ()=>{
+      if(newWorker.state==='installed' && navigator.serviceWorker.controller){
+        showUpdateBanner();
+      }
+    });
+  });
+  // The browser's own background update check can be lazy (up to ~24h by spec) — nudge it
+  // whenever the tab becomes visible again, so a client returning to an already-open tab finds
+  // out about a new deploy promptly instead of on the next random check.
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState==='visible') registration.update().catch(()=>{});
+  });
+}
+function showUpdateBanner(){
+  if($id('_updateBanner')) return;
+  const bar=document.createElement('div');
+  bar.id='_updateBanner';
+  bar.style.cssText='position:fixed;left:16px;right:16px;bottom:16px;max-width:420px;margin:0 auto;background:#0F2C4C;color:#fff;border-radius:14px;padding:14px 16px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:9998;display:flex;align-items:center;gap:12px;font-family:var(--body)';
+  bar.innerHTML=`
+    <div style="flex:1;font-size:13px;line-height:1.4">A new version of Leadvyne is available.</div>
+    <div style="display:flex;gap:8px;flex:none;align-items:center">
+      <button id="_updateBtn" style="background:#0D9C93;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Refresh</button>
+      <button id="_updateDismiss" style="background:transparent;color:#9FB4C7;border:none;font-size:13px;cursor:pointer;padding:8px;white-space:nowrap">Later</button>
+    </div>`;
+  document.body.appendChild(bar);
+  // "Later" just removes the bar for this session — no permanent dismiss flag like the install
+  // banner's, since a client running stale code for days is a worse outcome than a repeat prompt.
+  $id('_updateDismiss').addEventListener('click', ()=>bar.remove());
+  $id('_updateBtn').addEventListener('click', ()=>location.reload());
+}
+
 /* ── BOOT ── */
 (async function(){
   // Register service worker for HTML/asset caching
   if('serviceWorker' in navigator){
-    navigator.serviceWorker.register('/sw.js').catch(()=>{});
+    navigator.serviceWorker.register('/sw.js').then(reg=>{ if(reg) initSwUpdatePrompt(reg); }).catch(()=>{});
   }
   // Authentik redirects back here with ?code=&state= — handle that before falling
   // back to any existing session, since a fresh login always takes priority.
