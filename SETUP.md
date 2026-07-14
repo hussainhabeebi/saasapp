@@ -56,7 +56,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_message_limit | Number (optional, from the Price's `message_limit` metadata) |
 | wa_credits_balance | Number (running balance from WhatsApp-credit add-on purchases) |
 | voice_addon_active | Single line ("Yes"/"No") |
-| voice_reply_enabled | Single line ("Yes"/"No", default No/opt-in when blank) — Integrations → Voice-to-Voice Reply toggle. Client-controlled on/off switch for the voice-to-voice reply feature, layered on top of `voice_addon_active` (the paid gate); purchasing the add-on alone never sets this to Yes, and the toggle stays disabled in the dashboard until the add-on is active. See "Voice-to-voice replies" below. |
+| voice_reply_enabled | Single line ("Yes"/"No", default No/opt-in when blank) — Integrations → Voice-to-Voice Reply toggle. The only gate on the voice-to-voice reply feature — not tied to `voice_addon_active`/billing in any way. See "Voice-to-voice replies" below. |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | billing_email | Single line (**required before a Stripe Customer is ever created** — `ensureStripeCustomer` refuses to create one without it; both `handleBillingCheckoutSubscription` and `handleBillingCheckoutAddon` return a 400 telling the customer to set it first, rather than silently falling back to `authentik_email`, since the login address is sometimes a shared/ops account, not who should receive billing mail. Once a `stripe_customer_id` already exists this field can still be edited/updated freely — the "required" check only guards *creating* the Stripe account in the first place) |
@@ -2063,12 +2063,11 @@ every client and industry.
   back to the same `"(sent a voice note)"` placeholder text engine.json always sent instead (that
   placeholder isn't new, only now it's a fallback rather than the only behavior).
 
-**Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the paid voice add-on
-(`voice_addon_active='Yes'` — see the Billing module) **and** the Integrations → Voice-to-Voice
-Reply toggle explicitly switched on (`voice_reply_enabled='Yes'`, CLIENTS field, opt-in — default
-blank/`'No'` means off even once the add-on is active, so buying the add-on never silently starts
-sending voice replies; the toggle itself stays disabled in the dashboard until the add-on is
-active), a customer who sends a voice note
+**Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the Integrations →
+Voice-to-Voice Reply toggle explicitly switched on (`voice_reply_enabled='Yes'`, CLIENTS field,
+opt-in — default blank/`'No'` means off). This is the only gate — deliberately not tied to
+`voice_addon_active`/billing at all, so the client controls it purely via the toggle. A customer
+who sends a voice note
 gets a WhatsApp voice note back instead of text, mirroring their own input modality —
 `engineDeliverReply` is the single dispatcher every route (human handover / qualify / FAQ /
 objection / order-detected) now sends its final reply through, instead of each of those eight call

@@ -4452,11 +4452,10 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
   if(!trimmed) return;
   const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
-  // voice_reply_enabled — Integrations → Voice-to-Voice Reply toggle (dashboard.html). Deliberately
-  // opt-in (must be explicitly 'Yes'): voice_addon_active alone only means the add-on was purchased
-  // (see fulfillAddon()) — it must not silently start sending voice replies on its own, the client
-  // has to switch this on themselves.
-  if(mediaType==='voice' && c.voice_addon_active==='Yes' && c.voice_reply_enabled==='Yes' && !imageUrl && bcp47){
+  // voice_reply_enabled — Integrations → Voice-to-Voice Reply toggle (dashboard.html). This is the
+  // only gate: not tied to voice_addon_active/billing at all (deliberately — see the toggle's own
+  // comment in dashboard.html), so a client controls this purely by flipping the toggle on or off.
+  if(mediaType==='voice' && c.voice_reply_enabled==='Yes' && !imageUrl && bcp47){
     const spokenText=await engineBuildSpokenReply(env, c, trimmed, langCode);
     const audioBuf=await engineSarvamTts(env, spokenText, bcp47);
     if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
