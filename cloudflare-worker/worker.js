@@ -3936,15 +3936,31 @@ function engineRouteFlow(c, state, userText, cls){
   // real frustration — see that check's own comment.
   if(effIntent==='WANTS_HUMAN' && botConfig.handover_enabled!==false){ route='human'; humanReason='explicit'; }
   else if(isFinalStage && POSITIVE.has(effIntent) && botConfig.handover_enabled!==false){
-    route='human'; humanReason='final_stage_positive';
-    const tz=botConfig.timezone||'Asia/Kolkata';
-    const nowLocal=new Date(new Date().toLocaleString('en-US',{timeZone:tz}));
-    const hour=nowLocal.getHours(), day=nowLocal.getDay();
-    let callLabel='tomorrow';
-    if(hour<9 && day>=1 && day<=5) callLabel='today';
-    else if(day===6) callLabel='on Monday';
-    else if(day===0) callLabel='tomorrow (Monday)';
-    reply=botConfig.callback_msg||`Thank you! 🙏 Our team will contact you ${callLabel} at 9am. We look forward to speaking with you!`;
+    // Reached the end of the funnel with a positive reply — this used to hand straight over to a
+    // human with no order/trial link ever sent. Real product requirement: when a self-serve link
+    // is configured (Order Link in Integrations, or a Cal.com link), try to let the customer
+    // convert themselves right here first — 'selfserve' is a plain scripted send (handled in
+    // handleEngineWebhook exactly like qualify_next), not an LLM reply, so this exact link always
+    // goes out. Human handover for this internal heuristic (not an actual request from the
+    // customer) is now reserved for the genuine case: no self-serve link exists at all, so a human
+    // really is the only way forward — see this file's "human handover only when exactly required"
+    // requirement. An explicit WANTS_HUMAN or Frustrated-sentiment handover (both below/above) are
+    // untouched by this — those are real requests, always honored immediately regardless of link.
+    const selfServeLink=(c.external_store_link||c.cal_link||'').trim();
+    if(selfServeLink){
+      route='selfserve';
+      reply=(botConfig.selfserve_msg||"Great, you're all set! Go ahead right here:")+'\n\n👉 '+selfServeLink;
+    } else {
+      route='human'; humanReason='final_stage_positive';
+      const tz=botConfig.timezone||'Asia/Kolkata';
+      const nowLocal=new Date(new Date().toLocaleString('en-US',{timeZone:tz}));
+      const hour=nowLocal.getHours(), day=nowLocal.getDay();
+      let callLabel='tomorrow';
+      if(hour<9 && day>=1 && day<=5) callLabel='today';
+      else if(day===6) callLabel='on Monday';
+      else if(day===0) callLabel='tomorrow (Monday)';
+      reply=botConfig.callback_msg||`Thank you! 🙏 Our team will contact you ${callLabel} at 9am. We look forward to speaking with you!`;
+    }
   }
   // Reachable only when a client has opted into CLIENTS.handover_silence_enabled='Yes' (Settings →
   // Human Handover — off by default, so the bot keeps replying after handover unless a client
@@ -4121,7 +4137,7 @@ async function engineBuildTravelContext(env, c, clientId){
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
-function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang){
+function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, isNewLead){
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
   let sys=c.main_prompt||'';
@@ -4133,6 +4149,12 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang)
   }
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
   if(contextBlock) sys+=contextBlock;
+  // First-ever message from this lead — give a short, natural intro to what the business offers
+  // (drawing on Services/Knowledge Base above) before/alongside answering, instead of jumping
+  // straight into an answer with no context on who they're talking to. Short and blended into the
+  // reply, not a separate canned welcome message — the "keep it as short as the customer's own
+  // message" instruction below still applies on top of this.
+  if(isNewLead) sys+='\n\nThis is this customer\'s very first message to you. Before or alongside your answer, briefly introduce what the business offers in one short sentence (from the Services/Knowledge Base above) — a natural, warm opener, not a full catalog dump.';
   // 5, not 3 — a short attribute-only reply ("order M size") needs the assistant's own prior
   // product-listing message to still be in view to resolve against (see the instruction below);
   // 3 turns was tight enough to occasionally push it just out of frame.
@@ -4181,6 +4203,22 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang)
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
   if(stagesBlock) sys+=stagesBlock+'\n\nIf the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, do not force it if the customer is still asking unrelated questions, and do not repeat something you have already substantially covered (check Recent Conversation above).';
   return sys;
+}
+
+// A brand-new lead's very first bot reply, when the route is 'qualify' — previously just the raw
+// first qual_questions entry with zero context on who's texting them or what the business does.
+// One extra LLM call, but only ever once per lead's whole lifetime (isNewLead), so the cost is
+// negligible. Falls back to the plain question on any failure — same "never leave the customer
+// with nothing" principle as engineCallLlm's own fallback.
+async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
+  const lang=replyLang||c.language||'en';
+  const services=engineParseJsonField(c.services, []);
+  let sys=c.main_prompt||'';
+  if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
+  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
+  sys+=`\n\nThis is a brand-new lead's very first message. Write a short WhatsApp reply, in ${lang}: one short, warm sentence introducing what the business offers (from the Services/Knowledge Base above), then this exact question on its own line: "${firstQuestion}". Nothing else — no extra questions, no long pitch.`;
+  const out=await engineCallLlm(env, c, sys, '(new conversation)', 150);
+  return out && out.trim() && out!=='One moment 🙏' ? out : firstQuestion;
 }
 
 // Mirrors "Code · Objection prep".
@@ -4751,13 +4789,25 @@ async function handleEngineWebhook(request, env, secret){
       routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
       await engineSendHandoverLabel(c, convId);
+    } else if(routing.route==='selfserve'){
+      // Reached the end of the funnel with a positive reply and a self-serve link is configured —
+      // send the order/booking link itself, a plain scripted send like qualify_next (not an LLM
+      // reply), instead of handing over to a human. See engineRouteFlow's own comment.
+      sentText=await engineLocalizeReply(env, c, routing.reply, replyLang);
+      routing.reply=sentText;
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     } else if(routing.route==='drop'){
       // no reply
     } else if(routing.route==='qualify'){
       const qualQuestions=engineParseJsonField(c.qual_questions, []);
       const firstQ=typeof qualQuestions[0]==='string'?qualQuestions[0]:'';
       routing.next='qual_0';
-      sentText=await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
+      // A brand-new lead gets a short intro to what the business offers ahead of the first
+      // qualifying question — see engineBuildFirstTouchIntro. A returning lead landing on this
+      // route again (edge case, e.g. a re-subscribe) just gets the plain scripted question.
+      sentText=isNewLead
+        ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang)
+        : await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
       routing.reply=sentText;
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     } else if(routing.route==='qualify_next'){
@@ -4768,7 +4818,7 @@ async function handleEngineWebhook(request, env, secret){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
-      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang);
+      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       routing.reply=reply; sentText=reply;
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});

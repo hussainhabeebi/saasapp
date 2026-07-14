@@ -2252,6 +2252,38 @@ product reply, not a handover.
   eliminate) exactly this kind of unforced classification flip between identical deliveries of the
   same message.
 
+**`final_stage_positive` now tries the self-serve order/booking link before ever handing over to a
+human — a new `'selfserve'` route.** Previously, reaching the last configured flow stage with a
+positive reply always handed straight to a human with a "our team will contact you" message and no
+order/trial link at all, even when one was configured (`external_store_link`/Order Link in
+Integrations, or `cal_link`). `engineRouteFlow` now checks for that link first: if one exists, route
+becomes `'selfserve'` instead of `'human'` and the reply is the link itself (a plain scripted send —
+`handleEngineWebhook` sends it exactly like `qualify_next`, no LLM call, so the exact link always
+goes out); `Stage`/`Handover` are left untouched (`engineBuildLeadUpsertBody`'s `isHuman` check is
+`route==='human'`, which `'selfserve'` correctly fails). Only when no self-serve link is configured
+at all does this heuristic still fall back to the original human-handover behavior
+(`humanReason='final_stage_positive'`) — the genuine "nothing else the bot can offer" case. An
+explicit `WANTS_HUMAN` ask or `Frustrated` sentiment (both `humanReason='explicit'`) are completely
+unaffected by this — those are real requests from the customer and are always honored immediately,
+link or no link. Net effect: human handover now only fires for an actual request or real frustration,
+or as a last resort with no self-serve path — not as the default "funnel's done" behavior.
+
+**A brand-new lead's very first reply now includes a short intro to what the business offers,
+instead of jumping straight into a raw qualifying question or an answer with zero context.**
+Gated on `isNewLead` (`!state.leadId`, computed once per webhook call in `handleEngineWebhook`), so
+it only ever fires once per lead's whole lifetime:
+- **`route==='qualify'`** (the very first message, before this fix): `engineBuildFirstTouchIntro`
+  makes one extra LLM call — system prompt built from `main_prompt`/`services`/`kb_summary`, asked
+  for one short warm sentence introducing the business followed by the exact configured first
+  `qual_questions` entry on its own line. Falls back to the plain question text on any failure,
+  same "never leave the customer with nothing" principle as `engineCallLlm` itself.
+- **`route` is `faq`/`ecom_faq`/`travel_faq`** (qualification disabled, or the first message was a
+  genuine question): `engineBuildFaqSystemPrompt` takes a new `isNewLead` parameter and, when true,
+  appends one instruction telling the model to briefly work a one-sentence intro into its answer
+  using the Services/Knowledge Base data already in the prompt — not a separate canned message, and
+  the existing "keep replies as short as the customer's own message" instruction still applies on
+  top of it.
+
 **A matched product's photo is now sent as a real WhatsApp image attachment, not just a text
 link.** `engineSendChatwootImageReply` (`worker.js`) downloads the product's `image_url` — resolving
 a Google Drive share link to Drive's thumbnail endpoint first via `engineResolveDirectImageUrl`,
