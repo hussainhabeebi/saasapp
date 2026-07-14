@@ -42,6 +42,8 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | quote_terms | Long text |
 | quote_validity_days | Number |
 | quote_logo_url | Long text (base64 data URI of the uploaded logo) |
+| invoice_terms | Long text (Invoice mode's own terms text, separate from `quote_terms` since "valid for N days" wording doesn't fit an invoice — falls back to `quote_terms` if blank. See "Quotation moved into Human Deals + Invoice mode" below.) |
+| invoice_number_seq | Number (incrementing counter — last invoice number actually sent, e.g. `12` means the next one is `INV-0013`. Only written on a real send, never on a PDF preview, so a preview never burns a number.) |
 | waba_id | Single line (WhatsApp Business Account ID — for template list/create, separate from wa_phone_id) |
 | prospect_gsheet_url | Single line (last-used Prospects import sheet link, remembered across logins) |
 | authentik_email | Single line (email of the Authentik user allowed to log into this client's dashboard) |
@@ -62,6 +64,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | team_chatwoot_users | Long text (JSON, `{email: chatwoot_user_id}` — per-teammate Chatwoot Platform user ids, populated by User Management → Create New User — see "Matching Chatwoot agent" below) |
 | team_names | Long text (JSON, `{email: name}` — display names for team_emails, populated by User Management → Create New User — see "Agents = Team Members = Users" below; the now-unused `agents` field it replaced was a plain newline-separated name list) |
 | business_policies | Long text (JSON, `{refund, delivery, cancellation}` — structured objection-handling policy text, Settings → Trust & Policies — see "Trust Signals & grounded objection-handling" below) |
+| kb_entries | Long text (JSON array, `[{id, question, answer, category}]` — structured FAQ entries from the 📚 Knowledge Base page, additive to the freeform `kb_text` blob rather than replacing it. See "Knowledge Base page" below.) |
 | external_store_link | Single line text — Settings → Order Link. A client's own Shopify (or any other) storefront URL. Takes priority over the built-in Ecommerce module's own storefront link everywhere an order link is generated; see "Order-intent links" below. |
 | appt_enabled | Single line text (`Yes`/`No`) — Settings → Modules. Turns the Appointment Booking module on; adds the Appointments dashboard tab. See "Appointment Booking module" below. |
 | appt_table_ids | Long text (JSON, `{services, bookings}` NocoDB table ids) — this client's own per-client Appointment Booking tables, created by `apptSetupTables()`. |
@@ -96,6 +99,7 @@ More columns on the **LEADS** table, written by `engine.json` and read/edited by
 | WinProbabilityManual | Single line ("Yes"/"No" — set by the dashboard when a rep manually edits `WinProbability`) |
 | HandoverAt | Single line (ISO datetime — stamped the moment a lead first enters `human_handover`; powers the SLA-breach alert and an in-dashboard "waiting Xm" badge) |
 | SlaAlerted | Single line ("Yes"/"No" — dedupe flag so `n8n/notifications.json` only fires one SLA-breach alert per handover, reset by the engine each time a lead re-enters `human_handover`) |
+| HandoverOutcome | Single line (`Resolved-Won`/`Released`/`Lost`/`No-response` — set only when a rep clicks "Mark Done" on the Human Deals page, `removeHumanDeal()` in `dashboard.html`. Nothing else writes this; a lead handed over before this feature existed simply has it blank. Drives the Human Deals Stage transition (`HD_OUTCOME_STAGE`: Won→`won`, everything else→`new`/`lost`) and the Team page's Funnel Analytics "Handover Win Rate" stat — see "Human Deals page" below.) |
 
 **Known limitation**: SLA tracking only knows a lead *entered* `human_handover` — the bot stops
 writing to the lead entirely once handed over (by design, so it can never talk over a live agent),
@@ -2492,6 +2496,103 @@ are still swallowed silently by design — alerting on every best-effort fallbac
 file would be noisy without much operational value. The three wiring points above were chosen as
 the highest-signal: total silence to a customer, or a fully unhandled crash.
 
+## Dashboard reorganization (`frontend/dashboard.html`, `frontend/broadcast.html`, `frontend/ecom.html`)
+A single information-architecture pass: two new pages, one page promoted out of Settings, two
+pairs of pages merged into one, and one standalone page brought inside the dashboard shell instead
+of opening as a separate browser tab. All of it is additive/relocation — no existing backend route
+or NocoDB table was touched, only what's rendered where and which fields drive it.
+
+### Human Deals page (🤝, new)
+Handover leads (`Stage='human_handover'`) previously only existed as rows mixed into the Leads
+table/Pipeline kanban — no dedicated view for "what's actually waiting on a human right now."
+- **Card grid**, sorted Frustrated-first then longest-waiting by default (also sortable by deal
+  value/win %, filterable by owner/sentiment) — `renderHumanDeals()`, `humanDealCard()`.
+- **Stats strip**: queue size, SLA breaches (`sla_minutes`), average wait, total `DealValue`
+  waiting — `renderHdStats()`.
+- **"Mark Done" outcome flow** (`openHdRemoveModal()`/`removeHumanDeal()`) — tags the lead with
+  `HandoverOutcome` (see CLIENTS/LEADS field tables above) and clears `Handover`/`HandoverAt`/
+  `SlaAlerted` so it drops out of the queue and stale SLA state doesn't linger. `HD_OUTCOME_STAGE`
+  maps the outcome to a `Stage`: Won→`won` (reusing the same generic terminal value already
+  checked in a few places in this file, e.g. `renderHome`'s conversion counts), everything else→
+  `new`/`lost`.
+- Nav badge (`dnHdBadge`/`bnHdBadge`) lights up with the current SLA-breach count, computed on
+  every Home render (`updateHdBadge()`), not just when the tab is open.
+
+### Quotation moved into Human Deals + Invoice mode
+The Quotation tab no longer has its own top-level nav entry — `openQuoteFor(leadId, mode)` opens
+the same compose page directly from a Human Deals card's "Quote"/"Invoice" button, pre-selecting
+that lead (bypassing `quoteEligibleLeads()`'s auto-detected-price-mention gate, which is for the
+"browse for a lead to quote" workflow this isn't). `HUMANDEALS_GROUP` makes the Human Deals tab
+highlight (not nothing) while on the Quotation page, same pattern `SETTINGS_GROUP` already used for
+Billing/Channels/Integrations.
+- **Invoice mode** (`_quoteMode`) is the same compose UI/PDF engine (`quoteBuildPdfDoc`,
+  `quoteSend`) with different framing — `quoteApplyModeUi()` swaps the page title, send-button
+  label, and terms field between `quote_terms`/`invoice_terms`; the PDF header becomes "Invoice",
+  drops the "valid for N days" line, and adds a sequential `INV-00NN` number
+  (`invoice_number_seq`, only incremented on a real send — `quotePreviewPdf()`'s preview never
+  touches it). Separate `Quotation Sent`/`Invoice Sent` tags so a lead can legitimately get both
+  (a quote while negotiating, an invoice once they've agreed) without one blocking the other.
+- Template/branding settings (logo, terms, validity days) were **not** relocated into Settings as
+  originally scoped — they still live on the Quotation compose page itself (now reached only via
+  Human Deals), which was the lower-risk option given how tightly the file-upload/logo-preview
+  wiring there is coupled to those specific field ids.
+
+### Leads + Pipeline merged into one page, two views
+`pagePipeline` (kanban) no longer has its own nav tab — its markup moved inside `pageLeads` as a
+second view, toggled by `setLeadsViewMode('list'|'pipeline')` instead of `navigate('pipeline')`.
+`_leadsTableView` (the pre-existing List-vs-Table toggle *within* the List view) is unaffected —
+this is a separate, outer switch. `goToPipeline()` exists for the couple of buttons elsewhere
+(Home quick actions) that used to link straight to the old standalone tab.
+
+### Billing promoted to a top-level nav tab
+Previously reached only via Settings' own internal sub-nav (`SETTINGS_GROUP`). No markup moved —
+`pageBilling` already existed as its own page div; this was purely a nav-registration change
+(`SETTINGS_GROUP` no longer includes `'billing'`, a `dnTab`/`more-item` added, `renderSettingsSubnav`'s
+four copies of the sub-nav row had their `Billing` button removed since it'd now be redundant with
+the main nav). Nav badge (`updateBillingBadge()`) reuses the same past-due/cancel-at-period-end
+conditions `renderHomeBillingBanners()` already computed, rather than a second copy of that logic.
+
+### Knowledge Base page (📚, new)
+Structured FAQ entries (`kb_entries`, see CLIENTS field table above) instead of one long pasted
+`kb_text` blob — search, category filter, add/edit/delete (`renderKnowledgeBase()`, `kbSubmitEntry()`,
+`kbEditEntry()`, `kbDeleteEntry()`). Deliberately **additive to `kb_text`, not a replacement** — the
+existing freeform-notes-plus-file-upload Settings section is untouched (moving it risked breaking
+its file-upload/drag-drop wiring for no real benefit), and `kb_entries` only ever affects the
+processor *payload*: `buildKbProcessorText()` now also serializes entries into a `## KNOWLEDGE BASE
+Q&A` block, same additive-only pattern that function already used for policies/social proof/order
+links — the stored `kb_text` field a rep sees in Settings is never rewritten.
+
+### Prospects merged into Campaigns (`frontend/broadcast.html`)
+Prospects' Google Sheet import (`prospectImportBatch()`, unchanged server-side — still calls the
+same `leadvyne-prospects-import` n8n webhook) moved into `broadcast.html` as a new "🎯 Import
+Prospects" tab, reusing that page's own `allTemplates` (loaded once by `loadTemplates()`) instead
+of a second duplicate template-fetch/create UI dashboard.html's old Prospects page had
+(`loadWaTemplates()`/`createWaTemplate()`, now deleted as dead code along with the rest of that
+page). `dashboard.html`'s Integrations → Sheets list points its "Prospect Import" row at
+`window.open('broadcast.html')` (`INT_SHEETS`' new `external` field) instead of a dead
+`navigate('prospects')`.
+
+### Ecommerce embedded as a real nav tab, not a separate browser tab
+The existing `window.open('ecom.html?client=...')` industry-conditional nav buttons (desktop +
+mobile, `.industry-tab[data-industry="ecommerce"]`) now call `navigate('ecommerce')`, which lazily
+points an `<iframe>` (`#ecommerceFrame`, only loaded once — switching tabs away and back doesn't
+reset whichever Products/Orders/Shopify/Settings sub-tab the rep was on inside it) at
+`ecom.html?client=<id>&embed=1`.
+- **Deliberately an iframe, not a ported-in copy of ecom.html's ~1500 lines of markup/CSS/JS.**
+  Both files independently define generic class names (`.card`, `.stat`, `.tab`, `.page`) and their
+  own `:root` color tokens — concatenating them into one shared stylesheet/script scope risked
+  silently overriding `dashboard.html`'s own same-named rules used everywhere else in the app
+  (Home, Team, Human Deals, etc. all already use `.card`/`.stat`), a far larger blast radius than
+  the Ecommerce tab itself. The iframe keeps `ecom.html`'s own working code 100% untouched and
+  isolated.
+- **No auth-model change needed.** `ecom.html` was already client_id-based with no session token
+  (its `/ecom/*` Worker routes are deliberately no-session, same accepted trust model as the
+  automation-facing `/ecom/order-link` etc. routes documented elsewhere in this file) — the iframe
+  just passes `clientId` through the URL exactly as `ecom.html` already expected.
+- `ecom.html`'s only change: a new `embed=1` param (`isEmbedded`) hides its own header/"Back to
+  CRM" button when opened this way, since `dashboard.html`'s own header/nav/notifications already
+  surround it — everything else in that file is untouched.
+
 ## PWA install prompt (`frontend/dashboard.html`, `manifest.json`, `sw.js`, `icons/`)
 There's no App Store/Play Store app — installing the dashboard as a PWA (Add to Home Screen on
 mobile, "Install app" on desktop Chrome/Edge) is the only "app icon" experience available, so it's
@@ -2535,4 +2636,31 @@ worth prompting for rather than leaving to chance/discovery.
   would mean moving session persistence to `localStorage` (survives across browsing contexts), which
   is a separate change with its own security tradeoff (a session token that outlives the tab, until
   explicit logout, instead of clearing when the tab closes) — not made as part of this.
+
+### Self-service "update available" prompt
+A client can leave the dashboard tab open for hours/days — the service worker picking up a new
+`sw.js` (browsers detect the byte-diff on their own) never reloads whatever HTML/JS is already
+sitting in that tab's memory, so without this a deployed fix silently never reaches an
+already-open tab until the user happens to hit refresh on their own.
+- `sw.js`'s `install` handler already called `self.skipWaiting()` and `activate` already called
+  `self.clients.claim()` before this — a new worker takes over quickly, it just doesn't reload the
+  page that's already loaded.
+- `initSwUpdatePrompt(registration)` (`dashboard.html`, wired right after `serviceWorker.register()`
+  in the boot IIFE) listens for `registration`'s `updatefound` event; when the newly-installing
+  worker reaches `state==='installed'` **and** `navigator.serviceWorker.controller` is already set
+  (i.e. this page was already being served by a previous worker — a real update, not the very
+  first install ever, which has nothing to prompt about), `showUpdateBanner()` fires.
+- Also calls `registration.update()` on `visibilitychange` (tab regaining focus) — the browser's
+  own background check can be lazy (up to ~24h by spec), so this shortens the gap for a client who
+  left a tab open and comes back to it.
+- `showUpdateBanner()` mirrors `showInstallBanner()`'s exact visual pattern (small dismissible
+  on-brand bottom bar, not the raw browser dialog or a jarring auto-reload) — "Refresh" just calls
+  `location.reload()` (the new worker + new `dashboard.html` are already in place by then); "Later"
+  dismisses for the current page load only, deliberately **not** a permanent
+  `localStorage`-backed dismiss like the install banner's, since a client silently running stale
+  code for days is a worse outcome than being asked again next time.
+- `CACHE` in `sw.js` is now version-suffixed (`lv-v2`, was `lv-v1`) — bump it on any future deploy
+  that changes the cached-asset list, so `activate`'s existing cleanup (`caches.keys()` → delete
+  anything not matching the current `CACHE` name) actually has a new name to diff against instead
+  of silently keeping the same cache alive forever.
 

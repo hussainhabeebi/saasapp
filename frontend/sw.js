@@ -1,4 +1,4 @@
-const CACHE = 'lv-v1';
+const CACHE = 'lv-v2';
 const ASSETS = [
   '/dashboard.html',
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js',

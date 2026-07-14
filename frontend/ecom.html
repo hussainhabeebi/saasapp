@@ -448,6 +448,10 @@ const N8N_BASE = 'https://apps.leadvyne.com';
 
 const params = new URLSearchParams(location.search);
 let clientId = params.get('client') || '';
+// Set when opened inside dashboard.html's own Ecommerce tab (an iframe, not a separate browser
+// tab) — dashboard.html already has its own header/nav/notifications around this page, so this
+// page's own header (brand, chip, "Back to CRM" button) would just be a redundant duplicate.
+const isEmbedded = params.get('embed') === '1';
 let clientRecord = null;
 let ecomTableIds = {};
 
@@ -524,6 +528,11 @@ let shopifyNotifyConfig = { received: null, paid: null, shipped: null, delivered
 
 // ── INIT ──────────────────────────────────────────
 async function init() {
+  if (isEmbedded) {
+    const hdr = document.querySelector('header');
+    if (hdr) hdr.style.display = 'none';
+    document.body.style.height = '100%';
+  }
   if (!clientId) { clientId = prompt('Enter your Client ID:') || ''; }
   if (!clientId) return;
 
