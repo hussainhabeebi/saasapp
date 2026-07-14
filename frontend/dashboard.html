@@ -1993,11 +1993,21 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div id="chWaPending">
               <div class="s-note">Connect your WhatsApp Business number via Meta — no manual token copying, this uses Embedded Signup.</div>
               <button class="save-btn" onclick="connectWhatsApp()">Connect WhatsApp</button>
-              <span class="save-msg" id="chConnectWaMsg"></span>
             </div>
             <div id="chWaDone" style="display:none">
               <div class="s-note">✅ WhatsApp connected — phone number ID <span id="chWaPhoneDisplay"></span></div>
+              <button class="save-btn" style="margin-top:8px" onclick="connectWhatsApp()">+ Add another WhatsApp number</button>
             </div>
+            <span class="save-msg" id="chConnectWaMsg"></span>
+          </div>
+        </div>
+
+        <!-- STEP 2b: additional WhatsApp numbers, each independently automated by the bot -->
+        <div class="card" id="chWaExtraSection" style="margin-bottom:14px;display:none">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">Additional WhatsApp Numbers</div>
+            <div class="s-note">Every number below runs the bot independently. Turn "Bot active" off to leave a number connected but silent.</div>
+            <div id="chWaExtraList" class="s-note">Loading…</div>
           </div>
         </div>
 
@@ -5944,6 +5954,7 @@ function channelsInit(){
   renderChannelInboxForm();
   renderChannelsPage();
   loadChannelsStatus();
+  loadWhatsappInboxesList();
 }
 
 /* ── INTEGRATIONS TAB (Bulk Marketing module: WhatsApp status, Resend, Sheets, Health Check) ── */
@@ -6163,11 +6174,11 @@ async function createChatwootAccount(){
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
+// A client can connect more than one WhatsApp number now — this same flow (Meta Embedded Signup)
+// is reused for both the first number and every additional one; the backend (handleChannelsWhatsappConnect)
+// decides whether it fills the primary slot or gets appended to whatsapp_inboxes.
 function connectWhatsApp(){
   const msg=$id('chConnectWaMsg');
-  if(_channelsStatus?.has_whatsapp || (clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id)){
-    msg.textContent='WhatsApp is already connected for this client.'; return;
-  }
   if(!window.FB){ msg.textContent='Facebook SDK still loading — try again in a moment.'; return; }
   msg.textContent='';
   FB.login((response)=>{
@@ -6186,11 +6197,60 @@ async function completeWaConnect(code, waba_id, phone_number_id){
     const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/connect`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({code, waba_id, phone_number_id})});
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    Object.assign(clientRecord,{chatwoot_inbox_id:data.chatwoot_inbox_id, waba_id:data.waba_id, wa_phone_id:data.wa_phone_id});
-    msg.textContent='';
+    // Re-fetch rather than assuming primary fields changed — a second/third number lands in
+    // whatsapp_inboxes instead, so the local clientRecord needs a real refresh either way.
+    await refreshClientRecord();
+    msg.textContent='✓ Connected';
     renderChannelsPage();
     loadChannelsStatus();
+    loadWhatsappInboxesList();
   }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+/* ── Additional WhatsApp numbers (beyond the primary one above) — list/label/toggle/remove.
+   Removing here only stops the engine treating it as one of this client's automated numbers
+   (handleChannelsWhatsappInboxDelete); it does not delete the Chatwoot inbox itself. ── */
+let _waExtraInboxes=[];
+async function loadWhatsappInboxesList(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/inboxes`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    _waExtraInboxes=(data.inboxes||[]).filter(ib=>!ib.is_primary);
+  }catch(e){ _waExtraInboxes=[]; }
+  renderWaExtraList();
+}
+function renderWaExtraList(){
+  const has=!!(clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id);
+  $id('chWaExtraSection').style.display=has?'block':'none';
+  $id('chWaExtraList').innerHTML=_waExtraInboxes.length
+    ? _waExtraInboxes.map(ib=>`
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+        <input class="form-input" style="max-width:220px" value="${esc(ib.label)}" onchange="updateWaInbox('${esc(ib.id)}',{label:this.value})">
+        <span style="font-size:11px;color:var(--muted)">${esc(ib.wa_display_phone||ib.wa_phone_id||'')}</span>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted)">
+          <input type="checkbox" ${ib.active?'checked':''} onchange="updateWaInbox('${esc(ib.id)}',{active:this.checked})"> Bot active
+        </label>
+        <button class="save-btn" style="background:var(--muted);margin-left:auto" onclick="removeWaInbox('${esc(ib.id)}')">Remove</button>
+      </div>`).join('')
+    : '<div class="s-note">No additional numbers yet.</div>';
+}
+async function updateWaInbox(id, fields){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/inboxes`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id, ...fields})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    await loadWhatsappInboxesList();
+  }catch(e){ showToast('Failed to update: '+e.message); }
+}
+async function removeWaInbox(id){
+  if(!confirm('Remove this WhatsApp number from automation? It stays connected in Chatwoot — this only stops the bot replying on it.')) return;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/inboxes`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    await loadWhatsappInboxesList();
+    showToast('Removed');
+  }catch(e){ showToast('Failed to remove: '+e.message); }
 }
 
 function renderChannelInboxForm(){

@@ -26,6 +26,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | chatwoot_base | Single line |
 | chatwoot_token | Single line |
 | chatwoot_extra_accounts | Long text (JSON array, `[{id,label,chatwoot_base,chatwoot_account_id,chatwoot_token}]` — additional Chatwoot accounts linked for quick access only, see "Additional Chatwoot Accounts" below) |
+| whatsapp_inboxes | Long text (JSON array, `[{id,label,chatwoot_inbox_id,wa_phone_id,waba_id,wa_token,wa_display_phone,active,main_prompt_override,industry_override}]` — every WhatsApp number *beyond* the client's first one, which still lives in the plain `chatwoot_inbox_id`/`wa_phone_id`/`waba_id`/`wa_token`/`wa_display_phone` columns above. See "Multiple WhatsApp numbers per client" below.) |
 | nocodb_base | Single line |
 | leads_table_id | Single line |
 | nocodb_token | Single line |
@@ -109,6 +110,15 @@ is therefore a **time-in-stage** proxy (has this lead sat in `human_handover` lo
 `human_handover` (e.g. a rep manually moves the lead in the dashboard), not on the agent's first
 Chatwoot reply. A tighter version would need to poll Chatwoot's own conversation/message API for an
 agent-authored message timestamp, which isn't implemented here.
+
+### LEADS table additions (multiple WhatsApp numbers per client)
+Two more columns on the **LEADS** table, written by `engineBuildLeadUpsertBody` — see "Multiple
+WhatsApp numbers per client" above:
+
+| Field | Type |
+|---|---|
+| InboxId | Single line (the `chatwoot_inbox_id` this lead's conversation is on) |
+| InboxLabel | Single line (that inbox's display label — `"Primary"` or whatever the client named an additional number in Settings → Channels) |
 
 ### Prospects module
 Uses existing LEADS columns only — no new schema. Imported contacts are created with
@@ -895,12 +905,16 @@ Cloud onboarding — you don't need a second Meta app).
    `waba_id`/`phone_number_id` (posted via `window.message` by Meta's SDK). `POST
    /channels/whatsapp/connect` exchanges the code for a token, subscribes the app to the WABA,
    creates the WhatsApp Cloud inbox in Chatwoot (`provider_config: {business_account_id,
-   phone_number_id, api_key}`), best-effort wires the inbox's webhook to the client's existing
-   `webhook_url` (the n8n wrapper from onboarding), and writes `chatwoot_inbox_id`/`waba_id`/
-   `wa_token`/`wa_phone_id`. Blocked (400) if this client already has WhatsApp connected, and
-   blocked (409) if the same `waba_id`/`phone_number_id` is already on a *different* CLIENTS row
-   — a WhatsApp number can only ever belong to one client's row, since the schema has a single
-   `waba_id`/`wa_phone_id`/`chatwoot_inbox_id` slot.
+   phone_number_id, api_key}`), best-effort wires the Worker's `/engine/webhook` onto the Chatwoot
+   account (a no-op after the first number, since Chatwoot's webhook is account-wide, not
+   inbox-scoped — see "Multiple WhatsApp numbers per client" below), and writes the result onto the
+   CLIENTS row: the client's **first** WhatsApp number fills the plain `chatwoot_inbox_id`/
+   `waba_id`/`wa_token`/`wa_phone_id` columns; any number after that is appended to
+   `whatsapp_inboxes` instead of being rejected. Blocked (400) only if this exact `waba_id`/
+   `phone_number_id` is already connected *for this same client*; blocked (409) if it's already on
+   a *different* CLIENTS row's primary slot — the best-effort collision check does not scan every
+   other client's `whatsapp_inboxes` array, so a collision against someone else's *additional*
+   number would not be caught.
 3. **Add Another Inbox** — `POST /channels/inbox` creates a Website widget, Email, SMS (Twilio),
    Telegram, LINE, or API inbox on the same Chatwoot account — the same channel types Chatwoot's
    own generic inbox API supports (`allowed_channel_types` minus `whatsapp`, which has its own
@@ -927,6 +941,59 @@ Channels page uses this to show what's already connected and never offers to rec
 `provider_config`/field names and the webhook-create payload are taken from Chatwoot's
 `develop` branch source, not a live test — worth a smoke test on your instance before relying
 on it for production onboarding.
+
+### Multiple WhatsApp numbers per client
+A client can connect more than one WhatsApp number to the same Chatwoot account and have the
+engine automate each one independently. This grew out of a real bug: Chatwoot's `message_created`
+webhook fires for **every inbox on the account**, not just the one a client meant to automate —
+`handleEngineWebhook` used to only check `account_id`, so a second WhatsApp number (or any other
+channel type — widget, email) added to the same account got AI replies nobody wired it for. The
+fix, and this feature, are the same change: the engine now knows the full set of a client's
+*intentionally* connected WhatsApp numbers and drops anything else.
+
+- **Data model**: the client's first WhatsApp number still lives in the plain
+  `chatwoot_inbox_id`/`waba_id`/`wa_token`/`wa_phone_id`/`wa_display_phone` columns, unchanged —
+  existing single-number clients need no migration. Every number after that lives in
+  `whatsapp_inboxes` (see the CLIENTS table above). `engineListWhatsappInboxes(c)` (worker.js)
+  merges both into one flat list; every other piece of code that needs to reason about "this
+  client's WhatsApp inboxes" goes through that function rather than reading the columns directly.
+- **Engine webhook guard**: `engineParseChatwootPayload` extracts `conversation.inbox_id` from the
+  incoming payload. `handleEngineWebhook` matches it against `engineListWhatsappInboxes(c)` —
+  no match (and the client has at least one inbox configured) → dropped as `inbox-mismatch`;
+  matched but `active:false` → dropped as `inbox-disabled`. If the payload shape doesn't carry an
+  inbox id at all, the check is skipped rather than risk a false-negative drop of a real message.
+- **Per-number behavior override (optional)**: an entry in `whatsapp_inboxes` can set
+  `main_prompt_override`/`industry_override` — e.g. a second number that's actually a different
+  language/desk/vertical for the same client. Left blank, that number just uses the client's normal
+  `main_prompt`/`industry`. This is deliberately narrow (just those two fields, not a full
+  `bot_config`/`flow_json` override) — broader per-number config would need real demand to justify
+  the added surface.
+- **LEADS table additions** (new columns needed — see "LEADS table additions" sections below for
+  the existing convention): `InboxId` (Single line — the `chatwoot_inbox_id` the lead's
+  conversation is on) and `InboxLabel` (Single line — that inbox's display label, `"Primary"` or
+  whatever the client named it). Written by `engineBuildLeadUpsertBody` whenever the engine can
+  determine which inbox handled the turn; harmlessly omitted otherwise. Every lead that has these
+  set is guaranteed to have come through one of the client's own configured WhatsApp numbers (it
+  passed the inbox-mismatch check above to get a value at all), which is also what makes broadcast
+  sends safe — see below.
+- **Managing numbers**: `GET/PATCH/DELETE /channels/whatsapp/inboxes` (worker.js) list/edit
+  label+active+overrides/remove an *additional* number — the primary number keeps using the
+  existing Settings → Channels connect flow, unchanged. DELETE only removes it from this config
+  (engine goes silent on it); it does not delete the Chatwoot inbox or revoke the Meta token.
+  `dashboard.html`'s Channels page renders this list under "Additional WhatsApp Numbers", and its
+  "Connect WhatsApp" button now works for a second/third number too (previously blocked with
+  "WhatsApp is already connected for this client").
+- **Broadcast module**: `broadcast.html`'s DM and Template Broadcast lead tables show an `Inbox`
+  column and filter, populated from leads' `InboxLabel`. The Template Broadcast tab's template
+  list/sync/create (`/broadcast/templates*`) take an `inbox_id` so a client can view/sync/submit
+  templates for a specific number (templates are approved per-WABA on Meta's side, not shared
+  account-wide) — `engineResolveWhatsappInbox(c, inboxId)` resolves it, falling back to the primary
+  number when no `inbox_id` is given, so existing single-number clients' calls are unaffected.
+- **Known limitations**: the connect-time collision guard only checks other clients' *primary*
+  slot, not their `whatsapp_inboxes` arrays (would need a full CLIENTS table scan on every connect
+  request). Leads created before this feature existed, or on a client with only one number, simply
+  have `InboxId`/`InboxLabel` blank — the broadcast Inbox filter treats that as its own "unlabeled"
+  bucket rather than backfilling a guess.
 
 ## Shopify module (order/fulfillment/abandoned-cart WhatsApp notifications, no n8n)
 A separate connection from item 4 above — Chatwoot's Shopify integration only shows order

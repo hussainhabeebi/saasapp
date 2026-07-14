@@ -321,6 +321,9 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <select id="dmStageFilter" onchange="filterDmLeads()">
           <option value="">All stages</option>
         </select>
+        <select id="dmInboxFilter" onchange="filterDmLeads()">
+          <option value="">All inboxes</option>
+        </select>
         <select id="dmWindowFilter" onchange="filterDmLeads()">
           <option value="24h">Within 24h only</option>
           <option value="all">Show all leads</option>
@@ -339,7 +342,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <table class="tbl">
           <thead><tr>
             <th><input type="checkbox" class="chk" id="dmChkAll" onchange="toggleAllDm(this)"></th>
-            <th>Name</th><th>Phone</th><th>Stage</th><th>Last Message</th><th>Window</th>
+            <th>Name</th><th>Phone</th><th>Stage</th><th>Inbox</th><th>Last Message</th><th>Window</th>
           </tr></thead>
           <tbody id="dmLeadsTbody"></tbody>
         </table>
@@ -377,7 +380,8 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <div class="card">
       <div class="card-title">
         <span class="step-num">1</span> Select WhatsApp Template
-        <button class="btn btn-sec btn-sm" onclick="refreshTemplates()" style="margin-left:auto">↻ Refresh</button>
+        <select id="tplInboxSelect" onchange="loadTemplates()" style="margin-left:auto"></select>
+        <button class="btn btn-sec btn-sm" onclick="refreshTemplates()">↻ Refresh</button>
       </div>
       <div id="tplLoading" class="msg info">Loading templates from Meta…</div>
       <div id="tplError" class="msg error hidden"></div>
@@ -423,6 +427,9 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
           <option value="Warm">Warm</option>
           <option value="Cold">Cold</option>
         </select>
+        <select id="metaInboxFilter" onchange="filterMetaLeads()">
+          <option value="">All inboxes</option>
+        </select>
         <button class="btn btn-sec btn-sm" onclick="selectAllMeta()">Select all</button>
         <button class="btn btn-ghost btn-sm" onclick="selectNoneMeta()">Clear</button>
       </div>
@@ -435,7 +442,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <table class="tbl">
           <thead><tr>
             <th><input type="checkbox" class="chk" id="metaChkAll" onchange="toggleAllMeta(this)"></th>
-            <th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Last seen</th>
+            <th>Name</th><th>Phone</th><th>Stage</th><th>Inbox</th><th>Score</th><th>Last seen</th>
           </tr></thead>
           <tbody id="metaLeadsTbody"></tbody>
         </table>
@@ -666,7 +673,23 @@ async function initApp(){
   const logoUrl=clientRecord.quote_logo_url||'';
   const topLogo=$id('topLogo'),topBrandText=$id('topBrandText');
   if(logoUrl){topLogo.src=logoUrl;topLogo.style.display='inline-block';topBrandText.style.display='none';}
-  await Promise.all([loadLeads(), loadTemplates()]);
+  await Promise.all([loadLeads(), loadWhatsappInboxesForBroadcast(), loadTemplates()]);
+}
+
+// A client can have more than one WhatsApp number connected (see dashboard.html's Settings →
+// Channels); templates are approved per-number on Meta's side, so which one's cached template
+// list to show/sync/create against is a real choice, not cosmetic. Empty selection value falls
+// back to the primary number server-side (engineResolveWhatsappInbox), so this is a no-op for
+// every existing single-number client.
+let _bcWaInboxes=[];
+async function loadWhatsappInboxesForBroadcast(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/inboxes`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    _bcWaInboxes=data.inboxes||[];
+  }catch(e){ _bcWaInboxes=[]; }
+  const sel=$id('tplInboxSelect');
+  if(sel) sel.innerHTML=_bcWaInboxes.map(ib=>`<option value="${esc(ib.id)}">${esc(ib.label)}${ib.wa_display_phone?' — '+esc(ib.wa_display_phone):''}</option>`).join('');
 }
 
 // ── TABS ──
@@ -695,6 +718,14 @@ async function loadLeads(){
       while(sf.options.length>1) sf.remove(1);
       stages.forEach(s=>{ const o=document.createElement('option');o.value=s;o.textContent=s;sf.appendChild(o); });
     });
+    // Populate inbox filters — only meaningful once a client has more than one WhatsApp number;
+    // leads from before this field existed (or on a single-inbox client) just have it blank.
+    const inboxLabels=[...new Set(allLeads.map(l=>l.InboxLabel).filter(Boolean))].sort();
+    ['dmInboxFilter','metaInboxFilter'].forEach(id=>{
+      const sf=$id(id);
+      while(sf.options.length>1) sf.remove(1);
+      inboxLabels.forEach(lbl=>{ const o=document.createElement('option');o.value=lbl;o.textContent=lbl;sf.appendChild(o); });
+    });
 
     filterDmLeads();
     filterMetaLeads();
@@ -705,10 +736,12 @@ async function loadLeads(){
 function filterDmLeads(){
   const q=($id('dmSearch').value||'').toLowerCase();
   const stage=$id('dmStageFilter').value;
+  const inbox=$id('dmInboxFilter').value;
   const window=$id('dmWindowFilter').value;
 
   let leads=allLeads.filter(l=>{
     if(stage&&l.Stage!==stage) return false;
+    if(inbox&&l.InboxLabel!==inbox) return false;
     if(window==='24h'&&!within24h(l.LastMsgAt)) return false;
     if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
     return true;
@@ -734,6 +767,7 @@ function renderDmLeads(){
       <td style="font-weight:600">${esc(l.Name||'—')}</td>
       <td style="font-family:var(--mono);font-size:12px">${esc(l.Phone||'—')}</td>
       <td><span class="badge gray" style="font-size:10px">${esc(l.Stage||'new')}</span></td>
+      <td style="font-size:12px;color:var(--muted)">${esc(l.InboxLabel||'—')}</td>
       <td style="font-size:12px;color:var(--muted)">${ago}</td>
       <td>${in24?'<span class="in24-badge">✓ 24h</span>':'<span style="font-size:11px;color:var(--muted)">expired</span>'}</td>
     </tr>`;
@@ -752,9 +786,11 @@ function filterMetaLeads(){
   const q=($id('metaLeadSearch').value||'').toLowerCase();
   const stage=$id('metaStageFilter').value;
   const score=$id('metaScoreFilter').value;
+  const inbox=$id('metaInboxFilter').value;
   metaFilteredLeads=allLeads.filter(l=>{
     if(stage&&l.Stage!==stage) return false;
     if(score&&l.Score!==score) return false;
+    if(inbox&&l.InboxLabel!==inbox) return false;
     if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
     return true;
   });
@@ -772,6 +808,7 @@ function renderMetaLeads(){
       <td style="font-weight:600">${esc(l.Name||'—')}</td>
       <td style="font-family:var(--mono);font-size:12px">${esc(l.Phone||'—')}</td>
       <td><span class="badge gray" style="font-size:10px">${esc(l.Stage||'new')}</span></td>
+      <td style="font-size:12px;color:var(--muted)">${esc(l.InboxLabel||'—')}</td>
       <td><span style="font-size:12px;font-weight:700;color:${scoreColor}">${esc(l.Score||'—')}</span></td>
       <td style="font-size:12px;color:var(--muted)">${ago}</td>
     </tr>`;
@@ -890,7 +927,9 @@ async function loadTemplates(){
   }
 
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates`,{headers:ncAuthHeaders()});
+    const inboxId=$id('tplInboxSelect')?.value||'';
+    const url=`${CONFIG.WORKER_BASE}/broadcast/templates`+(inboxId?`?inbox_id=${encodeURIComponent(inboxId)}`:'');
+    const r=await fetch(url,{headers:ncAuthHeaders()});
     const resp=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(resp.error||('HTTP '+r.status));
     const data=resp.templates||[];
@@ -914,7 +953,8 @@ async function loadTemplates(){
 async function refreshTemplates(){
   if(!clientRecord?.chatwoot_inbox_id){ loadTemplates(); return; }
   try{
-    await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates/sync`,{method:'POST',headers:ncAuthHeaders()});
+    const inboxId=$id('tplInboxSelect')?.value||'';
+    await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates/sync`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({inbox_id:inboxId})});
   }catch(e){ /* fall through — still try to show whatever's already cached */ }
   await loadTemplates();
   await sleep(3000);
@@ -1151,7 +1191,7 @@ async function submitTemplate(){
     const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates`,{
       method:'POST',
       headers:ncAuthHeaders({'Content-Type':'application/json'}),
-      body:JSON.stringify({name,category,language,body,header,footer})
+      body:JSON.stringify({name,category,language,body,header,footer,inbox_id:$id('tplInboxSelect')?.value||''})
     });
     const data=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(data.error||('HTTP '+r.status));

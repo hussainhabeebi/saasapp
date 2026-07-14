@@ -1382,8 +1382,11 @@ async function handleBroadcastTemplatesGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
-  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}`, {headers:{api_access_token:c.chatwoot_token}});
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
+  const inboxId=new URL(request.url).searchParams.get('inbox_id')||'';
+  const inbox=engineResolveWhatsappInbox(c, inboxId);
+  if(!inbox) return json({error:'No WhatsApp number connected yet.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inbox.chatwoot_inbox_id}`, {headers:{api_access_token:c.chatwoot_token}});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:data?.message||'Chatwoot API '+r.status}, 502);
   return json({ok:true, templates:data?.message_templates||[], last_updated:data?.message_templates_last_updated||null});
@@ -1396,8 +1399,11 @@ async function handleBroadcastTemplatesSync(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
-  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}/sync_templates`, {
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
+  const {inbox_id}=await request.json().catch(()=>({}));
+  const inbox=engineResolveWhatsappInbox(c, inbox_id);
+  if(!inbox) return json({error:'No WhatsApp number connected yet.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inbox.chatwoot_inbox_id}/sync_templates`, {
     method:'POST', headers:{api_access_token:c.chatwoot_token}
   });
   const data=await r.json().catch(()=>({}));
@@ -1412,15 +1418,16 @@ async function handleBroadcastTemplatesSync(request, env){
 async function handleBroadcastTemplatesCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {name, category, language, body, header, footer}=await request.json().catch(()=>({}));
+  const {name, category, language, body, header, footer, inbox_id}=await request.json().catch(()=>({}));
   if(!name||!body) return json({error:'name and body required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.waba_id||!c?.wa_token) return json({error:'Creating a new template requires connecting your Meta WhatsApp Business API (Settings → Channels) — Chatwoot can only sync templates that already exist on Meta, not create new ones. Alternatively, create the template directly in Meta Business Manager, then use Refresh to pull it in.'}, 400);
+  const inbox=engineResolveWhatsappInbox(c, inbox_id);
+  if(!inbox?.waba_id||!inbox?.wa_token) return json({error:'Creating a new template requires connecting your Meta WhatsApp Business API (Settings → Channels) — Chatwoot can only sync templates that already exist on Meta, not create new ones. Alternatively, create the template directly in Meta Business Manager, then use Refresh to pull it in.'}, 400);
   const components=[{type:'BODY', text:body}];
   if(header) components.unshift({type:'HEADER', format:'TEXT', text:header});
   if(footer) components.push({type:'FOOTER', text:footer});
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+  const r=await fetch(`https://graph.facebook.com/v18.0/${inbox.waba_id}/message_templates`, {
+    method:'POST', headers:{Authorization:`Bearer ${inbox.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({name, category, language, components})
   });
   const data=await r.json().catch(()=>({}));
@@ -1537,12 +1544,20 @@ async function handleChannelsWhatsappConnect(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   if(!env.META_APP_ID||!env.META_APP_SECRET) return json({error:'Meta app credentials are not configured on the server.'}, 500);
-  const {code, waba_id, phone_number_id}=await request.json().catch(()=>({}));
+  const {code, waba_id, phone_number_id, label}=await request.json().catch(()=>({}));
   if(!code||!waba_id||!phone_number_id) return json({error:'code, waba_id and phone_number_id are required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
-  if(c.chatwoot_inbox_id && c.wa_phone_id) return json({error:'WhatsApp is already connected for this client.'}, 400);
+  // A client can now connect more than one WhatsApp number — the first fills the legacy primary
+  // columns (unchanged, below), any later ones are appended to whatsapp_inboxes instead of being
+  // rejected. Only a genuine re-add of the *same* waba/number already on this client is blocked.
+  const alreadyOwnThis=engineListWhatsappInboxes(c).some(ib=>ib.waba_id===waba_id||ib.wa_phone_id===phone_number_id);
+  if(alreadyOwnThis) return json({error:'This WhatsApp number is already connected for this client.'}, 400);
 
+  // Best-effort collision guard against other clients' *primary* numbers only — does not scan
+  // every other client's whatsapp_inboxes JSON blob (would mean a full CLIENTS table scan on every
+  // connect request), so a collision against someone else's *additional* number would not be
+  // caught here. Not a hard uniqueness constraint at the DB level either way.
   const collision=await findOtherClientByField(env, 'waba_id', waba_id, payload.cid) || await findOtherClientByField(env, 'wa_phone_id', phone_number_id, payload.cid);
   if(collision) return json({error:'This WhatsApp Business Account / number is already connected to a different client.'}, 409);
 
@@ -1568,17 +1583,29 @@ async function handleChannelsWhatsappConnect(request, env){
   const inbox=await inboxR.json().catch(()=>({}));
   if(!inboxR.ok||!inbox?.id) return json({error:'Chatwoot inbox creation failed: '+(inbox?.message||('HTTP '+inboxR.status))}, 502);
 
-  // Best-effort — wires this Worker's /engine/webhook onto the new inbox (see
+  // Best-effort — wires this Worker's /engine/webhook onto the Chatwoot account (see
   // engineSyncChatwootWebhook) so no manual paste-in-Chatwoot step is needed, for every industry.
+  // A no-op if it's already registered (checked inside that function) — true on every connect
+  // after the client's first, since the webhook URL is the same regardless of which inbox this is.
   // If this fails, it can still be added/fixed from Chatwoot's own UI, or re-synced later by
   // resaving any Settings field (handleNocodbPassthrough re-checks it on every CLIENTS PATCH).
-  await engineSyncChatwootWebhook(env, {...c, chatwoot_inbox_id:String(inbox.id)});
+  await engineSyncChatwootWebhook(env, {...c, chatwoot_inbox_id:c.chatwoot_inbox_id||String(inbox.id)});
 
   // wa_phone_id is Meta's internal phone-number-id (needed for API calls), not something a
   // customer can dial — wa_display_phone is the actual number (e.g. "+91 94969 71950") and is
   // what the public storefront's "Order on WhatsApp" links use, so they open the exact same
   // WhatsApp thread this bot/inbox replies from instead of a different, unrelated number.
-  await patchClientFields(env, payload.cid, {chatwoot_inbox_id:String(inbox.id), waba_id, wa_token, wa_phone_id:phone_number_id, wa_display_phone:phone_number});
+  //
+  // First WhatsApp number for this client fills the legacy primary columns, unchanged from before
+  // this multi-inbox change. Any later one is appended to whatsapp_inboxes instead — see
+  // engineListWhatsappInboxes for the merged shape every other caller reads.
+  if(!c.chatwoot_inbox_id){
+    await patchClientFields(env, payload.cid, {chatwoot_inbox_id:String(inbox.id), waba_id, wa_token, wa_phone_id:phone_number_id, wa_display_phone:phone_number});
+  }else{
+    const extra=engineParseJsonField(c.whatsapp_inboxes, []);
+    extra.push({id:crypto.randomUUID(), label:label||('WhatsApp '+(phone_number||inbox.id)), chatwoot_inbox_id:String(inbox.id), waba_id, wa_token, wa_phone_id:phone_number_id, wa_display_phone:phone_number, active:true});
+    await patchClientFields(env, payload.cid, {whatsapp_inboxes:JSON.stringify(extra)});
+  }
   return json({ok:true, chatwoot_inbox_id:String(inbox.id), waba_id, wa_phone_id:phone_number_id});
 }
 
@@ -1650,6 +1677,59 @@ async function handleChannelsStatus(request, env){
   const inboxes=(data?.payload||data?.data?.payload||[]).map(ib=>({id:ib.id, name:ib.name, channel_type:ib.channel_type}));
   const has_whatsapp=inboxes.some(ib=>ib.channel_type==='Channel::Whatsapp');
   return json({ok:true, account:{chatwoot_base:c.chatwoot_base, chatwoot_account_id:c.chatwoot_account_id}, inboxes, has_whatsapp});
+}
+
+// Lists every WhatsApp number this client has connected (primary + additional — see
+// engineListWhatsappInboxes), for the Settings → Channels "connected numbers" list and the
+// Broadcast page's inbox filter/selector. wa_token is stripped before it reaches the browser —
+// unlike the legacy top-level client record (safeClient() doesn't scrub wa_token/chatwoot_token
+// today), this is a new endpoint with no existing callers depending on the token being present,
+// so there's no reason to carry it to the browser at all.
+async function handleChannelsWhatsappInboxesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const inboxes=engineListWhatsappInboxes(c).map(({wa_token, ...rest})=>rest);
+  return json({ok:true, inboxes});
+}
+
+// Edits an *additional* WhatsApp number's label/active flag/prompt+industry override (the
+// primary number keeps using the existing Settings → Channels fields/flow, unchanged). Only
+// whatsapp_inboxes entries are editable here — 'primary' is rejected, same as not-found.
+async function handleChannelsWhatsappInboxUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {id, label, active, main_prompt_override, industry_override}=await request.json().catch(()=>({}));
+  if(!id||id==='primary') return json({error:'A valid additional-inbox id is required.'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const list=engineParseJsonField(c.whatsapp_inboxes, []);
+  const idx=list.findIndex(ib=>ib.id===id);
+  if(idx<0) return json({error:'WhatsApp number not found.'}, 404);
+  if(label!==undefined) list[idx].label=String(label).trim();
+  if(active!==undefined) list[idx].active=!!active;
+  if(main_prompt_override!==undefined) list[idx].main_prompt_override=String(main_prompt_override);
+  if(industry_override!==undefined) list[idx].industry_override=String(industry_override);
+  await patchClientFields(env, payload.cid, {whatsapp_inboxes:JSON.stringify(list)});
+  return json({ok:true});
+}
+
+// Removes an additional WhatsApp number from this client's config only — it does NOT delete the
+// underlying Chatwoot inbox or revoke the Meta token (destructive, and easily done from Chatwoot's
+// own UI if genuinely intended); this just stops the engine from treating it as one of this
+// client's automated numbers, so any further messages on it will hit the inbox-mismatch guard in
+// handleEngineWebhook and go unanswered instead of being replied to.
+async function handleChannelsWhatsappInboxDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {id}=await request.json().catch(()=>({}));
+  if(!id||id==='primary') return json({error:'A valid additional-inbox id is required.'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const list=engineParseJsonField(c.whatsapp_inboxes, []).filter(ib=>ib.id!==id);
+  await patchClientFields(env, payload.cid, {whatsapp_inboxes:JSON.stringify(list)});
+  return json({ok:true});
 }
 
 // Shopify (and any other Chatwoot-native OAuth integration) is configured at the Chatwoot
@@ -3664,6 +3744,41 @@ async function engineGeminiGenerateWithFallback(env, c, systemText, userText, op
 }
 
 function engineParseJsonField(raw, fallback){ try{ const v=JSON.parse(raw||''); return v??fallback; }catch(e){ return fallback; } }
+
+// A client can now have more than one automated WhatsApp number. The first one connected (via
+// Settings → Channels) still lives in the legacy single chatwoot_inbox_id/wa_phone_id/waba_id/
+// wa_token/wa_display_phone columns — kept as-is so existing single-inbox clients need no
+// migration. Any additional numbers live in the whatsapp_inboxes JSON array, same "just another
+// field, saved via patchClient()" pattern as chatwoot_extra_accounts (dashboard.html) — each entry
+// is {id, label, chatwoot_inbox_id, wa_phone_id, waba_id, wa_token, wa_display_phone, active,
+// main_prompt_override, industry_override}. This merges both into one flat list so every caller
+// (engine webhook inbox check, broadcast template routes, dashboard listing) has one shape to work
+// with regardless of which slot a given number happens to be stored in.
+function engineListWhatsappInboxes(c){
+  const list=[];
+  if(c.chatwoot_inbox_id){
+    list.push({id:'primary', label:'Primary', chatwoot_inbox_id:String(c.chatwoot_inbox_id), wa_phone_id:c.wa_phone_id||'', waba_id:c.waba_id||'', wa_token:c.wa_token||'', wa_display_phone:c.wa_display_phone||'', active:true, is_primary:true, main_prompt_override:'', industry_override:''});
+  }
+  engineParseJsonField(c.whatsapp_inboxes, []).forEach(ib=>{
+    if(!ib?.chatwoot_inbox_id) return;
+    list.push({
+      id:ib.id||String(ib.chatwoot_inbox_id), label:ib.label||('WhatsApp '+ib.chatwoot_inbox_id),
+      chatwoot_inbox_id:String(ib.chatwoot_inbox_id), wa_phone_id:ib.wa_phone_id||'', waba_id:ib.waba_id||'',
+      wa_token:ib.wa_token||'', wa_display_phone:ib.wa_display_phone||'', active:ib.active!==false, is_primary:false,
+      main_prompt_override:ib.main_prompt_override||'', industry_override:ib.industry_override||''
+    });
+  });
+  return list;
+}
+// Shared by the broadcast/template routes below — resolves which of the client's (possibly
+// several) WhatsApp numbers a request means. No inboxId given (or no match) falls back to the
+// primary number, so every existing single-number client's calls behave exactly as before.
+function engineResolveWhatsappInbox(c, inboxId){
+  const list=engineListWhatsappInboxes(c);
+  if(!list.length) return null;
+  if(!inboxId) return list.find(ib=>ib.is_primary)||list[0];
+  return list.find(ib=>ib.id===inboxId||ib.chatwoot_inbox_id===inboxId)||list.find(ib=>ib.is_primary)||list[0];
+}
 function engineParseSalesReps(raw){
   try{ const a=JSON.parse(raw||'[]'); if(Array.isArray(a)&&a.length) return a; }catch(e){}
   return (raw||'').split('\n').map(s=>s.trim()).filter(Boolean);
@@ -3687,7 +3802,12 @@ function engineParseChatwootPayload(body){
   const text=(body.content||body.message?.content||'').trim();
   if(!phone) return null;
   if(mediaType==='text' && !text) return null;
-  return {convId:conv?.id||null, phone, name:sender.name||'', text, mediaType, mediaUrl};
+  // inbox_id lives on `conversation` in every Chatwoot payload shape seen so far; `body.inbox?.id`
+  // is a defensive fallback only, unverified against a live payload (same honest caveat as the
+  // rest of this parser). null (not '') when absent so callers can tell "couldn't determine" apart
+  // from an actual inbox id of 0/'' and choose not to false-negative-drop the message either way.
+  const inboxId=String(conv?.inbox_id||body.inbox?.id||'')||null;
+  return {convId:conv?.id||null, phone, name:sender.name||'', text, mediaType, mediaUrl, inboxId};
 }
 
 // Mirrors "HTTP · Get lead" + "Code · State": pulls every LEADS row for this phone across ALL
@@ -4498,6 +4618,11 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString()
   };
   if(messageId) body.LastProcessedMessageId=messageId;
+  // Which of the client's (possibly several) WhatsApp numbers this lead's conversation is on —
+  // see engineListWhatsappInboxes. Requires the LEADS table to have InboxId/InboxLabel columns
+  // (SETUP.md); harmlessly omitted from the write if state.inboxId was never determined.
+  if(state.inboxId) body.InboxId=state.inboxId;
+  if(state.inboxLabel) body.InboxLabel=state.inboxLabel;
   if(qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers=JSON.stringify(qualAnswers);
   if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
   else body.Stage=next;
@@ -4595,7 +4720,7 @@ async function handleEngineWebhook(request, env, secret){
   // "stop replying" is the safer failure mode than "keep executing possibly-broken logic."
   if(env.ENGINE_ENABLED==='false') return json({ok:true, skipped:'engine-disabled-global'});
   if(!secret) return json({ok:true, skipped:'no-secret'});
-  const c=await findClientByField(env, 'engine_webhook_secret', secret);
+  let c=await findClientByField(env, 'engine_webhook_secret', secret);
   if(!c) return json({ok:true, skipped:'invalid-secret'});
   const clientId=String(c.Id);
   if(c.active==='No') return json({ok:true, skipped:'client-inactive'});
@@ -4617,14 +4742,31 @@ async function handleEngineWebhook(request, env, secret){
   try{
     const parsed=engineParseChatwootPayload(body);
     if(!parsed) return json({ok:true, skipped:'not-actionable'});
-    const {convId, name, text, mediaType, mediaUrl}=parsed;
+    const {convId, name, text, mediaType, mediaUrl, inboxId}=parsed;
     phone=parsed.phone;
+
+    // Multi-inbox guard: Chatwoot's webhook fires for every inbox on the account, not just the
+    // one(s) this client actually wants automated — see engineListWhatsappInboxes. Match the
+    // inbox the message actually came in on against that list, same "drop rather than guess"
+    // reasoning as the account-mismatch check above. If inboxId couldn't be determined from this
+    // payload shape, skip the check rather than false-negative-drop a legitimate message.
+    let activeInbox=null;
+    if(inboxId){
+      const inboxes=engineListWhatsappInboxes(c);
+      activeInbox=inboxes.find(ib=>ib.chatwoot_inbox_id===inboxId)||null;
+      if(inboxes.length && !activeInbox) return json({ok:true, skipped:'inbox-mismatch'});
+      if(activeInbox && !activeInbox.active) return json({ok:true, skipped:'inbox-disabled'});
+      if(activeInbox && (activeInbox.main_prompt_override||activeInbox.industry_override)){
+        c={...c, main_prompt:activeInbox.main_prompt_override||c.main_prompt, industry:activeInbox.industry_override||c.industry};
+      }
+    }
 
     if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')) return json({ok:true, skipped:'test-mode'});
     if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
 
     const state=await engineGetLeadState(env, clientId, phone);
     state.phone=phone; state.name=name; state.convId=convId;
+    state.inboxId=activeInbox?.chatwoot_inbox_id||inboxId||null; state.inboxLabel=activeInbox?.label||'';
 
     // Idempotency — Chatwoot may redeliver the same message_created event (timeout, network
     // retry); without this, a redelivery after this turn already completed would generate and
@@ -5196,6 +5338,9 @@ export default {
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
       else if(url.pathname==='/channels/status' && request.method==='GET'){ res=await handleChannelsStatus(request, env); }
+      else if(url.pathname==='/channels/whatsapp/inboxes' && request.method==='GET'){ res=await handleChannelsWhatsappInboxesList(request, env); }
+      else if(url.pathname==='/channels/whatsapp/inboxes' && request.method==='PATCH'){ res=await handleChannelsWhatsappInboxUpdate(request, env); }
+      else if(url.pathname==='/channels/whatsapp/inboxes' && request.method==='DELETE'){ res=await handleChannelsWhatsappInboxDelete(request, env); }
       else if(url.pathname==='/channels/chatwoot-sso' && request.method==='GET'){ res=await handleChannelsChatwootSso(request, env); }
       else if(url.pathname==='/shopify/oauth/start' && request.method==='POST'){ res=await handleShopifyOauthStart(request, env); }
       else if(url.pathname==='/shopify/oauth/callback' && request.method==='GET'){ res=await handleShopifyOauthCallback(request, env); }
