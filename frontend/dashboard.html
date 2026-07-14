@@ -424,7 +424,12 @@ tr:hover td{background:#FAFCFB}
 .li-date{font-size:10px;color:var(--muted);font-family:var(--mono)}
 
 /* ── MODALS ── */
-#overlay{position:fixed;inset:0;background:rgba(10,22,16,.55);z-index:100;display:none;backdrop-filter:blur(4px)}
+/* No backdrop-filter here on purpose — a full-screen fixed overlay with a blur filter sitting
+   behind another fixed-position element (the modal) triggers a real iOS Safari compositing bug
+   where the blur bleeds through and washes out the modal on top of it too, not just the page
+   behind it. A plain semi-transparent dim gets the same "background is inactive" effect without
+   that failure mode. */
+#overlay{position:fixed;inset:0;background:rgba(10,22,16,.55);z-index:100;display:none}
 #overlay.show{display:block}
 .modal{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-radius:24px 24px 0 0;z-index:101;transform:translateY(100%);transition:transform .35s cubic-bezier(.32,.72,0,1);max-height:92vh;display:flex;flex-direction:column}
 @media(min-width:768px){.modal{top:50%;left:50%;right:auto;bottom:auto;width:540px;border-radius:var(--r);transform:translate(-50%,-42%);opacity:0;pointer-events:none;transition:transform .25s,opacity .25s;max-height:85vh}}
@@ -482,6 +487,18 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .save-msg.err{color:var(--red)}
 .gcol-check{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;background:var(--bg);border:1px solid var(--ls);border-radius:6px;padding:5px 10px;cursor:pointer;color:var(--ink)}
 .gcol-check input{accent-color:var(--accent);cursor:pointer}
+
+/* Toggle switch — used where a setting is an explicit on/off the user must flip themselves
+   (e.g. Integrations → Voice-to-Voice Reply), as opposed to the Yes/No <select> used elsewhere. */
+.tgl-wrap{display:inline-flex;align-items:center;gap:10px;cursor:pointer}
+.tgl-wrap input{position:absolute;opacity:0;width:0;height:0}
+.tgl-track{position:relative;width:42px;height:23px;background:var(--ls);border-radius:99px;transition:background .18s;flex-shrink:0}
+.tgl-track::after{content:"";position:absolute;top:2px;left:2px;width:19px;height:19px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .18s}
+.tgl-wrap input:checked+.tgl-track{background:var(--accent)}
+.tgl-wrap input:checked+.tgl-track::after{transform:translateX(19px)}
+.tgl-wrap input:disabled+.tgl-track{opacity:.45;cursor:not-allowed}
+.tgl-wrap.disabled{cursor:not-allowed}
+.tgl-label{font-size:13px;font-weight:600;color:var(--ink)}
 
 /* stage builder */
 .stage-card{background:var(--bg);border:1.5px solid var(--line);border-radius:var(--r-sm);padding:16px;position:relative;margin-bottom:10px}
@@ -1844,18 +1861,6 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <hr class="div">
 
-          <div class="settings-section" id="voiceReplySettingsRow" style="display:none">
-            <div class="s-head">🎙️ Voice Replies</div>
-            <div class="s-note">When a customer sends a voice note, the bot can reply with a voice note back instead of text — same language as the customer, spoken naturally, with any link or price sent as a short text note alongside it instead of being read aloud. Requires the Voice add-on (Settings → Billing); this just turns it on or off for your account.</div>
-            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-              <div><label class="form-label">Reply to voice notes with voice</label><select class="form-input" id="cfgVoiceReplyEnabled"><option value="Yes">On — reply with voice</option><option value="No">Off — always reply with text</option></select></div>
-              <button class="save-btn" id="saveVoiceReplyEnabled">Save</button>
-              <span class="save-msg" id="saveVoiceReplyEnabledMsg"></span>
-            </div>
-          </div>
-
-          <hr class="div">
-
           <div class="settings-section">
             <div class="s-head">🤝 Human Handover</div>
             <div class="s-note">By default the bot keeps replying even after a lead is handed over to a human (e.g. outside business hours, or while waiting for a rep to pick up) — the lead still shows as handed over either way. Turn this on if you'd rather the bot go fully silent the moment a human takes over, so it can never talk over your team.</div>
@@ -2091,6 +2096,23 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">💬 WhatsApp (Meta)</div>
             <div id="intWaStatus" class="s-note">Checking…</div>
+          </div>
+        </div>
+
+        <!-- Voice-to-Voice Reply — an explicit opt-in toggle kept separate from the Voice add-on
+             purchase (Billing) on purpose: buying the add-on only unlocks the feature, it must be
+             switched on here before the bot actually starts sending voice-note replies. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🎙️ Voice-to-Voice Reply</div>
+            <div class="s-note">When a customer sends a voice note, the bot can reply with a voice note back instead of text — same language as the customer, spoken naturally, with any link or price sent as a short text note alongside it instead of being read aloud.</div>
+            <div id="intVoiceAddonNote" class="s-note" style="margin-bottom:12px"></div>
+            <label class="tgl-wrap" id="intVoiceToggleWrap">
+              <input type="checkbox" id="cfgVoiceReplyEnabled" onchange="saveVoiceReplyToggle()">
+              <span class="tgl-track"></span>
+              <span class="tgl-label" id="intVoiceToggleLabel">Off — always reply with text</span>
+            </label>
+            <span class="save-msg" id="saveVoiceReplyEnabledMsg"></span>
           </div>
         </div>
 
@@ -4034,11 +4056,22 @@ async function removeHumanDeal(outcome){
   const prevStage=lead.Stage;
   const nextStage=HD_OUTCOME_STAGE[outcome]||'new';
   const patch={Id:leadId, Stage:nextStage, Handover:'No', HandoverAt:'', SlaAlerted:'No', HandoverOutcome:outcome};
-  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
-  Object.assign(lead, patch);
-  reportLeadQualityChange(leadId, {Stage:prevStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:nextStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency});
-  closeHdRemoveModal();
-  renderHumanDeals();
+  // Buttons disabled + wrapped in try/catch so a failed save shows an error and re-enables the
+  // buttons instead of leaving the modal stuck open with no feedback (previously an unhandled
+  // rejection here just left the "Mark this deal done" modal hanging with no explanation).
+  const buttons=document.querySelectorAll('#modalHdRemove .modal-body button');
+  buttons.forEach(b=>b.disabled=true);
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
+    Object.assign(lead, patch);
+    reportLeadQualityChange(leadId, {Stage:prevStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:nextStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency});
+    closeHdRemoveModal();
+    renderHumanDeals();
+  }catch(e){
+    showToast('Failed to save: '+e.message,'err');
+  }finally{
+    buttons.forEach(b=>b.disabled=false);
+  }
 }
 
 function renderHumanDeals(){
@@ -4987,8 +5020,6 @@ function populateSettings(){
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
   $id('cfgHandoverSilence').value=clientRecord.handover_silence_enabled||'No';
-  $id('cfgVoiceReplyEnabled').value=clientRecord.voice_reply_enabled||'Yes';
-  updateVoiceReplySettingsVisibility();
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -5697,10 +5728,6 @@ async function quoteSend(){
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
 $id('saveHandoverSilence').addEventListener('click',async()=>saveField('saveHandoverSilence','saveHandoverSilenceMsg',{handover_silence_enabled:$id('cfgHandoverSilence').value}));
-$id('saveVoiceReplyEnabled').addEventListener('click',async()=>saveField('saveVoiceReplyEnabled','saveVoiceReplyEnabledMsg',{voice_reply_enabled:$id('cfgVoiceReplyEnabled').value}));
-function updateVoiceReplySettingsVisibility(){
-  const row=$id('voiceReplySettingsRow'); if(row) row.style.display=clientRecord?.voice_addon_active==='Yes'?'block':'none';
-}
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
 
@@ -5956,11 +5983,51 @@ const INT_SHEETS=[
 
 function integrationsInit(){
   renderWaStatus();
+  renderVoiceAddonCard();
   renderShopifyStatus();
   renderSheetsList();
   loadEmailStatus();
   loadMetaCapiStatus();
   renderHealthResults();
+}
+
+// Voice-to-Voice Reply toggle. Deliberately independent of voice_addon_active (set the moment
+// the Voice add-on purchase is fulfilled — see fulfillAddon() in worker.js): the add-on only
+// unlocks eligibility, it does not itself flip voice_reply_enabled to 'Yes'. The toggle here is
+// the only thing that does, and it's disabled until the add-on is active so it can't be turned
+// on for an account that hasn't actually paid for it.
+function renderVoiceAddonCard(){
+  const input=$id('cfgVoiceReplyEnabled');
+  if(!input) return;
+  const active=clientRecord?.voice_addon_active==='Yes';
+  const enabled=clientRecord?.voice_reply_enabled==='Yes';
+  input.checked=active && enabled;
+  input.disabled=!active;
+  $id('intVoiceToggleWrap').classList.toggle('disabled', !active);
+  $id('intVoiceToggleLabel').textContent=input.checked?'On — reply with voice':'Off — always reply with text';
+  $id('intVoiceAddonNote').innerHTML=active
+    ? '✅ Voice add-on active — flip the toggle below to start or stop voice replies.'
+    : `Requires the Voice add-on. <a href="#" onclick="navigate('billing');return false" style="color:inherit;text-decoration:underline;font-weight:600">Buy it in Billing</a> — purchasing it alone won't turn voice replies on, you'll still need to switch this toggle on afterward.`;
+}
+
+async function saveVoiceReplyToggle(){
+  const input=$id('cfgVoiceReplyEnabled'),msg=$id('saveVoiceReplyEnabledMsg'),label=$id('intVoiceToggleLabel');
+  const value=input.checked?'Yes':'No';
+  label.textContent=input.checked?'On — reply with voice':'Off — always reply with text';
+  msg.textContent='';msg.className='save-msg';
+  input.disabled=true;
+  try{
+    await patchClient({voice_reply_enabled:value});
+    clientRecord.voice_reply_enabled=value;
+    msg.textContent='✓ Saved';
+  }catch(e){
+    input.checked=!input.checked;
+    label.textContent=input.checked?'On — reply with voice':'Off — always reply with text';
+    msg.textContent='Error: '+e.message;msg.className='save-msg err';
+  }finally{
+    input.disabled=clientRecord?.voice_addon_active!=='Yes';
+    setTimeout(()=>msg.textContent='',3000);
+  }
 }
 
 function renderShopifyStatus(){
