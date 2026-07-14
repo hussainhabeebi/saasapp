@@ -1501,6 +1501,67 @@ blank, or from one of a few starter templates (`PROJECT_TEMPLATES`: New Client O
 Close Push, Campaign Launch) that pre-populate a standard checklist as ordinary manual tasks
 (no special linkage back to the template after creation).
 
+### Stage-gated workflow engine (dependencies, auto-unlock, notifications, AI client summaries)
+Projects/tasks amended in place to also work as a stage-gated delivery workflow — no new NocoDB
+table or column; everything below still lives inside the same `manual_tasks` field described above.
+A project used as a plain todo list (no client email, no dependencies) behaves exactly as before —
+every piece here is opt-in per field.
+- **Project gains**: `client_name`, `client_email`, `ai_summary_enabled` (default `true`) — set via
+  a new "⚙️" button on each project's group header in the Projects view (`openProjectModal()`/
+  `saveProjectFromModal()`), not the "+ New Project" prompt (which still only asks for a name).
+- **Task/stage gains**: `depends_on` (array of other task ids in the *same* project — cross-project
+  dependencies aren't meaningful, since the auto-unlock check only ever looks at siblings sharing a
+  `project_id`) and `notify_customer` (boolean). Both editable in the existing task modal, scoped to
+  whichever project is currently selected in that modal (`taskDepsPopulate()`, re-run on project
+  change).
+- **`blocked` is a new task status**, alongside the existing `open`/`in_progress`/`done` — reachable
+  from a new fourth column on the Board view, or the "🚧 Block"/"↩ Unblock" buttons there.
+- **"Locked" is computed, never stored** — `isStageLocked(task, state)` checks whether every id in
+  `depends_on` currently has `status==='done'` in the same project's task list (supports fan-in: a
+  stage waiting on two dependencies doesn't unlock until *both* are done). Because it's derived
+  fresh every render rather than a persisted flag, it can't drift out of sync with the actual
+  dependency graph. `computeAllTasks()` attaches the resolved boolean as `locked` on every task it
+  returns; UI code should read `t.locked` directly rather than re-calling `isStageLocked()` against
+  the flattened task shape `computeAllTasks()` produces, which doesn't carry `depends_on` through
+  (a bug caught and fixed during testing — `renderTasksBoard()` was recomputing against the wrong
+  object shape and always getting `false`). A locked task's Start/Block/Done buttons are hidden
+  (Board) or replaced with a "🔒 Locked" label (List); only "Edit" stays available.
+- **Notifications, all via the existing `/tasks/notify` Worker route** (fixed
+  title/notes/due_date/due_time/lead_name email template, already used for assignee-notify-on-save
+  — no backend changes needed for any of the below, just new call sites):
+  - **Auto-unlock**: `notifyDependentsIfUnlocked()` — when a stage is marked `done`, finds sibling
+    stages whose `depends_on` includes it and are now fully unlocked (respects fan-in), and emails
+    each one's `assignee_email`.
+  - **Blocked alert**: `notifyProjectOwnerBlocked()` — fires only to `clientRecord.authentik_email`
+    (the account owner), **never** the customer, when a stage is marked `blocked`.
+  - **Client-facing update**: `notifyClientIfStageComplete()` — fires only when the completed
+    stage has `notify_customer` checked *and* its project has a `client_email` set; a plain
+    todo-list project with neither configured never emails anyone new.
+  - Both `moveTaskStatus()` (Board) and `toggleTaskDone()` (List — now delegates to
+    `moveTaskStatus()` instead of duplicating the save) funnel through the same status-change path,
+    so notifications fire identically regardless of which view triggered the transition.
+- **AI client summary — deliberately a low-cost OpenRouter model, not this app's usual
+  `google/gemini-2.5-flash` default.** `notifyClientIfStageComplete()` calls the existing
+  `/ai/complete` route (which already lets the *caller* override the model per-request) with
+  `model:'google/gemini-2.5-flash-lite'` — a cheaper/faster tier in the same family already proven
+  elsewhere in this codebase, appropriate since rewriting one internal note into a short
+  client-facing paragraph is a low-complexity task that doesn't need a frontier model. Falls back
+  to the raw stage notes verbatim if `ai_summary_enabled` is off, there are no notes to rewrite, or
+  the AI call itself fails — a rougher client email beats silently sending nothing. **Not
+  live-verified**: this session's network policy blocked OpenRouter's own site, so the exact
+  current price/availability of this model slug should be checked on OpenRouter's model page before
+  relying on it in production, same caveat as the Sarvam TTS integration elsewhere in this file.
+- **Notification log** (`state.notificationLog`) — every send attempt (success or failure) is
+  appended with `{ts, to, type, subject, channel, ok, error}`, capped at 200 entries the same way
+  `dismissed`/done-items already are. Viewable via the new "🔔 Notification Log" button on the
+  Tasks page (`openNotifyLogModal()`) — the "who was notified, when, what channel" audit trail, for
+  dispute resolution. A dedicated NocoDB table would scale better long-term if log volume grows
+  large, but wasn't necessary to ship this.
+- **Deliberately not built**: AI-suggested stage sequencing from historical project similarity —
+  `PROJECT_TEMPLATES` (see above) already covers "start from a known-good sequence for a project
+  type" without any AI cost or hallucination risk; real similarity-matching against project history
+  is only worth building once there's enough real history to usefully match against.
+
 **Three views** (toggle in the secondary control row): **List** (the original unified sorted view,
 now with category/project tags), **Projects** (grouped by `project_id`, each group showing a
 progress bar computed from *all* of that project's tasks including done ones, not just the open

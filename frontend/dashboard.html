@@ -1478,7 +1478,10 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div class="page-pad">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
           <div class="card-title" style="margin-bottom:0">✅ Tasks</div>
-          <button class="btn btn-primary btn-sm" onclick="openTaskModal()">+ New Task</button>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-secondary btn-sm" onclick="openNotifyLogModal()">🔔 Notification Log</button>
+            <button class="btn btn-primary btn-sm" onclick="openTaskModal()">+ New Task</button>
+          </div>
         </div>
         <div class="task-filter-row" id="taskFilterRow"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px" id="taskSecondaryRow"></div>
@@ -3063,8 +3066,16 @@ const TODAY = new Date().toISOString().slice(0,10);
         <select class="form-input" id="taskCategory"><option value="">No category</option></select>
       </div>
       <div class="form-group"><label class="form-label">Project</label>
-        <select class="form-input" id="taskProject"><option value="">No project</option></select>
+        <select class="form-input" id="taskProject" onchange="taskDepsPopulate()"><option value="">No project</option></select>
       </div>
+    </div>
+    <div class="form-group" id="taskDepsGroup" style="display:none">
+      <label class="form-label">Depends On <span style="font-weight:400;color:var(--muted)">(this stage unlocks once all selected are Done)</span></label>
+      <select class="form-input" id="taskDependsOn" multiple size="4"></select>
+    </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:8px;margin-top:4px">
+      <input type="checkbox" id="taskNotifyCustomer" style="width:16px;height:16px">
+      <label for="taskNotifyCustomer" style="font-size:13px;color:var(--muted);margin:0">Email the project's client when this stage is marked Done</label>
     </div>
     <div class="form-group"><label class="form-label">Related Lead (optional)</label>
       <select class="form-input" id="taskLeadSelect"><option value="">Not linked to a lead</option></select>
@@ -3081,6 +3092,38 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="btn btn-primary" id="saveTaskBtn" onclick="saveTaskFromModal()">Save Task</button>
     <span class="save-msg" id="taskModalMsg"></span>
     <button class="btn btn-secondary" onclick="closeModal('modalTask')">Cancel</button>
+  </div>
+</div>
+
+<!-- MODAL: Project Settings (client info + AI summary toggle) -->
+<div class="modal" id="modalProject" style="width:480px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title">Project Settings</div><button class="icon-btn" onclick="closeModal('modalProject')">✕</button></div>
+  <div class="modal-body">
+    <div class="form-group"><label class="form-label">Project Name *</label><input class="form-input" id="projName" placeholder="e.g. Acme Corp Onboarding"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Client Name</label><input class="form-input" id="projClientName" placeholder="Optional"></div>
+      <div class="form-group"><label class="form-label">Client Email</label><input class="form-input" type="email" id="projClientEmail" placeholder="For client-facing updates"></div>
+    </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:8px;margin-top:4px">
+      <input type="checkbox" id="projAiSummary" style="width:16px;height:16px" checked>
+      <label for="projAiSummary" style="font-size:13px;color:var(--muted);margin:0">Auto-generate client-facing summaries with AI (otherwise the stage's raw notes are sent as-is)</label>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:2px">Client updates only send for stages with "Notify customer" checked and a client email set here.</div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" onclick="saveProjectFromModal()">Save</button>
+    <span class="save-msg" id="projModalMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalProject')">Cancel</button>
+  </div>
+</div>
+
+<!-- MODAL: Notification Log (audit trail — who was notified, when, what channel) -->
+<div class="modal" id="modalNotifyLog" style="width:560px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title">🔔 Notification Log</div><button class="icon-btn" onclick="closeModal('modalNotifyLog')">✕</button></div>
+  <div class="modal-body" style="max-height:60vh;overflow-y:auto">
+    <div id="notifyLogList"></div>
   </div>
 </div>
 
@@ -6775,8 +6818,12 @@ function getTasksState(){
       items:Array.isArray(parsed.items)?parsed.items:[],
       dismissed:Array.isArray(parsed.dismissed)?parsed.dismissed:[],
       projects:Array.isArray(parsed.projects)?parsed.projects:[],
+      // Whitelisted the same way as the three fields above — a naive spread of `parsed` here would
+      // silently reintroduce whatever this function used to strip out and not just this one field,
+      // so it gets its own explicit line instead.
+      notificationLog:Array.isArray(parsed.notificationLog)?parsed.notificationLog:[],
     };
-  }catch(e){ return {items:[],dismissed:[],projects:[]}; }
+  }catch(e){ return {items:[],dismissed:[],projects:[],notificationLog:[]}; }
 }
 async function saveTasksState(state){
   if(state.dismissed.length>300) state.dismissed=state.dismissed.slice(-300);
@@ -6786,6 +6833,20 @@ async function saveTasksState(state){
   await patchClient({manual_tasks:JSON.stringify(state)});
 }
 function taskAssigneeEmails(){ return getTeamMembers().map(m=>m.email); }
+
+// Computed, never stored — a stage is "locked" purely as a function of whether every id in its
+// own depends_on is currently status==='done' in the same project. Deriving this on every render
+// instead of persisting a separate "locked" status means it can never drift out of sync with the
+// actual dependency graph (e.g. if a dependency gets reopened after being marked done, the
+// dependent stage is automatically locked again next render, with no extra bookkeeping needed).
+// Supports fan-in (a stage with multiple dependencies) — ALL of them must be done, not just one.
+function isStageLocked(task, state){
+  if(!Array.isArray(task.depends_on) || !task.depends_on.length) return false;
+  return task.depends_on.some(depId=>{
+    const dep=state.items.find(x=>x.id===depId);
+    return !dep || dep.status!=='done';
+  });
+}
 
 // Single source of truth for "who can be assigned things" — the account owner plus everyone in
 // team_emails (User Management/Settings → Team). Used for both lead Owner and task assignee
@@ -6885,11 +6946,12 @@ function computeAllTasks(){
       urgency=daysUntil<=0?(300-daysUntil*10):Math.max(10,100-daysUntil*5);
     }
     const proj=t.project_id?state.projects.find(p=>p.id===t.project_id):null;
+    const locked=isStageLocked(t,state);
     out.push({_virtual:false,_type:'manual',id:t.id,leadId:t.lead_id||null,
-      title:t.title, meta:[t.notes,t.lead_name?('Re: '+t.lead_name):'',t.assignee_email?('→ '+t.assignee_email):''].filter(Boolean).join(' · '),
+      title:t.title, meta:[t.notes,t.lead_name?('Re: '+t.lead_name):'',t.assignee_email?('→ '+t.assignee_email):'',locked?'🔒 waiting on a dependency':''].filter(Boolean).join(' · '),
       due:t.due_date, dueTime:t.due_time, assignee:t.assignee_email||'', urgency,
       category:t.category||'', projectId:t.project_id||'', projectName:proj?.name||'', projectColor:proj?.color||'',
-      status:t.status||'open'});
+      status:t.status||'open', locked});
   });
 
   return out;
@@ -7010,7 +7072,7 @@ function taskItemHtml(t){
       ${t.leadId?`<button class="task-action-btn" onclick="event.stopPropagation();sendTaskWaFollowUp(${t.leadId},this)">💬 WA Follow-up</button>`:''}
       ${t._type==='reminder'?`<button class="task-action-btn" onclick="event.stopPropagation();snoozeReminderLead(${t.leadId})">+1d</button>`:''}
       ${t._type==='manual'?`<button class="task-action-btn" onclick="event.stopPropagation();snoozeManualTask('${t.id}')">+1d</button>`:''}
-      <button class="task-action-btn primary" onclick="event.stopPropagation();${t._virtual?`dismissVirtualTask('${t._dismissKey}')`:`toggleTaskDone('${t.id}')`}">✓ Done</button>
+      ${t.locked?'<span class="task-action-btn" title="Waiting on a dependency to finish" style="cursor:default;opacity:.7">🔒 Locked</span>':`<button class="task-action-btn primary" onclick="event.stopPropagation();${t._virtual?`dismissVirtualTask('${t._dismissKey}')`:`toggleTaskDone('${t.id}')`}">✓ Done</button>`}
     </div>
   </div>`;
 }
@@ -7048,7 +7110,7 @@ function renderTasksByProject(filtered){
         <span style="width:10px;height:10px;border-radius:50%;background:${color};flex:none"></span>
         <div style="font-family:var(--disp);font-weight:700;font-size:14px">${esc(name)}</div>
         ${g.project?`<div style="flex:1;max-width:140px;height:6px;background:var(--line);border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${color}"></div></div><span style="font-size:11px;color:var(--muted)">${doneCount}/${totalCount} done</span>`:''}
-        ${g.project?`<button class="task-action-btn" style="margin-left:auto" onclick="deleteProject('${g.project.id}')">🗑</button>`:''}
+        ${g.project?`<button class="task-action-btn" style="margin-left:auto" onclick="openProjectModal('${g.project.id}')">⚙️</button><button class="task-action-btn" onclick="deleteProject('${g.project.id}')">🗑</button>`:''}
       </div>
       ${g.tasks.length?g.tasks.sort((a,b)=>b.urgency-a.urgency).map(taskItemHtml).join(''):'<div style="color:var(--muted);font-size:12.5px;padding:4px 0 4px 20px">Nothing open here</div>'}
     </div>`;
@@ -7063,26 +7125,39 @@ function renderTasksBoard(manualOpen){
   const cols=[
     ['open','📋 To Do',manualOpen.filter(t=>(t.status||'open')==='open')],
     ['in_progress','🔨 In Progress',manualOpen.filter(t=>t.status==='in_progress')],
+    ['blocked','🚧 Blocked',manualOpen.filter(t=>t.status==='blocked')],
   ];
   const colHtml=(status,label,tasks,isDone)=>`
     <div style="flex:1;min-width:220px;background:var(--bg);border-radius:var(--r-sm);padding:10px">
       <div style="font-weight:700;font-size:12.5px;margin-bottom:8px">${label} <span style="color:var(--muted);font-weight:500">(${tasks.length})</span></div>
-      ${tasks.length?tasks.map(t=>isDone?`
+      ${tasks.length?tasks.map(t=>{
+        if(isDone) return `
         <div class="card" style="padding:10px;margin-bottom:8px">
           <div style="font-weight:600;font-size:13px;text-decoration:line-through;color:var(--muted)">${esc(t.title)}</div>
           <button class="task-action-btn" style="margin-top:6px" onclick="moveTaskStatus('${t.id}','open')">↩ Reopen</button>
-        </div>` : `
-        <div class="card" style="padding:10px;margin-bottom:8px">
+        </div>`;
+        // A locked stage (unmet dependency) can only be viewed/edited here, not started/completed.
+        // t.locked comes pre-computed from computeAllTasks() (isStageLocked() against the real
+        // state.items, which carry depends_on) — recomputing it here against `t` itself would
+        // silently always read false, since the flattened board/list task shape computeAllTasks()
+        // produces never carries depends_on through, only the already-resolved boolean.
+        const locked=status!=='blocked'&&t.locked;
+        return `
+        <div class="card" style="padding:10px;margin-bottom:8px${locked?';opacity:.6':''}">
           <div style="font-weight:600;font-size:13px">${esc(t.title)}</div>
           ${t.meta?`<div class="task-meta">${esc(t.meta)}</div>`:''}
           ${taskTagsHtml(t)}
           <div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap">
             <button class="task-action-btn" onclick="openTaskModal('${t.id}')">Edit</button>
+            ${locked?'':`
             ${status==='open'?`<button class="task-action-btn" onclick="moveTaskStatus('${t.id}','in_progress')">→ Start</button>`:''}
             ${status==='in_progress'?`<button class="task-action-btn" onclick="moveTaskStatus('${t.id}','open')">← To Do</button>`:''}
+            ${status!=='blocked'?`<button class="task-action-btn" onclick="moveTaskStatus('${t.id}','blocked')">🚧 Block</button>`:`<button class="task-action-btn" onclick="moveTaskStatus('${t.id}','open')">↩ Unblock</button>`}
             <button class="task-action-btn primary" onclick="moveTaskStatus('${t.id}','done')">✓ Done</button>
+            `}
           </div>
-        </div>`).join(''):'<div style="color:var(--muted);font-size:12px">Empty</div>'}
+        </div>`;
+      }).join(''):'<div style="color:var(--muted);font-size:12px">Empty</div>'}
     </div>`;
   $id('tasksList').innerHTML=`<div style="display:flex;gap:12px;flex-wrap:wrap">
     ${cols.map(([status,label,tasks])=>colHtml(status,label,tasks,false)).join('')}
@@ -7090,12 +7165,111 @@ function renderTasksBoard(manualOpen){
   </div>`;
 }
 
+// Logs every send attempt (success or failure) to state.notificationLog, capped at 200 like the
+// dismissed/done-items lists already are in saveTasksState — an audit trail for "who was notified,
+// when, what channel" without needing a separate NocoDB table. Reuses the existing /tasks/notify
+// route as-is (fixed title/notes/due_date/due_time/lead_name template) for all three notification
+// kinds below — the AI-generated client summary just rides in as `notes`.
+async function sendTaskNotifyEmail(state, {to, subject, title, notes, due_date, due_time, lead_name}, type){
+  if(!to) return false;
+  if(!Array.isArray(state.notificationLog)) state.notificationLog=[];
+  const entry={ts:new Date().toISOString(), to, type, subject, channel:'email'};
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/tasks/notify`,{
+      method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({to, subject, title, notes, due_date, due_time, lead_name})
+    });
+    entry.ok=r.ok;
+    if(!r.ok){ const d=await r.json().catch(()=>({})); entry.error=d.error||('HTTP '+r.status); }
+  }catch(e){ entry.ok=false; entry.error=e.message; }
+  state.notificationLog.unshift(entry);
+  state.notificationLog=state.notificationLog.slice(0,200);
+  return entry.ok;
+}
+
+// Auto-unlock notification — when a stage completes, find sibling stages (same project) whose
+// depends_on lists it, and notify the owner of any that are now fully unlocked. Uses
+// isStageLocked() itself so fan-in (a stage waiting on more than one dependency) is respected —
+// only fires once every dependency is done, not on the first one.
+async function notifyDependentsIfUnlocked(state, justCompletedId){
+  const completed=state.items.find(t=>t.id===justCompletedId);
+  if(!completed?.project_id) return;
+  const siblings=state.items.filter(t=>t.project_id===completed.project_id && t.id!==completed.id && t.status!=='done');
+  for(const sib of siblings){
+    if(!Array.isArray(sib.depends_on) || !sib.depends_on.includes(justCompletedId)) continue;
+    if(isStageLocked(sib,state)) continue;
+    if(!sib.assignee_email) continue;
+    await sendTaskNotifyEmail(state, {to:sib.assignee_email, subject:'Ready to start: '+sib.title, title:sib.title, notes:sib.notes, due_date:sib.due_date, due_time:sib.due_time, lead_name:sib.lead_name}, 'stage_unlocked');
+  }
+}
+
+// Blocked-stage alert — the project owner (account owner, authentik_email) only, never the
+// customer, matching the spec's explicit "never to customer" requirement for this one.
+async function notifyProjectOwnerBlocked(state, task){
+  const to=(clientRecord?.authentik_email||'').trim();
+  if(!to) return;
+  await sendTaskNotifyEmail(state, {to, subject:'⚠️ Blocked: '+task.title, title:task.title, notes:task.notes, due_date:task.due_date, due_time:task.due_time, lead_name:task.lead_name}, 'blocked_alert');
+}
+
+// Client-facing completion notification — only fires when the stage itself has notify_customer
+// checked AND the project has a client_email set (a plain todo-list project with neither keeps
+// working exactly as before, no client ever gets emailed). Rewrites the internal stage notes into
+// a short client-facing summary via a deliberately low-cost OpenRouter model — this is a simple
+// rewrite task, not something that needs a frontier model, and /ai/complete already lets the
+// caller override the model per-call. Falls back to the raw notes/title verbatim if the project
+// has ai_summary_enabled off, there are no notes to rewrite, or the AI call itself fails — a
+// slightly rougher client email beats silently sending nothing.
+async function notifyClientIfStageComplete(state, task){
+  if(!task.notify_customer || !task.project_id) return;
+  const proj=state.projects.find(p=>p.id===task.project_id);
+  const clientEmail=(proj?.client_email||'').trim();
+  if(!proj || !clientEmail) return;
+  let summary=task.notes||task.title;
+  if(proj.ai_summary_enabled!==false && task.notes){
+    try{
+      const resp=await fetch(`${CONFIG.WORKER_BASE}/ai/complete`,{
+        method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({model:'google/gemini-2.5-flash-lite', max_tokens:200, messages:[
+          {role:'system',content:'Rewrite this internal project-stage note into one short, friendly, client-facing update — 2-3 plain-language sentences, no internal jargon or internal team names. Respond with ONLY the update text.'},
+          {role:'user',content:`Stage: ${task.title}\nInternal notes: ${task.notes}`}
+        ]})
+      });
+      const data=await resp.json().catch(()=>({}));
+      const text=data?.choices?.[0]?.message?.content?.trim();
+      if(text) summary=text;
+    }catch(e){}
+  }
+  await sendTaskNotifyEmail(state, {to:clientEmail, subject:`Update on ${proj.name}`, title:task.title, notes:summary, lead_name:proj.client_name||proj.name}, 'client_update');
+}
+
+const NOTIFY_TYPE_LABELS={stage_unlocked:'🔓 Stage unlocked', blocked_alert:'⚠️ Blocked alert', client_update:'📣 Client update'};
+function openNotifyLogModal(){
+  const state=getTasksState();
+  const log=state.notificationLog||[];
+  $id('notifyLogList').innerHTML=log.length?log.map(e=>`
+    <div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+      <div style="min-width:0">
+        <div style="font-weight:600;font-size:13px">${esc(NOTIFY_TYPE_LABELS[e.type]||e.type)} — ${esc(e.subject||'')}</div>
+        <div style="font-size:11px;color:var(--muted)">To: ${esc(e.to)} · ${esc(e.channel||'email')}${e.ok===false?' · <span style="color:var(--red)">failed'+(e.error?': '+esc(e.error):'')+'</span>':''}</div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);white-space:nowrap;flex-shrink:0">${new Date(e.ts).toLocaleString()}</div>
+    </div>`).join('') : '<div style="color:var(--muted);font-size:13px">No notifications sent yet.</div>';
+  openModal('modalNotifyLog');
+}
+
 async function moveTaskStatus(id,newStatus){
   const state=getTasksState();
   const t=state.items.find(x=>x.id===id);
   if(!t) return;
+  const prevStatus=t.status;
   t.status=newStatus;
   t.completed_at=newStatus==='done'?new Date().toISOString():null;
+  if(newStatus==='done' && prevStatus!=='done'){
+    await notifyDependentsIfUnlocked(state, id);
+    await notifyClientIfStageComplete(state, t);
+  } else if(newStatus==='blocked' && prevStatus!=='blocked'){
+    await notifyProjectOwnerBlocked(state, t);
+  }
   try{ await saveTasksState(state); }catch(e){ alert('Could not save: '+e.message); return; }
   renderTasks();
 }
@@ -7114,7 +7288,10 @@ async function createProject(name,starterTasks){
   if(!name) return;
   const state=getTasksState();
   const color=PROJECT_COLORS[state.projects.length%PROJECT_COLORS.length];
-  const proj={id:'p_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), name, color, created_at:new Date().toISOString()};
+  // client_name/client_email/ai_summary_enabled power the client-facing notification flow (see
+  // notifyClientIfStageComplete()) — blank/on by default so an existing "just a todo list"
+  // project keeps working exactly as before if nobody ever fills them in.
+  const proj={id:'p_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), name, color, client_name:'', client_email:'', ai_summary_enabled:true, created_at:new Date().toISOString()};
   state.projects.push(proj);
   (starterTasks||[]).forEach(title=>{
     state.items.push({id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), title, notes:'', due_date:'', due_time:'',
@@ -7135,6 +7312,39 @@ async function deleteProject(id){
   renderTasks();
 }
 
+let _editingProjectId=null;
+function openProjectModal(id){
+  _editingProjectId=id;
+  const state=getTasksState();
+  const p=state.projects.find(x=>x.id===id);
+  if(!p) return;
+  $id('projName').value=p.name||'';
+  $id('projClientName').value=p.client_name||'';
+  $id('projClientEmail').value=p.client_email||'';
+  $id('projAiSummary').checked=p.ai_summary_enabled!==false;
+  $id('projModalMsg').textContent='';
+  openModal('modalProject');
+}
+async function saveProjectFromModal(){
+  const msg=$id('projModalMsg');
+  const name=$id('projName').value.trim();
+  if(!name){ msg.textContent='Enter a project name.'; msg.style.color='var(--red)'; return; }
+  const state=getTasksState();
+  const p=state.projects.find(x=>x.id===_editingProjectId);
+  if(!p) return;
+  Object.assign(p,{
+    name, client_name:$id('projClientName').value.trim(),
+    client_email:$id('projClientEmail').value.trim(),
+    ai_summary_enabled:$id('projAiSummary').checked,
+  });
+  msg.textContent='Saving…'; msg.style.color='var(--muted)';
+  try{
+    await saveTasksState(state);
+    closeModal('modalProject');
+    renderTasks();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.style.color='var(--red)'; }
+}
+
 async function dismissVirtualTask(key){
   const state=getTasksState();
   if(!state.dismissed.includes(key)) state.dismissed.push(key);
@@ -7142,14 +7352,14 @@ async function dismissVirtualTask(key){
   renderTasks();
 }
 
+// Delegates to moveTaskStatus() rather than duplicating the save — that's the one place
+// stage-unlock/client-update/blocked-alert notifications fire, so the list view's "✓ Done" button
+// and the board view's both trigger the same logic instead of two slightly-different copies.
 async function toggleTaskDone(id){
   const state=getTasksState();
   const t=state.items.find(x=>x.id===id);
   if(!t) return;
-  t.status=t.status==='done'?'open':'done';
-  t.completed_at=t.status==='done'?new Date().toISOString():null;
-  try{ await saveTasksState(state); }catch(e){ alert('Could not save: '+e.message); }
-  renderTasks();
+  await moveTaskStatus(id, t.status==='done'?'open':'done');
 }
 
 async function snoozeReminderLead(leadId){
@@ -7254,8 +7464,29 @@ function openTaskModal(id, prefillLead){
   const projects=state.projects;
   projSel.innerHTML='<option value="">No project</option>'+projects.map(p=>`<option value="${esc(p.id)}"${t?.project_id===p.id?' selected':''}>${esc(p.name)}</option>`).join('');
 
+  $id('taskNotifyCustomer').checked=t?.notify_customer===true;
+  taskDepsPopulate(t?.depends_on||[]);
+
   $id('taskModalMsg').textContent='';
   openModal('modalTask');
+}
+
+// Depends-on options are scoped to the currently-selected project (a dependency across two
+// different projects wouldn't mean anything for the auto-unlock check, which only ever looks at
+// siblings sharing the same project_id) — repopulated on project change, and hidden entirely when
+// no project is selected. `preselect` lets openTaskModal() restore a task's existing depends_on
+// when first opening the modal, before any user interaction with the Project dropdown.
+function taskDepsPopulate(preselect){
+  const group=$id('taskDepsGroup');
+  const sel=$id('taskDependsOn');
+  const projectId=$id('taskProject').value;
+  if(!projectId){ group.style.display='none'; sel.innerHTML=''; return; }
+  const state=getTasksState();
+  const selected=new Set(preselect||[]);
+  const siblings=state.items.filter(t=>t.project_id===projectId && t.id!==_editingTaskId);
+  if(!siblings.length){ group.style.display='none'; sel.innerHTML=''; return; }
+  group.style.display='';
+  sel.innerHTML=siblings.map(t=>`<option value="${esc(t.id)}"${selected.has(t.id)?' selected':''}>${esc(t.title)}</option>`).join('');
 }
 
 async function saveTaskFromModal(){
@@ -7268,6 +7499,8 @@ async function saveTaskFromModal(){
   const notify=$id('taskNotifyEmail').checked;
   const category=$id('taskCategory').value||'';
   const projectId=$id('taskProject').value||'';
+  const notifyCustomer=$id('taskNotifyCustomer').checked;
+  const dependsOn=projectId?[...$id('taskDependsOn').selectedOptions].map(o=>o.value):[];
 
   const state=getTasksState();
   let task=_editingTaskId?state.items.find(x=>x.id===_editingTaskId):null;
@@ -7278,6 +7511,7 @@ async function saveTaskFromModal(){
     due_date:$id('taskDueDate').value||'', due_time:$id('taskDueTime').value||'',
     lead_id:leadId, lead_name:lead?(lead.Name||lead.Phone||''):'',
     assignee_email:assigneeEmail, category, project_id:projectId,
+    notify_customer:notifyCustomer, depends_on:dependsOn,
   });
 
   msg.textContent='Saving…'; msg.style.color='var(--muted)';
