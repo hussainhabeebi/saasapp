@@ -4035,47 +4035,84 @@ function taResolveTable(c, kind){
   try{ return (JSON.parse(c.ta_table_ids||'{}'))[kind]||null; }catch(e){ return null; }
 }
 
+// Shared by every TA list-type field (packages.inclusions/exclusions, cars.features, ...) — all
+// of them are saved as a JSON-stringified array by both the dashboard form and CSV import (see
+// dashboard.html's taParseImportRows / package+car save handlers). Parsing back to a plain list
+// here is what keeps raw ["a","b"] JSON syntax from ever reaching a customer-facing reply.
+function taFormatList(raw){
+  const v=engineParseJsonField(raw, null);
+  if(Array.isArray(v)) return v.filter(Boolean).join(', ');
+  return raw||'';
+}
+
 // Travel-industry equivalent of engineBuildEcomContext, for the 'travel_faq' route — engine.json's
 // "Leadvyne · TA Context" sub-workflow wasn't available to port either, so this is the same
 // from-scratch approach: built directly off the Travel Agency module's own packages/Umrah-group/
 // car-rental tables instead of whatever that sub-workflow used to assemble.
 async function engineBuildTravelContext(env, c, clientId){
   const lines=[];
+  const today=new Date().toISOString().slice(0,10);
   const packagesTable=taResolveTable(c, 'packages');
   if(packagesTable){
-    const pr=await ncFetch(env, `api/v2/tables/${packagesTable}/records?where=(client_id,eq,${clientId})&limit=25&fields=name,type,destination,nights,pax_min,pax_max,currency,sell_price,inclusions`);
+    const pr=await ncFetch(env, `api/v2/tables/${packagesTable}/records?where=(client_id,eq,${clientId})&limit=25&fields=name,type,destination,nights,pax_min,pax_max,currency,sell_price,inclusions,exclusions`);
     const pd=await pr.json().catch(()=>({}));
     const pkgs=pd?.list||[];
     if(pkgs.length){
       lines.push('## Travel Packages');
       pkgs.forEach(p=>{
-        // inclusions is stored as a JSON-stringified array (dashboard form and CSV import both
-        // save it that way) — parse it back into a plain comma list so the raw ["a","b"] syntax
-        // never leaks into the context the model paraphrases from, and from there into the chat.
-        const inc=engineParseJsonField(p.inclusions, null);
-        const incText=Array.isArray(inc)?inc.filter(Boolean).join(', '):(p.inclusions||'');
-        lines.push(`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${p.currency||''} ${p.sell_price??''}${incText?' — includes: '+String(incText).slice(0,150):''}`);
+        const incText=taFormatList(p.inclusions);
+        const excText=taFormatList(p.exclusions);
+        let line=`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${p.currency||''} ${p.sell_price??''}`;
+        if(incText) line+=' — includes: '+incText.slice(0,150);
+        if(excText) line+=' — excludes: '+excText.slice(0,100);
+        lines.push(line);
       });
     }
   }
   const umrahTable=taResolveTable(c, 'umrah_groups');
   if(umrahTable){
-    const ur=await ncFetch(env, `api/v2/tables/${umrahTable}/records?where=(client_id,eq,${clientId})&limit=15&fields=name,departure_date,return_date,seats,makkah_hotel,madinah_hotel,price_per_pax,currency`);
+    // departure_date filter drops trips that have already left; pilgrims is fetched so remaining
+    // seats (not the gross `seats` capacity) is what actually gets quoted, and groups with no
+    // seats left are excluded rather than being offered as if they were bookable — mirrors the
+    // dashboard's own upcoming-groups filter (generateDealCoach's umrahText) and pilgrims/seats fill math.
+    const ur=await ncFetch(env, `api/v2/tables/${umrahTable}/records?where=(client_id,eq,${clientId})~and(departure_date,gte,${today})&limit=25&fields=name,departure_date,return_date,seats,makkah_hotel,madinah_hotel,makkah_nights,madinah_nights,price_per_pax,currency,pilgrims`);
     const ud=await ur.json().catch(()=>({}));
-    const groups=ud?.list||[];
+    const groups=(ud?.list||[]).map(g=>{
+      const pilgrims=engineParseJsonField(g.pilgrims, []);
+      const booked=Array.isArray(pilgrims)?pilgrims.length:0;
+      return {...g, remaining:Math.max(0,(g.seats||0)-booked)};
+    }).filter(g=>g.remaining>0).slice(0,15);
     if(groups.length){
       lines.push('## Umrah Groups');
-      groups.forEach(g=>lines.push(`- ${g.name} — departs ${g.departure_date||'TBA'}, returns ${g.return_date||'TBA'}, ${g.seats??''} seats — Makkah: ${g.makkah_hotel||''}, Madinah: ${g.madinah_hotel||''} — price ${g.currency||''} ${g.price_per_pax??''} per pax`));
+      groups.forEach(g=>{
+        const nightsText=(g.makkah_nights||g.madinah_nights)?`, ${g.makkah_nights??0}N Makkah / ${g.madinah_nights??0}N Madinah`:'';
+        lines.push(`- ${g.name} — departs ${g.departure_date||'TBA'}, returns ${g.return_date||'TBA'}${nightsText}, ${g.remaining} seat(s) left — Makkah: ${g.makkah_hotel||''}, Madinah: ${g.madinah_hotel||''} — price ${g.currency||''} ${g.price_per_pax??''} per pax`);
+      });
     }
   }
   const carsTable=taResolveTable(c, 'cars');
   if(carsTable){
-    const cr=await ncFetch(env, `api/v2/tables/${carsTable}/records?where=(client_id,eq,${clientId})~and(status,eq,available)&limit=15&fields=name,make,model,year,category,seats,daily_rate,currency`);
+    const cr=await ncFetch(env, `api/v2/tables/${carsTable}/records?where=(client_id,eq,${clientId})~and(status,eq,available)&limit=30&fields=Id,name,make,model,year,category,seats,daily_rate,currency,features`);
     const cd=await cr.json().catch(()=>({}));
-    const cars=cd?.list||[];
+    let cars=cd?.list||[];
+    // The `status` column alone is stale — a car can stay marked "available" while it's out on an
+    // active booking. Cross-check ta_car_bookings the same way dashboard.html's own per-car status
+    // badge does (pickup_date<=today<=dropoff_date on a non-cancelled/completed booking) so the bot
+    // never offers a car that is actually on the road right now.
+    const carBookingsTable=cars.length?taResolveTable(c, 'car_bookings'):null;
+    if(carBookingsTable){
+      const br=await ncFetch(env, `api/v2/tables/${carBookingsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,cancelled)~and(status,neq,completed)~and(pickup_date,lte,${today})~and(dropoff_date,gte,${today})&limit=100&fields=car_id`);
+      const bd=await br.json().catch(()=>({}));
+      const outNow=new Set((bd?.list||[]).map(b=>String(b.car_id)));
+      cars=cars.filter(car=>!outNow.has(String(car.Id)));
+    }
+    cars=cars.slice(0,15);
     if(cars.length){
       lines.push('## Rental Cars Available');
-      cars.forEach(car=>lines.push(`- ${car.name||(car.make+' '+car.model)} (${car.year??''}, ${car.category||''}, ${car.seats??''} seats) — ${car.currency||''} ${car.daily_rate??''}/day`));
+      cars.forEach(car=>{
+        const featText=taFormatList(car.features);
+        lines.push(`- ${car.name||(car.make+' '+car.model)} (${car.year??''}, ${car.category||''}, ${car.seats??''} seats) — ${car.currency||''} ${car.daily_rate??''}/day${featText?' — features: '+featText.slice(0,100):''}`);
+      });
     }
   }
   return lines.length?('\n\n'+lines.join('\n')):'';
