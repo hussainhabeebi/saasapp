@@ -56,7 +56,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_message_limit | Number (optional, from the Price's `message_limit` metadata) |
 | wa_credits_balance | Number (running balance from WhatsApp-credit add-on purchases) |
 | voice_addon_active | Single line ("Yes"/"No") |
-| voice_reply_enabled | Single line ("Yes"/"No", default No/opt-in when blank) — Integrations → Voice-to-Voice Reply toggle. Client-controlled on/off switch for the voice-to-voice reply feature, layered on top of `voice_addon_active` (the paid gate); purchasing the add-on alone never sets this to Yes, and the toggle stays disabled in the dashboard until the add-on is active. See "Voice-to-voice replies" below. |
+| voice_reply_enabled | Single line ("Yes"/"No", default No/opt-in when blank) — Integrations → Voice-to-Voice Reply toggle. The only gate on the voice-to-voice reply feature — not tied to `voice_addon_active`/billing in any way. See "Voice-to-voice replies" below. |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | billing_email | Single line (**required before a Stripe Customer is ever created** — `ensureStripeCustomer` refuses to create one without it; both `handleBillingCheckoutSubscription` and `handleBillingCheckoutAddon` return a 400 telling the customer to set it first, rather than silently falling back to `authentik_email`, since the login address is sometimes a shared/ops account, not who should receive billing mail. Once a `stripe_customer_id` already exists this field can still be edited/updated freely — the "required" check only guards *creating* the Stripe account in the first place) |
@@ -2063,12 +2063,11 @@ every client and industry.
   back to the same `"(sent a voice note)"` placeholder text engine.json always sent instead (that
   placeholder isn't new, only now it's a fallback rather than the only behavior).
 
-**Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the paid voice add-on
-(`voice_addon_active='Yes'` — see the Billing module) **and** the Integrations → Voice-to-Voice
-Reply toggle explicitly switched on (`voice_reply_enabled='Yes'`, CLIENTS field, opt-in — default
-blank/`'No'` means off even once the add-on is active, so buying the add-on never silently starts
-sending voice replies; the toggle itself stays disabled in the dashboard until the add-on is
-active), a customer who sends a voice note
+**Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the Integrations →
+Voice-to-Voice Reply toggle explicitly switched on (`voice_reply_enabled='Yes'`, CLIENTS field,
+opt-in — default blank/`'No'` means off). This is the only gate — deliberately not tied to
+`voice_addon_active`/billing at all, so the client controls it purely via the toggle. A customer
+who sends a voice note
 gets a WhatsApp voice note back instead of text, mirroring their own input modality —
 `engineDeliverReply` is the single dispatcher every route (human handover / qualify / FAQ /
 objection / order-detected) now sends its final reply through, instead of each of those eight call
@@ -2252,6 +2251,38 @@ product reply, not a handover.
   OpenRouter-fallback calls — a complementary mitigation, not a fix on its own; it reduces (doesn't
   eliminate) exactly this kind of unforced classification flip between identical deliveries of the
   same message.
+
+**`final_stage_positive` now tries the self-serve order/booking link before ever handing over to a
+human — a new `'selfserve'` route.** Previously, reaching the last configured flow stage with a
+positive reply always handed straight to a human with a "our team will contact you" message and no
+order/trial link at all, even when one was configured (`external_store_link`/Order Link in
+Integrations, or `cal_link`). `engineRouteFlow` now checks for that link first: if one exists, route
+becomes `'selfserve'` instead of `'human'` and the reply is the link itself (a plain scripted send —
+`handleEngineWebhook` sends it exactly like `qualify_next`, no LLM call, so the exact link always
+goes out); `Stage`/`Handover` are left untouched (`engineBuildLeadUpsertBody`'s `isHuman` check is
+`route==='human'`, which `'selfserve'` correctly fails). Only when no self-serve link is configured
+at all does this heuristic still fall back to the original human-handover behavior
+(`humanReason='final_stage_positive'`) — the genuine "nothing else the bot can offer" case. An
+explicit `WANTS_HUMAN` ask or `Frustrated` sentiment (both `humanReason='explicit'`) are completely
+unaffected by this — those are real requests from the customer and are always honored immediately,
+link or no link. Net effect: human handover now only fires for an actual request or real frustration,
+or as a last resort with no self-serve path — not as the default "funnel's done" behavior.
+
+**A brand-new lead's very first reply now includes a short intro to what the business offers,
+instead of jumping straight into a raw qualifying question or an answer with zero context.**
+Gated on `isNewLead` (`!state.leadId`, computed once per webhook call in `handleEngineWebhook`), so
+it only ever fires once per lead's whole lifetime:
+- **`route==='qualify'`** (the very first message, before this fix): `engineBuildFirstTouchIntro`
+  makes one extra LLM call — system prompt built from `main_prompt`/`services`/`kb_summary`, asked
+  for one short warm sentence introducing the business followed by the exact configured first
+  `qual_questions` entry on its own line. Falls back to the plain question text on any failure,
+  same "never leave the customer with nothing" principle as `engineCallLlm` itself.
+- **`route` is `faq`/`ecom_faq`/`travel_faq`** (qualification disabled, or the first message was a
+  genuine question): `engineBuildFaqSystemPrompt` takes a new `isNewLead` parameter and, when true,
+  appends one instruction telling the model to briefly work a one-sentence intro into its answer
+  using the Services/Knowledge Base data already in the prompt — not a separate canned message, and
+  the existing "keep replies as short as the customer's own message" instruction still applies on
+  top of it.
 
 **A matched product's photo is now sent as a real WhatsApp image attachment, not just a text
 link.** `engineSendChatwootImageReply` (`worker.js`) downloads the product's `image_url` — resolving

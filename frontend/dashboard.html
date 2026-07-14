@@ -2099,9 +2099,8 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
-        <!-- Voice-to-Voice Reply — an explicit opt-in toggle kept separate from the Voice add-on
-             purchase (Billing) on purpose: buying the add-on only unlocks the feature, it must be
-             switched on here before the bot actually starts sending voice-note replies. -->
+        <!-- Voice-to-Voice Reply — controlled ONLY by this toggle, no billing add-on required or
+             checked anywhere in the reply path (engineDeliverReply, worker.js). -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🎙️ Voice-to-Voice Reply</div>
@@ -6002,23 +6001,15 @@ function integrationsInit(){
   renderHealthResults();
 }
 
-// Voice-to-Voice Reply toggle. Deliberately independent of voice_addon_active (set the moment
-// the Voice add-on purchase is fulfilled — see fulfillAddon() in worker.js): the add-on only
-// unlocks eligibility, it does not itself flip voice_reply_enabled to 'Yes'. The toggle here is
-// the only thing that does, and it's disabled until the add-on is active so it can't be turned
-// on for an account that hasn't actually paid for it.
+// Voice-to-Voice Reply toggle. Deliberately the ONLY gate on this feature — not tied to
+// voice_addon_active/billing in any way, so a client controls it purely by flipping this switch.
 function renderVoiceAddonCard(){
   const input=$id('cfgVoiceReplyEnabled');
   if(!input) return;
-  const active=clientRecord?.voice_addon_active==='Yes';
   const enabled=clientRecord?.voice_reply_enabled==='Yes';
-  input.checked=active && enabled;
-  input.disabled=!active;
-  $id('intVoiceToggleWrap').classList.toggle('disabled', !active);
-  $id('intVoiceToggleLabel').textContent=input.checked?'On — reply with voice':'Off — always reply with text';
-  $id('intVoiceAddonNote').innerHTML=active
-    ? '✅ Voice add-on active — flip the toggle below to start or stop voice replies.'
-    : `Requires the Voice add-on. <a href="#" onclick="navigate('billing');return false" style="color:inherit;text-decoration:underline;font-weight:600">Buy it in Billing</a> — purchasing it alone won't turn voice replies on, you'll still need to switch this toggle on afterward.`;
+  input.checked=enabled;
+  $id('intVoiceToggleLabel').textContent=enabled?'On — reply with voice':'Off — always reply with text';
+  $id('intVoiceAddonNote').textContent='Flip the toggle below to start or stop voice replies — no billing add-on required.';
 }
 
 async function saveVoiceReplyToggle(){
@@ -6036,7 +6027,7 @@ async function saveVoiceReplyToggle(){
     label.textContent=input.checked?'On — reply with voice':'Off — always reply with text';
     msg.textContent='Error: '+e.message;msg.className='save-msg err';
   }finally{
-    input.disabled=clientRecord?.voice_addon_active!=='Yes';
+    input.disabled=false;
     setTimeout(()=>msg.textContent='',3000);
   }
 }
