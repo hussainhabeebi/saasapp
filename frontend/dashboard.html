@@ -4048,13 +4048,24 @@ function closeHdRemoveModal(){ _hdActiveLeadId=null; closeModal('modalHdRemove')
 // LEADS field — no history of what happened after a handover exists otherwise, which is what the
 // Team page's handover-conversion-rate stat needs). 'won'/'lost' reuse the same generic terminal
 // Stage values already checked elsewhere in this file (TERMINAL/'won' comparisons in renderHome
-// etc.) rather than inventing new ones flow_json wouldn't recognize.
-const HD_OUTCOME_STAGE={'Resolved-Won':'won','Released':'new','Lost':'lost','No-response':'new'};
+// etc.) rather than inventing new ones flow_json wouldn't recognize. 'Released' (back to bot) is
+// resolved dynamically below to Stage 2, not looked up here — see removeHumanDeal.
+const HD_OUTCOME_STAGE={'Resolved-Won':'won','Released':'stage_2','Lost':'lost','No-response':'new'};
 async function removeHumanDeal(outcome){
   const leadId=_hdActiveLeadId; if(!leadId) return;
   const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
   const prevStage=lead.Stage;
-  const nextStage=HD_OUTCOME_STAGE[outcome]||'new';
+  let nextStage=HD_OUTCOME_STAGE[outcome]||'new';
+  // Releasing back to the bot should not reset to the blank "new" state — a human already
+  // engaged this lead, so dropping it back to "new" made the AI treat the next reply as a
+  // brand-new lead's opening message instead of picking up the actual conversation, which is
+  // what led to it giving a generic canned reply instead of directly/exactly answering whatever
+  // the customer had just asked. Stage 2 anchors it back into the real, already-configured flow
+  // instead. Falls back to Stage 1, then 'new', for a client that hasn't configured two stages.
+  if(outcome==='Released'){
+    const stageIds=Object.keys(getFlow().stages||{}).filter(k=>k!=='new');
+    nextStage=stageIds[1]||stageIds[0]||'new';
+  }
   const patch={Id:leadId, Stage:nextStage, Handover:'No', HandoverAt:'', SlaAlerted:'No', HandoverOutcome:outcome};
   // Buttons disabled + wrapped in try/catch so a failed save shows an error and re-enables the
   // buttons instead of leaving the modal stuck open with no feedback (previously an unhandled
