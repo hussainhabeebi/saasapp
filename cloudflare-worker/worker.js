@@ -4048,7 +4048,14 @@ async function engineBuildTravelContext(env, c, clientId){
     const pkgs=pd?.list||[];
     if(pkgs.length){
       lines.push('## Travel Packages');
-      pkgs.forEach(p=>lines.push(`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${p.currency||''} ${p.sell_price??''}${p.inclusions?' — includes: '+String(p.inclusions).slice(0,150):''}`));
+      pkgs.forEach(p=>{
+        // inclusions is stored as a JSON-stringified array (dashboard form and CSV import both
+        // save it that way) — parse it back into a plain comma list so the raw ["a","b"] syntax
+        // never leaks into the context the model paraphrases from, and from there into the chat.
+        const inc=engineParseJsonField(p.inclusions, null);
+        const incText=Array.isArray(inc)?inc.filter(Boolean).join(', '):(p.inclusions||'');
+        lines.push(`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${p.currency||''} ${p.sell_price??''}${incText?' — includes: '+String(incText).slice(0,150):''}`);
+      });
     }
   }
   const umrahTable=taResolveTable(c, 'umrah_groups');
