@@ -4430,23 +4430,40 @@ const ENGINE_TTS_SPEAKER='meera'; // female voice — verify against Sarvam's cu
 // ArrayBuffer (Sarvam returns a base64-encoded WAV), or null on any failure so callers fall back
 // to text. Text is capped defensively — a long FAQ paragraph shouldn't become a multi-minute
 // voice note even after engineBuildSpokenReply's own shortening.
+// Every failure branch reports via reportOpsError instead of just returning null silently — this
+// integration was built from Sarvam's published SDK docs, not a live-verified API reference (see
+// the comment on ENGINE_TTS_LANG_MAP above), so if the endpoint/request/response shape is wrong,
+// every voice-note customer silently and permanently gets a text reply instead with zero trace of
+// why. Missing SARVAM_API_KEY is the one expected/unconfigured case and does NOT report — that's
+// just voice-to-voice not being set up yet for this environment, not a bug.
 async function engineSarvamTts(env, text, targetLangCode){
-  if(!env.SARVAM_API_KEY || !text || !targetLangCode) return null;
+  if(!text || !targetLangCode) return null;
+  if(!env.SARVAM_API_KEY){ await reportOpsError(env, 'engineSarvamTts — SARVAM_API_KEY not configured', new Error('missing secret')); return null; }
   try{
     const r=await fetch('https://api.sarvam.ai/text-to-speech', {
       method:'POST',
       headers:{'api-subscription-key':env.SARVAM_API_KEY, 'Content-Type':'application/json'},
       body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:22050})
     });
-    if(!r.ok) return null;
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSarvamTts — Sarvam API returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {targetLangCode});
+      return null;
+    }
     const data=await r.json().catch(()=>({}));
     const b64=data?.audios?.[0];
-    if(!b64) return null;
+    if(!b64){
+      await reportOpsError(env, 'engineSarvamTts — no audio in Sarvam response', new Error(JSON.stringify(data).slice(0,500)), {targetLangCode});
+      return null;
+    }
     const bin=atob(b64);
     const bytes=new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
     return bytes.buffer;
-  }catch(e){ return null; }
+  }catch(e){
+    await reportOpsError(env, 'engineSarvamTts — request threw', e, {targetLangCode});
+    return null;
+  }
 }
 
 // Rewrites an already-composed reply into a short, natural, spoken sentence — never the literal
