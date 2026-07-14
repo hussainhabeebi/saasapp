@@ -564,6 +564,15 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .task-lead{font-weight:600;font-size:14px}
 .task-meta{font-size:11.5px;color:var(--muted);margin-top:2px}
 .task-due{font-family:var(--mono);font-size:10px;color:#92400E;background:#FEF3C7;padding:3px 8px;border-radius:6px;white-space:nowrap}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
+.cal-dow{background:var(--bg);text-align:center;font-size:11px;font-weight:700;color:var(--muted);padding:8px 0}
+.cal-cell{background:var(--card);min-height:90px;padding:6px;overflow:hidden}
+.cal-empty{background:var(--bg)}
+.cal-today .cal-daynum{background:var(--accent);color:#fff;border-radius:50%;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center}
+.cal-daynum{font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px}
+.cal-task{font-size:10.5px;background:var(--accent-soft);color:var(--accent-ink);border-radius:4px;padding:2px 5px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.cal-more{font-size:10px;color:var(--muted)}
+@media(max-width:640px){.cal-cell{min-height:60px;font-size:10px}.cal-dow{font-size:9px}}
 .task-tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;text-transform:uppercase;letter-spacing:.02em;white-space:nowrap}
 .task-tag.manual{background:var(--accent-soft);color:var(--accent-ink)}
 .task-tag.reminder{background:#DBEAFE;color:#1E40AF}
@@ -3110,6 +3119,11 @@ const TODAY = new Date().toISOString().slice(0,10);
       <label for="projAiSummary" style="font-size:13px;color:var(--muted);margin:0">Auto-generate client-facing summaries with AI (otherwise the stage's raw notes are sent as-is)</label>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:2px">Client updates only send for stages with "Notify customer" checked and a client email set here.</div>
+    <div class="form-group" style="display:flex;align-items:center;gap:8px;margin-top:12px">
+      <input type="checkbox" id="projAiAutoStage" style="width:16px;height:16px">
+      <label for="projAiAutoStage" style="font-size:13px;color:var(--muted);margin:0">AI auto-creates the next stage when one finishes (off by default)</label>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:2px">Only fires when the finished stage has no manually-planned stage already waiting on it — never overrides a chain you've set up yourself. The suggested stage always gets a real owner from your team list or stays unassigned, never an invented email.</div>
   </div>
   <div class="modal-footer">
     <button class="btn btn-primary" onclick="saveProjectFromModal()">Save</button>
@@ -6995,7 +7009,7 @@ function renderTaskSecondaryControls(all){
     <button class="task-action-btn" onclick="promptNewProject()">+ New Project</button>
     <div style="flex:1"></div>
     <div style="display:flex;gap:4px;background:var(--bg);border-radius:10px;padding:3px">
-      ${[['list','📋 List'],['projects','📁 Projects'],['board','🗂️ Board']].map(([key,label])=>
+      ${[['list','📋 List'],['projects','📁 Projects'],['board','🗂️ Board'],['calendar','📅 Calendar']].map(([key,label])=>
         `<button class="task-action-btn${TASK_VIEW===key?' primary':''}" style="border:none" onclick="setTaskView('${key}')">${label}</button>`
       ).join('')}
     </div>`;
@@ -7039,7 +7053,103 @@ function renderTasks(){
 
   if(TASK_VIEW==='board') renderTasksBoard(filtered.filter(t=>t._type==='manual'));
   else if(TASK_VIEW==='projects') renderTasksByProject(filtered);
+  else if(TASK_VIEW==='detail') renderProjectDetail();
+  else if(TASK_VIEW==='calendar') renderTasksCalendar(filtered.filter(t=>t._type==='manual'));
   else renderTasksList(filtered);
+}
+
+// Simple Project → Sub-tasks view — a focused, single-project drill-down (one-line stage cards)
+// instead of the Projects view's all-projects-stacked grouping. Reached by clicking a project
+// name/📋 View there; TASK_VIEW keeps it in the same navigate('tasks')-scoped state machine as
+// List/Projects/Board rather than being a separate page.
+let TASK_DETAIL_PROJECT_ID=null;
+function openProjectDetail(projectId){
+  TASK_DETAIL_PROJECT_ID=projectId;
+  TASK_VIEW='detail';
+  renderTasks();
+}
+function backToProjectsView(){ TASK_VIEW='projects'; renderTasks(); }
+function openTaskModalForProject(projectId){ openTaskModal(null, null, projectId); }
+
+function oneLineStageCard(t, state){
+  const locked=isStageLocked(t,state);
+  const statusIcon={open:'⚪',in_progress:'🔨',blocked:'🚧',done:'✅'}[t.status||'open']||'⚪';
+  const dueLabel=t.due_date?fmtDateShort(t.due_date):'';
+  return `<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line);cursor:pointer;${locked?'opacity:.55':''}" onclick="openTaskModal('${t.id}')">
+    <span title="${locked?'Locked — waiting on a dependency':esc(t.status||'open')}" style="flex:none">${locked?'🔒':statusIcon}</span>
+    <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;${t.status==='done'?'text-decoration:line-through;color:var(--muted)':''}">${esc(t.title)}${t.ai_created?' ✨':''}</div>
+    <span style="font-size:11px;color:var(--muted);white-space:nowrap;flex:none">${t.assignee_email?esc(t.assignee_email):'Unassigned'}</span>
+    ${dueLabel?`<span style="font-size:11px;color:var(--muted);white-space:nowrap;flex:none">${esc(dueLabel)}</span>`:''}
+  </div>`;
+}
+
+function renderProjectDetail(){
+  const state=getTasksState();
+  const proj=state.projects.find(p=>p.id===TASK_DETAIL_PROJECT_ID);
+  if(!proj){ backToProjectsView(); return; }
+  const stages=state.items.filter(t=>t.project_id===proj.id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+  const doneCount=stages.filter(t=>t.status==='done').length;
+  $id('tasksList').innerHTML=`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+      <button class="task-action-btn" onclick="backToProjectsView()">← Back to Projects</button>
+      <span style="width:10px;height:10px;border-radius:50%;background:${proj.color};flex:none"></span>
+      <div style="font-family:var(--disp);font-weight:700;font-size:15px">${esc(proj.name)}</div>
+      <span style="font-size:12px;color:var(--muted)">${doneCount}/${stages.length} done</span>
+      <div style="display:flex;gap:8px;margin-left:auto">
+        <button class="task-action-btn" onclick="openProjectModal('${proj.id}')">⚙️ Settings</button>
+        <button class="btn btn-primary btn-sm" onclick="openTaskModalForProject('${proj.id}')">+ Add Stage</button>
+      </div>
+    </div>
+    ${proj.client_name||proj.client_email?`<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Client: ${esc(proj.client_name||'—')}${proj.client_email?' · '+esc(proj.client_email):''}${proj.ai_auto_stage_enabled?' · 🤖 AI auto-stage on':''}</div>`:''}
+    <div class="card" style="padding:0;overflow:hidden">
+      ${stages.length?stages.map(t=>oneLineStageCard(t,state)).join(''):'<div style="color:var(--muted);font-size:13px;padding:16px">No stages yet — click "+ Add Stage" to create one.</div>'}
+    </div>`;
+}
+
+// Project Calendar view — a lightweight hand-built month grid (no calendar library; this app
+// doesn't pull one in for anything else, and a "which stages/tasks are due when" view doesn't need
+// more than a grid + click-to-open). Plots manual tasks/stages by due_date across every project at
+// once — TASK_PROJECT_FILTER (the existing project dropdown in the secondary control row) still
+// narrows it to one project the same way it narrows every other view.
+let TASK_CAL_MONTH=new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+function taskCalNav(delta){
+  TASK_CAL_MONTH=new Date(TASK_CAL_MONTH.getFullYear(), TASK_CAL_MONTH.getMonth()+delta, 1);
+  renderTasks();
+}
+function taskCalToday(){
+  TASK_CAL_MONTH=new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  renderTasks();
+}
+function renderTasksCalendar(manualTasks){
+  const year=TASK_CAL_MONTH.getFullYear(), month=TASK_CAL_MONTH.getMonth();
+  const firstDay=new Date(year, month, 1);
+  const startWeekday=firstDay.getDay();
+  const daysInMonth=new Date(year, month+1, 0).getDate();
+  const byDate={};
+  manualTasks.forEach(t=>{ if(t.due) (byDate[t.due]=byDate[t.due]||[]).push(t); });
+  const monthLabel=firstDay.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+  let cells='';
+  for(let i=0;i<startWeekday;i++) cells+='<div class="cal-cell cal-empty"></div>';
+  for(let d=1; d<=daysInMonth; d++){
+    const dateStr=`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const dayTasks=byDate[dateStr]||[];
+    cells+=`<div class="cal-cell${dateStr===TODAY?' cal-today':''}">
+      <div class="cal-daynum">${d}</div>
+      ${dayTasks.slice(0,3).map(t=>`<div class="cal-task" title="${esc(t.title)}${t.locked?' — locked (waiting on a dependency)':''}" onclick="openTaskModal('${t.id}')">${t.locked?'🔒 ':''}${esc(t.title)}</div>`).join('')}
+      ${dayTasks.length>3?`<div class="cal-more">+${dayTasks.length-3} more</div>`:''}
+    </div>`;
+  }
+  $id('tasksList').innerHTML=`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <button class="task-action-btn" onclick="taskCalNav(-1)">← Prev</button>
+      <div style="font-family:var(--disp);font-weight:700;font-size:15px;min-width:160px;text-align:center">${esc(monthLabel)}</div>
+      <button class="task-action-btn" onclick="taskCalNav(1)">Next →</button>
+      <button class="task-action-btn" onclick="taskCalToday()">Today</button>
+    </div>
+    <div class="cal-grid">
+      ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}
+      ${cells}
+    </div>`;
 }
 
 function taskTagsHtml(t){
@@ -7108,9 +7218,9 @@ function renderTasksByProject(filtered){
     return `<div style="margin-bottom:18px">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
         <span style="width:10px;height:10px;border-radius:50%;background:${color};flex:none"></span>
-        <div style="font-family:var(--disp);font-weight:700;font-size:14px">${esc(name)}</div>
+        <div style="font-family:var(--disp);font-weight:700;font-size:14px${g.project?';cursor:pointer;text-decoration:underline;text-decoration-color:transparent' : ''}" ${g.project?`onclick="openProjectDetail('${g.project.id}')" onmouseover="this.style.textDecorationColor='${color}'" onmouseout="this.style.textDecorationColor='transparent'"`:''}>${esc(name)}</div>
         ${g.project?`<div style="flex:1;max-width:140px;height:6px;background:var(--line);border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${color}"></div></div><span style="font-size:11px;color:var(--muted)">${doneCount}/${totalCount} done</span>`:''}
-        ${g.project?`<button class="task-action-btn" style="margin-left:auto" onclick="openProjectModal('${g.project.id}')">⚙️</button><button class="task-action-btn" onclick="deleteProject('${g.project.id}')">🗑</button>`:''}
+        ${g.project?`<button class="task-action-btn" style="margin-left:auto" onclick="openProjectDetail('${g.project.id}')">📋 View</button><button class="task-action-btn" onclick="openProjectModal('${g.project.id}')">⚙️</button><button class="task-action-btn" onclick="deleteProject('${g.project.id}')">🗑</button>`:''}
       </div>
       ${g.tasks.length?g.tasks.sort((a,b)=>b.urgency-a.urgency).map(taskItemHtml).join(''):'<div style="color:var(--muted);font-size:12.5px;padding:4px 0 4px 20px">Nothing open here</div>'}
     </div>`;
@@ -7242,6 +7352,57 @@ async function notifyClientIfStageComplete(state, task){
   await sendTaskNotifyEmail(state, {to:clientEmail, subject:`Update on ${proj.name}`, title:task.title, notes:summary, lead_name:proj.client_name||proj.name}, 'client_update');
 }
 
+// Same deliberately low-cost model as notifyClientIfStageComplete — suggesting one short stage
+// title/note/owner from a handful of lines of context is not a task that needs a frontier model.
+// Returns null (never throws) on any failure, malformed JSON, or the model itself deciding there's
+// no sensible next stage — all of which mean "don't create anything" to the caller.
+async function aiSuggestNextStage(proj, projectStages, completedTask){
+  const stagesSummary=projectStages.map(t=>`- ${t.title} [${t.status}]`).join('\n')||'(none yet)';
+  const teamEmails=getTeamMembers().map(m=>m.email);
+  try{
+    const resp=await fetch(`${CONFIG.WORKER_BASE}/ai/complete`,{
+      method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({model:'google/gemini-2.5-flash-lite', max_tokens:150, messages:[
+        {role:'system',content:`You manage delivery projects. Given the stages so far in this project and the stage that was just completed, suggest ONE short, sensible next stage — or none if the project genuinely looks finished. Also pick the best-fit owner from this exact list of team emails (or leave it blank if you're not confident): ${teamEmails.join(', ')||'(no team members configured)'}. Respond with ONLY compact JSON, no markdown fences: {"title":"...", "notes":"one short sentence", "owner_email":"one of the listed emails, or empty string"}. If there is no sensible next stage, respond {"title":""}.`},
+        {role:'user',content:`Project: ${proj.name}\nStages so far:\n${stagesSummary}\nJust completed: ${completedTask.title}${completedTask.notes?' — '+completedTask.notes:''}`}
+      ]})
+    });
+    const data=await resp.json().catch(()=>({}));
+    const raw=(data?.choices?.[0]?.message?.content||'').replace(/```json|```/gi,'').trim();
+    const parsed=JSON.parse(raw);
+    if(!parsed?.title) return null;
+    // Never trust an owner email the model invented — only ever a real team member, or unassigned.
+    const owner=teamEmails.includes(parsed.owner_email)?parsed.owner_email:'';
+    return {title:String(parsed.title).slice(0,120), notes:String(parsed.notes||'').slice(0,300), owner_email:owner};
+  }catch(e){ return null; }
+}
+
+// "AI auto-creates the next stage" + "AI auto-assigns the owner" + "Auto-notify and move on" — one
+// pipeline, gated behind the project's own ai_auto_stage_enabled toggle (off by default, see the
+// project settings modal) so this never surprises a project nobody opted it into. Only fires when
+// nothing already depends on the completed stage — a manually-planned chain is never overridden by
+// an AI guess. The new stage's one dependency (the stage that just completed) is already done, so
+// it's unlocked from the moment it's created — "auto-notify and move on" is simply: create it, then
+// notify its owner immediately, the same email the normal auto-unlock path would have sent if this
+// stage had existed beforehand.
+async function maybeAiCreateNextStage(state, completedTask){
+  if(!completedTask.project_id) return;
+  const proj=state.projects.find(p=>p.id===completedTask.project_id);
+  if(!proj || proj.ai_auto_stage_enabled!==true) return;
+  const projectStages=state.items.filter(t=>t.project_id===proj.id);
+  const hasSuccessor=projectStages.some(t=>Array.isArray(t.depends_on)&&t.depends_on.includes(completedTask.id));
+  if(hasSuccessor) return;
+  const suggestion=await aiSuggestNextStage(proj, projectStages, completedTask);
+  if(!suggestion) return;
+  const newStage={id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), title:suggestion.title, notes:suggestion.notes,
+    status:'open', project_id:proj.id, assignee_email:suggestion.owner_email, notify_customer:false,
+    depends_on:[completedTask.id], created_at:new Date().toISOString(), ai_created:true};
+  state.items.push(newStage);
+  if(newStage.assignee_email){
+    await sendTaskNotifyEmail(state, {to:newStage.assignee_email, subject:'New stage (AI-suggested): '+newStage.title, title:newStage.title, notes:newStage.notes, lead_name:proj.client_name||proj.name}, 'stage_unlocked');
+  }
+}
+
 const NOTIFY_TYPE_LABELS={stage_unlocked:'🔓 Stage unlocked', blocked_alert:'⚠️ Blocked alert', client_update:'📣 Client update'};
 function openNotifyLogModal(){
   const state=getTasksState();
@@ -7267,6 +7428,7 @@ async function moveTaskStatus(id,newStatus){
   if(newStatus==='done' && prevStatus!=='done'){
     await notifyDependentsIfUnlocked(state, id);
     await notifyClientIfStageComplete(state, t);
+    await maybeAiCreateNextStage(state, t);
   } else if(newStatus==='blocked' && prevStatus!=='blocked'){
     await notifyProjectOwnerBlocked(state, t);
   }
@@ -7291,7 +7453,7 @@ async function createProject(name,starterTasks){
   // client_name/client_email/ai_summary_enabled power the client-facing notification flow (see
   // notifyClientIfStageComplete()) — blank/on by default so an existing "just a todo list"
   // project keeps working exactly as before if nobody ever fills them in.
-  const proj={id:'p_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), name, color, client_name:'', client_email:'', ai_summary_enabled:true, created_at:new Date().toISOString()};
+  const proj={id:'p_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), name, color, client_name:'', client_email:'', ai_summary_enabled:true, ai_auto_stage_enabled:false, created_at:new Date().toISOString()};
   state.projects.push(proj);
   (starterTasks||[]).forEach(title=>{
     state.items.push({id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), title, notes:'', due_date:'', due_time:'',
@@ -7322,6 +7484,7 @@ function openProjectModal(id){
   $id('projClientName').value=p.client_name||'';
   $id('projClientEmail').value=p.client_email||'';
   $id('projAiSummary').checked=p.ai_summary_enabled!==false;
+  $id('projAiAutoStage').checked=p.ai_auto_stage_enabled===true;
   $id('projModalMsg').textContent='';
   openModal('modalProject');
 }
@@ -7336,6 +7499,7 @@ async function saveProjectFromModal(){
     name, client_name:$id('projClientName').value.trim(),
     client_email:$id('projClientEmail').value.trim(),
     ai_summary_enabled:$id('projAiSummary').checked,
+    ai_auto_stage_enabled:$id('projAiAutoStage').checked,
   });
   msg.textContent='Saving…'; msg.style.color='var(--muted)';
   try{
@@ -7435,7 +7599,7 @@ let _editingTaskId=null;
 // Task" button) seeds a brand-new task from that lead — title, due date (its ReminderDate if
 // set), lead link and assignee (its Owner, now the same email identity as everyone in
 // getTeamMembers()) all default from it, but everything stays freely editable before saving.
-function openTaskModal(id, prefillLead){
+function openTaskModal(id, prefillLead, prefillProjectId){
   _editingTaskId=id||null;
   const state=getTasksState();
   const t=id?state.items.find(x=>x.id===id):null;
@@ -7462,7 +7626,8 @@ function openTaskModal(id, prefillLead){
 
   const projSel=$id('taskProject');
   const projects=state.projects;
-  projSel.innerHTML='<option value="">No project</option>'+projects.map(p=>`<option value="${esc(p.id)}"${t?.project_id===p.id?' selected':''}>${esc(p.name)}</option>`).join('');
+  const projectDefault=t?t.project_id:(prefillProjectId||'');
+  projSel.innerHTML='<option value="">No project</option>'+projects.map(p=>`<option value="${esc(p.id)}"${projectDefault===p.id?' selected':''}>${esc(p.name)}</option>`).join('');
 
   $id('taskNotifyCustomer').checked=t?.notify_customer===true;
   taskDepsPopulate(t?.depends_on||[]);

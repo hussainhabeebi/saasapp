@@ -1557,10 +1557,40 @@ every piece here is opt-in per field.
   Tasks page (`openNotifyLogModal()`) — the "who was notified, when, what channel" audit trail, for
   dispute resolution. A dedicated NocoDB table would scale better long-term if log volume grows
   large, but wasn't necessary to ship this.
-- **Deliberately not built**: AI-suggested stage sequencing from historical project similarity —
-  `PROJECT_TEMPLATES` (see above) already covers "start from a known-good sequence for a project
-  type" without any AI cost or hallucination risk; real similarity-matching against project history
-  is only worth building once there's enough real history to usefully match against.
+- **AI-suggested stage sequencing was later added** (see "AI auto-stage creation" below) as a
+  per-completion suggestion, not historical-project-similarity matching — `PROJECT_TEMPLATES` still
+  covers "start from a known-good sequence for a project type" up front; real similarity-matching
+  against project history remains unbuilt, worth it only once there's enough real history to match
+  against.
+
+### AI auto-stage creation, Project detail view, Calendar view
+Three more additions on top of the workflow engine above, all opt-in.
+- **AI auto-stage creation** (`ai_auto_stage_enabled`, new project setting, **off by default**) —
+  when a stage completes, `maybeAiCreateNextStage()` checks whether anything already depends on it
+  (a manually-planned chain is never overridden by an AI guess); if not, `aiSuggestNextStage()`
+  calls `/ai/complete` with the same low-cost `google/gemini-2.5-flash-lite` model, passing the
+  project's stage history and the real team email list. The model may suggest a title/notes/owner,
+  or explicitly decide there's no sensible next stage. **The owner is only ever a real team
+  member** — a suggested `owner_email` is checked against `getTeamMembers()` and dropped (left
+  unassigned) if it doesn't match, never trusted as-is. The new stage depends on the one that just
+  completed, so it's unlocked immediately — "auto-notify and move on" is simply sending that
+  owner the same unlock email a manually-created dependent stage would have gotten, right after
+  creating it. Stages created this way are tagged `ai_created:true` (shown as a ✨ in the UI) so
+  it's always visible which stages a human planned vs. which the AI proposed.
+- **Simple Project → Sub-tasks view** (`openProjectDetail()`/`renderProjectDetail()`, new
+  `TASK_VIEW==='detail'`) — clicking a project's name (or its new "📋 View" button) in the Projects
+  view drills into a focused single-project page: one-line stage cards (`oneLineStageCard()` —
+  status icon, title, owner, due date, all on one row, click to edit), a "+ Add Stage" button
+  pre-scoped to that project (`openTaskModalForProject()`, which just calls `openTaskModal()` with
+  a new third `prefillProjectId` argument), and a "⚙️ Settings" shortcut back to the project modal.
+  Locked stages render dimmed with a 🔒 in place of the status icon, same convention as the Board.
+- **Project Calendar view** (`TASK_VIEW==='calendar'`, `renderTasksCalendar()`) — a hand-built
+  month grid (no calendar library pulled in; nothing else in this app needed one either) plotting
+  every manual task/stage by `due_date`, up to 3 per day plus a "+N more" overflow count, Prev/
+  Next/Today navigation. Locked stages show a 🔒 prefix. Same `TASK_PROJECT_FILTER`/category
+  filters as every other view narrow it down. Completed tasks don't appear here, same as every
+  other view — `computeAllTasks()` excludes `status==='done'` items application-wide, not something
+  this view special-cases.
 
 **Three views** (toggle in the secondary control row): **List** (the original unified sorted view,
 now with category/project tags), **Projects** (grouped by `project_id`, each group showing a
