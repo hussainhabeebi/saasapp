@@ -265,6 +265,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .page{position:absolute;inset:0;overflow-y:auto;padding-bottom:calc(var(--nav)+16px)}
 #pageChats{overflow:hidden;display:none;flex-direction:column}
 #pageChats:not(.hidden){display:flex}
+#pageEcommerce{overflow:hidden;padding-bottom:0}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
 #pageAgency:not(.hidden){display:flex;flex-direction:column}
@@ -406,6 +407,7 @@ tr:hover td{background:#FAFCFB}
 .btn-primary:hover{background:linear-gradient(135deg,var(--accent-ink),var(--accent))}
 .btn-secondary{background:var(--card);color:var(--ink);border:1.5px solid var(--line);box-shadow:var(--shadow)}
 .btn-secondary:hover{border-color:var(--accent)}
+.leads-view-btn.active{background:var(--accent-soft);color:var(--accent-ink);border-color:var(--accent)}
 .btn-sm{padding:7px 13px;font-size:12px}
 .btn-ghost{background:none;border:1.5px solid var(--line);color:var(--muted);padding:7px 11px;border-radius:var(--r-sm);font-size:12px;cursor:pointer;font-family:var(--disp);font-weight:600}
 .btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
@@ -976,15 +978,15 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab active" data-page="home">🏠 Home</button>
     <button class="dnTab" data-page="chats">💬 Chats</button>
     <button class="dnTab" data-page="leads">👥 Leads</button>
-    <button class="dnTab" data-page="pipeline">📋 Pipeline</button>
     <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab" data-page="team">📊 Team</button>
-    <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank')">🛒 Ecommerce</button>
+    <button class="dnTab" data-page="humandeals">🤝 Human Deals<span id="dnHdBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
+    <button class="dnTab" data-page="knowledgebase">📚 Knowledge Base</button>
+    <button class="dnTab" data-page="billing">💳 Billing<span id="dnBillingBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
+    <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce">🛒 Ecommerce</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
     <button class="dnTab" data-page="appointments" id="dnApptTab" style="display:none">📅 Appointments</button>
-    <button class="dnTab" data-page="quotation">🧾 Quotation</button>
-    <button class="dnTab" data-page="prospects">🎯 Prospects</button>
     <button class="dnTab" data-page="broadcast">📢 Campaigns</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
@@ -1004,7 +1006,7 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
           <div class="home-actions">
             <button class="hact-btn primary-act" onclick="openAddLead()">＋ Add Lead</button>
-            <button class="hact-btn" onclick="navigate('pipeline')">📋 Pipeline</button>
+            <button class="hact-btn" onclick="goToPipeline()">📋 Pipeline</button>
             <button class="hact-btn" onclick="navigate('chats')">💬 Chats</button>
             <button class="hact-btn" onclick="window.open('broadcast.html','_blank')">📢 Campaigns</button>
             <button class="hact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
@@ -1126,7 +1128,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div class="section-card">
               <div class="section-title">⚡ Quick Actions</div>
               <div style="display:flex;flex-direction:column;gap:8px">
-                <button class="qact-btn" onclick="navigate('pipeline')">📋 View Pipeline</button>
+                <button class="qact-btn" onclick="goToPipeline()">📋 View Pipeline</button>
                 <button class="qact-btn" onclick="navigate('leads')">💬 Manage Leads</button>
                 <button class="qact-btn" onclick="navigate('chats')">💬 Open Chats</button>
                 <button class="qact-btn" onclick="window.open('broadcast.html','_blank')">📢 Send Campaign</button>
@@ -1158,8 +1160,8 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div class="page-pad">
 
         <div style="margin-bottom:18px">
-          <div class="card-title" style="margin-bottom:2px">🧾 Quotation / Proposal</div>
-          <div style="font-size:13px;color:var(--muted)">Send an official price quotation straight into a lead's WhatsApp chat — built from your price list and a fixed template.</div>
+          <div class="card-title" style="margin-bottom:2px" id="quotePageTitle">🧾 Quotation / Proposal</div>
+          <div style="font-size:13px;color:var(--muted)">Send an official price quotation or invoice straight into a lead's WhatsApp chat — built from your price list and a fixed template. Opened from a specific lead on the <a href="#" onclick="navigate('humandeals');return false">Human Deals</a> page, or pick one below.</div>
         </div>
 
         <!-- Auto-detection note -->
@@ -1188,12 +1190,13 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
 
           <div style="margin-top:14px">
-            <label class="form-label">Terms &amp; Conditions (printed on the PDF)</label>
+            <label class="form-label" id="quoteTermsLabel">Terms &amp; Conditions (printed on the PDF)</label>
             <textarea class="form-input" id="quoteTerms" rows="5"></textarea>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px">Edited here per send — Invoice mode starts from <code>invoice_terms</code> if set, else falls back to the Quotation terms above.</div>
           </div>
 
           <div style="display:flex;gap:12px;align-items:flex-end;margin-top:14px;flex-wrap:wrap">
-            <div>
+            <div id="quoteValidityRow">
               <label class="form-label">Valid for (days)</label>
               <input class="form-input" type="number" id="quoteValidityDays" min="1" max="90" style="width:90px">
             </div>
@@ -1249,115 +1252,146 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
-    <!-- PROSPECTS -->
-    <div class="page hidden" id="pageProspects">
-      <div class="page-pad">
+    <!-- Prospects import moved into Campaigns (broadcast.html)'s own "🎯 Import Prospects" tab —
+         see INT_SHEETS'/renderSheetsList()'s external:'broadcast.html' handling below. -->
 
-        <div style="margin-bottom:18px">
-          <div class="card-title" style="margin-bottom:2px">🎯 Prospects</div>
-          <div style="font-size:13px;color:var(--muted)">Import a list of new contacts from a Google Sheet and send them a first-touch WhatsApp template message — 50 at a time.</div>
-        </div>
-
-        <div id="prospectWaBanner" class="home-banner warn hidden" style="margin-bottom:14px">
-          <div class="hb-icon">⚠️</div>
-          <div class="hb-body"><div class="hb-title">WhatsApp Business API isn't connected yet</div>Templates and sends here go straight through Meta's Graph API — connect once via Embedded Signup and Prospects, Template Broadcast (Campaigns), and Chats/Quotation all start working.</div>
-          <button class="btn btn-secondary btn-sm hb-action" onclick="navigate('channels')">Connect in Channels</button>
-        </div>
-
-        <!-- WhatsApp Template -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="s-head" style="margin-bottom:8px">WhatsApp Template</div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">First-touch messages to people who've never messaged you must use a Meta-approved template — plain text won't be delivered to a new contact.</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
-            <select class="form-input" id="prospectTemplateSelect" style="flex:1;min-width:200px"><option value="">Click "Load Templates" →</option></select>
-            <button class="btn btn-secondary btn-sm" onclick="loadWaTemplates()">🔄 Load Templates</button>
-          </div>
-          <div class="save-msg" id="waTemplateMsg" style="margin-bottom:8px"></div>
-          <button class="btn btn-secondary btn-sm" onclick="toggleCreateTemplateForm()">+ Create New Template</button>
-
-          <div id="createTemplateBox" style="display:none;margin-top:12px;background:var(--accent-soft);border-radius:8px;padding:12px">
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-              <input class="form-input" type="text" id="newTplName" placeholder="template_name (lowercase_underscores)" style="flex:1;min-width:160px">
-              <select class="form-input" id="newTplCategory" style="width:140px">
-                <option value="MARKETING">Marketing</option>
-                <option value="UTILITY">Utility</option>
-              </select>
-              <select class="form-input" id="newTplLang" style="width:100px">
-                <option value="en_US">en_US</option>
-                <option value="en">en</option>
-                <option value="ar">ar</option>
-                <option value="hi">hi</option>
-              </select>
-            </div>
-            <textarea class="form-input" id="newTplBody" rows="3" placeholder="Hi {{1}}, thanks for your interest — we'd love to help you out. Reply here anytime!"></textarea>
-            <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
-              <button class="save-btn" onclick="createWaTemplate()">Submit for Approval</button>
-              <span class="save-msg" id="createTemplateMsg"></span>
-            </div>
-            <div style="font-size:11px;color:var(--muted);margin-top:6px">New templates take Meta a few minutes to a day to approve before they can be used.</div>
-          </div>
-        </div>
-
-        <!-- Google Sheet source -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="s-head" style="margin-bottom:8px">Prospect List (Google Sheet)</div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Sheet must have <code>Name</code> and <code>Phone</code> columns, and be shared with our sync account.</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <input class="form-input" type="text" id="prospectSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/…" style="flex:1;min-width:220px">
-            <button class="btn btn-secondary btn-sm" onclick="saveProspectSheetUrl()">Save Link</button>
-          </div>
-          <div class="save-msg" id="prospectSheetMsg"></div>
-        </div>
-
-        <!-- Import -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="s-head" style="margin-bottom:8px">Import &amp; Send</div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Each click imports the next batch of up to <b>50</b> new prospects (already-imported numbers are skipped automatically) and sends them the selected template. New prospects are added to Leads with stage <b>Prospect</b>.</div>
-          <button class="save-btn" id="prospectImportBtn" onclick="prospectImportBatch()">📤 Import Next 50 &amp; Send</button>
-          <span class="save-msg" id="prospectImportMsg"></span>
-        </div>
-
-        <!-- Log -->
-        <div class="card" style="margin-top:14px;margin-bottom:0">
-          <div class="s-head" style="margin-bottom:8px">📋 Import Runs</div>
-          <div id="prospectLogList"><div style="font-size:12px;color:var(--muted)">No import runs yet.</div></div>
-        </div>
-
-      </div>
-    </div>
-
-    <!-- PIPELINE -->
-    <div class="page hidden" id="pagePipeline">
-      <div style="padding:14px 16px 0">
-        <div class="card-title" style="margin-bottom:10px">📋 Pipeline</div>
-      </div>
-      <div style="padding:0 16px 16px;overflow-x:auto">
-        <div id="kanbanWrap"></div>
-      </div>
-    </div>
-
-    <!-- LEADS -->
+    <!-- LEADS (two views: List/Table and Pipeline — the old standalone "Pipeline" tab was merged
+         in here, same underlying lead data, no reason for two nav entries; see the Travel/Agency
+         merge above for the same pattern) -->
     <div class="page hidden" id="pageLeads">
+      <div class="page-pad" style="padding-bottom:0">
+        <div class="leads-view-switch" style="display:flex;gap:8px;margin-bottom:14px">
+          <button class="btn btn-secondary btn-sm leads-view-btn active" id="leadsViewModeList" onclick="setLeadsViewMode('list')">📇 List</button>
+          <button class="btn btn-secondary btn-sm leads-view-btn" id="leadsViewModePipeline" onclick="setLeadsViewMode('pipeline')">🗂 Pipeline</button>
+        </div>
+      </div>
+
+      <div id="leadsListView">
+        <div class="page-pad" style="padding-top:0">
+          <div class="leads-toolbar">
+            <input class="search-input" id="leadSearch" type="text" placeholder="Search name or phone…" oninput="filterLeads()" />
+            <select class="form-input" id="leadStageFilter" onchange="filterLeads()" style="flex:0 0 140px;padding:9px 10px">
+              <option value="">All stages</option>
+            </select>
+            <select class="form-input" id="leadOwnerFilter" onchange="filterLeads()" style="flex:0 0 120px;padding:9px 10px">
+              <option value="">All owners</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
+            <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
+            <button class="btn btn-primary btn-sm" onclick="openAddLead()">+ Add Lead</button>
+            <button class="btn btn-secondary btn-sm" onclick="exportCsv()">📥 CSV</button>
+            <button class="btn btn-secondary btn-sm" onclick="openImport()">📤 Import</button>
+          </div>
+          <div class="card" style="padding:0;overflow:hidden">
+            <div id="leadsList"></div>
+            <div id="leadsTable" style="display:none;overflow-x:auto"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="leadsPipelineView" style="display:none">
+        <div style="padding:0 16px 16px;overflow-x:auto">
+          <div id="kanbanWrap"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HUMAN DEALS -->
+    <div class="page hidden" id="pageHumandeals">
       <div class="page-pad">
-        <div class="leads-toolbar">
-          <input class="search-input" id="leadSearch" type="text" placeholder="Search name or phone…" oninput="filterLeads()" />
-          <select class="form-input" id="leadStageFilter" onchange="filterLeads()" style="flex:0 0 140px;padding:9px 10px">
-            <option value="">All stages</option>
-          </select>
-          <select class="form-input" id="leadOwnerFilter" onchange="filterLeads()" style="flex:0 0 120px;padding:9px 10px">
+        <div style="margin-bottom:18px">
+          <div class="card-title" style="margin-bottom:2px">🤝 Human Deals</div>
+          <div style="font-size:13px;color:var(--muted)">Leads currently waiting on a human — triage by wait time, sentiment, or deal value, and mark one done when you're finished with it.</div>
+        </div>
+
+        <div id="hdStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px"></div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+          <select class="form-input" id="hdOwnerFilter" onchange="renderHumanDeals()" style="flex:0 0 160px">
             <option value="">All owners</option>
           </select>
-          <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
-          <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
-          <button class="btn btn-primary btn-sm" onclick="openAddLead()">+ Add Lead</button>
-          <button class="btn btn-secondary btn-sm" onclick="exportCsv()">📥 CSV</button>
-          <button class="btn btn-secondary btn-sm" onclick="openImport()">📤 Import</button>
+          <select class="form-input" id="hdSentimentFilter" onchange="renderHumanDeals()" style="flex:0 0 150px">
+            <option value="">All sentiments</option>
+            <option value="Frustrated">😠 Frustrated</option>
+            <option value="Negative">🙁 Negative</option>
+            <option value="Neutral">Neutral</option>
+            <option value="Positive">🙂 Positive</option>
+          </select>
+          <select class="form-input" id="hdSort" onchange="renderHumanDeals()" style="flex:0 0 170px">
+            <option value="wait">Sort: Longest waiting</option>
+            <option value="value">Sort: Highest deal value</option>
+            <option value="win">Sort: Highest win %</option>
+          </select>
         </div>
-        <div class="card" style="padding:0;overflow:hidden">
-          <div id="leadsList"></div>
-          <div id="leadsTable" style="display:none;overflow-x:auto"></div>
+
+        <div id="hdGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px"></div>
+        <div id="hdEmpty" class="card" style="display:none;text-align:center;padding:30px;color:var(--muted);font-size:13px">No leads currently waiting on a human 🎉</div>
+      </div>
+    </div>
+
+    <!-- Outcome modal for removing a lead from Human Deals -->
+    <div class="modal" id="modalHdRemove" style="width:360px">
+      <span class="modal-drag"></span>
+      <div class="modal-hd"><div class="modal-title">Mark this deal done</div><button class="icon-btn" onclick="closeModal('modalHdRemove')">✕</button></div>
+      <div class="modal-body">
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:14px">This clears it from the Human Deals queue. What happened?</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn btn-secondary" onclick="removeHumanDeal('Resolved-Won')">✅ Resolved — Won</button>
+          <button class="btn btn-secondary" onclick="removeHumanDeal('Released')">🤖 Release back to bot</button>
+          <button class="btn btn-secondary" onclick="removeHumanDeal('Lost')">❌ Lost</button>
+          <button class="btn btn-secondary" onclick="removeHumanDeal('No-response')">🔕 No response</button>
         </div>
       </div>
+    </div>
+
+    <!-- KNOWLEDGE BASE -->
+    <div class="page hidden" id="pageKnowledgebase">
+      <div class="page-pad">
+        <div style="margin-bottom:18px">
+          <div class="card-title" style="margin-bottom:2px">📚 Knowledge Base</div>
+          <div style="font-size:13px;color:var(--muted)">Individual FAQ entries the bot grounds its answers in — searchable and categorized, instead of one long pasted document. These are combined with the freeform notes/uploaded files still in Settings → Knowledge Base; nothing there needs to change.</div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head" style="margin-bottom:8px" id="kbFormTitle">Add Entry</div>
+          <input class="form-input" type="text" id="kbEntryQuestion" placeholder="Question (e.g. What are your delivery times?)" style="margin-bottom:8px">
+          <textarea class="form-input" id="kbEntryAnswer" rows="3" placeholder="Answer" style="margin-bottom:8px"></textarea>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input class="form-input" type="text" id="kbEntryCategory" placeholder="Category (optional, e.g. Shipping)" style="flex:0 0 200px">
+            <button class="save-btn" id="kbSaveEntryBtn" onclick="kbSubmitEntry()">Add Entry</button>
+            <button class="btn btn-ghost" id="kbCancelEditBtn" style="display:none" onclick="kbCancelEdit()">Cancel edit</button>
+            <span class="save-msg" id="kbEntryMsg"></span>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <input class="search-input" id="kbSearch" type="text" placeholder="Search questions or answers…" oninput="renderKnowledgeBase()">
+          <select class="form-input" id="kbCategoryFilter" onchange="renderKnowledgeBase()" style="flex:0 0 180px">
+            <option value="">All categories</option>
+          </select>
+        </div>
+
+        <div id="kbEntriesList"></div>
+        <div id="kbEntriesEmpty" class="card" style="display:none;text-align:center;padding:30px;color:var(--muted);font-size:13px">No knowledge base entries yet — add your first FAQ above.</div>
+      </div>
+    </div>
+
+    <!-- ECOMMERCE (embedded, not a separate browser tab — ecom.html itself is unchanged, still a
+         fully self-contained page with its own CSS/JS scope and client_id-based /ecom/* Worker
+         routes (same no-session-required trust model as the automation-facing /ecom/order-link
+         etc. routes — not a bug, a deliberate accepted tradeoff already documented for that whole
+         route family). Embedding it in an iframe rather than porting its ~1500 lines of markup/CSS/
+         JS into this file's own script scope was a deliberate choice: both files independently
+         define generic class names (.card, .stat, .tab, .page) and their own :root color tokens —
+         concatenating them into one shared stylesheet/script scope risked silently overriding
+         dashboard.html's own same-named rules everywhere else in the app (Home, Team, Human Deals,
+         etc. all already use .card/.stat), a much larger blast radius than the Ecommerce tab itself.
+         The iframe keeps ecom.html's own working code 100% untouched and isolated, while still
+         genuinely satisfying "don't make the client leave the dashboard shell" — nav/header/
+         notifications all stay visible around it, only ecom.html's own duplicate header is hidden
+         via its new embed=1 param. -->
+    <div class="page hidden" id="pageEcommerce">
+      <iframe id="ecommerceFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- TRAVEL AGENCY MODULE (the standalone "Travel" tab was merged into this module's
@@ -1463,6 +1497,23 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div class="s-note" style="margin-bottom:14px">Every user in Settings → User Management is an agent here automatically — leads/tasks assigned to their email all roll up into this report, no separate agent list to keep in sync.</div>
         <div id="teamPerfStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
         <div class="card"><div id="teamPerfContent"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
+
+        <div style="margin:24px 0 14px"><div class="card-title" style="margin-bottom:0">📈 Funnel Analytics</div><div class="s-note">Whole-business view of how the funnel itself is performing — stage-by-stage, not per-agent.</div></div>
+        <div id="teamFunnelStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
+        <div class="card" style="margin-bottom:14px">
+          <div class="s-head" style="margin-bottom:8px">Stage Funnel</div>
+          <div id="teamFunnelStages"></div>
+        </div>
+        <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+          <div class="card">
+            <div class="s-head" style="margin-bottom:8px">Sentiment (last 4 weeks)</div>
+            <div id="teamFunnelSentiment"></div>
+          </div>
+          <div class="card">
+            <div class="s-head" style="margin-bottom:8px">Objection Breakdown</div>
+            <div id="teamFunnelObjections"></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1475,7 +1526,6 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
           </div>
         </div>
         <!-- USER MANAGEMENT -->
@@ -1905,7 +1955,6 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🔌 Channels</div>
@@ -2021,7 +2070,6 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🧩 Integrations</div>
@@ -2193,7 +2241,6 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="billing" onclick="navigate('billing')">💳 Billing</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">💳 Billing</div>
@@ -2284,7 +2331,6 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="bnItem active" data-page="home"><span class="bnIcon">🏠</span><span class="bnLabel">Home</span></button>
     <button class="bnItem" data-page="chats"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span></button>
     <button class="bnItem" data-page="leads"><span class="bnIcon">👥</span><span class="bnLabel">Leads</span></button>
-    <button class="bnItem" data-page="pipeline"><span class="bnIcon">📋</span><span class="bnLabel">Pipeline</span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span><span id="bnTaskBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
     <button class="bnItem" id="bnMore" onclick="openMoreSheet()"><span class="bnIcon">⋯</span><span class="bnLabel">More</span></button>
   </div>
@@ -2295,11 +2341,12 @@ const TODAY = new Date().toISOString().slice(0,10);
     <div class="more-sheet-handle"></div>
     <div class="more-sheet-title">More</div>
     <div class="more-sheet-grid">
-      <button class="more-item" data-page="quotation"><span class="bnIcon">🧾</span><span class="bnLabel">Quotation</span></button>
-      <button class="more-item" data-page="prospects"><span class="bnIcon">🎯</span><span class="bnLabel">Prospects</span></button>
       <button class="more-item" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
       <button class="more-item" data-page="team"><span class="bnIcon">📊</span><span class="bnLabel">Team</span></button>
-      <button class="more-item industry-tab" data-industry="ecommerce" style="display:none" onclick="window.open('https://app.leadvyne.com/ecom.html?client='+clientId,'_blank');closeMoreSheet()"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
+      <button class="more-item" data-page="humandeals" style="position:relative"><span class="bnIcon">🤝</span><span class="bnLabel">Human Deals</span><span id="bnHdBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
+      <button class="more-item" data-page="knowledgebase"><span class="bnIcon">📚</span><span class="bnLabel">Knowledge Base</span></button>
+      <button class="more-item" data-page="billing" style="position:relative"><span class="bnIcon">💳</span><span class="bnLabel">Billing</span><span id="bnBillingBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
+      <button class="more-item industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
       <button class="more-item" data-page="agency" id="moreAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
       <button class="more-item" data-page="recruit" id="moreRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
       <button class="more-item" data-page="appointments" id="moreApptTab" style="display:none"><span class="bnIcon">📅</span><span class="bnLabel">Appointments</span></button>
@@ -3402,10 +3449,13 @@ $id('hLogout').addEventListener('click',()=>{
 $id('hRefresh').addEventListener('click',()=>loadAll());
 
 /* ── NAVIGATION ── */
-const SETTINGS_GROUP=['settings','channels','integrations','billing']; // shown as one "Settings" tab with an internal sub-nav
+const SETTINGS_GROUP=['settings','channels','integrations']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
+// Quotation no longer has its own nav entry — it's opened from a specific lead on the Human
+// Deals page (openQuoteFor()) instead, so it highlights that tab rather than nothing at all.
+const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['quotation','prospects','broadcast','team','agency','recruit','appointments','settings','channels','integrations','billing'];
+const MORE_GROUP=['broadcast','team','humandeals','knowledgebase','ecommerce','agency','recruit','appointments','settings','channels','integrations','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -3418,15 +3468,16 @@ function navigate(page){
   document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
   document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>b.classList.remove('active'));
   $id('page'+cap(page)).classList.remove('hidden');
-  const navPage=SETTINGS_GROUP.includes(page)?'settings':page;
+  const navPage=SETTINGS_GROUP.includes(page)?'settings':(HUMANDEALS_GROUP.includes(page)?'humandeals':page);
   document.querySelectorAll(`[data-page="${navPage}"]`).forEach(b=>b.classList.add('active'));
   const moreBtn=$id('bnMore');if(moreBtn)moreBtn.classList.toggle('active',MORE_GROUP.includes(navPage));
   if(SETTINGS_GROUP.includes(page)) renderSettingsSubnav(page);
   if(page==='quotation') quoteInit();
-  if(page==='prospects') prospectInit();
-  if(page==='pipeline') renderKanban();
-  if(page==='leads'){if(_leadsTableView)renderLeadsTable();else renderLeadsList();}
+  if(page==='leads') setLeadsViewMode(_leadsViewMode);
   if(page==='team') renderTeamPerformance();
+  if(page==='humandeals') renderHumanDeals();
+  if(page==='knowledgebase') renderKnowledgeBase();
+  if(page==='ecommerce') renderEcommerce();
   if(page==='agency') renderAgency();
   if(page==='recruit') renderRecruit();
   if(page==='appointments') renderAppointments();
@@ -3535,6 +3586,8 @@ function renderHome(){
   try{renderHomeBillingBanners();}catch(e){}
   try{renderOnboardingChecklist();}catch(e){}
   try{updateTasksBadge();}catch(e){}
+  try{updateBillingBadge();}catch(e){}
+  try{updateHdBadge();}catch(e){}
 
   const ind=getIndustry();
   const booked=allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
@@ -3796,10 +3849,18 @@ function renderKanban(){
   }).join('');
 }
 
+// Shared "waiting Xm since handover" / SLA-breach computation — used by the kanban card, the
+// lead detail pane's signal chips, and the Human Deals queue, so all three always agree.
+function handoverWaitInfo(l){
+  if(l.Stage!=='human_handover' || !l.HandoverAt) return null;
+  const mins=Math.max(0,Math.round((Date.now()-new Date(l.HandoverAt).getTime())/60000));
+  const slaLimit=parseInt(clientRecord?.sla_minutes)||15;
+  return {mins, overdue:mins>=slaLimit};
+}
+
 function kbCard(l){
   const sentimentIcon=l.Sentiment==='Frustrated'?'😠':(l.Sentiment==='Negative'?'🙁':'');
-  const slaLimit=parseInt(clientRecord?.sla_minutes)||15;
-  const overdue=l.Stage==='human_handover' && l.HandoverAt && (Date.now()-new Date(l.HandoverAt).getTime())/60000>=slaLimit;
+  const overdue=handoverWaitInfo(l)?.overdue;
   return `<div class="kb-card ${scoreCardClass(l.Score)}" draggable="true" id="kbc${l.Id}"
     ondragstart="kbStart(event,${l.Id})" ondragend="kbEnd(event)"
     onclick="openDetail(${l.Id})">
@@ -3825,6 +3886,128 @@ async function kbDrop(e,stage){
   await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:_dragId,Stage:stage});
   reportLeadQualityChange(_dragId, {Stage:prevStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:stage});
   renderKanban();
+}
+
+// Loads the embedded Ecommerce iframe once — not on every nav visit, so switching away and back
+// doesn't reset whichever sub-tab (Products/Orders/Shopify/Settings) the rep was on inside it.
+// embed=1 tells ecom.html to hide its own header/"Back to CRM" button, since this dashboard's own
+// header/nav already surrounds it.
+function renderEcommerce(){
+  const frame=$id('ecommerceFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`ecom.html?client=${clientId}&embed=1`;
+}
+
+/* ── HUMAN DEALS ── */
+function humanDealsQueue(){ return allLeads.filter(l=>l.Stage==='human_handover'); }
+
+function updateHdBadge(){
+  const overdueCount=humanDealsQueue().filter(l=>handoverWaitInfo(l)?.overdue).length;
+  const dnBadge=$id('dnHdBadge'), bnBadge=$id('bnHdBadge');
+  if(dnBadge){ dnBadge.style.display=overdueCount?'inline-block':'none'; dnBadge.textContent=overdueCount>99?'99+':overdueCount; }
+  if(bnBadge){ bnBadge.style.display=overdueCount?'block':'none'; }
+}
+
+function renderHdStats(queue){
+  const slaLimit=parseInt(clientRecord?.sla_minutes)||15;
+  const waits=queue.map(l=>handoverWaitInfo(l)?.mins||0);
+  const avgWait=waits.length?Math.round(waits.reduce((a,b)=>a+b,0)/waits.length):0;
+  const breaches=queue.filter(l=>handoverWaitInfo(l)?.overdue).length;
+  const totalValueByCcy={};
+  queue.forEach(l=>{ if(l.DealValue){ const ccy=l.DealCurrency||clientRecord?.deal_currency||'AED'; totalValueByCcy[ccy]=(totalValueByCcy[ccy]||0)+Number(l.DealValue); } });
+  const valueLine=Object.entries(totalValueByCcy).map(([ccy,v])=>`${ccy} ${v.toLocaleString()}`).join(', ')||'—';
+  $id('hdStats').innerHTML=`
+    <div class="stat accent"><div class="stat-lbl">Waiting Now</div><div class="stat-val">${queue.length}</div><div class="stat-sub">in the queue</div></div>
+    <div class="stat"><div class="stat-lbl">SLA Breaches</div><div class="stat-val" style="color:${breaches?'#DC2626':'inherit'}">${breaches}</div><div class="stat-sub">over ${slaLimit}m</div></div>
+    <div class="stat"><div class="stat-lbl">Avg Wait</div><div class="stat-val">${avgWait}m</div><div class="stat-sub">across the queue</div></div>
+    <div class="stat"><div class="stat-lbl">Deal Value Waiting</div><div class="stat-val" style="font-size:18px">${esc(valueLine)}</div></div>`;
+}
+
+function hdPopulateOwnerFilter(){
+  const sel=$id('hdOwnerFilter'); if(!sel) return;
+  const cur=sel.value;
+  const members=getTeamMembers();
+  sel.innerHTML='<option value="">All owners</option>'+members.map(m=>`<option value="${esc(m.email)}">${esc(m.name||m.email)}</option>`).join('');
+  sel.value=cur;
+}
+
+function humanDealCard(l){
+  const wait=handoverWaitInfo(l);
+  const sentimentFlag=l.Sentiment==='Frustrated'?'😠 Frustrated':(l.Sentiment==='Negative'?'🙁 Negative':'');
+  let lastMsg='';
+  try{ const h=JSON.parse(l.ConvHistory||'[]'); const last=h[h.length-1]; if(last) lastMsg=(last.content||'').slice(0,90); }catch(e){}
+  return `<div class="card" style="border-left:3px solid ${wait?.overdue?'#DC2626':'var(--accent)'};cursor:pointer" onclick="openDetail(${l.Id})">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+      <div>
+        <div style="font-weight:700;font-size:14px">${esc(l.Name||l.Phone||'Unknown')}</div>
+        <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">${maskPhone(l.Phone)}</div>
+      </div>
+      ${wait?`<span class="tag" style="background:${wait.overdue?'#FEE2E2':'#F1F5F9'};color:${wait.overdue?'#991B1B':'var(--muted)'};white-space:nowrap">⏱ ${wait.mins}m${wait.overdue?' ⚠️':''}</span>`:''}
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
+      ${sentimentFlag?`<span class="tag" style="background:#FEE2E2;color:#991B1B">${sentimentFlag}</span>`:''}
+      ${l.LastObjectionCategory?`<span class="tag" style="background:#FEF3C7;color:#92400E">⚠️ ${esc(l.LastObjectionCategory)}</span>`:''}
+      ${l.DealValue?`<span class="tag" style="background:var(--accent-soft);color:var(--accent-ink)">${esc(l.DealCurrency||'')} ${Number(l.DealValue).toLocaleString()}</span>`:''}
+      ${l.WinProbability!=null&&l.WinProbability!==''?`<span class="tag" style="background:#F1F5F9;color:var(--muted)">${l.WinProbability}% win</span>`:''}
+    </div>
+    ${lastMsg?`<div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.4">"${esc(lastMsg)}${lastMsg.length>=90?'…':''}"</div>`:''}
+    <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--muted);margin-bottom:10px">
+      <span>${l.Owner?'👤 '+esc(l.Owner):'Unassigned'}</span>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">
+      <button class="btn btn-secondary btn-sm" onclick="openQuoteFor(${l.Id},'quote')">📤 Quote</button>
+      <button class="btn btn-secondary btn-sm" onclick="openQuoteFor(${l.Id},'invoice')">🧾 Invoice</button>
+      <button class="btn btn-secondary btn-sm" onclick="openHdRemoveModal(${l.Id})">✓ Mark Done</button>
+    </div>
+  </div>`;
+}
+
+let _hdActiveLeadId=null;
+function openHdRemoveModal(leadId){ _hdActiveLeadId=leadId; openModal('modalHdRemove'); }
+function closeHdRemoveModal(){ _hdActiveLeadId=null; closeModal('modalHdRemove'); }
+
+// Outcome tag drives both the Stage this lead lands on afterward and HandoverOutcome (a new
+// LEADS field — no history of what happened after a handover exists otherwise, which is what the
+// Team page's handover-conversion-rate stat needs). 'won'/'lost' reuse the same generic terminal
+// Stage values already checked elsewhere in this file (TERMINAL/'won' comparisons in renderHome
+// etc.) rather than inventing new ones flow_json wouldn't recognize.
+const HD_OUTCOME_STAGE={'Resolved-Won':'won','Released':'new','Lost':'lost','No-response':'new'};
+async function removeHumanDeal(outcome){
+  const leadId=_hdActiveLeadId; if(!leadId) return;
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  const prevStage=lead.Stage;
+  const nextStage=HD_OUTCOME_STAGE[outcome]||'new';
+  const patch={Id:leadId, Stage:nextStage, Handover:'No', HandoverAt:'', SlaAlerted:'No', HandoverOutcome:outcome};
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
+  Object.assign(lead, patch);
+  reportLeadQualityChange(leadId, {Stage:prevStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:nextStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency});
+  closeHdRemoveModal();
+  renderHumanDeals();
+}
+
+function renderHumanDeals(){
+  hdPopulateOwnerFilter();
+  let queue=humanDealsQueue();
+  renderHdStats(queue);
+  updateHdBadge();
+
+  const ownerF=$id('hdOwnerFilter')?.value||'';
+  const sentF=$id('hdSentimentFilter')?.value||'';
+  const sort=$id('hdSort')?.value||'wait';
+  if(ownerF) queue=queue.filter(l=>l.Owner===ownerF);
+  if(sentF) queue=queue.filter(l=>(l.Sentiment||'Neutral')===sentF);
+
+  queue=queue.slice().sort((a,b)=>{
+    if(sort==='value') return (Number(b.DealValue)||0)-(Number(a.DealValue)||0);
+    if(sort==='win') return (Number(b.WinProbability)||0)-(Number(a.WinProbability)||0);
+    // default: longest waiting first, Frustrated always floats to the top regardless of wait time
+    const aFrustrated=a.Sentiment==='Frustrated', bFrustrated=b.Sentiment==='Frustrated';
+    if(aFrustrated!==bFrustrated) return aFrustrated?-1:1;
+    return (handoverWaitInfo(b)?.mins||0)-(handoverWaitInfo(a)?.mins||0);
+  });
+
+  $id('hdGrid').style.display=queue.length?'grid':'none';
+  $id('hdEmpty').style.display=queue.length?'none':'block';
+  $id('hdGrid').innerHTML=queue.map(humanDealCard).join('');
 }
 
 /* ── LEADS LIST ── */
@@ -3881,6 +4064,24 @@ function renderLeadsList(){
 }
 
 function filterLeads(){_leadsPage=1;if(_leadsTableView)renderLeadsTable();else renderLeadsList();}
+
+// Leads page's two top-level views (List/Table vs Pipeline/kanban) — merged from what used to be
+// two separate nav tabs ("Leads" and "Pipeline") into one, since both are just different displays
+// of the same lead data. _leadsTableView (below) is the separate List-vs-Table toggle *within*
+// the List view, unaffected by this.
+let _leadsViewMode='list';
+function setLeadsViewMode(mode){
+  _leadsViewMode=mode;
+  $id('leadsViewModeList')?.classList.toggle('active', mode==='list');
+  $id('leadsViewModePipeline')?.classList.toggle('active', mode==='pipeline');
+  $id('leadsListView').style.display=mode==='list'?'':'none';
+  $id('leadsPipelineView').style.display=mode==='pipeline'?'':'none';
+  if(mode==='pipeline') renderKanban();
+  else if(_leadsTableView) renderLeadsTable();
+  else renderLeadsList();
+}
+// Convenience for any button elsewhere that used to link straight to the standalone Pipeline tab.
+function goToPipeline(){ navigate('leads'); setLeadsViewMode('pipeline'); }
 
 let _leadsTableView=false;
 function toggleLeadsView(){
@@ -4320,11 +4521,9 @@ function renderDetailSignals(lead){
   if(lead.LastObjectionCategory){
     chips.push(`<span class="tag" style="background:#FEF3C7;color:#92400E">⚠️ ${esc(lead.LastObjectionCategory)} objection</span>`);
   }
-  if(lead.Stage==='human_handover' && lead.HandoverAt){
-    const mins=Math.max(0,Math.round((Date.now()-new Date(lead.HandoverAt).getTime())/60000));
-    const slaLimit=parseInt(clientRecord?.sla_minutes)||15;
-    const overdue=mins>=slaLimit;
-    chips.push(`<span class="tag" style="background:${overdue?'#FEE2E2':'#F1F5F9'};color:${overdue?'#991B1B':'var(--muted)'}">⏱ waiting ${mins}m${overdue?' — SLA breached':''}</span>`);
+  const wait=handoverWaitInfo(lead);
+  if(wait){
+    chips.push(`<span class="tag" style="background:${wait.overdue?'#FEE2E2':'#F1F5F9'};color:${wait.overdue?'#991B1B':'var(--muted)'}">⏱ waiting ${wait.mins}m${wait.overdue?' — SLA breached':''}</span>`);
   }
   $id('detailSignals').innerHTML=chips.join('');
 }
@@ -4969,6 +5168,47 @@ const QUOTE_DEFAULT_TERMS=`• This quotation is valid for the period stated abo
 • This document does not constitute a binding contract until formally accepted by both parties.`;
 
 let _quoteServices=[], _quoteSelectedLead=null, _quoteSelectedItems={}, _quoteEligible=[], _quoteLogoDims=null;
+// 'quote' or 'invoice' — same compose/PDF engine, quoteBuildPdfDoc/quoteSend branch on this for
+// header text, terms text (invoice_terms falls back to quote_terms), and an invoice number.
+let _quoteMode='quote';
+
+// Entry point from a Human Deals card's Send Quote/Send Invoice button — bypasses
+// quoteEligibleLeads()'s auto-detected-price-mention gate (that gate is for the "browse for a
+// lead to quote" workflow; here the rep has already picked a specific lead) by pre-selecting it
+// directly after quoteInit() has run its normal reset.
+function openQuoteFor(leadId,mode){
+  _quoteMode=mode||'quote';
+  navigate('quotation');
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead) return;
+  _quoteSelectedLead=lead;
+  const sel=$id('quoteLeadSelect');
+  if(sel){
+    if(![...sel.options].some(o=>o.value===String(leadId))){
+      sel.insertAdjacentHTML('afterbegin',`<option value="${leadId}">${esc(lead.Name||lead.Phone||'Unknown')} · ${esc(maskPhone(lead.Phone))}</option>`);
+    }
+    sel.value=String(leadId);
+  }
+  const linkWrap=$id('quoteLinkConvWrap');
+  if(linkWrap) linkWrap.style.display=(!leadConvId(lead))?'block':'none';
+  quoteApplyModeUi();
+  quoteUpdatePreview();
+}
+
+// Swaps the compose page's own copy/labels between Quotation and Invoice mode — same fields
+// (items, template, terms), just different framing so a rep isn't confused about which they're
+// sending. Invoice terms are a separate field (invoice_terms) since "valid for N days" wording
+// doesn't fit an invoice, but falls back to quote_terms if a client hasn't set one yet.
+function quoteApplyModeUi(){
+  const isInvoice=_quoteMode==='invoice';
+  const title=$id('quotePageTitle'); if(title) title.textContent=isInvoice?'🧾 Invoice':'🧾 Quotation / Proposal';
+  const sendBtn=$id('sendQuoteBtn'); if(sendBtn) sendBtn.textContent=isInvoice?'📤 Send Invoice (PDF)':'📤 Send Quotation (PDF)';
+  const termsLabel=$id('quoteTermsLabel');
+  if(termsLabel) termsLabel.textContent=isInvoice?'Terms (printed on the PDF)':'Terms & Conditions (printed on the PDF)';
+  const termsField=$id('quoteTerms');
+  if(termsField) termsField.value=isInvoice?(clientRecord.invoice_terms||clientRecord.quote_terms||QUOTE_DEFAULT_TERMS):(clientRecord.quote_terms||QUOTE_DEFAULT_TERMS);
+  const validityRow=$id('quoteValidityRow'); if(validityRow) validityRow.style.display=isInvoice?'none':'';
+}
 
 function quoteLoadLogoDims(url){
   if(!url){_quoteLogoDims=null;return;}
@@ -5006,6 +5246,7 @@ function quoteInit(){
   $id('quoteLeadSearch').value='';
   $id('quoteLinkConvWrap').style.display='none';
   quoteFilterLeads();
+  quoteApplyModeUi();
   quoteUpdatePreview();
   renderQuoteSentLog();
 }
@@ -5014,7 +5255,7 @@ function renderQuoteSentLog(){
   const wrap=$id('quoteSentLog');
   if(!wrap) return;
   const sentLeads=allLeads
-    .filter(l=>parseTags(l.Tags).includes('Quotation Sent'))
+    .filter(l=>{const t=parseTags(l.Tags);return t.includes('Quotation Sent')||t.includes('Invoice Sent');})
     .sort((a,b)=>(b.QuoteSentAt||'').localeCompare(a.QuoteSentAt||''));
   if(!sentLeads.length){wrap.innerHTML='<div style="font-size:12px;color:var(--muted)">No quotations sent yet.</div>';return;}
   wrap.innerHTML=`
@@ -5201,7 +5442,8 @@ function applyHeaderLogo(){
 }
 
 /* ── PDF generation — the item table is built from whatever is selected ── */
-function quoteBuildPdfDoc(lead,items,total,currency){
+function quoteBuildPdfDoc(lead,items,total,currency,invoiceNumber){
+  const isInvoice=_quoteMode==='invoice';
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
   const marginX=40;
@@ -5226,9 +5468,9 @@ function quoteBuildPdfDoc(lead,items,total,currency){
   }
 
   doc.setFont('helvetica','bold');doc.setFontSize(18);
-  doc.text(clientRecord.client_name||'Quotation',marginX+110,y+20);
+  doc.text(clientRecord.client_name||(isInvoice?'Invoice':'Quotation'),marginX+110,y+20);
   doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(100);
-  doc.text('Official Quotation',marginX+110,y+38);
+  doc.text(isInvoice?'Invoice':'Official Quotation',marginX+110,y+38);
   doc.setTextColor(0);
   y+=80;
 
@@ -5236,7 +5478,11 @@ function quoteBuildPdfDoc(lead,items,total,currency){
   doc.text(`Prepared for: ${lead.Name||lead.Phone||'Customer'}`,marginX,y);
   doc.text(`Date: ${new Date().toLocaleDateString()}`,400,y);
   y+=16;
-  doc.text(`Valid for: ${$id('quoteValidityDays').value||clientRecord.quote_validity_days||7} days`,marginX,y);
+  if(isInvoice){
+    if(invoiceNumber) doc.text(`Invoice #: ${invoiceNumber}`,marginX,y);
+  } else {
+    doc.text(`Valid for: ${$id('quoteValidityDays').value||clientRecord.quote_validity_days||7} days`,marginX,y);
+  }
   y+=20;
 
   doc.autoTable({
@@ -5271,12 +5517,14 @@ function quoteBuildPdfDoc(lead,items,total,currency){
     y+=10;
   }
 
-  // Terms & Conditions — common boilerplate, editable per client
-  const terms=(clientRecord.quote_terms||QUOTE_DEFAULT_TERMS).trim();
+  // Terms & Conditions — common boilerplate, editable per client. Uses whatever's currently in
+  // the #quoteTerms field (quoteApplyModeUi() already swapped it to invoice_terms/quote_terms
+  // when this doc was opened), so an edit made just before sending is respected either way.
+  const terms=($id('quoteTerms')?.value||(isInvoice?clientRecord.invoice_terms:clientRecord.quote_terms)||QUOTE_DEFAULT_TERMS).trim();
   if(terms){
     if(y>pageH-100){doc.addPage();y=50;}
     doc.setFont('helvetica','bold');doc.setFontSize(12);doc.setTextColor(0);
-    doc.text('Terms & Conditions',marginX,y);
+    doc.text(isInvoice?'Terms':'Terms & Conditions',marginX,y);
     y+=16;
     doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
     doc.splitTextToSize(terms,pageW-marginX*2).forEach(line=>{
@@ -5296,7 +5544,10 @@ function quotePreviewPdf(){
   const {items,total,currency}=quoteBuildItemLines();
   if(!items.length){msg.textContent='Select at least one item.';msg.className='save-msg err';return;}
   msg.textContent='';
-  const doc=quoteBuildPdfDoc(_quoteSelectedLead,items,total,currency);
+  // Preview only — doesn't consume/increment invoice_number_seq, just shows what the next one
+  // would look like, since a preview isn't a real send.
+  const previewNum=_quoteMode==='invoice'?('INV-'+String((parseInt(clientRecord.invoice_number_seq)||0)+1).padStart(4,'0')+' (draft)'):null;
+  const doc=quoteBuildPdfDoc(_quoteSelectedLead,items,total,currency,previewNum);
   window.open(doc.output('bloburl'),'_blank');
 }
 
@@ -5308,20 +5559,26 @@ async function quoteSend(){
   const lead=_quoteSelectedLead;
   const convId=leadConvId(lead);
   if(!convId){msg.textContent='No Chatwoot conversation linked — paste a conversation ID above first.';msg.className='save-msg err';return;}
+  const isInvoice=_quoteMode==='invoice';
   const tpl=$id('quoteTemplate').value||QUOTE_DEFAULT_TEMPLATE;
   const caption=quoteRenderTemplate(tpl,lead,lines,total,currency);
+  // Invoice numbers are sequential and only consumed on a real send (quotePreviewPdf's preview
+  // above does NOT touch this) — computed here, before the send call, but only persisted to
+  // CLIENTS after the send actually succeeds, so a failed send doesn't burn a number.
+  const invoiceNumber=isInvoice?('INV-'+String((parseInt(clientRecord.invoice_number_seq)||0)+1).padStart(4,'0')):null;
   btn.disabled=true;msg.textContent='Generating PDF…';msg.className='save-msg';
   let sent=false;
   try{
-    const doc=quoteBuildPdfDoc(lead,items,total,currency);
+    const doc=quoteBuildPdfDoc(lead,items,total,currency,invoiceNumber);
     const pdfBlob=doc.output('blob');
     msg.textContent='Sending…';
     // Sent via the Worker proxy — it holds the Chatwoot token server-side and forwards
-    // the attachment itself.
+    // the attachment itself. Same /quote/send route for both — it just forwards conv_id/
+    // caption/file, so it doesn't need to know or care whether this is a quote or an invoice.
     const fd=new FormData();
     fd.append('conv_id',convId);
     fd.append('caption',caption);
-    fd.append('file',pdfBlob,`Quotation-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
+    fd.append('file',pdfBlob,`${isInvoice?'Invoice':'Quotation'}-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
     const r=await fetch(`${CONFIG.WORKER_BASE}/quote/send`,{
       method:'POST',headers:ncAuthHeaders(),body:fd
     });
@@ -5336,16 +5593,26 @@ async function quoteSend(){
 
   // Tag locally right away so this lead drops out of the sendable dropdown immediately,
   // even if the NocoDB logging patch below hiccups — the message has already gone out.
+  // Separate tags for quote vs invoice — a lead can legitimately get both (a quote while
+  // negotiating, an invoice once they've agreed), so one shouldn't block the other.
+  const sentTag=isInvoice?'Invoice Sent':'Quotation Sent';
   const tags=parseTags(lead.Tags);
-  if(!tags.includes('Quotation Sent')) tags.push('Quotation Sent');
+  if(!tags.includes(sentTag)) tags.push(sentTag);
   lead.Tags=tags.join(',');
+
+  // Best-effort — persists the invoice number actually used so the next send doesn't reuse it,
+  // even though a failed write here can't undo the WhatsApp message that already went out.
+  if(isInvoice){
+    try{ await patchClient({invoice_number_seq:parseInt(invoiceNumber.replace('INV-',''))}); clientRecord.invoice_number_seq=parseInt(invoiceNumber.replace('INV-','')); }catch(e){}
+  }
 
   // Logging the send (ConvHistory/Tags/QuoteSentAt) is best-effort — a hiccup here must
   // never be shown as a send failure, since the WhatsApp message already went out.
   const sentAt=new Date().toISOString();
   try{
     const hist=await freshConvHistory(lead);
-    hist.push({role:'assistant',content:caption+`\n[Quotation PDF — ${items.length} item(s), total ${currency} ${total.toLocaleString()}]`,ts:sentAt});
+    const label=isInvoice?`Invoice PDF${invoiceNumber?' — '+invoiceNumber:''}`:'Quotation PDF';
+    hist.push({role:'assistant',content:caption+`\n[${label} — ${items.length} item(s), total ${currency} ${total.toLocaleString()}]`,ts:sentAt});
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(','),QuoteSentAt:sentAt,QuoteSentTotal:`${currency} ${total.toLocaleString()}`});
     lead.ConvHistory=JSON.stringify(hist);
     lead.QuoteSentAt=sentAt;
@@ -5365,114 +5632,10 @@ async function quoteSend(){
   }
 }
 
-/* ── PROSPECTS MODULE ── */
-const PROSPECT_BATCH_SIZE=50;
-let _prospectLog=[];
-
-function prospectN8nBase(){return (clientRecord?.n8n_base||'https://apps.leadvyne.com').replace(/\/$/,'');}
-
-function prospectInit(){
-  if(!clientRecord) return;
-  $id('prospectSheetUrl').value=clientRecord.prospect_gsheet_url||'';
-  renderProspectLog();
-  $id('prospectWaBanner').classList.toggle('hidden', !!(clientRecord.wa_phone_id && clientRecord.wa_token));
-}
-
-async function saveProspectSheetUrl(){
-  const url=$id('prospectSheetUrl').value.trim();
-  const msg=$id('prospectSheetMsg');
-  if(!url){msg.textContent='Paste a Google Sheet link first.';msg.className='save-msg err';return;}
-  msg.textContent='Saving…';msg.className='save-msg';
-  try{await patchClient({prospect_gsheet_url:url});msg.textContent='✓ Saved';}
-  catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
-  finally{setTimeout(()=>{if(msg)msg.textContent='';},3000);}
-}
-
-/* WhatsApp template management — routed through the Worker proxy, which holds
-   waba_id/wa_token server-side and calls Meta's Graph API itself. */
-async function loadWaTemplates(){
-  const sel=$id('prospectTemplateSelect'); const msg=$id('waTemplateMsg');
-  msg.textContent='Loading templates…';msg.className='save-msg';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/wa/templates`,{headers:ncAuthHeaders()});
-    const data=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    const templates=(data.data||[]).filter(t=>t.status==='APPROVED');
-    if(!templates.length){
-      sel.innerHTML='<option value="">No approved templates yet</option>';
-      msg.textContent='No approved templates found — create one below.';msg.className='save-msg';
-      return;
-    }
-    sel.innerHTML='<option value="">Select a template…</option>'+templates.map(t=>`<option value="${esc(t.name)}" data-lang="${esc(t.language)}">${esc(t.name)} (${esc(t.language)})</option>`).join('');
-    msg.textContent=`✓ ${templates.length} approved template(s) loaded`;msg.className='save-msg';
-  }catch(e){msg.textContent='Error loading templates: '+e.message;msg.className='save-msg err';}
-}
-
-function toggleCreateTemplateForm(){
-  const box=$id('createTemplateBox');
-  box.style.display=box.style.display==='none'?'':'none';
-}
-
-async function createWaTemplate(){
-  const msg=$id('createTemplateMsg');
-  const name=$id('newTplName').value.trim().toLowerCase().replace(/[^a-z0-9_]+/g,'_');
-  const category=$id('newTplCategory').value;
-  const language=$id('newTplLang').value;
-  const body=$id('newTplBody').value.trim();
-  if(!name||!body){msg.textContent='Enter a name and body text.';msg.className='save-msg err';return;}
-  msg.textContent='Submitting to Meta for approval…';msg.className='save-msg';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/wa/templates`,{
-      method:'POST',
-      headers:ncAuthHeaders({'Content-Type':'application/json'}),
-      body:JSON.stringify({name,category,language,body})
-    });
-    const data=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    msg.textContent='✓ Submitted — templates usually take a few minutes to a day for Meta to approve. Click "Load Templates" once approved.';msg.className='save-msg';
-    $id('newTplName').value='';$id('newTplBody').value='';
-  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
-}
-
-/* Batch import from Sheet + first-touch template send, via n8n (server-side — avoids exposing
-   the Google Sheets sync credential and keeps the WhatsApp/Chatwoot conversation-creation calls
-   off the browser). One click = up to PROSPECT_BATCH_SIZE new (not-yet-imported) rows. */
-async function prospectImportBatch(){
-  const btn=$id('prospectImportBtn'), msg=$id('prospectImportMsg');
-  const gsheetUrl=$id('prospectSheetUrl').value.trim();
-  const sel=$id('prospectTemplateSelect');
-  const templateName=sel.value;
-  const templateLang=sel.selectedOptions[0]?.dataset.lang||'en_US';
-  if(!gsheetUrl){msg.textContent='Paste a Google Sheet link first.';msg.className='save-msg err';return;}
-  if(!templateName){msg.textContent='Choose an approved WhatsApp template first.';msg.className='save-msg err';return;}
-  btn.disabled=true; msg.textContent=`Importing next batch of ${PROSPECT_BATCH_SIZE}…`; msg.className='save-msg';
-  try{
-    const r=await fetch(`${prospectN8nBase()}/webhook/leadvyne-prospects-import`,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({client_id:clientId,gsheet_url:gsheetUrl,template_name:templateName,template_lang:templateLang,batch_size:PROSPECT_BATCH_SIZE})
-    });
-    const data=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data?.error||('HTTP '+r.status));
-    const imported=data.imported||0, sent=data.sent||0, failed=data.failed||0, skipped=data.skipped_duplicate||0;
-    msg.textContent=imported?`✓ Imported ${imported} — ${sent} sent, ${failed} failed. ${skipped} already-known number(s) skipped.`:'No new prospects found in the sheet — everything already imported.';
-    msg.className='save-msg';
-    _prospectLog.unshift({ts:new Date().toISOString(),imported,sent,failed,skipped});
-    _prospectLog=_prospectLog.slice(0,10);
-    renderProspectLog();
-    loadAll(true);
-  }catch(e){
-    msg.textContent='Import failed: '+e.message+' — is the workflow active?';msg.className='save-msg err';
-  }finally{btn.disabled=false;}
-}
-
-function renderProspectLog(){
-  const box=$id('prospectLogList'); if(!box) return;
-  if(!_prospectLog.length){box.innerHTML='<div style="font-size:12px;color:var(--muted)">No import runs yet.</div>';return;}
-  box.innerHTML=_prospectLog.map(l=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 0;border-bottom:1px solid var(--line)">
-    <span>${new Date(l.ts).toLocaleString()}</span>
-    <span>${l.imported} imported · ${l.sent} sent · ${l.failed} failed · ${l.skipped} skipped</span>
-  </div>`).join('');
-}
+/* Prospects import (Google Sheet + template send) moved into Campaigns (broadcast.html)'s own
+   "🎯 Import Prospects" tab — see that file for the current implementation. Template load/create
+   (loadWaTemplates/createWaTemplate) were Prospects-only here and are superseded by broadcast.html's
+   own "Manage Templates" tab, which every other broadcast feature already used. */
 
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
@@ -5729,7 +5892,7 @@ function channelsInit(){
 /* ── INTEGRATIONS TAB (Bulk Marketing module: WhatsApp status, Resend, Sheets, Health Check) ── */
 const INT_SHEETS=[
   {field:'gsheet_url', label:'Leads Export', page:'settings'},
-  {field:'prospect_gsheet_url', label:'Prospect Import', page:'prospects'},
+  {field:'prospect_gsheet_url', label:'Prospect Import', page:null, external:'broadcast.html'}, // moved into Campaigns' own Import Prospects tab
   {field:'ecom_products_sheet', label:'Ecom Products', page:null},
   {field:'ecom_orders_sheet', label:'Ecom Orders', page:null},
 ];
@@ -5798,7 +5961,7 @@ function renderSheetsList(){
     const status=val?'<span class="badge green" style="font-size:10px">Configured</span>':'<span class="badge gray" style="font-size:10px">Not set</span>';
     return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
       <div style="flex:1;min-width:160px"><b>${esc(s.label)}</b> ${status}<div style="font-size:11px;color:var(--muted);word-break:break-all">${esc(val||'—')}</div></div>
-      ${s.page?`<button class="save-btn" style="font-size:12px" onclick="navigate('${s.page}')">Edit</button>`:''}
+      ${s.page?`<button class="save-btn" style="font-size:12px" onclick="navigate('${s.page}')">Edit</button>`:(s.external?`<button class="save-btn" style="font-size:12px" onclick="window.open('${s.external}','_blank')">Edit</button>`:'')}
     </div>`;
   }).join('');
 }
@@ -6784,6 +6947,18 @@ function updateTasksBadge(){
   if(bnBadge){ bnBadge.style.display=n?'block':'none'; }
 }
 
+// Lights up the Billing nav tab when there's something a client actually needs to act on —
+// reuses the same conditions renderHomeBillingBanners() already computes (past-due copy lookup,
+// cancel-at-period-end) instead of re-deriving plan-status logic a second time.
+function updateBillingBadge(){
+  const c=clientRecord||{};
+  const pastDue=(typeof BILLING_PAST_DUE_COPY!=='undefined')?!!BILLING_PAST_DUE_COPY[c.plan_status]:false;
+  const flagged=pastDue||c.plan_cancel_at_period_end==='Yes';
+  const dnBadge=$id('dnBillingBadge'), bnBadge=$id('bnBillingBadge');
+  if(dnBadge){ dnBadge.style.display=flagged?'inline-block':'none'; dnBadge.textContent='!'; }
+  if(bnBadge){ bnBadge.style.display=flagged?'block':'none'; }
+}
+
 function renderTasks(){
   const all=computeAllTasks();
   const counts=taskCounts(all);
@@ -7427,12 +7602,123 @@ function showToast(msg,type='ok'){
 }
 
 /* ── KB AUTO-REFRESH ── */
+function kbEntries(){
+  try{ const v=JSON.parse(clientRecord?.kb_entries||'[]'); return Array.isArray(v)?v:[]; }catch(e){ return []; }
+}
+async function kbSaveEntries(entries){
+  await patchClient({kb_entries:JSON.stringify(entries)});
+  clientRecord.kb_entries=JSON.stringify(entries);
+  if(clientRecord?.kb_text?.trim()||entries.length) triggerKbRefresh();
+}
+
+let _kbEditingId=null;
+function kbPopulateCategoryFilter(entries){
+  const sel=$id('kbCategoryFilter'); if(!sel) return;
+  const cur=sel.value;
+  const cats=[...new Set(entries.map(e=>e.category).filter(Boolean))].sort();
+  sel.innerHTML='<option value="">All categories</option>'+cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  if(cats.includes(cur)) sel.value=cur;
+}
+
+function kbEntryCard(e){
+  return `<div class="card" style="margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+      <div style="min-width:0">
+        <div style="font-weight:700;font-size:13.5px">${esc(e.question)}</div>
+        <div style="font-size:13px;color:var(--ink);margin-top:4px;white-space:pre-wrap">${esc(e.answer)}</div>
+        ${e.category?`<span class="tag" style="background:var(--accent-soft);color:var(--accent-ink);margin-top:8px;display:inline-block">${esc(e.category)}</span>`:''}
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn btn-secondary btn-sm" onclick="kbEditEntry('${e.id}')">✏️</button>
+        <button class="btn btn-secondary btn-sm" onclick="kbDeleteEntry('${e.id}')">🗑️</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderKnowledgeBase(){
+  const entries=kbEntries();
+  kbPopulateCategoryFilter(entries);
+  const q=($id('kbSearch')?.value||'').toLowerCase();
+  const catF=$id('kbCategoryFilter')?.value||'';
+  const filtered=entries.filter(e=>{
+    if(catF && e.category!==catF) return false;
+    if(q && !(e.question.toLowerCase().includes(q)||e.answer.toLowerCase().includes(q))) return false;
+    return true;
+  });
+  $id('kbEntriesList').style.display=filtered.length?'':'none';
+  $id('kbEntriesEmpty').style.display=filtered.length?'none':'block';
+  $id('kbEntriesList').innerHTML=filtered.map(kbEntryCard).join('');
+}
+
+function kbCancelEdit(){
+  _kbEditingId=null;
+  $id('kbFormTitle').textContent='Add Entry';
+  $id('kbSaveEntryBtn').textContent='Add Entry';
+  $id('kbCancelEditBtn').style.display='none';
+  $id('kbEntryQuestion').value='';
+  $id('kbEntryAnswer').value='';
+  $id('kbEntryCategory').value='';
+}
+
+function kbEditEntry(id){
+  const entry=kbEntries().find(e=>e.id===id); if(!entry) return;
+  _kbEditingId=id;
+  $id('kbFormTitle').textContent='Edit Entry';
+  $id('kbSaveEntryBtn').textContent='Save Changes';
+  $id('kbCancelEditBtn').style.display='';
+  $id('kbEntryQuestion').value=entry.question;
+  $id('kbEntryAnswer').value=entry.answer;
+  $id('kbEntryCategory').value=entry.category||'';
+  $id('kbEntryQuestion').scrollIntoView({behavior:'smooth',block:'center'});
+}
+
+async function kbSubmitEntry(){
+  const msg=$id('kbEntryMsg');
+  const question=$id('kbEntryQuestion').value.trim();
+  const answer=$id('kbEntryAnswer').value.trim();
+  const category=$id('kbEntryCategory').value.trim();
+  if(!question||!answer){ msg.textContent='Question and answer are both required.'; msg.className='save-msg err'; return; }
+  const entries=kbEntries();
+  if(_kbEditingId){
+    const idx=entries.findIndex(e=>e.id===_kbEditingId);
+    if(idx>=0) entries[idx]={...entries[idx],question,answer,category};
+  } else {
+    entries.push({id:'kb'+Date.now()+Math.round(Math.random()*1000),question,answer,category});
+  }
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    await kbSaveEntries(entries);
+    msg.textContent='✓ Saved';
+    kbCancelEdit();
+    renderKnowledgeBase();
+  }catch(e){
+    msg.textContent='Error: '+e.message; msg.className='save-msg err';
+  }
+  setTimeout(()=>{ if(msg) msg.textContent=''; },3000);
+}
+
+async function kbDeleteEntry(id){
+  if(!confirm('Delete this knowledge base entry?')) return;
+  const entries=kbEntries().filter(e=>e.id!==id);
+  await kbSaveEntries(entries);
+  renderKnowledgeBase();
+}
+
 // Enriches the raw kb_text with policy grounding, social proof and order-link instructions
 // before it is sent to the n8n KB processor webhook. This is additive to the *payload* only —
 // the stored kb_text field (what reps see/edit in Settings) is never mutated — so the bot picks
 // up trust-signal + order-link behavior purely through KB content, with zero n8n workflow edits.
 function buildKbProcessorText(rawText){
   let extra='';
+  // Structured Q&A entries (Knowledge Base page, kb_entries — separate from the freeform kb_text
+  // blob) serialize into the same payload here, same additive-only pattern as everything else in
+  // this function: kb_entries itself is never mutated, only what's sent to the processor.
+  const entries=kbEntries();
+  if(entries.length){
+    extra+='\n\n## KNOWLEDGE BASE Q&A\n';
+    entries.forEach(e=>{ extra+=`Q: ${e.question}${e.category?` [${e.category}]`:''}\nA: ${e.answer}\n\n`; });
+  }
   const pol=getBusinessPolicies();
   if(pol.refund||pol.delivery||pol.cancellation){
     extra+='\n\n## STORE POLICIES (ground objection-handling in these exact terms — never invent policy details)\n';
@@ -7481,9 +7767,68 @@ function toggleConvSearch(){
 // Per-agent breakdown across leads (Owner) and tasks (assignee_email) — both now the same email
 // identity via getTeamMembers(), so this is a straight join, not a name-matching guess the way it
 // would have been against the old free-text `agents` field.
+// Whole-business funnel/trend view, additive to the per-agent table above — computed entirely
+// client-side from allLeads (same as renderTeamPerformance itself), no new backend route.
+function renderTeamFunnelAnalytics(){
+  const stageEl=$id('teamFunnelStages'), statsEl=$id('teamFunnelStats');
+  const sentEl=$id('teamFunnelSentiment'), objEl=$id('teamFunnelObjections');
+  if(!stageEl) return;
+
+  // Stage funnel — same stage list/order the kanban already uses, so the two stay consistent.
+  const flow=getFlow();
+  const stages=['new',...Object.keys(flow.stages||{}).filter(k=>k!=='new'),'human_handover'];
+  const stageCounts=stages.map(s=>allLeads.filter(l=>(l.Stage||'new')===s).length);
+  const maxStage=Math.max(1,...stageCounts);
+  stageEl.innerHTML=stages.map((s,i)=>`<div class="bar-row"><div style="min-width:120px;font-size:11px">${esc(s)}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(stageCounts[i]/maxStage*100)}%"></div></div><div class="bar-val">${stageCounts[i]}</div></div>`).join('')
+    ||'<div style="color:var(--muted);font-size:12px">No stages configured yet.</div>';
+
+  // Sentiment trend, last 4 weeks — bucketed by LastMsgAt (falls back to Date if never set).
+  const weeks=[];
+  for(let i=3;i>=0;i--){
+    const end=new Date(); end.setDate(end.getDate()-i*7);
+    const start=new Date(end); start.setDate(start.getDate()-6);
+    weeks.push({label:`${start.getMonth()+1}/${start.getDate()}`, startStr:start.toISOString().slice(0,10), endStr:end.toISOString().slice(0,10)});
+  }
+  const sentimentRows=weeks.map(w=>{
+    const inWeek=allLeads.filter(l=>{const d=(l.LastMsgAt||l.Date||'').slice(0,10); return d>=w.startStr&&d<=w.endStr;});
+    const frustrated=inWeek.filter(l=>l.Sentiment==='Frustrated').length;
+    const negative=inWeek.filter(l=>l.Sentiment==='Negative').length;
+    const positive=inWeek.filter(l=>l.Sentiment==='Positive').length;
+    return {label:w.label, total:inWeek.length, frustrated, negative, positive};
+  });
+  sentEl.innerHTML=sentimentRows.map(r=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:6px 0;border-bottom:1px solid var(--line)">
+    <span style="color:var(--muted)">${r.label}</span>
+    <span>😠 ${r.frustrated} · 🙁 ${r.negative} · 🙂 ${r.positive} <span style="color:var(--muted)">(${r.total} msgs)</span></span>
+  </div>`).join('');
+
+  // Objection breakdown — LastObjectionCategory is the most recent objection per lead, not a full
+  // history, so this reads as "leads currently sitting on this objection" rather than a lifetime count.
+  const objCats=['price','competitor','timing','trust'];
+  const objCounts=objCats.map(c=>allLeads.filter(l=>l.LastObjectionCategory===c).length);
+  const maxObj=Math.max(1,...objCounts);
+  objEl.innerHTML=objCats.some((c,i)=>objCounts[i]>0)
+    ? objCats.map((c,i)=>`<div class="bar-row"><div style="min-width:90px;font-size:11px;text-transform:capitalize">${esc(c)}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(objCounts[i]/maxObj*100)}%"></div></div><div class="bar-val">${objCounts[i]}</div></div>`).join('')
+    : '<div style="color:var(--muted);font-size:12px">No open objections right now.</div>';
+
+  // Handover conversion — needs HandoverOutcome (set by Human Deals' "Mark this deal done" flow);
+  // leads handed over before that existed just won't have one, so this is scoped to what's
+  // actually been tagged, not a lifetime total.
+  const resolved=allLeads.filter(l=>l.HandoverOutcome);
+  const won=resolved.filter(l=>l.HandoverOutcome==='Resolved-Won').length;
+  const convRate=resolved.length?Math.round(won/resolved.length*100):null;
+  const queueNow=allLeads.filter(l=>l.Stage==='human_handover').length;
+  if(statsEl) statsEl.innerHTML=`
+    <div class="stat"><div class="stat-lbl">Waiting on a Human</div><div class="stat-val">${queueNow}</div></div>
+    <div class="stat"><div class="stat-lbl">Handovers Resolved</div><div class="stat-val">${resolved.length}</div></div>
+    <div class="stat accent"><div class="stat-lbl">Handover Win Rate</div><div class="stat-val">${convRate===null?'—':convRate+'%'}</div></div>
+    <div class="stat"><div class="stat-lbl">Total Leads</div><div class="stat-val">${allLeads.length}</div></div>
+  `;
+}
+
 function renderTeamPerformance(){
   const el=$id('teamPerfContent'); const statsEl=$id('teamPerfStats');
   if(!el) return;
+  try{ renderTeamFunnelAnalytics(); }catch(e){}
   const members=getTeamMembers();
   const state=getTasksState();
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
@@ -7491,7 +7836,11 @@ function renderTeamPerformance(){
 
   const rows=members.map(m=>{
     const ownedLeads=allLeads.filter(l=>l.Owner===m.email);
-    const won=ownedLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
+    // Matches the 'won'/'converted' recognition already used elsewhere (renderHome etc.) — plain
+    // TERMINAL.has() alone misses Human Deals' own "Resolved-Won" outcome (HD_OUTCOME_STAGE sets
+    // Stage='won', which isn't in the TERMINAL set itself), which would otherwise silently
+    // undercount wins right next to the Funnel Analytics section below that does count them.
+    const won=ownedLeads.filter(l=>l.Stage==='won'||l.Stage==='converted'||(TERMINAL.has(l.Stage)&&l.Stage!=='human_handover'));
     const active=ownedLeads.filter(l=>!TERMINAL.has(l.Stage));
     const hot=ownedLeads.filter(l=>l.Score==='Hot').length;
     const winRate=ownedLeads.length?Math.round(won.length/ownedLeads.length*100):0;

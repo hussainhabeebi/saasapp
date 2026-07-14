@@ -212,9 +212,43 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
   <div class="tabs">
     <button class="tab active" id="tab-dm" onclick="showTab('dm')">💬 Direct Message</button>
     <button class="tab" id="tab-meta" onclick="showTab('meta')">📣 Template Broadcast</button>
+    <button class="tab" id="tab-prospects" onclick="showTab('prospects')">🎯 Import Prospects</button>
     <button class="tab" id="tab-followups" onclick="showTab('followups')">🔁 Follow-ups</button>
     <button class="tab" id="tab-templates" onclick="showTab('templates')">📋 Manage Templates</button>
     <button class="tab" id="tab-tracking" onclick="showTab('tracking')">📊 Tracking</button>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       TAB: IMPORT PROSPECTS (merged in from dashboard.html's old standalone Prospects tab —
+       same Google Sheet import, now sharing this page's own template list/management instead
+       of a second duplicate template picker)
+  ══════════════════════════════════════ -->
+  <div id="view-prospects" style="display:none">
+    <div class="msg info">
+      🎯 Import a list of new contacts from a Google Sheet and send them a first-touch WhatsApp template message — 50 at a time. Uses the same approved templates as Template Broadcast/Manage Templates above.
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="step-num">1</span> Prospect List (Google Sheet)</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Sheet must have <code>Name</code> and <code>Phone</code> columns, and be shared with our sync account.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input class="ginput" style="flex:1;min-width:220px;color:var(--ink);background:var(--card);border-color:var(--line)" type="text" id="prospectSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/…">
+        <button class="btn btn-sec" onclick="saveProspectSheetUrl()">Save Link</button>
+      </div>
+      <div class="msg" id="prospectSheetMsg" style="display:none;margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="step-num">2</span> Template &amp; Import</div>
+      <select class="ginput" style="color:var(--ink);background:var(--card);border-color:var(--line);width:100%;margin-bottom:12px" id="prospectTemplateSelect"><option value="">Select an approved template…</option></select>
+      <button class="btn btn-primary" id="prospectImportBtn" onclick="prospectImportBatch()">📤 Import Next 50 &amp; Send</button>
+      <div class="msg" id="prospectImportMsg" style="display:none;margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📋 Import Runs</div>
+      <div id="prospectLogList"><div style="font-size:12px;color:var(--muted)">No import runs yet.</div></div>
+    </div>
   </div>
 
   <!-- ══════════════════════════════════════
@@ -637,12 +671,13 @@ async function initApp(){
 
 // ── TABS ──
 function showTab(tab){
-  ['dm','meta','followups','templates','tracking'].forEach(t=>{
+  ['dm','meta','prospects','followups','templates','tracking'].forEach(t=>{
     $id('view-'+t).style.display = t===tab ? '' : 'none';
     $id('tab-'+t).classList.toggle('active', t===tab);
   });
   if(tab==='followups') renderFollowupsTab();
   if(tab==='tracking') renderTrackingTab();
+  if(tab==='prospects') prospectsInit();
 }
 
 // ── LEADS ──
@@ -884,6 +919,81 @@ async function refreshTemplates(){
   await loadTemplates();
   await sleep(3000);
   await loadTemplates();
+}
+
+// ── PROSPECTS (merged in from dashboard.html's old standalone Prospects tab) ──
+const PROSPECT_BATCH_SIZE=50;
+let _prospectLog=[];
+function prospectN8nBase(){ return (clientRecord?.n8n_base||'https://apps.leadvyne.com').replace(/\/$/,''); }
+
+// Shares this page's own allTemplates (loaded once by loadTemplates() at page init) instead of a
+// second duplicate template-fetch — same list Template Broadcast/Manage Templates already show.
+function prospectsPopulateTemplates(){
+  const sel=$id('prospectTemplateSelect'); if(!sel) return;
+  const cur=sel.value;
+  sel.innerHTML='<option value="">Select an approved template…</option>'+allTemplates.map(t=>`<option value="${esc(t.name)}" data-lang="${esc(t.language||t.language_code||'en_US')}">${esc(t.name)} (${esc(t.language||t.language_code||'')})</option>`).join('');
+  if([...sel.options].some(o=>o.value===cur)) sel.value=cur;
+}
+
+function prospectsInit(){
+  if(!clientRecord) return;
+  $id('prospectSheetUrl').value=clientRecord.prospect_gsheet_url||'';
+  prospectsPopulateTemplates();
+  renderProspectLog();
+}
+
+async function saveProspectSheetUrl(){
+  const msg=$id('prospectSheetMsg');
+  const url=$id('prospectSheetUrl').value.trim();
+  msg.style.display='block'; msg.className='msg info'; msg.textContent='Saving…';
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:clientId,prospect_gsheet_url:url});
+    clientRecord.prospect_gsheet_url=url;
+    msg.className='msg success'; msg.textContent='✓ Saved';
+  }catch(e){
+    msg.className='msg error'; msg.textContent='Error: '+e.message;
+  }
+  setTimeout(()=>{ if(msg) msg.style.display='none'; },3000);
+}
+
+// Server-side webhook does the real work (import + send + log) — this is the same lightweight
+// trigger dashboard.html's old Prospects page used, ported as-is: one click imports up to
+// PROSPECT_BATCH_SIZE new (not-yet-imported) rows and sends each one the chosen template.
+async function prospectImportBatch(){
+  const btn=$id('prospectImportBtn'), msg=$id('prospectImportMsg');
+  const gsheetUrl=$id('prospectSheetUrl').value.trim();
+  const sel=$id('prospectTemplateSelect');
+  const templateName=sel.value;
+  const templateLang=sel.selectedOptions[0]?.dataset.lang||'en_US';
+  msg.style.display='block';
+  if(!gsheetUrl){ msg.className='msg error'; msg.textContent='Paste a Google Sheet link first.'; return; }
+  if(!templateName){ msg.className='msg error'; msg.textContent='Choose an approved WhatsApp template first.'; return; }
+  btn.disabled=true; msg.className='msg info'; msg.textContent=`Importing next batch of ${PROSPECT_BATCH_SIZE}…`;
+  try{
+    const r=await fetch(`${prospectN8nBase()}/webhook/leadvyne-prospects-import`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({client_id:clientId,gsheet_url:gsheetUrl,template_name:templateName,template_lang:templateLang,batch_size:PROSPECT_BATCH_SIZE})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data?.error||('HTTP '+r.status));
+    const imported=data.imported||0, sent=data.sent||0, failed=data.failed||0, skipped=data.skipped_duplicate||0;
+    msg.className='msg success';
+    msg.textContent=imported?`✓ Imported ${imported} — ${sent} sent, ${failed} failed. ${skipped} already-known number(s) skipped.`:'No new prospects found in the sheet — everything already imported.';
+    _prospectLog.unshift({ts:new Date().toISOString(),imported,sent,failed,skipped});
+    _prospectLog=_prospectLog.slice(0,10);
+    renderProspectLog();
+  }catch(e){
+    msg.className='msg error'; msg.textContent='Import failed: '+e.message+' — is the workflow active?';
+  }finally{ btn.disabled=false; }
+}
+
+function renderProspectLog(){
+  const box=$id('prospectLogList'); if(!box) return;
+  if(!_prospectLog.length){ box.innerHTML='<div style="font-size:12px;color:var(--muted)">No import runs yet.</div>'; return; }
+  box.innerHTML=_prospectLog.map(l=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 0;border-bottom:1px solid var(--line)">
+    <span>${new Date(l.ts).toLocaleString()}</span>
+    <span>${l.imported} imported · ${l.sent} sent · ${l.failed} failed · ${l.skipped} skipped</span>
+  </div>`).join('');
 }
 
 function renderTemplateGrid(){
