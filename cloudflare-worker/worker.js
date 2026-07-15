@@ -4164,11 +4164,19 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
   const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
 
+  // Both attempts below used to swallow every failure via a bare `catch(e){}` — with aiResult left
+  // null, customerLanguage below falls back to c.language (usually 'en'), so a classifier failure
+  // silently reads as "reply in English" for a customer who spoke/wrote another language entirely,
+  // with zero trace of why. reportOpsError here closes that blind spot (same fix already applied
+  // to voice transcription and Sarvam TTS above).
   let aiResult=null;
   try{
     const geminiRaw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true});
-    if(geminiRaw) aiResult=JSON.parse(geminiRaw);
-  }catch(e){}
+    if(geminiRaw){
+      try{ aiResult=JSON.parse(geminiRaw); }
+      catch(e){ await reportOpsError(env, 'engineClassifyIntent — Gemini returned unparseable JSON', e, {geminiRaw:geminiRaw.slice(0,500)}); }
+    }
+  }catch(e){ await reportOpsError(env, 'engineClassifyIntent — Gemini request threw', e); }
 
   if(!aiResult && c.openrouter_key){
     try{
@@ -4179,12 +4187,24 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
           messages:[{role:'system', content:systemText}, {role:'user', content:userPrompt}]
         })
       });
-      const data=await r.json().catch(()=>({}));
-      const raw=data?.choices?.[0]?.message?.content||'';
-      const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
-      if(m) aiResult=JSON.parse(m[0]);
-    }catch(e){}
+      if(!r.ok){
+        const bodyText=await r.text().catch(()=>'');
+        await reportOpsError(env, 'engineClassifyIntent — OpenRouter returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`));
+      }else{
+        const data=await r.json().catch(()=>({}));
+        const raw=data?.choices?.[0]?.message?.content||'';
+        const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+        if(m){
+          try{ aiResult=JSON.parse(m[0]); }
+          catch(e){ await reportOpsError(env, 'engineClassifyIntent — OpenRouter returned unparseable JSON', e, {raw:raw.slice(0,500)}); }
+        }else{
+          await reportOpsError(env, 'engineClassifyIntent — no JSON object in OpenRouter response', new Error(raw.slice(0,500)));
+        }
+      }
+    }catch(e){ await reportOpsError(env, 'engineClassifyIntent — OpenRouter request threw', e); }
   }
+
+  if(!aiResult) await reportOpsError(env, 'engineClassifyIntent — both Gemini and OpenRouter failed, using keyword/default fallback for intent+language', new Error('no aiResult'), {hasOpenrouterKey:!!c.openrouter_key});
 
   const VALID_INTENTS=new Set(['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL']);
   const VALID_SENTIMENT=new Set(['Positive','Neutral','Negative','Frustrated']);
