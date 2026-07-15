@@ -769,11 +769,11 @@ async function emailResolveTable(env, clientId, kind){
 // own where() clause.
 function emailSanitizeFilterValue(v){ return String(v).replace(/[(),~]/g,'').trim(); }
 
-// Builds the NocoDB where clause a campaign's audience resolves to. Every campaign send is
-// implicitly scoped to leads that (a) have an email address at all and (b) haven't opted out of
-// email specifically — segment_filter only narrows further from there.
-function emailAudienceWhereClause(clientId, segmentFilter){
-  const clauses=[`(ClientId,eq,${clientId})`, `(Email,notblank)`, `(EmailOptOut,neq,Yes)`];
+// Builds the NocoDB where clause a {stage:[...], tags_any:[...]} segment_filter resolves to,
+// scoped to one client's leads — shared by the Email Marketing module's campaigns and the
+// Automations module's flow audiences below, since both use the exact same filter shape.
+function leadsAudienceWhereClause(clientId, segmentFilter){
+  const clauses=[`(ClientId,eq,${clientId})`];
   const f=segmentFilter||{};
   if(Array.isArray(f.stage)&&f.stage.length){
     clauses.push('('+f.stage.map(s=>`(Stage,eq,${emailSanitizeFilterValue(s)})`).join('~or')+')');
@@ -782,6 +782,12 @@ function emailAudienceWhereClause(clientId, segmentFilter){
     clauses.push('('+f.tags_any.map(t=>`(Tags,like,${emailSanitizeFilterValue(t)})`).join('~or')+')');
   }
   return clauses.join('~and');
+}
+
+// Email sends narrow further: every campaign send is implicitly scoped to leads that (a) have an
+// email address at all and (b) haven't opted out of email specifically.
+function emailAudienceWhereClause(clientId, segmentFilter){
+  return leadsAudienceWhereClause(clientId, segmentFilter)+'~and(Email,notblank)~and(EmailOptOut,neq,Yes)';
 }
 
 async function handleEmailCampaignsList(request, env){
@@ -1502,6 +1508,364 @@ async function handleBroadcastFollowupSend(request, env){
 
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), ['Follow up '+(nextIdx+1)]:'Yes'}});
   return json({ok:true, stage:nextIdx+1, sentText:text});
+}
+
+/* ── Automations & Flow module (frontend/broadcast.html — "⚡ Automations" tab) ─────────────
+   A standalone module inside the Campaigns/Broadcast page: build a small ordered "flow" of
+   steps a lead walks through once enrolled, entered either automatically (new lead, stage
+   change, gone quiet) or by picking a segment and enrolling it once. It's deliberately built by
+   *reusing* the two sibling modules' own facilities rather than re-implementing sends:
+     - WhatsApp steps use the exact same Chatwoot call shape as the Broadcast module's
+       handleBroadcastSendDm/handleBroadcastSendTemplate above (and recovery.js's ladder).
+     - Email steps reuse sendClientResendEmail (the Email Marketing module's Resend helper) and
+       the same unsubscribe-link footer handleEmailCampaignSendOne sends.
+     - Audience matching reuses leadsAudienceWhereClause — the Email module's own
+       {stage:[...], tags_any:[...]} segment_filter shape, unchanged.
+   Flow definitions live as one JSON field on the client row (automation_flows) — same
+   config-blob-on-CLIENTS pattern as followup_messages/recovery_gaps_hours, since a client has a
+   handful of flows, not thousands of rows needing their own table. Per-lead progress lives in
+   one JSON field on the Leads table (flow_state), auto-created the first time the engine touches
+   a client — the same ensureRecoveryFields()-at-runtime pattern recovery.js uses for its own
+   recovery_* fields, just issued through this file's ncFetch/master-token helper instead of a
+   raw per-client-token fetch.
+   Execution is a Cron Trigger tick (runAutomationFlowsForAllClients, every 15 min — see
+   wrangler.toml), not a browser send-loop like the Email/Broadcast modules use for one-shot
+   blasts: a flow can contain multi-hour/day `wait` steps, and nothing guarantees the tab that
+   built the flow stays open that long. Manual "enroll this segment now" is the one action that
+   still comes from an explicit request rather than the tick, mirroring the Email module's
+   send-init/send-one split (enroll now, sends still happen on the flow's own schedule). ── */
+
+const AUTOMATION_STEP_TYPES = new Set(['wait','send_whatsapp_dm','send_whatsapp_template','send_email','update_field']);
+const AUTOMATION_TRIGGER_TYPES = new Set(['manual','new_lead','stage_enter','no_reply']);
+// Same closed-out stages recovery.js already refuses to touch — a flow (especially a broad
+// "no reply in N hours" one) shouldn't keep nudging a lead that's Converted/Lost/Closed/opted out.
+const AUTOMATION_TERMINAL_STAGES = new Set(['Converted','Lost','Closed','Opt Out']);
+
+function validateAutomationFlow(body){
+  const name=String(body?.name||'').trim();
+  if(!name) return 'name required';
+  const trigger=body?.trigger||{};
+  if(!AUTOMATION_TRIGGER_TYPES.has(trigger.type)) return 'invalid trigger.type';
+  if(trigger.type==='no_reply' && !(parseFloat(trigger.no_reply_hours)>0)) return 'no_reply trigger needs no_reply_hours > 0';
+  if(trigger.type==='stage_enter' && !(Array.isArray(body?.segment?.stage)&&body.segment.stage.length)) return 'a stage-enter trigger needs at least one Stage selected';
+  const steps=Array.isArray(body?.steps)?body.steps:[];
+  if(!steps.length) return 'at least one step required';
+  for(const s of steps){
+    if(!AUTOMATION_STEP_TYPES.has(s?.type)) return 'invalid step type: '+s?.type;
+    if(s.type==='wait' && !(parseFloat(s.hours)>0)) return 'a Wait step needs hours > 0';
+    if(s.type==='send_whatsapp_dm' && !String(s.message||'').trim()) return 'a Send WhatsApp DM step needs a message';
+    if(s.type==='send_whatsapp_template' && !String(s.template_name||'').trim()) return 'a Send WhatsApp Template step needs a template_name';
+    if(s.type==='send_email' && (!String(s.subject||'').trim()||!String(s.html_body||'').trim())) return 'a Send Email step needs a subject and html_body';
+    if(s.type==='update_field' && !String(s.field||'').trim()) return 'an Update Field step needs a field name';
+  }
+  return null;
+}
+
+async function getAutomationFlows(env, clientId){
+  const c=await getClientById(env, clientId);
+  let list=[]; try{ list=JSON.parse(c?.automation_flows||'[]'); }catch(e){}
+  return {client:c, list};
+}
+async function saveAutomationFlows(env, clientId, list){
+  await patchClientFields(env, clientId, {automation_flows:JSON.stringify(list)});
+}
+
+async function handleAutomationFlowsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {list}=await getAutomationFlows(env, payload.cid);
+  return json({list});
+}
+
+async function handleAutomationFlowCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const err=validateAutomationFlow(body);
+  if(err) return json({error:err}, 400);
+  const {list}=await getAutomationFlows(env, payload.cid);
+  const flow={
+    id:'fl_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8),
+    name:String(body.name).trim(),
+    active:false,
+    trigger:{type:body.trigger.type, no_reply_hours:parseFloat(body.trigger.no_reply_hours)||null},
+    segment:{stage:Array.isArray(body.segment?.stage)?body.segment.stage:[], tags_any:Array.isArray(body.segment?.tags_any)?body.segment.tags_any:[]},
+    steps:body.steps,
+    stats:{enrolled:0, completed:0},
+    created_at:new Date().toISOString(),
+  };
+  list.push(flow);
+  await saveAutomationFlows(env, payload.cid, list);
+  return json({ok:true, flow});
+}
+
+async function handleAutomationFlowUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const {list}=await getAutomationFlows(env, payload.cid);
+  const idx=list.findIndex(f=>f.id===body.id);
+  if(idx===-1) return json({error:'Flow not found'}, 404);
+  // Flipping just `active` (pause/resume) skips re-validation — the steps were already valid
+  // the last time they were saved. Anything touching name/trigger/segment/steps re-validates
+  // the full merged shape before persisting.
+  const touchesShape=['name','trigger','segment','steps'].some(k=>k in body);
+  if(touchesShape){
+    const merged={...list[idx], name:body.name??list[idx].name, trigger:body.trigger??list[idx].trigger, segment:body.segment??list[idx].segment, steps:body.steps??list[idx].steps};
+    const err=validateAutomationFlow(merged);
+    if(err) return json({error:err}, 400);
+    list[idx]={...list[idx], name:merged.name, trigger:merged.trigger, segment:merged.segment, steps:merged.steps};
+  }
+  if('active' in body) list[idx].active=!!body.active;
+  await saveAutomationFlows(env, payload.cid, list);
+  return json({ok:true, flow:list[idx]});
+}
+
+async function handleAutomationFlowDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const {list}=await getAutomationFlows(env, payload.cid);
+  const next=list.filter(f=>f.id!==body.id);
+  if(next.length===list.length) return json({error:'Flow not found'}, 404);
+  await saveAutomationFlows(env, payload.cid, next);
+  return json({ok:true});
+}
+
+async function handleAutomationAudiencePreview(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  let segmentFilter={}; try{ segmentFilter=JSON.parse(url.searchParams.get('segment_filter')||'{}'); }catch(e){}
+  const where=leadsAudienceWhereClause(payload.cid, segmentFilter);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=5&fields=Id,Name,Phone`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({count:data?.pageInfo?.totalRows??(data.list||[]).length, sample:(data.list||[]).slice(0,5)});
+}
+
+// Auto-creates the flow_state field the first time any client's flow engine touches the Leads
+// table — mirrors recovery.js's ensureRecoveryFields, just routed through this file's own
+// ncFetch/master-token helper instead of a raw per-client-token fetch. Memoized per Worker
+// isolate (best-effort — a cold start just re-checks once, no correctness impact either way).
+let _flowStateFieldEnsured=false;
+async function ensureFlowStateField(env){
+  if(_flowStateFieldEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('flow_state')){
+      await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'flow_state', uidt:'LongText'}});
+    }
+    _flowStateFieldEnsured=true;
+  }catch(e){ console.error('[automations] ensureFlowStateField failed', e.message); }
+}
+
+function parseFlowState(lead){ try{ return JSON.parse(lead.flow_state||'{}'); }catch(e){ return {}; } }
+function flowLeadConvId(lead){ return lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id||null; }
+function fillFlowTokens(text, lead){
+  return String(text||'').replace(/\{name\}/gi, lead.Name||'there').replace(/\{stage\}/gi, lead.Stage||'').replace(/\{phone\}/gi, lead.Phone||'');
+}
+
+// Manual "Enroll matching leads now" — the one enrollment path triggered by an explicit request
+// instead of the cron tick (same split as the Email module's send-init vs. its own cron-free
+// send-one loop). Leads already enrolled (active or done) in this flow are left alone.
+async function handleAutomationFlowEnroll(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const {list}=await getAutomationFlows(env, payload.cid);
+  const flow=list.find(f=>f.id===body.id);
+  if(!flow) return json({error:'Flow not found'}, 404);
+  await ensureFlowStateField(env);
+
+  const where=leadsAudienceWhereClause(payload.cid, flow.segment);
+  let enrolled=0, page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=Id,flow_state,OptOut,Handover,Stage`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const lead of rows){
+      if(lead.OptOut==='Yes'||lead.Handover==='Yes'||AUTOMATION_TERMINAL_STAGES.has(lead.Stage)) continue;
+      const state=parseFlowState(lead);
+      if(state[flow.id]) continue;
+      state[flow.id]={step:0, next_at:new Date().toISOString(), enrolled_at:new Date().toISOString(), status:'active'};
+      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, flow_state:JSON.stringify(state)}});
+      enrolled++;
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+  flow.stats=flow.stats||{enrolled:0,completed:0};
+  flow.stats.enrolled=(flow.stats.enrolled||0)+enrolled;
+  await saveAutomationFlows(env, payload.cid, list);
+  return json({ok:true, enrolled});
+}
+
+// Same Chatwoot call shape as handleBroadcastSendDm above / recovery.js's sendPlainMessage.
+async function sendFlowWhatsappDm(c, convId, content){
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({content, message_type:'outgoing', private:false})
+  });
+  if(!r.ok) throw new Error('Chatwoot send failed: HTTP '+r.status);
+}
+// Same Chatwoot template shape as handleBroadcastSendTemplate above.
+async function sendFlowWhatsappTemplate(c, convId, step, leadName){
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({content:step.template_name, message_type:'outgoing', private:false, template_params:{
+      name:step.template_name, category:step.category||'MARKETING', language:step.language||'en',
+      processed_params:{1:leadName||'there'}
+    }})
+  });
+  if(!r.ok) throw new Error('Chatwoot template send failed: HTTP '+r.status);
+}
+// Reuses sendClientResendEmail plus the same unsubscribe-link footer handleEmailCampaignSendOne
+// sends — a flow's email step is just a one-recipient version of the same campaign send.
+async function sendFlowEmail(env, c, lead, step){
+  if(!lead.Email || lead.EmailOptOut==='Yes') return; // same channel-specific opt-out email campaigns respect
+  const unsubToken=await hmacHex(env, `unsub:${lead.Id}`);
+  const unsubLink=`${env.WORKER_BASE_URL}/email/unsubscribe?lead_id=${lead.Id}&token=${unsubToken}`;
+  const html=`${step.html_body}<p style="font-size:11px;color:#888;margin-top:24px">Don't want these emails? <a href="${unsubLink}">Unsubscribe</a>.</p>`;
+  const result=await sendClientResendEmail(c, {to:lead.Email, subject:step.subject, html});
+  if(!result.ok) throw new Error(result.error||'Resend send failed');
+}
+
+// Runs every step starting at entry.step that doesn't need a wait, stopping at the next
+// unexpired 'wait' (or the end of the flow). Mutates `entry` (step/next_at/status) in place —
+// the caller persists lead.flow_state right after this returns.
+async function advanceFlowLead(env, c, lead, flow, entry){
+  while(entry.step<flow.steps.length){
+    const step=flow.steps[entry.step];
+    if(step.type==='wait'){
+      entry.next_at=new Date(Date.now()+step.hours*3600000).toISOString();
+      entry.step++;
+      return {completed:false};
+    }
+    const convId=flowLeadConvId(lead);
+    if(step.type==='send_whatsapp_dm'){
+      if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendFlowWhatsappDm(c, convId, fillFlowTokens(step.message, lead));
+    }else if(step.type==='send_whatsapp_template'){
+      if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendFlowWhatsappTemplate(c, convId, step, lead.Name);
+    }else if(step.type==='send_email'){
+      await sendFlowEmail(env, c, lead, step);
+    }else if(step.type==='update_field'){
+      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, [step.field]:step.value}});
+    }
+    entry.step++;
+  }
+  entry.status='done';
+  entry.next_at=null;
+  return {completed:true};
+}
+
+// Cron Trigger entry point (every 15 min — see wrangler.toml [triggers]). Loops every client
+// with at least one active flow, same paginated-CLIENTS-scan shape as
+// runDailyHealthCheckForAllClients above.
+async function runAutomationFlowsForAllClients(env){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      let flows=[]; try{ flows=JSON.parse(c.automation_flows||'[]'); }catch(e){}
+      const activeFlows=flows.filter(f=>f.active);
+      if(!activeFlows.length) continue;
+      try{ await processClientAutomationFlows(env, c, flows, activeFlows); }
+      catch(e){ console.error('[automations] tick failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+
+async function processClientAutomationFlows(env, c, allFlows, activeFlows){
+  if(!c.chatwoot_base && !c.resend_api_key) return; // nothing this client could actually send with
+  await ensureFlowStateField(env);
+  let flowsChanged=false;
+
+  for(const flow of activeFlows){
+    // ── Ongoing auto-enrollment (manual-trigger flows only enroll via handleAutomationFlowEnroll) ──
+    if(flow.trigger.type==='new_lead' || flow.trigger.type==='stage_enter'){
+      const where=leadsAudienceWhereClause(c.Id, flow.segment);
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=100&sort=-Date&fields=Id,flow_state,OptOut,Handover,Stage`);
+      const data=await r.json().catch(()=>({}));
+      for(const lead of (data?.list||[])){
+        if(lead.OptOut==='Yes'||lead.Handover==='Yes'||AUTOMATION_TERMINAL_STAGES.has(lead.Stage)) continue;
+        const state=parseFlowState(lead);
+        if(state[flow.id]) continue;
+        state[flow.id]={step:0, next_at:new Date().toISOString(), enrolled_at:new Date().toISOString(), status:'active'};
+        await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, flow_state:JSON.stringify(state)}});
+        flow.stats=flow.stats||{enrolled:0,completed:0}; flow.stats.enrolled++; flowsChanged=true;
+      }
+    }
+    // "No reply in N hours" — same silence signal recovery.js's ladder already uses
+    // (LastMsgAt), just enrolling into this flow's own steps instead of a hardcoded ladder.
+    // Still honors the flow's own segment (e.g. restrict to certain Stages/tags) on top of that.
+    if(flow.trigger.type==='no_reply'){
+      const where=leadsAudienceWhereClause(c.Id, flow.segment)+'~and(LastMsgAt,notblank)';
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&fields=Id,flow_state,OptOut,Handover,Stage,LastMsgAt`);
+      const data=await r.json().catch(()=>({}));
+      const cutoffMs=Date.now()-flow.trigger.no_reply_hours*3600000;
+      for(const lead of (data?.list||[])){
+        if(lead.OptOut==='Yes'||lead.Handover==='Yes'||AUTOMATION_TERMINAL_STAGES.has(lead.Stage)) continue;
+        if(new Date(lead.LastMsgAt).getTime()>cutoffMs) continue; // still within the reply window
+        const state=parseFlowState(lead);
+        if(state[flow.id]) continue;
+        state[flow.id]={step:0, next_at:new Date().toISOString(), enrolled_at:new Date().toISOString(), status:'active'};
+        await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, flow_state:JSON.stringify(state)}});
+        flow.stats=flow.stats||{enrolled:0,completed:0}; flow.stats.enrolled++; flowsChanged=true;
+      }
+    }
+
+    // ── Advance leads already enrolled and due ──
+    // flow_state is a LongText JSON blob, so it can't be filtered "due now" server-side — narrow
+    // with a cheap `like` on the flow id (present as a JSON object key), then check next_at
+    // precisely in memory. Same trade-off recovery.js accepts for its own ladder fields.
+    const dueWhere=`(ClientId,eq,${c.Id})~and(flow_state,like,%22${flow.id}%22)`;
+    let page=1;
+    while(true){
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(dueWhere)}&limit=100&offset=${(page-1)*100}`);
+      if(!r.ok) break;
+      const data=await r.json().catch(()=>({}));
+      const rows=data?.list||[];
+      if(!rows.length) break;
+      for(const lead of rows){
+        const state=parseFlowState(lead);
+        const entry=state[flow.id];
+        if(!entry || entry.status!=='active') continue;
+        if(lead.OptOut==='Yes'||lead.Handover==='Yes'||AUTOMATION_TERMINAL_STAGES.has(lead.Stage)){
+          entry.status='exited';
+          await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, flow_state:JSON.stringify(state)}});
+          continue;
+        }
+        if(new Date(entry.next_at).getTime()>Date.now()) continue; // not due yet
+
+        try{
+          const advanced=await advanceFlowLead(env, c, lead, flow, entry);
+          if(advanced.completed){ flow.stats=flow.stats||{enrolled:0,completed:0}; flow.stats.completed++; flowsChanged=true; }
+          await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, flow_state:JSON.stringify(state)}});
+        }catch(e){ console.error('[automations] step failed for lead', lead.Id, 'flow', flow.id, e.message); }
+        await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
+      }
+      if(rows.length<100) break;
+      page++;
+    }
+  }
+
+  if(flowsChanged){
+    try{ await patchClientFields(env, c.Id, {automation_flows:JSON.stringify(allFlows)}); }catch(e){}
+  }
 }
 
 /* ── Channels module ──────────────────────────────────────────────────────
@@ -5258,6 +5622,12 @@ export default {
       else if(url.pathname==='/broadcast/send-dm' && request.method==='POST'){ res=await handleBroadcastSendDm(request, env); }
       else if(url.pathname==='/broadcast/send-template' && request.method==='POST'){ res=await handleBroadcastSendTemplate(request, env); }
       else if(url.pathname==='/broadcast/followup-send' && request.method==='POST'){ res=await handleBroadcastFollowupSend(request, env); }
+      else if(url.pathname==='/automations/flows' && request.method==='GET'){ res=await handleAutomationFlowsList(request, env); }
+      else if(url.pathname==='/automations/flows' && request.method==='POST'){ res=await handleAutomationFlowCreate(request, env); }
+      else if(url.pathname==='/automations/flows' && request.method==='PATCH'){ res=await handleAutomationFlowUpdate(request, env); }
+      else if(url.pathname==='/automations/flows' && request.method==='DELETE'){ res=await handleAutomationFlowDelete(request, env); }
+      else if(url.pathname==='/automations/flows/enroll' && request.method==='POST'){ res=await handleAutomationFlowEnroll(request, env); }
+      else if(url.pathname==='/automations/audience-preview' && request.method==='GET'){ res=await handleAutomationAudiencePreview(request, env); }
       else if(url.pathname==='/channels/create-account' && request.method==='POST'){ res=await handleChannelsCreateAccount(request, env); }
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
@@ -5293,10 +5663,12 @@ export default {
     return new Response(res.body, {status:res.status, headers});
   },
 
-  // Cloudflare Cron Triggers — see wrangler.toml [triggers]. Two schedules share this one
-  // entry point: the daily health check, and the more frequent Shopify abandoned-cart sweep.
+  // Cloudflare Cron Triggers — see wrangler.toml [triggers]. Three schedules share this one
+  // entry point: the daily health check, the Automations module's flow-advance tick, and the
+  // Shopify abandoned-cart sweep.
   async scheduled(event, env, ctx){
     if(event.cron==='0 2 * * *') ctx.waitUntil(runDailyHealthCheckForAllClients(env));
+    else if(event.cron==='*/15 * * * *') ctx.waitUntil(runAutomationFlowsForAllClients(env));
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }
 };

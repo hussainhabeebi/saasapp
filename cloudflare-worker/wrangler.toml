@@ -2,13 +2,15 @@ name = "leadvyne-api-proxy"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
-# Two schedules, dispatched by event.cron in `scheduled()`:
+# Three schedules, dispatched by event.cron in `scheduled()`:
 #  - "0 2 * * *"     Integrations tab health check, once daily for every client
 #                    (runDailyHealthCheckForAllClients in worker.js).
+#  - "*/15 * * * *"  Automations module — advances every client's active flows
+#                    (runAutomationFlowsForAllClients in worker.js).
 #  - "*/20 * * * *"  Shopify module — abandoned-cart nudge sweep
 #                    (sweepAbandonedShopifyCheckouts in worker.js).
 [triggers]
-crons = ["0 2 * * *", "*/20 * * * *"]
+crons = ["0 2 * * *", "*/15 * * * *", "*/20 * * * *"]
 
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
