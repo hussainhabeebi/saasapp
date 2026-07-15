@@ -1237,6 +1237,33 @@ const TODAY = new Date().toISOString().slice(0,10);
             <textarea class="form-input" id="quoteFooterAddress" rows="2" placeholder="e.g. 123 Sheikh Zayed Road, Dubai, UAE — +971 4 123 4567"></textarea>
           </div>
 
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
+            <div>
+              <label class="form-label">Document Title (printed at the top of the PDF)</label>
+              <input class="form-input" id="quoteHeaderTitle" type="text" placeholder="e.g. Travel Agency">
+              <div style="font-size:11px;color:var(--muted);margin-top:4px">Company name (shown below the title) is set in Settings → Billing.</div>
+            </div>
+            <div>
+              <label class="form-label">Accent Color</label>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input type="color" id="quoteAccentColor" style="width:44px;height:38px;padding:2px;border:1.5px solid var(--line);border-radius:8px;cursor:pointer">
+                <input class="form-input" id="quoteAccentColorHex" type="text" placeholder="#0D9C93" style="flex:1">
+              </div>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px">Leave blank to use your account's theme color.</div>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
+            <div>
+              <label class="form-label">Payment Methods</label>
+              <input class="form-input" id="quotePaymentMethods" type="text" placeholder="e.g. Bank Transfer, Cash, Card">
+            </div>
+            <div>
+              <label class="form-label">Tax %</label>
+              <input class="form-input" id="quoteTaxPercent" type="number" min="0" max="100" step="0.1" placeholder="0">
+            </div>
+          </div>
+
           <div style="display:flex;gap:12px;align-items:flex-end;margin-top:14px;flex-wrap:wrap">
             <div id="quoteValidityRow">
               <label class="form-label">Valid for (days)</label>
@@ -5354,6 +5381,11 @@ function quoteInit(){
   $id('quoteTemplate').value=clientRecord.quote_template||QUOTE_DEFAULT_TEMPLATE;
   $id('quoteTerms').value=clientRecord.quote_terms||QUOTE_DEFAULT_TERMS;
   $id('quoteFooterAddress').value=clientRecord.quote_footer_address||'';
+  $id('quoteHeaderTitle').value=clientRecord.quote_header_title||'';
+  $id('quoteAccentColorHex').value=clientRecord.quote_accent_color||'';
+  $id('quoteAccentColor').value=clientRecord.quote_accent_color||'#0D9C93';
+  $id('quotePaymentMethods').value=clientRecord.quote_payment_methods||'';
+  $id('quoteTaxPercent').value=clientRecord.quote_tax_percent||0;
   $id('quoteValidityDays').value=clientRecord.quote_validity_days||7;
   try{_quoteServices=JSON.parse(clientRecord.services||'[]');}catch(e){_quoteServices=[];}
   _quoteSelectedLead=null;
@@ -5392,11 +5424,24 @@ function renderQuoteSentLog(){
     </div>`;
 }
 
+// The swatch and the hex text field both drive the same quote_accent_color value — clicking the
+// swatch fills in the hex text, and typing a valid hex updates the swatch preview, so either one
+// works and they never fall out of sync with each other.
+$id('quoteAccentColor').addEventListener('input',()=>{ $id('quoteAccentColorHex').value=$id('quoteAccentColor').value; });
+$id('quoteAccentColorHex').addEventListener('input',()=>{
+  const v=$id('quoteAccentColorHex').value.trim();
+  if(/^#[0-9a-f]{6}$/i.test(v)) $id('quoteAccentColor').value=v;
+});
+
 $id('saveQuoteTemplate').addEventListener('click',async()=>{
   await saveField('saveQuoteTemplate','saveQuoteTemplateMsg',{
     quote_template:$id('quoteTemplate').value,
     quote_terms:$id('quoteTerms').value,
     quote_footer_address:$id('quoteFooterAddress').value.trim(),
+    quote_header_title:$id('quoteHeaderTitle').value.trim(),
+    quote_accent_color:$id('quoteAccentColorHex').value.trim(),
+    quote_payment_methods:$id('quotePaymentMethods').value.trim(),
+    quote_tax_percent:parseFloat($id('quoteTaxPercent').value)||0,
     quote_validity_days:parseInt($id('quoteValidityDays').value)||7,
   });
 });
@@ -9482,46 +9527,57 @@ function sqAccentRgb(varName,fallbackHex){
     const v=getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
     if(v) hex=v;
   }catch(e){}
-  hex=hex.replace('#','');
+  return sqHexToRgb(hex);
+}
+
+function sqHexToRgb(hex){
+  hex=(hex||'').replace('#','');
   if(hex.length===3) hex=hex.split('').map(c=>c+c).join('');
   const n=parseInt(hex,16)||0;
   return[(n>>16)&255,(n>>8)&255,n&255];
 }
 
-// Writes a labeled block of wrapped free-text, paginating if it runs off the page — used for
-// notes/details sections where the source data is plain text rather than a list.
-function sqWriteWrapped(doc,label,text,x,y,maxW,accentInk){
-  const pageH=doc.internal.pageSize.getHeight();
-  if(y>pageH-60){doc.addPage();y=50;}
-  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(...accentInk);doc.text(label,x,y);y+=13;
-  doc.setTextColor(0);
-  doc.setFont('helvetica','normal');doc.setFontSize(9.5);
-  const lines=doc.splitTextToSize(text,maxW);
-  lines.forEach(line=>{
-    if(y>pageH-50){doc.addPage();y=50;}
-    doc.text(line,x,y);y+=12;
+// Shifts an RGB triple toward black (negative percent) or white (positive percent) — used to
+// derive an ink/soft-tint pair from a single custom accent color, the same way the CSS theme
+// already provides --accent-ink/--accent-soft alongside --accent.
+function sqShade(rgb,percent){
+  return rgb.map(c=>{
+    const v=percent<0?c*(1+percent):c+(255-c)*percent;
+    return Math.max(0,Math.min(255,Math.round(v)));
   });
-  return y+8;
 }
 
-// Writes a labeled bullet list, one wrapped bullet per array entry — used for
-// Inclusions/Exclusions, which are stored as JSON-stringified arrays (see savePkg()) and must
-// be parsed with safeJson() before printing, not written out as a raw JSON string.
-function sqWriteBulletList(doc,label,items,x,y,maxW,accentInk){
-  if(!items.length) return y;
-  const pageH=doc.internal.pageSize.getHeight();
-  if(y>pageH-60){doc.addPage();y=50;}
-  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(...accentInk);doc.text(label,x,y);y+=14;
-  doc.setTextColor(0);
-  doc.setFont('helvetica','normal');doc.setFontSize(9.5);
-  items.forEach(item=>{
-    const lines=doc.splitTextToSize('•  '+item,maxW);
-    lines.forEach(line=>{
-      if(y>pageH-50){doc.addPage();y=50;}
-      doc.text(line,x,y);y+=13;
-    });
-  });
-  return y+7;
+// Builds the itemized rows for the quotation table (Description / No. of Persons / Price /
+// Total), one row per unit the client's charging for plus zero-priced context rows (inclusions,
+// itinerary days, notes) — mirrors a standard line-item quote layout regardless of format.
+function sqBuildLineItems(src,format,price,currency,pax){
+  const rows=[];
+  const unitPrice=parseFloat(price)||0;
+  if(format==='package'){
+    if(src.type==='package'){
+      const p=src.rec;
+      safeJson(p.inclusions,[]).forEach(inc=>rows.push({desc:'Included: '+inc,persons:'',price:0,total:0}));
+      rows.push({desc:p.name||'Package',persons:pax,price:unitPrice,total:unitPrice*pax});
+      if((p.notes||'').trim()) rows.push({desc:'Note: '+p.notes.trim(),persons:'',price:0,total:0});
+    }else{
+      const it=src.rec;
+      (it.days||[]).forEach(d=>{
+        const items=(d.items||[]).map(i=>i.description).filter(Boolean).join(', ');
+        rows.push({desc:`Day ${d.day_no}: ${d.title||''}${items?' — '+items:''}`,persons:'',price:0,total:0});
+      });
+      rows.push({desc:it.title||'Itinerary',persons:pax,price:unitPrice,total:unitPrice*pax});
+      if((it.notes||'').trim()) rows.push({desc:'Note: '+it.notes.trim(),persons:'',price:0,total:0});
+    }
+  }else if(format==='group_fare'){
+    rows.push({desc:src.rec.destination?`Group Fare — ${src.rec.destination}`:'Group Fare',persons:pax,price:unitPrice,total:unitPrice*pax});
+    if((src.rec.notes||'').trim()) rows.push({desc:'Note: '+src.rec.notes.trim(),persons:'',price:0,total:0});
+  }else{ // travel_service
+    const label=src.type==='package'?(src.rec.name||'Travel Service'):(src.rec.title||'Travel Service');
+    rows.push({desc:label,persons:pax,price:unitPrice,total:unitPrice*pax});
+    if((src.rec.notes||'').trim()) rows.push({desc:'Note: '+src.rec.notes.trim(),persons:'',price:0,total:0});
+  }
+  const subtotal=rows.reduce((s,r)=>s+(r.total||0),0);
+  return{rows,subtotal};
 }
 
 // Stamps a footer (rule + optional business address + "Page X of N") on every page of the
@@ -9547,163 +9603,197 @@ function stampQuoteFooter(doc,marginX){
   }
 }
 
-function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity){
+function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber){
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
   const marginX=40;
   const pageW=doc.internal.pageSize.getWidth();
   const pageH=doc.internal.pageSize.getHeight();
   const contentW=pageW-marginX*2;
-  const accent=sqAccentRgb('--accent','#0D9C93');
-  const accentInk=sqAccentRgb('--accent-ink','#1E3A6E');
-  const accentSoft=sqAccentRgb('--accent-soft','#DFF6F3');
+
+  // Colors: a custom quote_accent_color (if set) drives everything — ink/soft tints are shaded
+  // from it programmatically — otherwise falls back to the account's own theme accent.
+  const customHex=(clientRecord.quote_accent_color||'').trim();
+  const accent=customHex?sqHexToRgb(customHex):sqAccentRgb('--accent','#0D9C93');
+  const accentInk=customHex?sqShade(accent,-0.35):sqAccentRgb('--accent-ink','#1E3A6E');
+  const accentSoft=customHex?sqShade(accent,0.85):sqAccentRgb('--accent-soft','#DFF6F3');
+
   let y=44;
 
-  // ── Header: logo only when one's set (no redundant business-name text next to it) — falls
-  // back to the business name as text only when there's no logo to show at all.
-  let headerBottomY=y;
+  // ── Header: logo top-left (if set) alongside a centered, brandable document title — both the
+  // title text and the accent color are client-configurable (quote_header_title / quote_accent_color).
+  let logoBottomY=y;
   if(clientRecord.quote_logo_url){
     try{
       const mime=/data:image\/(png|jpe?g|webp)/.exec(clientRecord.quote_logo_url);
       const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
-      const maxLogoW=150,maxLogoH=60;
+      const maxLogoW=110,maxLogoH=50;
       let w=maxLogoW,h=maxLogoH;
       if(_quoteLogoDims&&_quoteLogoDims.w&&_quoteLogoDims.h){
         const ratio=Math.min(maxLogoW/_quoteLogoDims.w,maxLogoH/_quoteLogoDims.h);
         w=_quoteLogoDims.w*ratio; h=_quoteLogoDims.h*ratio;
       }
       doc.addImage(clientRecord.quote_logo_url,fmt,marginX,y,w,h,undefined,'FAST');
-      headerBottomY=y+h;
-    }catch(e){
-      doc.setFont('helvetica','bold');doc.setFontSize(18);doc.setTextColor(...accentInk);
-      doc.text(clientRecord.client_name||'Quotation',marginX,y+20);
-      doc.setTextColor(0);
-      headerBottomY=y+28;
-    }
-  }else{
-    doc.setFont('helvetica','bold');doc.setFontSize(18);doc.setTextColor(...accentInk);
-    doc.text(clientRecord.client_name||'Quotation',marginX,y+20);
-    doc.setTextColor(0);
-    headerBottomY=y+28;
+      logoBottomY=y+h;
+    }catch(e){}
   }
-
-  // Document meta, right-aligned: type, date, valid-until (a concrete date reads better than
-  // a bare "valid for N days" — the recipient shouldn't have to do the math themselves).
-  const validUntil=new Date(Date.now()+validity*86400000).toLocaleDateString();
-  doc.setFont('helvetica','bold');doc.setFontSize(13);doc.setTextColor(...accentInk);
-  doc.text(SQ_FORMAT_TITLES[format]||'Quotation',pageW-marginX,y+12,{align:'right'});
+  const headerTitle=(clientRecord.quote_header_title||clientRecord.client_name||'Quotation').trim();
+  doc.setFont('times','bold');doc.setFontSize(24);doc.setTextColor(...accentInk);
+  doc.text(headerTitle,pageW/2,y+22,{align:'center'});
   doc.setTextColor(0);
-  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(100);
-  doc.text(`Date: ${new Date().toLocaleDateString()}`,pageW-marginX,y+28,{align:'right'});
-  doc.text(`Valid until: ${validUntil}`,pageW-marginX,y+42,{align:'right'});
-  doc.setTextColor(0);
-  headerBottomY=Math.max(headerBottomY,y+50);
+  y=Math.max(logoBottomY,y+30)+12;
 
-  y=headerBottomY+10;
-  doc.setDrawColor(...accent);doc.setLineWidth(1.4);
+  doc.setDrawColor(...accent);doc.setLineWidth(1.2);
   doc.line(marginX,y,pageW-marginX,y);
-  y+=24;
+  y+=20;
 
-  const title=src.type==='package'?(src.rec.name||'Package'):(src.rec.title||'Itinerary');
-  const destination=src.rec.destination||'';
+  // Meta grid — trip basics on the left, document identity on the right
+  const departure=src.type==='itinerary'?(src.rec.from_date||'—'):'—';
+  const metaLeft=[['Departure:',departure],['Operator:',clientRecord.client_name||'—'],['No. of Passengers:',String(pax)]];
+  const metaRight=[['Quote No.:',quoteNumber||'—'],['Quote Date:',new Date().toLocaleDateString()],['Valid Until:',new Date(Date.now()+validity*86400000).toLocaleDateString()]];
+  doc.setFontSize(9);
+  let my=y;
+  metaLeft.forEach(([lab,val])=>{
+    doc.setFont('helvetica','bold');doc.setTextColor(60);doc.text(lab,marginX,my);
+    doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(String(val),marginX+120,my);
+    my+=15;
+  });
+  let my2=y;
+  metaRight.forEach(([lab,val])=>{
+    doc.setFont('helvetica','bold');doc.setTextColor(60);doc.text(lab,marginX+contentW/2,my2);
+    doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(String(val),marginX+contentW/2+80,my2);
+    my2+=15;
+  });
+  doc.setTextColor(0);
+  y=Math.max(my,my2)+8;
 
-  // "Prepared for / Destination" info box
-  const boxH=44;
-  if(y+boxH>pageH-120){doc.addPage();y=50;}
-  doc.setFillColor(...accentSoft);
-  doc.roundedRect(marginX,y,contentW,boxH,4,4,'F');
+  doc.setDrawColor(220);doc.setLineWidth(0.6);
+  doc.line(marginX,y,pageW-marginX,y);
+  y+=20;
+
+  // From (this business) / To (the lead) block
+  const fromAddr=(clientRecord.quote_footer_address||'').trim();
+  const fromLines=fromAddr?doc.splitTextToSize(fromAddr,contentW/2-30):[];
+  const toLines=[];
+  if(lead.Phone) toLines.push(String(lead.Phone));
+  if(lead.Email) toLines.push(String(lead.Email));
+
+  doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(20);
+  doc.text(clientRecord.client_name||'—',marginX,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(80);
+  let fy=y+13;
+  fromLines.forEach(line=>{doc.text(line,marginX,fy);fy+=12;});
+
+  const toX=marginX+contentW/2+10;
   doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(...accentInk);
-  doc.text('PREPARED FOR',marginX+14,y+16);
-  doc.text('DESTINATION',marginX+contentW/2+10,y+16);
-  doc.setFont('helvetica','normal');doc.setFontSize(11);doc.setTextColor(20);
-  doc.text(lead.Name||lead.Phone||'Customer',marginX+14,y+33);
-  doc.text(destination||'—',marginX+contentW/2+10,y+33);
+  doc.text('TO',toX,y-11);
+  doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(20);
+  doc.text(lead.Name||lead.Phone||'Customer',toX,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(80);
+  let ty=y+13;
+  toLines.forEach(line=>{doc.text(line,toX,ty);ty+=12;});
+
   doc.setTextColor(0);
-  y+=boxH+20;
+  y=Math.max(fy,ty)+18;
 
-  // Title banner
-  if(y+32>pageH-120){doc.addPage();y=50;}
-  doc.setFillColor(...accent);
-  doc.rect(marginX,y,contentW,30,'F');
-  doc.setFont('helvetica','bold');doc.setFontSize(13);doc.setTextColor(255,255,255);
-  doc.text(title,marginX+14,y+20);
-  doc.setTextColor(0);
-  y+=30+18;
+  // Line-items table (Description / No. of Persons / Price / Total)
+  const {rows,subtotal}=sqBuildLineItems(src,format,price,currency,pax);
+  const taxPct=parseFloat(clientRecord.quote_tax_percent)||0;
+  const tax=subtotal*taxPct/100;
+  const grandTotal=subtotal+tax;
+  const colPersons=marginX+contentW-175, colPrice=marginX+contentW-105, colTotal=marginX+contentW-12;
 
-  if(format==='package'){
-    if(src.type==='package'){
-      const p=src.rec;
-      doc.setFont('helvetica','normal');doc.setFontSize(10.5);
-      doc.text(`${p.nights||'—'} nights  ·  Pax ${p.pax_min||1}-${p.pax_max||p.pax_min||1}`,marginX,y); y+=20;
-      y=sqWriteBulletList(doc,'✓  Inclusions',safeJson(p.inclusions,[]),marginX,y,contentW,accentInk);
-      y=sqWriteBulletList(doc,'✕  Exclusions',safeJson(p.exclusions,[]),marginX,y,contentW,accentInk);
-      if((p.notes||'').trim()) y=sqWriteWrapped(doc,'Notes',p.notes,marginX,y,contentW,accentInk);
-    }else{
-      const it=src.rec;
-      doc.setFont('helvetica','normal');doc.setFontSize(10.5);
-      doc.text(`${(it.days||[]).length} day(s)${it.from_date?'  ·  '+it.from_date+(it.to_date?' to '+it.to_date:''):''}`,marginX,y); y+=20;
-      (it.days||[]).forEach(d=>{
-        if(y>pageH-90){doc.addPage();y=50;}
-        doc.setFillColor(...accentSoft);
-        doc.roundedRect(marginX,y-11,54,16,3,3,'F');
-        doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(...accentInk);
-        doc.text(`DAY ${d.day_no}`,marginX+27,y,{align:'center'});
-        doc.setTextColor(0);
-        doc.setFont('helvetica','bold');doc.setFontSize(10.5);
-        doc.text(d.title||'',marginX+64,y);
-        y+=16;
-        doc.setFont('helvetica','normal');doc.setFontSize(9.5);
-        (d.items||[]).forEach(item=>{
-          if(y>pageH-70){doc.addPage();y=50;}
-          doc.text(`${itinItemIcon(item.type)}  ${item.description||''}`,marginX+16,y);y+=13;
-        });
-        y+=6;
-      });
-      if((it.notes||'').trim()) y=sqWriteWrapped(doc,'Notes',it.notes,marginX,y,contentW,accentInk);
-    }
-  }else if(format==='group_fare'){
-    doc.setFont('helvetica','normal');doc.setFontSize(10.5);
-    if(src.type==='itinerary'&&src.rec.from_date){
-      doc.text(`Travel dates: ${src.rec.from_date}${src.rec.to_date?' to '+src.rec.to_date:''}`,marginX,y);y+=18;
-    }
-    doc.text(`Seats available: ${pax}`,marginX,y);y+=18;
-    if(src.type==='package'){
-      y=sqWriteBulletList(doc,'✓  Inclusions',safeJson(src.rec.inclusions,[]),marginX,y,contentW,accentInk);
-    }
-    if((src.rec.notes||'').trim()) y=sqWriteWrapped(doc,'Notes',src.rec.notes,marginX,y,contentW,accentInk);
-  }else{ // travel_service
-    if(src.type==='package'){
-      y=sqWriteBulletList(doc,'✓  What\'s Included',safeJson(src.rec.inclusions,[]),marginX,y,contentW,accentInk);
-    }
-    const desc=(src.rec.notes||'').trim();
-    if(desc) y=sqWriteWrapped(doc,'Details',desc,marginX,y,contentW,accentInk);
-  }
+  const drawTableHeader=()=>{
+    doc.setFillColor(...accent);
+    doc.rect(marginX,y,contentW,22,'F');
+    doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(255,255,255);
+    doc.text('DESCRIPTION',marginX+12,y+14);
+    doc.text('NO. OF PERSONS',colPersons,y+14,{align:'right'});
+    doc.text('PRICE',colPrice,y+14,{align:'right'});
+    doc.text('TOTAL',colTotal,y+14,{align:'right'});
+    doc.setTextColor(0);
+    y+=22;
+  };
+  drawTableHeader();
+  doc.setFont('helvetica','normal');doc.setFontSize(9);
+  rows.forEach((r,i)=>{
+    if(y>pageH-170){doc.addPage();y=50;drawTableHeader();doc.setFont('helvetica','normal');doc.setFontSize(9);}
+    if(i%2===1){doc.setFillColor(...accentSoft);doc.rect(marginX,y,contentW,18,'F');}
+    const descLines=doc.splitTextToSize(r.desc,colPersons-marginX-24);
+    doc.text(descLines[0]||'',marginX+12,y+13);
+    doc.text(r.persons===''?'—':String(r.persons),colPersons,y+13,{align:'right'});
+    doc.text(r.price?`${currency} ${r.price.toLocaleString()}`:'—',colPrice,y+13,{align:'right'});
+    doc.text(r.total?`${currency} ${r.total.toLocaleString()}`:'—',colTotal,y+13,{align:'right'});
+    y+=18;
+  });
+  doc.setDrawColor(...accent);doc.setLineWidth(1);
+  doc.line(marginX,y,pageW-marginX,y);
+  y+=16;
 
-  // Total box
-  y+=8;
-  const totalBoxH=44;
-  if(y+totalBoxH>pageH-130){doc.addPage();y=50;}
-  doc.setFillColor(...accentInk);
-  doc.roundedRect(marginX,y,contentW,totalBoxH,4,4,'F');
-  doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(255,255,255);
-  doc.text('TOTAL',marginX+16,y+17);
-  doc.setFontSize(17);
-  doc.text(`${currency} ${(parseFloat(price)||0).toLocaleString()}${format!=='travel_service'?' / person':''}`,marginX+16,y+36);
-  if(format==='group_fare'){
-    doc.setFont('helvetica','normal');doc.setFontSize(9);
-    doc.text(`${pax} seat(s) available`,marginX+contentW-16,y+27,{align:'right'});
-  }
-  doc.setTextColor(0);
-  y+=totalBoxH+22;
+  // Terms & Payment Method (left) alongside Subtotal/Tax/Grand Total (right)
+  if(y>pageH-160){doc.addPage();y=50;}
+  const leftColW=contentW*0.55,rightColX=marginX+leftColW+18,rightColW=contentW-leftColW-18;
+  let leftY=y;
 
-  // Terms & Conditions
   const terms=clientRecord.quote_terms||QUOTE_DEFAULT_TERMS;
-  if(y>pageH-100){doc.addPage();y=50;}
-  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(...accentInk);
-  doc.text('Terms & Conditions',marginX,y);y+=14;
+  const termsLines=doc.splitTextToSize(terms,leftColW-20);
+  const termsBoxH=24+termsLines.length*10.5;
+  doc.setFillColor(...accentSoft);
+  doc.roundedRect(marginX,leftY,leftColW,termsBoxH,4,4,'F');
+  doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(...accentInk);
+  doc.text('Terms & Conditions',marginX+10,leftY+15);
+  doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.setTextColor(70);
+  doc.text(termsLines,marginX+10,leftY+28);
   doc.setTextColor(0);
-  doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(90);
-  doc.text(doc.splitTextToSize(terms,contentW),marginX,y);
+  leftY+=termsBoxH+10;
+
+  const paymentMethods=(clientRecord.quote_payment_methods||'').trim();
+  if(paymentMethods){
+    const pmLines=doc.splitTextToSize(paymentMethods,leftColW-20);
+    const pmBoxH=24+pmLines.length*10.5;
+    doc.setFillColor(...accentSoft);
+    doc.roundedRect(marginX,leftY,leftColW,pmBoxH,4,4,'F');
+    doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(...accentInk);
+    doc.text('Payment Method',marginX+10,leftY+15);
+    doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.setTextColor(70);
+    doc.text(pmLines,marginX+10,leftY+28);
+    doc.setTextColor(0);
+    leftY+=pmBoxH+10;
+  }
+
+  let rightY=y+12;
+  doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.setTextColor(60);
+  doc.text('Subtotal',rightColX,rightY);
+  doc.text(`${currency} ${subtotal.toLocaleString()}`,rightColX+rightColW,rightY,{align:'right'});
+  rightY+=15;
+  if(taxPct){
+    doc.text(`Tax @ ${taxPct}%`,rightColX,rightY);
+    doc.text(`${currency} ${tax.toLocaleString()}`,rightColX+rightColW,rightY,{align:'right'});
+    rightY+=15;
+  }
+  doc.setTextColor(0);
+  rightY+=6;
+  doc.setFillColor(...accentInk);
+  doc.roundedRect(rightColX-8,rightY-14,rightColW+8,28,3,3,'F');
+  doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(255,255,255);
+  doc.text('Grand Total',rightColX,rightY+3);
+  doc.text(`${currency} ${grandTotal.toLocaleString()}`,rightColX+rightColW,rightY+3,{align:'right'});
+  doc.setTextColor(0);
+  rightY+=28;
+
+  y=Math.max(leftY,rightY)+22;
+
+  // Signature line + thank-you close
+  if(y>pageH-90){doc.addPage();y=50;}
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(60);
+  doc.text('To accept this Quote please sign and return here:',marginX,y);
+  doc.setDrawColor(150);doc.setLineWidth(0.7);
+  doc.line(marginX+235,y-3,pageW-marginX,y-3);
+  doc.setTextColor(0);
+  y+=36;
+
+  doc.setFont('times','bold');doc.setFontSize(15);doc.setTextColor(...accentInk);
+  doc.text('Thank You for Your Business!',pageW/2,y,{align:'center'});
   doc.setTextColor(0);
 
   stampQuoteFooter(doc,marginX);
@@ -9740,6 +9830,11 @@ async function sqSend(){
 
   const logRow=(text,color)=>{ $id('sqLogBox').insertAdjacentHTML('beforeend',`<div style="padding:4px 0;${color?'color:'+color:''}">${esc(text)}</div>`); };
 
+  // Each PDF gets its own sequential Quote No. (QUO-0001, QUO-0002, ...), mirroring how the
+  // single-lead flow numbers invoices — advanced locally as we go and persisted once at the end
+  // (best-effort) so a batch of N leads doesn't need N separate writes to the client record.
+  let quoteSeq=parseInt(clientRecord.quote_number_seq)||0;
+
   let sent=0,failed=0,skipped=0;
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
@@ -9751,7 +9846,9 @@ async function sqSend(){
       continue;
     }
     try{
-      const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity);
+      quoteSeq++;
+      const quoteNumber='QUO-'+String(quoteSeq).padStart(4,'0');
+      const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber);
       const pdfBlob=doc.output('blob');
       const caption=sqBuildCaption(lead,format,price,currency,validity);
       const fd=new FormData();
@@ -9781,6 +9878,10 @@ async function sqSend(){
     }
     bar.style.width=Math.round(((i+1)/leads.length)*100)+'%'; label.textContent=`${i+1} / ${leads.length}`;
     await new Promise(res=>setTimeout(res,600));
+  }
+
+  if(quoteSeq!==(parseInt(clientRecord.quote_number_seq)||0)){
+    try{ await patchClient({quote_number_seq:quoteSeq}); clientRecord.quote_number_seq=quoteSeq; }catch(e){}
   }
 
   label.textContent=`Done — ${sent} sent, ${failed} failed, ${skipped} skipped (no chat linked)`;
