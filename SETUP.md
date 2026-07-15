@@ -42,6 +42,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | quote_terms | Long text |
 | quote_validity_days | Number |
 | quote_logo_url | Long text (base64 data URI of the uploaded logo) |
+| quote_footer_address | Long text (business address printed in the footer of every Quotation/Invoice PDF page, including the Agency module's bulk "Send Quotation" PDFs) |
 | invoice_terms | Long text (Invoice mode's own terms text, separate from `quote_terms` since "valid for N days" wording doesn't fit an invoice — falls back to `quote_terms` if blank. See "Quotation moved into Human Deals + Invoice mode" below.) |
 | invoice_number_seq | Number (incrementing counter — last invoice number actually sent, e.g. `12` means the next one is `INV-0013`. Only written on a real send, never on a PDF preview, so a preview never burns a number.) |
 | waba_id | Single line (WhatsApp Business Account ID — for template list/create, separate from wa_phone_id) |
