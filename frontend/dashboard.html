@@ -6604,6 +6604,7 @@ async function saveCompanyProfile(){
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     Object.assign(clientRecord,{client_name, company_address, billing_email});
+    $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
     renderBillingPage();
     msg.textContent='Saved.';
   }catch(e){ msg.textContent='Error: '+e.message; }
