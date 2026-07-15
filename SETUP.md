@@ -1961,6 +1961,84 @@ already used by `signSession`), so nothing needs to be stored per-send.
   narrow (best-effort `text/plain` extraction, not a full RFC 2045 MIME parser) and that limitation
   should be documented, not silently papered over.
 
+## Automations & Flow module (`frontend/broadcast.html` — "⚡ Automations" tab)
+A standalone module built *inside* the Campaigns/Broadcast page, deliberately reusing the two
+sibling modules' own facilities instead of re-implementing sends: a flow's WhatsApp steps use the
+exact same Chatwoot call shape as this page's Direct Message/Template Broadcast tabs
+(`handleBroadcastSendDm`/`handleBroadcastSendTemplate` in `cloudflare-worker/worker.js`), its email
+step reuses the Email Marketing module's `sendClientResendEmail` helper and unsubscribe-link
+footer, and its audience matching reuses the Email module's `segment_filter` shape
+(`{"stage":[...], "tags_any":[...]}`, generalized into `leadsAudienceWhereClause`).
+
+### What it is
+A **flow** is a small ordered list of steps a lead walks through once enrolled:
+- **Triggers**: `manual` (pick a segment, enroll it once via a button), `new_lead` (auto-enrolls
+  new leads matching the segment), `stage_enter` (auto-enrolls leads as they enter one of the
+  chosen Stages), `no_reply` (auto-enrolls leads silent for N hours — same signal
+  `backend/recovery.js`'s ladder already uses, just driving this flow's own steps instead of a
+  hardcoded ladder).
+- **Steps**: `wait` (hours), `send_whatsapp_dm`, `send_whatsapp_template`, `send_email`,
+  `update_field` (writes any Leads column, e.g. `Stage`). Reordered by dragging step cards
+  (native HTML5 drag/drop, no library) in the editor.
+- Every enrollment path — manual, auto, and the advance tick — refuses to touch a lead that's
+  opted out (`OptOut`/`EmailOptOut`), mid human-handover (`Handover`), or in a terminal Stage
+  (`Converted`/`Lost`/`Closed`/`Opt Out`), matching `recovery.js`'s existing safety gate.
+
+### Schema
+**Clients table** (`mxl33bg4wi70fqj`) — one new field:
+- `automation_flows` (Long text, JSON) — an array of flow objects, same config-blob-on-CLIENTS
+  pattern as `followup_messages`/`recovery_gaps_hours`, not a new table (a client has a handful of
+  flows, not thousands of rows). Shape:
+  ```json
+  [{
+    "id": "fl_...", "name": "Abandoned Cart Nudge", "active": true,
+    "trigger": {"type": "no_reply", "no_reply_hours": 24},
+    "segment": {"stage": ["Hot Lead"], "tags_any": []},
+    "steps": [
+      {"type": "wait", "hours": 2},
+      {"type": "send_whatsapp_dm", "message": "Hey {name}, still around?"}
+    ],
+    "stats": {"enrolled": 12, "completed": 4}
+  }]
+  ```
+
+**Leads table** (`mvg6rcw0ia5qqrx`) — one new field, **auto-created at runtime** the first time
+the engine tick touches a client (no manual NocoDB step needed, unlike the Email module's fields):
+- `flow_state` (Long text, JSON) — per-lead progress, keyed by flow id:
+  `{"fl_...": {"step": 1, "next_at": "2026-...", "enrolled_at": "2026-...", "status": "active"}}`.
+  `status` is one of `active` / `done` / `exited` (opted out, handed over, or hit a terminal Stage
+  mid-flow). Mirrors `recovery.js`'s `ensureRecoveryFields()` pattern, just issued through this
+  file's own `ncFetch`/master-token helper (`ensureFlowStateField`) instead of a raw per-client
+  token fetch.
+
+### Backend (`cloudflare-worker/worker.js`)
+- Routes, all session-gated via `requireSession`/`payload.cid` (the same "derive the client from
+  the session" pattern the Email module uses):
+  - `GET/POST/PATCH/DELETE /automations/flows` — CRUD on one client's `automation_flows` array.
+    `PATCH` with only `{id, active}` just flips pause/resume without re-validating steps; touching
+    `name`/`trigger`/`segment`/`steps` re-validates the whole shape (`validateAutomationFlow`).
+  - `GET /automations/audience-preview` — same shape as `handleEmailAudiencePreview`, minus the
+    email-specific clauses (a WhatsApp-only flow shouldn't require an email address).
+  - `POST /automations/flows/enroll` — the one enrollment path triggered by an explicit request
+    instead of the tick (mirrors the Email module's send-init vs. its cron-free send-one loop):
+    resolves the flow's segment, skips leads already enrolled/opted-out/terminal, and tags each
+    matching lead's `flow_state` with `{step:0, next_at:now, status:'active'}`.
+- **`runAutomationFlowsForAllClients`** — a Cron Trigger tick (`*/15 * * * *`, added to
+  `wrangler.toml`'s existing `[triggers]` list alongside the daily health check and the Shopify
+  abandoned-cart sweep), not a browser send-loop: a flow's `wait` steps can span hours or days, and
+  nothing guarantees the tab that built the flow stays open that long — the same reason
+  `recovery.js`/the classic follow-up ladder are cron-driven instead of loop-driven. Each tick:
+  auto-enrolls new matches for `new_lead`/`stage_enter`/`no_reply` triggers, then advances every
+  already-enrolled lead whose `next_at` has passed, running consecutive non-`wait` steps in one
+  pass (`advanceFlowLead`) until it hits the next `wait` or the end of the flow.
+
+### Frontend (`frontend/broadcast.html`)
+New "⚡ Automations" tab: a flow list (name, trigger, step count, Active/Draft badge, enrolled/
+completed counters) and a flow editor (trigger picker, Stage/tag audience chips reusing the same
+chip pattern as `email-marketing.html`'s segment builder, a live audience-count preview, and a
+drag-reorderable step list with an inline mini-form per step type). No new library — reordering
+uses native `draggable`/`dragover`/`drop` events on the step cards.
+
 ## Meta Ads Conversions API (CAPI) module — lead-quality reporting
 Feeds CRM lead-quality signals (captured → qualified/disqualified → booked) back to Meta via
 server-side Conversions API calls, so ad delivery optimizes for real conversions instead of just

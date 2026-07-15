@@ -139,6 +139,31 @@ textarea{resize:vertical;min-height:90px;line-height:1.6}
 .progress-bar-fill{background:linear-gradient(90deg,var(--accent),#0CB870);height:100%;border-radius:6px;transition:width .3s}
 .log-box{background:var(--bg);border-radius:var(--r-sm);padding:12px;max-height:180px;overflow-y:auto;font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:8px}
 
+/* AUTOMATIONS & FLOW */
+.flow-tbl-name{font-weight:600}
+.seg-chip{display:inline-block;border:1.5px solid var(--line);border-radius:20px;padding:6px 13px;font-size:12.5px;cursor:pointer;user-select:none;transition:all .15s}
+.seg-chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.trigger-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.trigger-card{border:2px solid var(--line);border-radius:var(--r-sm);padding:12px;cursor:pointer;text-align:center;transition:all .15s;background:var(--bg)}
+.trigger-card:hover{border-color:var(--accent)}
+.trigger-card.selected{border-color:var(--accent);background:var(--accent-soft)}
+.trigger-card .t-icon{font-size:20px;margin-bottom:4px}
+.trigger-card .t-label{font-size:12px;font-weight:600}
+.step-list{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
+.step-card{border:1.5px solid var(--line);border-radius:var(--r-sm);padding:14px;background:var(--bg);display:flex;gap:12px;align-items:flex-start}
+.step-card.drag-over{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.step-handle{cursor:grab;color:var(--muted);font-size:16px;line-height:1;padding-top:2px;user-select:none}
+.step-body{flex:1;min-width:0}
+.step-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.step-type-label{font-family:var(--disp);font-size:12.5px;font-weight:700;color:var(--accent-ink)}
+.step-remove{margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:2px 6px}
+.step-remove:hover{color:var(--red)}
+.add-step-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+.add-step-btn{border:1.5px dashed var(--ls);border-radius:var(--r-sm);padding:10px 8px;background:none;text-align:center;cursor:pointer;font-size:12px;font-weight:600;color:var(--muted);transition:all .15s}
+.add-step-btn:hover{border-style:solid;border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.flow-stats{display:flex;gap:16px;font-size:12px;color:var(--muted);margin-top:2px}
+.flow-stats b{color:var(--ink)}
+
 /* CATEGORY SELECTOR */
 .cat-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:0}
 .cat-card{border:2px solid var(--line);border-radius:var(--r);padding:22px 20px;cursor:pointer;transition:all .2s;background:var(--bg);text-align:left}
@@ -216,6 +241,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <button class="tab" id="tab-followups" onclick="showTab('followups')">🔁 Follow-ups</button>
     <button class="tab" id="tab-templates" onclick="showTab('templates')">📋 Manage Templates</button>
     <button class="tab" id="tab-tracking" onclick="showTab('tracking')">📊 Tracking</button>
+    <button class="tab" id="tab-automations" onclick="showTab('automations')">⚡ Automations</button>
   </div>
 
   <!-- ══════════════════════════════════════
@@ -577,6 +603,76 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     </div>
   </div><!-- /view-tracking -->
 
+  <!-- ══════════════════════════════════════
+       TAB 6: AUTOMATIONS & FLOW
+  ══════════════════════════════════════ -->
+  <div id="view-automations" style="display:none">
+
+    <!-- Flow list -->
+    <div class="card" id="flowListCard">
+      <div class="card-title">⚡ Flows
+        <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openFlowEditor()">+ New Flow</button>
+      </div>
+      <div class="msg info">Build a small sequence of steps a lead walks through automatically — reuses the same WhatsApp sends as Direct Message/Template Broadcast above, plus email sends from Email Marketing, all in one flow.</div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>Name</th><th>Trigger</th><th>Steps</th><th>Status</th><th>Enrolled</th><th>Completed</th><th></th></tr></thead>
+          <tbody id="flowsTbody"></tbody>
+        </table>
+      </div>
+      <div id="flowsEmpty" class="msg info hidden">No flows yet — create one to get started.</div>
+    </div>
+
+    <!-- Flow editor -->
+    <div class="card hidden" id="flowEditorCard">
+      <div class="card-title"><span id="flowEditorTitle">New Flow</span>
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="closeFlowEditor()">Cancel</button>
+      </div>
+
+      <div class="form-field">
+        <label>Flow name</label>
+        <input type="text" id="flowName" placeholder="e.g. Abandoned Cart Nudge">
+      </div>
+
+      <label>Trigger — when should a lead enter this flow?</label>
+      <div class="trigger-grid" id="flowTriggerGrid"></div>
+
+      <div id="flowNoReplyWrap" class="form-field hidden">
+        <label>No reply for (hours)</label>
+        <input type="number" id="flowNoReplyHours" min="1" value="24" style="max-width:140px">
+      </div>
+
+      <div class="form-field" id="flowSegmentWrap">
+        <label id="flowSegStageLabel">Audience — Stage (optional narrower filter)</label>
+        <div class="chip-row" id="flowSegStageChips" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>
+        <label>Audience — Tag contains (optional)</label>
+        <input type="text" id="flowSegTag" placeholder="e.g. vip (leave blank for any tag)">
+        <div class="msg info" id="flowAudiencePreview" style="margin-top:10px">Checking audience…</div>
+      </div>
+
+      <hr class="divider">
+      <label>Steps</label>
+      <div class="step-list" id="flowStepsList"></div>
+      <div class="add-step-grid">
+        <button class="add-step-btn" onclick="addFlowStep('wait')">⏳ Wait</button>
+        <button class="add-step-btn" onclick="addFlowStep('send_whatsapp_dm')">💬 WhatsApp DM</button>
+        <button class="add-step-btn" onclick="addFlowStep('send_whatsapp_template')">📣 WhatsApp Template</button>
+        <button class="add-step-btn" onclick="addFlowStep('send_email')">✉️ Email</button>
+        <button class="add-step-btn" onclick="addFlowStep('update_field')">🏷️ Update Field</button>
+      </div>
+
+      <hr class="divider">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-sec" onclick="saveFlow(false)">Save Draft</button>
+        <button class="btn btn-primary" onclick="saveFlow(true)">Save &amp; Activate</button>
+        <button class="btn btn-ghost" id="flowEnrollBtn" onclick="enrollFlowNow()">Enroll Matching Leads Now</button>
+        <button class="btn btn-ghost" id="flowDeleteBtn" onclick="deleteFlow()" style="color:var(--red);border-color:var(--red)">Delete</button>
+        <span id="flowSaveMsg" style="font-size:12.5px"></span>
+      </div>
+    </div>
+
+  </div><!-- /view-automations -->
+
 </div><!-- /wrap -->
 </div><!-- /main -->
 
@@ -602,6 +698,8 @@ let metaFilteredLeads=[], metaSelectedIds=new Set();
 let followupLeads=[];
 let allTemplates=[], selectedTemplate=null;
 let imgFile=null;
+let knownStages=[];
+let flows=[], editingFlowId=null, editingFlowSteps=[], flowSelectedTrigger='manual', flowSegSelectedStages=new Set(), flowDragIdx=null;
 
 const $id = id => document.getElementById(id);
 function ncAuthHeaders(extra){ return {'Authorization':'Bearer '+sessionToken, ...extra}; }
@@ -611,6 +709,7 @@ function leadConvId(lead){ return lead&&(lead.ConversationID||lead.conv_id||lead
 
 // ── UTILS ──
 function esc(s){ const d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
+function escAttr(s){ return esc(s).replace(/"/g,'&quot;'); }
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function timeSince(dt){
   if(!dt) return '—';
@@ -671,13 +770,14 @@ async function initApp(){
 
 // ── TABS ──
 function showTab(tab){
-  ['dm','meta','prospects','followups','templates','tracking'].forEach(t=>{
+  ['dm','meta','prospects','followups','templates','tracking','automations'].forEach(t=>{
     $id('view-'+t).style.display = t===tab ? '' : 'none';
     $id('tab-'+t).classList.toggle('active', t===tab);
   });
   if(tab==='followups') renderFollowupsTab();
   if(tab==='tracking') renderTrackingTab();
   if(tab==='prospects') prospectsInit();
+  if(tab==='automations') loadFlows();
 }
 
 // ── LEADS ──
@@ -690,6 +790,7 @@ async function loadLeads(){
 
     // Populate stage filters
     const stages=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))].sort();
+    knownStages=stages;
     [['dmStageFilter','dmStageFilter'],['metaStageFilter','metaStageFilter']].forEach(([id])=>{
       const sf=$id(id);
       while(sf.options.length>1) sf.remove(1);
@@ -1256,6 +1357,282 @@ function appendLog(prefix,msg){
   const box=$id(prefix+'LogBox');
   box.innerHTML+=msg+'\n';
   box.scrollTop=box.scrollHeight;
+}
+
+// ── AUTOMATIONS & FLOW ──
+// A flow is a small ordered list of steps a lead walks through once enrolled — built by reusing
+// this same page's WhatsApp sends (allTemplates, the same Chatwoot template dropdown data the
+// Template Broadcast tab already loads) and the Email Marketing module's segment_filter shape
+// ({stage:[...], tags_any:[...]}) for audience matching. Steps run on the worker's own cron tick
+// (every ~15 min — see cloudflare-worker/wrangler.toml), not a send-loop from this tab, since a
+// flow can contain multi-hour/day Wait steps that must survive this tab being closed.
+const FLOW_TRIGGERS=[
+  {type:'manual', icon:'👆', label:'Manual segment'},
+  {type:'new_lead', icon:'🆕', label:'New Lead'},
+  {type:'stage_enter', icon:'🔀', label:'Stage change'},
+  {type:'no_reply', icon:'🔕', label:'No reply'},
+];
+const FLOW_TRIGGER_LABELS=Object.fromEntries(FLOW_TRIGGERS.map(t=>[t.type,t.label]));
+const FLOW_STEP_META={
+  wait:{icon:'⏳',label:'Wait'},
+  send_whatsapp_dm:{icon:'💬',label:'Send WhatsApp DM'},
+  send_whatsapp_template:{icon:'📣',label:'Send WhatsApp Template'},
+  send_email:{icon:'✉️',label:'Send Email'},
+  update_field:{icon:'🏷️',label:'Update Field'},
+};
+const FLOW_STEP_DEFAULTS={
+  wait:()=>({type:'wait', hours:24}),
+  send_whatsapp_dm:()=>({type:'send_whatsapp_dm', message:'Hi {name}, just checking in — still around?'}),
+  send_whatsapp_template:()=>({type:'send_whatsapp_template', template_name:'', category:'MARKETING', language:'en'}),
+  send_email:()=>({type:'send_email', subject:'', html_body:''}),
+  update_field:()=>({type:'update_field', field:'Stage', value:''}),
+};
+
+async function loadFlows(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/automations/flows`,{headers:ncAuthHeaders()});
+    const data=await r.json().catch(()=>({list:[]}));
+    flows=data.list||[];
+    renderFlowsTable();
+  }catch(e){ console.error('loadFlows',e); }
+}
+
+function renderFlowsTable(){
+  $id('flowsEmpty').classList.toggle('hidden', flows.length>0);
+  $id('flowsTbody').innerHTML=flows.map(f=>`
+    <tr>
+      <td class="flow-tbl-name">${esc(f.name)}</td>
+      <td>${esc(FLOW_TRIGGER_LABELS[f.trigger?.type]||f.trigger?.type||'—')}</td>
+      <td>${(f.steps||[]).length}</td>
+      <td><span class="badge ${f.active?'green':'gray'}">${f.active?'Active':'Draft'}</span></td>
+      <td>${f.stats?.enrolled||0}</td>
+      <td>${f.stats?.completed||0}</td>
+      <td><button class="btn btn-sec btn-sm" onclick="openFlowEditor('${f.id}')">Edit</button></td>
+    </tr>`).join('');
+}
+
+function openFlowEditor(id){
+  editingFlowId=id||null;
+  const f=id?flows.find(x=>x.id===id):null;
+  $id('flowEditorTitle').textContent=id?'Edit Flow':'New Flow';
+  $id('flowName').value=f?.name||'';
+  flowSelectedTrigger=f?.trigger?.type||'manual';
+  $id('flowNoReplyHours').value=f?.trigger?.no_reply_hours||24;
+  flowSegSelectedStages=new Set(f?.segment?.stage||[]);
+  $id('flowSegTag').value=(f?.segment?.tags_any||[])[0]||'';
+  editingFlowSteps=f?JSON.parse(JSON.stringify(f.steps||[])):[];
+
+  applyFlowTriggerUI();
+  renderFlowSegStageChips();
+  renderFlowSteps();
+  $id('flowDeleteBtn').style.display=id?'':'none';
+  $id('flowSaveMsg').textContent='';
+  $id('flowListCard').classList.add('hidden');
+  $id('flowEditorCard').classList.remove('hidden');
+  refreshFlowAudiencePreview();
+}
+function closeFlowEditor(){
+  $id('flowEditorCard').classList.add('hidden');
+  $id('flowListCard').classList.remove('hidden');
+}
+
+function renderFlowTriggerGrid(){
+  $id('flowTriggerGrid').innerHTML=FLOW_TRIGGERS.map(t=>
+    `<div class="trigger-card ${flowSelectedTrigger===t.type?'selected':''}" onclick="selectFlowTrigger('${t.type}')">
+      <div class="t-icon">${t.icon}</div><div class="t-label">${esc(t.label)}</div>
+    </div>`).join('');
+}
+function applyFlowTriggerUI(){
+  renderFlowTriggerGrid();
+  $id('flowNoReplyWrap').classList.toggle('hidden', flowSelectedTrigger!=='no_reply');
+  $id('flowSegStageLabel').textContent = flowSelectedTrigger==='stage_enter'
+    ? 'Enters when Stage becomes one of (required)' : 'Audience — Stage (optional narrower filter)';
+  $id('flowEnrollBtn').style.display = flowSelectedTrigger==='manual' ? '' : 'none';
+}
+function selectFlowTrigger(type){ flowSelectedTrigger=type; applyFlowTriggerUI(); refreshFlowAudiencePreview(); }
+
+function renderFlowSegStageChips(){
+  $id('flowSegStageChips').innerHTML = knownStages.length
+    ? knownStages.map(s=>`<span class="seg-chip ${flowSegSelectedStages.has(s)?'on':''}" data-stage="${escAttr(s)}" onclick="toggleFlowSegStage(this)">${esc(s)}</span>`).join('')
+    : '<span style="font-size:12px;color:var(--muted)">No stages found yet on your leads.</span>';
+}
+function toggleFlowSegStage(el){
+  const stage=el.dataset.stage;
+  if(flowSegSelectedStages.has(stage)) flowSegSelectedStages.delete(stage); else flowSegSelectedStages.add(stage);
+  el.classList.toggle('on', flowSegSelectedStages.has(stage));
+  refreshFlowAudiencePreview();
+}
+
+function currentFlowSegmentFilter(){
+  const f={};
+  if(flowSegSelectedStages.size) f.stage=[...flowSegSelectedStages];
+  const tag=($id('flowSegTag').value||'').trim();
+  if(tag) f.tags_any=[tag];
+  return f;
+}
+let flowAudienceDebounce=null;
+function refreshFlowAudiencePreview(){
+  clearTimeout(flowAudienceDebounce);
+  flowAudienceDebounce=setTimeout(async ()=>{
+    $id('flowAudiencePreview').textContent='Checking audience…';
+    try{
+      const qs=new URLSearchParams({segment_filter:JSON.stringify(currentFlowSegmentFilter())});
+      const r=await fetch(`${CONFIG.WORKER_BASE}/automations/audience-preview?${qs}`,{headers:ncAuthHeaders()});
+      const data=await r.json();
+      $id('flowAudiencePreview').textContent=data.count
+        ? `Matches ${data.count} lead${data.count===1?'':'s'} right now.`
+        : 'No leads match this audience yet.';
+    }catch(e){ $id('flowAudiencePreview').textContent='Could not check audience.'; }
+  }, 300);
+}
+
+// ── STEPS (drag-to-reorder via native HTML5 drag/drop) ──
+function addFlowStep(type){ editingFlowSteps.push(FLOW_STEP_DEFAULTS[type]()); renderFlowSteps(); }
+function removeFlowStep(idx){ editingFlowSteps.splice(idx,1); renderFlowSteps(); }
+function updateFlowStep(idx,field,value){ if(editingFlowSteps[idx]) editingFlowSteps[idx][field]=value; }
+
+function renderFlowSteps(){
+  const box=$id('flowStepsList');
+  if(!editingFlowSteps.length){ box.innerHTML='<div style="font-size:12.5px;color:var(--muted)">No steps yet — add one below.</div>'; return; }
+  box.innerHTML=editingFlowSteps.map((s,i)=>{
+    const meta=FLOW_STEP_META[s.type]||{icon:'',label:s.type};
+    return `<div class="step-card" draggable="true"
+        ondragstart="stepDragStart(event,${i})" ondragover="stepDragOver(event,${i})"
+        ondragleave="stepDragLeave(event)" ondrop="stepDrop(event,${i})" ondragend="stepDragEnd(event)">
+      <div class="step-handle" title="Drag to reorder">⠿</div>
+      <div class="step-body">
+        <div class="step-head">
+          <span class="step-type-label">${meta.icon} ${esc(meta.label)}</span>
+          <button class="step-remove" onclick="removeFlowStep(${i})" title="Remove step">✕</button>
+        </div>
+        ${renderFlowStepFields(s,i)}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderFlowStepFields(s,i){
+  if(s.type==='wait'){
+    return `<div class="form-field" style="margin-bottom:0">
+      <label>Wait this many hours before the next step</label>
+      <input type="number" min="1" value="${esc(s.hours||'')}" oninput="updateFlowStep(${i},'hours',this.value)" style="max-width:160px">
+    </div>`;
+  }
+  if(s.type==='send_whatsapp_dm'){
+    return `<div class="form-field" style="margin-bottom:0">
+      <label>Message — use {name}, {stage}, {phone}</label>
+      <textarea style="min-height:70px" oninput="updateFlowStep(${i},'message',this.value)">${esc(s.message||'')}</textarea>
+    </div>`;
+  }
+  if(s.type==='send_whatsapp_template'){
+    const opts=allTemplates.map(t=>`<option value="${escAttr(t.name)}" ${t.name===s.template_name?'selected':''}>${esc(t.name)}</option>`).join('');
+    return `<div class="form-row">
+      <div class="form-field" style="margin-bottom:0"><label>Approved template</label>
+        <select onchange="updateFlowStep(${i},'template_name',this.value)"><option value="">Select…</option>${opts}</select></div>
+      <div class="form-field" style="margin-bottom:0"><label>Category</label>
+        <select onchange="updateFlowStep(${i},'category',this.value)">
+          <option value="MARKETING" ${s.category==='MARKETING'?'selected':''}>MARKETING</option>
+          <option value="UTILITY" ${s.category==='UTILITY'?'selected':''}>UTILITY</option>
+          <option value="AUTHENTICATION" ${s.category==='AUTHENTICATION'?'selected':''}>AUTHENTICATION</option>
+        </select></div>
+    </div>
+    <div class="form-field" style="margin-bottom:0"><label>Language</label>
+      <input type="text" value="${escAttr(s.language||'en')}" oninput="updateFlowStep(${i},'language',this.value)" style="max-width:140px"></div>`;
+  }
+  if(s.type==='send_email'){
+    return `<div class="form-field" style="margin-bottom:8px">
+      <label>Subject</label><input type="text" value="${escAttr(s.subject||'')}" oninput="updateFlowStep(${i},'subject',this.value)"></div>
+    <div class="form-field" style="margin-bottom:0">
+      <label>HTML body</label><textarea style="min-height:80px" oninput="updateFlowStep(${i},'html_body',this.value)">${esc(s.html_body||'')}</textarea></div>`;
+  }
+  if(s.type==='update_field'){
+    return `<div class="form-row">
+      <div class="form-field" style="margin-bottom:0"><label>Field name</label>
+        <input type="text" value="${escAttr(s.field||'')}" oninput="updateFlowStep(${i},'field',this.value)" placeholder="e.g. Stage"></div>
+      <div class="form-field" style="margin-bottom:0"><label>New value</label>
+        <input type="text" value="${escAttr(s.value||'')}" oninput="updateFlowStep(${i},'value',this.value)" placeholder="e.g. Nurture"></div>
+    </div>`;
+  }
+  return '';
+}
+
+function stepDragStart(e,idx){ flowDragIdx=idx; e.dataTransfer.effectAllowed='move'; }
+function stepDragOver(e,idx){ e.preventDefault(); e.currentTarget.classList.add('drag-over'); }
+function stepDragLeave(e){ e.currentTarget.classList.remove('drag-over'); }
+function stepDragEnd(e){ document.querySelectorAll('.step-card.drag-over').forEach(el=>el.classList.remove('drag-over')); }
+function stepDrop(e,idx){
+  e.preventDefault(); e.currentTarget.classList.remove('drag-over');
+  if(flowDragIdx===null||flowDragIdx===idx) return;
+  const [moved]=editingFlowSteps.splice(flowDragIdx,1);
+  editingFlowSteps.splice(idx,0,moved);
+  flowDragIdx=null;
+  renderFlowSteps();
+}
+
+// ── SAVE / DELETE / ENROLL ──
+function collectFlowPayload(){
+  const name=$id('flowName').value.trim();
+  const trigger={type:flowSelectedTrigger};
+  if(flowSelectedTrigger==='no_reply') trigger.no_reply_hours=parseFloat($id('flowNoReplyHours').value)||24;
+  const segment=currentFlowSegmentFilter();
+  const steps=editingFlowSteps.map(s=>s.type==='wait'?{...s, hours:parseFloat(s.hours)||1}:s);
+  return {name, trigger, segment, steps};
+}
+
+async function saveFlow(activate){
+  const payload=collectFlowPayload();
+  const msg=$id('flowSaveMsg');
+  if(!payload.name){ msg.textContent='Name is required.'; msg.style.color='var(--red)'; return; }
+  if(!payload.steps.length){ msg.textContent='Add at least one step.'; msg.style.color='var(--red)'; return; }
+  if(payload.trigger.type==='stage_enter' && !(payload.segment.stage||[]).length){
+    msg.textContent='A stage-change trigger needs at least one Stage selected above.'; msg.style.color='var(--red)'; return;
+  }
+  try{
+    let r;
+    if(editingFlowId){
+      r=await fetch(`${CONFIG.WORKER_BASE}/automations/flows`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:editingFlowId, active:activate, ...payload})});
+    }else{
+      r=await fetch(`${CONFIG.WORKER_BASE}/automations/flows`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(payload)});
+    }
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
+    if(!editingFlowId && data.flow){
+      editingFlowId=data.flow.id;
+      // A freshly created flow always starts as a draft (worker.js) — activate in a follow-up
+      // PATCH rather than teaching the create route two responsibilities at once.
+      if(activate) await fetch(`${CONFIG.WORKER_BASE}/automations/flows`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:editingFlowId, active:true})});
+    }
+    msg.textContent='✅ Saved.'; msg.style.color='var(--accent-ink)';
+    await loadFlows();
+    closeFlowEditor();
+  }catch(e){
+    msg.textContent='Error: '+e.message.slice(0,150); msg.style.color='var(--red)';
+  }
+}
+
+async function deleteFlow(){
+  if(!editingFlowId) return;
+  if(!confirm('Delete this flow? Leads currently enrolled will stop advancing through it.')) return;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/automations/flows`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:editingFlowId})});
+    if(!r.ok){ const data=await r.json().catch(()=>({})); throw new Error(data.error||('HTTP '+r.status)); }
+    await loadFlows();
+    closeFlowEditor();
+  }catch(e){ alert('Failed to delete: '+e.message); }
+}
+
+async function enrollFlowNow(){
+  if(!editingFlowId){ alert('Save the flow first, then enroll.'); return; }
+  const btn=$id('flowEnrollBtn'); const orig=btn.textContent;
+  btn.disabled=true; btn.textContent='Enrolling…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/automations/flows/enroll`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:editingFlowId})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
+    alert(`Enrolled ${data.enrolled} lead${data.enrolled===1?'':'s'}. Steps run on the flow's own schedule (checked every ~15 min), not instantly.`);
+    await loadFlows();
+  }catch(e){ alert('Failed to enroll: '+e.message); }
+  finally{ btn.disabled=false; btn.textContent=orig; }
 }
 
 // ── BOOT ──
