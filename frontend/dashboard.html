@@ -198,11 +198,15 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .chat-search-wrap{position:relative}
 .chat-search-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:12px;opacity:.55;pointer-events:none}
 .chat-search{width:100%;box-sizing:border-box;background:#fff;border:none;border-radius:20px;padding:8px 12px 8px 32px;font-size:13.5px;color:#111b21;font-family:inherit;outline:none}
+.chat-filter-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.chat-filter-btn{font-size:11.5px;font-weight:600;padding:5px 11px;border-radius:99px;border:1px solid #d1d7db;background:#fff;color:#54656f;cursor:pointer;white-space:nowrap}
+.chat-filter-btn.active{background:#00a884;color:#fff;border-color:#00a884}
+.chat-filter-btn .cnt{margin-left:3px;opacity:.75}
 .chat-contact-list{flex:1;overflow-y:auto;min-height:0}
 .chat-contact-row{display:flex;align-items:center;gap:13px;padding:12px 16px;cursor:pointer;border-bottom:1px solid #f0f2f5;transition:background .1s}
 .chat-contact-row:hover{background:#f5f6f6}
 .chat-contact-row.active{background:#f0f2f5}
-.cc-avatar{width:44px;height:44px;border-radius:50%;background:#00a884;color:#fff;font-size:15px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.cc-avatar{width:44px;height:44px;border-radius:50%;background:#00a884;color:#fff;font-size:15px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative}
 .cc-avatar.lg{width:40px;height:40px}
 .cc-info{flex:1;min-width:0}
 .cc-row-top{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
@@ -211,6 +215,11 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .cc-row-bottom{display:flex;align-items:center;gap:4px;margin-top:2px}
 .cc-preview{font-size:13px;color:#667781;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
 .cc-check{font-size:13px;color:#8696a0;flex-shrink:0}
+.cc-needs-you{position:absolute;top:-2px;right:-2px;width:13px;height:13px;border-radius:50%;background:#ef4444;border:2px solid #f0f2f5;box-sizing:border-box}
+/* Matches the hover/active background this row actually ends up with — the later, more specific
+   .chat-contact-row:hover/.active rule further down (var(--accent-soft)) wins the cascade over
+   the plain #f5f6f6/#f0f2f5 declared just above, so the badge ring must match that one instead. */
+.chat-contact-row:hover .cc-needs-you,.chat-contact-row.active .cc-needs-you{border-color:var(--accent-soft)}
 .chat-load-more{padding:12px 16px;text-align:center;border:none;background:none;font-size:12.5px;color:#00a884;font-weight:600;cursor:pointer;width:100%}
 .chat-load-more:hover{background:#f5f6f6}
 .chat-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;background:#efeae2 url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><g fill="none" stroke="%23000" stroke-opacity="0.028" stroke-width="1.2"><circle cx="20" cy="20" r="9"/><path d="M55 10 L70 30 L45 35 Z"/><circle cx="80" cy="70" r="12"/><path d="M15 70 q10 -15 25 0 q10 15 -5 20 q-15 5 -20 -20"/></g></svg>')}
@@ -1001,12 +1010,12 @@ const TODAY = new Date().toISOString().slice(0,10);
 
   <!-- Desktop nav -->
   <div id="desktopNav">
-    <button class="dnTab active" data-page="home">🏠 Home</button>
+    <button class="dnTab active" data-page="humandeals">🤝 Human Deals<span id="dnHdBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
+    <button class="dnTab" data-page="home">🏠 Home</button>
     <button class="dnTab" data-page="chats">💬 Chats</button>
     <button class="dnTab" data-page="leads">👥 Leads</button>
     <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab" data-page="team">📊 Team</button>
-    <button class="dnTab" data-page="humandeals">🤝 Human Deals<span id="dnHdBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab" data-page="knowledgebase">📚 Knowledge Base</button>
     <button class="dnTab" data-page="billing">💳 Billing<span id="dnBillingBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce">🛒 Ecommerce</button>
@@ -1483,6 +1492,7 @@ const TODAY = new Date().toISOString().slice(0,10);
               <span class="chat-search-icon">🔍</span>
               <input class="chat-search" id="chatSearch" type="text" placeholder="Search or start a new chat" oninput="chatSearchDebounce()" autocomplete="off" />
             </div>
+            <div class="chat-filter-row" id="chatFilterRow"></div>
           </div>
           <div class="chat-contact-list" id="chatContactList">
             <div class="chat-empty"><div class="chat-empty-icon">👤</div><div>Loading contacts…</div></div>
@@ -2363,7 +2373,7 @@ const TODAY = new Date().toISOString().slice(0,10);
   <div id="bottomNav">
     <button class="bnItem active" data-page="home"><span class="bnIcon">🏠</span><span class="bnLabel">Home</span></button>
     <button class="bnItem" data-page="chats"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span></button>
-    <button class="bnItem" data-page="leads"><span class="bnIcon">👥</span><span class="bnLabel">Leads</span></button>
+    <button class="bnItem" data-page="humandeals" style="position:relative"><span class="bnIcon">🤝</span><span class="bnLabel">Deals</span><span id="bnHdBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span><span id="bnTaskBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
     <button class="bnItem" id="bnMore" onclick="openMoreSheet()"><span class="bnIcon">⋯</span><span class="bnLabel">More</span></button>
   </div>
@@ -2374,9 +2384,9 @@ const TODAY = new Date().toISOString().slice(0,10);
     <div class="more-sheet-handle"></div>
     <div class="more-sheet-title">More</div>
     <div class="more-sheet-grid">
+      <button class="more-item" data-page="leads"><span class="bnIcon">👥</span><span class="bnLabel">Leads</span></button>
       <button class="more-item" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
       <button class="more-item" data-page="team"><span class="bnIcon">📊</span><span class="bnLabel">Team</span></button>
-      <button class="more-item" data-page="humandeals" style="position:relative"><span class="bnIcon">🤝</span><span class="bnLabel">Human Deals</span><span id="bnHdBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
       <button class="more-item" data-page="knowledgebase"><span class="bnIcon">📚</span><span class="bnLabel">Knowledge Base</span></button>
       <button class="more-item" data-page="billing" style="position:relative"><span class="bnIcon">💳</span><span class="bnLabel">Billing</span><span id="bnBillingBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
       <button class="more-item industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
@@ -3610,18 +3620,19 @@ function showApp(){
   setTimeout(checkReminders,3000);
   clearInterval(_reminderTimer);
   _reminderTimer=setInterval(checkReminders,6*3600*1000);
-  // Land back on Billing after a Stripe Checkout/Portal redirect instead of the default Home tab.
-  if(new URLSearchParams(location.search).has('billing')) navigate('billing');
-  // Deep link from Campaigns' Template Broadcast tab when WhatsApp Business API isn't connected yet.
-  if(new URLSearchParams(location.search).has('channels')) navigate('channels');
-  // Deep link from the Ecommerce module's Shopify tab when no store is connected yet.
-  if(new URLSearchParams(location.search).has('integrations')) navigate('integrations');
-  // Land back on Integrations after the Shopify OAuth redirect (handleShopifyOauthCallback in worker.js).
-  const shopifyParam=new URLSearchParams(location.search).get('shopify');
+  // Default landing tab is Human Deals, not Home — that's the queue that actually needs daily
+  // attention. A deep-link query param (Billing/Channels/Integrations/Shopify redirect) always
+  // wins over that default when present, same as before this changed.
+  const params=new URLSearchParams(location.search);
+  const shopifyParam=params.get('shopify');
+  let landingPage='humandeals';
+  if(params.has('billing')) landingPage='billing';
+  else if(params.has('channels')) landingPage='channels';
+  else if(params.has('integrations')||shopifyParam) landingPage='integrations';
+  navigate(landingPage);
   if(shopifyParam){
-    navigate('integrations');
     if(shopifyParam==='connected'){ showToast('Shopify connected ✓'); refreshClientRecord().then(renderShopifyStatus); }
-    else showToast(new URLSearchParams(location.search).get('msg')||'Shopify connection failed', 'error');
+    else showToast(params.get('msg')||'Shopify connection failed', 'error');
     history.replaceState(null, '', location.pathname+(clientId?`?client=${clientId}`:''));
   }
 }
@@ -11193,21 +11204,43 @@ function renderRecoveryChip(lead){
 
 /* ── CHATS TAB ── */
 /* ── CHATS TAB (uses local allLeads + ConvHistory) ── */
-let _chatSearchTimer=null, _chatLeadId=null;
+let _chatSearchTimer=null, _chatLeadId=null, CHAT_FILTER='all';
 
 function openChatsTab(){
   _chatLeadId=null;
   $id('chatSearch').value='';
+  CHAT_FILTER='all';
   renderChatEmpty();
   renderChatContacts();
+}
+
+function setChatFilter(f){ CHAT_FILTER=f; renderChatContacts(); }
+
+// Base list shared by both the filter-row counts and the actual rendered rows, so a count never
+// drifts out of sync with what tapping that chip actually shows — only the search box (applied
+// separately below) can make the two differ, and that's deliberate: counts reflect the filter
+// tabs only, search narrows whichever tab is currently active.
+function chatConvoLeads(){
+  return allLeads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]');
 }
 
 function renderChatContacts(){
   const q=($id('chatSearch').value||'').trim().toLowerCase();
   const list=$id('chatContactList');
-  // Only show leads that have conversation history
-  let leads=[...allLeads].filter(l=>{
-    if(!l.ConvHistory||l.ConvHistory==='[]') return false;
+  const base=chatConvoLeads();
+
+  const counts={
+    all:base.length,
+    needsyou:base.filter(l=>l.Handover==='Yes').length,
+    hot:base.filter(l=>l.Score==='Hot').length,
+    mine:myEmail?base.filter(l=>l.Owner===myEmail).length:0
+  };
+  renderChatFilterRow(counts);
+
+  let leads=base.filter(l=>{
+    if(CHAT_FILTER==='needsyou' && l.Handover!=='Yes') return false;
+    if(CHAT_FILTER==='hot' && l.Score!=='Hot') return false;
+    if(CHAT_FILTER==='mine' && l.Owner!==myEmail) return false;
     if(q){
       const nm=(l.Name||'').toLowerCase().includes(q);
       const ph=(l.Phone||'').includes(q);
@@ -11219,7 +11252,8 @@ function renderChatContacts(){
   }).sort((a,b)=>(b.LastMsgAt||b.Date||'').localeCompare(a.LastMsgAt||a.Date||''));
 
   if(!leads.length){
-    list.innerHTML=`<div class="chat-empty"><div class="chat-empty-icon">${q?'🔍':'💬'}</div><div>${q?'No matches found':'No conversations yet'}</div></div>`;
+    const emptyMsg=q?'No matches found':(CHAT_FILTER==='all'?'No conversations yet':'Nothing here right now');
+    list.innerHTML=`<div class="chat-empty"><div class="chat-empty-icon">${q?'🔍':'💬'}</div><div>${emptyMsg}</div></div>`;
     $id('chatLoadMore').style.display='none';
     return;
   }
@@ -11237,8 +11271,12 @@ function renderChatContacts(){
     // WhatsApp's list shows the last message as the subtitle, not a phone number — but this
     // CRM leans on phone to identify leads with no name yet, so fall back to it only then.
     const preview=l.Name?lastMsg:(maskPhone(l.Phone)+(lastMsg?' — '+lastMsg:''));
+    // Small red dot on the avatar — same "waiting on a human" signal Human Deals uses (Handover
+    // field), so a chat that needs you stands out even while browsing the "All" tab, not just
+    // inside the "Needs You" filter.
+    const needsYou=l.Handover==='Yes'?'<span class="cc-needs-you" title="Waiting on a human"></span>':'';
     return `<div class="chat-contact-row${_chatLeadId===l.Id?' active':''}" id="ccRow${l.Id}" onclick="chatSelectLead(${l.Id})">
-      <div class="cc-avatar">${initial}</div>
+      <div class="cc-avatar">${initial}${needsYou}</div>
       <div class="cc-info">
         <div class="cc-row-top">
           <div class="cc-name">${scoreDot}${esc(l.Name||'Unknown')}</div>
@@ -11252,6 +11290,13 @@ function renderChatContacts(){
     </div>`;
   }).join('');
   $id('chatLoadMore').style.display='none';
+}
+
+function renderChatFilterRow(counts){
+  const tabs=[['all','All'],['needsyou','Needs You'],['hot','🔴 Hot'],['mine','Mine']];
+  $id('chatFilterRow').innerHTML=tabs.map(([key,label])=>
+    `<button class="chat-filter-btn${CHAT_FILTER===key?' active':''}" onclick="setChatFilter('${key}')">${label}<span class="cnt">${counts[key]}</span></button>`
+  ).join('');
 }
 
 function chatSearchDebounce(){
