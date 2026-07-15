@@ -2,6 +2,12 @@ name = "leadvyne-api-proxy"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
+# Enabled via the dashboard (Observability tab) to debug the voice-to-voice transcription issue —
+# committed here so a future `wrangler deploy` from this config doesn't silently turn it back off.
+[observability.logs]
+enabled = true
+invocation_logs = true
+
 # Three schedules, dispatched by event.cron in `scheduled()`:
 #  - "0 2 * * *"     Integrations tab health check, once daily for every client
 #                    (runDailyHealthCheckForAllClients in worker.js).
