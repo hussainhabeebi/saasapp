@@ -3908,6 +3908,15 @@ const ENGINE_OPT_OUT_WORDS=['stop','unsubscribe','opt out','opt-out','optout'];
 // which the "AI Agent · Sentiment & Intent" node ran on — a dedicated Gemini credential shared
 // across all clients (REPLACE_GEMINI_CRED), not each client's own per-tenant OpenRouter key.
 const ENGINE_GEMINI_MODEL='gemini-2.0-flash';
+// Real observed failure: a customer asked about a free-trial offer that WAS explicitly written in
+// this client's own main_prompt (so the model had the correct answer in context) and still got
+// told there wasn't one — a plain accuracy/instruction-following gap in gemini-2.0-flash, the same
+// gap already fixed for voice transcription (see ENGINE_TRANSCRIBE_MODEL above). The customer-
+// facing reply itself (engineCallLlm — every FAQ/objection/product-enquiry answer, for every
+// client) is worth the extra cost/latency of a stronger model; the classifier/translation calls
+// elsewhere stay on the fast/cheap model since a wrong intent guess or a slightly-off translation
+// is a much smaller miss than the actual answer being factually wrong.
+const ENGINE_REPLY_MODEL='gemini-2.5-flash';
 
 // Direct Google Generative Language API call (env.GEMINI_API_KEY — a Worker secret, shared across
 // all clients, same as the n8n workflow's single Gemini credential). Returns the model's raw text
@@ -3920,7 +3929,7 @@ async function engineGeminiGenerate(env, systemText, userText, opts={}){
       generationConfig:{temperature:opts.temperature??0.3, maxOutputTokens:opts.maxOutputTokens||300, ...(opts.json?{responseMimeType:'application/json'}:{})}
     };
     if(systemText) reqBody.systemInstruction={parts:[{text:systemText}]};
-    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${opts.model||ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(reqBody)
     });
     if(!r.ok) return null;
@@ -4652,7 +4661,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
 // principle that a customer getting nothing/genuinely-wrong is worth alerting on, ordinary
 // single-layer fallbacks elsewhere aren't (see SETUP.md "Error monitoring").
 async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
-  const geminiReply=await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300});
+  const geminiReply=await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL});
   if(geminiReply) return geminiReply;
   try{
     const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {

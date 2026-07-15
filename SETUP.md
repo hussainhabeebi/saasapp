@@ -2136,6 +2136,16 @@ exception to this fallback pattern — deliberately Gemini-only, no OpenRouter b
   `engineGeminiDescribeImage` (direct Gemini vision) tried first, the existing OpenRouter vision
   call (client's own key/model) as fallback — closing the last OpenRouter-only LLM call in the
   turn-processing path.
+- **`engineCallLlm`'s direct-Gemini call now uses a dedicated `ENGINE_REPLY_MODEL`
+  (`gemini-2.5-flash`), not the shared fast/cheap `ENGINE_GEMINI_MODEL` (`gemini-2.0-flash`) used
+  for the classifier/translation calls.** Real observed failure: a customer asked about a free-trial
+  offer that was explicitly written in that client's own `main_prompt` (so the correct answer was
+  right there in the system prompt) and still got told there wasn't one — the same accuracy gap
+  already fixed for voice transcription (see `ENGINE_TRANSCRIBE_MODEL`), just showing up in the
+  reply itself instead. `engineGeminiGenerate` now takes an optional `opts.model` (defaults to
+  `ENGINE_GEMINI_MODEL` everywhere else — classifier/translation calls are unaffected, since a
+  slightly-off intent guess or translation is a smaller miss than the actual answer being factually
+  wrong).
 - **Not yet covered by this pass** (still OpenRouter-only, same single-point-of-failure shape,
   just not touched by this change): `handleAiComplete` (`POST /ai/complete`, the dashboard's AI
   Deal Coach and other assistant features), `handleAiObjectionReply` (`POST /ai/objection-reply`),
