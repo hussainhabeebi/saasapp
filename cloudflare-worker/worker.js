@@ -3943,16 +3943,22 @@ const ENGINE_TRANSCRIBE_PROMPT='Transcribe this voice note to plain text, in wha
 
 // Downloads the voice note once (shared by both transcription attempts below, so a Gemini failure
 // followed by the OpenRouter fallback doesn't re-fetch the same file from Meta/Chatwoot a second
-// time) and base64-encodes it. Null on any fetch failure or an unexpectedly large file.
-async function engineFetchAudioBase64(mediaUrl){
+// time) and base64-encodes it. Null on any fetch failure or an unexpectedly large file. Every
+// failure branch reports via reportOpsError (not just STT's own two functions below) since a
+// silent null here was previously indistinguishable from "transcription itself failed" — same
+// blind spot that let the Sarvam TTS speaker-name bug go unnoticed.
+async function engineFetchAudioBase64(env, mediaUrl){
   try{
     const audioR=await fetch(mediaUrl);
-    if(!audioR.ok) return null;
-    const mimeType=audioR.headers.get('content-type')||'audio/ogg';
+    if(!audioR.ok){ await reportOpsError(env, 'engineFetchAudioBase64 — media fetch returned non-OK', new Error(`HTTP ${audioR.status}`), {mediaUrl}); return null; }
+    // Chatwoot/Meta serve WhatsApp voice notes as "audio/ogg; codecs=opus" — strip the codec
+    // parameter before handing this to Gemini's inline_data.mime_type, which expects a bare type.
+    const rawContentType=audioR.headers.get('content-type')||'audio/ogg';
+    const mimeType=rawContentType.split(';')[0].trim()||'audio/ogg';
     const buf=await audioR.arrayBuffer();
-    if(buf.byteLength>15*1024*1024) return null; // stay well under Gemini's inline-data request size limit
+    if(buf.byteLength>15*1024*1024){ await reportOpsError(env, 'engineFetchAudioBase64 — audio file too large', new Error(`${buf.byteLength} bytes`), {mediaUrl}); return null; }
     return {mimeType, base64:engineArrayBufferToBase64(buf)};
-  }catch(e){ return null; }
+  }catch(e){ await reportOpsError(env, 'engineFetchAudioBase64 — fetch threw', e, {mediaUrl}); return null; }
 }
 
 // Real voice transcription, via the same shared Gemini credential as the intent classifier —
@@ -3970,12 +3976,17 @@ async function engineGeminiTranscribeVoice(env, mimeType, base64){
         {inline_data:{mime_type:mimeType, data:base64}}
       ]}]})
     });
-    if(!r.ok) return null;
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineGeminiTranscribeVoice — Gemini returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {mimeType});
+      return null;
+    }
     const data=await r.json().catch(()=>({}));
     const parts=data?.candidates?.[0]?.content?.parts||[];
     const text=parts.map(p=>p.text||'').join('').trim();
+    if(!text) await reportOpsError(env, 'engineGeminiTranscribeVoice — empty transcript in response', new Error(JSON.stringify(data).slice(0,500)), {mimeType});
     return text||null;
-  }catch(e){ return null; }
+  }catch(e){ await reportOpsError(env, 'engineGeminiTranscribeVoice — request threw', e, {mimeType}); return null; }
 }
 
 // Backup transcription path when the direct Gemini call above is unavailable (no GEMINI_API_KEY)
@@ -3986,7 +3997,7 @@ async function engineGeminiTranscribeVoice(env, mimeType, base64){
 // verified against a live call in this session (docs.sarvam.ai/api.sarvam.ai/OpenRouter's own docs
 // were all unreachable under this session's network policy — see the Sarvam TTS caveat elsewhere
 // in this file for the same reason), so this is worth a real test call before relying on it.
-async function engineOpenRouterTranscribeVoice(c, mimeType, base64){
+async function engineOpenRouterTranscribeVoice(env, c, mimeType, base64){
   if(!c?.openrouter_key || !base64) return null;
   try{
     const format=/mp3|mpeg/.test(mimeType)?'mp3':/wav/.test(mimeType)?'wav':'ogg';
@@ -3997,10 +4008,14 @@ async function engineOpenRouterTranscribeVoice(c, mimeType, base64){
         {type:'input_audio', input_audio:{data:base64, format}}
       ]}]})
     });
-    if(!r.ok) return null;
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineOpenRouterTranscribeVoice — OpenRouter returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {mimeType});
+      return null;
+    }
     const data=await r.json().catch(()=>({}));
     return data?.choices?.[0]?.message?.content?.trim()||null;
-  }catch(e){ return null; }
+  }catch(e){ await reportOpsError(env, 'engineOpenRouterTranscribeVoice — request threw', e, {mimeType}); return null; }
 }
 
 // Direct Gemini text generation (engineGeminiGenerate) with an OpenRouter-routed Gemini model as
@@ -4127,11 +4142,11 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
     }catch(e){ return '(image received)'; }
   }
   if(mediaType==='voice' && mediaUrl){
-    const audio=await engineFetchAudioBase64(mediaUrl);
+    const audio=await engineFetchAudioBase64(env, mediaUrl);
     let transcript=null;
     if(audio){
       transcript=await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64);
-      if(!transcript) transcript=await engineOpenRouterTranscribeVoice(c, audio.mimeType, audio.base64);
+      if(!transcript) transcript=await engineOpenRouterTranscribeVoice(env, c, audio.mimeType, audio.base64);
     }
     return transcript || '(sent a voice note)';
   }
@@ -4756,17 +4771,19 @@ async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, 
 
 // Sends a Sarvam AI-generated voice note (female speaker) as the customer's reply attachment,
 // same Chatwoot-attachment relay engineSendChatwootImageReply already uses for product photos.
+// Sent as .ogg/audio+opus (matching engineSarvamTts's output_audio_codec) — that's the one format
+// WhatsApp's Cloud API renders as a native voice-note bubble instead of a generic file attachment.
 // Falls back to a plain text reply (engineSendChatwootReply) on any failure — a customer getting
 // the text-only reply they'd have gotten before this existed is a far better failure mode than
 // getting nothing at all, same reasoning as the image-reply fallback above.
 async function engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, captionText, fallbackText){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!audioBuf) return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
   try{
-    const blob=new Blob([audioBuf], {type:'audio/wav'});
+    const blob=new Blob([audioBuf], {type:'audio/ogg; codecs=opus'});
     const trimmed=(typeof captionText==='string'?captionText:'').trim();
     const fd=new FormData();
     fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
-    fd.append('attachments[]', blob, 'reply.wav');
+    fd.append('attachments[]', blob, 'reply.ogg');
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
     if(!r.ok){
       const errBody=await r.text().catch(()=>'');
@@ -4789,9 +4806,14 @@ const ENGINE_TTS_LANG_MAP={en:'en-IN', ml:'ml-IN', hi:'hi-IN', ta:'ta-IN', te:'t
 const ENGINE_TTS_SPEAKER='anushka'; // bulbul:v2's default female voice — 'meera' (previously used here) isn't a valid bulbul:v2 speaker, which made every real Sarvam call fail
 
 // Real TTS call — env.SARVAM_API_KEY (Worker secret, see wrangler.toml). Returns a decoded audio
-// ArrayBuffer (Sarvam returns a base64-encoded WAV), or null on any failure so callers fall back
-// to text. Text is capped defensively — a long FAQ paragraph shouldn't become a multi-minute
-// voice note even after engineBuildSpokenReply's own shortening.
+// ArrayBuffer, or null on any failure so callers fall back to text. Text is capped defensively —
+// a long FAQ paragraph shouldn't become a multi-minute voice note even after
+// engineBuildSpokenReply's own shortening.
+// output_audio_codec:'opus' (Ogg/Opus) instead of Sarvam's default WAV — WhatsApp's Cloud API only
+// renders audio as a native voice-note bubble for Ogg/Opus; a WAV attachment either gets rejected
+// outright or arrives as a generic file, not a playable voice note (this was the "message format
+// not suitable" bug). speech_sample_rate:16000 because Opus itself only supports 8/12/16/24/48kHz —
+// Sarvam's general 22050Hz default (valid for its other codecs) isn't a legal Opus rate.
 // Every failure branch reports via reportOpsError instead of just returning null silently, so any
 // future regression (bad speaker name, changed API shape, etc.) surfaces instead of every
 // voice-note customer silently and permanently getting a text reply with zero trace of why.
@@ -4804,7 +4826,7 @@ async function engineSarvamTts(env, text, targetLangCode){
     const r=await fetch('https://api.sarvam.ai/text-to-speech', {
       method:'POST',
       headers:{'api-subscription-key':env.SARVAM_API_KEY, 'Content-Type':'application/json'},
-      body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:22050})
+      body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:16000, output_audio_codec:'opus'})
     });
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');

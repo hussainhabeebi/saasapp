@@ -2146,6 +2146,14 @@ every client and industry.
 - Voice notes without `GEMINI_API_KEY` set, or where both transcription attempts fail, still fall
   back to the same `"(sent a voice note)"` placeholder text engine.json always sent instead (that
   placeholder isn't new, only now it's a fallback rather than the only behavior).
+- The media download (`engineFetchAudioBase64`) and both transcription attempts
+  (`engineGeminiTranscribeVoice`, `engineOpenRouterTranscribeVoice`) now report failures via
+  `reportOpsError` instead of returning `null` silently — previously a transcription failure was
+  indistinguishable from "customer just sent an unclear voice note," so a real bug (bad mime type,
+  expired media URL, API error) had zero trace. The media fetch also strips any `; codecs=...`
+  parameter off the downloaded file's `Content-Type` before handing it to Gemini as `mime_type`
+  (WhatsApp/Chatwoot serve voice notes as `audio/ogg; codecs=opus`, and Gemini's `inline_data`
+  expects a bare MIME type).
 
 **Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the Integrations →
 Voice-to-Voice Reply toggle explicitly switched on (`voice_reply_enabled='Yes'`, CLIENTS field,
@@ -2172,13 +2180,19 @@ sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
   regex extraction — no second AI call) — so a checkout link or a price the FAQ answer needed to
   share still reaches the customer in a form they can actually tap/copy.
 - **Female voice, via Sarvam's `bulbul:v2` model** (`ENGINE_TTS_SPEAKER='anushka'`) — `engineSarvamTts`
-  calls `POST https://api.sarvam.ai/text-to-speech` with the `api-subscription-key` header, returns
-  a base64-encoded WAV. Endpoint, header, request/response shape, and speaker name have been
-  checked against Sarvam's live REST reference (`docs.sarvam.ai`). Earlier revisions of this feature
-  hardcoded `speaker='meera'`, which isn't a valid `bulbul:v2` speaker (valid female voices are
-  `anushka`/`manisha`/`vidya`/`arya`, male are `abhilash`/`karun`/`hitesh`) — every real Sarvam call
-  was failing with a non-OK response and silently falling back to a text reply. Fixed by switching
-  to `anushka`, `bulbul:v2`'s default voice.
+  calls `POST https://api.sarvam.ai/text-to-speech` with the `api-subscription-key` header. Endpoint,
+  header, request/response shape, and speaker name have been checked against Sarvam's live REST
+  reference (`docs.sarvam.ai`). Earlier revisions of this feature hardcoded `speaker='meera'`, which
+  isn't a valid `bulbul:v2` speaker (valid female voices are `anushka`/`manisha`/`vidya`/`arya`, male
+  are `abhilash`/`karun`/`hitesh`) — every real Sarvam call was failing with a non-OK response and
+  silently falling back to a text reply. Fixed by switching to `anushka`, `bulbul:v2`'s default voice.
+- **Requests `output_audio_codec:'opus'` (Ogg/Opus), not Sarvam's default WAV.** WhatsApp's Cloud
+  API only renders an audio attachment as a native, playable voice-note bubble when it's Ogg/Opus —
+  a WAV attachment is either rejected outright or arrives as a generic file, not a voice note. Also
+  switched `speech_sample_rate` to `16000`: Opus itself only supports 8/12/16/24/48kHz, and Sarvam's
+  general-purpose 22050Hz default (valid for its other codecs) isn't a legal Opus rate.
+  `engineSendChatwootAudioReply` sends the attachment as `reply.ogg` /
+  `audio/ogg; codecs=opus` to match.
 - **Follow-up messages are explicitly out of scope for now** — `followup-template.json` and the
   dashboard's Follow-ups feature are untouched; this only covers live conversational replies inside
   `handleEngineWebhook`, not scheduled nudges.
