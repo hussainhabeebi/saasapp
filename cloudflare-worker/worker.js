@@ -3964,8 +3964,11 @@ async function engineFetchAudioBase64(env, mediaUrl){
 // Real voice transcription, via the same shared Gemini credential as the intent classifier —
 // engine.json never actually had this wired up (voice notes went to the AI as a literal
 // "(sent a voice note)" placeholder despite the docs describing transcription). Requires
-// GEMINI_API_KEY; falls back to engineOpenRouterTranscribeVoice below if unset or the call fails,
-// and to the literal placeholder in engineResolveUserText if that fails too.
+// GEMINI_API_KEY; falls back to the literal placeholder in engineResolveUserText if it's unset or
+// the call fails. Deliberately Gemini-only — no OpenRouter fallback (unlike text generation
+// elsewhere in this file) since that path used OpenRouter's `input_audio` content part, which was
+// never verified against a live call and was a plausible source of bad transcripts in its own
+// right rather than a safety net.
 async function engineGeminiTranscribeVoice(env, mimeType, base64){
   if(!env.GEMINI_API_KEY || !base64) return null;
   try{
@@ -3989,41 +3992,12 @@ async function engineGeminiTranscribeVoice(env, mimeType, base64){
   }catch(e){ await reportOpsError(env, 'engineGeminiTranscribeVoice — request threw', e, {mimeType}); return null; }
 }
 
-// Backup transcription path when the direct Gemini call above is unavailable (no GEMINI_API_KEY)
-// or fails — routes through OpenRouter to a Gemini model instead, using the client's own
-// openrouter_key (there's no shared OpenRouter credential the way GEMINI_API_KEY is shared, so
-// this fallback is unavailable for a client who hasn't set one). Uses the OpenAI-compatible
-// `input_audio` content part that OpenRouter mirrors for audio-capable models — NOT independently
-// verified against a live call in this session (docs.sarvam.ai/api.sarvam.ai/OpenRouter's own docs
-// were all unreachable under this session's network policy — see the Sarvam TTS caveat elsewhere
-// in this file for the same reason), so this is worth a real test call before relying on it.
-async function engineOpenRouterTranscribeVoice(env, c, mimeType, base64){
-  if(!c?.openrouter_key || !base64) return null;
-  try{
-    const format=/mp3|mpeg/.test(mimeType)?'mp3':/wav/.test(mimeType)?'wav':'ogg';
-    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-      body:JSON.stringify({model:'google/gemini-2.5-flash', max_tokens:300, messages:[{role:'user', content:[
-        {type:'text', text:ENGINE_TRANSCRIBE_PROMPT},
-        {type:'input_audio', input_audio:{data:base64, format}}
-      ]}]})
-    });
-    if(!r.ok){
-      const bodyText=await r.text().catch(()=>'');
-      await reportOpsError(env, 'engineOpenRouterTranscribeVoice — OpenRouter returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {mimeType});
-      return null;
-    }
-    const data=await r.json().catch(()=>({}));
-    return data?.choices?.[0]?.message?.content?.trim()||null;
-  }catch(e){ await reportOpsError(env, 'engineOpenRouterTranscribeVoice — request threw', e, {mimeType}); return null; }
-}
-
 // Direct Gemini text generation (engineGeminiGenerate) with an OpenRouter-routed Gemini model as
-// backup when it's unavailable or fails — same "backup if Gemini is failing, use an OpenRouter
-// Gemini model" pattern as engineOpenRouterTranscribeVoice above, for plain-text (non-audio)
-// generation calls. Deliberately hardcodes a Gemini model here rather than using the client's own
-// `c.model` — the point of this fallback is specifically "still get a Gemini-quality answer", not
-// "fall back to whatever model this client happens to have configured".
+// backup when it's unavailable or fails, for plain-text (non-audio) generation calls — voice
+// transcription (engineGeminiTranscribeVoice above) has no such fallback, deliberately Gemini-only.
+// Deliberately hardcodes a Gemini model here rather than using the client's own `c.model` — the
+// point of this fallback is specifically "still get a Gemini-quality answer", not "fall back to
+// whatever model this client happens to have configured".
 async function engineGeminiGenerateWithFallback(env, c, systemText, userText, opts={}){
   const direct=await engineGeminiGenerate(env, systemText, userText, opts);
   if(direct) return direct;
@@ -4143,11 +4117,7 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
   }
   if(mediaType==='voice' && mediaUrl){
     const audio=await engineFetchAudioBase64(env, mediaUrl);
-    let transcript=null;
-    if(audio){
-      transcript=await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64);
-      if(!transcript) transcript=await engineOpenRouterTranscribeVoice(env, c, audio.mimeType, audio.base64);
-    }
+    const transcript=audio?await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64):null;
     return transcript || '(sent a voice note)';
   }
   return text || (mediaType==='voice'?'(sent a voice note)':'');
