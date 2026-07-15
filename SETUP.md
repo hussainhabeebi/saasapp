@@ -2171,13 +2171,14 @@ sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
   short one-line text caption on the same voice message (`engineExtractLinkPriceCaption`, simple
   regex extraction — no second AI call) — so a checkout link or a price the FAQ answer needed to
   share still reaches the customer in a form they can actually tap/copy.
-- **Female voice, via Sarvam's `bulbul:v2` model** (`ENGINE_TTS_SPEAKER='meera'`) — `engineSarvamTts`
+- **Female voice, via Sarvam's `bulbul:v2` model** (`ENGINE_TTS_SPEAKER='anushka'`) — `engineSarvamTts`
   calls `POST https://api.sarvam.ai/text-to-speech` with the `api-subscription-key` header, returns
-  a base64-encoded WAV per Sarvam's own SDK docs. **Not live-verified against Sarvam's REST
-  reference** — this session's network policy blocked `docs.sarvam.ai`/`api.sarvam.ai` outright, so
-  the endpoint path, header name, and response shape here are built from Sarvam's published Python
-  SDK description (PyPI), not a fetched API reference. Worth a real test call before relying on
-  this in production.
+  a base64-encoded WAV. Endpoint, header, request/response shape, and speaker name have been
+  checked against Sarvam's live REST reference (`docs.sarvam.ai`). Earlier revisions of this feature
+  hardcoded `speaker='meera'`, which isn't a valid `bulbul:v2` speaker (valid female voices are
+  `anushka`/`manisha`/`vidya`/`arya`, male are `abhilash`/`karun`/`hitesh`) — every real Sarvam call
+  was failing with a non-OK response and silently falling back to a text reply. Fixed by switching
+  to `anushka`, `bulbul:v2`'s default voice.
 - **Follow-up messages are explicitly out of scope for now** — `followup-template.json` and the
   dashboard's Follow-ups feature are untouched; this only covers live conversational replies inside
   `handleEngineWebhook`, not scheduled nudges.
