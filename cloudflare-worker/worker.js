@@ -3939,7 +3939,23 @@ function engineArrayBufferToBase64(buf){
   return btoa(binary);
 }
 
-const ENGINE_TRANSCRIBE_PROMPT='Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription — no commentary, no quotes, no translation.';
+const ENGINE_TRANSCRIBE_PROMPT='Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription, written in that language\'s own native script — no commentary, no quotes, no translation, no romanization.';
+
+// gemini-2.0-flash (ENGINE_GEMINI_MODEL, used for the fast text classifier/reply calls elsewhere)
+// measurably under-transcribes audio next to Gemini's newer models, and that gap is worse for
+// lower-resource Indic languages (Malayalam, etc.) than for English — accuracy, not just speed, is
+// what matters for a customer's actual words, so transcription gets its own, stronger model rather
+// than reusing the fast/cheap one.
+const ENGINE_TRANSCRIBE_MODEL='gemini-2.5-flash';
+
+// ISO 639-1 → language name, for a hint in the transcription prompt below (CLIENTS.language, e.g.
+// 'ml' for a Malayalam-speaking client base). Forcing the model to simultaneously guess which
+// language is being spoken AND transcribe it blind is a harder task than transcribing with a
+// steer — Gemini's own docs note a language hint "noticeably improves accuracy on multilingual or
+// accented audio". Not a hard constraint: the prompt still says "if it's actually a different
+// language, transcribe that instead" so a customer who doesn't match the client's configured
+// default language isn't mistranscribed into it.
+const ENGINE_LANG_NAMES={en:'English', ml:'Malayalam', hi:'Hindi', ta:'Tamil', te:'Telugu', kn:'Kannada', bn:'Bengali', gu:'Gujarati', mr:'Marathi', pa:'Punjabi', or:'Odia', ar:'Arabic'};
 
 // Downloads the voice note once (shared by both transcription attempts below, so a Gemini failure
 // followed by the OpenRouter fallback doesn't re-fetch the same file from Meta/Chatwoot a second
@@ -3969,13 +3985,17 @@ async function engineFetchAudioBase64(env, mediaUrl){
 // elsewhere in this file) since that path used OpenRouter's `input_audio` content part, which was
 // never verified against a live call and was a plausible source of bad transcripts in its own
 // right rather than a safety net.
-async function engineGeminiTranscribeVoice(env, mimeType, base64){
+async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode){
   if(!env.GEMINI_API_KEY || !base64) return null;
+  const langName=ENGINE_LANG_NAMES[(langHintCode||'').toLowerCase()];
+  const prompt=langName
+    ? `${ENGINE_TRANSCRIBE_PROMPT} This customer usually writes in ${langName}, so expect ${langName} unless the audio is clearly a different language — in that case transcribe the language actually spoken instead.`
+    : ENGINE_TRANSCRIBE_PROMPT;
   try{
-    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_TRANSCRIBE_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({contents:[{role:'user', parts:[
-        {text:ENGINE_TRANSCRIBE_PROMPT},
+        {text:prompt},
         {inline_data:{mime_type:mimeType, data:base64}}
       ]}]})
     });
@@ -4117,7 +4137,7 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
   }
   if(mediaType==='voice' && mediaUrl){
     const audio=await engineFetchAudioBase64(env, mediaUrl);
-    const transcript=audio?await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64):null;
+    const transcript=audio?await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64, c.language):null;
     return transcript || '(sent a voice note)';
   }
   return text || (mediaType==='voice'?'(sent a voice note)':'');

@@ -2158,6 +2158,21 @@ exception to this fallback pattern — deliberately Gemini-only, no OpenRouter b
   trace. The media fetch also strips any `; codecs=...` parameter off the downloaded file's
   `Content-Type` before handing it to Gemini as `mime_type` (WhatsApp/Chatwoot serve voice notes as
   `audio/ogg; codecs=opus`, and Gemini's `inline_data` expects a bare MIME type).
+- **Transcription accuracy fix: dedicated model + language hint.** Real-world testing (Malayalam
+  voice notes) surfaced calls that succeed (no error, non-empty text) but mis-transcribe the actual
+  words — two separate gaps, not a failure this engine's error reporting would ever catch:
+  - `engineGeminiTranscribeVoice` now calls `gemini-2.5-flash` (`ENGINE_TRANSCRIBE_MODEL`) instead
+    of reusing `ENGINE_GEMINI_MODEL` (`gemini-2.0-flash`, chosen elsewhere in this file for speed on
+    the classifier/reply calls) — Gemini's own docs note 2.0 Flash trails its newer models on
+    transcription accuracy specifically, a gap that's worse for lower-resource Indic languages than
+    for English.
+  - The transcription prompt now takes an optional language hint (`CLIENTS.language`, e.g. `'ml'`
+    for a Malayalam-speaking client base) via `ENGINE_LANG_NAMES`, so Gemini isn't simultaneously
+    guessing which language is spoken *and* transcribing it blind — per Gemini's docs, a language
+    hint "noticeably improves accuracy on multilingual or accented audio." Framed as a soft
+    expectation, not a hard lock ("expect {language} unless the audio is clearly a different
+    language"), so a customer who doesn't match the client's configured default still gets
+    transcribed in whatever they actually spoke.
 
 **Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the Integrations →
 Voice-to-Voice Reply toggle explicitly switched on (`voice_reply_enabled='Yes'`, CLIENTS field,
