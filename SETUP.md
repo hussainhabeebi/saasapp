@@ -2511,6 +2511,13 @@ unconditionally.
   2-letter code (a very short/ambiguous message, for instance) — callers fall back to
   `CLIENTS.language` themselves in that case, so there's always a sane default.
   `customerLanguage` flows through `engineRouteFlow`'s return value into `routing.customerLanguage`.
+- **The classifier's own Gemini/OpenRouter calls used to fail completely silently** (`catch(e){}`,
+  no logging at all) — since a failure here means `aiResult` stays `null`, `customerLanguage` falls
+  back to `CLIENTS.language` (commonly `'en'`), so a classifier failure was indistinguishable from
+  "customer wrote in English": the reply content (a separate, independently-succeeding LLM call)
+  could come back correct while the *language* silently reverted to the client's default. Every
+  failure branch — unparseable JSON, a non-OK response, a thrown request, or both attempts failing
+  outright — now reports via `reportOpsError`.
 - **`replyLang` (`handleEngineWebhook`)** = `routing.customerLanguage||c.language||'en'` — computed
   once per turn, passed into `engineBuildFaqSystemPrompt`, `engineBuildObjectionSystemPrompt`, and
   `engineBuildProductEnquirySystemPrompt` (each gained a `replyLang` parameter, still falling back
