@@ -1232,6 +1232,11 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div style="font-size:11px;color:var(--muted);margin-top:4px">Edited here per send — Invoice mode starts from <code>invoice_terms</code> if set, else falls back to the Quotation terms above.</div>
           </div>
 
+          <div style="margin-top:14px">
+            <label class="form-label">Footer Address (printed on every page)</label>
+            <textarea class="form-input" id="quoteFooterAddress" rows="2" placeholder="e.g. 123 Sheikh Zayed Road, Dubai, UAE — +971 4 123 4567"></textarea>
+          </div>
+
           <div style="display:flex;gap:12px;align-items:flex-end;margin-top:14px;flex-wrap:wrap">
             <div id="quoteValidityRow">
               <label class="form-label">Valid for (days)</label>
@@ -5348,6 +5353,7 @@ function quoteInit(){
   if(!clientRecord) return;
   $id('quoteTemplate').value=clientRecord.quote_template||QUOTE_DEFAULT_TEMPLATE;
   $id('quoteTerms').value=clientRecord.quote_terms||QUOTE_DEFAULT_TERMS;
+  $id('quoteFooterAddress').value=clientRecord.quote_footer_address||'';
   $id('quoteValidityDays').value=clientRecord.quote_validity_days||7;
   try{_quoteServices=JSON.parse(clientRecord.services||'[]');}catch(e){_quoteServices=[];}
   _quoteSelectedLead=null;
@@ -5390,6 +5396,7 @@ $id('saveQuoteTemplate').addEventListener('click',async()=>{
   await saveField('saveQuoteTemplate','saveQuoteTemplateMsg',{
     quote_template:$id('quoteTemplate').value,
     quote_terms:$id('quoteTerms').value,
+    quote_footer_address:$id('quoteFooterAddress').value.trim(),
     quote_validity_days:parseInt($id('quoteValidityDays').value)||7,
   });
 });
@@ -5646,6 +5653,7 @@ function quoteBuildPdfDoc(lead,items,total,currency,invoiceNumber){
     doc.setTextColor(0);
   }
 
+  stampQuoteFooter(doc,marginX);
   return doc;
 }
 
@@ -9465,12 +9473,28 @@ function sqUpdateSelBar(){
   if(chkAll) chkAll.checked=_sqFilteredLeads.length>0&&_sqFilteredLeads.every(l=>_sqSelectedIds.has(String(l.Id)));
 }
 
-// Writes a labeled block of wrapped text, paginating if it runs off the page — shared by the
-// Inclusions/Exclusions/Notes/Details sections across all three PDF formats below.
-function sqWriteWrapped(doc,label,text,x,y,maxW){
+// Reads a CSS custom property off the live page (so the PDF picks up whichever industry theme
+// — theme-travel, theme-insurance, etc. — is actually applied) and converts it to a jsPDF RGB
+// triple, falling back to the base theme's value if the property isn't set for some reason.
+function sqAccentRgb(varName,fallbackHex){
+  let hex=fallbackHex;
+  try{
+    const v=getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+    if(v) hex=v;
+  }catch(e){}
+  hex=hex.replace('#','');
+  if(hex.length===3) hex=hex.split('').map(c=>c+c).join('');
+  const n=parseInt(hex,16)||0;
+  return[(n>>16)&255,(n>>8)&255,n&255];
+}
+
+// Writes a labeled block of wrapped free-text, paginating if it runs off the page — used for
+// notes/details sections where the source data is plain text rather than a list.
+function sqWriteWrapped(doc,label,text,x,y,maxW,accentInk){
   const pageH=doc.internal.pageSize.getHeight();
   if(y>pageH-60){doc.addPage();y=50;}
-  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.text(label,x,y);y+=13;
+  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(...accentInk);doc.text(label,x,y);y+=13;
+  doc.setTextColor(0);
   doc.setFont('helvetica','normal');doc.setFontSize(9.5);
   const lines=doc.splitTextToSize(text,maxW);
   lines.forEach(line=>{
@@ -9480,99 +9504,209 @@ function sqWriteWrapped(doc,label,text,x,y,maxW){
   return y+8;
 }
 
+// Writes a labeled bullet list, one wrapped bullet per array entry — used for
+// Inclusions/Exclusions, which are stored as JSON-stringified arrays (see savePkg()) and must
+// be parsed with safeJson() before printing, not written out as a raw JSON string.
+function sqWriteBulletList(doc,label,items,x,y,maxW,accentInk){
+  if(!items.length) return y;
+  const pageH=doc.internal.pageSize.getHeight();
+  if(y>pageH-60){doc.addPage();y=50;}
+  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(...accentInk);doc.text(label,x,y);y+=14;
+  doc.setTextColor(0);
+  doc.setFont('helvetica','normal');doc.setFontSize(9.5);
+  items.forEach(item=>{
+    const lines=doc.splitTextToSize('•  '+item,maxW);
+    lines.forEach(line=>{
+      if(y>pageH-50){doc.addPage();y=50;}
+      doc.text(line,x,y);y+=13;
+    });
+  });
+  return y+7;
+}
+
+// Stamps a footer (rule + optional business address + "Page X of N") on every page of the
+// document — called once at the end, after all content/pagination has happened, since the
+// final page count isn't known until then.
+function stampQuoteFooter(doc,marginX){
+  const address=(clientRecord.quote_footer_address||'').trim();
+  const pageW=doc.internal.pageSize.getWidth();
+  const pageH=doc.internal.pageSize.getHeight();
+  const totalPages=doc.internal.getNumberOfPages();
+  for(let p=1;p<=totalPages;p++){
+    doc.setPage(p);
+    const fy=pageH-38;
+    doc.setDrawColor(220);doc.setLineWidth(0.6);
+    doc.line(marginX,fy,pageW-marginX,fy);
+    doc.setFont('helvetica','normal');doc.setFontSize(8);doc.setTextColor(120);
+    if(address){
+      const lines=doc.splitTextToSize(address,pageW-marginX*2-90);
+      doc.text(lines,marginX,fy+13);
+    }
+    doc.text(`Page ${p} of ${totalPages}`,pageW-marginX,fy+13,{align:'right'});
+    doc.setTextColor(0);
+  }
+}
+
 function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity){
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
   const marginX=40;
   const pageW=doc.internal.pageSize.getWidth();
   const pageH=doc.internal.pageSize.getHeight();
-  let y=50;
+  const contentW=pageW-marginX*2;
+  const accent=sqAccentRgb('--accent','#0D9C93');
+  const accentInk=sqAccentRgb('--accent-ink','#1E3A6E');
+  const accentSoft=sqAccentRgb('--accent-soft','#DFF6F3');
+  let y=44;
 
+  // ── Header: logo only when one's set (no redundant business-name text next to it) — falls
+  // back to the business name as text only when there's no logo to show at all.
+  let headerBottomY=y;
   if(clientRecord.quote_logo_url){
     try{
       const mime=/data:image\/(png|jpe?g|webp)/.exec(clientRecord.quote_logo_url);
       const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
-      const maxW=90,maxH=45;
-      let w=maxW,h=maxH;
+      const maxLogoW=150,maxLogoH=60;
+      let w=maxLogoW,h=maxLogoH;
       if(_quoteLogoDims&&_quoteLogoDims.w&&_quoteLogoDims.h){
-        const ratio=Math.min(maxW/_quoteLogoDims.w,maxH/_quoteLogoDims.h);
+        const ratio=Math.min(maxLogoW/_quoteLogoDims.w,maxLogoH/_quoteLogoDims.h);
         w=_quoteLogoDims.w*ratio; h=_quoteLogoDims.h*ratio;
       }
       doc.addImage(clientRecord.quote_logo_url,fmt,marginX,y,w,h,undefined,'FAST');
-    }catch(e){}
+      headerBottomY=y+h;
+    }catch(e){
+      doc.setFont('helvetica','bold');doc.setFontSize(18);doc.setTextColor(...accentInk);
+      doc.text(clientRecord.client_name||'Quotation',marginX,y+20);
+      doc.setTextColor(0);
+      headerBottomY=y+28;
+    }
+  }else{
+    doc.setFont('helvetica','bold');doc.setFontSize(18);doc.setTextColor(...accentInk);
+    doc.text(clientRecord.client_name||'Quotation',marginX,y+20);
+    doc.setTextColor(0);
+    headerBottomY=y+28;
   }
 
-  doc.setFont('helvetica','bold');doc.setFontSize(18);
-  doc.text(clientRecord.client_name||'Quotation',marginX+110,y+20);
-  doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(100);
-  doc.text(SQ_FORMAT_TITLES[format]||'Quotation',marginX+110,y+38);
+  // Document meta, right-aligned: type, date, valid-until (a concrete date reads better than
+  // a bare "valid for N days" — the recipient shouldn't have to do the math themselves).
+  const validUntil=new Date(Date.now()+validity*86400000).toLocaleDateString();
+  doc.setFont('helvetica','bold');doc.setFontSize(13);doc.setTextColor(...accentInk);
+  doc.text(SQ_FORMAT_TITLES[format]||'Quotation',pageW-marginX,y+12,{align:'right'});
   doc.setTextColor(0);
-  y+=80;
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(100);
+  doc.text(`Date: ${new Date().toLocaleDateString()}`,pageW-marginX,y+28,{align:'right'});
+  doc.text(`Valid until: ${validUntil}`,pageW-marginX,y+42,{align:'right'});
+  doc.setTextColor(0);
+  headerBottomY=Math.max(headerBottomY,y+50);
 
-  doc.setFontSize(11);
-  doc.text(`Prepared for: ${lead.Name||lead.Phone||'Customer'}`,marginX,y);
-  doc.text(`Date: ${new Date().toLocaleDateString()}`,400,y);
-  y+=16;
-  doc.text(`Valid for: ${validity} days`,marginX,y);
+  y=headerBottomY+10;
+  doc.setDrawColor(...accent);doc.setLineWidth(1.4);
+  doc.line(marginX,y,pageW-marginX,y);
   y+=24;
 
   const title=src.type==='package'?(src.rec.name||'Package'):(src.rec.title||'Itinerary');
   const destination=src.rec.destination||'';
-  doc.setFont('helvetica','bold');doc.setFontSize(13);
-  doc.text(title,marginX,y); y+=18;
-  if(destination){
-    doc.setFont('helvetica','normal');doc.setFontSize(10.5);doc.setTextColor(90);
-    doc.text(destination,marginX,y);y+=16;doc.setTextColor(0);
-  }
-  y+=6;
+
+  // "Prepared for / Destination" info box
+  const boxH=44;
+  if(y+boxH>pageH-120){doc.addPage();y=50;}
+  doc.setFillColor(...accentSoft);
+  doc.roundedRect(marginX,y,contentW,boxH,4,4,'F');
+  doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(...accentInk);
+  doc.text('PREPARED FOR',marginX+14,y+16);
+  doc.text('DESTINATION',marginX+contentW/2+10,y+16);
+  doc.setFont('helvetica','normal');doc.setFontSize(11);doc.setTextColor(20);
+  doc.text(lead.Name||lead.Phone||'Customer',marginX+14,y+33);
+  doc.text(destination||'—',marginX+contentW/2+10,y+33);
+  doc.setTextColor(0);
+  y+=boxH+20;
+
+  // Title banner
+  if(y+32>pageH-120){doc.addPage();y=50;}
+  doc.setFillColor(...accent);
+  doc.rect(marginX,y,contentW,30,'F');
+  doc.setFont('helvetica','bold');doc.setFontSize(13);doc.setTextColor(255,255,255);
+  doc.text(title,marginX+14,y+20);
+  doc.setTextColor(0);
+  y+=30+18;
 
   if(format==='package'){
     if(src.type==='package'){
       const p=src.rec;
       doc.setFont('helvetica','normal');doc.setFontSize(10.5);
-      doc.text(`${p.nights||'—'} nights · Pax ${p.pax_min||1}-${p.pax_max||p.pax_min||1}`,marginX,y); y+=18;
-      if(p.inclusions) y=sqWriteWrapped(doc,'Inclusions:',p.inclusions,marginX,y,pageW-marginX*2);
-      if(p.exclusions) y=sqWriteWrapped(doc,'Exclusions:',p.exclusions,marginX,y,pageW-marginX*2);
+      doc.text(`${p.nights||'—'} nights  ·  Pax ${p.pax_min||1}-${p.pax_max||p.pax_min||1}`,marginX,y); y+=20;
+      y=sqWriteBulletList(doc,'✓  Inclusions',safeJson(p.inclusions,[]),marginX,y,contentW,accentInk);
+      y=sqWriteBulletList(doc,'✕  Exclusions',safeJson(p.exclusions,[]),marginX,y,contentW,accentInk);
+      if((p.notes||'').trim()) y=sqWriteWrapped(doc,'Notes',p.notes,marginX,y,contentW,accentInk);
     }else{
       const it=src.rec;
       doc.setFont('helvetica','normal');doc.setFontSize(10.5);
-      doc.text(`${(it.days||[]).length} day(s)${it.from_date?' · '+it.from_date+(it.to_date?' to '+it.to_date:''):''}`,marginX,y); y+=18;
+      doc.text(`${(it.days||[]).length} day(s)${it.from_date?'  ·  '+it.from_date+(it.to_date?' to '+it.to_date:''):''}`,marginX,y); y+=20;
       (it.days||[]).forEach(d=>{
-        if(y>pageH-80){doc.addPage();y=50;}
-        doc.setFont('helvetica','bold');doc.setFontSize(10.5);doc.text(`Day ${d.day_no}: ${d.title||''}`,marginX,y);y+=14;
-        doc.setFont('helvetica','normal');
+        if(y>pageH-90){doc.addPage();y=50;}
+        doc.setFillColor(...accentSoft);
+        doc.roundedRect(marginX,y-11,54,16,3,3,'F');
+        doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(...accentInk);
+        doc.text(`DAY ${d.day_no}`,marginX+27,y,{align:'center'});
+        doc.setTextColor(0);
+        doc.setFont('helvetica','bold');doc.setFontSize(10.5);
+        doc.text(d.title||'',marginX+64,y);
+        y+=16;
+        doc.setFont('helvetica','normal');doc.setFontSize(9.5);
         (d.items||[]).forEach(item=>{
-          if(y>pageH-60){doc.addPage();y=50;}
-          doc.text(`• ${item.description||''}`,marginX+10,y);y+=13;
+          if(y>pageH-70){doc.addPage();y=50;}
+          doc.text(`${itinItemIcon(item.type)}  ${item.description||''}`,marginX+16,y);y+=13;
         });
-        y+=4;
+        y+=6;
       });
+      if((it.notes||'').trim()) y=sqWriteWrapped(doc,'Notes',it.notes,marginX,y,contentW,accentInk);
     }
   }else if(format==='group_fare'){
     doc.setFont('helvetica','normal');doc.setFontSize(10.5);
     if(src.type==='itinerary'&&src.rec.from_date){
-      doc.text(`Travel dates: ${src.rec.from_date}${src.rec.to_date?' to '+src.rec.to_date:''}`,marginX,y);y+=16;
+      doc.text(`Travel dates: ${src.rec.from_date}${src.rec.to_date?' to '+src.rec.to_date:''}`,marginX,y);y+=18;
     }
-    doc.text(`Seats available: ${pax}`,marginX,y);y+=16;
-    if(src.rec.notes) y=sqWriteWrapped(doc,'Notes:',src.rec.notes,marginX,y,pageW-marginX*2);
+    doc.text(`Seats available: ${pax}`,marginX,y);y+=18;
+    if(src.type==='package'){
+      y=sqWriteBulletList(doc,'✓  Inclusions',safeJson(src.rec.inclusions,[]),marginX,y,contentW,accentInk);
+    }
+    if((src.rec.notes||'').trim()) y=sqWriteWrapped(doc,'Notes',src.rec.notes,marginX,y,contentW,accentInk);
   }else{ // travel_service
-    const desc=src.rec.notes||src.rec.inclusions||'';
-    if(desc) y=sqWriteWrapped(doc,'Details:',desc,marginX,y,pageW-marginX*2);
+    if(src.type==='package'){
+      y=sqWriteBulletList(doc,'✓  What\'s Included',safeJson(src.rec.inclusions,[]),marginX,y,contentW,accentInk);
+    }
+    const desc=(src.rec.notes||'').trim();
+    if(desc) y=sqWriteWrapped(doc,'Details',desc,marginX,y,contentW,accentInk);
   }
 
-  y+=16;
-  if(y>pageH-90){doc.addPage();y=50;}
-  doc.setFont('helvetica','bold');doc.setFontSize(12);
-  doc.text(`Total: ${currency} ${(parseFloat(price)||0).toLocaleString()}${format!=='travel_service'?' / person':''}`,marginX,y);
-  y+=26;
+  // Total box
+  y+=8;
+  const totalBoxH=44;
+  if(y+totalBoxH>pageH-130){doc.addPage();y=50;}
+  doc.setFillColor(...accentInk);
+  doc.roundedRect(marginX,y,contentW,totalBoxH,4,4,'F');
+  doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(255,255,255);
+  doc.text('TOTAL',marginX+16,y+17);
+  doc.setFontSize(17);
+  doc.text(`${currency} ${(parseFloat(price)||0).toLocaleString()}${format!=='travel_service'?' / person':''}`,marginX+16,y+36);
+  if(format==='group_fare'){
+    doc.setFont('helvetica','normal');doc.setFontSize(9);
+    doc.text(`${pax} seat(s) available`,marginX+contentW-16,y+27,{align:'right'});
+  }
+  doc.setTextColor(0);
+  y+=totalBoxH+22;
 
+  // Terms & Conditions
   const terms=clientRecord.quote_terms||QUOTE_DEFAULT_TERMS;
   if(y>pageH-100){doc.addPage();y=50;}
-  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.text('Terms & Conditions',marginX,y);y+=14;
+  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(...accentInk);
+  doc.text('Terms & Conditions',marginX,y);y+=14;
+  doc.setTextColor(0);
   doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(90);
-  doc.text(doc.splitTextToSize(terms,pageW-marginX*2),marginX,y);
+  doc.text(doc.splitTextToSize(terms,contentW),marginX,y);
   doc.setTextColor(0);
 
+  stampQuoteFooter(doc,marginX);
   return doc;
 }
 
