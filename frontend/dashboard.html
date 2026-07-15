@@ -1865,7 +1865,7 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <div class="settings-section">
             <div class="s-head">Bot Persona &amp; System Prompt</div>
-            <div class="s-note">The bot's voice, scope, and guardrails.</div>
+            <div class="s-note">The bot's voice, scope, and guardrails. You can also override the defaults here for tone/style, reply length, stage pacing, closing style, and message format — e.g. "keep replies to 1-2 sentences", "never propose a next step, just answer the question", "use short paragraphs with line breaks". Anything you specify here takes priority over the built-in defaults.</div>
             <textarea class="form-input" id="cfgPrompt" rows="8" placeholder="Loading…"></textarea>
             <div style="margin-top:10px;display:flex;align-items:center">
               <button class="save-btn" id="savePrompt">Save Prompt</button>

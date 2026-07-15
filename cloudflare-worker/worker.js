@@ -4537,7 +4537,7 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // asked for. Match the customer's own effort/length instead of maximizing how much gets said in
   // one reply, and never volunteer price unless it's actually asked about or genuinely needed to
   // answer — a real salesperson doesn't open with a price list either.
-  sys+='\n\nKeep your reply roughly as short as the customer\'s own message — a short greeting or a one-line question deserves a short, natural reply, not a long pitch covering everything you could possibly say. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message.';
+  sys+='\n\nDefault style (follow this unless the persona/instructions above specify a different tone, reply length, closing style, or message format — in that case, follow those instead): keep your reply roughly as short as the customer\'s own message — a short greeting or a one-line question deserves a short, natural reply, not a long pitch covering everything you could possibly say. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message.';
 
   if(industry==='ecommerce'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
@@ -4565,7 +4565,7 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // dispatcher with its own message-sending path — see engineFlowStagesBlock/engineClassifyIntent's
   // own comments for the two prior designs this replaced and the real bugs each one caused.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
-  if(stagesBlock) sys+=stagesBlock+'\n\nIf the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, do not force it if the customer is still asking unrelated questions, and do not repeat something you have already substantially covered (check Recent Conversation above).';
+  if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, do not force it if the customer is still asking unrelated questions, and do not repeat something you have already substantially covered (check Recent Conversation above).';
   return sys;
 }
 
@@ -4580,7 +4580,7 @@ async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
   let sys=c.main_prompt||'';
   if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
-  sys+=`\n\nThis is a brand-new lead's very first message. Write a short WhatsApp reply, in ${lang}: one short, warm sentence introducing what the business offers (from the Services/Knowledge Base above), then this exact question on its own line: "${firstQuestion}". Nothing else — no extra questions, no long pitch.`;
+  sys+=`\n\nThis is a brand-new lead's very first message. Default format (follow this unless the persona/instructions above specify a different length or format): write a short WhatsApp reply, in ${lang}: one short, warm sentence introducing what the business offers (from the Services/Knowledge Base above), then this exact question on its own line: "${firstQuestion}". Nothing else — no extra questions, no long pitch.`;
   const out=await engineCallLlm(env, c, sys, '(new conversation)', 150);
   return out && out.trim() && out!=='One moment 🙏' ? out : firstQuestion;
 }
@@ -4597,17 +4597,17 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
   sys+=`\n\n## Objection Handling\nThe lead just raised a "${objectionCategory}" objection.`;
   if(match && match.approved_response) sys+=` Use this approved response strategy: ${match.approved_response}`;
-  else sys+=' Acknowledge the concern briefly and honestly, respond confidently without over-promising, and always end by proposing one concrete next step (a call, a demo, or answering one more question) rather than just apologising.';
+  else sys+=' Acknowledge the concern briefly and honestly, respond confidently without over-promising. Default closing (follow this unless the persona/instructions above specify a different closing style): always end by proposing one concrete next step (a call, a demo, or answering one more question) rather than just apologising.';
   if(objectionCategory==='price'){
     sys+=c.quote_validity_days
       ? ` Create gentle urgency: mention that this pricing is confirmed for the next ${c.quote_validity_days} day(s) and encourage a decision within that window.`
       : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
   }
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
-  sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Keep it to 2-4 sentences.';
+  sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences.';
   // See engineBuildFaqSystemPrompt's matching comment.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
-  if(stagesBlock) sys+=stagesBlock+'\n\nAfter addressing the objection, if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, and do not repeat something already substantially covered (check Recent Conversation above).';
+  if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): after addressing the objection, if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, and do not repeat something already substantially covered (check Recent Conversation above).';
   return sys;
 }
 
