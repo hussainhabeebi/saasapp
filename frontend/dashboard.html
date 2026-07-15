@@ -714,6 +714,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 /* ── TRAVEL AGENCY MODULE ── */
 .ta-tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:13px 16px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
 .ta-tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.ta-subtab{font-family:var(--disp);font-size:12.5px;font-weight:600;padding:9px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1.5px;transition:color .15s,border-color .15s}
+.ta-subtab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
 .ta-card{background:var(--card);border-radius:var(--r);padding:20px;box-shadow:var(--shadow);margin-bottom:16px}
 .ta-card-title{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;gap:8px;color:var(--ink)}
 .pkg-filter-pill{background:none;border:1.5px solid var(--line);color:var(--muted);padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:var(--disp);font-weight:600;transition:background .15s,border-color .15s,color .15s}
@@ -8980,7 +8982,7 @@ function renderAgencySubPage(page) {
   switch(page) {
     case 'dashboard':   el.innerHTML = renderTaDashboard(); break;
     case 'packages':    el.innerHTML = renderTaPackages(); break;
-    case 'itineraries': el.innerHTML = renderTaItineraries(); break;
+    case 'itineraries': el.innerHTML = renderTaItineraries(); if(_itinSubTab==='send') sqFilterLeads(); break;
     case 'services':    el.innerHTML = renderTaServices(); break;
     case 'umrah':       el.innerHTML = renderTaUmrah(); break;
     case 'bookings':    el.innerHTML = renderTaBookings(); break;
@@ -9166,8 +9168,27 @@ async function deletePkg(id){
 /* ── TA: ITINERARIES ── */
 let _editItinId = null;
 let _itinDays = [];
+// Which inner tab the Itineraries page is showing — the itinerary list, or the bulk
+// "send this as a quotation to leads" compose view (state lives here, not in
+// renderAgencySubPage, since it's local to the itineraries ta-tab).
+let _itinSubTab = 'list';
+
+function itinGoSubTab(tab){
+  _itinSubTab = tab;
+  if(tab==='send') _sqSelectedIds = new Set();
+  renderAgencySubPage('itineraries');
+}
 
 function renderTaItineraries() {
+  return `
+  <div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:1.5px solid var(--line)">
+    <button class="ta-subtab${_itinSubTab==='list'?' active':''}" onclick="itinGoSubTab('list')">🗺️ Itineraries</button>
+    <button class="ta-subtab${_itinSubTab==='send'?' active':''}" onclick="itinGoSubTab('send')">📤 Send Quotation</button>
+  </div>
+  ${_itinSubTab==='send' ? renderItinSendQuote() : renderItinList()}`;
+}
+
+function renderItinList() {
   return `
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🗺️ Itineraries</div>
@@ -9253,6 +9274,386 @@ async function saveItin() {
 async function deleteItin(id){
   if(!confirm('Delete this itinerary?'))return;
   await taDeleteRow('itineraries',id);_taLoaded=false;await taLoad();renderAgencySubPage('itineraries');
+}
+
+/* ── TA: SEND QUOTATION TO LEADS ──
+   Bulk version of the single-lead Quotation page (openQuoteFor/quoteSend, in the QUOTATION
+   MODULE section above): picks an existing Package or Itinerary as the source, formats it as
+   a Package / Group Fare / Travel Service quotation PDF, and sends it to any number of
+   selected leads via the same /quote/send Chatwoot proxy — one call per lead, same pattern
+   broadcast.html's sendDm() uses for its checkbox-table multi-lead picker. Leads with no
+   linked Chatwoot conversation are skipped and logged rather than blocking the whole send. */
+const SQ_FORMATS=[
+  {key:'package',label:'📦 Package'},
+  {key:'group_fare',label:'✈️ Group Fare'},
+  {key:'travel_service',label:'🗂️ Travel Service'},
+];
+const SQ_FORMAT_TITLES={package:'Package Quotation',group_fare:'Group Fare Offer',travel_service:'Travel Service Quotation'};
+const SQ_CAPTION_TEMPLATES={
+  package:`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Please find our package quotation attached.\n\nTotal: {{total}}\nValid for {{validity_days}} days. Let us know if you'd like to proceed.`,
+  group_fare:`Hi {{lead_name}}, here's a group fare offer from {{business_name}}.\n\nFare: {{total}} per person\nValid for {{validity_days}} days — seats are limited, let us know if you'd like to book.`,
+  travel_service:`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Please find our service quotation attached.\n\nPrice: {{total}}\nValid for {{validity_days}} days. Let us know if you'd like to proceed.`,
+};
+
+let _sqFormat='package';       // 'package' | 'group_fare' | 'travel_service' — PDF wording/layout only
+let _sqSourceKey='';           // e.g. 'pkg-12' or 'itin-7'
+let _sqSelectedIds=new Set();  // lead Ids selected for this bulk send
+let _sqFilteredLeads=[];
+
+function sqSources(){
+  return[
+    ..._taPackages.map(p=>({key:'pkg-'+p.Id,type:'package',rec:p,label:'📦 '+(p.name||'Unnamed package'),price:p.sell_price||p.base_price||'',currency:p.currency||'AED',group:'Packages'})),
+    ..._taItineraries.map(it=>({key:'itin-'+it.Id,type:'itinerary',rec:it,label:'🗺️ '+(it.title||'Untitled itinerary'),price:'',currency:'AED',group:'Itineraries'})),
+  ];
+}
+
+function sqResolveSource(key){
+  return sqSources().find(s=>s.key===key)||null;
+}
+
+function sqFormatPillsHtml(){
+  return SQ_FORMATS.map(f=>`<button type="button" class="pkg-filter-pill${_sqFormat===f.key?' active':''}" onclick="sqSetFormat('${f.key}')">${f.label}</button>`).join('');
+}
+
+function sqSetFormat(fmt){
+  _sqFormat=fmt;
+  const pills=$id('sqFormatPills'); if(pills) pills.innerHTML=sqFormatPillsHtml();
+  const priceLabel=$id('sqPriceLabel'); if(priceLabel) priceLabel.textContent=fmt==='group_fare'?'Fare / person':fmt==='travel_service'?'Service price':'Price / person';
+  const paxLabel=$id('sqPaxLabel'); if(paxLabel) paxLabel.textContent=fmt==='group_fare'?'Seats available':'Pax';
+}
+
+function sqOnSourceChange(){
+  _sqSourceKey=$id('sqSource').value;
+  const src=sqResolveSource(_sqSourceKey);
+  if(src&&src.type==='package'){
+    $id('sqPrice').value=src.price||'';
+    $id('sqCurrency').value=src.currency||'AED';
+  }
+}
+
+function renderItinSendQuote(){
+  const sources=sqSources();
+  if(!sources.length){
+    return `<div style="text-align:center;padding:52px 24px;color:var(--muted);font-size:13px"><div style="font-size:36px;margin-bottom:10px">📤</div>Add a package or itinerary first, then come back here to send it to leads as a quotation.</div>`;
+  }
+  if(!_sqSourceKey||!sources.some(s=>s.key===_sqSourceKey)) _sqSourceKey=sources[0].key;
+  const selected=sqResolveSource(_sqSourceKey);
+  return `
+  <div class="ta-card">
+    <div class="ta-card-title">📤 Send Quotation to Leads</div>
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:16px">Pick a package or itinerary, choose how it should read on the PDF, then select any number of leads to send it to.</div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+      <div class="form-group">
+        <label class="form-label">Source</label>
+        <select class="form-input" id="sqSource" onchange="sqOnSourceChange()">
+          ${['Packages','Itineraries'].map(grp=>{
+            const opts=sources.filter(s=>s.group===grp);
+            if(!opts.length) return '';
+            return `<optgroup label="${grp}">${opts.map(s=>`<option value="${s.key}"${s.key===_sqSourceKey?' selected':''}>${esc(s.label)}</option>`).join('')}</optgroup>`;
+          }).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Format on PDF</label>
+        <div id="sqFormatPills" style="display:flex;gap:6px;flex-wrap:wrap;padding-top:6px">${sqFormatPillsHtml()}</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px">
+      <div class="form-group"><label class="form-label">Currency</label>
+        <select class="form-input" id="sqCurrency">${['AED','USD','EUR','GBP','SAR','QAR','KWD','INR','OMR','BHD'].map(c=>`<option value="${c}"${(selected?.currency||'AED')===c?' selected':''}>${c}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label class="form-label" id="sqPriceLabel">Price / person</label>
+        <input class="form-input" type="number" min="0" id="sqPrice" value="${esc(String(selected?.price||''))}" placeholder="0">
+      </div>
+      <div class="form-group"><label class="form-label" id="sqPaxLabel">Pax</label>
+        <input class="form-input" type="number" min="1" id="sqPax" value="1">
+      </div>
+      <div class="form-group"><label class="form-label">Valid for (days)</label>
+        <input class="form-input" type="number" min="1" id="sqValidity" value="7">
+      </div>
+    </div>
+
+    <div class="s-head" style="margin-bottom:8px">Select Leads</div>
+    <div class="leads-toolbar">
+      <input class="form-input" type="text" id="sqLeadSearch" placeholder="Search name / phone…" oninput="sqFilterLeads()" style="flex:1;min-width:160px">
+      <select class="form-input" id="sqStageFilter" onchange="sqFilterLeads()" style="flex:0 0 140px">
+        <option value="">All stages</option>
+      </select>
+      <button class="btn btn-secondary btn-sm" onclick="sqSelectAll()">Select all</button>
+      <button class="btn btn-ghost btn-sm" onclick="sqSelectNoneBtn()">Clear</button>
+    </div>
+    <div id="sqSelBar" style="display:none;align-items:center;gap:8px;background:var(--accent-soft);color:var(--accent-ink);padding:8px 12px;border-radius:8px;font-size:12.5px;font-weight:600;margin-bottom:8px">
+      <span id="sqSelCount">0 selected</span>
+    </div>
+    <div class="tbl-wrap" style="max-height:320px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-sm)">
+      <table class="leads-tbl">
+        <thead><tr>
+          <th style="width:34px"><input type="checkbox" id="sqChkAll" onchange="sqToggleAll(this)"></th>
+          <th>Name</th><th>Phone</th><th>Stage</th><th>Chat linked</th>
+        </tr></thead>
+        <tbody id="sqLeadsTbody"></tbody>
+      </table>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
+      <button class="save-btn" id="sqSendBtn" onclick="sqSend()">📤 Send Quotation to Selected Leads</button>
+      <span class="save-msg" id="sqSendMsg"></span>
+    </div>
+    <div id="sqProgressWrap" style="display:none;margin-top:12px">
+      <div style="height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px"><div id="sqProgressBar" style="height:100%;width:0;background:var(--accent);transition:width .2s"></div></div>
+      <div id="sqProgLabel" style="font-size:11.5px;color:var(--muted);margin-bottom:8px"></div>
+      <div id="sqLogBox" style="max-height:160px;overflow-y:auto;font-size:12px"></div>
+    </div>
+  </div>`;
+}
+
+function sqFilterLeads(){
+  const q=($id('sqLeadSearch')?.value||'').toLowerCase();
+  const sf=$id('sqStageFilter')?.value||'';
+  const stageSet=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))];
+  const sfEl=$id('sqStageFilter');
+  if(sfEl) sfEl.innerHTML='<option value="">All stages</option>'+stageSet.map(s=>`<option value="${esc(s)}"${sf===s?' selected':''}>${esc(s)}</option>`).join('');
+  _sqFilteredLeads=allLeads.filter(l=>{
+    if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
+    if(sf&&l.Stage!==sf) return false;
+    return true;
+  });
+  sqRenderLeadRows();
+}
+
+function sqRenderLeadRows(){
+  const tbody=$id('sqLeadsTbody');
+  if(!tbody) return;
+  if(!_sqFilteredLeads.length){
+    tbody.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px">No leads match.</td></tr>';
+    sqUpdateSelBar();
+    return;
+  }
+  tbody.innerHTML=_sqFilteredLeads.slice(0,200).map(l=>{
+    const chk=_sqSelectedIds.has(String(l.Id));
+    const hasConv=!!leadConvId(l);
+    return `<tr>
+      <td><input type="checkbox" data-id="${l.Id}" ${chk?'checked':''} onchange="sqToggleLead(this)"></td>
+      <td>${esc(l.Name||'Unknown')}</td>
+      <td style="font-family:var(--mono);font-size:12px">${esc(maskPhone(l.Phone))}</td>
+      <td>${esc(l.Stage||'new')}</td>
+      <td>${hasConv?'<span style="color:#166534">✓</span>':'<span style="color:var(--muted)">—</span>'}</td>
+    </tr>`;
+  }).join('');
+  sqUpdateSelBar();
+}
+
+function sqToggleLead(el){
+  const id=el.dataset.id;
+  if(el.checked) _sqSelectedIds.add(id); else _sqSelectedIds.delete(id);
+  sqUpdateSelBar();
+}
+function sqToggleAll(el){
+  _sqFilteredLeads.forEach(l=>{ if(el.checked) _sqSelectedIds.add(String(l.Id)); else _sqSelectedIds.delete(String(l.Id)); });
+  sqRenderLeadRows();
+}
+function sqSelectAll(){ _sqFilteredLeads.forEach(l=>_sqSelectedIds.add(String(l.Id))); sqRenderLeadRows(); }
+function sqSelectNoneBtn(){ _sqSelectedIds.clear(); sqRenderLeadRows(); }
+function sqUpdateSelBar(){
+  const bar=$id('sqSelBar'); if(!bar) return;
+  const n=_sqSelectedIds.size;
+  bar.style.display=n?'flex':'none';
+  $id('sqSelCount').textContent=n+' lead(s) selected';
+  const chkAll=$id('sqChkAll');
+  if(chkAll) chkAll.checked=_sqFilteredLeads.length>0&&_sqFilteredLeads.every(l=>_sqSelectedIds.has(String(l.Id)));
+}
+
+// Writes a labeled block of wrapped text, paginating if it runs off the page — shared by the
+// Inclusions/Exclusions/Notes/Details sections across all three PDF formats below.
+function sqWriteWrapped(doc,label,text,x,y,maxW){
+  const pageH=doc.internal.pageSize.getHeight();
+  if(y>pageH-60){doc.addPage();y=50;}
+  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.text(label,x,y);y+=13;
+  doc.setFont('helvetica','normal');doc.setFontSize(9.5);
+  const lines=doc.splitTextToSize(text,maxW);
+  lines.forEach(line=>{
+    if(y>pageH-50){doc.addPage();y=50;}
+    doc.text(line,x,y);y+=12;
+  });
+  return y+8;
+}
+
+function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity){
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({unit:'pt',format:'a4'});
+  const marginX=40;
+  const pageW=doc.internal.pageSize.getWidth();
+  const pageH=doc.internal.pageSize.getHeight();
+  let y=50;
+
+  if(clientRecord.quote_logo_url){
+    try{
+      const mime=/data:image\/(png|jpe?g|webp)/.exec(clientRecord.quote_logo_url);
+      const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
+      const maxW=90,maxH=45;
+      let w=maxW,h=maxH;
+      if(_quoteLogoDims&&_quoteLogoDims.w&&_quoteLogoDims.h){
+        const ratio=Math.min(maxW/_quoteLogoDims.w,maxH/_quoteLogoDims.h);
+        w=_quoteLogoDims.w*ratio; h=_quoteLogoDims.h*ratio;
+      }
+      doc.addImage(clientRecord.quote_logo_url,fmt,marginX,y,w,h,undefined,'FAST');
+    }catch(e){}
+  }
+
+  doc.setFont('helvetica','bold');doc.setFontSize(18);
+  doc.text(clientRecord.client_name||'Quotation',marginX+110,y+20);
+  doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(100);
+  doc.text(SQ_FORMAT_TITLES[format]||'Quotation',marginX+110,y+38);
+  doc.setTextColor(0);
+  y+=80;
+
+  doc.setFontSize(11);
+  doc.text(`Prepared for: ${lead.Name||lead.Phone||'Customer'}`,marginX,y);
+  doc.text(`Date: ${new Date().toLocaleDateString()}`,400,y);
+  y+=16;
+  doc.text(`Valid for: ${validity} days`,marginX,y);
+  y+=24;
+
+  const title=src.type==='package'?(src.rec.name||'Package'):(src.rec.title||'Itinerary');
+  const destination=src.rec.destination||'';
+  doc.setFont('helvetica','bold');doc.setFontSize(13);
+  doc.text(title,marginX,y); y+=18;
+  if(destination){
+    doc.setFont('helvetica','normal');doc.setFontSize(10.5);doc.setTextColor(90);
+    doc.text(destination,marginX,y);y+=16;doc.setTextColor(0);
+  }
+  y+=6;
+
+  if(format==='package'){
+    if(src.type==='package'){
+      const p=src.rec;
+      doc.setFont('helvetica','normal');doc.setFontSize(10.5);
+      doc.text(`${p.nights||'—'} nights · Pax ${p.pax_min||1}-${p.pax_max||p.pax_min||1}`,marginX,y); y+=18;
+      if(p.inclusions) y=sqWriteWrapped(doc,'Inclusions:',p.inclusions,marginX,y,pageW-marginX*2);
+      if(p.exclusions) y=sqWriteWrapped(doc,'Exclusions:',p.exclusions,marginX,y,pageW-marginX*2);
+    }else{
+      const it=src.rec;
+      doc.setFont('helvetica','normal');doc.setFontSize(10.5);
+      doc.text(`${(it.days||[]).length} day(s)${it.from_date?' · '+it.from_date+(it.to_date?' to '+it.to_date:''):''}`,marginX,y); y+=18;
+      (it.days||[]).forEach(d=>{
+        if(y>pageH-80){doc.addPage();y=50;}
+        doc.setFont('helvetica','bold');doc.setFontSize(10.5);doc.text(`Day ${d.day_no}: ${d.title||''}`,marginX,y);y+=14;
+        doc.setFont('helvetica','normal');
+        (d.items||[]).forEach(item=>{
+          if(y>pageH-60){doc.addPage();y=50;}
+          doc.text(`• ${item.description||''}`,marginX+10,y);y+=13;
+        });
+        y+=4;
+      });
+    }
+  }else if(format==='group_fare'){
+    doc.setFont('helvetica','normal');doc.setFontSize(10.5);
+    if(src.type==='itinerary'&&src.rec.from_date){
+      doc.text(`Travel dates: ${src.rec.from_date}${src.rec.to_date?' to '+src.rec.to_date:''}`,marginX,y);y+=16;
+    }
+    doc.text(`Seats available: ${pax}`,marginX,y);y+=16;
+    if(src.rec.notes) y=sqWriteWrapped(doc,'Notes:',src.rec.notes,marginX,y,pageW-marginX*2);
+  }else{ // travel_service
+    const desc=src.rec.notes||src.rec.inclusions||'';
+    if(desc) y=sqWriteWrapped(doc,'Details:',desc,marginX,y,pageW-marginX*2);
+  }
+
+  y+=16;
+  if(y>pageH-90){doc.addPage();y=50;}
+  doc.setFont('helvetica','bold');doc.setFontSize(12);
+  doc.text(`Total: ${currency} ${(parseFloat(price)||0).toLocaleString()}${format!=='travel_service'?' / person':''}`,marginX,y);
+  y+=26;
+
+  const terms=clientRecord.quote_terms||QUOTE_DEFAULT_TERMS;
+  if(y>pageH-100){doc.addPage();y=50;}
+  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.text('Terms & Conditions',marginX,y);y+=14;
+  doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(90);
+  doc.text(doc.splitTextToSize(terms,pageW-marginX*2),marginX,y);
+  doc.setTextColor(0);
+
+  return doc;
+}
+
+function sqBuildCaption(lead,format,total,currency,validity){
+  const tpl=SQ_CAPTION_TEMPLATES[format]||SQ_CAPTION_TEMPLATES.package;
+  return tpl
+    .replace(/\{\{lead_name\}\}/g,lead.Name||lead.Phone||'there')
+    .replace(/\{\{business_name\}\}/g,clientRecord.client_name||'us')
+    .replace(/\{\{total\}\}/g,`${currency} ${(parseFloat(total)||0).toLocaleString()}`)
+    .replace(/\{\{validity_days\}\}/g,String(validity));
+}
+
+async function sqSend(){
+  const btn=$id('sqSendBtn'),msg=$id('sqSendMsg');
+  if(!_sqSelectedIds.size){msg.textContent='Select at least one lead.';msg.className='save-msg err';return;}
+  const src=sqResolveSource(_sqSourceKey);
+  if(!src){msg.textContent='Pick a package or itinerary first.';msg.className='save-msg err';return;}
+  const price=parseFloat($id('sqPrice').value)||0;
+  if(!price){msg.textContent='Enter a price first.';msg.className='save-msg err';return;}
+  const currency=$id('sqCurrency').value||'AED';
+  const pax=parseInt($id('sqPax').value)||1;
+  const validity=parseInt($id('sqValidity').value)||7;
+  const format=_sqFormat;
+
+  const leads=allLeads.filter(l=>_sqSelectedIds.has(String(l.Id)));
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  $id('sqProgressWrap').style.display='block';
+  $id('sqLogBox').innerHTML='';
+  const bar=$id('sqProgressBar'),label=$id('sqProgLabel');
+  bar.style.width='0%'; label.textContent=`0 / ${leads.length}`;
+
+  const logRow=(text,color)=>{ $id('sqLogBox').insertAdjacentHTML('beforeend',`<div style="padding:4px 0;${color?'color:'+color:''}">${esc(text)}</div>`); };
+
+  let sent=0,failed=0,skipped=0;
+  for(let i=0;i<leads.length;i++){
+    const lead=leads[i];
+    const convId=leadConvId(lead);
+    if(!convId){
+      skipped++;
+      logRow(`⚠️ ${lead.Name||lead.Phone||'Lead'} — skipped, no WhatsApp conversation linked`,'var(--muted)');
+      bar.style.width=Math.round(((i+1)/leads.length)*100)+'%'; label.textContent=`${i+1} / ${leads.length}`;
+      continue;
+    }
+    try{
+      const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity);
+      const pdfBlob=doc.output('blob');
+      const caption=sqBuildCaption(lead,format,price,currency,validity);
+      const fd=new FormData();
+      fd.append('conv_id',convId);
+      fd.append('caption',caption);
+      fd.append('file',pdfBlob,`Quotation-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
+      const r=await fetch(`${CONFIG.WORKER_BASE}/quote/send`,{method:'POST',headers:ncAuthHeaders(),body:fd});
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+
+      const tags=parseTags(lead.Tags);
+      if(!tags.includes('Quotation Sent')) tags.push('Quotation Sent');
+      lead.Tags=tags.join(',');
+      const sentAt=new Date().toISOString();
+      const totalLabel=`${currency} ${price.toLocaleString()}`;
+      try{
+        const hist=await freshConvHistory(lead);
+        hist.push({role:'assistant',content:caption+`\n[Quotation PDF — ${SQ_FORMAT_TITLES[format]}, ${totalLabel}]`,ts:sentAt});
+        await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(','),QuoteSentAt:sentAt,QuoteSentTotal:totalLabel});
+        lead.ConvHistory=JSON.stringify(hist); lead.QuoteSentAt=sentAt; lead.QuoteSentTotal=totalLabel;
+      }catch(e){}
+      sent++;
+      logRow(`✅ ${lead.Name||lead.Phone||'Lead'} — sent`,'#166534');
+    }catch(e){
+      failed++;
+      logRow(`❌ ${lead.Name||lead.Phone||'Lead'} — ${e.message}`,'#991B1B');
+    }
+    bar.style.width=Math.round(((i+1)/leads.length)*100)+'%'; label.textContent=`${i+1} / ${leads.length}`;
+    await new Promise(res=>setTimeout(res,600));
+  }
+
+  label.textContent=`Done — ${sent} sent, ${failed} failed, ${skipped} skipped (no chat linked)`;
+  msg.textContent=`${sent} sent · ${failed} failed · ${skipped} skipped`;
+  btn.disabled=false;
+  _sqSelectedIds.clear();
+  sqFilterLeads();
 }
 
 /* ── TA: SERVICES ── */
