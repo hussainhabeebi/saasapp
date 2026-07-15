@@ -2113,11 +2113,11 @@ the loop for any client once they're cut over; `handleEngineWebhook` has no indu
 **Gemini-first, OpenRouter-fallback — every LLM call in the engine (`GEMINI_API_KEY`):** every
 step of a turn that calls an LLM now tries the shared Gemini credential first and only falls back
 to the client's own `openrouter_key`/`model` if Gemini is unset or fails — intent/sentiment/
-objection classification (`engineClassifyIntent`), voice transcription
-(`engineGeminiTranscribeVoice`/`engineOpenRouterTranscribeVoice`), image description
+objection classification (`engineClassifyIntent`), image description
 (`engineGeminiDescribeImage`), and — the one that used to be the exception — **the main reply
 agent itself, `engineCallLlm`**, which generates every FAQ/objection/product-enquiry reply across
-every client and industry.
+every client and industry. Voice transcription (`engineGeminiTranscribeVoice`) is the one
+exception to this fallback pattern — deliberately Gemini-only, no OpenRouter backup (see below).
 - `engineCallLlm` was OpenRouter-only until this change: no Gemini path at all, so it was a single
   shared point of failure for every client's core reply text, and — worse — any failure there
   (a thrown fetch, a non-OK response, an empty response body) was swallowed completely silently,
@@ -2143,17 +2143,21 @@ every client and industry.
   this fix (none of them generate the primary customer-facing reply) and are shaped differently
   (JSON-classifier calls, not free-text generation), so converting them would be a separate,
   deliberate follow-up rather than a mechanical copy of this pattern.
-- Voice notes without `GEMINI_API_KEY` set, or where both transcription attempts fail, still fall
-  back to the same `"(sent a voice note)"` placeholder text engine.json always sent instead (that
-  placeholder isn't new, only now it's a fallback rather than the only behavior).
-- The media download (`engineFetchAudioBase64`) and both transcription attempts
-  (`engineGeminiTranscribeVoice`, `engineOpenRouterTranscribeVoice`) now report failures via
-  `reportOpsError` instead of returning `null` silently — previously a transcription failure was
-  indistinguishable from "customer just sent an unclear voice note," so a real bug (bad mime type,
-  expired media URL, API error) had zero trace. The media fetch also strips any `; codecs=...`
-  parameter off the downloaded file's `Content-Type` before handing it to Gemini as `mime_type`
-  (WhatsApp/Chatwoot serve voice notes as `audio/ogg; codecs=opus`, and Gemini's `inline_data`
-  expects a bare MIME type).
+- Voice notes without `GEMINI_API_KEY` set, or where the Gemini transcription call fails, still
+  fall back to the same `"(sent a voice note)"` placeholder text engine.json always sent instead
+  (that placeholder isn't new, only now it's a fallback rather than the only behavior).
+- **Transcription is Gemini-only, deliberately no OpenRouter fallback.** An earlier revision routed
+  a failed direct Gemini call through OpenRouter's OpenAI-compatible `input_audio` content part as
+  a backup — that shape was never verified against a live call and was a plausible source of bad/
+  garbled transcripts in its own right, not a safety net. Removed; `engineGeminiTranscribeVoice` is
+  the only transcription path now.
+- The media download (`engineFetchAudioBase64`) and the transcription call
+  (`engineGeminiTranscribeVoice`) now report failures via `reportOpsError` instead of returning
+  `null` silently — previously a transcription failure was indistinguishable from "customer just
+  sent an unclear voice note," so a real bug (bad mime type, expired media URL, API error) had zero
+  trace. The media fetch also strips any `; codecs=...` parameter off the downloaded file's
+  `Content-Type` before handing it to Gemini as `mime_type` (WhatsApp/Chatwoot serve voice notes as
+  `audio/ogg; codecs=opus`, and Gemini's `inline_data` expects a bare MIME type).
 
 **Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the Integrations →
 Voice-to-Voice Reply toggle explicitly switched on (`voice_reply_enabled='Yes'`, CLIENTS field,
@@ -2201,24 +2205,16 @@ sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
   combined), or the TTS call itself failing all fall straight back to
   `engineSendChatwootReply`/`engineSendChatwootImageReply`, same "customer never gets nothing"
   principle as the existing image-reply fallback.
-- **Gemini backup via OpenRouter, for both voice-reply steps that call Gemini.** Direct Gemini
-  (`GEMINI_API_KEY`) is always tried first; if it's unset or the call fails, both steps now retry
-  once through OpenRouter routed to a Gemini model, using the client's own `openrouter_key` (there's
-  no shared OpenRouter credential the way `GEMINI_API_KEY` is shared, so this backup is unavailable
-  for a client who hasn't set one) — deliberately hardcoded to a Gemini model on OpenRouter rather
-  than the client's own configured `model`, since the point is "still get a Gemini-quality result",
-  not "fall back to whatever model this client happens to use elsewhere":
-  - **Voice-note transcription** — `engineGeminiTranscribeVoice` (direct) → `engineOpenRouterTranscribeVoice`
-    (backup, same downloaded audio bytes reused, no second fetch). The backup uses the OpenAI-
-    compatible `input_audio` content part OpenRouter mirrors for audio-capable models — like the
-    Sarvam TTS shape above, **not independently verified against a live call** in this session
-    (network policy blocked outbound docs lookups); test with a real voice note before relying on
-    it. If both attempts fail, transcription falls back to the same `"(sent a voice note)"`
-    placeholder text as before.
-  - **Spoken-reply rewrite** — `engineBuildSpokenReply` now calls `engineGeminiGenerateWithFallback`
-    (tries direct Gemini, then OpenRouter/Gemini) instead of direct Gemini alone. If both fail, it
-    falls back to a plain regex strip of links/prices from the real reply text rather than failing
-    the voice reply outright.
+- **Spoken-reply rewrite has a Gemini-via-OpenRouter backup; voice-note transcription does not.**
+  `engineBuildSpokenReply` calls `engineGeminiGenerateWithFallback` (direct Gemini first, then
+  OpenRouter routed to a Gemini model using the client's own `openrouter_key` if Gemini is unset or
+  fails) — deliberately hardcoded to a Gemini model on OpenRouter rather than the client's own
+  configured `model`, since the point is "still get a Gemini-quality result", not "fall back to
+  whatever model this client happens to use elsewhere". If both fail, it falls back to a plain
+  regex strip of links/prices from the real reply text rather than failing the voice reply
+  outright. **Voice-note transcription (`engineGeminiTranscribeVoice`) intentionally has no such
+  backup** — see "Voice messages are actually transcribed" above for why the OpenRouter fallback
+  that used to exist here was removed rather than kept as a safety net.
 
 **Fully automatic on signup — no manual Chatwoot step, for any industry.**
 `engineSyncChatwootWebhook` (`worker.js`) keeps a client's PRIMARY Chatwoot webhook (the one that
