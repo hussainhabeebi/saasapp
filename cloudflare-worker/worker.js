@@ -4783,22 +4783,19 @@ async function engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, 
 // Sarvam AI's TTS is Indic-language-focused — deliberately not a general-purpose fallback for
 // every language this engine can detect (e.g. Arabic customers, common in this product's UAE
 // client base, get a normal text reply instead of voice, not a mistranslated/unsupported one).
-// Exact supported-language list should be re-checked against Sarvam's current docs before launch —
-// this session's outbound network policy blocked docs.sarvam.ai/api.sarvam.ai, so this list and
-// engineSarvamTts's request/response shape below are built from Sarvam's published Python SDK
-// description (PyPI), not a live-verified API reference.
+// Endpoint, header, request/response shape, and this language list have been checked against
+// Sarvam's current docs (docs.sarvam.ai) and confirmed correct for bulbul:v2.
 const ENGINE_TTS_LANG_MAP={en:'en-IN', ml:'ml-IN', hi:'hi-IN', ta:'ta-IN', te:'te-IN', kn:'kn-IN', bn:'bn-IN', gu:'gu-IN', mr:'mr-IN', pa:'pa-IN', or:'od-IN'};
-const ENGINE_TTS_SPEAKER='meera'; // female voice — verify against Sarvam's current bulbul:v2 speaker list
+const ENGINE_TTS_SPEAKER='anushka'; // bulbul:v2's default female voice — 'meera' (previously used here) isn't a valid bulbul:v2 speaker, which made every real Sarvam call fail
 
 // Real TTS call — env.SARVAM_API_KEY (Worker secret, see wrangler.toml). Returns a decoded audio
 // ArrayBuffer (Sarvam returns a base64-encoded WAV), or null on any failure so callers fall back
 // to text. Text is capped defensively — a long FAQ paragraph shouldn't become a multi-minute
 // voice note even after engineBuildSpokenReply's own shortening.
-// Every failure branch reports via reportOpsError instead of just returning null silently — this
-// integration was built from Sarvam's published SDK docs, not a live-verified API reference (see
-// the comment on ENGINE_TTS_LANG_MAP above), so if the endpoint/request/response shape is wrong,
-// every voice-note customer silently and permanently gets a text reply instead with zero trace of
-// why. Missing SARVAM_API_KEY is the one expected/unconfigured case and does NOT report — that's
+// Every failure branch reports via reportOpsError instead of just returning null silently, so any
+// future regression (bad speaker name, changed API shape, etc.) surfaces instead of every
+// voice-note customer silently and permanently getting a text reply with zero trace of why.
+// Missing SARVAM_API_KEY is the one expected/unconfigured case and does NOT report — that's
 // just voice-to-voice not being set up yet for this environment, not a bug.
 async function engineSarvamTts(env, text, targetLangCode){
   if(!text || !targetLangCode) return null;
