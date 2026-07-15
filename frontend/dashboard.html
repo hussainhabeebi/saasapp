@@ -1012,8 +1012,8 @@ const TODAY = new Date().toISOString().slice(0,10);
 
   <!-- Desktop nav -->
   <div id="desktopNav">
-    <button class="dnTab active" data-page="humandeals">🤝 Human Deals<span id="dnHdBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
-    <button class="dnTab" data-page="home">🏠 Home</button>
+    <button class="dnTab active" data-page="home">🏠 Home</button>
+    <button class="dnTab" data-page="humandeals">🤝 Human Deals<span id="dnHdBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab" data-page="chats">💬 Chats</button>
     <button class="dnTab" data-page="leads">👥 Leads</button>
     <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
@@ -3654,12 +3654,11 @@ function showApp(){
   setTimeout(checkReminders,3000);
   clearInterval(_reminderTimer);
   _reminderTimer=setInterval(checkReminders,6*3600*1000);
-  // Default landing tab is Human Deals, not Home — that's the queue that actually needs daily
-  // attention. A deep-link query param (Billing/Channels/Integrations/Shopify redirect) always
-  // wins over that default when present, same as before this changed.
+  // Default landing tab is Home. A deep-link query param (Billing/Channels/Integrations/Shopify
+  // redirect) always wins over that default when present, same as before this changed.
   const params=new URLSearchParams(location.search);
   const shopifyParam=params.get('shopify');
-  let landingPage='humandeals';
+  let landingPage='home';
   if(params.has('billing')) landingPage='billing';
   else if(params.has('channels')) landingPage='channels';
   else if(params.has('integrations')||shopifyParam) landingPage='integrations';
