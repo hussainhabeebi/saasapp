@@ -3948,6 +3948,22 @@ function engineArrayBufferToBase64(buf){
   return btoa(binary);
 }
 
+// Retries a fetch once (after a short fixed delay) on a thrown network error or a likely-transient
+// status (429 rate limit, or 5xx) — covers the "momentary blip" case for the voice-to-voice
+// pipeline's external calls (media download, Gemini STT, Sarvam TTS) without retrying a real
+// client error (bad key, malformed request) that would just fail identically a second time. Not
+// applied engine-wide — scoped to this one pipeline, where a customer getting silently downgraded
+// to text/placeholder on a single transient failure is the specific problem being solved here.
+async function engineFetchWithRetry(url, options){
+  for(let attempt=0; ; attempt++){
+    let r, thrown=null;
+    try{ r=await fetch(url, options); }catch(e){ thrown=e; }
+    const transient=thrown || r.status===429 || r.status>=500;
+    if(!transient || attempt>=1) { if(thrown) throw thrown; return r; }
+    await new Promise(res=>setTimeout(res, 400));
+  }
+}
+
 const ENGINE_TRANSCRIBE_PROMPT='Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription, written in that language\'s own native script — no commentary, no quotes, no translation, no romanization.';
 
 // gemini-2.0-flash (ENGINE_GEMINI_MODEL, used for the fast text classifier/reply calls elsewhere)
@@ -3971,10 +3987,11 @@ const ENGINE_LANG_NAMES={en:'English', ml:'Malayalam', hi:'Hindi', ta:'Tamil', t
 // time) and base64-encodes it. Null on any fetch failure or an unexpectedly large file. Every
 // failure branch reports via reportOpsError (not just STT's own two functions below) since a
 // silent null here was previously indistinguishable from "transcription itself failed" — same
-// blind spot that let the Sarvam TTS speaker-name bug go unnoticed.
+// blind spot that let the Sarvam TTS speaker-name bug go unnoticed. Retries once on a transient
+// network/5xx blip (engineFetchWithRetry) before giving up.
 async function engineFetchAudioBase64(env, mediaUrl){
   try{
-    const audioR=await fetch(mediaUrl);
+    const audioR=await engineFetchWithRetry(mediaUrl, {});
     if(!audioR.ok){ await reportOpsError(env, 'engineFetchAudioBase64 — media fetch returned non-OK', new Error(`HTTP ${audioR.status}`), {mediaUrl}); return null; }
     // Chatwoot/Meta serve WhatsApp voice notes as "audio/ogg; codecs=opus" — strip the codec
     // parameter before handing this to Gemini's inline_data.mime_type, which expects a bare type.
@@ -3982,6 +3999,12 @@ async function engineFetchAudioBase64(env, mediaUrl){
     const mimeType=rawContentType.split(';')[0].trim()||'audio/ogg';
     const buf=await audioR.arrayBuffer();
     if(buf.byteLength>15*1024*1024){ await reportOpsError(env, 'engineFetchAudioBase64 — audio file too large', new Error(`${buf.byteLength} bytes`), {mediaUrl}); return null; }
+    // Real observed case: a near-instant tap-and-release voice note showed as 00:00 in Chatwoot's
+    // own player — a file this small is essentially silence/container-only, not real speech.
+    // Transcribing it anyway risks Gemini hallucinating plausible-sounding text from noise; treating
+    // it as "too short" up front (tooShort, not null — a distinct outcome from a real fetch/size
+    // failure) lets the caller ask the customer to resend instead of guessing.
+    if(buf.byteLength<800) return {tooShort:true};
     return {mimeType, base64:engineArrayBufferToBase64(buf)};
   }catch(e){ await reportOpsError(env, 'engineFetchAudioBase64 — fetch threw', e, {mediaUrl}); return null; }
 }
@@ -4001,7 +4024,7 @@ async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode){
     ? `${ENGINE_TRANSCRIBE_PROMPT} This customer usually writes in ${langName}, so expect ${langName} unless the audio is clearly a different language — in that case transcribe the language actually spoken instead.`
     : ENGINE_TRANSCRIBE_PROMPT;
   try{
-    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_TRANSCRIBE_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+    const r=await engineFetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_TRANSCRIBE_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({contents:[{role:'user', parts:[
         {text:prompt},
@@ -4146,6 +4169,12 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
   }
   if(mediaType==='voice' && mediaUrl){
     const audio=await engineFetchAudioBase64(env, mediaUrl);
+    // A too-short/near-silent recording skips the Gemini call entirely (see
+    // engineFetchAudioBase64) — there's nothing real to transcribe, and asking Gemini anyway risks
+    // it hallucinating plausible-sounding text from noise. Distinct placeholder from the generic
+    // one below so the AI's reply naturally asks the customer to resend, rather than answering a
+    // fabricated question.
+    if(audio?.tooShort) return '(sent a voice note that was too short/silent to make out — ask them to resend)';
     const transcript=audio?await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64, c.language):null;
     return transcript || '(sent a voice note)';
   }
@@ -4842,7 +4871,7 @@ async function engineSarvamTts(env, text, targetLangCode){
   if(!text || !targetLangCode) return null;
   if(!env.SARVAM_API_KEY){ await reportOpsError(env, 'engineSarvamTts — SARVAM_API_KEY not configured', new Error('missing secret')); return null; }
   try{
-    const r=await fetch('https://api.sarvam.ai/text-to-speech', {
+    const r=await engineFetchWithRetry('https://api.sarvam.ai/text-to-speech', {
       method:'POST',
       headers:{'api-subscription-key':env.SARVAM_API_KEY, 'Content-Type':'application/json'},
       body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:16000, output_audio_codec:'opus'})
@@ -4861,6 +4890,14 @@ async function engineSarvamTts(env, text, targetLangCode){
     const bin=atob(b64);
     const bytes=new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    // A well-formed Opus reply is never this small (even a one-word reply is comfortably above a
+    // few hundred bytes) — guards against sending a customer a broken/silent "voice note" that's
+    // actually just container bytes with no real audio, same principle as the too-short-recording
+    // check on the inbound side above.
+    if(bytes.buffer.byteLength<200){
+      await reportOpsError(env, 'engineSarvamTts — decoded audio suspiciously small, treating as failure', new Error(`${bytes.buffer.byteLength} bytes`), {targetLangCode});
+      return null;
+    }
     return bytes.buffer;
   }catch(e){
     await reportOpsError(env, 'engineSarvamTts — request threw', e, {targetLangCode});

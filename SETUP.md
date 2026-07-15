@@ -2168,6 +2168,21 @@ exception to this fallback pattern — deliberately Gemini-only, no OpenRouter b
   trace. The media fetch also strips any `; codecs=...` parameter off the downloaded file's
   `Content-Type` before handing it to Gemini as `mime_type` (WhatsApp/Chatwoot serve voice notes as
   `audio/ogg; codecs=opus`, and Gemini's `inline_data` expects a bare MIME type).
+- **Reliability pass: retries, a too-short-recording guard, and an outbound audio sanity check.**
+  - `engineFetchWithRetry` retries once (short fixed delay) on a thrown network error or a
+    likely-transient status (429/5xx), for the pipeline's three external calls: the media download,
+    the Gemini transcription call, and the Sarvam TTS call. Scoped to this one pipeline, not applied
+    engine-wide.
+  - `engineFetchAudioBase64` now flags a suspiciously tiny downloaded file (under 800 bytes — real
+    observed case: a tap-and-release voice note showing `00:00` in Chatwoot's own player) as
+    `{tooShort:true}` rather than attempting transcription on what's essentially silence/
+    container-only bytes — Gemini transcribing that anyway risks hallucinating plausible-sounding
+    text from noise rather than failing cleanly. `engineResolveUserText` returns a distinct
+    placeholder for this case so the AI's reply naturally asks the customer to resend, instead of
+    answering a fabricated transcript.
+  - `engineSarvamTts` now rejects a suspiciously tiny decoded audio buffer (under 200 bytes) as a
+    failure (same fallback-to-text path as every other TTS failure) rather than sending the customer
+    a broken/silent "voice note."
 - **Transcription accuracy fix: dedicated model + language hint.** Real-world testing (Malayalam
   voice notes) surfaced calls that succeed (no error, non-empty text) but mis-transcribe the actual
   words — two separate gaps, not a failure this engine's error reporting would ever catch:
