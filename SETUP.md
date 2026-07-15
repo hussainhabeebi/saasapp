@@ -43,6 +43,11 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | quote_validity_days | Number |
 | quote_logo_url | Long text (base64 data URI of the uploaded logo) |
 | quote_footer_address | Long text (business address printed in the footer of every Quotation/Invoice PDF page, including the Agency module's bulk "Send Quotation" PDFs) |
+| quote_header_title | Single line (big heading text printed at the top of the Agency module's bulk "Send Quotation" PDF, e.g. "Travel Agency" — falls back to `client_name` if blank) |
+| quote_accent_color | Single line (hex color, e.g. `#0D9C93` — overrides the account's theme color for the Agency module's bulk "Send Quotation" PDF; blank uses the theme color) |
+| quote_payment_methods | Single line (free text shown in the Payment Method box on the Agency module's bulk "Send Quotation" PDF, e.g. "Bank Transfer, Cash, Card") |
+| quote_tax_percent | Number (tax % applied to the Agency module's bulk "Send Quotation" PDF subtotal, shown as its own line above the Grand Total; `0` if unset) |
+| quote_number_seq | Number (incrementing counter for the Agency module's bulk "Send Quotation" PDF — last quote number actually sent, e.g. `12` means the next one is `QUO-0013`. Only written on a real send, mirrors `invoice_number_seq`.) |
 | invoice_terms | Long text (Invoice mode's own terms text, separate from `quote_terms` since "valid for N days" wording doesn't fit an invoice — falls back to `quote_terms` if blank. See "Quotation moved into Human Deals + Invoice mode" below.) |
 | invoice_number_seq | Number (incrementing counter — last invoice number actually sent, e.g. `12` means the next one is `INV-0013`. Only written on a real send, never on a PDF preview, so a preview never burns a number.) |
 | waba_id | Single line (WhatsApp Business Account ID — for template list/create, separate from wa_phone_id) |
