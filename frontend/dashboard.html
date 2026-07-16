@@ -9439,10 +9439,20 @@ function renderItinList() {
     </div>`).join('') : '<div style="text-align:center;padding:52px 24px;color:var(--muted);font-size:13px"><div style="font-size:36px;margin-bottom:10px">🗺️</div>No itineraries yet.<br>Build your first day-by-day itinerary.</div>'}`;
 }
 
-function itinItemIcon(type) {
-  const m={activity:'🎯',transfer:'🚌',hotel:'🏨',meal:'🍽️',note:'📝',flight:'✈️'};
-  return m[type]||'📌';
-}
+// Single source of truth for an itinerary item's type — icon/label for the builder UI and
+// itinerary list preview, hex color for both the builder's card accent and the PDF's timeline bar
+// + pill, so a "Flight" reads the same blue everywhere the app shows it.
+const ITIN_TYPES=['flight','hotel','activity','transfer','meal','note'];
+const ITIN_TYPE_META={
+  flight:{icon:'✈️',label:'Flight',hex:'#2563EB'},
+  hotel:{icon:'🏨',label:'Hotel',hex:'#7C3AED'},
+  activity:{icon:'🎯',label:'Activity',hex:'#16A34A'},
+  transfer:{icon:'🚌',label:'Transfer',hex:'#EA580C'},
+  meal:{icon:'🍽️',label:'Meal',hex:'#DB2777'},
+  note:{icon:'📝',label:'Note',hex:'#64748B'},
+};
+function itinTypeMeta(type){ return ITIN_TYPE_META[type]||ITIN_TYPE_META.note; }
+function itinItemIcon(type) { return itinTypeMeta(type).icon; }
 
 function openItinModal(id) {
   _editItinId = id||null;
@@ -9495,21 +9505,28 @@ function renderItinDays() {
         <input class="form-input" style="flex:1;padding:6px 10px;font-size:13px" placeholder="Day title" value="${esc(d.title||'')}" oninput="_itinDays[${di}].title=this.value">
         <button onclick="removeItinDay(${di})" style="background:none;border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;color:var(--muted)">✕</button>
       </div>
-      ${(d.items||[]).map((item,ii)=>`
-        <div style="display:grid;grid-template-columns:100px 1fr auto;gap:6px;margin-bottom:6px;align-items:start">
-          <select class="form-input" style="padding:5px 8px;font-size:12px" onchange="_itinDays[${di}].items[${ii}].type=this.value">
-            ${['activity','transfer','hotel','meal','flight','note'].map(t=>`<option value="${t}" ${item.type===t?'selected':''}>${cap(t)}</option>`).join('')}
-          </select>
-          <div>
-            <input class="form-input" style="padding:6px 10px;font-size:13px" placeholder="Description" value="${esc(item.description||'')}" oninput="_itinDays[${di}].items[${ii}].description=this.value">
-            <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+      ${(d.items||[]).map((item,ii)=>{
+        const meta=itinTypeMeta(item.type);
+        return `
+        <div style="display:flex;margin-bottom:8px;border-radius:8px;overflow:hidden;border:1px solid var(--line)">
+          <div style="width:5px;flex-shrink:0;background:${meta.hex}"></div>
+          <div style="flex:1;padding:10px 12px;min-width:0">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <span style="font-size:14px;flex-shrink:0">${meta.icon}</span>
+              <select class="form-input" style="padding:4px 8px;font-size:12px;flex:0 0 130px" onchange="_itinDays[${di}].items[${ii}].type=this.value;renderItinDays()">
+                ${ITIN_TYPES.map(t=>`<option value="${t}" ${item.type===t?'selected':''}>${ITIN_TYPE_META[t].label}</option>`).join('')}
+              </select>
+              <button onclick="removeItinItem(${di},${ii})" style="margin-left:auto;background:none;border:1px solid var(--line);border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--muted);font-size:12px;flex-shrink:0">✕</button>
+            </div>
+            <input class="form-input" style="padding:6px 10px;font-size:13px" placeholder="e.g. flight number & time, hotel name, activity details" value="${esc(item.description||'')}" oninput="_itinDays[${di}].items[${ii}].description=this.value">
+            <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
               ${item.image?`<img src="${item.image}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid var(--line)">`:''}
               <label style="font-size:11px;color:var(--accent-ink);cursor:pointer">${item.image?'Change photo':'+ Add location photo'}<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="itinHandleItemImage(${di},${ii},this.files[0])"></label>
               ${item.image?`<button onclick="itinRemoveItemImage(${di},${ii})" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:11px">Remove</button>`:''}
             </div>
           </div>
-          <button onclick="removeItinItem(${di},${ii})" style="background:none;border:1px solid var(--line);border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--muted);font-size:12px">✕</button>
-        </div>`).join('')}
+        </div>`;
+      }).join('')}
       <button onclick="addItinItem(${di})" style="width:100%;padding:7px;border:1.5px dashed var(--ls);border-radius:6px;background:none;cursor:pointer;color:var(--muted);font-size:12px">+ Add Item</button>
     </div>`).join('')+'<button onclick="addItinDay()" style="width:100%;padding:10px;border:2px dashed var(--ls);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px;margin-top:4px">+ Add Day</button>';
 }
@@ -9837,11 +9854,6 @@ function stampQuoteFooter(doc,marginX){
   }
 }
 
-function itinItemTypeLabel(type){
-  const m={activity:'Activity',transfer:'Transfer',hotel:'Hotel',meal:'Meal',flight:'Flight',note:'Note'};
-  return m[type]||'Item';
-}
-
 // Renders the itinerary's own day-by-day content (with per-item photos) rather than converting
 // it into a priced line-item table — used when SQ_FORMATS' 'itinerary_full' format is selected.
 // Shares the same branding (logo/accent/footer) as sqBuildPdfDoc's quote layout so a PDF sent
@@ -9963,21 +9975,46 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
     y+=32;
 
     (d.items||[]).forEach(item=>{
+      const meta=itinTypeMeta(item.type);
+      const typeRgb=sqHexToRgb(meta.hex);
       const hasImg=!!item.image;
       const imgSize=70;
-      const textW=contentW-16-(hasImg?imgSize+12:0);
-      const descLines=doc.splitTextToSize(`${itinItemTypeLabel(item.type)}: ${item.description||''}`,textW);
-      const blockH=Math.max(descLines.length*12+10, hasImg?imgSize+10:0);
+      // innerLeft clears the 4pt color bar + padding; text starts under the type pill, not
+      // beside it, so long descriptions wrap under the label rather than fighting it for width.
+      const innerLeft=16,innerRight=8;
+      const textW=contentW-innerLeft-innerRight-(hasImg?imgSize+12:0);
+      const descLines=doc.splitTextToSize(item.description||'—',textW);
+      // 26 clears the pill row + top/bottom padding; 12 per line matches the line height used
+      // for every other multi-line text block in this document (terms, notes, etc).
+      const blockH=Math.max(26+12*descLines.length, hasImg?imgSize+16:0);
       ensureSpace(blockH+8);
+
+      // Timeline card: a solid left bar + a colored pill, both keyed to the item's type
+      // (flight/hotel/activity/transfer/meal/note — see ITIN_TYPE_META), on the same accentSoft
+      // background every other section of this PDF uses. Makes a day's mix of logistics vs.
+      // experiences scannable at a glance instead of reading as one undifferentiated list.
+      doc.setFillColor(...typeRgb);
+      doc.rect(marginX,y,4,blockH,'F');
       doc.setFillColor(...accentSoft);
-      doc.roundedRect(marginX,y,contentW,blockH,3,3,'F');
+      doc.rect(marginX+4,y,contentW-4,blockH,'F');
+
+      doc.setFont('helvetica','bold');doc.setFontSize(7.5);
+      const pillLabel=meta.label.toUpperCase();
+      const pillW=doc.getTextWidth(pillLabel)+14;
+      doc.setFillColor(...typeRgb);
+      doc.roundedRect(marginX+innerLeft,y+6,pillW,13,3,3,'F');
+      doc.setTextColor(255,255,255);
+      doc.text(pillLabel,marginX+innerLeft+7,y+15);
+      doc.setTextColor(0);
+
       doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.setTextColor(30);
-      doc.text(descLines,marginX+10,y+14);
+      doc.text(descLines,marginX+innerLeft,y+31);
+
       if(hasImg){
         try{
           const mime=/data:image\/(png|jpe?g|webp)/.exec(item.image);
           const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
-          doc.addImage(item.image,fmt,marginX+contentW-imgSize-10,y+5,imgSize,imgSize-10,undefined,'FAST');
+          doc.addImage(item.image,fmt,marginX+contentW-imgSize-10,y+Math.max(6,(blockH-imgSize)/2),imgSize,imgSize-10,undefined,'FAST');
         }catch(e){}
       }
       doc.setTextColor(0);
