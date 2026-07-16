@@ -1480,6 +1480,7 @@ const TODAY = new Date().toISOString().slice(0,10);
         <button class="ta-tab" data-ta="cars">🚗 Cars</button>
         <button class="ta-tab" data-ta="finance">💰 Finance</button>
       </div>
+      <div id="taMissingTablesBanner" style="display:none"></div>
       <div class="page-pad" id="agencyContent" style="flex:1">
         <div style="color:var(--muted);font-size:13px;padding:40px 0;text-align:center">Loading…</div>
       </div>
@@ -9008,8 +9009,9 @@ async function taLoad(){
 
 async function renderAgency(){
   const el=$id('agencyContent');
-  if(!taTablesReady()){el.innerHTML=renderTaSetupNeeded();document.querySelectorAll('.ta-tab').forEach(t=>t.classList.remove('active'));return;}
+  if(!taTablesReady()){el.innerHTML=renderTaSetupNeeded();document.querySelectorAll('.ta-tab').forEach(t=>t.classList.remove('active'));taUpdateMissingBanner();return;}
   if(!_taLoaded){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';await taLoad();}
+  taUpdateMissingBanner();
   renderAgencySubPage(_taPage);
 }
 
@@ -9157,6 +9159,7 @@ async function taSetupTables(){
     msg.textContent='✓ All tables created! Loading…';
     await taLoad();
     renderAgencySubPage(_taPage);
+    taUpdateMissingBanner();
   }catch(e){
     msg.textContent='Error: '+e.message;msg.className='save-msg err';
     btn.disabled=false;
@@ -9169,15 +9172,40 @@ function renderTaSetupNeeded(){
     <div style="font-size:48px;margin-bottom:16px">🗄️</div>
     <div style="font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:8px">One-time Database Setup</div>
     <div style="font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:24px">
-      The Travel Agency module needs 5 dedicated tables in your NocoDB database.<br>
-      This runs once and takes about 10 seconds.
+      The Travel Agency module needs dedicated tables in your NocoDB database.<br>
+      This runs once and takes about 10 seconds — already-existing tables are left as-is and just
+      reused, so it's always safe to re-run.
     </div>
     <div style="background:var(--bg);border-radius:var(--r-sm);padding:16px;margin-bottom:24px;text-align:left;font-size:12.5px;color:var(--muted)">
-      Will create: <b style="color:var(--ink)">ta_packages</b> · <b style="color:var(--ink)">ta_bookings</b> · <b style="color:var(--ink)">ta_cases</b> · <b style="color:var(--ink)">ta_itineraries</b> · <b style="color:var(--ink)">ta_umrah_groups</b>
+      Will create: ${Object.values(TA_TABLE_TITLES).map(t=>`<b style="color:var(--ink)">${t}</b>`).join(' · ')}
     </div>
     <button class="btn btn-primary" id="taSetupBtn" onclick="taSetupTables()" style="padding:12px 28px;font-size:14px">🚀 Create Tables Now</button>
     <span class="save-msg" id="taSetupMsg" style="display:block;margin-top:12px;min-height:18px"></span>
   </div>`;
+}
+
+// taTablesReady() only gates on the original 5 tables (packages/bookings/cases/itineraries/
+// umrah_groups), so an account that finished setup before Visas/Group Fares/Special Fares/Cars
+// existed sails straight past renderTaSetupNeeded() into the module — then hits a bare
+// "ta_visas isn't set up yet" error the first time it touches one of those newer tabs, with no
+// visible way to re-run Create Tables Now (that button only lives inside renderTaSetupNeeded(),
+// which never shows again once the original 5 exist). This banner is the fix: it surfaces
+// whichever tables are actually still missing, with a button that calls the same taSetupTables()
+// — already idempotent (reuses any table that already exists by name) — so existing accounts can
+// self-serve instead of needing a manual admin fix per client.
+function taMissingTableTitles(){
+  const ids=taTableIds();
+  return Object.entries(TA_TABLE_TITLES).filter(([k])=>!ids[k]).map(([,title])=>title);
+}
+function taUpdateMissingBanner(){
+  const el=$id('taMissingTablesBanner');
+  if(!el) return;
+  const missing=taTablesReady()?taMissingTableTitles():[];
+  if(!missing.length){ el.style.display='none'; el.innerHTML=''; return; }
+  el.style.cssText='display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#FEF3C7;border-bottom:1px solid #F59E0B;padding:10px 16px;font-size:12.5px;color:#92400E';
+  el.innerHTML=`<span>🔧 New Agency features need a one-time table setup: <b>${missing.join(', ')}</b></span>
+    <button class="btn btn-primary btn-sm" id="taSetupBtn" onclick="taSetupTables()">Set up now</button>
+    <span class="save-msg" id="taSetupMsg"></span>`;
 }
 
 /* old taLoad/taSave/renderAgency replaced above */
@@ -9770,6 +9798,7 @@ function renderItinSendQuote(){
     </div>
 
     <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
+      <button class="btn btn-secondary btn-sm" onclick="sqPreviewPdf()">📄 Preview PDF</button>
       <button class="save-btn" id="sqSendBtn" onclick="sqSend()">📤 Send Quotation to Selected Leads</button>
       <span class="save-msg" id="sqSendMsg"></span>
     </div>
@@ -10337,6 +10366,39 @@ function sqBuildCaption(lead,format,total,currency,validity,extra){
     .replace(/\{\{validity_days\}\}/g,String(validity));
   if(extra) Object.entries(extra).forEach(([k,v])=>{ out=out.replace(new RegExp(`\\{\\{${k}\\}\\}`,'g'),v||''); });
   return out;
+}
+
+// Opens the exact PDF a real send would produce, without touching quote_number_seq/
+// itin_number_seq (those only advance on a real send) or requiring a lead's WhatsApp conversation
+// to be linked — the single-lead Quotation page already has this via quotePreviewPdf(), this is
+// the same idea for the bulk source-based flow (Package/Group Fare/Special Fare/Full Itinerary).
+async function sqPreviewPdf(){
+  const msg=$id('sqSendMsg');
+  const src=sqResolveSource(_sqSourceKey);
+  if(!src){msg.textContent='Pick a package or itinerary first.';msg.className='save-msg err';return;}
+  const format=_sqFormat;
+  const isItinFull=format==='itinerary_full';
+  if(isItinFull&&src.type!=='itinerary'){msg.textContent='Full Itinerary needs an itinerary source.';msg.className='save-msg err';return;}
+  const price=isItinFull?0:(parseFloat($id('sqPrice').value)||0);
+  if(!isItinFull&&!price){msg.textContent='Enter a price first.';msg.className='save-msg err';return;}
+  const currency=$id('sqCurrency').value||'AED';
+  const pax=parseInt($id('sqPax').value)||1;
+  const validity=parseInt($id('sqValidity').value)||7;
+
+  // Same batch-wide logo dims measurement sqSend does before its loop — a preview is just a
+  // one-off "batch" of one.
+  _itinSendLogoDims=isItinFull&&src.rec.logo_url
+    ? await new Promise(resolve=>{ const img=new Image(); img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight}); img.onerror=()=>resolve(null); img.src=src.rec.logo_url; })
+    : null;
+
+  // Prefers the first selected lead so the preview shows real customer details; falls back to a
+  // placeholder when none are picked yet, since previewing shouldn't require selecting leads first.
+  const leads=allLeads.filter(l=>_sqSelectedIds.has(String(l.Id)));
+  const lead=leads[0]||{Name:'Sample Customer',Phone:'971500000000'};
+  const previewNum=(isItinFull?'ITN-':'QUO-')+'0000 (preview)';
+  msg.textContent='';msg.className='save-msg';
+  const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,previewNum);
+  window.open(doc.output('bloburl'),'_blank');
 }
 
 async function sqSend(){
