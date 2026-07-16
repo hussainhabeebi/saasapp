@@ -3921,15 +3921,32 @@ const ENGINE_REPLY_MODEL='gemini-2.5-flash';
 // Direct Google Generative Language API call (env.GEMINI_API_KEY — a Worker secret, shared across
 // all clients, same as the n8n workflow's single Gemini credential). Returns the model's raw text
 // output, or null if the key isn't configured or the call fails — callers fall back accordingly.
+// Real observed failure: a customer's first message got the reply "Hello! Leadvyne is an
+// AI-powered" — cut off mid-sentence, nothing after, sent as-is to the customer. Root cause:
+// gemini-2.5-flash (ENGINE_REPLY_MODEL/ENGINE_TRANSCRIBE_MODEL — switched to from gemini-2.0-flash
+// for accuracy) has "thinking" (internal reasoning) on by default, and unlike OpenAI's models,
+// Google counts those invisible thinking tokens against the SAME maxOutputTokens budget as the
+// visible reply — a 2.5 model can burn 90-98% of a short reply's budget on reasoning alone,
+// truncating the actual visible text wherever the budget runs out. None of this engine's calls
+// benefit from extended reasoning (a classifier verdict or a short customer reply isn't a
+// chain-of-thought task), so thinking is switched off whenever a 2.5 model is in use, keeping the
+// whole budget for real output. gemini-2.0-flash has no thinking mode, so this is a no-op there.
+function engineGeminiGenerationConfig(model, opts){
+  const cfg={temperature:opts.temperature??0.3, maxOutputTokens:opts.maxOutputTokens||300, ...(opts.json?{responseMimeType:'application/json'}:{})};
+  if(model.startsWith('gemini-2.5')) cfg.thinkingConfig={thinkingBudget:0};
+  return cfg;
+}
+
 async function engineGeminiGenerate(env, systemText, userText, opts={}){
   if(!env.GEMINI_API_KEY) return null;
   try{
+    const model=opts.model||ENGINE_GEMINI_MODEL;
     const reqBody={
       contents:[{role:'user', parts:[{text:userText}]}],
-      generationConfig:{temperature:opts.temperature??0.3, maxOutputTokens:opts.maxOutputTokens||300, ...(opts.json?{responseMimeType:'application/json'}:{})}
+      generationConfig:engineGeminiGenerationConfig(model, opts)
     };
     if(systemText) reqBody.systemInstruction={parts:[{text:systemText}]};
-    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${opts.model||ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`, {
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(reqBody)
     });
     if(!r.ok) return null;
@@ -4026,10 +4043,13 @@ async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode){
   try{
     const r=await engineFetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_TRANSCRIBE_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
       method:'POST', headers:{'Content-Type':'application/json'},
+      // thinkingConfig disabled — see engineGeminiGenerationConfig's comment: gemini-2.5-flash
+      // thinks by default and those tokens count against the same output budget, adding pure
+      // latency/cost here with no benefit (transcription isn't a reasoning task).
       body:JSON.stringify({contents:[{role:'user', parts:[
         {text:prompt},
         {inline_data:{mime_type:mimeType, data:base64}}
-      ]}]})
+      ]}], generationConfig:{thinkingConfig:{thinkingBudget:0}}})
     });
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');

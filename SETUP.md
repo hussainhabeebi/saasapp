@@ -2146,6 +2146,19 @@ exception to this fallback pattern — deliberately Gemini-only, no OpenRouter b
   `ENGINE_GEMINI_MODEL` everywhere else — classifier/translation calls are unaffected, since a
   slightly-off intent guess or translation is a smaller miss than the actual answer being factually
   wrong).
+- **Thinking disabled for both `gemini-2.5-flash` calls (`ENGINE_REPLY_MODEL`,
+  `ENGINE_TRANSCRIBE_MODEL`) — a follow-up fix to the model upgrade above.** Real observed failure:
+  a brand-new lead's first-touch reply came back as `"Hello! Leadvyne is an AI-powered"`, cut off
+  mid-sentence, sent to the customer as-is. Root cause: Gemini 2.5 models have "thinking" (internal
+  reasoning) on by default, and Google counts those invisible thinking tokens against the *same*
+  `maxOutputTokens` budget as the visible reply — a 2.5 model can burn 90-98% of a short reply's
+  token budget on reasoning alone, truncating the actual visible text wherever the budget runs out.
+  None of this engine's calls need extended reasoning (a classifier verdict or a short WhatsApp
+  reply isn't a chain-of-thought task), so `engineGeminiGenerationConfig` now sets
+  `thinkingConfig:{thinkingBudget:0}` whenever a 2.5 model is in use (`model.startsWith('gemini-2.5')`)
+  — a no-op for `gemini-2.0-flash`, which has no thinking mode. `engineGeminiTranscribeVoice` sets
+  the same flag directly on its own request body (it doesn't route through `engineGeminiGenerate`,
+  since it needs to attach `inline_data` audio).
 - **Not yet covered by this pass** (still OpenRouter-only, same single-point-of-failure shape,
   just not touched by this change): `handleAiComplete` (`POST /ai/complete`, the dashboard's AI
   Deal Coach and other assistant features), `handleAiObjectionReply` (`POST /ai/objection-reply`),
