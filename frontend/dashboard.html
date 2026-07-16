@@ -1472,6 +1472,9 @@ const TODAY = new Date().toISOString().slice(0,10);
         <button class="ta-tab" data-ta="packages">📦 Packages</button>
         <button class="ta-tab" data-ta="itineraries">🗺️ Itineraries</button>
         <button class="ta-tab" data-ta="services">🗂️ Services</button>
+        <button class="ta-tab" data-ta="visas">🛂 Visa</button>
+        <button class="ta-tab" data-ta="groupfares">👥 Group Fare</button>
+        <button class="ta-tab" data-ta="specialfares">🎟️ Special Fare</button>
         <button class="ta-tab" data-ta="umrah">🕌 Umrah</button>
         <button class="ta-tab" data-ta="bookings">🎫 Bookings</button>
         <button class="ta-tab" data-ta="cars">🚗 Cars</button>
@@ -2505,6 +2508,94 @@ const TODAY = new Date().toISOString().slice(0,10);
       <button class="btn btn-primary" id="saveCaseBtn" onclick="saveCase()">Save Case</button>
       <span class="save-msg" id="saveCaseMsg"></span>
       <button class="btn btn-secondary" onclick="closeModal('modalCase')">Cancel</button>
+    </div>
+  </div>
+
+  <!-- TA: VISA MODAL -->
+  <div class="modal" id="modalVisa" style="width:580px">
+    <span class="modal-drag"></span>
+    <div class="modal-hd"><div class="modal-title" id="visaModalTitle">New Visa</div><button class="icon-btn" onclick="closeModal('modalVisa')">✕</button></div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Visa Country *</label><input class="form-input" id="visaCountry" placeholder="e.g. Thailand"></div>
+        <div class="form-group"><label class="form-label">Visa Type</label><select class="form-input" id="visaType"><option value="single_entry">Single Entry</option><option value="multiple_entry">Multiple Entry</option><option value="transit">Transit</option></select></div>
+        <div class="form-group"><label class="form-label">Duration</label><select class="form-input" id="visaDuration"><option value="10_days">10 Days</option><option value="14_days">14 Days</option><option value="30_days">30 Days</option><option value="60_days">60 Days</option><option value="90_days">90 Days</option><option value="1_year">1 Year</option></select></div>
+        <div class="form-group"><label class="form-label">Adult Price</label><input class="form-input" type="number" id="visaAdultPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Child Price</label><input class="form-input" type="number" id="visaChildPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="visaCurrency"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option><option>GBP</option></select></div>
+        <div class="form-group"><label class="form-label">Processing Time</label><input class="form-input" id="visaProcessingTime" placeholder="e.g. 3-5 working days"></div>
+        <div class="form-group"><label class="form-label">Visa Validity</label><input class="form-input" id="visaValidity" placeholder="e.g. 6 months from issue"></div>
+        <div class="form-group"><label class="form-label">Entry Type</label><input class="form-input" id="visaEntryType" placeholder="e.g. Tourist, Business"></div>
+        <div class="form-group"><label class="form-label">Status</label><select class="form-input" id="visaStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Required Documents</label><textarea class="form-input" id="visaRequiredDocs" rows="3" placeholder="Passport copy&#10;Photo&#10;Bank statement"></textarea></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="saveVisaBtn" onclick="saveVisa()">Save Visa</button>
+      <span class="save-msg" id="saveVisaMsg"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modalVisa')">Cancel</button>
+    </div>
+  </div>
+
+  <!-- TA: GROUP FARE MODAL -->
+  <div class="modal" id="modalGroupFare" style="width:600px">
+    <span class="modal-drag"></span>
+    <div class="modal-hd"><div class="modal-title" id="groupFareModalTitle">New Group Fare</div><button class="icon-btn" onclick="closeModal('modalGroupFare')">✕</button></div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sector (From → To) *</label><input class="form-input" id="gfSector" placeholder="e.g. DXB → COK"></div>
+        <div class="form-group"><label class="form-label">Airline</label><input class="form-input" id="gfAirline" placeholder="e.g. Air India Express"></div>
+        <div class="form-group"><label class="form-label">Flight Number</label><input class="form-input" id="gfFlightNumber" placeholder="e.g. IX 384"></div>
+        <div class="form-group"><label class="form-label">Departure Date</label><input class="form-input" type="date" id="gfDepDate"></div>
+        <div class="form-group"><label class="form-label">Departure Time</label><input class="form-input" type="time" id="gfDepTime"></div>
+        <div class="form-group"><label class="form-label">Arrival Time</label><input class="form-input" type="time" id="gfArrTime"></div>
+        <div class="form-group"><label class="form-label">Group Fare Price</label><input class="form-input" type="number" id="gfPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="gfCurrency"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option><option>GBP</option></select></div>
+        <div class="form-group"><label class="form-label">Available Seats</label><input class="form-input" type="number" id="gfSeats" placeholder="0" min="0"></div>
+        <div class="form-group"><label class="form-label">Booking Deadline</label><input class="form-input" type="date" id="gfDeadline"></div>
+        <div class="form-group"><label class="form-label">Baggage Allowance</label><input class="form-input" id="gfBaggage" placeholder="e.g. 30kg"></div>
+        <div class="form-group"><label class="form-label">Cabin Class</label><select class="form-input" id="gfCabinClass"><option value="economy">Economy</option><option value="business">Business</option></select></div>
+        <div class="form-group"><label class="form-label">Fare Type</label><select class="form-input" id="gfFareType"><option value="refundable">Refundable</option><option value="non_refundable">Non-Refundable</option></select></div>
+        <div class="form-group"><label class="form-label">Status</label><select class="form-input" id="gfStatus"><option value="available">Available</option><option value="limited">Limited</option><option value="closed">Closed</option></select></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Remarks / Notes</label><textarea class="form-input" id="gfRemarks" rows="2"></textarea></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="saveGroupFareBtn" onclick="saveGroupFare()">Save Group Fare</button>
+      <span class="save-msg" id="saveGroupFareMsg"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modalGroupFare')">Cancel</button>
+    </div>
+  </div>
+
+  <!-- TA: SPECIAL FARE MODAL -->
+  <div class="modal" id="modalSpecialFare" style="width:600px">
+    <span class="modal-drag"></span>
+    <div class="modal-hd"><div class="modal-title" id="specialFareModalTitle">New Special Fare</div><button class="icon-btn" onclick="closeModal('modalSpecialFare')">✕</button></div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sector *</label><input class="form-input" id="sfSector" placeholder="e.g. DXB → COK"></div>
+        <div class="form-group"><label class="form-label">From</label><input class="form-input" id="sfFrom" placeholder="e.g. Dubai"></div>
+        <div class="form-group"><label class="form-label">To</label><input class="form-input" id="sfTo" placeholder="e.g. Kochi"></div>
+        <div class="form-group"><label class="form-label">Airline</label><input class="form-input" id="sfAirline" placeholder="e.g. Air India Express"></div>
+        <div class="form-group"><label class="form-label">Flight Number</label><input class="form-input" id="sfFlightNumber" placeholder="e.g. IX 384"></div>
+        <div class="form-group"><label class="form-label">Departure Date</label><input class="form-input" type="date" id="sfDepDate"></div>
+        <div class="form-group"><label class="form-label">Return Date (Optional)</label><input class="form-input" type="date" id="sfRetDate"></div>
+        <div class="form-group"><label class="form-label">Special Fare</label><input class="form-input" type="number" id="sfPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="sfCurrency"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option><option>GBP</option></select></div>
+        <div class="form-group"><label class="form-label">Cabin Class</label><select class="form-input" id="sfCabinClass"><option value="economy">Economy</option><option value="business">Business</option></select></div>
+        <div class="form-group"><label class="form-label">Baggage Allowance</label><input class="form-input" id="sfBaggage" placeholder="e.g. 30kg"></div>
+        <div class="form-group"><label class="form-label">Fare Type</label><select class="form-input" id="sfFareType"><option value="refundable">Refundable</option><option value="non_refundable">Non-Refundable</option></select></div>
+        <div class="form-group"><label class="form-label">Available Seats</label><input class="form-input" type="number" id="sfSeats" placeholder="0" min="0"></div>
+        <div class="form-group"><label class="form-label">Booking Deadline</label><input class="form-input" type="date" id="sfDeadline"></div>
+        <div class="form-group"><label class="form-label">Fare Valid Until</label><input class="form-input" type="date" id="sfValidUntil"></div>
+        <div class="form-group"><label class="form-label">Status</label><select class="form-input" id="sfStatus"><option value="available">Available</option><option value="limited">Limited</option><option value="closed">Closed</option></select></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Remarks / Notes</label><textarea class="form-input" id="sfRemarks" rows="2"></textarea></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="saveSpecialFareBtn" onclick="saveSpecialFare()">Save Special Fare</button>
+      <span class="save-msg" id="saveSpecialFareMsg"></span>
+      <button class="btn btn-secondary" onclick="closeModal('modalSpecialFare')">Cancel</button>
     </div>
   </div>
 
@@ -8651,6 +8742,7 @@ async function doMerge(dupId){
 /* ── TRAVEL AGENCY MODULE ── */
 let _taPage = 'dashboard';
 let _taPackages = [], _taBookings = [], _taCases = [], _taItineraries = [], _taUmrahGroups = [], _taCars = [], _taCarBookings = [];
+let _taVisas = [], _taGroupFares = [], _taSpecialFares = [];
 let _taLoaded = false;
 
 /* ── TA: TABLE IDS & CRUD HELPERS ── */
@@ -8667,7 +8759,7 @@ function safeJson(s,def=[]){try{return JSON.parse(s||'null')||def;}catch(e){retu
 // creation) and taRepairTableIds() below (re-resolving a stored ID that's stopped working —
 // e.g. the table was deleted and recreated in NocoDB directly, which gives it a new ID that
 // the client's stored ta_table_ids doesn't know about, so every save 404s until repaired).
-const TA_TABLE_TITLES={packages:'ta_packages',bookings:'ta_bookings',cases:'ta_cases',itineraries:'ta_itineraries',umrah_groups:'ta_umrah_groups',cars:'ta_cars',car_bookings:'ta_car_bookings'};
+const TA_TABLE_TITLES={packages:'ta_packages',bookings:'ta_bookings',cases:'ta_cases',itineraries:'ta_itineraries',umrah_groups:'ta_umrah_groups',cars:'ta_cars',car_bookings:'ta_car_bookings',visas:'ta_visas',group_fares:'ta_group_fares',special_fares:'ta_special_fares'};
 
 async function taRepairTableIds(){
   const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
@@ -8869,15 +8961,17 @@ async function taConfirmImport(){
 
 async function taLoad(){
   if(!taTablesReady())return;
-  const [pkgs,bks,cs,its,ug,cars,carbks]=await Promise.all([
+  const [pkgs,bks,cs,its,ug,cars,carbks,visas,gfares,sfares]=await Promise.all([
     taFetch('packages'),taFetch('bookings'),taFetch('cases'),
     taFetch('itineraries'),taFetch('umrah_groups'),
-    taFetch('cars'),taFetch('car_bookings')
+    taFetch('cars'),taFetch('car_bookings'),
+    taFetch('visas'),taFetch('group_fares'),taFetch('special_fares')
   ]);
   _taPackages=pkgs; _taBookings=bks; _taCases=cs;
   _taItineraries=its.map(r=>({...r,days:safeJson(r.days)}));
   _taUmrahGroups=ug.map(r=>({...r,pilgrims:safeJson(r.pilgrims)}));
   _taCars=cars; _taCarBookings=carbks;
+  _taVisas=visas; _taGroupFares=gfares; _taSpecialFares=sfares;
   _taLoaded=true;
 }
 
@@ -8967,6 +9061,35 @@ async function taSetupTables(){
         {title:'deposit',uidt:'Decimal'},{title:'currency',uidt:'SingleLineText'},
         {title:'status',uidt:'SingleLineText'},{title:'notes',uidt:'LongText'},
       ]},
+      visas:{title:'ta_visas',columns:[
+        {title:'client_id',uidt:'SingleLineText'},{title:'visa_country',uidt:'SingleLineText'},
+        {title:'visa_type',uidt:'SingleLineText'},{title:'duration',uidt:'SingleLineText'},
+        {title:'adult_price',uidt:'Decimal'},{title:'child_price',uidt:'Decimal'},
+        {title:'currency',uidt:'SingleLineText'},{title:'required_documents',uidt:'LongText'},
+        {title:'processing_time',uidt:'SingleLineText'},{title:'visa_validity',uidt:'SingleLineText'},
+        {title:'entry_type',uidt:'SingleLineText'},{title:'status',uidt:'SingleLineText'},
+      ]},
+      group_fares:{title:'ta_group_fares',columns:[
+        {title:'client_id',uidt:'SingleLineText'},{title:'sector',uidt:'SingleLineText'},
+        {title:'airline',uidt:'SingleLineText'},{title:'flight_number',uidt:'SingleLineText'},
+        {title:'departure_date',uidt:'Date'},{title:'departure_time',uidt:'SingleLineText'},
+        {title:'arrival_time',uidt:'SingleLineText'},{title:'fare_price',uidt:'Decimal'},
+        {title:'currency',uidt:'SingleLineText'},{title:'available_seats',uidt:'Number'},
+        {title:'booking_deadline',uidt:'Date'},{title:'baggage_allowance',uidt:'SingleLineText'},
+        {title:'cabin_class',uidt:'SingleLineText'},{title:'fare_type',uidt:'SingleLineText'},
+        {title:'status',uidt:'SingleLineText'},{title:'remarks',uidt:'LongText'},
+      ]},
+      special_fares:{title:'ta_special_fares',columns:[
+        {title:'client_id',uidt:'SingleLineText'},{title:'sector',uidt:'SingleLineText'},
+        {title:'from_city',uidt:'SingleLineText'},{title:'to_city',uidt:'SingleLineText'},
+        {title:'airline',uidt:'SingleLineText'},{title:'flight_number',uidt:'SingleLineText'},
+        {title:'departure_date',uidt:'Date'},{title:'return_date',uidt:'Date'},
+        {title:'fare_price',uidt:'Decimal'},{title:'currency',uidt:'SingleLineText'},
+        {title:'cabin_class',uidt:'SingleLineText'},{title:'baggage_allowance',uidt:'SingleLineText'},
+        {title:'fare_type',uidt:'SingleLineText'},{title:'available_seats',uidt:'Number'},
+        {title:'booking_deadline',uidt:'Date'},{title:'fare_valid_until',uidt:'Date'},
+        {title:'status',uidt:'SingleLineText'},{title:'remarks',uidt:'LongText'},
+      ]},
     };
     // Fetch existing tables in this base to handle re-runs gracefully
     msg.textContent='Checking existing tables…';
@@ -9037,6 +9160,9 @@ function renderAgencySubPage(page) {
     case 'packages':    el.innerHTML = renderTaPackages(); break;
     case 'itineraries': el.innerHTML = renderTaItineraries(); if(_itinSubTab==='send') sqFilterLeads(); break;
     case 'services':    el.innerHTML = renderTaServices(); break;
+    case 'visas':       el.innerHTML = renderTaVisas(); break;
+    case 'groupfares':  el.innerHTML = renderTaGroupFares(); break;
+    case 'specialfares':el.innerHTML = renderTaSpecialFares(); break;
     case 'umrah':       el.innerHTML = renderTaUmrah(); break;
     case 'bookings':    el.innerHTML = renderTaBookings(); break;
     case 'cars': el.innerHTML = renderTaCars(); renderCarCalendar(); break;
@@ -9987,6 +10113,222 @@ async function saveCase(){
 async function deleteCase(id){
   if(!confirm('Delete this case?'))return;
   await taDeleteRow('cases',id);_taLoaded=false;await taLoad();renderAgencySubPage('services');
+}
+
+/* ── TA: VISA ── */
+let _editVisaId=null;
+const VISA_TYPE_LABELS={single_entry:'Single Entry',multiple_entry:'Multiple Entry',transit:'Transit'};
+const VISA_DURATION_LABELS={'10_days':'10 Days','14_days':'14 Days','30_days':'30 Days','60_days':'60 Days','90_days':'90 Days','1_year':'1 Year'};
+
+function renderTaVisas(){
+  const active=_taVisas.filter(v=>v.status!=='inactive').length;
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🛂 Visa Catalogue</div>
+    <button class="btn btn-primary btn-sm" onclick="openVisaModal()">+ New Visa</button>
+  </div>
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(2,1fr);margin-bottom:14px">
+    <div class="stat accent"><div class="stat-lbl">Total Visas</div><div class="stat-val">${_taVisas.length}</div></div>
+    <div class="stat"><div class="stat-lbl">Active</div><div class="stat-val">${active}</div></div>
+  </div>
+  <div class="ta-card" style="padding:0;overflow:hidden">
+    <div id="visaList">
+      ${_taVisas.length?_taVisas.map((v)=>renderVisaRow(v)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No visas yet</div>'}
+    </div>
+  </div>`;
+}
+
+function renderVisaRow(v){
+  return `
+  <div class="booking-row" onclick="openVisaModal('${v.Id}')">
+    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🛂</div>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v.visa_country||'—')}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(VISA_TYPE_LABELS[v.visa_type]||v.visa_type||'—')} · ${esc(VISA_DURATION_LABELS[v.duration]||v.duration||'—')} · ${esc(v.entry_type||'—')}</div>
+    </div>
+    <div style="text-align:right;flex-shrink:0">
+      <div style="font-family:var(--disp);font-size:14px;font-weight:700">${esc(v.currency||'AED')} ${(parseFloat(v.adult_price)||0).toLocaleString()}</div>
+      <span class="stage-pill ${v.status==='inactive'?'stage-blocked':'stage-done'}" style="margin-top:4px">${esc(v.status||'active')}</span>
+    </div>
+    <button onclick="event.stopPropagation();deleteVisa('${v.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px;flex-shrink:0" title="Delete">✕</button>
+  </div>`;
+}
+
+function openVisaModal(id){
+  _editVisaId=id||null;
+  const v=id?(_taVisas.find(x=>String(x.Id)===String(id))||{}):{};
+  $id('visaModalTitle').textContent=id?'Edit Visa':'New Visa';
+  $id('visaCountry').value=v.visa_country||''; $id('visaType').value=v.visa_type||'single_entry';
+  $id('visaDuration').value=v.duration||'30_days'; $id('visaAdultPrice').value=v.adult_price||'';
+  $id('visaChildPrice').value=v.child_price||''; $id('visaCurrency').value=v.currency||'AED';
+  $id('visaProcessingTime').value=v.processing_time||''; $id('visaValidity').value=v.visa_validity||'';
+  $id('visaEntryType').value=v.entry_type||''; $id('visaStatus').value=v.status||'active';
+  $id('visaRequiredDocs').value=v.required_documents||'';
+  openModal('modalVisa');
+}
+
+async function saveVisa(){
+  const btn=$id('saveVisaBtn'),msg=$id('saveVisaMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const v={visa_country:$id('visaCountry').value.trim(),visa_type:$id('visaType').value,duration:$id('visaDuration').value,adult_price:parseFloat($id('visaAdultPrice').value)||0,child_price:parseFloat($id('visaChildPrice').value)||0,currency:$id('visaCurrency').value,required_documents:$id('visaRequiredDocs').value.trim(),processing_time:$id('visaProcessingTime').value.trim(),visa_validity:$id('visaValidity').value.trim(),entry_type:$id('visaEntryType').value.trim(),status:$id('visaStatus').value};
+  if(!v.visa_country){msg.textContent='Visa country required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editVisaId) await taUpdate('visas',_editVisaId,v); else await taCreate('visas',v);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalVisa');await taLoad();renderAgencySubPage('visas');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteVisa(id){
+  if(!confirm('Delete this visa?'))return;
+  await taDeleteRow('visas',id);_taLoaded=false;await taLoad();renderAgencySubPage('visas');
+}
+
+/* ── TA: GROUP FARE ── */
+let _editGroupFareId=null;
+
+function renderTaGroupFares(){
+  const byStatus={available:0,limited:0,closed:0};
+  _taGroupFares.forEach(g=>{if(byStatus[g.status]!==undefined)byStatus[g.status]++;});
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">👥 Group Fares</div>
+    <button class="btn btn-primary btn-sm" onclick="openGroupFareModal()">+ New Group Fare</button>
+  </div>
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(3,1fr);margin-bottom:14px">
+    ${[['available','Available','#DCFCE7','#166534'],['limited','Limited','#FEF3C7','#92400E'],['closed','Closed','#FEE2E2','#991B1B']].map(([s,l,bg,col])=>`
+      <div style="background:${bg};border-radius:var(--r-sm);padding:12px 14px">
+        <div style="font-size:10px;font-weight:700;color:${col};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
+        <div style="font-family:var(--disp);font-size:22px;font-weight:700;color:${col}">${byStatus[s]||0}</div>
+      </div>`).join('')}
+  </div>
+  <div class="ta-card" style="padding:0;overflow:hidden">
+    <div id="groupFareList">
+      ${_taGroupFares.length?_taGroupFares.map((g)=>renderGroupFareRow(g)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No group fares yet</div>'}
+    </div>
+  </div>`;
+}
+
+function renderGroupFareRow(g){
+  return `
+  <div class="booking-row" onclick="openGroupFareModal('${g.Id}')">
+    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">✈️</div>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.sector||'—')}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(g.airline||'—')} ${esc(g.flight_number||'')} · ${esc(g.departure_date||'TBD')} · ${g.available_seats||0} seats</div>
+    </div>
+    <div style="text-align:right;flex-shrink:0">
+      <div style="font-family:var(--disp);font-size:14px;font-weight:700">${esc(g.currency||'AED')} ${(parseFloat(g.fare_price)||0).toLocaleString()}</div>
+      <span class="stage-pill ${g.status==='closed'?'stage-blocked':g.status==='limited'?'stage-pending':'stage-done'}" style="margin-top:4px">${esc(g.status||'available')}</span>
+    </div>
+    <button onclick="event.stopPropagation();deleteGroupFare('${g.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px;flex-shrink:0" title="Delete">✕</button>
+  </div>`;
+}
+
+function openGroupFareModal(id){
+  _editGroupFareId=id||null;
+  const g=id?(_taGroupFares.find(x=>String(x.Id)===String(id))||{}):{};
+  $id('groupFareModalTitle').textContent=id?'Edit Group Fare':'New Group Fare';
+  $id('gfSector').value=g.sector||''; $id('gfAirline').value=g.airline||'';
+  $id('gfFlightNumber').value=g.flight_number||''; $id('gfDepDate').value=g.departure_date||'';
+  $id('gfDepTime').value=g.departure_time||''; $id('gfArrTime').value=g.arrival_time||'';
+  $id('gfPrice').value=g.fare_price||''; $id('gfCurrency').value=g.currency||'AED';
+  $id('gfSeats').value=g.available_seats||''; $id('gfDeadline').value=g.booking_deadline||'';
+  $id('gfBaggage').value=g.baggage_allowance||''; $id('gfCabinClass').value=g.cabin_class||'economy';
+  $id('gfFareType').value=g.fare_type||'refundable'; $id('gfStatus').value=g.status||'available';
+  $id('gfRemarks').value=g.remarks||'';
+  openModal('modalGroupFare');
+}
+
+async function saveGroupFare(){
+  const btn=$id('saveGroupFareBtn'),msg=$id('saveGroupFareMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const g={sector:$id('gfSector').value.trim(),airline:$id('gfAirline').value.trim(),flight_number:$id('gfFlightNumber').value.trim(),departure_date:$id('gfDepDate').value,departure_time:$id('gfDepTime').value,arrival_time:$id('gfArrTime').value,fare_price:parseFloat($id('gfPrice').value)||0,currency:$id('gfCurrency').value,available_seats:parseInt($id('gfSeats').value)||0,booking_deadline:$id('gfDeadline').value,baggage_allowance:$id('gfBaggage').value.trim(),cabin_class:$id('gfCabinClass').value,fare_type:$id('gfFareType').value,status:$id('gfStatus').value,remarks:$id('gfRemarks').value.trim()};
+  if(!g.sector){msg.textContent='Sector required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editGroupFareId) await taUpdate('group_fares',_editGroupFareId,g); else await taCreate('group_fares',g);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalGroupFare');await taLoad();renderAgencySubPage('groupfares');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteGroupFare(id){
+  if(!confirm('Delete this group fare?'))return;
+  await taDeleteRow('group_fares',id);_taLoaded=false;await taLoad();renderAgencySubPage('groupfares');
+}
+
+/* ── TA: SPECIAL FARE ── */
+let _editSpecialFareId=null;
+
+function renderTaSpecialFares(){
+  const byStatus={available:0,limited:0,closed:0};
+  _taSpecialFares.forEach(s=>{if(byStatus[s.status]!==undefined)byStatus[s.status]++;});
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🎟️ Special Fares</div>
+    <button class="btn btn-primary btn-sm" onclick="openSpecialFareModal()">+ New Special Fare</button>
+  </div>
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(3,1fr);margin-bottom:14px">
+    ${[['available','Available','#DCFCE7','#166534'],['limited','Limited','#FEF3C7','#92400E'],['closed','Closed','#FEE2E2','#991B1B']].map(([st,l,bg,col])=>`
+      <div style="background:${bg};border-radius:var(--r-sm);padding:12px 14px">
+        <div style="font-size:10px;font-weight:700;color:${col};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
+        <div style="font-family:var(--disp);font-size:22px;font-weight:700;color:${col}">${byStatus[st]||0}</div>
+      </div>`).join('')}
+  </div>
+  <div class="ta-card" style="padding:0;overflow:hidden">
+    <div id="specialFareList">
+      ${_taSpecialFares.length?_taSpecialFares.map((s)=>renderSpecialFareRow(s)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No special fares yet</div>'}
+    </div>
+  </div>`;
+}
+
+function renderSpecialFareRow(s){
+  return `
+  <div class="booking-row" onclick="openSpecialFareModal('${s.Id}')">
+    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🎟️</div>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.sector||'—')}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(s.airline||'—')} ${esc(s.flight_number||'')} · ${esc(s.departure_date||'TBD')} · ${s.available_seats||0} seats</div>
+    </div>
+    <div style="text-align:right;flex-shrink:0">
+      <div style="font-family:var(--disp);font-size:14px;font-weight:700">${esc(s.currency||'AED')} ${(parseFloat(s.fare_price)||0).toLocaleString()}</div>
+      <span class="stage-pill ${s.status==='closed'?'stage-blocked':s.status==='limited'?'stage-pending':'stage-done'}" style="margin-top:4px">${esc(s.status||'available')}</span>
+    </div>
+    <button onclick="event.stopPropagation();deleteSpecialFare('${s.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px;flex-shrink:0" title="Delete">✕</button>
+  </div>`;
+}
+
+function openSpecialFareModal(id){
+  _editSpecialFareId=id||null;
+  const s=id?(_taSpecialFares.find(x=>String(x.Id)===String(id))||{}):{};
+  $id('specialFareModalTitle').textContent=id?'Edit Special Fare':'New Special Fare';
+  $id('sfSector').value=s.sector||''; $id('sfFrom').value=s.from_city||'';
+  $id('sfTo').value=s.to_city||''; $id('sfAirline').value=s.airline||'';
+  $id('sfFlightNumber').value=s.flight_number||''; $id('sfDepDate').value=s.departure_date||'';
+  $id('sfRetDate').value=s.return_date||''; $id('sfPrice').value=s.fare_price||'';
+  $id('sfCurrency').value=s.currency||'AED'; $id('sfCabinClass').value=s.cabin_class||'economy';
+  $id('sfBaggage').value=s.baggage_allowance||''; $id('sfFareType').value=s.fare_type||'refundable';
+  $id('sfSeats').value=s.available_seats||''; $id('sfDeadline').value=s.booking_deadline||'';
+  $id('sfValidUntil').value=s.fare_valid_until||''; $id('sfStatus').value=s.status||'available';
+  $id('sfRemarks').value=s.remarks||'';
+  openModal('modalSpecialFare');
+}
+
+async function saveSpecialFare(){
+  const btn=$id('saveSpecialFareBtn'),msg=$id('saveSpecialFareMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const s={sector:$id('sfSector').value.trim(),from_city:$id('sfFrom').value.trim(),to_city:$id('sfTo').value.trim(),airline:$id('sfAirline').value.trim(),flight_number:$id('sfFlightNumber').value.trim(),departure_date:$id('sfDepDate').value,return_date:$id('sfRetDate').value,fare_price:parseFloat($id('sfPrice').value)||0,currency:$id('sfCurrency').value,cabin_class:$id('sfCabinClass').value,baggage_allowance:$id('sfBaggage').value.trim(),fare_type:$id('sfFareType').value,available_seats:parseInt($id('sfSeats').value)||0,booking_deadline:$id('sfDeadline').value,fare_valid_until:$id('sfValidUntil').value,status:$id('sfStatus').value,remarks:$id('sfRemarks').value.trim()};
+  if(!s.sector){msg.textContent='Sector required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editSpecialFareId) await taUpdate('special_fares',_editSpecialFareId,s); else await taCreate('special_fares',s);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalSpecialFare');await taLoad();renderAgencySubPage('specialfares');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteSpecialFare(id){
+  if(!confirm('Delete this special fare?'))return;
+  await taDeleteRow('special_fares',id);_taLoaded=false;await taLoad();renderAgencySubPage('specialfares');
 }
 
 /* ── TA: UMRAH ── */
