@@ -2458,11 +2458,19 @@ whether the customer asked for it or not. `detectOrderSignal` now also classifie
   template (`buildProductDetailText`, since removed) that always recited every field regardless of
   what was actually asked — observed live: a plain "Hi" got a long, salesy paragraph covering
   sizes/colors nobody asked about, and price was always volunteered even for a pure availability
-  question. The system prompt now explicitly tells the model to answer only what was asked, match
-  the customer's own message length, never volunteer price unless asked or genuinely needed, and
-  sound like a real person texting rather than a scripted pitch — the same three instructions
-  (length, price, tone) were also added to `engineBuildFaqSystemPrompt` for the general FAQ/greeting
-  reply path, which had the identical "Hi" → long-pitch failure.
+  question. The system prompt now explicitly tells the model to answer only what was asked, never
+  volunteer price unless asked or genuinely needed, and sound like a real person texting rather than
+  a scripted pitch — the same three instructions (length, price, tone) were also added to
+  `engineBuildFaqSystemPrompt` for the general FAQ/greeting reply path, which had the identical "Hi"
+  → long-pitch failure.
+  - **Length guidance refined, both prompts.** The original single rule — "match the customer's own
+    message length" — was later observed cutting the other way: a short, specific question (how many
+    days is the free trial) got an equally short reply that skipped the actual number and answered
+    wrong, rather than staying brief while still giving the real answer. Both prompts now separate
+    the two failure modes explicitly: a greeting/small talk still gets a short, natural reply (no
+    unsolicited pitch), but a short, specific question (a number, a policy, a fact) always gets the
+    complete real answer even if that reply ends up a little longer than the question itself — never
+    trading accuracy/completeness for brevity.
 
 **Product resolution now falls back to a fuzzy name match when the sku doesn't exactly match.**
 `detectOrderSignal` asks the model to copy a real product's `sku` string verbatim from the catalog
