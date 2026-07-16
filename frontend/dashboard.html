@@ -9798,6 +9798,7 @@ function renderItinSendQuote(){
     </div>
 
     <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
+      <button class="btn btn-secondary btn-sm" onclick="sqPreviewPdf()">📄 Preview PDF</button>
       <button class="save-btn" id="sqSendBtn" onclick="sqSend()">📤 Send Quotation to Selected Leads</button>
       <span class="save-msg" id="sqSendMsg"></span>
     </div>
@@ -10365,6 +10366,39 @@ function sqBuildCaption(lead,format,total,currency,validity,extra){
     .replace(/\{\{validity_days\}\}/g,String(validity));
   if(extra) Object.entries(extra).forEach(([k,v])=>{ out=out.replace(new RegExp(`\\{\\{${k}\\}\\}`,'g'),v||''); });
   return out;
+}
+
+// Opens the exact PDF a real send would produce, without touching quote_number_seq/
+// itin_number_seq (those only advance on a real send) or requiring a lead's WhatsApp conversation
+// to be linked — the single-lead Quotation page already has this via quotePreviewPdf(), this is
+// the same idea for the bulk source-based flow (Package/Group Fare/Special Fare/Full Itinerary).
+async function sqPreviewPdf(){
+  const msg=$id('sqSendMsg');
+  const src=sqResolveSource(_sqSourceKey);
+  if(!src){msg.textContent='Pick a package or itinerary first.';msg.className='save-msg err';return;}
+  const format=_sqFormat;
+  const isItinFull=format==='itinerary_full';
+  if(isItinFull&&src.type!=='itinerary'){msg.textContent='Full Itinerary needs an itinerary source.';msg.className='save-msg err';return;}
+  const price=isItinFull?0:(parseFloat($id('sqPrice').value)||0);
+  if(!isItinFull&&!price){msg.textContent='Enter a price first.';msg.className='save-msg err';return;}
+  const currency=$id('sqCurrency').value||'AED';
+  const pax=parseInt($id('sqPax').value)||1;
+  const validity=parseInt($id('sqValidity').value)||7;
+
+  // Same batch-wide logo dims measurement sqSend does before its loop — a preview is just a
+  // one-off "batch" of one.
+  _itinSendLogoDims=isItinFull&&src.rec.logo_url
+    ? await new Promise(resolve=>{ const img=new Image(); img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight}); img.onerror=()=>resolve(null); img.src=src.rec.logo_url; })
+    : null;
+
+  // Prefers the first selected lead so the preview shows real customer details; falls back to a
+  // placeholder when none are picked yet, since previewing shouldn't require selecting leads first.
+  const leads=allLeads.filter(l=>_sqSelectedIds.has(String(l.Id)));
+  const lead=leads[0]||{Name:'Sample Customer',Phone:'971500000000'};
+  const previewNum=(isItinFull?'ITN-':'QUO-')+'0000 (preview)';
+  msg.textContent='';msg.className='save-msg';
+  const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,previewNum);
+  window.open(doc.output('bloburl'),'_blank');
 }
 
 async function sqSend(){
