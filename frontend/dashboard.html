@@ -1921,6 +1921,18 @@ const TODAY = new Date().toISOString().slice(0,10);
           <hr class="div">
 
           <div class="settings-section">
+            <div class="s-head">🤖 Bot Auto-Reply</div>
+            <div class="s-note">Turn this off if you're running your own bot (e.g. a custom n8n workflow) wired to the same WhatsApp inbox and want it to own the replies instead. The CRM keeps working exactly as normal either way — leads, stages, analytics, and handover detection keep updating from the conversation; only this bot's own outgoing WhatsApp messages stop sending.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div><label class="form-label">Bot auto-reply</label><select class="form-input" id="cfgBotReplyDisabled"><option value="No">On — bot replies normally</option><option value="Yes">Off — bot stays silent</option></select></div>
+              <button class="save-btn" id="saveBotReplyDisabled">Save</button>
+              <span class="save-msg" id="saveBotReplyDisabledMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
             <div class="s-head">Conversation Stages</div>
             <div class="s-note">Exact messages the bot sends at each stage — sent only when the customer gives a genuine reply that moves the conversation forward (e.g. "yes", a booking time), never mixed into an answer to a question. Keep these generic ("Would you like to see pricing?") rather than naming a specific product or service — if you sell multiple, the bot already pulls in live details for whichever one the customer is actually asking about when they ask, from your Products/Services data. A stage message naming one specific product will read oddly to a customer asking about a different one.</div>
             <div id="stageList" style="margin-bottom:12px"></div>
@@ -2476,6 +2488,10 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div class="form-group"><label class="form-label">From Date</label><input class="form-input" type="date" id="itinFrom"></div>
         <div class="form-group"><label class="form-label">To Date</label><input class="form-input" type="date" id="itinTo"></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="itinNotes" rows="2"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1">
+          <label class="form-label">Logo (optional — overrides your account logo on this itinerary's PDF only)</label>
+          <div id="itinLogoWrap"></div>
+        </div>
       </div>
       <div class="sec-hd">Day-by-Day Plan</div>
       <div id="itinDaysList"></div>
@@ -5178,6 +5194,7 @@ function populateSettings(){
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
   $id('cfgHandoverSilence').value=clientRecord.handover_silence_enabled||'No';
+  $id('cfgBotReplyDisabled').value=clientRecord.bot_reply_disabled||'No';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -5907,6 +5924,7 @@ async function quoteSend(){
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
 $id('saveHandoverSilence').addEventListener('click',async()=>saveField('saveHandoverSilence','saveHandoverSilenceMsg',{handover_silence_enabled:$id('cfgHandoverSilence').value}));
+$id('saveBotReplyDisabled').addEventListener('click',async()=>saveField('saveBotReplyDisabled','saveBotReplyDisabledMsg',{bot_reply_disabled:$id('cfgBotReplyDisabled').value}));
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
 
@@ -9047,6 +9065,7 @@ async function taSetupTables(){
         {title:'client_id',uidt:'SingleLineText'},{title:'title',uidt:'SingleLineText'},
         {title:'destination',uidt:'SingleLineText'},{title:'from_date',uidt:'Date'},
         {title:'to_date',uidt:'Date'},{title:'days',uidt:'LongText'},{title:'notes',uidt:'LongText'},
+        {title:'logo_url',uidt:'LongText'},
       ]},
       umrah_groups:{title:'ta_umrah_groups',columns:[
         {title:'client_id',uidt:'SingleLineText'},{title:'name',uidt:'SingleLineText'},
@@ -9360,6 +9379,17 @@ async function deletePkg(id){
 /* ── TA: ITINERARIES ── */
 let _editItinId = null;
 let _itinDays = [];
+// Per-itinerary logo (base64 data URL, stored on the itinerary record itself as `logo_url`) —
+// separate from CLIENTS.quote_logo_url so a single account can brand different itineraries
+// differently (e.g. a co-branded trip with a partner operator); itinBuildFullPdfDoc falls back
+// to the account logo when an itinerary has none of its own.
+let _itinLogoUrl = '';
+let _itinLogoDims = null;
+// Precomputed once per bulk send (not per lead) in sqSend, since remeasuring the same image's
+// natural dimensions for every selected lead would be wasted work — itinBuildFullPdfDoc reads
+// this instead of _itinLogoDims when sending, since the modal that set _itinLogoDims usually
+// isn't open at send time.
+let _itinSendLogoDims = null;
 // Which inner tab the Itineraries page is showing — the itinerary list, or the bulk
 // "send this as a quotation to leads" compose view (state lives here, not in
 // renderAgencySubPage, since it's local to the itineraries ta-tab).
@@ -9422,7 +9452,39 @@ function openItinModal(id) {
   $id('itinTitle').value=it.title||''; $id('itinDest').value=it.destination||'';
   $id('itinFrom').value=it.from_date||''; $id('itinTo').value=it.to_date||'';
   $id('itinNotes').value=it.notes||'';
+  _itinLogoUrl=it.logo_url||''; _itinLogoDims=null;
+  if(_itinLogoUrl) itinLoadLogoDims(_itinLogoUrl);
+  itinRenderLogoWrap();
   renderItinDays(); openModal('modalItin');
+}
+
+function itinRenderLogoWrap(){
+  const wrap=$id('itinLogoWrap'); if(!wrap) return;
+  wrap.innerHTML=_itinLogoUrl
+    ? `<div style="display:flex;align-items:center;gap:10px">
+        <img src="${_itinLogoUrl}" style="max-height:50px;max-width:160px;border-radius:6px;border:1px solid var(--line)">
+        <button type="button" onclick="itinRemoveLogo()" style="background:none;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;color:var(--muted);font-size:12px">Remove</button>
+      </div>`
+    : `<label style="display:inline-block;font-size:12.5px;color:var(--accent-ink);cursor:pointer;border:1.5px dashed var(--ls);border-radius:6px;padding:8px 12px">+ Upload logo (PNG/JPG/WEBP, max 400KB)<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="itinHandleLogoFile(this.files[0])"></label>`;
+}
+
+async function itinHandleLogoFile(file){
+  if(!file) return;
+  if(!['image/png','image/jpeg','image/webp'].includes(file.type)){ alert('Please choose a PNG, JPG, or WEBP image.'); return; }
+  if(file.size>400*1024){ alert('Logo must be under 400KB.'); return; }
+  const dataUrl=await new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(file); });
+  _itinLogoUrl=dataUrl;
+  itinLoadLogoDims(dataUrl);
+  itinRenderLogoWrap();
+}
+function itinRemoveLogo(){ _itinLogoUrl=''; _itinLogoDims=null; itinRenderLogoWrap(); }
+
+function itinLoadLogoDims(url){
+  if(!url){ _itinLogoDims=null; return; }
+  const img=new Image();
+  img.onload=()=>{_itinLogoDims={w:img.naturalWidth,h:img.naturalHeight};};
+  img.onerror=()=>{_itinLogoDims=null;};
+  img.src=url;
 }
 
 function renderItinDays() {
@@ -9434,11 +9496,18 @@ function renderItinDays() {
         <button onclick="removeItinDay(${di})" style="background:none;border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;color:var(--muted)">✕</button>
       </div>
       ${(d.items||[]).map((item,ii)=>`
-        <div style="display:grid;grid-template-columns:100px 1fr auto;gap:6px;margin-bottom:6px;align-items:center">
+        <div style="display:grid;grid-template-columns:100px 1fr auto;gap:6px;margin-bottom:6px;align-items:start">
           <select class="form-input" style="padding:5px 8px;font-size:12px" onchange="_itinDays[${di}].items[${ii}].type=this.value">
             ${['activity','transfer','hotel','meal','flight','note'].map(t=>`<option value="${t}" ${item.type===t?'selected':''}>${cap(t)}</option>`).join('')}
           </select>
-          <input class="form-input" style="padding:6px 10px;font-size:13px" placeholder="Description" value="${esc(item.description||'')}" oninput="_itinDays[${di}].items[${ii}].description=this.value">
+          <div>
+            <input class="form-input" style="padding:6px 10px;font-size:13px" placeholder="Description" value="${esc(item.description||'')}" oninput="_itinDays[${di}].items[${ii}].description=this.value">
+            <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+              ${item.image?`<img src="${item.image}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid var(--line)">`:''}
+              <label style="font-size:11px;color:var(--accent-ink);cursor:pointer">${item.image?'Change photo':'+ Add location photo'}<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="itinHandleItemImage(${di},${ii},this.files[0])"></label>
+              ${item.image?`<button onclick="itinRemoveItemImage(${di},${ii})" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:11px">Remove</button>`:''}
+            </div>
+          </div>
           <button onclick="removeItinItem(${di},${ii})" style="background:none;border:1px solid var(--line);border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--muted);font-size:12px">✕</button>
         </div>`).join('')}
       <button onclick="addItinItem(${di})" style="width:100%;padding:7px;border:1.5px dashed var(--ls);border-radius:6px;background:none;cursor:pointer;color:var(--muted);font-size:12px">+ Add Item</button>
@@ -9447,14 +9516,27 @@ function renderItinDays() {
 
 function addItinDay(){_itinDays.push({day_no:_itinDays.length+1,title:'',items:[]});renderItinDays();}
 function removeItinDay(i){_itinDays.splice(i,1);_itinDays.forEach((d,j)=>d.day_no=j+1);renderItinDays();}
-function addItinItem(di){_itinDays[di].items.push({type:'activity',description:''});renderItinDays();}
+function addItinItem(di){_itinDays[di].items.push({type:'activity',description:'',image:''});renderItinDays();}
 function removeItinItem(di,ii){_itinDays[di].items.splice(ii,1);renderItinDays();}
+
+// Stored as a base64 data URL directly on the item, same pattern as CLIENTS.quote_logo_url — no
+// R2/object storage in this app. Capped tighter than the logo (250KB vs 500KB) since an itinerary
+// can have many items, all landing in the same LongText `days` JSON column on ta_itineraries.
+async function itinHandleItemImage(di,ii,file){
+  if(!file) return;
+  if(!['image/png','image/jpeg','image/webp'].includes(file.type)){ alert('Please choose a PNG, JPG, or WEBP image.'); return; }
+  if(file.size>250*1024){ alert('Image must be under 250KB.'); return; }
+  const dataUrl=await new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(file); });
+  _itinDays[di].items[ii].image=dataUrl;
+  renderItinDays();
+}
+function itinRemoveItemImage(di,ii){ _itinDays[di].items[ii].image=''; renderItinDays(); }
 
 async function saveItin() {
   const btn=$id('saveItinBtn'),msg=$id('saveItinMsg');
   btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   const existing=_editItinId?(_taItineraries.find(x=>String(x.Id)===String(_editItinId))||{}):{};
-  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:$id('itinFrom').value,to_date:$id('itinTo').value,notes:$id('itinNotes').value.trim(),days:JSON.stringify(_itinDays),created_at:existing.created_at||new Date().toISOString().slice(0,10)};
+  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:$id('itinFrom').value,to_date:$id('itinTo').value,notes:$id('itinNotes').value.trim(),days:JSON.stringify(_itinDays),logo_url:_itinLogoUrl,created_at:existing.created_at||new Date().toISOString().slice(0,10)};
   if(!it.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editItinId) await taUpdate('itineraries',_editItinId,it); else await taCreate('itineraries',it);
@@ -9479,12 +9561,14 @@ const SQ_FORMATS=[
   {key:'package',label:'📦 Package'},
   {key:'group_fare',label:'✈️ Group Fare'},
   {key:'travel_service',label:'🗂️ Travel Service'},
+  {key:'itinerary_full',label:'🗺️ Full Itinerary'},
 ];
-const SQ_FORMAT_TITLES={package:'Package Quotation',group_fare:'Group Fare Offer',travel_service:'Travel Service Quotation'};
+const SQ_FORMAT_TITLES={package:'Package Quotation',group_fare:'Group Fare Offer',travel_service:'Travel Service Quotation',itinerary_full:'Itinerary'};
 const SQ_CAPTION_TEMPLATES={
   package:`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Please find our package quotation attached.\n\nTotal: {{total}}\nValid for {{validity_days}} days. Let us know if you'd like to proceed.`,
   group_fare:`Hi {{lead_name}}, here's a group fare offer from {{business_name}}.\n\nFare: {{total}} per person\nValid for {{validity_days}} days — seats are limited, let us know if you'd like to book.`,
   travel_service:`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Please find our service quotation attached.\n\nPrice: {{total}}\nValid for {{validity_days}} days. Let us know if you'd like to proceed.`,
+  itinerary_full:`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Please find your itinerary for {{trip_title}} attached. Let us know if you'd like to proceed or have any questions.`,
 };
 
 let _sqFormat='package';       // 'package' | 'group_fare' | 'travel_service' — PDF wording/layout only
@@ -9503,8 +9587,13 @@ function sqResolveSource(key){
   return sqSources().find(s=>s.key===key)||null;
 }
 
+// 'itinerary_full' only makes sense against an itinerary source — it renders the itinerary's own
+// day-by-day content (with photos) instead of a priced line-item table, so it's hidden as a pill
+// choice whenever a package is selected instead.
 function sqFormatPillsHtml(){
-  return SQ_FORMATS.map(f=>`<button type="button" class="pkg-filter-pill${_sqFormat===f.key?' active':''}" onclick="sqSetFormat('${f.key}')">${f.label}</button>`).join('');
+  const src=sqResolveSource(_sqSourceKey);
+  const formats=SQ_FORMATS.filter(f=>f.key!=='itinerary_full'||(src&&src.type==='itinerary'));
+  return formats.map(f=>`<button type="button" class="pkg-filter-pill${_sqFormat===f.key?' active':''}" onclick="sqSetFormat('${f.key}')">${f.label}</button>`).join('');
 }
 
 function sqSetFormat(fmt){
@@ -9512,6 +9601,8 @@ function sqSetFormat(fmt){
   const pills=$id('sqFormatPills'); if(pills) pills.innerHTML=sqFormatPillsHtml();
   const priceLabel=$id('sqPriceLabel'); if(priceLabel) priceLabel.textContent=fmt==='group_fare'?'Fare / person':fmt==='travel_service'?'Service price':'Price / person';
   const paxLabel=$id('sqPaxLabel'); if(paxLabel) paxLabel.textContent=fmt==='group_fare'?'Seats available':'Pax';
+  // No pricing table on a full-itinerary send — the price/currency/pax/validity row is irrelevant.
+  const grid=$id('sqPricingGrid'); if(grid) grid.style.display=fmt==='itinerary_full'?'none':'grid';
 }
 
 function sqOnSourceChange(){
@@ -9520,7 +9611,10 @@ function sqOnSourceChange(){
   if(src&&src.type==='package'){
     $id('sqPrice').value=src.price||'';
     $id('sqCurrency').value=src.currency||'AED';
+    if(_sqFormat==='itinerary_full') _sqFormat='package';
   }
+  const pills=$id('sqFormatPills'); if(pills) pills.innerHTML=sqFormatPillsHtml();
+  const grid=$id('sqPricingGrid'); if(grid) grid.style.display=_sqFormat==='itinerary_full'?'none':'grid';
 }
 
 function renderItinSendQuote(){
@@ -9530,6 +9624,7 @@ function renderItinSendQuote(){
   }
   if(!_sqSourceKey||!sources.some(s=>s.key===_sqSourceKey)) _sqSourceKey=sources[0].key;
   const selected=sqResolveSource(_sqSourceKey);
+  if(_sqFormat==='itinerary_full'&&(!selected||selected.type!=='itinerary')) _sqFormat='package';
   return `
   <div class="ta-card">
     <div class="ta-card-title">📤 Send Quotation to Leads</div>
@@ -9552,7 +9647,7 @@ function renderItinSendQuote(){
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px">
+    <div id="sqPricingGrid" style="display:${_sqFormat==='itinerary_full'?'none':'grid'};grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px">
       <div class="form-group"><label class="form-label">Currency</label>
         <select class="form-input" id="sqCurrency">${['AED','USD','EUR','GBP','SAR','QAR','KWD','INR','OMR','BHD'].map(c=>`<option value="${c}"${(selected?.currency||'AED')===c?' selected':''}>${c}</option>`).join('')}</select>
       </div>
@@ -9742,7 +9837,196 @@ function stampQuoteFooter(doc,marginX){
   }
 }
 
+function itinItemTypeLabel(type){
+  const m={activity:'Activity',transfer:'Transfer',hotel:'Hotel',meal:'Meal',flight:'Flight',note:'Note'};
+  return m[type]||'Item';
+}
+
+// Renders the itinerary's own day-by-day content (with per-item photos) rather than converting
+// it into a priced line-item table — used when SQ_FORMATS' 'itinerary_full' format is selected.
+// Shares the same branding (logo/accent/footer) as sqBuildPdfDoc's quote layout so a PDF sent
+// from either format looks like it came from the same business, just with no pricing section.
+function itinBuildFullPdfDoc(lead,it,quoteNumber){
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({unit:'pt',format:'a4'});
+  const marginX=40;
+  const pageW=doc.internal.pageSize.getWidth();
+  const pageH=doc.internal.pageSize.getHeight();
+  const contentW=pageW-marginX*2;
+
+  const customHex=(clientRecord.quote_accent_color||'').trim();
+  const accent=customHex?sqHexToRgb(customHex):sqAccentRgb('--accent','#0D9C93');
+  const accentInk=customHex?sqShade(accent,-0.35):sqAccentRgb('--accent-ink','#1E3A6E');
+  const accentSoft=customHex?sqShade(accent,0.85):sqAccentRgb('--accent-soft','#DFF6F3');
+
+  let y=44;
+  let logoBottomY=y;
+  // An itinerary's own logo_url (Logo field on the itinerary modal) overrides the account-wide
+  // quote_logo_url for its own PDF only — e.g. a co-branded trip with a partner operator. Its
+  // dimensions come from _itinSendLogoDims (measured once for the whole batch in sqSend, not
+  // per-lead) rather than _itinLogoDims, since the itinerary modal that set the latter usually
+  // isn't open anymore by the time a bulk send actually runs.
+  const logoUrl=it.logo_url||clientRecord.quote_logo_url;
+  const logoDims=it.logo_url?_itinSendLogoDims:_quoteLogoDims;
+  if(logoUrl){
+    try{
+      const mime=/data:image\/(png|jpe?g|webp)/.exec(logoUrl);
+      const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
+      const maxLogoW=110,maxLogoH=50;
+      let w=maxLogoW,h=maxLogoH;
+      if(logoDims&&logoDims.w&&logoDims.h){
+        const ratio=Math.min(maxLogoW/logoDims.w,maxLogoH/logoDims.h);
+        w=logoDims.w*ratio; h=logoDims.h*ratio;
+      }
+      doc.addImage(logoUrl,fmt,marginX,y,w,h,undefined,'FAST');
+      logoBottomY=y+h;
+    }catch(e){}
+  }
+  const headerTitle=(clientRecord.quote_header_title||clientRecord.client_name||'Itinerary').trim();
+  doc.setFont('times','bold');doc.setFontSize(24);doc.setTextColor(...accentInk);
+  doc.text(headerTitle,pageW/2,y+22,{align:'center'});
+  doc.setTextColor(0);
+  y=Math.max(logoBottomY,y+30)+12;
+
+  doc.setDrawColor(...accent);doc.setLineWidth(1.2);
+  doc.line(marginX,y,pageW-marginX,y);
+  y+=20;
+
+  doc.setFont('helvetica','bold');doc.setFontSize(15);doc.setTextColor(20);
+  doc.text(it.title||'Itinerary',marginX,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(60);
+  doc.text(quoteNumber||'',pageW-marginX,y,{align:'right'});
+  doc.setTextColor(0);
+  y+=22;
+
+  // Meta grid — trip basics on the left, document identity on the right. Same layout/type sizes
+  // as the Quotation PDF's own meta grid (sqBuildPdfDoc), just itinerary-specific fields, so a
+  // customer receiving both document types from this business sees one consistent format.
+  const dateRange=it.from_date&&it.to_date?`${it.from_date} to ${it.to_date}`:(it.from_date||it.to_date||'');
+  const metaLeft=[['Destination:',it.destination||'—'],['Trip Dates:',dateRange||'—'],['Duration:',`${(it.days||[]).length} day(s)`]];
+  const metaRight=[['Itinerary No.:',quoteNumber||'—'],['Issued On:',new Date().toLocaleDateString()],['Prepared By:',clientRecord.client_name||'—']];
+  doc.setFontSize(9);
+  let my=y;
+  metaLeft.forEach(([lab,val])=>{
+    doc.setFont('helvetica','bold');doc.setTextColor(60);doc.text(lab,marginX,my);
+    doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(String(val),marginX+120,my);
+    my+=15;
+  });
+  let my2=y;
+  metaRight.forEach(([lab,val])=>{
+    doc.setFont('helvetica','bold');doc.setTextColor(60);doc.text(lab,marginX+contentW/2,my2);
+    doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(String(val),marginX+contentW/2+80,my2);
+    my2+=15;
+  });
+  doc.setTextColor(0);
+  y=Math.max(my,my2)+8;
+
+  doc.setDrawColor(220);doc.setLineWidth(0.6);
+  doc.line(marginX,y,pageW-marginX,y);
+  y+=20;
+
+  // From (this business) / To (the lead) block — identical layout and colors to the Quotation
+  // PDF's own FROM/TO block.
+  const fromAddr=(clientRecord.quote_footer_address||'').trim();
+  const fromLines=fromAddr?doc.splitTextToSize(fromAddr,contentW/2-30):[];
+  const toLines=[];
+  if(lead.Phone) toLines.push(String(lead.Phone));
+  if(lead.Email) toLines.push(String(lead.Email));
+
+  doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(20);
+  doc.text(clientRecord.client_name||'—',marginX,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(80);
+  let fy=y+13;
+  fromLines.forEach(line=>{doc.text(line,marginX,fy);fy+=12;});
+
+  const toX=marginX+contentW/2+10;
+  doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(...accentInk);
+  doc.text('TO',toX,y-11);
+  doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(20);
+  doc.text(lead.Name||lead.Phone||'Customer',toX,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(80);
+  let ty=y+13;
+  toLines.forEach(line=>{doc.text(line,toX,ty);ty+=12;});
+
+  doc.setTextColor(0);
+  y=Math.max(fy,ty)+18;
+
+  const ensureSpace=(needed)=>{ if(y+needed>pageH-70){ doc.addPage(); y=50; } };
+
+  (it.days||[]).forEach(d=>{
+    ensureSpace(40);
+    doc.setFillColor(...accent);
+    doc.roundedRect(marginX,y,contentW,22,4,4,'F');
+    doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(255,255,255);
+    doc.text(`Day ${d.day_no}${d.title?' — '+d.title:''}`,marginX+10,y+15);
+    doc.setTextColor(0);
+    y+=32;
+
+    (d.items||[]).forEach(item=>{
+      const hasImg=!!item.image;
+      const imgSize=70;
+      const textW=contentW-16-(hasImg?imgSize+12:0);
+      const descLines=doc.splitTextToSize(`${itinItemTypeLabel(item.type)}: ${item.description||''}`,textW);
+      const blockH=Math.max(descLines.length*12+10, hasImg?imgSize+10:0);
+      ensureSpace(blockH+8);
+      doc.setFillColor(...accentSoft);
+      doc.roundedRect(marginX,y,contentW,blockH,3,3,'F');
+      doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.setTextColor(30);
+      doc.text(descLines,marginX+10,y+14);
+      if(hasImg){
+        try{
+          const mime=/data:image\/(png|jpe?g|webp)/.exec(item.image);
+          const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
+          doc.addImage(item.image,fmt,marginX+contentW-imgSize-10,y+5,imgSize,imgSize-10,undefined,'FAST');
+        }catch(e){}
+      }
+      doc.setTextColor(0);
+      y+=blockH+8;
+    });
+  });
+
+  if((it.notes||'').trim()){
+    const noteLines=doc.splitTextToSize(it.notes.trim(),contentW-20);
+    const boxH=24+noteLines.length*11;
+    ensureSpace(boxH+16);
+    doc.setFillColor(...accentSoft);
+    doc.roundedRect(marginX,y,contentW,boxH,4,4,'F');
+    doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(...accentInk);
+    doc.text('Notes',marginX+10,y+15);
+    doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(70);
+    doc.text(noteLines,marginX+10,y+28);
+    doc.setTextColor(0);
+    y+=boxH+16;
+  }
+
+  // Same accentSoft-fill/accentInk-heading styling as the Quotation PDF's own Terms & Conditions
+  // box (sqBuildPdfDoc), not a fixed gray — so both document types read as the same brand.
+  const terms=(clientRecord.quote_terms||QUOTE_DEFAULT_TERMS).trim();
+  if(terms){
+    const termsLines=doc.splitTextToSize(terms,contentW-20);
+    const boxH=24+termsLines.length*10.5;
+    ensureSpace(boxH+16);
+    doc.setFillColor(...accentSoft);
+    doc.roundedRect(marginX,y,contentW,boxH,4,4,'F');
+    doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(...accentInk);
+    doc.text('Terms & Conditions',marginX+10,y+15);
+    doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.setTextColor(70);
+    doc.text(termsLines,marginX+10,y+28);
+    doc.setTextColor(0);
+    y+=boxH+16;
+  }
+
+  ensureSpace(30);
+  doc.setFont('times','bold');doc.setFontSize(14);doc.setTextColor(...accentInk);
+  doc.text('We look forward to hosting you!',pageW/2,y+10,{align:'center'});
+  doc.setTextColor(0);
+
+  stampQuoteFooter(doc,marginX);
+  return doc;
+}
+
 function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber){
+  if(format==='itinerary_full') return itinBuildFullPdfDoc(lead,src.rec,quoteNumber);
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
   const marginX=40;
@@ -9939,13 +10223,15 @@ function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber){
   return doc;
 }
 
-function sqBuildCaption(lead,format,total,currency,validity){
+function sqBuildCaption(lead,format,total,currency,validity,extra){
   const tpl=SQ_CAPTION_TEMPLATES[format]||SQ_CAPTION_TEMPLATES.package;
-  return tpl
+  let out=tpl
     .replace(/\{\{lead_name\}\}/g,lead.Name||lead.Phone||'there')
     .replace(/\{\{business_name\}\}/g,clientRecord.client_name||'us')
     .replace(/\{\{total\}\}/g,`${currency} ${(parseFloat(total)||0).toLocaleString()}`)
     .replace(/\{\{validity_days\}\}/g,String(validity));
+  if(extra) Object.entries(extra).forEach(([k,v])=>{ out=out.replace(new RegExp(`\\{\\{${k}\\}\\}`,'g'),v||''); });
+  return out;
 }
 
 async function sqSend(){
@@ -9953,12 +10239,22 @@ async function sqSend(){
   if(!_sqSelectedIds.size){msg.textContent='Select at least one lead.';msg.className='save-msg err';return;}
   const src=sqResolveSource(_sqSourceKey);
   if(!src){msg.textContent='Pick a package or itinerary first.';msg.className='save-msg err';return;}
-  const price=parseFloat($id('sqPrice').value)||0;
-  if(!price){msg.textContent='Enter a price first.';msg.className='save-msg err';return;}
+  const format=_sqFormat;
+  // Full-itinerary sends have no pricing table, so the price field isn't required for them.
+  const isItinFull=format==='itinerary_full';
+  if(isItinFull&&src.type!=='itinerary'){msg.textContent='Full Itinerary needs an itinerary source.';msg.className='save-msg err';return;}
+  const price=isItinFull?0:(parseFloat($id('sqPrice').value)||0);
+  if(!isItinFull&&!price){msg.textContent='Enter a price first.';msg.className='save-msg err';return;}
   const currency=$id('sqCurrency').value||'AED';
   const pax=parseInt($id('sqPax').value)||1;
   const validity=parseInt($id('sqValidity').value)||7;
-  const format=_sqFormat;
+
+  // Measured once for the whole batch (not per lead) — itinBuildFullPdfDoc reads this instead of
+  // _itinLogoDims, since the itinerary modal that measured the latter usually isn't open anymore
+  // by the time a bulk send runs.
+  _itinSendLogoDims=isItinFull&&src.rec.logo_url
+    ? await new Promise(resolve=>{ const img=new Image(); img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight}); img.onerror=()=>resolve(null); img.src=src.rec.logo_url; })
+    : null;
 
   const leads=allLeads.filter(l=>_sqSelectedIds.has(String(l.Id)));
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
@@ -9969,10 +10265,12 @@ async function sqSend(){
 
   const logRow=(text,color)=>{ $id('sqLogBox').insertAdjacentHTML('beforeend',`<div style="padding:4px 0;${color?'color:'+color:''}">${esc(text)}</div>`); };
 
-  // Each PDF gets its own sequential Quote No. (QUO-0001, QUO-0002, ...), mirroring how the
+  // Each PDF gets its own sequential number (QUO-0001.. for quotes, ITN-0001.. for full
+  // itineraries — kept separate so one doesn't eat into the other's sequence), mirroring how the
   // single-lead flow numbers invoices — advanced locally as we go and persisted once at the end
   // (best-effort) so a batch of N leads doesn't need N separate writes to the client record.
   let quoteSeq=parseInt(clientRecord.quote_number_seq)||0;
+  let itinSeq=parseInt(clientRecord.itin_number_seq)||0;
 
   let sent=0,failed=0,skipped=0;
   for(let i=0;i<leads.length;i++){
@@ -9985,29 +10283,34 @@ async function sqSend(){
       continue;
     }
     try{
-      quoteSeq++;
-      const quoteNumber='QUO-'+String(quoteSeq).padStart(4,'0');
+      let quoteNumber;
+      if(isItinFull){ itinSeq++; quoteNumber='ITN-'+String(itinSeq).padStart(4,'0'); }
+      else { quoteSeq++; quoteNumber='QUO-'+String(quoteSeq).padStart(4,'0'); }
       const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber);
       const pdfBlob=doc.output('blob');
-      const caption=sqBuildCaption(lead,format,price,currency,validity);
+      const caption=sqBuildCaption(lead,format,price,currency,validity,isItinFull?{trip_title:src.rec.title||'your trip'}:null);
       const fd=new FormData();
       fd.append('conv_id',convId);
       fd.append('caption',caption);
-      fd.append('file',pdfBlob,`Quotation-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
+      fd.append('file',pdfBlob,`${isItinFull?'Itinerary':'Quotation'}-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
       const r=await fetch(`${CONFIG.WORKER_BASE}/quote/send`,{method:'POST',headers:ncAuthHeaders(),body:fd});
       const data=await r.json().catch(()=>({}));
       if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
 
+      const tagName=isItinFull?'Itinerary Sent':'Quotation Sent';
       const tags=parseTags(lead.Tags);
-      if(!tags.includes('Quotation Sent')) tags.push('Quotation Sent');
+      if(!tags.includes(tagName)) tags.push(tagName);
       lead.Tags=tags.join(',');
       const sentAt=new Date().toISOString();
-      const totalLabel=`${currency} ${price.toLocaleString()}`;
+      const totalLabel=isItinFull?'':`${currency} ${price.toLocaleString()}`;
       try{
         const hist=await freshConvHistory(lead);
-        hist.push({role:'assistant',content:caption+`\n[Quotation PDF — ${SQ_FORMAT_TITLES[format]}, ${totalLabel}]`,ts:sentAt});
-        await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(','),QuoteSentAt:sentAt,QuoteSentTotal:totalLabel});
-        lead.ConvHistory=JSON.stringify(hist); lead.QuoteSentAt=sentAt; lead.QuoteSentTotal=totalLabel;
+        hist.push({role:'assistant',content:caption+(isItinFull?`\n[Itinerary PDF — ${src.rec.title||'Itinerary'}]`:`\n[Quotation PDF — ${SQ_FORMAT_TITLES[format]}, ${totalLabel}]`),ts:sentAt});
+        const patchBody={Id:lead.Id,ConvHistory:JSON.stringify(hist),Tags:tags.join(',')};
+        if(!isItinFull){ patchBody.QuoteSentAt=sentAt; patchBody.QuoteSentTotal=totalLabel; }
+        await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patchBody);
+        lead.ConvHistory=JSON.stringify(hist);
+        if(!isItinFull){ lead.QuoteSentAt=sentAt; lead.QuoteSentTotal=totalLabel; }
       }catch(e){}
       sent++;
       logRow(`✅ ${lead.Name||lead.Phone||'Lead'} — sent`,'#166534');
@@ -10019,8 +10322,11 @@ async function sqSend(){
     await new Promise(res=>setTimeout(res,600));
   }
 
-  if(quoteSeq!==(parseInt(clientRecord.quote_number_seq)||0)){
-    try{ await patchClient({quote_number_seq:quoteSeq}); clientRecord.quote_number_seq=quoteSeq; }catch(e){}
+  const clientPatch={};
+  if(quoteSeq!==(parseInt(clientRecord.quote_number_seq)||0)) clientPatch.quote_number_seq=quoteSeq;
+  if(itinSeq!==(parseInt(clientRecord.itin_number_seq)||0)) clientPatch.itin_number_seq=itinSeq;
+  if(Object.keys(clientPatch).length){
+    try{ await patchClient(clientPatch); Object.assign(clientRecord,clientPatch); }catch(e){}
   }
 
   label.textContent=`Done — ${sent} sent, ${failed} failed, ${skipped} skipped (no chat linked)`;

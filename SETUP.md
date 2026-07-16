@@ -48,6 +48,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | quote_payment_methods | Single line (free text shown in the Payment Method box on the Agency module's bulk "Send Quotation" PDF, e.g. "Bank Transfer, Cash, Card") |
 | quote_tax_percent | Number (tax % applied to the Agency module's bulk "Send Quotation" PDF subtotal, shown as its own line above the Grand Total; `0` if unset) |
 | quote_number_seq | Number (incrementing counter for the Agency module's bulk "Send Quotation" PDF — last quote number actually sent, e.g. `12` means the next one is `QUO-0013`. Only written on a real send, mirrors `invoice_number_seq`.) |
+| itin_number_seq | Number (separate counter for the "Full Itinerary" send format's own PDF — last one actually sent, e.g. `12` means the next one is `ITN-0013`. Kept apart from `quote_number_seq` so sending an itinerary doesn't burn a quote number and vice versa.) |
 | invoice_terms | Long text (Invoice mode's own terms text, separate from `quote_terms` since "valid for N days" wording doesn't fit an invoice — falls back to `quote_terms` if blank. See "Quotation moved into Human Deals + Invoice mode" below.) |
 | invoice_number_seq | Number (incrementing counter — last invoice number actually sent, e.g. `12` means the next one is `INV-0013`. Only written on a real send, never on a PDF preview, so a preview never burns a number.) |
 | waba_id | Single line (WhatsApp Business Account ID — for template list/create, separate from wa_phone_id) |
@@ -2728,6 +2729,70 @@ engine.json behavior (bot goes fully silent the instant a human's involved) turn
   `'human_handover'` regardless of this toggle, so the CRM/dashboard still correctly shows the lead
   as escalated; only whether the bot keeps sending replies changes. A staff member can still take
   over the conversation in Chatwoot at any point, same as always.
+
+### Itinerary location photos + "Full Itinerary" send format
+The Travel Agency module's itinerary builder (`openItinModal`/`renderItinDays` in
+`frontend/dashboard.html`) now supports one photo per day-item, and the itinerary can be sent as
+itself (day-by-day, with those photos) rather than only as a converted price quote.
+- **Photos**: each item in `ta_itineraries.days` (LongText JSON) can carry an `image` field —
+  same base64-data-URL-on-record pattern as `CLIENTS.quote_logo_url`, capped at 250KB per photo
+  (tighter than the logo's 500KB since one itinerary can have many items, all landing in the same
+  JSON column) via `itinHandleItemImage`. No new NocoDB column — `days` already existed as
+  LongText, this just adds a key inside each item object. Older itineraries saved before this
+  change simply have no `image` key on their items, which renders as "no photo" everywhere.
+- **Full Itinerary send format**: the Agency module's existing bulk "Send Quotation to Leads" tab
+  (`renderItinSendQuote`/`sqSend`, originally built to convert a Package or Itinerary into a
+  priced quote PDF) gained a fourth `SQ_FORMATS` entry, `itinerary_full`, selectable only when the
+  chosen source is an itinerary (`sqFormatPillsHtml` filters it out for packages). Instead of
+  `sqBuildLineItems`' priced table, it renders the itinerary's own day/item/photo content via
+  `itinBuildFullPdfDoc` — same branding (logo/accent/footer, from the same `quote_*` CLIENTS
+  fields) as the priced formats, just no pricing section, and the price/currency/pax/validity
+  fields are hidden (`#sqPricingGrid`) since they don't apply. Delivery is the same
+  lead-search-and-checkbox-select-then-send-via-Chatwoot flow as the priced formats — same
+  `/quote/send` route, same per-lead skip-if-no-linked-chat behavior, same progress log. Sent
+  leads get tagged `'Itinerary Sent'` (not `'Quotation Sent'`) and are **not** given
+  `QuoteSentAt`/`QuoteSentTotal` (there's no total), so this doesn't show up in the quote-specific
+  sent log — only in the lead's `Tags`/`ConvHistory`.
+- **Per-itinerary logo**: `ta_itineraries.logo_url` (new LongText column — base64 data URL, same
+  pattern as the photos and `CLIENTS.quote_logo_url`) lets one itinerary override the account-wide
+  logo on its own PDF only, e.g. a co-branded trip with a partner operator. Set via the "Logo"
+  field in the itinerary modal (`itinHandleLogoFile`/`itinRenderLogoWrap`), capped at 400KB. Falls
+  back to `CLIENTS.quote_logo_url` when blank — `itinBuildFullPdfDoc` picks whichever is set.
+  Auto-created for brand-new Agency-module setups (added to the `itineraries` table schema at
+  `frontend/dashboard.html:9060-9065`); existing clients who provisioned `ta_itineraries` before
+  this change need the column added by hand in NocoDB.
+- **`itin_number_seq`** — see the CLIENTS field table above — is this format's own PDF numbering
+  counter (`ITN-0001`, `ITN-0002`, ...), kept separate from `quote_number_seq` for the same reason
+  `invoice_number_seq` is separate from it.
+
+### Bot auto-reply toggle (optional, off by default — bot replies normally)
+For a client who wants to run their own bot (e.g. a custom n8n workflow wired to the same
+Chatwoot inbox) and have it own the WhatsApp replies, without losing this CRM's lead
+tracking/analytics on that same conversation. Unlike the `engine_disabled` kill switch above, this
+does **not** stop `handleEngineWebhook` from running — classification, `flow_json` routing, the
+LEADS upsert (Stage/Score/QualScore/WinProbability/Sentiment/etc.), `ENGINE_ANALYTICS_TABLE`
+logging, `last_seen`, and order/booking-signal detection (`logPendingOrder`, `detectOrderSignal`)
+all still happen every turn exactly as if the bot were replying. Only the actual outbound WhatsApp
+send is skipped.
+- **`bot_reply_disabled`** (new CLIENTS column, Single line text, `'Yes'`/`'No'`, defaults to
+  replying normally when unset) — toggle in dashboard.html Settings → "🤖 Bot Auto-Reply". Checked
+  in exactly two places: `engineDeliverReply` (the single choke point every FAQ/qualify/human/
+  selfserve/objection/order/enquiry reply goes through, text or media) returns immediately without
+  sending when `'Yes'`; and the auto booking-link nudge in `handleEngineWebhook` (the
+  `sendBookingLinkViaChatwoot`/`sendBookingLinkNow` call for non-ecommerce industries) is skipped
+  the same way, since sending that link *is* the point of that block — skipping it also means the
+  stage-advance bundled inside `sendBookingLinkViaChatwoot` doesn't fire for that nudge, same
+  trade-off as the reply itself not going out.
+- **Does not touch Chatwoot webhook registration** — `engineSyncChatwootWebhook` still registers
+  `/engine/webhook` normally regardless of this flag (it only checks `engine_disabled`), so
+  `handleEngineWebhook` keeps receiving every `message_created` event and keeps the CRM in sync;
+  it just never talks back. A customer's own bot (n8n or otherwise) still needs its own separate
+  webhook registered on the same Chatwoot inbox to actually send replies — this flag only silences
+  this app's side, it doesn't wire up anything else.
+- **Manual/API-triggered sends are unaffected** — `handleLeadBookingLink` (the `/leads/booking-link`
+  n8n-callable route) calls `sendBookingLinkViaChatwoot`/`sendBookingLinkNow` directly, not through
+  this flag's gated call site inside `handleEngineWebhook`, so an explicit API-triggered booking
+  link still sends even while automatic bot replies are off.
 
 ### Idempotency
 Chatwoot may redeliver the same `message_created` event (timeout, network retry) — without a

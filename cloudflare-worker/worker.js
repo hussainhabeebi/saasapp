@@ -4979,6 +4979,15 @@ function engineExtractLinkPriceCaption(replyText){
 // Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
 // out of scope for now, this only covers live conversational replies.
 async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl}={}){
+  // CLIENTS.bot_reply_disabled ('Yes'/'No', Settings → Bot Auto-Reply) — unlike engine_disabled
+  // above, this is the ONLY choke point gated by this flag: classification, routing, lead
+  // upsert/CRM fields, analytics logging, last_seen, and order/booking-signal detection in
+  // handleEngineWebhook all still run normally. Only the actual outbound WhatsApp message (text,
+  // image caption, or voice) stops going out — for a client who wants their own bot (e.g. a
+  // custom n8n workflow wired to the same Chatwoot inbox) to own the reply, while this CRM keeps
+  // tracking leads/stages/analytics off the same conversation exactly as if the built-in bot were
+  // still replying.
+  if(c.bot_reply_disabled==='Yes') return;
   const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
   if(!trimmed) return;
   const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
@@ -5341,7 +5350,7 @@ async function handleEngineWebhook(request, env, secret){
     // ecommerce here would just re-call detectOrderSignal a second, redundant time, and could
     // violate the "never send a link before order intent" rule for the one case the order-check
     // above deliberately leaves unhandled (an enquiry with no confident product match).
-    if(c.industry!=='ecommerce' && !['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && (c.external_store_link||'').trim()){
+    if(c.bot_reply_disabled!=='Yes' && c.industry!=='ecommerce' && !['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && (c.external_store_link||'').trim()){
       // Only runs once a booking link is actually configured, and skips a lead already at a
       // booking-terminal stage or one with a `requested` appointment already pending.
       const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
