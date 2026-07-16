@@ -9896,21 +9896,60 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   doc.text(it.title||'Itinerary',marginX,y);
   doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(60);
   doc.text(quoteNumber||'',pageW-marginX,y,{align:'right'});
-  y+=16;
-  const dateRange=it.from_date&&it.to_date?`${it.from_date} to ${it.to_date}`:(it.from_date||it.to_date||'');
-  const metaBits=[it.destination,dateRange].filter(Boolean).join('   ·   ');
-  if(metaBits){ doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(80); doc.text(metaBits,marginX,y); y+=14; }
-
-  doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(...accentInk);
-  doc.text('PREPARED FOR',marginX,y+8);
-  doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(20);
-  doc.text(lead.Name||lead.Phone||'Customer',marginX+90,y+8);
   doc.setTextColor(0);
-  y+=26;
+  y+=22;
+
+  // Meta grid — trip basics on the left, document identity on the right. Same layout/type sizes
+  // as the Quotation PDF's own meta grid (sqBuildPdfDoc), just itinerary-specific fields, so a
+  // customer receiving both document types from this business sees one consistent format.
+  const dateRange=it.from_date&&it.to_date?`${it.from_date} to ${it.to_date}`:(it.from_date||it.to_date||'');
+  const metaLeft=[['Destination:',it.destination||'—'],['Trip Dates:',dateRange||'—'],['Duration:',`${(it.days||[]).length} day(s)`]];
+  const metaRight=[['Itinerary No.:',quoteNumber||'—'],['Issued On:',new Date().toLocaleDateString()],['Prepared By:',clientRecord.client_name||'—']];
+  doc.setFontSize(9);
+  let my=y;
+  metaLeft.forEach(([lab,val])=>{
+    doc.setFont('helvetica','bold');doc.setTextColor(60);doc.text(lab,marginX,my);
+    doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(String(val),marginX+120,my);
+    my+=15;
+  });
+  let my2=y;
+  metaRight.forEach(([lab,val])=>{
+    doc.setFont('helvetica','bold');doc.setTextColor(60);doc.text(lab,marginX+contentW/2,my2);
+    doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(String(val),marginX+contentW/2+80,my2);
+    my2+=15;
+  });
+  doc.setTextColor(0);
+  y=Math.max(my,my2)+8;
 
   doc.setDrawColor(220);doc.setLineWidth(0.6);
   doc.line(marginX,y,pageW-marginX,y);
   y+=20;
+
+  // From (this business) / To (the lead) block — identical layout and colors to the Quotation
+  // PDF's own FROM/TO block.
+  const fromAddr=(clientRecord.quote_footer_address||'').trim();
+  const fromLines=fromAddr?doc.splitTextToSize(fromAddr,contentW/2-30):[];
+  const toLines=[];
+  if(lead.Phone) toLines.push(String(lead.Phone));
+  if(lead.Email) toLines.push(String(lead.Email));
+
+  doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(20);
+  doc.text(clientRecord.client_name||'—',marginX,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(80);
+  let fy=y+13;
+  fromLines.forEach(line=>{doc.text(line,marginX,fy);fy+=12;});
+
+  const toX=marginX+contentW/2+10;
+  doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(...accentInk);
+  doc.text('TO',toX,y-11);
+  doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(20);
+  doc.text(lead.Name||lead.Phone||'Customer',toX,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(80);
+  let ty=y+13;
+  toLines.forEach(line=>{doc.text(line,toX,ty);ty+=12;});
+
+  doc.setTextColor(0);
+  y=Math.max(fy,ty)+18;
 
   const ensureSpace=(needed)=>{ if(y+needed>pageH-70){ doc.addPage(); y=50; } };
 
@@ -9960,17 +9999,19 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
     y+=boxH+16;
   }
 
+  // Same accentSoft-fill/accentInk-heading styling as the Quotation PDF's own Terms & Conditions
+  // box (sqBuildPdfDoc), not a fixed gray — so both document types read as the same brand.
   const terms=(clientRecord.quote_terms||QUOTE_DEFAULT_TERMS).trim();
   if(terms){
     const termsLines=doc.splitTextToSize(terms,contentW-20);
     const boxH=24+termsLines.length*10.5;
     ensureSpace(boxH+16);
-    doc.setFillColor(245,245,245);
+    doc.setFillColor(...accentSoft);
     doc.roundedRect(marginX,y,contentW,boxH,4,4,'F');
-    doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(80);
-    doc.text('Terms & Conditions',marginX+10,y+14);
-    doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.setTextColor(90);
-    doc.text(termsLines,marginX+10,y+26);
+    doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(...accentInk);
+    doc.text('Terms & Conditions',marginX+10,y+15);
+    doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.setTextColor(70);
+    doc.text(termsLines,marginX+10,y+28);
     doc.setTextColor(0);
     y+=boxH+16;
   }
