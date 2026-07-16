@@ -9317,7 +9317,10 @@ function renderPkgCard(p) {
   <div class="pkg-card" style="--pkg-accent:${color};--pkg-accent-soft:${color}1a" onclick="openPkgModal('${p.Id}')">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px">
       <span class="pkg-type-badge">${esc(p.type||'tour')}</span>
-      <button onclick="event.stopPropagation();deletePkg('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Delete">✕</button>
+      <div style="display:flex;gap:2px">
+        <button onclick="event.stopPropagation();pkgCreateItin('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Create Itinerary">🗺️</button>
+        <button onclick="event.stopPropagation();deletePkg('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Delete">✕</button>
+      </div>
     </div>
     <div class="pkg-name">${esc(p.name||'—')}</div>
     <div class="pkg-meta">${esc(p.destination||'—')} · ${p.nights||0} nights · ${p.pax_min||1}–${p.pax_max||99} pax</div>
@@ -9454,9 +9457,13 @@ const ITIN_TYPE_META={
 function itinTypeMeta(type){ return ITIN_TYPE_META[type]||ITIN_TYPE_META.note; }
 function itinItemIcon(type) { return itinTypeMeta(type).icon; }
 
-function openItinModal(id) {
+// `prefill` (title/destination/from_date/to_date/notes/days — same shape as an itinerary record)
+// lets pkgCreateItin/groupFareCreateItin/specialFareCreateItin below open this as a brand-new,
+// pre-populated itinerary instead of a blank one. Only used when `id` is falsy — an existing
+// itinerary always wins over a stale prefill.
+function openItinModal(id, prefill) {
   _editItinId = id||null;
-  const it = id?(_taItineraries.find(x=>String(x.Id)===String(id))||{}):{};
+  const it = id?(_taItineraries.find(x=>String(x.Id)===String(id))||{}):(prefill||{});
   _itinDays = JSON.parse(JSON.stringify(it.days||[]));
   $id('itinModalTitle').textContent = id?'Edit Itinerary':'New Itinerary';
   $id('itinTitle').value=it.title||''; $id('itinDest').value=it.destination||'';
@@ -9466,6 +9473,67 @@ function openItinModal(id) {
   if(_itinLogoUrl) itinLoadLogoDims(_itinLogoUrl);
   itinRenderLogoWrap();
   renderItinDays(); openModal('modalItin');
+}
+
+// ── Create Itinerary from Package / Group Fare / Special Fare ──
+// Each builds a starting itinerary from whichever structured fields that source type actually
+// has (packages: nights → blank day count; fares: flight fields → a seeded Flight item using the
+// day-item types added earlier), then opens the same itinerary modal used for a blank "+ New
+// Itinerary" — the user still fills in the day-by-day details, this just saves the re-typing of
+// what's already known (title/destination/dates/flight info).
+function pkgToItinPrefill(p){
+  const nights=Math.max(1,parseInt(p.nights)||1);
+  const days=[];
+  for(let i=0;i<nights;i++) days.push({day_no:i+1,title:'',items:[]});
+  const inc=safeJson(p.inclusions,p.inclusions instanceof Array?p.inclusions:[]);
+  const notesParts=[];
+  if(inc.length) notesParts.push('Includes: '+inc.join(', '));
+  if((p.notes||'').trim()) notesParts.push(p.notes.trim());
+  return {title:p.name||'',destination:p.destination||'',from_date:'',to_date:'',notes:notesParts.join('\n\n'),days};
+}
+function pkgCreateItin(id){
+  const p=_taPackages.find(x=>String(x.Id)===String(id));
+  if(p) openItinModal(null,pkgToItinPrefill(p));
+}
+
+function groupFareToItinPrefill(g){
+  const flightDesc=[g.airline,g.flight_number].filter(Boolean).join(' ')
+    +(g.departure_time?` — departs ${g.departure_time}`:'')+(g.arrival_time?`, arrives ${g.arrival_time}`:'');
+  const notesParts=[];
+  if(g.cabin_class) notesParts.push('Cabin: '+cap(g.cabin_class));
+  if(g.fare_type) notesParts.push('Fare type: '+cap(g.fare_type));
+  if(g.baggage_allowance) notesParts.push('Baggage: '+g.baggage_allowance);
+  if((g.remarks||'').trim()) notesParts.push(g.remarks.trim());
+  return {
+    title:g.sector?`${g.sector} Group Fare`:'Group Fare Itinerary', destination:g.sector||'',
+    from_date:g.departure_date||'', to_date:'', notes:notesParts.join('\n'),
+    days:[{day_no:1,title:'Departure',items:[{type:'flight',description:flightDesc.trim(),image:''}]}],
+  };
+}
+function groupFareCreateItin(id){
+  const g=_taGroupFares.find(x=>String(x.Id)===String(id));
+  if(g) openItinModal(null,groupFareToItinPrefill(g));
+}
+
+function specialFareToItinPrefill(s){
+  const flightDesc=[s.airline,s.flight_number].filter(Boolean).join(' ')||'Flight';
+  const notesParts=[];
+  if(s.cabin_class) notesParts.push('Cabin: '+cap(s.cabin_class));
+  if(s.fare_type) notesParts.push('Fare type: '+cap(s.fare_type));
+  if(s.baggage_allowance) notesParts.push('Baggage: '+s.baggage_allowance);
+  if(s.fare_valid_until) notesParts.push('Fare valid until: '+s.fare_valid_until);
+  if((s.remarks||'').trim()) notesParts.push(s.remarks.trim());
+  const days=[{day_no:1,title:'Departure',items:[{type:'flight',description:flightDesc,image:''}]}];
+  if((s.return_date||'').trim()) days.push({day_no:2,title:'Return',items:[{type:'flight',description:flightDesc,image:''}]});
+  return {
+    title:(s.from_city||s.to_city)?`${s.from_city||'—'} → ${s.to_city||'—'}`:(s.sector||'Special Fare Itinerary'),
+    destination:s.to_city||s.sector||'', from_date:s.departure_date||'', to_date:s.return_date||'',
+    notes:notesParts.join('\n'), days,
+  };
+}
+function specialFareCreateItin(id){
+  const s=_taSpecialFares.find(x=>String(x.Id)===String(id));
+  if(s) openItinModal(null,specialFareToItinPrefill(s));
 }
 
 function itinRenderLogoWrap(){
@@ -10577,6 +10645,7 @@ function renderGroupFareRow(g){
       <div style="font-family:var(--disp);font-size:14px;font-weight:700">${esc(g.currency||'AED')} ${(parseFloat(g.fare_price)||0).toLocaleString()}</div>
       <span class="stage-pill ${g.status==='closed'?'stage-blocked':g.status==='limited'?'stage-pending':'stage-done'}" style="margin-top:4px">${esc(g.status||'available')}</span>
     </div>
+    <button onclick="event.stopPropagation();groupFareCreateItin('${g.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px;flex-shrink:0" title="Create Itinerary">🗺️</button>
     <button onclick="event.stopPropagation();deleteGroupFare('${g.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px;flex-shrink:0" title="Delete">✕</button>
   </div>`;
 }
@@ -10650,6 +10719,7 @@ function renderSpecialFareRow(s){
       <div style="font-family:var(--disp);font-size:14px;font-weight:700">${esc(s.currency||'AED')} ${(parseFloat(s.fare_price)||0).toLocaleString()}</div>
       <span class="stage-pill ${s.status==='closed'?'stage-blocked':s.status==='limited'?'stage-pending':'stage-done'}" style="margin-top:4px">${esc(s.status||'available')}</span>
     </div>
+    <button onclick="event.stopPropagation();specialFareCreateItin('${s.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px;flex-shrink:0" title="Create Itinerary">🗺️</button>
     <button onclick="event.stopPropagation();deleteSpecialFare('${s.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px;flex-shrink:0" title="Delete">✕</button>
   </div>`;
 }
