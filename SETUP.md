@@ -2729,6 +2729,35 @@ engine.json behavior (bot goes fully silent the instant a human's involved) turn
   as escalated; only whether the bot keeps sending replies changes. A staff member can still take
   over the conversation in Chatwoot at any point, same as always.
 
+### Bot auto-reply toggle (optional, off by default — bot replies normally)
+For a client who wants to run their own bot (e.g. a custom n8n workflow wired to the same
+Chatwoot inbox) and have it own the WhatsApp replies, without losing this CRM's lead
+tracking/analytics on that same conversation. Unlike the `engine_disabled` kill switch above, this
+does **not** stop `handleEngineWebhook` from running — classification, `flow_json` routing, the
+LEADS upsert (Stage/Score/QualScore/WinProbability/Sentiment/etc.), `ENGINE_ANALYTICS_TABLE`
+logging, `last_seen`, and order/booking-signal detection (`logPendingOrder`, `detectOrderSignal`)
+all still happen every turn exactly as if the bot were replying. Only the actual outbound WhatsApp
+send is skipped.
+- **`bot_reply_disabled`** (new CLIENTS column, Single line text, `'Yes'`/`'No'`, defaults to
+  replying normally when unset) — toggle in dashboard.html Settings → "🤖 Bot Auto-Reply". Checked
+  in exactly two places: `engineDeliverReply` (the single choke point every FAQ/qualify/human/
+  selfserve/objection/order/enquiry reply goes through, text or media) returns immediately without
+  sending when `'Yes'`; and the auto booking-link nudge in `handleEngineWebhook` (the
+  `sendBookingLinkViaChatwoot`/`sendBookingLinkNow` call for non-ecommerce industries) is skipped
+  the same way, since sending that link *is* the point of that block — skipping it also means the
+  stage-advance bundled inside `sendBookingLinkViaChatwoot` doesn't fire for that nudge, same
+  trade-off as the reply itself not going out.
+- **Does not touch Chatwoot webhook registration** — `engineSyncChatwootWebhook` still registers
+  `/engine/webhook` normally regardless of this flag (it only checks `engine_disabled`), so
+  `handleEngineWebhook` keeps receiving every `message_created` event and keeps the CRM in sync;
+  it just never talks back. A customer's own bot (n8n or otherwise) still needs its own separate
+  webhook registered on the same Chatwoot inbox to actually send replies — this flag only silences
+  this app's side, it doesn't wire up anything else.
+- **Manual/API-triggered sends are unaffected** — `handleLeadBookingLink` (the `/leads/booking-link`
+  n8n-callable route) calls `sendBookingLinkViaChatwoot`/`sendBookingLinkNow` directly, not through
+  this flag's gated call site inside `handleEngineWebhook`, so an explicit API-triggered booking
+  link still sends even while automatic bot replies are off.
+
 ### Idempotency
 Chatwoot may redeliver the same `message_created` event (timeout, network retry) — without a
 guard, a redelivery arriving after a turn already completed would generate and send a second

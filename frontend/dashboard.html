@@ -1921,6 +1921,18 @@ const TODAY = new Date().toISOString().slice(0,10);
           <hr class="div">
 
           <div class="settings-section">
+            <div class="s-head">🤖 Bot Auto-Reply</div>
+            <div class="s-note">Turn this off if you're running your own bot (e.g. a custom n8n workflow) wired to the same WhatsApp inbox and want it to own the replies instead. The CRM keeps working exactly as normal either way — leads, stages, analytics, and handover detection keep updating from the conversation; only this bot's own outgoing WhatsApp messages stop sending.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div><label class="form-label">Bot auto-reply</label><select class="form-input" id="cfgBotReplyDisabled"><option value="No">On — bot replies normally</option><option value="Yes">Off — bot stays silent</option></select></div>
+              <button class="save-btn" id="saveBotReplyDisabled">Save</button>
+              <span class="save-msg" id="saveBotReplyDisabledMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
             <div class="s-head">Conversation Stages</div>
             <div class="s-note">Exact messages the bot sends at each stage — sent only when the customer gives a genuine reply that moves the conversation forward (e.g. "yes", a booking time), never mixed into an answer to a question. Keep these generic ("Would you like to see pricing?") rather than naming a specific product or service — if you sell multiple, the bot already pulls in live details for whichever one the customer is actually asking about when they ask, from your Products/Services data. A stage message naming one specific product will read oddly to a customer asking about a different one.</div>
             <div id="stageList" style="margin-bottom:12px"></div>
@@ -5178,6 +5190,7 @@ function populateSettings(){
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
   $id('cfgHandoverSilence').value=clientRecord.handover_silence_enabled||'No';
+  $id('cfgBotReplyDisabled').value=clientRecord.bot_reply_disabled||'No';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -5907,6 +5920,7 @@ async function quoteSend(){
 $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmail','saveNotifEmailMsg',{notification_email:$id('cfgNotifEmail').value.trim()}));
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
 $id('saveHandoverSilence').addEventListener('click',async()=>saveField('saveHandoverSilence','saveHandoverSilenceMsg',{handover_silence_enabled:$id('cfgHandoverSilence').value}));
+$id('saveBotReplyDisabled').addEventListener('click',async()=>saveField('saveBotReplyDisabled','saveBotReplyDisabledMsg',{bot_reply_disabled:$id('cfgBotReplyDisabled').value}));
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
 
