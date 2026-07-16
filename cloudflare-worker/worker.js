@@ -3363,7 +3363,7 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang){
   if(product.category) lines.push(`Category: ${product.category}`);
   const stockNum=Number(product.stock);
   lines.push(Number.isFinite(stockNum) && stockNum<=0 ? 'Currently out of stock' : 'In stock');
-  return `You are a friendly, human WhatsApp sales assistant replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Do not mention the price unless the customer's message is about price/cost, or you genuinely need it to answer their question. Keep your reply roughly as short as their message — a one-line question deserves a one- or two-line answer, not a paragraph. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond ONLY in ${lang}. Never switch languages.`;
+  return `You are a friendly, human WhatsApp sales assistant replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Do not mention the price unless the customer's message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond ONLY in ${lang}. Never switch languages.`;
 }
 
 // order.html's checkout form (frontend/order.html) — collects size, delivery address, phone and
@@ -4615,12 +4615,18 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // only runs pre-handover in the first place — see engineRouteFlow — so it never legitimately is).
   sys+='\n\nNever claim a human agent, advisor, or your team is "already" looking into something or has been notified — that has not happened. If you cannot answer from the data above, say plainly that you do not have that specific information and will find out / connect them with the team, as something you are about to do, not something already in progress.';
 
-  // Observed real failure: a customer's plain "Hi" got a long, salesy paragraph back — a full
+  // Observed real failure #1: a customer's plain "Hi" got a long, salesy paragraph back — a full
   // "welcome to the store, what are you looking for, let me know your size and color" pitch nobody
   // asked for. Match the customer's own effort/length instead of maximizing how much gets said in
   // one reply, and never volunteer price unless it's actually asked about or genuinely needed to
   // answer — a real salesperson doesn't open with a price list either.
-  sys+='\n\nDefault style (follow this unless the persona/instructions above specify a different tone, reply length, closing style, or message format — in that case, follow those instead): keep your reply roughly as short as the customer\'s own message — a short greeting or a one-line question deserves a short, natural reply, not a long pitch covering everything you could possibly say. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message.';
+  // Observed real failure #2, the opposite direction: a customer's short, specific question (how
+  // many days is the free trial — info that WAS in main_prompt above) got an equally short reply
+  // that answered wrong rather than giving the real number, seemingly because "match their length"
+  // pushed toward brevity over substance. A short question is about tone/effort, not permission to
+  // skip the actual fact being asked for — so the two failure modes get distinct instructions
+  // instead of one rule that (as observed) can be read as license for either.
+  sys+='\n\nDefault style (follow this unless the persona/instructions above specify a different tone, reply length, closing style, or message format — in that case, follow those instead): a short greeting or small talk deserves a short, natural reply, not a long pitch covering everything you could possibly say — but a short, specific question (a number, a policy, a fact) always deserves the real, complete answer, even if that makes the reply a bit longer than the question itself; never trade accuracy or completeness for brevity. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message.';
 
   if(industry==='ecommerce'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
