@@ -2471,6 +2471,14 @@ whether the customer asked for it or not. `detectOrderSignal` now also classifie
     unsolicited pitch), but a short, specific question (a number, a policy, a fact) always gets the
     complete real answer even if that reply ends up a little longer than the question itself — never
     trading accuracy/completeness for brevity.
+  - **`engineBuildProductEnquirySystemPrompt` now starts with `c.main_prompt` too, same as the other
+    three reply-generating prompts (`engineBuildFaqSystemPrompt`, `engineBuildObjectionSystemPrompt`,
+    `engineBuildFirstTouchIntro`).** It was the one prompt in the engine that left this out entirely —
+    a fully self-contained, hardcoded persona with no hook for a client's own tone/closing-style
+    instructions, so whatever a client wrote in Main Prompt had zero effect specifically on
+    product-enquiry replies. Every hardcoded instruction in this prompt is phrased the same "Default
+    X — follow this unless the persona/instructions above specify otherwise" way the other three
+    prompts use, so `main_prompt` is authoritative here too now.
 
 **Product resolution now falls back to a fuzzy name match when the sku doesn't exactly match.**
 `detectOrderSignal` asks the model to copy a real product's `sku` string verbatim from the catalog
