@@ -2764,6 +2764,21 @@ itself (day-by-day, with those photos) rather than only as a converted price quo
 - **`itin_number_seq`** — see the CLIENTS field table above — is this format's own PDF numbering
   counter (`ITN-0001`, `ITN-0002`, ...), kept separate from `quote_number_seq` for the same reason
   `invoice_number_seq` is separate from it.
+- **"Create Itinerary" from Packages / Group Fares / Special Fares**: a 🗺️ button on each of
+  those three record types' cards/rows (`pkgCreateItin`/`groupFareCreateItin`/
+  `specialFareCreateItin`) opens the itinerary modal pre-filled from that record instead of blank
+  — `openItinModal(id, prefill)` gained an optional second argument for this (only used when
+  `id` is falsy, so editing an existing itinerary is unaffected). No new NocoDB columns — it maps
+  each source's own fields into the same `title`/`destination`/`from_date`/`to_date`/`notes`/`days`
+  shape a normal itinerary already has:
+  - **Package** → blank days sized to `nights`, `inclusions`/`notes` folded into the itinerary's
+    own Notes field. No dates (packages are date-less catalogue items).
+  - **Group Fare** → a single "Departure" day with one `flight`-type item pre-filled from
+    `airline`/`flight_number`/`departure_time`/`arrival_time`; `departure_date` copied across.
+  - **Special Fare** → a "Departure" day, plus a "Return" day if `return_date` is set, each with a
+    seeded `flight` item; `from_city`/`to_city`/`departure_date`/`return_date` copied across.
+  Saving still creates a genuinely new `ta_itineraries` row via the existing `saveItin()` — this
+  only changes what the modal starts with, not how it saves.
 
 ### Bot auto-reply toggle (optional, off by default — bot replies normally)
 For a client who wants to run their own bot (e.g. a custom n8n workflow wired to the same
