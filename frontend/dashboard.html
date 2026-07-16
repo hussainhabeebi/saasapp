@@ -3442,6 +3442,12 @@ function deriveBusinessName(email){
 async function autoProvisionAndLogin(email, accessToken){
   const err=$id('gErr');
   err.textContent='Setting up your account…';
+  // The onboarding webhook writes the CLIENTS row first, then does slower, non-essential
+  // follow-up work (provisioning this client's automation workflow). That later work is what
+  // most often times out or errors — by then the account already exists. So a failure/bad
+  // response here is only ever a *hint*, never treated as final: we always fall through to the
+  // session check below and let that be the real source of truth for whether the account exists.
+  let onboardOk=false;
   try{
     const res=await fetch('https://apps.leadvyne.com/webhook/leadvyne-onboard',{
       method:'POST',headers:{'Content-Type':'application/json'},
@@ -3452,14 +3458,21 @@ async function autoProvisionAndLogin(email, accessToken){
         language:'en',industry:'general'
       })
     });
-    const data=await res.json();
-    if(!res.ok||data.ok===false)throw new Error(data.error||'Account setup failed');
+    const data=await res.json().catch(()=>({}));
+    onboardOk=res.ok&&data.ok!==false;
+  }catch(onboardErr){ /* network hiccup — still worth checking whether the row landed */ }
+  err.textContent='Signing you in…';
+  try{
     const sr=await fetch(`${CONFIG.WORKER_BASE}/session/exchange`,{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({access_token:accessToken})
     });
     const session=await sr.json().catch(()=>({}));
-    if(!sr.ok||!session.session_token) throw new Error(session.error||'Account created, but sign-in failed — click "Secure Login" again.');
+    if(!sr.ok||!session.session_token){
+      throw new Error(onboardOk
+        ? 'Your account was created — click "Secure Login" to continue.'
+        : 'Account setup failed — try again.');
+    }
     completeLoginResult(session);
   }catch(e){
     completeLoginError(e.message||'Account setup failed — try again.');
