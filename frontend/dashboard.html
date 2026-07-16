@@ -2488,6 +2488,10 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div class="form-group"><label class="form-label">From Date</label><input class="form-input" type="date" id="itinFrom"></div>
         <div class="form-group"><label class="form-label">To Date</label><input class="form-input" type="date" id="itinTo"></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="itinNotes" rows="2"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1">
+          <label class="form-label">Logo (optional — overrides your account logo on this itinerary's PDF only)</label>
+          <div id="itinLogoWrap"></div>
+        </div>
       </div>
       <div class="sec-hd">Day-by-Day Plan</div>
       <div id="itinDaysList"></div>
@@ -9061,6 +9065,7 @@ async function taSetupTables(){
         {title:'client_id',uidt:'SingleLineText'},{title:'title',uidt:'SingleLineText'},
         {title:'destination',uidt:'SingleLineText'},{title:'from_date',uidt:'Date'},
         {title:'to_date',uidt:'Date'},{title:'days',uidt:'LongText'},{title:'notes',uidt:'LongText'},
+        {title:'logo_url',uidt:'LongText'},
       ]},
       umrah_groups:{title:'ta_umrah_groups',columns:[
         {title:'client_id',uidt:'SingleLineText'},{title:'name',uidt:'SingleLineText'},
@@ -9374,6 +9379,17 @@ async function deletePkg(id){
 /* ── TA: ITINERARIES ── */
 let _editItinId = null;
 let _itinDays = [];
+// Per-itinerary logo (base64 data URL, stored on the itinerary record itself as `logo_url`) —
+// separate from CLIENTS.quote_logo_url so a single account can brand different itineraries
+// differently (e.g. a co-branded trip with a partner operator); itinBuildFullPdfDoc falls back
+// to the account logo when an itinerary has none of its own.
+let _itinLogoUrl = '';
+let _itinLogoDims = null;
+// Precomputed once per bulk send (not per lead) in sqSend, since remeasuring the same image's
+// natural dimensions for every selected lead would be wasted work — itinBuildFullPdfDoc reads
+// this instead of _itinLogoDims when sending, since the modal that set _itinLogoDims usually
+// isn't open at send time.
+let _itinSendLogoDims = null;
 // Which inner tab the Itineraries page is showing — the itinerary list, or the bulk
 // "send this as a quotation to leads" compose view (state lives here, not in
 // renderAgencySubPage, since it's local to the itineraries ta-tab).
@@ -9436,7 +9452,39 @@ function openItinModal(id) {
   $id('itinTitle').value=it.title||''; $id('itinDest').value=it.destination||'';
   $id('itinFrom').value=it.from_date||''; $id('itinTo').value=it.to_date||'';
   $id('itinNotes').value=it.notes||'';
+  _itinLogoUrl=it.logo_url||''; _itinLogoDims=null;
+  if(_itinLogoUrl) itinLoadLogoDims(_itinLogoUrl);
+  itinRenderLogoWrap();
   renderItinDays(); openModal('modalItin');
+}
+
+function itinRenderLogoWrap(){
+  const wrap=$id('itinLogoWrap'); if(!wrap) return;
+  wrap.innerHTML=_itinLogoUrl
+    ? `<div style="display:flex;align-items:center;gap:10px">
+        <img src="${_itinLogoUrl}" style="max-height:50px;max-width:160px;border-radius:6px;border:1px solid var(--line)">
+        <button type="button" onclick="itinRemoveLogo()" style="background:none;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;color:var(--muted);font-size:12px">Remove</button>
+      </div>`
+    : `<label style="display:inline-block;font-size:12.5px;color:var(--accent-ink);cursor:pointer;border:1.5px dashed var(--ls);border-radius:6px;padding:8px 12px">+ Upload logo (PNG/JPG/WEBP, max 400KB)<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="itinHandleLogoFile(this.files[0])"></label>`;
+}
+
+async function itinHandleLogoFile(file){
+  if(!file) return;
+  if(!['image/png','image/jpeg','image/webp'].includes(file.type)){ alert('Please choose a PNG, JPG, or WEBP image.'); return; }
+  if(file.size>400*1024){ alert('Logo must be under 400KB.'); return; }
+  const dataUrl=await new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(file); });
+  _itinLogoUrl=dataUrl;
+  itinLoadLogoDims(dataUrl);
+  itinRenderLogoWrap();
+}
+function itinRemoveLogo(){ _itinLogoUrl=''; _itinLogoDims=null; itinRenderLogoWrap(); }
+
+function itinLoadLogoDims(url){
+  if(!url){ _itinLogoDims=null; return; }
+  const img=new Image();
+  img.onload=()=>{_itinLogoDims={w:img.naturalWidth,h:img.naturalHeight};};
+  img.onerror=()=>{_itinLogoDims=null;};
+  img.src=url;
 }
 
 function renderItinDays() {
@@ -9488,7 +9536,7 @@ async function saveItin() {
   const btn=$id('saveItinBtn'),msg=$id('saveItinMsg');
   btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   const existing=_editItinId?(_taItineraries.find(x=>String(x.Id)===String(_editItinId))||{}):{};
-  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:$id('itinFrom').value,to_date:$id('itinTo').value,notes:$id('itinNotes').value.trim(),days:JSON.stringify(_itinDays),created_at:existing.created_at||new Date().toISOString().slice(0,10)};
+  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:$id('itinFrom').value,to_date:$id('itinTo').value,notes:$id('itinNotes').value.trim(),days:JSON.stringify(_itinDays),logo_url:_itinLogoUrl,created_at:existing.created_at||new Date().toISOString().slice(0,10)};
   if(!it.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editItinId) await taUpdate('itineraries',_editItinId,it); else await taCreate('itineraries',it);
@@ -9813,17 +9861,24 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
 
   let y=44;
   let logoBottomY=y;
-  if(clientRecord.quote_logo_url){
+  // An itinerary's own logo_url (Logo field on the itinerary modal) overrides the account-wide
+  // quote_logo_url for its own PDF only — e.g. a co-branded trip with a partner operator. Its
+  // dimensions come from _itinSendLogoDims (measured once for the whole batch in sqSend, not
+  // per-lead) rather than _itinLogoDims, since the itinerary modal that set the latter usually
+  // isn't open anymore by the time a bulk send actually runs.
+  const logoUrl=it.logo_url||clientRecord.quote_logo_url;
+  const logoDims=it.logo_url?_itinSendLogoDims:_quoteLogoDims;
+  if(logoUrl){
     try{
-      const mime=/data:image\/(png|jpe?g|webp)/.exec(clientRecord.quote_logo_url);
+      const mime=/data:image\/(png|jpe?g|webp)/.exec(logoUrl);
       const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
       const maxLogoW=110,maxLogoH=50;
       let w=maxLogoW,h=maxLogoH;
-      if(_quoteLogoDims&&_quoteLogoDims.w&&_quoteLogoDims.h){
-        const ratio=Math.min(maxLogoW/_quoteLogoDims.w,maxLogoH/_quoteLogoDims.h);
-        w=_quoteLogoDims.w*ratio; h=_quoteLogoDims.h*ratio;
+      if(logoDims&&logoDims.w&&logoDims.h){
+        const ratio=Math.min(maxLogoW/logoDims.w,maxLogoH/logoDims.h);
+        w=logoDims.w*ratio; h=logoDims.h*ratio;
       }
-      doc.addImage(clientRecord.quote_logo_url,fmt,marginX,y,w,h,undefined,'FAST');
+      doc.addImage(logoUrl,fmt,marginX,y,w,h,undefined,'FAST');
       logoBottomY=y+h;
     }catch(e){}
   }
@@ -10152,6 +10207,13 @@ async function sqSend(){
   const currency=$id('sqCurrency').value||'AED';
   const pax=parseInt($id('sqPax').value)||1;
   const validity=parseInt($id('sqValidity').value)||7;
+
+  // Measured once for the whole batch (not per lead) — itinBuildFullPdfDoc reads this instead of
+  // _itinLogoDims, since the itinerary modal that measured the latter usually isn't open anymore
+  // by the time a bulk send runs.
+  _itinSendLogoDims=isItinFull&&src.rec.logo_url
+    ? await new Promise(resolve=>{ const img=new Image(); img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight}); img.onerror=()=>resolve(null); img.src=src.rec.logo_url; })
+    : null;
 
   const leads=allLeads.filter(l=>_sqSelectedIds.has(String(l.Id)));
   btn.disabled=true;msg.textContent='';msg.className='save-msg';

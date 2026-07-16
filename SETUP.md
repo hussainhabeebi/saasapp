@@ -2753,6 +2753,14 @@ itself (day-by-day, with those photos) rather than only as a converted price quo
   leads get tagged `'Itinerary Sent'` (not `'Quotation Sent'`) and are **not** given
   `QuoteSentAt`/`QuoteSentTotal` (there's no total), so this doesn't show up in the quote-specific
   sent log — only in the lead's `Tags`/`ConvHistory`.
+- **Per-itinerary logo**: `ta_itineraries.logo_url` (new LongText column — base64 data URL, same
+  pattern as the photos and `CLIENTS.quote_logo_url`) lets one itinerary override the account-wide
+  logo on its own PDF only, e.g. a co-branded trip with a partner operator. Set via the "Logo"
+  field in the itinerary modal (`itinHandleLogoFile`/`itinRenderLogoWrap`), capped at 400KB. Falls
+  back to `CLIENTS.quote_logo_url` when blank — `itinBuildFullPdfDoc` picks whichever is set.
+  Auto-created for brand-new Agency-module setups (added to the `itineraries` table schema at
+  `frontend/dashboard.html:9060-9065`); existing clients who provisioned `ta_itineraries` before
+  this change need the column added by hand in NocoDB.
 - **`itin_number_seq`** — see the CLIENTS field table above — is this format's own PDF numbering
   counter (`ITN-0001`, `ITN-0002`, ...), kept separate from `quote_number_seq` for the same reason
   `invoice_number_seq` is separate from it.
