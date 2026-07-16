@@ -3363,7 +3363,17 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang){
   if(product.category) lines.push(`Category: ${product.category}`);
   const stockNum=Number(product.stock);
   lines.push(Number.isFinite(stockNum) && stockNum<=0 ? 'Currently out of stock' : 'In stock');
-  return `You are a friendly, human WhatsApp sales assistant replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Do not mention the price unless the customer's message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond ONLY in ${lang}. Never switch languages.`;
+  // main_prompt goes first, same as engineBuildFaqSystemPrompt/engineBuildObjectionSystemPrompt/
+  // engineBuildFirstTouchIntro — this was the one reply-generating prompt in the engine that left
+  // it out entirely, so a client's own persona/tone/closing-style instructions had zero effect on
+  // product-enquiry replies specifically, no matter what they wrote in Main Prompt. Every hardcoded
+  // instruction below is phrased the same "Default X — follow this unless the persona/instructions
+  // above specify otherwise" way as the other three prompts, so main_prompt stays authoritative.
+  let sys=c.main_prompt||'';
+  sys+=`\n\nYou are replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}`;
+  sys+='\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Default style (follow this unless the persona/instructions above specify a different tone, reply length, or closing style — in that case, follow those instead): do not mention the price unless the customer\'s message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji.';
+  sys+=`\n\nRespond ONLY in ${lang}. Never switch languages.`;
+  return sys;
 }
 
 // order.html's checkout form (frontend/order.html) — collects size, delivery address, phone and
