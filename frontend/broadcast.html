@@ -347,6 +347,12 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <select id="dmStageFilter" onchange="filterDmLeads()">
           <option value="">All stages</option>
         </select>
+        <select id="dmBrandFilter" onchange="filterDmLeads()">
+          <option value="">All brands</option>
+        </select>
+        <select id="dmCountryFilter" onchange="filterDmLeads()">
+          <option value="">All countries</option>
+        </select>
         <select id="dmWindowFilter" onchange="filterDmLeads()">
           <option value="24h">Within 24h only</option>
           <option value="all">Show all leads</option>
@@ -442,6 +448,12 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <input type="text" id="metaLeadSearch" placeholder="Search name / phone…" oninput="filterMetaLeads()">
         <select id="metaStageFilter" onchange="filterMetaLeads()">
           <option value="">All stages</option>
+        </select>
+        <select id="metaBrandFilter" onchange="filterMetaLeads()">
+          <option value="">All brands</option>
+        </select>
+        <select id="metaCountryFilter" onchange="filterMetaLeads()">
+          <option value="">All countries</option>
         </select>
         <select id="metaScoreFilter" onchange="filterMetaLeads()">
           <option value="">All scores</option>
@@ -788,28 +800,51 @@ async function loadLeads(){
     const data=await ncGet(url);
     allLeads=data.list||[];
 
-    // Populate stage filters
+    // Populate stage/brand/country filters
     const stages=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))].sort();
     knownStages=stages;
-    [['dmStageFilter','dmStageFilter'],['metaStageFilter','metaStageFilter']].forEach(([id])=>{
+    const brands=[...new Set(allLeads.map(l=>l.Brand).filter(Boolean))].sort();
+    const countries=[...new Set(allLeads.map(l=>l.Country).filter(Boolean))].sort();
+    const populate=(id,values)=>{
       const sf=$id(id);
+      if(!sf) return;
       while(sf.options.length>1) sf.remove(1);
-      stages.forEach(s=>{ const o=document.createElement('option');o.value=s;o.textContent=s;sf.appendChild(o); });
-    });
+      values.forEach(v=>{ const o=document.createElement('option');o.value=v;o.textContent=v;sf.appendChild(o); });
+    };
+    populate('dmStageFilter',stages); populate('metaStageFilter',stages);
+    populate('dmBrandFilter',brands); populate('metaBrandFilter',brands);
+    populate('dmCountryFilter',countries); populate('metaCountryFilter',countries);
 
+    applyFilterPresetsFromUrl();
     filterDmLeads();
     filterMetaLeads();
   }catch(e){ console.error('loadLeads',e); }
+}
+
+// B2B module deep-link: broadcast.html?stage=X&brand=Y&country=Z (from Smart Lists / Analytics
+// "📢 Broadcast" buttons in b2b.html) — preset both the DM and Meta Template tabs' filters so
+// sending to that slice is a one-click follow-on from wherever it was surfaced.
+function applyFilterPresetsFromUrl(){
+  const qp=new URLSearchParams(location.search);
+  const stage=qp.get('stage')||'', brand=qp.get('brand')||'', country=qp.get('country')||'';
+  [['dmStageFilter',stage],['metaStageFilter',stage],['dmBrandFilter',brand],['metaBrandFilter',brand],['dmCountryFilter',country],['metaCountryFilter',country]].forEach(([id,val])=>{
+    const el=$id(id);
+    if(el && val && [...el.options].some(o=>o.value===val)) el.value=val;
+  });
 }
 
 // ── DM LEADS ──
 function filterDmLeads(){
   const q=($id('dmSearch').value||'').toLowerCase();
   const stage=$id('dmStageFilter').value;
+  const brand=$id('dmBrandFilter').value;
+  const country=$id('dmCountryFilter').value;
   const window=$id('dmWindowFilter').value;
 
   let leads=allLeads.filter(l=>{
     if(stage&&l.Stage!==stage) return false;
+    if(brand&&l.Brand!==brand) return false;
+    if(country&&l.Country!==country) return false;
     if(window==='24h'&&!within24h(l.LastMsgAt)) return false;
     if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
     return true;
@@ -852,9 +887,13 @@ function updateDmSelBar(){ const n=dmSelectedIds.size; $id('dmSelBar').classList
 function filterMetaLeads(){
   const q=($id('metaLeadSearch').value||'').toLowerCase();
   const stage=$id('metaStageFilter').value;
+  const brand=$id('metaBrandFilter').value;
+  const country=$id('metaCountryFilter').value;
   const score=$id('metaScoreFilter').value;
   metaFilteredLeads=allLeads.filter(l=>{
     if(stage&&l.Stage!==stage) return false;
+    if(brand&&l.Brand!==brand) return false;
+    if(country&&l.Country!==country) return false;
     if(score&&l.Score!==score) return false;
     if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
     return true;
