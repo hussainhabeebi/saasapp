@@ -5702,10 +5702,28 @@ async function ensureB2bLeadFields(env){
 
 // Called once by b2b.html on load — ensures the Leads columns Brand/Country/b2b_events exist
 // before the page starts writing to them directly through /nocodb/*.
+// Mirrors ensureB2bLeadFields but for the CLIENTS table — b2b_enabled already gets its own
+// check-and-create step in dashboard.html's Settings save handler (same pattern as ta_enabled),
+// but b2b_segments_json is only ever written from b2b.html's Smart Lists save, which had no such
+// step — on a fresh NocoDB base that PATCH would just fail with "Save didn't take effect" the
+// first time a Smart List was created. Ensuring it here, on every b2b.html load, closes that gap.
+let _b2bClientFieldsEnsured=false;
+async function ensureB2bClientFields(env){
+  if(_b2bClientFieldsEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('b2b_segments_json')) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title:'b2b_segments_json', uidt:'LongText'}});
+    _b2bClientFieldsEnsured=true;
+  }catch(e){ console.error('[b2b] ensureB2bClientFields failed', e.message); }
+}
+
 async function handleB2bInit(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   await ensureB2bLeadFields(env);
+  await ensureB2bClientFields(env);
   return json({ok:true});
 }
 
