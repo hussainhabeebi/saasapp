@@ -1059,10 +1059,16 @@ single-record-Id check the passthrough already does for every other CLIENTS fiel
 text, JSON array of `{name, qty, price}`), `currency`, `subtotal`, `tax_pct`, `total`, `status`
 (`draft`/`sent`/`viewed`/`accepted`/`expired`), `public_slug` (Single line text, unique — the
 `?slug=` token in the shared link), `view_count` (Number), `last_viewed_at`, `accepted_at`,
-`created_at`, `expires_at`, `notes`. Create this table once in NocoDB and paste its table id into
-`B2B_DOCUMENTS_TABLE` in `worker.js` (same "create once, paste the id in" pattern as
-`SHOPIFY_CHECKOUTS_TABLE` above). **Why a dedicated table instead of the generic `/nocodb/*`
-passthrough**: this table uses a lowercase `client_id` column, which the passthrough's
+`created_at`, `expires_at`, `notes`. Create this table once in NocoDB, then point the Worker at
+it — two ways, pick whichever fits your workflow: (a) **preferred, no redeploy needed** — add a
+Worker var or secret named `B2B_DOCUMENTS_TABLE` set to the table id (Cloudflare dashboard →
+Workers → your Worker → Settings → Variables and Secrets → Add, or `wrangler secret put
+B2B_DOCUMENTS_TABLE`); `b2bDocumentsTable(env)` in `worker.js` reads this first. (b) edit the
+`B2B_DOCUMENTS_TABLE` constant in `worker.js` directly (replacing the
+`REPLACE_B2B_DOCUMENTS_TABLE_ID` placeholder) and redeploy — same pattern as
+`SHOPIFY_CHECKOUTS_TABLE` above, used as the fallback if the env var isn't set. **Why a dedicated
+table instead of the generic `/nocodb/*` passthrough**: this table uses a lowercase `client_id`
+column, which the passthrough's
 cross-tenant guard doesn't protect (it only regex-matches the literal `ClientId,eq,` used by
 LEADS) — so Documents get dedicated, session-authed `/b2b/documents` routes in `worker.js` that
 derive `client_id` server-side from the session instead, same reasoning as `/ecom/products`.

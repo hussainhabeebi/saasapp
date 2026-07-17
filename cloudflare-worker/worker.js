@@ -28,9 +28,13 @@ const EMAIL_CAMPAIGNS_TABLE = 'md3ghcfigac4yqs';
 const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
 // Create this table once in NocoDB (fields: client_id, lead_id, type, title, brand,
 // line_items_json, currency, subtotal, tax_pct, total, status, public_slug, view_count,
-// last_viewed_at, accepted_at, created_at, expires_at, notes — see SETUP.md "B2B module") and
-// paste its real id here.
+// last_viewed_at, accepted_at, created_at, expires_at, notes — see SETUP.md "B2B module"), then
+// either set it as a Worker var/secret named B2B_DOCUMENTS_TABLE (Cloudflare dashboard → Settings
+// → Variables and Secrets, or `wrangler secret put B2B_DOCUMENTS_TABLE`) — no redeploy needed —
+// or paste its real id over the placeholder below and redeploy. b2bDocumentsTable(env) below
+// prefers the env var when set, so either path works.
 const B2B_DOCUMENTS_TABLE = 'REPLACE_B2B_DOCUMENTS_TABLE_ID';
+function b2bDocumentsTable(env){ return env.B2B_DOCUMENTS_TABLE || B2B_DOCUMENTS_TABLE; }
 
 function corsHeaders(origin, env){
   const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -5733,12 +5737,12 @@ function computeB2bDocSubtotal(lineItems){
   return subtotal;
 }
 async function findB2bDocument(env, id){
-  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records/${id}`);
+  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records/${id}`);
   if(!r.ok) return null;
   return r.json().catch(()=>null);
 }
 async function findB2bDocumentBySlug(env, slug){
-  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records?where=${encodeURIComponent(`(public_slug,eq,${slug})`)}&limit=1`);
+  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records?where=${encodeURIComponent(`(public_slug,eq,${slug})`)}&limit=1`);
   if(!r.ok) return null;
   const data=await r.json().catch(()=>({}));
   return data?.list?.[0]||null;
@@ -5762,7 +5766,7 @@ async function appendB2bLeadEvent(env, leadId, type, meta){
 async function handleB2bDocumentsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&sort=-created_at&limit=500`);
+  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&sort=-created_at&limit=500`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json(data, r.status);
   return json({list:data.list||[]});
@@ -5785,7 +5789,7 @@ async function handleB2bDocumentCreate(request, env){
     public_slug:crypto.randomUUID().replace(/-/g,''), view_count:0, last_viewed_at:'', accepted_at:'',
     created_at:new Date().toISOString(), expires_at:body.expires_at||'', notes:String(body.notes||'').trim().slice(0,1000)
   };
-  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records`, {method:'POST', body:fields});
+  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'POST', body:fields});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json(data, r.status);
   return json({...fields, Id:data.Id});
@@ -5810,7 +5814,7 @@ async function handleB2bDocumentUpdate(request, env){
     fields.line_items_json=JSON.stringify(body.line_items);
     fields.subtotal=subtotal; fields.tax_pct=taxPct; fields.total=subtotal+subtotal*(taxPct/100);
   }
-  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records`, {method:'PATCH', body:fields});
+  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'PATCH', body:fields});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json(data, r.status);
   return json({ok:true});
@@ -5823,7 +5827,7 @@ async function handleB2bDocumentDelete(request, env){
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await findB2bDocument(env, body.id);
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
-  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records`, {method:'DELETE', body:{Id:Number(body.id)}});
+  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'DELETE', body:{Id:Number(body.id)}});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json(data, r.status);
   return json({ok:true});
@@ -5839,7 +5843,7 @@ async function handleB2bDocPublicGet(request, env, slug){
   if(!doc) return json({error:'Not found'}, 404);
   const patch={view_count:(Number(doc.view_count)||0)+1, last_viewed_at:new Date().toISOString()};
   if(doc.status==='draft'||doc.status==='sent') patch.status='viewed';
-  await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records`, {method:'PATCH', body:{Id:doc.Id, ...patch}});
+  await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'PATCH', body:{Id:doc.Id, ...patch}});
   await appendB2bLeadEvent(env, doc.lead_id, 'doc_view', {slug});
   const out={}; B2B_PUBLIC_DOC_FIELDS.forEach(k=>{ out[k]=doc[k]; });
   out.view_count=patch.view_count; out.status=patch.status||doc.status;
@@ -5854,7 +5858,7 @@ async function handleB2bDocPublicAccept(request, env, slug){
   if(!doc) return json({error:'Not found'}, 404);
   if(doc.status==='accepted') return json({ok:true, already:true});
   const acceptedAt=new Date().toISOString();
-  await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records`, {method:'PATCH', body:{Id:doc.Id, status:'accepted', accepted_at:acceptedAt}});
+  await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'PATCH', body:{Id:doc.Id, status:'accepted', accepted_at:acceptedAt}});
   await appendB2bLeadEvent(env, doc.lead_id, 'doc_accepted', {slug});
   return json({ok:true, accepted_at:acceptedAt});
 }

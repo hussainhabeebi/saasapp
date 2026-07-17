@@ -309,6 +309,7 @@ const isEmbedded = params.get('embed') === '1';
 let clientRecord = null;
 let allLeads = [];
 let allDocuments = [];
+let documentsLoadError = '';
 let segments = [];
 
 function esc(str){ return String(str==null?'':str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -405,7 +406,12 @@ async function init(){
     await b2bFetch(`/b2b/init?client_id=${encodeURIComponent(clientId)}`,{method:'GET'});
     clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
     try{ segments=JSON.parse(clientRecord.b2b_segments_json||'[]'); }catch(e){ segments=[]; }
-    await Promise.all([loadLeads(), loadDocuments()]);
+    await loadLeads();
+    // Documents lives in its own dedicated NocoDB table (B2B_DOCUMENTS_TABLE in worker.js) that
+    // has to be created once by hand — see SETUP.md "B2B module" — so it can fail (e.g.
+    // ERR_TABLE_NOT_FOUND before that setup step is done) without taking down Smart Lists,
+    // Analytics or Brand Classification, none of which depend on it.
+    try{ await loadDocuments(); }catch(e){ documentsLoadError=e.message; allDocuments=[]; }
     renderOverview();
     renderSegments();
     renderDocumentsTable();
@@ -658,6 +664,10 @@ async function saveDocument(){
 function renderDocumentsTable(){
   const q=(document.getElementById('docSearch').value||'').toLowerCase();
   const tbody=document.getElementById('documentsTbody');
+  if(documentsLoadError){
+    tbody.innerHTML=`<tr><td colspan="9" class="empty-state"><div class="empty-icon">⚠️</div>Documents aren't set up yet (${esc(documentsLoadError)}).<br>Create the <code>b2b_documents</code> table in NocoDB and set <code>B2B_DOCUMENTS_TABLE</code> — see SETUP.md "B2B module".</td></tr>`;
+    return;
+  }
   const rows=allDocuments.filter(d=>!q||(d.title||'').toLowerCase().includes(q)||(d.brand||'').toLowerCase().includes(q));
   if(!rows.length){ tbody.innerHTML='<tr><td colspan="9" class="empty-state">No documents yet — create a quote or catalog above.</td></tr>'; return; }
   tbody.innerHTML=rows.map(d=>{
