@@ -1509,14 +1509,40 @@ async function handleBroadcastFollowupSend(request, env){
   const tmpl=messages[nextIdx]||messages[messages.length-1];
   if(!tmpl) return json({error:'No follow-up message configured for this client.'}, 400);
   const text=tmpl.replace(/\{name\}/gi, lead.Name||'there');
+  const clientId=String(payload.cid);
 
-  const fd=new FormData();
-  fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
-  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  // Voice Follow-ups (Settings → Voice) — same Sarvam pipeline as live voice-to-voice replies,
+  // applied to this scheduled/manual send instead. Unlike engineDeliverReply's fire-and-forget
+  // voice attempt, this is a rep clicking a button expecting real success/failure feedback in the
+  // UI, so a failed voice send falls through to the normal text send below rather than silently
+  // reporting success — same "customer never gets nothing" principle, but the rep still sees the
+  // true outcome instead of it being swallowed into an ops-only alert.
+  let sentViaVoice=false;
+  if(c.voice_followup_enabled==='Yes'){
+    const bcp47=ENGINE_TTS_LANG_MAP[(c.language||'en').toLowerCase()];
+    if(bcp47){
+      const audioBuf=await engineSarvamTts(env, text, bcp47);
+      if(audioBuf){
+        const vfd=new FormData();
+        vfd.append('content', engineExtractLinkPriceCaption(text));
+        vfd.append('message_type','outgoing'); vfd.append('private','false');
+        vfd.append('attachments[]', new Blob([audioBuf], {type:'audio/ogg; codecs=opus'}), 'followup.ogg');
+        const vr=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:vfd});
+        sentViaVoice=vr.ok;
+        if(!vr.ok) await reportOpsError(env, 'handleBroadcastFollowupSend — voice send failed, falling back to text', new Error('HTTP '+vr.status), {clientId, convId});
+      }
+    }
+  }
+
+  if(!sentViaVoice){
+    const fd=new FormData();
+    fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  }
 
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), ['Follow up '+(nextIdx+1)]:'Yes'}});
-  return json({ok:true, stage:nextIdx+1, sentText:text});
+  return json({ok:true, stage:nextIdx+1, sentText:text, sentViaVoice});
 }
 
 /* ── Automations & Flow module (frontend/broadcast.html — "⚡ Automations" tab) ─────────────
@@ -4053,12 +4079,18 @@ async function engineFetchAudioBase64(env, mediaUrl){
 // elsewhere in this file) since that path used OpenRouter's `input_audio` content part, which was
 // never verified against a live call and was a plausible source of bad transcripts in its own
 // right rather than a safety net.
-async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode){
+async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode, vocabHint){
   if(!env.GEMINI_API_KEY || !base64) return null;
   const langName=ENGINE_LANG_NAMES[(langHintCode||'').toLowerCase()];
-  const prompt=langName
+  let prompt=langName
     ? `${ENGINE_TRANSCRIBE_PROMPT} This customer usually writes in ${langName}, so expect ${langName} unless the audio is clearly a different language — in that case transcribe the language actually spoken instead.`
     : ENGINE_TRANSCRIBE_PROMPT;
+  // Business-specific vocabulary — brand/product/service names are exactly the kind of term a
+  // general-purpose ASR model most commonly mishears (unfamiliar words, no context to disambiguate
+  // against). A short list alongside the audio gives it real terms to match against instead of
+  // guessing phonetically. Not a hard constraint: still transcribe whatever's actually said if it
+  // doesn't match anything here.
+  if(vocabHint) prompt+=` This business's own name/product/service names — spell these exactly as given if you hear something close to one, even if pronunciation is unclear: ${vocabHint}.`;
   try{
     const r=await engineFetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_TRANSCRIBE_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -4190,6 +4222,23 @@ async function engineGeminiDescribeImage(env, mediaUrl){
   }catch(e){ return null; }
 }
 
+// Domain-vocabulary hint for engineGeminiTranscribeVoice — the business's own name plus its
+// product/service names (same c.services field engineBuildFaqSystemPrompt already reads), since a
+// customer's voice note mentioning these is exactly the kind of term a general-purpose ASR model
+// most commonly mishears (unfamiliar brand/product names it has zero prior context for). Capped
+// short — this rides along on every single voice note, so it stays a lightweight nudge rather than
+// a full catalog dump inflating every transcription call.
+function engineBuildTranscribeVocabHint(c){
+  const terms=[];
+  if(c.client_name) terms.push(c.client_name);
+  const services=engineParseJsonField(c.services, []);
+  for(const s of services){
+    if(s?.name) terms.push(s.name);
+    if(terms.length>=15) break;
+  }
+  return terms.join(', ');
+}
+
 async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
   if(mediaType==='image' && mediaUrl){
     const geminiDesc=await engineGeminiDescribeImage(env, mediaUrl);
@@ -4214,7 +4263,7 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
     // one below so the AI's reply naturally asks the customer to resend, rather than answering a
     // fabricated question.
     if(audio?.tooShort) return '(sent a voice note that was too short/silent to make out — ask them to resend)';
-    const transcript=audio?await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64, c.language):null;
+    const transcript=audio?await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64, c.language, engineBuildTranscribeVocabHint(c)):null;
     return transcript || '(sent a voice note)';
   }
   return text || (mediaType==='voice'?'(sent a voice note)':'');
