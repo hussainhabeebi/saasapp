@@ -1615,6 +1615,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
           </div>
         </div>
         <!-- USER MANAGEMENT -->
@@ -2052,6 +2053,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🔌 Channels</div>
@@ -2167,6 +2169,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🧩 Integrations</div>
@@ -2179,21 +2182,8 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
-        <!-- Voice-to-Voice Reply — controlled ONLY by this toggle, no billing add-on required or
-             checked anywhere in the reply path (engineDeliverReply, worker.js). -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🎙️ Voice-to-Voice Reply</div>
-            <div class="s-note">When a customer sends a voice note, the bot can reply with a voice note back instead of text — same language as the customer, spoken naturally, with any link or price sent as a short text note alongside it instead of being read aloud.</div>
-            <div id="intVoiceAddonNote" class="s-note" style="margin-bottom:12px"></div>
-            <label class="tgl-wrap" id="intVoiceToggleWrap">
-              <input type="checkbox" id="cfgVoiceReplyEnabled" onchange="saveVoiceReplyToggle()">
-              <span class="tgl-track"></span>
-              <span class="tgl-label" id="intVoiceToggleLabel">Off — always reply with text</span>
-            </label>
-            <span class="save-msg" id="saveVoiceReplyEnabledMsg"></span>
-          </div>
-        </div>
+        <!-- Voice-to-Voice Reply + Voice Follow-ups moved to their own "🎙️ Voice" sub-page
+             (pageVoice below) — see there. -->
 
         <!-- Shopify — the one and only connect method (a Chatwoot-native sidebar-integration
              deep-link used to live in Channels too; removed so there's a single, unambiguous way
@@ -2346,6 +2336,61 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
+    <!-- VOICE — everything Sarvam-TTS-voice-related in one place: the live voice-to-voice reply
+         toggle (moved here from Integrations) and the newer voice follow-ups toggle. Previously the
+         reply toggle was one card buried inside Integrations, with no home for the follow-up
+         option at all — a dedicated sub-page makes both settings the one obvious place a client
+         looks for "does this account talk back with a voice, and when." -->
+    <div class="page hidden" id="pageVoice">
+      <div class="page-pad">
+        <!-- SETTINGS SUB-NAV (Settings / Channels / Integrations / Voice) -->
+        <div class="card" style="margin-bottom:14px;padding:10px 14px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
+          </div>
+        </div>
+        <div class="card-title" style="margin-bottom:14px">🎙️ Voice</div>
+
+        <!-- Voice-to-Voice Reply — controlled ONLY by this toggle, no billing add-on required or
+             checked anywhere in the reply path (engineDeliverReply, worker.js). Moved here from
+             Integrations. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🎙️ Voice-to-Voice Reply</div>
+            <div class="s-note">When a customer sends a voice note, the bot can reply with a voice note back instead of text — same language as the customer, spoken naturally, with any link or price sent as a short text note alongside it instead of being read aloud.</div>
+            <div id="intVoiceAddonNote" class="s-note" style="margin-bottom:12px"></div>
+            <label class="tgl-wrap" id="intVoiceToggleWrap">
+              <input type="checkbox" id="cfgVoiceReplyEnabled" onchange="saveVoiceReplyToggle()">
+              <span class="tgl-track"></span>
+              <span class="tgl-label" id="intVoiceToggleLabel">Off — always reply with text</span>
+            </label>
+            <span class="save-msg" id="saveVoiceReplyEnabledMsg"></span>
+          </div>
+        </div>
+
+        <!-- Voice Follow-ups — same Sarvam voice/pipeline as the reply toggle above, applied to
+             scheduled outbound messages instead of live replies: the classic follow-up sequence
+             (Follow-ups tab / POST /broadcast/followup-send) and the automated recovery/win-back
+             ladder (backend/recovery.js). Independent toggle from Voice-to-Voice Reply — a client
+             may want the bot to talk back live but keep scheduled nudges as text, or vice versa. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🔁 Voice Follow-ups</div>
+            <div class="s-note">When this is on, scheduled follow-up and win-back messages (the Follow-ups tab's sequence and the automated recovery ladder) go out as a spoken voice note too, in the same natural voice and language as live voice-to-voice replies — not just plain text. Falls back to text automatically if voice generation fails for a given message, so a follow-up is never skipped over a voice hiccup.</div>
+            <label class="tgl-wrap" id="voiceFollowupToggleWrap">
+              <input type="checkbox" id="cfgVoiceFollowupEnabled" onchange="saveVoiceFollowupToggle()">
+              <span class="tgl-track"></span>
+              <span class="tgl-label" id="voiceFollowupToggleLabel">Off — follow-ups sent as text</span>
+            </label>
+            <span class="save-msg" id="saveVoiceFollowupEnabledMsg"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- BILLING -->
     <div class="page hidden" id="pageBilling">
       <div class="page-pad">
@@ -2354,6 +2399,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">💳 Billing</div>
@@ -3713,7 +3759,7 @@ $id('hLogout').addEventListener('click',()=>{
 $id('hRefresh').addEventListener('click',()=>loadAll());
 
 /* ── NAVIGATION ── */
-const SETTINGS_GROUP=['settings','channels','integrations']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
+const SETTINGS_GROUP=['settings','channels','integrations','voice']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
 // Quotation no longer has its own nav entry — it's opened from a specific lead on the Human
 // Deals page (openQuoteFor()) instead, so it highlights that tab rather than nothing at all.
 const HUMANDEALS_GROUP=['humandeals','quotation'];
@@ -3750,6 +3796,7 @@ function navigate(page){
   if(page==='chats') openChatsTab();
   if(page==='channels') channelsInit();
   if(page==='integrations') integrationsInit();
+  if(page==='voice') voiceInit();
   if(page==='billing') billingInit();
 }
 
@@ -6214,12 +6261,17 @@ const INT_SHEETS=[
 
 function integrationsInit(){
   renderWaStatus();
-  renderVoiceAddonCard();
   renderShopifyStatus();
   renderSheetsList();
   loadEmailStatus();
   loadMetaCapiStatus();
   renderHealthResults();
+}
+
+// pageVoice — Voice-to-Voice Reply (moved from Integrations) + Voice Follow-ups.
+function voiceInit(){
+  renderVoiceAddonCard();
+  renderVoiceFollowupCard();
 }
 
 // Voice-to-Voice Reply toggle. Deliberately the ONLY gate on this feature — not tied to
@@ -6246,6 +6298,37 @@ async function saveVoiceReplyToggle(){
   }catch(e){
     input.checked=!input.checked;
     label.textContent=input.checked?'On — reply with voice':'Off — always reply with text';
+    msg.textContent='Error: '+e.message;msg.className='save-msg err';
+  }finally{
+    input.disabled=false;
+    setTimeout(()=>msg.textContent='',3000);
+  }
+}
+
+// Voice Follow-ups toggle — independent of Voice-to-Voice Reply above, same pattern. Read by
+// handleBroadcastFollowupSend (worker.js, classic sequence) and backend/recovery.js (automated
+// recovery ladder), both of which fall back to their normal text send on any voice failure.
+function renderVoiceFollowupCard(){
+  const input=$id('cfgVoiceFollowupEnabled');
+  if(!input) return;
+  const enabled=clientRecord?.voice_followup_enabled==='Yes';
+  input.checked=enabled;
+  $id('voiceFollowupToggleLabel').textContent=enabled?'On — follow-ups sent as voice':'Off — follow-ups sent as text';
+}
+
+async function saveVoiceFollowupToggle(){
+  const input=$id('cfgVoiceFollowupEnabled'),msg=$id('saveVoiceFollowupEnabledMsg'),label=$id('voiceFollowupToggleLabel');
+  const value=input.checked?'Yes':'No';
+  label.textContent=input.checked?'On — follow-ups sent as voice':'Off — follow-ups sent as text';
+  msg.textContent='';msg.className='save-msg';
+  input.disabled=true;
+  try{
+    await patchClient({voice_followup_enabled:value});
+    clientRecord.voice_followup_enabled=value;
+    msg.textContent='✓ Saved';
+  }catch(e){
+    input.checked=!input.checked;
+    label.textContent=input.checked?'On — follow-ups sent as voice':'Off — follow-ups sent as text';
     msg.textContent='Error: '+e.message;msg.className='save-msg err';
   }finally{
     input.disabled=false;

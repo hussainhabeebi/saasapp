@@ -26,6 +26,11 @@ const CLIENTS_TABLE   = process.env.CLIENTS_TABLE   || 'mxl33bg4wi70fqj';
 const LOOKBACK_DAYS   = parseInt(process.env.RECOVERY_LOOKBACK_DAYS || '60'); // ignore leads older than this
 const SEND_DELAY_MS   = parseInt(process.env.RECOVERY_SEND_DELAY_MS || '600'); // pacing between sends
 const AI_TIMEOUT_MS   = 10000;
+// Voice Follow-ups (Settings → Voice, client.voice_followup_enabled) — same Sarvam AI pipeline the
+// Cloudflare Worker uses for live voice-to-voice replies (cloudflare-worker/worker.js), ported here
+// since this is a separate Node process with no access to that Worker's own secrets/helpers. One
+// shared key for all clients, same pattern as NOCODB_TOKEN above — not per-client.
+const SARVAM_API_KEY  = process.env.SARVAM_API_KEY  || '';
 
 const TERMINAL_STAGES = new Set(['Converted', 'Lost', 'Closed', 'Opt Out']);
 
@@ -262,6 +267,67 @@ async function sendTemplateMessage(client, convId, templateName, leadName) {
   return r.json();
 }
 
+// ── VOICE FOLLOW-UPS (Sarvam AI TTS) ──────────────────────────────────────────
+// Ported from engineSarvamTts/ENGINE_TTS_LANG_MAP/ENGINE_TTS_SPEAKER/engineExtractLinkPriceCaption
+// in cloudflare-worker/worker.js — keep these in sync if the Worker's copy changes (speaker name,
+// codec, sample rate). Template messages (sendTemplateMessage above) never go through here — voice
+// notes aren't a WhatsApp template content type, so a lead outside the 24h session window always
+// gets its approved text template regardless of this toggle.
+const TTS_LANG_MAP = { en: 'en-IN', ml: 'ml-IN', hi: 'hi-IN', ta: 'ta-IN', te: 'te-IN', kn: 'kn-IN', bn: 'bn-IN', gu: 'gu-IN', mr: 'mr-IN', pa: 'pa-IN', or: 'od-IN' };
+const TTS_SPEAKER = 'anushka'; // bulbul:v2's default female voice — see worker.js's ENGINE_TTS_SPEAKER comment
+
+function extractLinkPriceCaption(text) {
+  const links = [...new Set(text.match(/https?:\/\/\S+/g) || [])];
+  const prices = [...new Set(text.match(/(?:AED|USD|INR|EUR|GBP|₹|\$|€|£)\s?[\d,]+(?:\.\d+)?/gi) || [])];
+  const parts = [];
+  if (prices.length) parts.push('💰 ' + prices.join(', '));
+  if (links.length) parts.push('🔗 ' + links.join(' '));
+  return parts.join('  ');
+}
+
+async function sarvamTts(text, targetLangCode) {
+  if (!SARVAM_API_KEY || !text || !targetLangCode) return null;
+  try {
+    const r = await fetch('https://api.sarvam.ai/text-to-speech', {
+      method: 'POST',
+      headers: { 'api-subscription-key': SARVAM_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text.slice(0, 500), target_language_code: targetLangCode, speaker: TTS_SPEAKER, model: 'bulbul:v2', speech_sample_rate: 16000, output_audio_codec: 'opus' }),
+    });
+    if (!r.ok) { console.warn(`  [sarvamTts] HTTP ${r.status}`); return null; }
+    const data = await r.json().catch(() => ({}));
+    const b64 = data?.audios?.[0];
+    if (!b64) return null;
+    const buf = Buffer.from(b64, 'base64');
+    return buf.length >= 200 ? buf : null; // same "suspiciously small = failure" guard as worker.js
+  } catch (e) {
+    console.warn(`  [sarvamTts] threw: ${e.message}`);
+    return null;
+  }
+}
+
+// Returns true on a successful voice send, false on any failure (caller falls back to
+// sendPlainMessage's normal text send) — never throws, since a voice hiccup should never cost a
+// lead their follow-up entirely.
+async function sendVoiceMessage(client, convId, text) {
+  const bcp47 = TTS_LANG_MAP[(client.language || 'en').toLowerCase()];
+  if (!bcp47) return false; // Sarvam TTS is Indic-language-focused, same scope limit as the live-reply pipeline
+  const audioBuf = await sarvamTts(text, bcp47);
+  if (!audioBuf) return false;
+  try {
+    const fd = new FormData();
+    fd.append('content', extractLinkPriceCaption(text));
+    fd.append('message_type', 'outgoing');
+    fd.append('private', 'false');
+    fd.append('attachments[]', new Blob([audioBuf], { type: 'audio/ogg; codecs=opus' }), 'followup.ogg');
+    const url = `${client.chatwoot_base}/api/v1/accounts/${client.chatwoot_account_id}/conversations/${convId}/messages`;
+    const r = await fetch(url, { method: 'POST', headers: { api_access_token: client.chatwoot_token }, body: fd });
+    return r.ok;
+  } catch (e) {
+    console.warn(`  [sendVoiceMessage] threw: ${e.message}`);
+    return false;
+  }
+}
+
 // ── PROCESS ONE CLIENT ────────────────────────────────────────────────────────
 async function processClient(client) {
   const tableId = client.leads_table_id || client.LEADS_TABLE_ID;
@@ -298,7 +364,8 @@ async function processClient(client) {
         sentText = `[template:${plan.templateName}]`;
       } else {
         sentText = await personalize(plan.message, lead, client);
-        await sendPlainMessage(client, convId, sentText);
+        const sentViaVoice = truthy(client.voice_followup_enabled) && (await sendVoiceMessage(client, convId, sentText));
+        if (!sentViaVoice) await sendPlainMessage(client, convId, sentText);
       }
 
       await ncPatch(`${NOCODB_BASE}/api/v2/tables/${tableId}/records`, {

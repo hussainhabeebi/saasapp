@@ -29,6 +29,10 @@ services:
       RECOVERY_SEND_DELAY_MS: ${RECOVERY_SEND_DELAY_MS:-600}
       TZ: ${TZ:-UTC}
       RUN_NOW: ${RUN_NOW:-0}
+      # Optional — only used for clients with Settings → Voice → Voice Follow-ups turned on. Same
+      # Sarvam AI key as the Cloudflare Worker's SARVAM_API_KEY secret; leave unset/empty to keep
+      # the recovery ladder text-only.
+      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
     logging:
       driver: json-file
       options:

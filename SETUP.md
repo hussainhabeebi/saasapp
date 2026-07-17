@@ -1747,7 +1747,19 @@ leads table (auto-created on first run) — it never writes `Stage`, `ConvHistor
 
 - Deploy as its own container: `docker compose up -d leadvyne-recovery` (see
   `backend/docker-compose.yml`). Test a single run with `RUN_NOW=1`.
-- Uses the same `NOCODB_TOKEN`/`CLIENTS_TABLE` as `nba.js`; no new credentials needed.
+- Uses the same `NOCODB_TOKEN`/`CLIENTS_TABLE` as `nba.js`; no new credentials needed unless
+  Voice Follow-ups is used (see below), which needs its own `SARVAM_API_KEY`.
+- **Voice Follow-ups** (`client.voice_followup_enabled`, Settings → Voice — see "Voice module"
+  below): when a client has this on, a plain-text recovery/win-back stage (not a template stage —
+  templates never go through this) tries a Sarvam AI voice note first, same pipeline as
+  `cloudflare-worker/worker.js`'s live voice-to-voice replies, ported natively into this file
+  (`sarvamTts`/`sendVoiceMessage`/`extractLinkPriceCaption`, since this is a separate Node process
+  with no access to the Worker's own secrets/helpers) — falls back to the normal
+  `sendPlainMessage` text send on any failure (no `SARVAM_API_KEY` set, an unsupported language, or
+  the TTS call itself failing), so a follow-up is never skipped over a voice hiccup. Requires
+  `SARVAM_API_KEY` as an env var on this container specifically (`backend/.env.example`,
+  `backend/docker-compose.yml`'s `leadvyne-recovery` service) — same key as the Worker's own secret,
+  just needs setting again here since it's a different deployment.
 
 ## Ecom bot memory (`ecom_prefs`) and product filtering
 Two additions that fix the ecom WhatsApp bot forgetting a customer's stated size/color mid-order
@@ -2282,7 +2294,7 @@ exception to this fallback pattern — deliberately Gemini-only, no OpenRouter b
     language"), so a customer who doesn't match the client's configured default still gets
     transcribed in whatever they actually spoke.
 
-**Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the Integrations →
+**Voice-to-voice replies (Sarvam AI, `SARVAM_API_KEY`):** for clients with the Settings → Voice →
 Voice-to-Voice Reply toggle explicitly switched on (`voice_reply_enabled='Yes'`, CLIENTS field,
 opt-in — default blank/`'No'` means off). This is the only gate — deliberately not tied to
 `voice_addon_active`/billing at all, so the client controls it purely via the toggle. A customer
@@ -2338,6 +2350,47 @@ sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
   outright. **Voice-note transcription (`engineGeminiTranscribeVoice`) intentionally has no such
   backup** — see "Voice messages are actually transcribed" above for why the OpenRouter fallback
   that used to exist here was removed rather than kept as a safety net.
+
+**Voice module (Settings → 🎙️ Voice, `frontend/dashboard.html`) — a dedicated sub-page, not a
+card buried inside Integrations.** Previously the only voice-related setting was one card on the
+Integrations page; there was no home at all for a second voice-related toggle. Voice is now its own
+sub-page in the Settings sub-nav (alongside General/Channels/Integrations — `SETTINGS_GROUP`,
+`navigate('voice')`), holding two independent toggles:
+- **🎙️ Voice-to-Voice Reply** (`voice_reply_enabled`) — moved here unchanged from Integrations, see
+  above.
+- **🔁 Voice Follow-ups** (`voice_followup_enabled`, new CLIENTS field — add this column before
+  using the toggle) — applies the same Sarvam voice pipeline to *scheduled* outbound messages
+  instead of live replies:
+  - **Classic follow-up sequence, manual "Send Next Now"** (`handleBroadcastFollowupSend`,
+    `POST /broadcast/followup-send`) — when the toggle is on, tries a Sarvam voice note
+    (`engineSarvamTts` + the same Ogg/Opus attachment shape `engineSendChatwootAudioReply` uses)
+    before falling back to the existing plain-text send. Unlike the live-reply pipeline's
+    fire-and-forget voice attempt, this is a rep clicking a button expecting real success/failure
+    feedback, so a failed voice send falls through to the text send rather than silently reporting
+    success to the UI — the rep still sees the true outcome. Response now also includes
+    `sentViaVoice: true/false`.
+  - **Automated recovery/win-back ladder** (`backend/recovery.js`, hourly cron) — same toggle,
+    checked before each plain-text stage send (never for a `recovery_templates` stage — WhatsApp
+    template messages aren't a voice-note content type, so those always send as the approved text
+    template regardless). Since `recovery.js` is a separate Node process with no access to the
+    Worker's own `SARVAM_API_KEY` secret or helper functions, the Sarvam TTS call and the Chatwoot
+    audio-attachment send are natively ported into that file (`sarvamTts`/`sendVoiceMessage`/
+    `extractLinkPriceCaption`) rather than shared code — keep both copies in sync if the Worker's
+    speaker/codec/sample-rate choices ever change. Needs its own `SARVAM_API_KEY` env var on the
+    `leadvyne-recovery` container (`backend/.env.example`, `backend/docker-compose.yml`) — the same
+    key value as the Worker's secret, just configured again since it's a different deployment
+    that doesn't share environment with the Worker.
+  - Both paths fall back to the ordinary text send on any failure (missing key, unsupported
+    language, the TTS call itself failing) — a follow-up is never skipped over a voice hiccup, same
+    "customer never gets nothing" principle as the live-reply pipeline.
+
+**Transcription accuracy: business-vocabulary hint.** `engineGeminiTranscribeVoice` now takes an
+optional `vocabHint` (`engineBuildTranscribeVocabHint`) — the client's own business name plus its
+`services` product/service names, capped to 15 terms — appended to the transcription prompt as
+"spell these exactly as given if you hear something close to one." Real-world gap: a brand/product
+name is exactly the kind of term a general-purpose ASR model most commonly mishears, since it has no
+prior context for an unfamiliar word and just guesses phonetically. Not a hard constraint — the
+model still transcribes whatever's actually said if it doesn't match anything in the hint.
 
 **Fully automatic on signup — no manual Chatwoot step, for any industry.**
 `engineSyncChatwootWebhook` (`worker.js`) keeps a client's PRIMARY Chatwoot webhook (the one that
