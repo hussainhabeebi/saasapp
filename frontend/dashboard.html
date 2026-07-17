@@ -968,6 +968,9 @@ const INDUSTRIES = {
     theme:{accent:'#7C3AED',accentInk:'#6D28D9',accentSoft:'#EDE9FE',bg:'#F5F3FF',line:'#DDD6FE'} },
   consultancy: { label:'Consultancy / Recruitment', booked:'Placements', active:'Active Candidates', tags:['Qualified','Interview Scheduled','Offer Sent','On Hold','Not Interested'],
     theme:{accent:'#2563EB',accentInk:'#1D4ED8',accentSoft:'#DBEAFE',bg:'#EFF6FF',line:'#BFDBFE'} },
+  b2b: { label:'B2B / Wholesale', booked:'Deals Closed', active:'Active Enquiries', tags:['Hot Lead','Quote Sent','Sample Requested','Negotiating','Not Interested'],
+    theme:{accent:'#0F766E',accentInk:'#115E59',accentSoft:'#CCFBF1',bg:'#F0FDFA',line:'#99F6E4'},
+    extraFields:['Brand','Country'] },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -1021,6 +1024,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="knowledgebase">📚 Knowledge Base</button>
     <button class="dnTab" data-page="billing">💳 Billing<span id="dnBillingBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce">🛒 Ecommerce</button>
+    <button class="dnTab" data-page="b2b" id="dnB2bTab" style="display:none">🤝 B2B</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
     <button class="dnTab" data-page="appointments" id="dnApptTab" style="display:none">📅 Appointments</button>
@@ -1461,6 +1465,14 @@ const TODAY = new Date().toISOString().slice(0,10);
          via its new embed=1 param. -->
     <div class="page hidden" id="pageEcommerce">
       <iframe id="ecommerceFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- B2B MODULE (same iframe-embed pattern/rationale as Ecommerce above — b2b.html is its own
+         self-contained page. Unlike ecom.html it's passed the session token too, not just the
+         client id, because it reads/writes Leads fields (Brand, Country, Smart List rules) through
+         the same /nocodb/* passthrough dashboard.html itself uses, which requires a bearer token. -->
+    <div class="page hidden" id="pageB2b">
+      <iframe id="b2bFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- TRAVEL AGENCY MODULE (the standalone "Travel" tab was merged into this module's
@@ -2007,12 +2019,20 @@ const TODAY = new Date().toISOString().slice(0,10);
               <span id="rcModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
-            <div id="apptModuleRow" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
+            <div id="apptModuleRow" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
               <div style="flex:1;min-width:180px"><b>📅 Appointment Booking</b><div class="s-note" style="margin:2px 0 0">Services, bookings calendar, and optional Cal.com sync — for healthcare, consultancy, and other services businesses.</div></div>
               <select class="form-input" id="cfgApptEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
               <button class="save-btn" id="saveApptEnabled">Save</button>
               <span class="save-msg" id="saveApptEnabledMsg"></span>
               <span id="apptModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
+              <div style="flex:1;min-width:180px"><b>🤝 B2B Suite</b><div class="s-note" style="margin:2px 0 0">Smart Lists, trackable quotes/catalogs (CPQ), brand classification, and B2B analytics — for wholesale, distribution, and other B2B sales teams.</div></div>
+              <select class="form-input" id="cfgB2bEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveB2bEnabled">Save</button>
+              <span class="save-msg" id="saveB2bEnabledMsg"></span>
+              <span id="b2bModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
           </div>
 
@@ -2440,6 +2460,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <button class="more-item" data-page="knowledgebase"><span class="bnIcon">📚</span><span class="bnLabel">Knowledge Base</span></button>
       <button class="more-item" data-page="billing" style="position:relative"><span class="bnIcon">💳</span><span class="bnLabel">Billing</span><span id="bnBillingBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
       <button class="more-item industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
+      <button class="more-item" data-page="b2b" id="moreB2bTab" style="display:none"><span class="bnIcon">🤝</span><span class="bnLabel">B2B</span></button>
       <button class="more-item" data-page="agency" id="moreAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
       <button class="more-item" data-page="recruit" id="moreRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
       <button class="more-item" data-page="appointments" id="moreApptTab" style="display:none"><span class="bnIcon">📅</span><span class="bnLabel">Appointments</span></button>
@@ -3698,7 +3719,7 @@ const SETTINGS_GROUP=['settings','channels','integrations']; // shown as one "Se
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','humandeals','knowledgebase','ecommerce','agency','recruit','appointments','settings','channels','integrations','billing'];
+const MORE_GROUP=['broadcast','team','humandeals','knowledgebase','ecommerce','b2b','agency','recruit','appointments','settings','channels','integrations','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -3721,6 +3742,7 @@ function navigate(page){
   if(page==='humandeals') renderHumanDeals();
   if(page==='knowledgebase') renderKnowledgeBase();
   if(page==='ecommerce') renderEcommerce();
+  if(page==='b2b') renderB2b();
   if(page==='agency') renderAgency();
   if(page==='recruit') renderRecruit();
   if(page==='appointments') renderAppointments();
@@ -3766,6 +3788,7 @@ function showApp(){
   updateAgencyTabVisibility();
   updateRecruitTabVisibility();
   updateApptTabVisibility();
+  updateB2bTabVisibility();
   loadAll();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
@@ -4138,6 +4161,14 @@ async function kbDrop(e,stage){
 function renderEcommerce(){
   const frame=$id('ecommerceFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`ecom.html?client=${clientId}&embed=1`;
+}
+
+// Unlike ecom.html, b2b.html also gets the session token — it reads/writes Leads fields
+// (Brand, Country, Smart List rules) through the same /nocodb/* passthrough this dashboard uses,
+// which requires a bearer token (ecom.html never touches Leads, so it never needed one).
+function renderB2b(){
+  const frame=$id('b2bFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`b2b.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
 }
 
 /* ── HUMAN DEALS ── */
@@ -5246,6 +5277,8 @@ function populateSettings(){
   initRcSettings();
   // appointment booking — only offered as a module for services-style industries (isBookingIndustry())
   initApptSettings();
+  // b2b suite
+  initB2bSettings();
 }
 
 /* ── SERVICES ── */
@@ -11345,6 +11378,37 @@ $id('saveTaEnabled').addEventListener('click',async()=>{
     clientRecord.ta_enabled=val;
     taSaveLocal('ta_enabled',val);
     updateAgencyTabVisibility();
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+/* ── B2B: SETTINGS ── */
+function initB2bSettings(){
+  const sel=$id('cfgB2bEnabled'); if(sel) sel.value=(clientRecord.b2b_enabled==='Yes')?'Yes':'No';
+  _renderModuleBadge('b2bModuleStatusBadge',clientRecord.b2b_enabled==='Yes');
+  updateB2bTabVisibility();
+}
+
+function updateB2bTabVisibility(){
+  const enabled=(clientRecord.b2b_enabled==='Yes');
+  [$id('dnB2bTab'),$id('moreB2bTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+}
+
+$id('saveB2bEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveB2bEnabled'),msg=$id('saveB2bEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    // Ensure b2b_enabled column exists in clients table before saving
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('b2b_enabled')){
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'b2b_enabled',title:'b2b_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    }
+    const val=$id('cfgB2bEnabled').value;
+    await patchClient({b2b_enabled:val});
+    clientRecord.b2b_enabled=val;
+    updateB2bTabVisibility();
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}

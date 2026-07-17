@@ -1032,6 +1032,69 @@ natively — the "Order Delivered" notification is best-effort and won't fire fo
 domain/token on this side. It does not revoke the app from the Shopify Admin — for a full
 uninstall the merchant should also remove the app from their store's Apps page.
 
+## B2B module (Smart Lists, trackable Documents/CPQ, brand classification, B2B analytics)
+A new industry (`b2b`) plus an independently-toggleable module, following the same pattern as
+Travel Agency/Recruitment/Appointments: **Settings → Modules → 🤝 B2B Suite** turns on a `🤝 B2B`
+nav tab, which embeds `frontend/b2b.html` in an iframe (same "own self-contained page, `?client=`
+in the query string" approach as Ecommerce's `ecom.html` — see "Ecommerce embedded as a real nav
+tab" below — except b2b.html is also passed a `token=` (the dashboard's session token), because
+it reads/writes Leads fields through the same `/nocodb/*` passthrough dashboard.html itself uses,
+which requires a bearer token; `ecom.html` never touches Leads so it never needed one).
+
+**New LEADS columns** (self-migrating — `ensureB2bLeadFields()` in `worker.js` creates these the
+first time the module touches them, same pattern as `flow_state`): `Brand` (Single line text —
+which brand/product line the enquiry is for), `Country` (Single line text — feeds the
+Country/Continent report), `b2b_events` (Long text, JSON array of `{type, at, meta}`, capped at
+the last 50 — a behavioral log of `doc_view`/`doc_accepted` events, read by Smart Lists' "viewed/
+accepted a document in the last N days" rule).
+
+**New CLIENTS columns** (self-migrating on save, same pattern as `ta_enabled`): `b2b_enabled`
+(Single line text, Yes/No — module toggle) and `b2b_segments_json` (Long text, JSON — saved Smart
+List definitions: `[{id, name, rules:[{field, op, value}] | {field:'behavior', value, days},
+createdAt}]`, read/written straight through `/nocodb/*` from `b2b.html`, protected by the same
+single-record-Id check the passthrough already does for every other CLIENTS field).
+
+**New NocoDB table** `b2b_documents` (quotes & catalogs, with trackable public links) — fields:
+`client_id`, `lead_id`, `type` (`quote`/`catalog`), `title`, `brand`, `line_items_json` (Long
+text, JSON array of `{name, qty, price}`), `currency`, `subtotal`, `tax_pct`, `total`, `status`
+(`draft`/`sent`/`viewed`/`accepted`/`expired`), `public_slug` (Single line text, unique — the
+`?slug=` token in the shared link), `view_count` (Number), `last_viewed_at`, `accepted_at`,
+`created_at`, `expires_at`, `notes`. Create this table once in NocoDB and paste its table id into
+`B2B_DOCUMENTS_TABLE` in `worker.js` (same "create once, paste the id in" pattern as
+`SHOPIFY_CHECKOUTS_TABLE` above). **Why a dedicated table instead of the generic `/nocodb/*`
+passthrough**: this table uses a lowercase `client_id` column, which the passthrough's
+cross-tenant guard doesn't protect (it only regex-matches the literal `ClientId,eq,` used by
+LEADS) — so Documents get dedicated, session-authed `/b2b/documents` routes in `worker.js` that
+derive `client_id` server-side from the session instead, same reasoning as `/ecom/products`.
+
+**Trackable links & CPQ**: creating a quote/catalog in b2b.html's Documents tab generates a
+`public_slug`; the shareable link is `b2b.html?slug=<slug>` (works standalone, outside the
+dashboard iframe — it's served as a public page, no login). Opening it (`GET /b2b/doc/:slug`,
+no session) logs a view (`view_count`, `last_viewed_at`, a `doc_view` event on the linked lead)
+and flips `draft`/`sent` → `viewed`. For quotes, an **"Accept Quote" button** (`POST
+/b2b/doc/:slug/accept`, no session) records `status='accepted'` + `accepted_at` — click-to-accept
+only, deliberately no e-signature capture in this phase.
+
+**Smart Lists**: saved segment rules (Stage/Tags/Brand/Country equals-or-contains, plus a
+"Behavior" rule keyed on `b2b_events`) evaluated client-side in `b2b.html` against the same
+`/nocodb/*`-fetched lead list the rest of the dashboard uses — no server "preview" endpoint, same
+client-side-filter approach Campaigns' Stage filter already uses.
+
+**Analytics & Brand/Country broadcast**: Brand-based enquiries, Country/Continent-based leads
+(small static lookup table in `b2b.html`, not a NocoDB table) and Sales-person (`Owner`, already
+an existing LEADS column) reports are all aggregated client-side from the same lead list. Each
+report row's "📢 Broadcast" button deep-links to `broadcast.html?brand=X&country=Y&stage=Z`,
+which now reads those query params on load (`applyFilterPresetsFromUrl()`) to preset two new
+`Brand`/`Country` filter dropdowns added next to the existing Stage filter on both the Direct
+Message and Meta Template tabs — sending itself still goes through the pre-existing
+`/broadcast/send-dm`/`/broadcast/send-template` routes, untouched.
+
+**Out of scope for this phase** (needs external credentials/decisions the deployer must supply
+before these can be built): LinkedIn Post Automation via LinkedIn's direct API (needs a LinkedIn
+developer app + OAuth), Apify-based lead scraping (needs the specific Apify Actor id(s) to map
+into Leads), Google-Sheet stock sync via an n8n webhook, and chat-content-based B2B client
+classification.
+
 ## Billing module (Stripe — self-serve portal, add-on purchases, usage dashboard)
 Implements: a self-serve billing portal (invoices, upgrade/downgrade, renewal date), in-app
 add-on purchases (WhatsApp credits, voice add-on), and a client-facing usage dashboard

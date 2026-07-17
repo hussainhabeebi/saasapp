@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Leadvyne · B2B</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F0FDFA;--card:#FFFFFF;--ink:#0C1E1B;--muted:#4B6B65;
+  --accent:#0F766E;--accent-ink:#115E59;--accent-soft:#CCFBF1;
+  --line:#CBEEE8;--ls:#9FDCD1;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --r:16px;--r-sm:10px;
+  --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column}
+
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:56px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 1px 0 var(--line)}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700;display:inline-flex;align-items:center;gap:6px}
+.brand span{color:var(--accent)}
+.chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
+.hback{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body)}
+.hback:hover{background:var(--bg)}
+
+#tabs{background:var(--card);border-bottom:1px solid var(--line);display:flex;padding:0 20px;flex-shrink:0;overflow-x:auto}
+.tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap}
+.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+
+main{flex:1;overflow-y:auto;overflow-x:hidden;padding:20px;min-height:0}
+.inner{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.page{display:none}
+.page.active{display:block}
+
+.card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:20px;box-shadow:var(--shadow)}
+.card-title{font-family:var(--disp);font-size:14px;font-weight:700;color:var(--muted);margin-bottom:14px;text-transform:uppercase;letter-spacing:.04em}
+.card-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.card-title-row .card-title{margin-bottom:0}
+.card-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.stat{background:var(--card);border-radius:var(--r-sm);border:1px solid var(--line);padding:16px 18px}
+.stat-val{font-family:var(--disp);font-size:26px;font-weight:700;color:var(--accent-ink)}
+.stat-lbl{font-size:12px;color:var(--muted);margin-top:2px}
+
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--bg)}
+.badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;background:var(--accent-soft);color:var(--accent-ink)}
+.badge.draft{background:#F1F5F9;color:#475569}
+.badge.sent{background:#DBEAFE;color:#1E3A8A}
+.badge.viewed{background:#FEF3C7;color:#92400E}
+.badge.accepted{background:#D1FAE5;color:#065F46}
+.badge.expired{background:#FEE2E2;color:#991B1B}
+
+.search-input{border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:200px}
+.search-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.save-btn{background:linear-gradient(135deg,#0F766E,#14B8A6);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
+.save-btn:hover{opacity:.9}
+.save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)}
+.save-btn:disabled{opacity:.5;cursor:default}
+.save-msg{font-size:12px;color:var(--accent);align-self:center}
+.icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
+.icon-btn:hover{background:var(--bg)}
+.icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
+.row-actions{display:flex;gap:6px}
+
+.s-lbl{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;display:block;text-transform:uppercase;letter-spacing:.04em}
+.s-input,select.s-input{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg)}
+.s-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.s-hint{font-size:12px;color:var(--muted);margin-top:5px}
+
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(12,30,27,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal-card{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal-title{font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:18px}
+.modal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+
+.rule-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.rule-row select,.rule-row input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;background:var(--bg)}
+.li-row{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.li-row input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;background:var(--bg)}
+
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-row td{text-align:center;padding:30px;color:var(--muted)}
+.empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty-icon{font-size:36px;margin-bottom:10px}
+.segment-card{border:1px solid var(--line);border-radius:var(--r-sm);padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.segment-name{font-family:var(--disp);font-weight:700;flex:1;min-width:160px}
+.segment-count{font-size:12px;color:var(--muted)}
+
+/* ── PUBLIC DOCUMENT VIEW ── */
+#publicView{display:none;height:100%;overflow-y:auto;background:var(--bg)}
+.pv-wrap{max-width:720px;margin:0 auto;padding:40px 20px}
+.pv-card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:32px;box-shadow:var(--shadow)}
+.pv-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+.pv-title{font-family:var(--disp);font-size:24px;font-weight:700}
+.pv-brand{color:var(--muted);font-size:13px;margin-top:4px}
+.pv-tbl{width:100%;border-collapse:collapse;margin:20px 0;font-size:14px}
+.pv-tbl th{text-align:left;padding:8px 6px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-bottom:1.5px solid var(--line)}
+.pv-tbl td{padding:10px 6px;border-bottom:1px solid var(--line)}
+.pv-totals{margin-left:auto;max-width:260px;display:flex;flex-direction:column;gap:6px;font-size:14px}
+.pv-totals .row{display:flex;justify-content:space-between}
+.pv-totals .grand{font-family:var(--disp);font-weight:700;font-size:18px;border-top:1.5px solid var(--line);padding-top:8px;margin-top:4px;color:var(--accent-ink)}
+.pv-accept{margin-top:28px;text-align:center}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════
+     PUBLIC TRACKABLE DOCUMENT VIEW (?slug=...) — no login, no client id. Hit by the B2B
+     client's own customer opening a shared quote/catalog link.
+     ══════════════════════════════════════════════ -->
+<div id="publicView">
+  <div class="pv-wrap">
+    <div class="pv-card" id="pvCard">
+      <div class="loading-row"><span class="spinner"></span>Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     AUTHENTICATED B2B SUITE (embedded in dashboard.html's B2B tab)
+     ══════════════════════════════════════════════ -->
+<div id="app" style="display:none;height:100%;display:flex;flex-direction:column">
+  <header>
+    <span class="brand">Leadvyne<span>.</span></span>
+    <span class="chip">🤝 B2B Suite</span>
+    <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
+  </header>
+
+  <div id="tabs">
+    <button class="tab active" data-tab="overview" onclick="showTab('overview')">🏠 Overview</button>
+    <button class="tab" data-tab="segments" onclick="showTab('segments')">🎯 Smart Lists</button>
+    <button class="tab" data-tab="documents" onclick="showTab('documents')">🧾 Documents (CPQ)</button>
+    <button class="tab" data-tab="classify" onclick="showTab('classify')">🏷️ Brand Classification</button>
+    <button class="tab" data-tab="analytics" onclick="showTab('analytics')">📊 Analytics</button>
+  </div>
+
+  <main>
+  <div class="inner">
+
+    <!-- OVERVIEW -->
+    <div id="tabOverview" class="page active">
+      <div class="stats" id="ovStats">
+        <div class="stat"><div class="stat-val" id="ovTotalLeads">—</div><div class="stat-lbl">Total Enquiries</div></div>
+        <div class="stat"><div class="stat-val" id="ovActive">—</div><div class="stat-lbl">Active Enquiries</div></div>
+        <div class="stat"><div class="stat-val" id="ovClosed">—</div><div class="stat-lbl">Deals Closed</div></div>
+        <div class="stat"><div class="stat-val" id="ovDocsSent">—</div><div class="stat-lbl">Documents Sent</div></div>
+        <div class="stat"><div class="stat-val" id="ovDocsAccepted">—</div><div class="stat-lbl">Quotes Accepted</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Getting started</div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.7">
+          <b>🎯 Smart Lists</b> — build saved segments from Tags, Stage, Brand, Country and document-view behavior for fast targeted outreach.<br>
+          <b>🧾 Documents (CPQ)</b> — create trackable quotes &amp; catalogs, share a link, and see opens/acceptance in real time.<br>
+          <b>🏷️ Brand Classification</b> — tag every enquiry with the brand/product line it's for.<br>
+          <b>📊 Analytics</b> — brand, country/continent and sales-person reports, with one-click broadcast to any slice.
+        </div>
+      </div>
+    </div>
+
+    <!-- SMART LISTS -->
+    <div id="tabSegments" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Smart Lists</div>
+          <div class="card-actions"><button class="save-btn" onclick="openSegmentModal()">+ New Smart List</button></div>
+        </div>
+        <div id="segmentsList"><div class="empty-state"><div class="empty-icon">🎯</div>No Smart Lists yet — create one to auto-group contacts for fast targeted outreach.</div></div>
+      </div>
+    </div>
+
+    <!-- DOCUMENTS / CPQ -->
+    <div id="tabDocuments" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Quotes &amp; Catalogs</div>
+          <div class="card-actions">
+            <input class="search-input" id="docSearch" type="text" placeholder="🔍 Search documents…" oninput="renderDocumentsTable()">
+            <button class="save-btn sec" onclick="openDocumentModal('catalog')">+ New Catalog</button>
+            <button class="save-btn" onclick="openDocumentModal('quote')">+ New Quote</button>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Title</th><th>Type</th><th>Brand</th><th>Lead</th><th>Total</th><th>Status</th><th>Views</th><th>Link</th><th>Actions</th></tr></thead>
+            <tbody id="documentsTbody"><tr class="loading-row"><td colspan="9"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- BRAND CLASSIFICATION -->
+    <div id="tabClassify" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Brand &amp; Country Classification</div>
+          <div class="card-actions"><input class="search-input" id="classifySearch" type="text" placeholder="🔍 Search leads…" oninput="renderClassifyTable()"></div>
+        </div>
+        <div class="s-hint" style="margin-bottom:12px">Tag every enquiry with the brand/product line and country it's for — this feeds Smart Lists, Analytics and brand/country broadcast below.</div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Phone</th><th>Stage</th><th>Brand</th><th>Country</th></tr></thead>
+            <tbody id="classifyTbody"><tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANALYTICS -->
+    <div id="tabAnalytics" class="page">
+      <div class="card">
+        <div class="card-title">🏷️ Brand-Based Enquiries</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Brand</th><th>Enquiries</th><th>Closed Value</th><th></th></tr></thead><tbody id="anBrandTbody"></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🌍 Country &amp; Continent-Based Leads</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Country</th><th>Continent</th><th>Leads</th><th></th></tr></thead><tbody id="anCountryTbody"></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🧑‍💼 Sales-Person Report</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Sales Person</th><th>Leads</th><th>Closed</th><th>Closed Value</th></tr></thead><tbody id="anOwnerTbody"></tbody></table></div>
+      </div>
+    </div>
+
+  </div>
+  </main>
+</div>
+
+<!-- ── SEGMENT MODAL ── -->
+<div class="modal-overlay" id="segmentModal">
+  <div class="modal-card">
+    <div class="modal-title" id="segmentModalTitle">New Smart List</div>
+    <input type="hidden" id="segId">
+    <div style="margin-bottom:14px">
+      <label class="s-lbl">Name</label>
+      <input class="s-input" id="segName" placeholder="e.g. Hot UAE Buyers — Brand X">
+    </div>
+    <label class="s-lbl">Match leads where <i>all</i> of these are true</label>
+    <div id="segRules"></div>
+    <button class="save-btn sec" type="button" onclick="addRuleRow()" style="margin-top:6px">+ Add Rule</button>
+    <div class="s-hint" id="segPreviewCount" style="margin-top:10px"></div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeSegmentModal()">Cancel</button>
+      <button class="save-btn" onclick="saveSegment()">Save Smart List</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── DOCUMENT MODAL ── -->
+<div class="modal-overlay" id="documentModal">
+  <div class="modal-card">
+    <div class="modal-title" id="documentModalTitle">New Quote</div>
+    <input type="hidden" id="docType" value="quote">
+    <div class="modal-grid">
+      <div><label class="s-lbl">Title</label><input class="s-input" id="docTitle" placeholder="e.g. Q3 Bulk Order — Brand X"></div>
+      <div><label class="s-lbl">Brand</label><input class="s-input" id="docBrand" placeholder="e.g. Brand X"></div>
+      <div><label class="s-lbl">Lead / Customer</label>
+        <input class="s-input" id="docLeadSearch" placeholder="🔍 Search leads…" oninput="renderLeadPicker()">
+        <select class="s-input" id="docLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+      </div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="docCurrency" placeholder="e.g. AED" value="AED"></div>
+      <div><label class="s-lbl">Tax %</label><input class="s-input" id="docTaxPct" type="number" value="0"></div>
+    </div>
+    <label class="s-lbl">Line Items</label>
+    <div id="docLineItems"></div>
+    <button class="save-btn sec" type="button" onclick="addLineItemRow()" style="margin-top:6px">+ Add Line Item</button>
+    <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docTotalPreview">Total: —</div>
+    <div style="margin-top:14px">
+      <label class="s-lbl">Notes</label>
+      <textarea class="s-input" id="docNotes" rows="2" style="resize:vertical"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeDocumentModal()">Cancel</button>
+      <button class="save-btn" onclick="saveDocument()">Save &amp; Get Link</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// All authenticated calls go through the Cloudflare Worker (master NocoDB token stays
+// server-side there) — same /nocodb/* passthrough dashboard.html itself uses for CLIENTS/LEADS,
+// plus dedicated /b2b/* routes for Documents (a table the generic passthrough's cross-tenant
+// guard doesn't cover — see worker.js's B2B module comment). REPLACE with your deployed Worker
+// URL if this file is ever opened outside dashboard.html's iframe.
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const CONFIG = {
+  NOCODB_BASE: WORKER_BASE+'/nocodb',
+  CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj',
+  LEADS_TABLE_ID: 'mvg6rcw0ia5qqrx',
+  WORKER_BASE
+};
+
+const params = new URLSearchParams(location.search);
+const publicSlug = params.get('slug') || '';
+let clientId = params.get('client') || '';
+let sessionToken = params.get('token') || '';
+const isEmbedded = params.get('embed') === '1';
+let clientRecord = null;
+let allLeads = [];
+let allDocuments = [];
+let segments = [];
+
+function esc(str){ return String(str==null?'':str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(str){ return esc(str).replace(/"/g,'&quot;'); }
+function fmtMoney(n,cur){ return `${cur||''} ${Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2})}`.trim(); }
+function showMsg(id,msg,duration){ const el=document.getElementById(id); if(!el)return; el.textContent=msg; setTimeout(()=>{el.textContent='';},duration||3000); }
+
+/* ═══════════════ PUBLIC TRACKABLE DOCUMENT VIEW ═══════════════ */
+async function initPublicView(){
+  document.getElementById('publicView').style.display='block';
+  try{
+    const r=await fetch(`${WORKER_BASE}/b2b/doc/${encodeURIComponent(publicSlug)}`);
+    const doc=await r.json();
+    if(!r.ok||doc.error){ renderPublicError(doc.error||'This link could not be found.'); return; }
+    renderPublicDoc(doc);
+  }catch(e){ renderPublicError('Something went wrong loading this document.'); }
+}
+function renderPublicError(msg){
+  document.getElementById('pvCard').innerHTML=`<div class="empty-state"><div class="empty-icon">⚠️</div>${esc(msg)}</div>`;
+}
+function renderPublicDoc(doc){
+  let items=[]; try{ items=JSON.parse(doc.line_items_json||'[]'); }catch(e){}
+  const rows=items.map(li=>`<tr><td>${esc(li.name||'')}</td><td>${esc(li.qty||0)}</td><td>${fmtMoney(li.price,doc.currency)}</td><td>${fmtMoney((Number(li.qty)||0)*(Number(li.price)||0),doc.currency)}</td></tr>`).join('');
+  const accepted=doc.status==='accepted';
+  const expired=doc.status==='expired';
+  document.getElementById('pvCard').innerHTML=`
+    <div class="pv-head">
+      <div>
+        <div class="pv-title">${esc(doc.title||(doc.type==='catalog'?'Catalog':'Quote'))}</div>
+        <div class="pv-brand">${doc.brand?esc(doc.brand)+' · ':''}${doc.type==='catalog'?'Catalog':'Quote'}</div>
+      </div>
+      <span class="badge ${esc(doc.status||'sent')}">${esc((doc.status||'sent').toUpperCase())}</span>
+    </div>
+    <table class="pv-tbl"><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>${rows||'<tr><td colspan="4" style="text-align:center;color:var(--muted)">No line items</td></tr>'}</tbody></table>
+    <div class="pv-totals">
+      <div class="row"><span>Subtotal</span><span>${fmtMoney(doc.subtotal,doc.currency)}</span></div>
+      <div class="row"><span>Tax (${esc(doc.tax_pct||0)}%)</span><span>${fmtMoney((doc.subtotal||0)*(doc.tax_pct||0)/100,doc.currency)}</span></div>
+      <div class="row grand"><span>Total</span><span>${fmtMoney(doc.total,doc.currency)}</span></div>
+    </div>
+    <div class="pv-accept" id="pvAcceptWrap">
+      ${doc.type!=='quote' ? '' : accepted
+        ? `<div class="badge accepted" style="font-size:13px;padding:8px 16px">✅ Accepted</div>`
+        : expired
+          ? `<div class="badge expired" style="font-size:13px;padding:8px 16px">This quote has expired</div>`
+          : `<button class="save-btn" onclick="acceptPublicDoc()">✅ Accept Quote</button>`}
+    </div>`;
+}
+async function acceptPublicDoc(){
+  const wrap=document.getElementById('pvAcceptWrap');
+  wrap.innerHTML='<span class="spinner"></span>Accepting…';
+  try{
+    const r=await fetch(`${WORKER_BASE}/b2b/doc/${encodeURIComponent(publicSlug)}/accept`,{method:'POST'});
+    const data=await r.json();
+    if(!r.ok||data.error) throw new Error(data.error||'Failed');
+    wrap.innerHTML='<div class="badge accepted" style="font-size:13px;padding:8px 16px">✅ Accepted — thank you!</div>';
+  }catch(e){ wrap.innerHTML=`<div class="s-hint">Something went wrong (${esc(e.message)}) — please try again.</div>`; }
+}
+
+/* ═══════════════ AUTHENTICATED APP ═══════════════ */
+function ncAuthHeaders(extra){ return {'Authorization':'Bearer '+sessionToken, ...extra}; }
+async function ncGet(url){ const r=await fetch(url,{headers:ncAuthHeaders()}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+async function ncPatch(url,body){ const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+async function b2bFetch(path,opts){
+  const r=await fetch(`${WORKER_BASE}${path}`,{...opts,headers:ncAuthHeaders({'Content-Type':'application/json',...(opts&&opts.headers)})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||data.error) throw new Error(data.error||('HTTP '+r.status));
+  return data;
+}
+// Same retry-and-verify save as dashboard.html's patchClient — a field that silently no-ops
+// right after ensureB2bLeadFields/its own column-create step is the same race documented there.
+async function patchClient(fields){
+  const MAX=3; let lastErr=null;
+  for(let attempt=1; attempt<=MAX; attempt++){
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId),...fields});
+    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${Number(clientId)}`);
+    const stuck=Object.keys(fields).filter(k=>String(fresh[k]??'')!==String(fields[k]??''));
+    if(!stuck.length){ Object.assign(clientRecord,fresh); return; }
+    lastErr=new Error('Save did not take effect for: '+stuck.join(', '));
+    if(attempt<MAX) await new Promise(r=>setTimeout(r,900*attempt));
+  }
+  throw lastErr;
+}
+async function patchLead(leadId,fields){
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:Number(leadId),...fields});
+}
+
+async function init(){
+  if(publicSlug){ initPublicView(); return; }
+  if(isEmbedded){ const hdr=document.querySelector('header'); if(hdr) hdr.style.display='none'; }
+  if(!clientId){ clientId=prompt('Enter your Client ID:')||''; }
+  if(!clientId||!sessionToken){ document.body.innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>Missing client/session — open this page from the B2B tab inside your dashboard.</div>'; return; }
+  document.getElementById('app').style.display='flex';
+  try{
+    await b2bFetch(`/b2b/init?client_id=${encodeURIComponent(clientId)}`,{method:'GET'});
+    clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
+    try{ segments=JSON.parse(clientRecord.b2b_segments_json||'[]'); }catch(e){ segments=[]; }
+    await Promise.all([loadLeads(), loadDocuments()]);
+    renderOverview();
+    renderSegments();
+    renderDocumentsTable();
+    renderClassifyTable();
+    renderAnalytics();
+  }catch(e){
+    document.getElementById('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+async function loadLeads(){
+  const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=2000&sort=-Date`);
+  allLeads=data.list||[];
+}
+async function loadDocuments(){
+  const data=await b2bFetch('/b2b/documents',{method:'GET'});
+  allDocuments=data.list||[];
+}
+
+function showTab(name){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
+  document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+}
+
+/* ── OVERVIEW ── */
+function renderOverview(){
+  const closedStages=new Set(['booked','won','closed','converted']);
+  document.getElementById('ovTotalLeads').textContent=allLeads.length.toLocaleString();
+  document.getElementById('ovActive').textContent=allLeads.filter(l=>!closedStages.has((l.Stage||'').toLowerCase())&&l.Stage!=='lost').length.toLocaleString();
+  document.getElementById('ovClosed').textContent=allLeads.filter(l=>closedStages.has((l.Stage||'').toLowerCase())).length.toLocaleString();
+  document.getElementById('ovDocsSent').textContent=allDocuments.filter(d=>d.status&&d.status!=='draft').length.toLocaleString();
+  document.getElementById('ovDocsAccepted').textContent=allDocuments.filter(d=>d.status==='accepted').length.toLocaleString();
+}
+
+/* ── SMART LISTS (SEGMENTS) ── */
+const RULE_FIELDS=[
+  {key:'Stage', label:'Stage', type:'text'},
+  {key:'Tags', label:'Tag contains', type:'text'},
+  {key:'Brand', label:'Brand', type:'text'},
+  {key:'Country', label:'Country', type:'text'},
+  {key:'behavior', label:'Behavior (viewed/accepted a document)', type:'behavior'}
+];
+function matchesSegmentRules(lead,rules){
+  return (rules||[]).every(rule=>{
+    if(rule.field==='behavior'){
+      let events=[]; try{ events=JSON.parse(lead.b2b_events||'[]'); }catch(e){}
+      const cutoff=Date.now()-(Number(rule.days)||30)*86400000;
+      return events.some(ev=>ev.type===rule.value && new Date(ev.at).getTime()>=cutoff);
+    }
+    const v=String(lead[rule.field]||'');
+    if(rule.op==='contains') return v.toLowerCase().includes(String(rule.value||'').toLowerCase());
+    return v.toLowerCase()===String(rule.value||'').toLowerCase();
+  });
+}
+function segmentMatchCount(rules){ return allLeads.filter(l=>matchesSegmentRules(l,rules)).length; }
+
+function renderSegments(){
+  const wrap=document.getElementById('segmentsList');
+  if(!segments.length){ wrap.innerHTML='<div class="empty-state"><div class="empty-icon">🎯</div>No Smart Lists yet — create one to auto-group contacts for fast targeted outreach.</div>'; return; }
+  wrap.innerHTML=segments.map(seg=>{
+    const count=segmentMatchCount(seg.rules);
+    const summary=(seg.rules||[]).map(r=>r.field==='behavior'?`${r.value} in last ${r.days}d`:`${r.field} ${r.op==='contains'?'contains':'='} "${r.value}"`).join(' · ');
+    const stageRule=(seg.rules||[]).find(r=>r.field==='Stage');
+    const brandRule=(seg.rules||[]).find(r=>r.field==='Brand');
+    const countryRule=(seg.rules||[]).find(r=>r.field==='Country');
+    const tagRule=(seg.rules||[]).find(r=>r.field==='Tags');
+    const bcParams=new URLSearchParams();
+    if(stageRule) bcParams.set('stage',stageRule.value);
+    if(brandRule) bcParams.set('brand',brandRule.value);
+    if(countryRule) bcParams.set('country',countryRule.value);
+    if(tagRule) bcParams.set('tag',tagRule.value);
+    return `<div class="segment-card">
+      <div style="flex:1;min-width:200px">
+        <div class="segment-name">${esc(seg.name)}</div>
+        <div class="segment-count">${esc(summary)||'No rules'} — <b>${count}</b> matching contact${count===1?'':'s'}</div>
+      </div>
+      <button class="save-btn sec" onclick="window.open('broadcast.html?${bcParams.toString()}','_blank')">📢 Broadcast</button>
+      <button class="icon-btn" onclick="openSegmentModal('${seg.id}')">✎</button>
+      <button class="icon-btn danger" onclick="deleteSegment('${seg.id}')">🗑</button>
+    </div>`;
+  }).join('');
+}
+function openSegmentModal(id){
+  const seg=id?segments.find(s=>s.id===id):null;
+  document.getElementById('segmentModalTitle').textContent=seg?'Edit Smart List':'New Smart List';
+  document.getElementById('segId').value=seg?seg.id:'';
+  document.getElementById('segName').value=seg?seg.name:'';
+  document.getElementById('segRules').innerHTML='';
+  (seg?seg.rules:[{field:'Stage',op:'equals',value:''}]).forEach(r=>addRuleRow(r));
+  document.getElementById('segmentModal').classList.add('active');
+  updateSegPreview();
+}
+function closeSegmentModal(){ document.getElementById('segmentModal').classList.remove('active'); }
+function addRuleRow(rule){
+  rule=rule||{field:'Stage',op:'equals',value:''};
+  const row=document.createElement('div'); row.className='rule-row';
+  row.innerHTML=`
+    <select class="rule-field" onchange="renderRuleRowInputs(this)">
+      ${RULE_FIELDS.map(f=>`<option value="${f.key}" ${rule.field===f.key?'selected':''}>${f.label}</option>`).join('')}
+    </select>
+    <span class="rule-inputs"></span>
+    <button class="icon-btn danger" type="button" onclick="this.parentElement.remove();updateSegPreview()">✕</button>`;
+  document.getElementById('segRules').appendChild(row);
+  renderRuleRowInputs(row.querySelector('.rule-field'), rule);
+}
+function renderRuleRowInputs(sel,rule){
+  rule=rule||{};
+  const row=sel.closest('.rule-row');
+  const field=sel.value;
+  const inputsEl=row.querySelector('.rule-inputs');
+  if(field==='behavior'){
+    inputsEl.innerHTML=`
+      <select class="rule-value">
+        <option value="doc_view" ${rule.value==='doc_view'?'selected':''}>Viewed a document</option>
+        <option value="doc_accepted" ${rule.value==='doc_accepted'?'selected':''}>Accepted a quote</option>
+      </select>
+      in the last <input class="rule-days" type="number" style="width:60px" value="${esc(rule.days||30)}"> days`;
+  }else{
+    inputsEl.innerHTML=`
+      <select class="rule-op">
+        <option value="equals" ${rule.op==='equals'?'selected':''}>equals</option>
+        <option value="contains" ${rule.op==='contains'?'selected':''}>contains</option>
+      </select>
+      <input class="rule-value" type="text" placeholder="value" value="${escAttr(rule.value||'')}">`;
+  }
+  row.querySelectorAll('select,input').forEach(el=>el.addEventListener('input',updateSegPreview));
+  updateSegPreview();
+}
+function collectRules(){
+  return [...document.querySelectorAll('#segRules .rule-row')].map(row=>{
+    const field=row.querySelector('.rule-field').value;
+    if(field==='behavior'){
+      return {field, value:row.querySelector('.rule-value').value, days:Number(row.querySelector('.rule-days').value)||30};
+    }
+    return {field, op:row.querySelector('.rule-op').value, value:row.querySelector('.rule-value').value};
+  });
+}
+function updateSegPreview(){
+  const rules=collectRules();
+  document.getElementById('segPreviewCount').textContent=`Matches ${segmentMatchCount(rules)} contact(s) right now.`;
+}
+async function saveSegment(){
+  const name=document.getElementById('segName').value.trim();
+  if(!name){ alert('Please name this Smart List.'); return; }
+  const id=document.getElementById('segId').value;
+  const rules=collectRules();
+  if(id){
+    const seg=segments.find(s=>s.id===id);
+    seg.name=name; seg.rules=rules;
+  }else{
+    segments.push({id:'seg_'+Date.now().toString(36), name, rules, createdAt:new Date().toISOString()});
+  }
+  try{
+    await patchClient({b2b_segments_json:JSON.stringify(segments)});
+    closeSegmentModal();
+    renderSegments();
+  }catch(e){ alert('Failed to save: '+e.message); }
+}
+async function deleteSegment(id){
+  if(!confirm('Delete this Smart List?')) return;
+  segments=segments.filter(s=>s.id!==id);
+  try{ await patchClient({b2b_segments_json:JSON.stringify(segments)}); renderSegments(); }
+  catch(e){ alert('Failed to delete: '+e.message); }
+}
+
+/* ── DOCUMENTS (CPQ) ── */
+function openDocumentModal(type){
+  document.getElementById('documentModalTitle').textContent=type==='catalog'?'New Catalog':'New Quote';
+  document.getElementById('docType').value=type;
+  document.getElementById('docTitle').value='';
+  document.getElementById('docBrand').value='';
+  document.getElementById('docLeadSearch').value='';
+  document.getElementById('docCurrency').value=clientRecord?.deal_currency||'AED';
+  document.getElementById('docTaxPct').value='0';
+  document.getElementById('docNotes').value='';
+  document.getElementById('docLineItems').innerHTML='';
+  addLineItemRow();
+  renderLeadPicker();
+  document.getElementById('documentModal').classList.add('active');
+  updateDocTotalPreview();
+}
+function closeDocumentModal(){ document.getElementById('documentModal').classList.remove('active'); }
+function renderLeadPicker(){
+  const q=(document.getElementById('docLeadSearch').value||'').toLowerCase();
+  const sel=document.getElementById('docLeadId');
+  const current=sel.value;
+  const matches=q?allLeads.filter(l=>(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)):allLeads.slice(0,200);
+  sel.innerHTML='<option value="">— None —</option>'+matches.map(l=>`<option value="${l.Id}">${esc(l.Name||'Unknown')} — ${esc(l.Phone||'')}</option>`).join('');
+  if([...sel.options].some(o=>o.value===current)) sel.value=current;
+}
+function addLineItemRow(li){
+  li=li||{name:'',qty:1,price:0};
+  const row=document.createElement('div'); row.className='li-row';
+  row.innerHTML=`
+    <input class="li-name" placeholder="Product / description" value="${escAttr(li.name)}">
+    <input class="li-qty" type="number" placeholder="Qty" value="${esc(li.qty)}">
+    <input class="li-price" type="number" placeholder="Price" value="${esc(li.price)}">
+    <span class="li-total" style="font-family:var(--mono);font-size:13px;text-align:right"></span>
+    <button class="icon-btn danger" type="button" onclick="this.parentElement.remove();updateDocTotalPreview()">✕</button>`;
+  document.getElementById('docLineItems').appendChild(row);
+  row.querySelectorAll('input').forEach(el=>el.addEventListener('input',updateDocTotalPreview));
+  updateDocTotalPreview();
+}
+function collectLineItems(){
+  return [...document.querySelectorAll('#docLineItems .li-row')].map(row=>({
+    name:row.querySelector('.li-name').value.trim(),
+    qty:Number(row.querySelector('.li-qty').value)||0,
+    price:Number(row.querySelector('.li-price').value)||0
+  })).filter(li=>li.name);
+}
+function updateDocTotalPreview(){
+  const items=[...document.querySelectorAll('#docLineItems .li-row')];
+  let subtotal=0;
+  items.forEach(row=>{
+    const qty=Number(row.querySelector('.li-qty').value)||0;
+    const price=Number(row.querySelector('.li-price').value)||0;
+    const total=qty*price;
+    subtotal+=total;
+    row.querySelector('.li-total').textContent=total.toLocaleString();
+  });
+  const taxPct=Number(document.getElementById('docTaxPct').value)||0;
+  const cur=document.getElementById('docCurrency').value||'';
+  document.getElementById('docTotalPreview').textContent=`Total: ${fmtMoney(subtotal+subtotal*taxPct/100,cur)}`;
+}
+document.getElementById('docTaxPct').addEventListener('input',updateDocTotalPreview);
+async function saveDocument(){
+  const title=document.getElementById('docTitle').value.trim();
+  if(!title){ alert('Please give this document a title.'); return; }
+  const body={
+    type:document.getElementById('docType').value,
+    title, brand:document.getElementById('docBrand').value.trim(),
+    lead_id:document.getElementById('docLeadId').value||null,
+    currency:document.getElementById('docCurrency').value.trim(),
+    tax_pct:Number(document.getElementById('docTaxPct').value)||0,
+    notes:document.getElementById('docNotes').value.trim(),
+    line_items:collectLineItems()
+  };
+  try{
+    const created=await b2bFetch('/b2b/documents',{method:'POST',body:JSON.stringify(body)});
+    allDocuments.unshift(created);
+    closeDocumentModal();
+    renderDocumentsTable();
+    renderOverview();
+    const link=`${location.origin}${location.pathname.replace(/[^/]*$/,'')}b2b.html?slug=${created.public_slug}`;
+    if(navigator.clipboard) navigator.clipboard.writeText(link).catch(()=>{});
+    alert('Saved! Trackable link copied to clipboard:\n\n'+link);
+  }catch(e){ alert('Failed to save: '+e.message); }
+}
+function renderDocumentsTable(){
+  const q=(document.getElementById('docSearch').value||'').toLowerCase();
+  const tbody=document.getElementById('documentsTbody');
+  const rows=allDocuments.filter(d=>!q||(d.title||'').toLowerCase().includes(q)||(d.brand||'').toLowerCase().includes(q));
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="9" class="empty-state">No documents yet — create a quote or catalog above.</td></tr>'; return; }
+  tbody.innerHTML=rows.map(d=>{
+    const lead=allLeads.find(l=>String(l.Id)===String(d.lead_id));
+    const link=`${location.origin}${location.pathname.replace(/[^/]*$/,'')}b2b.html?slug=${d.public_slug}`;
+    return `<tr>
+      <td>${esc(d.title||'')}</td>
+      <td>${d.type==='catalog'?'📖 Catalog':'🧾 Quote'}</td>
+      <td>${esc(d.brand||'—')}</td>
+      <td>${lead?esc(lead.Name||lead.Phone):'—'}</td>
+      <td>${fmtMoney(d.total,d.currency)}</td>
+      <td><span class="badge ${esc(d.status||'draft')}">${esc((d.status||'draft').toUpperCase())}</span></td>
+      <td>${esc(d.view_count||0)}</td>
+      <td><button class="icon-btn" onclick="navigator.clipboard&&navigator.clipboard.writeText('${escAttr(link)}');alert('Link copied!')">🔗 Copy</button></td>
+      <td class="row-actions">
+        ${d.status==='draft'?`<button class="icon-btn" title="Mark sent" onclick="markDocumentSent(${d.Id})">📤</button>`:''}
+        <button class="icon-btn danger" onclick="deleteDocument(${d.Id})">🗑</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+async function markDocumentSent(id){
+  try{ await b2bFetch('/b2b/documents',{method:'PATCH',body:JSON.stringify({id,status:'sent'})}); const d=allDocuments.find(x=>x.Id===id); if(d)d.status='sent'; renderDocumentsTable(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteDocument(id){
+  if(!confirm('Delete this document?')) return;
+  try{ await b2bFetch('/b2b/documents',{method:'DELETE',body:JSON.stringify({id})}); allDocuments=allDocuments.filter(d=>d.Id!==id); renderDocumentsTable(); renderOverview(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── BRAND CLASSIFICATION ── */
+function renderClassifyTable(){
+  const q=(document.getElementById('classifySearch').value||'').toLowerCase();
+  const tbody=document.getElementById('classifyTbody');
+  const rows=allLeads.filter(l=>!q||(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q));
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="5" class="empty-state">No leads yet.</td></tr>'; return; }
+  tbody.innerHTML=rows.slice(0,500).map(l=>`<tr>
+    <td>${esc(l.Name||'Unknown')}</td>
+    <td>${esc(l.Phone||'')}</td>
+    <td>${esc(l.Stage||'new')}</td>
+    <td><input class="s-input" style="padding:5px 8px;font-size:12px" value="${escAttr(l.Brand||'')}" onchange="updateLeadBrand(${l.Id},this.value)"></td>
+    <td><input class="s-input" style="padding:5px 8px;font-size:12px" value="${escAttr(l.Country||'')}" onchange="updateLeadCountry(${l.Id},this.value)"></td>
+  </tr>`).join('');
+}
+async function updateLeadBrand(id,val){
+  const lead=allLeads.find(l=>l.Id===id); if(lead) lead.Brand=val;
+  try{ await patchLead(id,{Brand:val}); renderAnalytics(); }catch(e){ alert('Failed to save: '+e.message); }
+}
+async function updateLeadCountry(id,val){
+  const lead=allLeads.find(l=>l.Id===id); if(lead) lead.Country=val;
+  try{ await patchLead(id,{Country:val}); renderAnalytics(); }catch(e){ alert('Failed to save: '+e.message); }
+}
+
+/* ── ANALYTICS ── */
+const COUNTRY_TO_CONTINENT={
+  'UAE':'Asia','United Arab Emirates':'Asia','Saudi Arabia':'Asia','KSA':'Asia','Qatar':'Asia','Kuwait':'Asia','Bahrain':'Asia','Oman':'Asia',
+  'India':'Asia','Pakistan':'Asia','China':'Asia','Japan':'Asia','Singapore':'Asia','Malaysia':'Asia','Indonesia':'Asia','Philippines':'Asia',
+  'UK':'Europe','United Kingdom':'Europe','Germany':'Europe','France':'Europe','Spain':'Europe','Italy':'Europe','Netherlands':'Europe',
+  'USA':'North America','United States':'North America','Canada':'North America','Mexico':'North America',
+  'Brazil':'South America','Argentina':'South America',
+  'South Africa':'Africa','Nigeria':'Africa','Egypt':'Africa','Kenya':'Africa',
+  'Australia':'Oceania','New Zealand':'Oceania'
+};
+function continentFor(country){ return COUNTRY_TO_CONTINENT[country]||'Other'; }
+const closedStagesLower=new Set(['booked','won','closed','converted']);
+function renderAnalytics(){
+  const groupBy=(keyFn)=>{
+    const map=new Map();
+    allLeads.forEach(l=>{
+      const key=keyFn(l)||'Unclassified';
+      if(!map.has(key)) map.set(key,{count:0,closedValue:0,closedCount:0});
+      const g=map.get(key);
+      g.count++;
+      if(closedStagesLower.has((l.Stage||'').toLowerCase())){ g.closedCount++; g.closedValue+=Number(l.DealValue)||0; }
+    });
+    return map;
+  };
+
+  const byBrand=groupBy(l=>l.Brand);
+  document.getElementById('anBrandTbody').innerHTML=[...byBrand.entries()].sort((a,b)=>b[1].count-a[1].count).map(([brand,g])=>
+    `<tr><td>${esc(brand)}</td><td>${g.count}</td><td>${g.closedValue.toLocaleString()}</td>
+      <td><button class="icon-btn" onclick="window.open('broadcast.html?brand=${encodeURIComponent(brand)}','_blank')">📢</button></td></tr>`
+  ).join('')||'<tr><td colspan="4" class="empty-state">No data yet.</td></tr>';
+
+  const byCountry=groupBy(l=>l.Country);
+  document.getElementById('anCountryTbody').innerHTML=[...byCountry.entries()].sort((a,b)=>b[1].count-a[1].count).map(([country,g])=>
+    `<tr><td>${esc(country)}</td><td>${esc(continentFor(country))}</td><td>${g.count}</td>
+      <td><button class="icon-btn" onclick="window.open('broadcast.html?country=${encodeURIComponent(country)}','_blank')">📢</button></td></tr>`
+  ).join('')||'<tr><td colspan="4" class="empty-state">No data yet.</td></tr>';
+
+  const byOwner=groupBy(l=>l.Owner);
+  document.getElementById('anOwnerTbody').innerHTML=[...byOwner.entries()].sort((a,b)=>b[1].count-a[1].count).map(([owner,g])=>
+    `<tr><td>${esc(owner)}</td><td>${g.count}</td><td>${g.closedCount}</td><td>${g.closedValue.toLocaleString()}</td></tr>`
+  ).join('')||'<tr><td colspan="4" class="empty-state">No data yet.</td></tr>';
+}
+
+init();
+</script>
+</body>
+</html>

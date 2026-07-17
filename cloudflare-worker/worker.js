@@ -26,6 +26,11 @@ const DEFAULT_LEADS_TABLE = 'mvg6rcw0ia5qqrx';
 // client_id column — see SETUP.md "Email Marketing module") and paste their real ids here.
 const EMAIL_CAMPAIGNS_TABLE = 'md3ghcfigac4yqs';
 const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
+// Create this table once in NocoDB (fields: client_id, lead_id, type, title, brand,
+// line_items_json, currency, subtotal, tax_pct, total, status, public_slug, view_count,
+// last_viewed_at, accepted_at, created_at, expires_at, notes — see SETUP.md "B2B module") and
+// paste its real id here.
+const B2B_DOCUMENTS_TABLE = 'REPLACE_B2B_DOCUMENTS_TABLE_ID';
 
 function corsHeaders(origin, env){
   const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -5668,6 +5673,192 @@ async function handleApptPublicBook(request, env){
   return json({ok:true, lead_id, stage_advanced});
 }
 
+/* ── B2B MODULE (frontend/b2b.html) — Smart Documents (quotes/catalogs) with trackable public
+   links and click-to-accept. Smart Lists (saved segment rules) live as a plain b2b_segments_json
+   CLIENTS column, and Brand/Country classification live as plain LEADS columns — both are
+   read/written straight through the existing /nocodb/* passthrough from b2b.html, exactly like
+   every other CLIENTS/LEADS field in dashboard.html, since that passthrough already protects
+   LEADS via its ClientId (PascalCase) cross-tenant check and CLIENTS via its single-record-Id
+   check. Only Documents get dedicated routes here: B2B_DOCUMENTS_TABLE uses a lowercase
+   client_id column, which that same passthrough guard does NOT match (it only regexes the
+   literal "ClientId,eq,"), so ownership has to be enforced server-side instead — same reasoning
+   as why /ecom/products etc. are dedicated routes rather than raw passthrough. ── */
+
+// Auto-creates the Brand/Country/b2b_events Leads columns the first time the B2B module touches
+// them — mirrors ensureFlowStateField above (memoized per Worker isolate, best-effort).
+let _b2bLeadFieldsEnsured=false;
+async function ensureB2bLeadFields(env){
+  if(_b2bLeadFieldsEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('Brand')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'Brand', uidt:'SingleLineText'}});
+    if(!names.has('Country')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'Country', uidt:'SingleLineText'}});
+    if(!names.has('b2b_events')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'b2b_events', uidt:'LongText'}});
+    _b2bLeadFieldsEnsured=true;
+  }catch(e){ console.error('[b2b] ensureB2bLeadFields failed', e.message); }
+}
+
+// Called once by b2b.html on load — ensures the Leads columns Brand/Country/b2b_events exist
+// before the page starts writing to them directly through /nocodb/*.
+// Mirrors ensureB2bLeadFields but for the CLIENTS table — b2b_enabled already gets its own
+// check-and-create step in dashboard.html's Settings save handler (same pattern as ta_enabled),
+// but b2b_segments_json is only ever written from b2b.html's Smart Lists save, which had no such
+// step — on a fresh NocoDB base that PATCH would just fail with "Save didn't take effect" the
+// first time a Smart List was created. Ensuring it here, on every b2b.html load, closes that gap.
+let _b2bClientFieldsEnsured=false;
+async function ensureB2bClientFields(env){
+  if(_b2bClientFieldsEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('b2b_segments_json')) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title:'b2b_segments_json', uidt:'LongText'}});
+    _b2bClientFieldsEnsured=true;
+  }catch(e){ console.error('[b2b] ensureB2bClientFields failed', e.message); }
+}
+
+async function handleB2bInit(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await ensureB2bLeadFields(env);
+  await ensureB2bClientFields(env);
+  return json({ok:true});
+}
+
+function computeB2bDocSubtotal(lineItems){
+  let subtotal=0;
+  (Array.isArray(lineItems)?lineItems:[]).forEach(li=>{ subtotal += (Number(li.qty)||0) * (Number(li.price)||0); });
+  return subtotal;
+}
+async function findB2bDocument(env, id){
+  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records/${id}`);
+  if(!r.ok) return null;
+  return r.json().catch(()=>null);
+}
+async function findB2bDocumentBySlug(env, slug){
+  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records?where=${encodeURIComponent(`(public_slug,eq,${slug})`)}&limit=1`);
+  if(!r.ok) return null;
+  const data=await r.json().catch(()=>({}));
+  return data?.list?.[0]||null;
+}
+// Appends one event to a lead's b2b_events log (capped at the last 50) — feeds Smart Lists'
+// "viewed/accepted a document in the last N days" rule. Best-effort: never blocks the public
+// view/accept response on this bookkeeping succeeding.
+async function appendB2bLeadEvent(env, leadId, type, meta){
+  if(!leadId) return;
+  try{
+    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+    if(!leadR.ok) return;
+    const lead=await leadR.json();
+    let events=[]; try{ events=JSON.parse(lead.b2b_events||'[]'); }catch(e){}
+    events.push({type, at:new Date().toISOString(), meta:meta||{}});
+    if(events.length>50) events=events.slice(-50);
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), b2b_events:JSON.stringify(events)}});
+  }catch(e){}
+}
+
+async function handleB2bDocumentsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&sort=-created_at&limit=500`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({list:data.list||[]});
+}
+
+async function handleB2bDocumentCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const type=body.type==='catalog'?'catalog':'quote';
+  const lineItems=Array.isArray(body.line_items)?body.line_items:[];
+  const subtotal=computeB2bDocSubtotal(lineItems);
+  const taxPct=Number(body.tax_pct)||0;
+  const total=subtotal + subtotal*(taxPct/100);
+  const fields={
+    client_id:String(payload.cid), lead_id:body.lead_id?String(body.lead_id):'',
+    type, title:String(body.title||'').trim().slice(0,200), brand:String(body.brand||'').trim().slice(0,100),
+    line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
+    subtotal, tax_pct:taxPct, total, status:'draft',
+    public_slug:crypto.randomUUID().replace(/-/g,''), view_count:0, last_viewed_at:'', accepted_at:'',
+    created_at:new Date().toISOString(), expires_at:body.expires_at||'', notes:String(body.notes||'').trim().slice(0,1000)
+  };
+  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records`, {method:'POST', body:fields});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({...fields, Id:data.Id});
+}
+
+async function handleB2bDocumentUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findB2bDocument(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const fields={Id:Number(body.id)};
+  if(body.title!==undefined) fields.title=String(body.title).trim().slice(0,200);
+  if(body.brand!==undefined) fields.brand=String(body.brand).trim().slice(0,100);
+  if(body.status!==undefined) fields.status=String(body.status);
+  if(body.notes!==undefined) fields.notes=String(body.notes).trim().slice(0,1000);
+  if(body.expires_at!==undefined) fields.expires_at=body.expires_at;
+  if(Array.isArray(body.line_items)){
+    const subtotal=computeB2bDocSubtotal(body.line_items);
+    const taxPct=body.tax_pct!==undefined?(Number(body.tax_pct)||0):(Number(existing.tax_pct)||0);
+    fields.line_items_json=JSON.stringify(body.line_items);
+    fields.subtotal=subtotal; fields.tax_pct=taxPct; fields.total=subtotal+subtotal*(taxPct/100);
+  }
+  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records`, {method:'PATCH', body:fields});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({ok:true});
+}
+
+async function handleB2bDocumentDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findB2bDocument(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const r=await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records`, {method:'DELETE', body:{Id:Number(body.id)}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({ok:true});
+}
+
+// Public — no session, by design: hit by the B2B client's own customer opening a trackable
+// quote/catalog link (b2b.html?slug=...). Logs a view and appends a b2b_events entry on the
+// linked lead so Smart Lists can target "viewed a document in the last N days".
+const B2B_PUBLIC_DOC_FIELDS=['Id','type','title','brand','line_items_json','currency','subtotal','tax_pct','total','status','view_count','accepted_at','expires_at'];
+async function handleB2bDocPublicGet(request, env, slug){
+  await ensureB2bLeadFields(env);
+  const doc=await findB2bDocumentBySlug(env, slug);
+  if(!doc) return json({error:'Not found'}, 404);
+  const patch={view_count:(Number(doc.view_count)||0)+1, last_viewed_at:new Date().toISOString()};
+  if(doc.status==='draft'||doc.status==='sent') patch.status='viewed';
+  await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records`, {method:'PATCH', body:{Id:doc.Id, ...patch}});
+  await appendB2bLeadEvent(env, doc.lead_id, 'doc_view', {slug});
+  const out={}; B2B_PUBLIC_DOC_FIELDS.forEach(k=>{ out[k]=doc[k]; });
+  out.view_count=patch.view_count; out.status=patch.status||doc.status;
+  return json(out);
+}
+
+// Public — no session. Click-to-accept only (no e-signature) — records an acceptance timestamp,
+// nothing more.
+async function handleB2bDocPublicAccept(request, env, slug){
+  await ensureB2bLeadFields(env);
+  const doc=await findB2bDocumentBySlug(env, slug);
+  if(!doc) return json({error:'Not found'}, 404);
+  if(doc.status==='accepted') return json({ok:true, already:true});
+  const acceptedAt=new Date().toISOString();
+  await ncFetch(env, `api/v2/tables/${B2B_DOCUMENTS_TABLE}/records`, {method:'PATCH', body:{Id:doc.Id, status:'accepted', accepted_at:acceptedAt}});
+  await appendB2bLeadEvent(env, doc.lead_id, 'doc_accepted', {slug});
+  return json({ok:true, accepted_at:acceptedAt});
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -5772,6 +5963,13 @@ export default {
       else if(url.pathname==='/admin/billing-refresh' && request.method==='POST'){ res=await handleAdminBillingRefresh(request, env); }
       else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }
       else if(url.pathname==='/admin/billing-reset-anchor' && request.method==='POST'){ res=await handleAdminBillingResetAnchor(request, env); }
+      else if(url.pathname==='/b2b/init' && request.method==='GET'){ res=await handleB2bInit(request, env); }
+      else if(url.pathname==='/b2b/documents' && request.method==='GET'){ res=await handleB2bDocumentsList(request, env); }
+      else if(url.pathname==='/b2b/documents' && request.method==='POST'){ res=await handleB2bDocumentCreate(request, env); }
+      else if(url.pathname==='/b2b/documents' && request.method==='PATCH'){ res=await handleB2bDocumentUpdate(request, env); }
+      else if(url.pathname==='/b2b/documents' && request.method==='DELETE'){ res=await handleB2bDocumentDelete(request, env); }
+      else if(url.pathname.startsWith('/b2b/doc/') && url.pathname.endsWith('/accept') && request.method==='POST'){ res=await handleB2bDocPublicAccept(request, env, url.pathname.slice('/b2b/doc/'.length, -'/accept'.length)); }
+      else if(url.pathname.startsWith('/b2b/doc/') && request.method==='GET'){ res=await handleB2bDocPublicGet(request, env, url.pathname.slice('/b2b/doc/'.length)); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);
