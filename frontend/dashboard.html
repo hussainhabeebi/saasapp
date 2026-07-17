@@ -1022,6 +1022,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab" data-page="team">📊 Team</button>
     <button class="dnTab" data-page="knowledgebase">📚 Knowledge Base</button>
+    <button class="dnTab" data-page="accounting">💰 Accounting</button>
     <button class="dnTab" data-page="billing">💳 Billing<span id="dnBillingBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce">🛒 Ecommerce</button>
     <button class="dnTab" data-page="b2b" id="dnB2bTab" style="display:none">🤝 B2B</button>
@@ -1473,6 +1474,17 @@ const TODAY = new Date().toISOString().slice(0,10);
          the same /nocodb/* passthrough dashboard.html itself uses, which requires a bearer token. -->
     <div class="page hidden" id="pageB2b">
       <iframe id="b2bFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- ACCOUNTING MODULE (same iframe-embed pattern as B2B above — accounting.html is its own
+         self-contained page, passed the session token for the same reason: it reads/writes the
+         Accounting Documents table through dedicated /accounting/* Worker routes, and Leads
+         through the same /nocodb/* passthrough dashboard.html itself uses, both bearer-token
+         gated. Deliberately NOT industry-gated like B2B/Agency/Ecommerce/Recruit — quoting/
+         invoicing an existing lead is a fit for every client regardless of industry, so this tab
+         is always visible. -->
+    <div class="page hidden" id="pageAccounting">
+      <iframe id="accountingFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- TRAVEL AGENCY MODULE (the standalone "Travel" tab was merged into this module's
@@ -2504,6 +2516,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <button class="more-item" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
       <button class="more-item" data-page="team"><span class="bnIcon">📊</span><span class="bnLabel">Team</span></button>
       <button class="more-item" data-page="knowledgebase"><span class="bnIcon">📚</span><span class="bnLabel">Knowledge Base</span></button>
+      <button class="more-item" data-page="accounting"><span class="bnIcon">💰</span><span class="bnLabel">Accounting</span></button>
       <button class="more-item" data-page="billing" style="position:relative"><span class="bnIcon">💳</span><span class="bnLabel">Billing</span><span id="bnBillingBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
       <button class="more-item industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
       <button class="more-item" data-page="b2b" id="moreB2bTab" style="display:none"><span class="bnIcon">🤝</span><span class="bnLabel">B2B</span></button>
@@ -3765,7 +3778,7 @@ const SETTINGS_GROUP=['settings','channels','integrations','voice']; // shown as
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','humandeals','knowledgebase','ecommerce','b2b','agency','recruit','appointments','settings','channels','integrations','billing'];
+const MORE_GROUP=['broadcast','team','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','settings','channels','integrations','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -3789,6 +3802,7 @@ function navigate(page){
   if(page==='knowledgebase') renderKnowledgeBase();
   if(page==='ecommerce') renderEcommerce();
   if(page==='b2b') renderB2b();
+  if(page==='accounting') renderAccounting();
   if(page==='agency') renderAgency();
   if(page==='recruit') renderRecruit();
   if(page==='appointments') renderAppointments();
@@ -4216,6 +4230,13 @@ function renderEcommerce(){
 function renderB2b(){
   const frame=$id('b2bFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`b2b.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+}
+
+// Same pattern as renderB2b above — accounting.html needs the session token too, for the same
+// reason (reads/writes Leads through the bearer-token-gated /nocodb/* passthrough).
+function renderAccounting(){
+  const frame=$id('accountingFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`accounting.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
 }
 
 /* ── HUMAN DEALS ── */

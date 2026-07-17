@@ -1101,6 +1101,84 @@ developer app + OAuth), Apify-based lead scraping (needs the specific Apify Acto
 into Leads), Google-Sheet stock sync via an n8n webhook, and chat-content-based B2B client
 classification.
 
+## Accounting module (Quotation → Invoice → Receipt, ERPNext push)
+A `💰 Accounting` nav tab, **always visible — not gated behind any industry flag or Settings →
+Modules toggle** the way B2B/Agency/Ecommerce/Recruit/Appointments are, since quoting/invoicing an
+existing lead is a fit for every client regardless of what they sell. Embeds `frontend/accounting.html`
+in an iframe, same pattern as B2B (`?client=` + `?token=` in the query string — needs the session
+token for the same reason b2b.html does: it reads/writes Leads through the bearer-token-gated
+`/nocodb/*` passthrough).
+
+**New NocoDB table** (name it anything — a client-visible table name isn't assumed anywhere) —
+fields: `client_id`, `lead_id`, `type` (`quotation`/`invoice`/`receipt`), `title`,
+`line_items_json` (Long text, JSON array of `{name, qty, price}`), `currency`, `subtotal`,
+`tax_pct`, `tax_amount`, `total`, `status` (`draft`/`sent`/`paid`/`void`/`accepted` — used loosely
+per type, no strict per-type state machine), `linked_doc_id` (Single line text — an invoice's
+source quotation, or a receipt's source invoice; blank for a document created standalone), `notes`,
+`erpnext_doctype`, `erpnext_doc_name`, `erpnext_sync_status` (`` / `pending` / `synced` /
+`failed`), `erpnext_sync_error`, `erpnext_synced_at`, `created_at`. Create this table once in
+NocoDB, then point the Worker at it the same two ways `B2B_DOCUMENTS_TABLE` works (see "B2B
+module" above): preferred — a Worker var/secret named `ACCOUNTING_DOCUMENTS_TABLE` (no redeploy
+needed), or edit the `ACCOUNTING_DOCUMENTS_TABLE` constant in `worker.js` directly (replacing the
+`REPLACE_ACCOUNTING_DOCUMENTS_TABLE_ID` placeholder) and redeploy. Same "dedicated routes instead
+of the generic passthrough" reasoning as B2B Documents — this table's lowercase `client_id` column
+isn't covered by the passthrough's cross-tenant guard, so `/accounting/*` routes in `worker.js`
+derive `client_id` server-side from the session instead.
+
+**Lifecycle**: create a Quotation against an existing lead (title, line items, tax %, currency,
+notes) — `handleAccountingDocumentCreate`. Once it's ready to become billable, **Convert**
+(`POST /accounting/documents/convert`, `handleAccountingDocumentConvert`) creates a new draft
+Invoice pre-filled from the quotation's line items/totals/lead, linked back via `linked_doc_id` —
+deliberately a new record rather than mutating the source in place, so the original quotation stays
+exactly as sent/agreed. The same Convert action turns an Invoice into a draft Receipt once paid.
+Each document can be downloaded as a simple itemized PDF (`downloadDocumentPdf` in
+`accounting.html`, jsPDF + jspdf-autotable — same CDN libraries the Agency Quotation feature in
+`dashboard.html` already loads, but a plainer layout deliberately with no logo/branding, since this
+spans every industry rather than just travel).
+
+**ERPNext (Frappe) push — one-way only, per-client credentials.** Each of this app's own clients
+runs their own separate ERPNext/Frappe Cloud site, so the connection is per-CLIENTS-row, not a
+single shared integration: three new CLIENTS columns, `erpnext_base_url` (e.g.
+`https://yoursite.frappe.cloud`), `erpnext_api_key`, `erpnext_api_secret` (Settings → Accounting →
+ERPNext tab in `accounting.html`; same plaintext-on-CLIENTS convention as `wa_token`/
+`chatwoot_token`/`openrouter_key` elsewhere in this file — no dedicated secrets vault for per-client
+credentials anywhere in this codebase). Generate the API Key/Secret pair in ERPNext under
+**Settings → My Settings → API Access**.
+- **"Sync to ERPNext"** (`POST /accounting/documents/sync-erpnext`,
+  `handleAccountingDocumentSyncErpnext`) pushes the document as a real ERPNext doctype: Quotation
+  and Invoice map to ERPNext's own `Quotation`/`Sales Invoice` doctypes (`erpnextPushSalesDoc`),
+  Receipt maps to a `Payment Entry` (`erpnextPushPaymentEntry`) — a "Receive" payment from the
+  customer, allocated against the source invoice's own ERPNext document name if that invoice was
+  itself synced first (`linked_doc_id` → the linked document's `erpnext_doc_name`); if it wasn't,
+  the receipt still posts as an unallocated payment against the customer rather than blocking the
+  sync outright.
+- **Customer/Item auto-resolution** (`erpnextResolveCustomer`/`erpnextResolveItem`): ERPNext's
+  Quotation/Sales Invoice/Payment Entry doctypes all require a real `Customer` record and each line
+  item's `item_code` to reference a real `Item` record — there's no way to post a sales document
+  against a bare name string. Both helpers search by name first (`customer_name`/`item_name`) and
+  create a minimal record (Item as a non-stock `Services`-group item) on no match, rather than
+  requiring the client to pre-map every lead/service to exact ERPNext master data before a document
+  can sync. This trades some chart-of-accounts tidiness for the document actually going through — a
+  client who wants tighter control can still pre-create the exact Customer/Item names in ERPNext
+  themselves, since auto-create only fires when no matching name is found.
+- **Tax**: a flat percentage line (`charge_type:'On Net Total'`) is added to the ERPNext document
+  when `tax_pct > 0`, with no `account_head` specified — ERPNext will require one to actually save
+  the tax row in most chart-of-accounts setups; this is a known gap deliberately left for the
+  deployer to map (which income/tax account a synced document should post against depends entirely
+  on that client's own ERPNext accounts, which this integration has no way to know).
+- **Failure handling**: every sync failure — HTTP error, a thrown Customer/Item create, ERPNext's
+  own validation errors (parsed from Frappe's `exception`/`_server_messages` response shape via
+  `erpnextErrorMessage`) — is caught, written back onto the document (`erpnext_sync_status:'failed'`,
+  `erpnext_sync_error`, visible as a badge with the error as a tooltip in `accounting.html`), and
+  reported via `reportOpsError`. The local document record is never blocked on ERPNext sync
+  succeeding — create/convert/PDF/send all work with or without ERPNext connected; sync is always a
+  separate, retriable action.
+- **Frappe REST API assumptions**: token auth (`Authorization: token {api_key}:{api_secret}`),
+  standard resource endpoints (`POST /api/resource/<Doctype>`, `GET
+  /api/resource/<Doctype>?filters=[[...]]`) — not live-verified against a real Frappe Cloud site in
+  this session (no ERPNext instance reachable from this environment); test a real sync against your
+  own site's chart of accounts/tax setup before relying on it for real customer documents.
+
 ## Billing module (Stripe — self-serve portal, add-on purchases, usage dashboard)
 Implements: a self-serve billing portal (invoices, upgrade/downgrade, renewal date), in-app
 add-on purchases (WhatsApp credits, voice add-on), and a client-facing usage dashboard
