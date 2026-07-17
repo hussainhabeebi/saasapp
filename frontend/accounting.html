@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Leadvyne · Accounting</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+<style>
+:root{
+  --bg:#FFF7ED;--card:#FFFFFF;--ink:#241A0C;--muted:#8A6D4B;
+  --accent:#C2410C;--accent-ink:#9A3412;--accent-soft:#FFEDD5;
+  --line:#FDE8CE;--ls:#FBCFA0;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --r:16px;--r-sm:10px;
+  --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column}
+
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:56px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 1px 0 var(--line)}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700;display:inline-flex;align-items:center;gap:6px}
+.brand span{color:var(--accent)}
+.chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
+.hback{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body)}
+.hback:hover{background:var(--bg)}
+
+#tabs{background:var(--card);border-bottom:1px solid var(--line);display:flex;padding:0 20px;flex-shrink:0;overflow-x:auto}
+.tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap}
+.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+
+main{flex:1;overflow-y:auto;overflow-x:hidden;padding:20px;min-height:0}
+.inner{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.page{display:none}
+.page.active{display:block}
+
+.card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:20px;box-shadow:var(--shadow)}
+.card-title{font-family:var(--disp);font-size:14px;font-weight:700;color:var(--muted);margin-bottom:14px;text-transform:uppercase;letter-spacing:.04em}
+.card-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.card-title-row .card-title{margin-bottom:0}
+.card-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--bg)}
+.badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;background:var(--accent-soft);color:var(--accent-ink)}
+.badge.draft{background:#F1F5F9;color:#475569}
+.badge.sent{background:#DBEAFE;color:#1E3A8A}
+.badge.paid,.badge.accepted{background:#D1FAE5;color:#065F46}
+.badge.void{background:#FEE2E2;color:#991B1B}
+.badge.synced{background:#D1FAE5;color:#065F46}
+.badge.failed{background:#FEE2E2;color:#991B1B;cursor:help}
+.badge.pending,.badge.notsynced{background:#F1F5F9;color:#475569}
+
+.search-input{border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:200px}
+.search-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.save-btn{background:linear-gradient(135deg,#C2410C,#F97316);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
+.save-btn:hover{opacity:.9}
+.save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)}
+.save-btn:disabled{opacity:.5;cursor:default}
+.save-msg{font-size:12px;color:var(--accent);align-self:center}
+.save-msg.err{color:#DC2626}
+.icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
+.icon-btn:hover{background:var(--bg)}
+.icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
+.row-actions{display:flex;gap:6px;flex-wrap:wrap}
+
+.s-lbl{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;display:block;text-transform:uppercase;letter-spacing:.04em}
+.s-input,select.s-input{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg)}
+.s-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.s-hint{font-size:12px;color:var(--muted);margin-top:5px}
+
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(36,26,12,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal-card{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal-title{font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:18px}
+.modal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+
+.li-row{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.li-row input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;background:var(--bg)}
+
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-row td{text-align:center;padding:30px;color:var(--muted)}
+.empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty-icon{font-size:36px;margin-bottom:10px}
+</style>
+</head>
+<body>
+
+<div id="app" style="display:none;height:100%;display:flex;flex-direction:column">
+  <header>
+    <span class="brand">Leadvyne<span>.</span></span>
+    <span class="chip">💰 Accounting</span>
+    <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
+  </header>
+
+  <div id="tabs">
+    <button class="tab active" data-tab="documents" onclick="showTab('documents')">🧾 Documents</button>
+    <button class="tab" data-tab="erpnext" onclick="showTab('erpnext')">⚙️ ERPNext</button>
+  </div>
+
+  <main>
+  <div class="inner">
+
+    <!-- DOCUMENTS: Quotation → Invoice → Receipt, all tied to an existing lead -->
+    <div id="tabDocuments" class="page active">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Quotations, Invoices &amp; Receipts</div>
+          <div class="card-actions">
+            <input class="search-input" id="docSearch" type="text" placeholder="🔍 Search…" oninput="renderDocumentsTable()">
+            <select class="s-input" id="docFilterType" style="width:auto" onchange="renderDocumentsTable()">
+              <option value="">All types</option>
+              <option value="quotation">Quotations</option>
+              <option value="invoice">Invoices</option>
+              <option value="receipt">Receipts</option>
+            </select>
+            <button class="save-btn" onclick="openDocumentModal('quotation')">+ New Quotation</button>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Title</th><th>Type</th><th>Lead</th><th>Total</th><th>Status</th><th>ERPNext</th><th>Actions</th></tr></thead>
+            <tbody id="documentsTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ERPNEXT CONNECTION — per-client Frappe Cloud credentials, one-way push only -->
+    <div id="tabErpnext" class="page">
+      <div class="card">
+        <div class="card-title">⚙️ ERPNext Connection</div>
+        <div class="s-hint" style="margin-bottom:16px">Connect this account's own ERPNext (Frappe Cloud) site — when you create a Quotation, Invoice or Receipt here, "Sync to ERPNext" pushes it there as a real Quotation / Sales Invoice / Payment Entry. One-way only (create in ERPNext, never pulled back). The customer and each line item are matched by name in ERPNext, or created automatically if no match exists.</div>
+        <div class="modal-grid" style="margin-bottom:0">
+          <div><label class="s-lbl">Frappe Cloud Site URL</label><input class="s-input" id="erpBaseUrl" placeholder="https://yoursite.frappe.cloud"></div>
+          <div><label class="s-lbl">API Key</label><input class="s-input" id="erpApiKey" placeholder="API Key"></div>
+          <div><label class="s-lbl">API Secret</label><input class="s-input" id="erpApiSecret" type="password" placeholder="API Secret"></div>
+        </div>
+        <div class="s-hint">Generate an API Key/Secret pair in ERPNext under Settings → My Settings → API Access.</div>
+        <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+          <button class="save-btn" onclick="saveErpnextSettings()">Save Connection</button>
+          <span class="save-msg" id="erpSaveMsg"></span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  </main>
+</div>
+
+<!-- ── DOCUMENT MODAL ── -->
+<div class="modal-overlay" id="documentModal">
+  <div class="modal-card">
+    <div class="modal-title" id="documentModalTitle">New Quotation</div>
+    <input type="hidden" id="docId">
+    <input type="hidden" id="docType" value="quotation">
+    <div class="modal-grid">
+      <div><label class="s-lbl">Title</label><input class="s-input" id="docTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
+      <div><label class="s-lbl">Lead / Customer</label>
+        <input class="s-input" id="docLeadSearch" placeholder="🔍 Search leads…" oninput="renderLeadPicker()">
+        <select class="s-input" id="docLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+      </div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="docCurrency" placeholder="e.g. AED" value="AED"></div>
+      <div><label class="s-lbl">Tax %</label><input class="s-input" id="docTaxPct" type="number" value="0"></div>
+    </div>
+    <label class="s-lbl">Line Items</label>
+    <div id="docLineItems"></div>
+    <button class="save-btn sec" type="button" onclick="addLineItemRow()" style="margin-top:6px">+ Add Line Item</button>
+    <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docTotalPreview">Total: —</div>
+    <div style="margin-top:14px">
+      <label class="s-lbl">Notes</label>
+      <textarea class="s-input" id="docNotes" rows="2" style="resize:vertical"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeDocumentModal()">Cancel</button>
+      <button class="save-btn" onclick="saveDocument()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// All authenticated calls go through the Cloudflare Worker (master NocoDB token stays
+// server-side there) — same /nocodb/* passthrough dashboard.html itself uses for CLIENTS/LEADS,
+// plus dedicated /accounting/* routes for Documents (a table the generic passthrough's
+// cross-tenant guard doesn't cover — see worker.js's Accounting module comment). REPLACE with
+// your deployed Worker URL if this file is ever opened outside dashboard.html's iframe.
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const CONFIG = {
+  NOCODB_BASE: WORKER_BASE+'/nocodb',
+  CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj',
+  LEADS_TABLE_ID: 'mvg6rcw0ia5qqrx',
+  WORKER_BASE
+};
+
+const params = new URLSearchParams(location.search);
+let clientId = params.get('client') || '';
+let sessionToken = params.get('token') || '';
+const isEmbedded = params.get('embed') === '1';
+let clientRecord = null;
+let allLeads = [];
+let allDocuments = [];
+let documentsLoadError = '';
+
+function esc(str){ return String(str==null?'':str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(str){ return esc(str).replace(/"/g,'&quot;'); }
+function fmtMoney(n,cur){ return `${cur||''} ${Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2})}`.trim(); }
+
+function ncAuthHeaders(extra){ return {'Authorization':'Bearer '+sessionToken, ...extra}; }
+async function ncGet(url){ const r=await fetch(url,{headers:ncAuthHeaders()}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+async function ncPatch(url,body){ const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+async function acctFetch(path,opts){
+  const r=await fetch(`${WORKER_BASE}${path}`,{...opts,headers:ncAuthHeaders({'Content-Type':'application/json',...(opts&&opts.headers)})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||data.error) throw new Error(data.error||('HTTP '+r.status));
+  return data;
+}
+// Same retry-and-verify save as dashboard.html's patchClient/b2b.html's own copy — a field that
+// silently no-ops right after this account's first-ever save is the same race documented there.
+async function patchClient(fields){
+  const MAX=3; let lastErr=null;
+  for(let attempt=1; attempt<=MAX; attempt++){
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId),...fields});
+    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${Number(clientId)}`);
+    const stuck=Object.keys(fields).filter(k=>String(fresh[k]??'')!==String(fields[k]??''));
+    if(!stuck.length){ Object.assign(clientRecord,fresh); return; }
+    lastErr=new Error('Save did not take effect for: '+stuck.join(', '));
+    if(attempt<MAX) await new Promise(r=>setTimeout(r,900*attempt));
+  }
+  throw lastErr;
+}
+
+async function init(){
+  if(isEmbedded){ const hdr=document.querySelector('header'); if(hdr) hdr.style.display='none'; }
+  if(!clientId){ clientId=prompt('Enter your Client ID:')||''; }
+  if(!clientId||!sessionToken){ document.body.innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>Missing client/session — open this page from the Accounting tab inside your dashboard.</div>'; return; }
+  document.getElementById('app').style.display='flex';
+  try{
+    clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
+    document.getElementById('erpBaseUrl').value=clientRecord.erpnext_base_url||'';
+    document.getElementById('erpApiKey').value=clientRecord.erpnext_api_key||'';
+    document.getElementById('erpApiSecret').value=clientRecord.erpnext_api_secret||'';
+    await loadLeads();
+    // Documents lives in its own dedicated NocoDB table (ACCOUNTING_DOCUMENTS_TABLE in worker.js)
+    // that has to be created once by hand — see SETUP.md "Accounting module" — so it can fail
+    // (e.g. ERR_TABLE_NOT_FOUND before that setup step is done) without taking down the ERPNext
+    // settings tab.
+    try{ await loadDocuments(); }catch(e){ documentsLoadError=e.message; allDocuments=[]; }
+    renderDocumentsTable();
+  }catch(e){
+    document.getElementById('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+async function loadLeads(){
+  const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=2000&sort=-Date`);
+  allLeads=data.list||[];
+}
+async function loadDocuments(){
+  const data=await acctFetch('/accounting/documents',{method:'GET'});
+  allDocuments=data.list||[];
+}
+
+function showTab(name){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
+  document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+}
+
+/* ── ERPNEXT SETTINGS ── */
+async function saveErpnextSettings(){
+  const msg=document.getElementById('erpSaveMsg');
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    await patchClient({
+      erpnext_base_url:document.getElementById('erpBaseUrl').value.trim(),
+      erpnext_api_key:document.getElementById('erpApiKey').value.trim(),
+      erpnext_api_secret:document.getElementById('erpApiSecret').value.trim(),
+    });
+    msg.textContent='✓ Saved'; msg.className='save-msg';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  setTimeout(()=>msg.textContent='',3000);
+}
+
+/* ── DOCUMENTS (Quotation / Invoice / Receipt) ── */
+const DOC_TYPE_LABEL={quotation:'🧾 Quotation', invoice:'📄 Invoice', receipt:'🧾 Receipt'};
+const DOC_TYPE_TITLE={quotation:'New Quotation', invoice:'New Invoice', receipt:'New Receipt'};
+
+function openDocumentModal(type, prefill){
+  document.getElementById('documentModalTitle').textContent=DOC_TYPE_TITLE[type]||'New Document';
+  document.getElementById('docId').value='';
+  document.getElementById('docType').value=type;
+  document.getElementById('docTitle').value=prefill?.title||'';
+  document.getElementById('docLeadSearch').value='';
+  document.getElementById('docCurrency').value=prefill?.currency||clientRecord?.deal_currency||'AED';
+  document.getElementById('docTaxPct').value=prefill?.tax_pct||'0';
+  document.getElementById('docNotes').value=prefill?.notes||'';
+  document.getElementById('docLineItems').innerHTML='';
+  const items=prefill?.line_items?.length?prefill.line_items:[{name:'',qty:1,price:0}];
+  items.forEach(li=>addLineItemRow(li));
+  renderLeadPicker();
+  if(prefill?.lead_id) document.getElementById('docLeadId').value=prefill.lead_id;
+  document.getElementById('documentModal').classList.add('active');
+  updateDocTotalPreview();
+}
+function closeDocumentModal(){ document.getElementById('documentModal').classList.remove('active'); }
+function renderLeadPicker(){
+  const q=(document.getElementById('docLeadSearch').value||'').toLowerCase();
+  const sel=document.getElementById('docLeadId');
+  const current=sel.value;
+  const matches=q?allLeads.filter(l=>(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)):allLeads.slice(0,200);
+  sel.innerHTML='<option value="">— None —</option>'+matches.map(l=>`<option value="${l.Id}">${esc(l.Name||'Unknown')} — ${esc(l.Phone||'')}</option>`).join('');
+  if([...sel.options].some(o=>o.value===current)) sel.value=current;
+}
+function addLineItemRow(li){
+  li=li||{name:'',qty:1,price:0};
+  const row=document.createElement('div'); row.className='li-row';
+  row.innerHTML=`
+    <input class="li-name" placeholder="Product / description" value="${escAttr(li.name)}">
+    <input class="li-qty" type="number" placeholder="Qty" value="${esc(li.qty)}">
+    <input class="li-price" type="number" placeholder="Price" value="${esc(li.price)}">
+    <span class="li-total" style="font-family:var(--mono);font-size:13px;text-align:right"></span>
+    <button class="icon-btn danger" type="button" onclick="this.parentElement.remove();updateDocTotalPreview()">✕</button>`;
+  document.getElementById('docLineItems').appendChild(row);
+  row.querySelectorAll('input').forEach(el=>el.addEventListener('input',updateDocTotalPreview));
+  updateDocTotalPreview();
+}
+function collectLineItems(){
+  return [...document.querySelectorAll('#docLineItems .li-row')].map(row=>({
+    name:row.querySelector('.li-name').value.trim(),
+    qty:Number(row.querySelector('.li-qty').value)||0,
+    price:Number(row.querySelector('.li-price').value)||0
+  })).filter(li=>li.name);
+}
+function updateDocTotalPreview(){
+  const items=[...document.querySelectorAll('#docLineItems .li-row')];
+  let subtotal=0;
+  items.forEach(row=>{
+    const qty=Number(row.querySelector('.li-qty').value)||0;
+    const price=Number(row.querySelector('.li-price').value)||0;
+    const total=qty*price;
+    subtotal+=total;
+    row.querySelector('.li-total').textContent=total.toLocaleString();
+  });
+  const taxPct=Number(document.getElementById('docTaxPct').value)||0;
+  const cur=document.getElementById('docCurrency').value||'';
+  document.getElementById('docTotalPreview').textContent=`Total: ${fmtMoney(subtotal+subtotal*taxPct/100,cur)}`;
+}
+document.getElementById('docTaxPct').addEventListener('input',updateDocTotalPreview);
+
+async function saveDocument(){
+  const title=document.getElementById('docTitle').value.trim();
+  if(!title){ alert('Please give this document a title.'); return; }
+  const lineItems=collectLineItems();
+  if(!lineItems.length){ alert('Add at least one line item.'); return; }
+  const body={
+    type:document.getElementById('docType').value,
+    title, lead_id:document.getElementById('docLeadId').value||null,
+    currency:document.getElementById('docCurrency').value.trim(),
+    tax_pct:Number(document.getElementById('docTaxPct').value)||0,
+    notes:document.getElementById('docNotes').value.trim(),
+    line_items:lineItems
+  };
+  try{
+    const created=await acctFetch('/accounting/documents',{method:'POST',body:JSON.stringify(body)});
+    allDocuments.unshift(created);
+    closeDocumentModal();
+    renderDocumentsTable();
+  }catch(e){ alert('Failed to save: '+e.message); }
+}
+
+function erpBadge(doc){
+  if(!doc.erpnext_sync_status) return '<span class="badge notsynced">Not synced</span>';
+  if(doc.erpnext_sync_status==='synced') return `<span class="badge synced" title="${escAttr(doc.erpnext_doc_name||'')}">✓ Synced</span>`;
+  if(doc.erpnext_sync_status==='failed') return `<span class="badge failed" title="${escAttr(doc.erpnext_sync_error||'Sync failed')}">⚠ Failed</span>`;
+  return '<span class="badge pending">Pending</span>';
+}
+
+function renderDocumentsTable(){
+  const q=(document.getElementById('docSearch').value||'').toLowerCase();
+  const typeFilter=document.getElementById('docFilterType').value;
+  const tbody=document.getElementById('documentsTbody');
+  if(documentsLoadError){
+    tbody.innerHTML=`<tr><td colspan="7" class="empty-state"><div class="empty-icon">⚠️</div>Documents aren't set up yet (${esc(documentsLoadError)}).<br>Create the accounting documents table in NocoDB and set <code>ACCOUNTING_DOCUMENTS_TABLE</code> — see SETUP.md "Accounting module".</td></tr>`;
+    return;
+  }
+  const rows=allDocuments.filter(d=>(!q||(d.title||'').toLowerCase().includes(q))&&(!typeFilter||d.type===typeFilter));
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No documents yet — create a quotation above, then convert it to an invoice and receipt as the deal progresses.</td></tr>'; return; }
+  const erpReady=!!(clientRecord?.erpnext_base_url&&clientRecord?.erpnext_api_key&&clientRecord?.erpnext_api_secret);
+  const convertTo={quotation:'invoice', invoice:'receipt'};
+  tbody.innerHTML=rows.map(d=>{
+    const lead=allLeads.find(l=>String(l.Id)===String(d.lead_id));
+    const nextType=convertTo[d.type];
+    return `<tr>
+      <td>${esc(d.title||'')}</td>
+      <td>${DOC_TYPE_LABEL[d.type]||esc(d.type)}</td>
+      <td>${lead?esc(lead.Name||lead.Phone):'—'}</td>
+      <td>${fmtMoney(d.total,d.currency)}</td>
+      <td><span class="badge ${esc(d.status||'draft')}">${esc((d.status||'draft').toUpperCase())}</span></td>
+      <td>${erpBadge(d)}</td>
+      <td class="row-actions">
+        <button class="icon-btn" title="Download PDF" onclick="downloadDocumentPdf(${d.Id})">⬇️</button>
+        ${nextType?`<button class="icon-btn" title="Convert to ${nextType}" onclick="convertDocument(${d.Id},'${nextType}')">→ ${DOC_TYPE_LABEL[nextType]}</button>`:''}
+        <button class="icon-btn" title="${erpReady?'Sync to ERPNext':'Connect ERPNext first (⚙️ tab)'}" ${erpReady?'':'disabled'} onclick="syncDocumentToErpnext(${d.Id})">🔄 ERPNext</button>
+        <button class="icon-btn danger" onclick="deleteDocument(${d.Id})">🗑</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function convertDocument(id, toType){
+  if(!confirm(`Create a new draft ${toType} from this document?`)) return;
+  try{
+    const created=await acctFetch('/accounting/documents/convert',{method:'POST',body:JSON.stringify({id})});
+    allDocuments.unshift(created);
+    renderDocumentsTable();
+    alert(`Draft ${toType} created — edit and send it whenever you're ready.`);
+  }catch(e){ alert('Failed to convert: '+e.message); }
+}
+
+async function syncDocumentToErpnext(id){
+  const doc=allDocuments.find(d=>d.Id===id);
+  if(doc) doc.erpnext_sync_status='pending';
+  renderDocumentsTable();
+  try{
+    const result=await acctFetch('/accounting/documents/sync-erpnext',{method:'POST',body:JSON.stringify({id})});
+    if(doc){ doc.erpnext_sync_status='synced'; doc.erpnext_doc_name=result.erpnext_doc_name; doc.erpnext_sync_error=''; }
+    renderDocumentsTable();
+  }catch(e){
+    if(doc){ doc.erpnext_sync_status='failed'; doc.erpnext_sync_error=e.message; }
+    renderDocumentsTable();
+    alert('ERPNext sync failed: '+e.message);
+  }
+}
+
+async function deleteDocument(id){
+  if(!confirm('Delete this document?')) return;
+  try{ await acctFetch('/accounting/documents',{method:'DELETE',body:JSON.stringify({id})}); allDocuments=allDocuments.filter(d=>d.Id!==id); renderDocumentsTable(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── PDF EXPORT — simple itemized table, no logo/branding complexity (that lives in the
+   Agency Quotation feature in dashboard.html; this is deliberately plainer since it spans every
+   industry, not just travel). ── */
+function downloadDocumentPdf(id){
+  const d=allDocuments.find(x=>x.Id===id);
+  if(!d) return;
+  const lead=allLeads.find(l=>String(l.Id)===String(d.lead_id));
+  let items=[]; try{ items=JSON.parse(d.line_items_json||'[]'); }catch(e){}
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({unit:'pt',format:'a4'});
+  const marginX=40;
+  let y=50;
+  const typeLabel={quotation:'Quotation', invoice:'Invoice', receipt:'Receipt'}[d.type]||'Document';
+
+  doc.setFont('helvetica','bold');doc.setFontSize(18);
+  doc.text(clientRecord?.client_name||typeLabel,marginX,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(100);
+  doc.text(`${typeLabel} #${d.Id}`,marginX,y+18);
+  doc.setTextColor(0);
+  y+=50;
+
+  doc.setFontSize(11);
+  doc.text(`Prepared for: ${lead?(lead.Name||lead.Phone):'Customer'}`,marginX,y);
+  doc.text(`Date: ${d.created_at?new Date(d.created_at).toLocaleDateString():new Date().toLocaleDateString()}`,400,y);
+  y+=24;
+
+  doc.autoTable({
+    startY:y,
+    margin:{left:marginX,right:marginX},
+    head:[['Item','Qty','Unit Price','Line Total']],
+    body:items.map(it=>[it.name,String(it.qty),fmtMoney(it.price,d.currency),fmtMoney((Number(it.qty)||0)*(Number(it.price)||0),d.currency)]),
+    foot:[
+      ['','','Subtotal',fmtMoney(d.subtotal,d.currency)],
+      ['','',`Tax (${d.tax_pct||0}%)`,fmtMoney(d.tax_amount,d.currency)],
+      ['','','Total',fmtMoney(d.total,d.currency)],
+    ],
+    theme:'grid',
+    headStyles:{fillColor:[194,65,12]},
+    footStyles:{fillColor:[255,247,237],textColor:0,fontStyle:'bold'},
+    styles:{fontSize:10},
+  });
+
+  y=((doc.lastAutoTable&&doc.lastAutoTable.finalY)||y+40)+26;
+  if(d.notes){
+    doc.setFont('helvetica','bold');doc.setFontSize(11);
+    doc.text('Notes',marginX,y);
+    y+=16;
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
+    doc.splitTextToSize(d.notes,515).forEach(line=>{ doc.text(line,marginX,y); y+=12; });
+  }
+
+  doc.save(`${typeLabel}-${(lead?(lead.Name||lead.Phone):'document').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
+}
+
+init();
+</script>
+</body>
+</html>

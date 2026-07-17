@@ -35,6 +35,13 @@ const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
 // prefers the env var when set, so either path works.
 const B2B_DOCUMENTS_TABLE = 'REPLACE_B2B_DOCUMENTS_TABLE_ID';
 function b2bDocumentsTable(env){ return env.B2B_DOCUMENTS_TABLE || B2B_DOCUMENTS_TABLE; }
+// Create this table once in NocoDB (fields: client_id, lead_id, type, title, line_items_json,
+// currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_doctype,
+// erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, created_at — see
+// SETUP.md "Accounting module"), then set it as ACCOUNTING_DOCUMENTS_TABLE the same way
+// B2B_DOCUMENTS_TABLE above works (env var preferred, falls back to the placeholder below).
+const ACCOUNTING_DOCUMENTS_TABLE = 'REPLACE_ACCOUNTING_DOCUMENTS_TABLE_ID';
+function accountingDocumentsTable(env){ return env.ACCOUNTING_DOCUMENTS_TABLE || ACCOUNTING_DOCUMENTS_TABLE; }
 
 function corsHeaders(origin, env){
   const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -5912,6 +5919,276 @@ async function handleB2bDocPublicAccept(request, env, slug){
   return json({ok:true, accepted_at:acceptedAt});
 }
 
+/* ── ACCOUNTING MODULE (frontend/dashboard.html — "💰 Accounting") — Quotation → Invoice →
+   Receipt lifecycle for any client's existing leads, with optional one-way push to a client's own
+   ERPNext (Frappe Cloud) site. Same ACCOUNTING_DOCUMENTS_TABLE-uses-a-lowercase-client_id-column
+   reasoning as B2B_DOCUMENTS_TABLE above (see that module's comment) — dedicated routes, not the
+   generic /nocodb/* passthrough, since ownership has to be enforced server-side here too.
+   Deliberately industry-agnostic (not gated behind b2b_enabled or any industry flag) — any
+   client's lead can be quoted/invoiced regardless of what they sell. ── */
+
+function computeAccountingDocTotals(lineItems, taxPct){
+  let subtotal=0;
+  (Array.isArray(lineItems)?lineItems:[]).forEach(li=>{ subtotal += (Number(li.qty)||0) * (Number(li.price)||0); });
+  const pct=Number(taxPct)||0;
+  const taxAmount=subtotal*(pct/100);
+  return {subtotal, taxAmount, total:subtotal+taxAmount};
+}
+
+async function findAccountingDocument(env, id){
+  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records/${id}`);
+  if(!r.ok) return null;
+  return r.json().catch(()=>null);
+}
+
+async function handleAccountingDocumentsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const leadId=url.searchParams.get('lead_id');
+  let where=`(client_id,eq,${payload.cid})`;
+  if(leadId) where+=`~and(lead_id,eq,${leadId})`;
+  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records?where=${encodeURIComponent(where)}&sort=-created_at&limit=500`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({list:data.list||[]});
+}
+
+async function handleAccountingDocumentCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const VALID_TYPES=new Set(['quotation','invoice','receipt']);
+  const type=VALID_TYPES.has(body.type)?body.type:'quotation';
+  const lineItems=Array.isArray(body.line_items)?body.line_items:[];
+  const taxPct=Number(body.tax_pct)||0;
+  const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, taxPct);
+  const fields={
+    client_id:String(payload.cid), lead_id:body.lead_id?String(body.lead_id):'',
+    type, title:String(body.title||'').trim().slice(0,200),
+    line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
+    subtotal, tax_pct:taxPct, tax_amount:taxAmount, total, status:'draft',
+    linked_doc_id:body.linked_doc_id?String(body.linked_doc_id):'',
+    notes:String(body.notes||'').trim().slice(0,1000),
+    erpnext_doctype:'', erpnext_doc_name:'', erpnext_sync_status:'', erpnext_sync_error:'', erpnext_synced_at:'',
+    created_at:new Date().toISOString(),
+  };
+  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'POST', body:fields});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({...fields, Id:data.Id});
+}
+
+async function handleAccountingDocumentUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findAccountingDocument(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const fields={Id:Number(body.id)};
+  if(body.title!==undefined) fields.title=String(body.title).trim().slice(0,200);
+  if(body.status!==undefined) fields.status=String(body.status);
+  if(body.notes!==undefined) fields.notes=String(body.notes).trim().slice(0,1000);
+  if(body.currency!==undefined) fields.currency=String(body.currency).trim().slice(0,10);
+  if(Array.isArray(body.line_items)){
+    const taxPct=body.tax_pct!==undefined?(Number(body.tax_pct)||0):(Number(existing.tax_pct)||0);
+    const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, taxPct);
+    fields.line_items_json=JSON.stringify(body.line_items);
+    fields.subtotal=subtotal; fields.tax_pct=taxPct; fields.tax_amount=taxAmount; fields.total=total;
+  }
+  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'PATCH', body:fields});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({ok:true});
+}
+
+async function handleAccountingDocumentDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findAccountingDocument(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'DELETE', body:{Id:Number(body.id)}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({ok:true});
+}
+
+// Quotation → Invoice → Receipt — a new draft document in the next stage, pre-filled from the
+// source (line items, totals, lead), linked back via linked_doc_id. Deliberately a new record
+// rather than mutating the source in place — the original quotation/invoice should stay exactly as
+// it was sent, since that's what the customer actually saw/agreed to.
+const ACCOUNTING_CONVERT_MAP={quotation:'invoice', invoice:'receipt'};
+async function handleAccountingDocumentConvert(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const src=await findAccountingDocument(env, body.id);
+  if(!src || String(src.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const toType=ACCOUNTING_CONVERT_MAP[src.type];
+  if(!toType) return json({error:`Cannot convert a ${src.type} — only quotation→invoice and invoice→receipt are supported`}, 400);
+  const fields={
+    client_id:String(payload.cid), lead_id:src.lead_id||'',
+    type:toType, title:src.title||'', line_items_json:src.line_items_json||'[]',
+    currency:src.currency||'', subtotal:src.subtotal||0, tax_pct:src.tax_pct||0, tax_amount:src.tax_amount||0, total:src.total||0,
+    status:'draft', linked_doc_id:String(src.Id), notes:src.notes||'',
+    erpnext_doctype:'', erpnext_doc_name:'', erpnext_sync_status:'', erpnext_sync_error:'', erpnext_synced_at:'',
+    created_at:new Date().toISOString(),
+  };
+  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'POST', body:fields});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({...fields, Id:data.Id});
+}
+
+// ── ERPNext (Frappe) push integration — per-client credentials (erpnext_base_url/
+// erpnext_api_key/erpnext_api_secret, CLIENTS fields, same plaintext-on-CLIENTS convention as
+// wa_token/chatwoot_token/openrouter_key elsewhere in this file), since each of THIS app's clients
+// runs their own separate ERPNext/Frappe Cloud site — one-way push only (create in ERPNext when a
+// document is created here), never pulled back. Frappe's REST API uses token auth
+// (`Authorization: token {api_key}:{api_secret}`) — see https://frappeframework.com/docs for the
+// resource API shape assumed below (POST /api/resource/<Doctype>, filters as a JSON array).
+function erpnextConfigured(c){ return !!(c.erpnext_base_url && c.erpnext_api_key && c.erpnext_api_secret); }
+async function erpnextFetch(c, path, options={}){
+  const base=(c.erpnext_base_url||'').trim().replace(/\/+$/,'');
+  return fetch(`${base}${path}`, {
+    ...options,
+    headers:{Authorization:`token ${c.erpnext_api_key}:${c.erpnext_api_secret}`, 'Content-Type':'application/json', ...(options.headers||{})}
+  });
+}
+function erpnextErrorMessage(data, status){
+  // Frappe's error shape varies — validation errors come back as `exception` (a formatted string)
+  // or `_server_messages` (a JSON-encoded array of {message} objects); neither is guaranteed.
+  if(data?.exception) return String(data.exception).slice(0,500);
+  if(data?._server_messages){
+    try{ const msgs=JSON.parse(data._server_messages); return msgs.map(m=>{ try{ return JSON.parse(m).message; }catch(e){ return m; } }).join('; ').slice(0,500); }
+    catch(e){ /* fall through */ }
+  }
+  return `HTTP ${status}`;
+}
+
+// Finds an existing Customer by name, or creates a minimal one. ERPNext's Quotation/Sales
+// Invoice/Payment Entry doctypes all require a real Customer record to exist first — there's no
+// way to post a sales document against a bare name string.
+async function erpnextResolveCustomer(c, leadName, leadPhone){
+  const name=String(leadName||leadPhone||'Customer').trim().slice(0,140)||'Customer';
+  const filters=encodeURIComponent(JSON.stringify([['customer_name','=',name]]));
+  const searchR=await erpnextFetch(c, `/api/resource/Customer?filters=${filters}&limit_page_length=1`);
+  const searchData=await searchR.json().catch(()=>({}));
+  if(searchR.ok && searchData?.data?.[0]?.name) return searchData.data[0].name;
+  const createR=await erpnextFetch(c, '/api/resource/Customer', {method:'POST', body:JSON.stringify({customer_name:name, customer_type:'Individual'})});
+  const createData=await createR.json().catch(()=>({}));
+  if(!createR.ok) throw new Error('Customer — '+erpnextErrorMessage(createData, createR.status));
+  return createData?.data?.name;
+}
+
+// Finds an existing Item by name, or creates a minimal non-stock service item. Same "must exist
+// first" constraint as Customer above — a line item's `item_code` has to reference a real Item.
+// Auto-creating on first use (rather than requiring the client to pre-map every service to an
+// ERPNext item code) trades some chart-of-accounts tidiness for the document actually syncing
+// instead of hard-failing on the first unmapped line item — a client who wants tighter control can
+// still pre-create the exact Item names in ERPNext themselves, since this only creates one when no
+// matching name is found.
+async function erpnextResolveItem(c, itemName){
+  const name=String(itemName||'Service').trim().slice(0,140)||'Service';
+  const filters=encodeURIComponent(JSON.stringify([['item_name','=',name]]));
+  const searchR=await erpnextFetch(c, `/api/resource/Item?filters=${filters}&limit_page_length=1`);
+  const searchData=await searchR.json().catch(()=>({}));
+  if(searchR.ok && searchData?.data?.[0]?.name) return searchData.data[0].name;
+  const createR=await erpnextFetch(c, '/api/resource/Item', {method:'POST', body:JSON.stringify({item_code:name, item_name:name, item_group:'Services', is_stock_item:0, stock_uom:'Nos'})});
+  const createData=await createR.json().catch(()=>({}));
+  if(!createR.ok) throw new Error('Item — '+erpnextErrorMessage(createData, createR.status));
+  return createData?.data?.name;
+}
+
+// Pushes a quotation/invoice as a real ERPNext Quotation or Sales Invoice — resolves the customer
+// and every line item's Item first (both required to exist before the parent document can be
+// created), then posts the document with a flat percentage tax line if tax_pct is set. Returns the
+// new document's ERPNext name (e.g. "SINV-2026-00001").
+async function erpnextPushSalesDoc(c, erpDoctype, doc, lead){
+  const customer=await erpnextResolveCustomer(c, lead?.Name, lead?.Phone);
+  const lineItems=engineParseJsonField(doc.line_items_json, []);
+  const items=[];
+  for(const li of lineItems){
+    const itemCode=await erpnextResolveItem(c, li.name);
+    items.push({item_code:itemCode, qty:Number(li.qty)||1, rate:Number(li.price)||0});
+  }
+  if(!items.length) throw new Error('No line items to send');
+  const payload={customer, items};
+  const taxPct=Number(doc.tax_pct)||0;
+  if(taxPct>0) payload.taxes=[{charge_type:'On Net Total', description:'Tax', rate:taxPct, account_head:''}];
+  const r=await erpnextFetch(c, `/api/resource/${encodeURIComponent(erpDoctype)}`, {method:'POST', body:JSON.stringify(payload)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
+  return data?.data?.name;
+}
+
+// Pushes a receipt as an ERPNext Payment Entry — a "Receive" payment from the customer, linked
+// back to the source invoice's own ERPNext document if one was pushed (allocates the payment
+// against that invoice; without a linked/synced invoice it's still recorded as an unallocated
+// receipt against the customer rather than blocking the sync entirely).
+async function erpnextPushPaymentEntry(c, doc, lead, invoiceErpnextName){
+  const customer=await erpnextResolveCustomer(c, lead?.Name, lead?.Phone);
+  const amount=Number(doc.total)||0;
+  const payload={
+    payment_type:'Receive', party_type:'Customer', party:customer,
+    paid_amount:amount, received_amount:amount,
+    references:invoiceErpnextName?[{reference_doctype:'Sales Invoice', reference_name:invoiceErpnextName, allocated_amount:amount}]:[],
+  };
+  const r=await erpnextFetch(c, '/api/resource/Payment Entry', {method:'POST', body:JSON.stringify(payload)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
+  return data?.data?.name;
+}
+
+const ACCOUNTING_ERPNEXT_DOCTYPE_MAP={quotation:'Quotation', invoice:'Sales Invoice', receipt:'Payment Entry'};
+async function handleAccountingDocumentSyncErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const doc=await findAccountingDocument(env, body.id);
+  if(!doc || String(doc.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const erpDoctype=ACCOUNTING_ERPNEXT_DOCTYPE_MAP[doc.type];
+  if(!erpDoctype) return json({error:'Unknown document type'}, 400);
+
+  let lead=null;
+  if(doc.lead_id){
+    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${doc.lead_id}`);
+    if(leadR.ok) lead=await leadR.json().catch(()=>null);
+  }
+
+  try{
+    let erpName;
+    if(doc.type==='receipt'){
+      let invoiceErpName=null;
+      if(doc.linked_doc_id){
+        const linked=await findAccountingDocument(env, doc.linked_doc_id);
+        invoiceErpName=linked?.erpnext_doc_name||null;
+      }
+      erpName=await erpnextPushPaymentEntry(c, doc, lead, invoiceErpName);
+    }else{
+      erpName=await erpnextPushSalesDoc(c, erpDoctype, doc, lead);
+    }
+    await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'PATCH', body:{
+      Id:doc.Id, erpnext_doctype:erpDoctype, erpnext_doc_name:erpName||'', erpnext_sync_status:'synced', erpnext_sync_error:'', erpnext_synced_at:new Date().toISOString()
+    }});
+    return json({ok:true, erpnext_doc_name:erpName});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'PATCH', body:{
+      Id:doc.Id, erpnext_sync_status:'failed', erpnext_sync_error:msg
+    }});
+    await reportOpsError(env, 'handleAccountingDocumentSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, docId:doc.Id, type:doc.type});
+    return json({error:'ERPNext sync failed: '+msg}, 502);
+  }
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -6023,6 +6300,12 @@ export default {
       else if(url.pathname==='/b2b/documents' && request.method==='DELETE'){ res=await handleB2bDocumentDelete(request, env); }
       else if(url.pathname.startsWith('/b2b/doc/') && url.pathname.endsWith('/accept') && request.method==='POST'){ res=await handleB2bDocPublicAccept(request, env, url.pathname.slice('/b2b/doc/'.length, -'/accept'.length)); }
       else if(url.pathname.startsWith('/b2b/doc/') && request.method==='GET'){ res=await handleB2bDocPublicGet(request, env, url.pathname.slice('/b2b/doc/'.length)); }
+      else if(url.pathname==='/accounting/documents' && request.method==='GET'){ res=await handleAccountingDocumentsList(request, env); }
+      else if(url.pathname==='/accounting/documents' && request.method==='POST'){ res=await handleAccountingDocumentCreate(request, env); }
+      else if(url.pathname==='/accounting/documents' && request.method==='PATCH'){ res=await handleAccountingDocumentUpdate(request, env); }
+      else if(url.pathname==='/accounting/documents' && request.method==='DELETE'){ res=await handleAccountingDocumentDelete(request, env); }
+      else if(url.pathname==='/accounting/documents/convert' && request.method==='POST'){ res=await handleAccountingDocumentConvert(request, env); }
+      else if(url.pathname==='/accounting/documents/sync-erpnext' && request.method==='POST'){ res=await handleAccountingDocumentSyncErpnext(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);
