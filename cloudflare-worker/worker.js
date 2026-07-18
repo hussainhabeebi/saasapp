@@ -4185,7 +4185,10 @@ async function engineGetLeadState(env, clientId, phone){
   let history=[]; try{ history=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
   const botMsgs=history.filter(m=>m.role==='assistant').slice(-3).map(m=>m.content);
   const looping=botMsgs.length===3 && botMsgs.every(m=>m===botMsgs[0]);
-  const activeHistory=history.length>20?history.slice(-6):history;
+  // 20, not 6 — keep roughly the last 10 customer/bot exchanges as working memory instead of ~3,
+  // so the bot still recalls what was discussed several turns back (ConvHistory itself has no
+  // date-based staleness at all, only this count-based trim of what's "active" for the prompts).
+  const activeHistory=history.length>20?history.slice(-20):history;
   let qualAnswers={}; try{ qualAnswers=JSON.parse(lead?.QualAnswers||'{}'); }catch(e){}
   return {
     lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping,
@@ -4677,10 +4680,11 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // reply, not a separate canned welcome message — the "keep it as short as the customer's own
   // message" instruction below still applies on top of this.
   if(isNewLead) sys+='\n\nThis is this customer\'s very first message to you. Before or alongside your answer, briefly introduce what the business offers in one short sentence (from the Services/Knowledge Base above) — a natural, warm opener, not a full catalog dump.';
-  // 5, not 3 — a short attribute-only reply ("order M size") needs the assistant's own prior
-  // product-listing message to still be in view to resolve against (see the instruction below);
-  // 3 turns was tight enough to occasionally push it just out of frame.
-  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-5).map(m=>m.role+': '+m.content).join('\n');
+  // Last ~10 exchanges (activeHistory is already capped there) — a short attribute-only reply
+  // ("order M size") needs the assistant's own prior product-listing message to still be in view
+  // to resolve against (see the instruction below), and a returning customer's earlier stated
+  // preferences should still be visible several turns later, not just the last couple of messages.
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
 
   // Observed real failure: with no concrete data to answer from (e.g. an unconfigured product/
   // package catalog), the model didn't just say it would connect the customer with support — it
@@ -4767,7 +4771,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
       ? ` Create gentle urgency: mention that this pricing is confirmed for the next ${c.quote_validity_days} day(s) and encourage a decision within that window.`
       : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
   }
-  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-3).map(m=>m.role+': '+m.content).join('\n');
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences.';
   // See engineBuildFaqSystemPrompt's matching comment.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
