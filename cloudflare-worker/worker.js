@@ -37,9 +37,11 @@ const B2B_DOCUMENTS_TABLE = 'REPLACE_B2B_DOCUMENTS_TABLE_ID';
 function b2bDocumentsTable(env){ return env.B2B_DOCUMENTS_TABLE || B2B_DOCUMENTS_TABLE; }
 // Create this table once in NocoDB (fields: client_id, lead_id, type, title, line_items_json,
 // currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_doctype,
-// erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, created_at — see
-// SETUP.md "Accounting module"), then set it as ACCOUNTING_DOCUMENTS_TABLE the same way
-// B2B_DOCUMENTS_TABLE above works (env var preferred, falls back to the placeholder below).
+// erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at —
+// named doc_created_at, not created_at, because newer NocoDB versions auto-add their own hidden
+// system "Created At" field to every new table, which collides with a custom field of that same
+// name — see SETUP.md "Accounting module"), then set it as ACCOUNTING_DOCUMENTS_TABLE the same
+// way B2B_DOCUMENTS_TABLE above works (env var preferred, falls back to the placeholder below).
 const ACCOUNTING_DOCUMENTS_TABLE = 'REPLACE_ACCOUNTING_DOCUMENTS_TABLE_ID';
 function accountingDocumentsTable(env){ return env.ACCOUNTING_DOCUMENTS_TABLE || ACCOUNTING_DOCUMENTS_TABLE; }
 
@@ -5952,7 +5954,7 @@ async function handleAccountingDocumentsList(request, env){
   const leadId=url.searchParams.get('lead_id');
   let where=`(client_id,eq,${payload.cid})`;
   if(leadId) where+=`~and(lead_id,eq,${leadId})`;
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records?where=${encodeURIComponent(where)}&sort=-created_at&limit=500`);
+  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records?where=${encodeURIComponent(where)}&sort=-doc_created_at&limit=500`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json(data, r.status);
   return json({list:data.list||[]});
@@ -5975,7 +5977,7 @@ async function handleAccountingDocumentCreate(request, env){
     linked_doc_id:body.linked_doc_id?String(body.linked_doc_id):'',
     notes:String(body.notes||'').trim().slice(0,1000),
     erpnext_doctype:'', erpnext_doc_name:'', erpnext_sync_status:'', erpnext_sync_error:'', erpnext_synced_at:'',
-    created_at:new Date().toISOString(),
+    doc_created_at:new Date().toISOString(),
   };
   const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'POST', body:fields});
   const data=await r.json().catch(()=>({}));
@@ -6040,7 +6042,7 @@ async function handleAccountingDocumentConvert(request, env){
     currency:src.currency||'', subtotal:src.subtotal||0, tax_pct:src.tax_pct||0, tax_amount:src.tax_amount||0, total:src.total||0,
     status:'draft', linked_doc_id:String(src.Id), notes:src.notes||'',
     erpnext_doctype:'', erpnext_doc_name:'', erpnext_sync_status:'', erpnext_sync_error:'', erpnext_synced_at:'',
-    created_at:new Date().toISOString(),
+    doc_created_at:new Date().toISOString(),
   };
   const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'POST', body:fields});
   const data=await r.json().catch(()=>({}));

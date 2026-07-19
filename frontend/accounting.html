@@ -471,7 +471,7 @@ function downloadDocumentPdf(id){
 
   doc.setFontSize(11);
   doc.text(`Prepared for: ${lead?(lead.Name||lead.Phone):'Customer'}`,marginX,y);
-  doc.text(`Date: ${d.created_at?new Date(d.created_at).toLocaleDateString():new Date().toLocaleDateString()}`,400,y);
+  doc.text(`Date: ${d.doc_created_at?new Date(d.doc_created_at).toLocaleDateString():new Date().toLocaleDateString()}`,400,y);
   y+=24;
 
   doc.autoTable({
