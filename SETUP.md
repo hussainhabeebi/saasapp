@@ -1116,9 +1116,12 @@ fields: `client_id`, `lead_id`, `type` (`quotation`/`invoice`/`receipt`), `title
 per type, no strict per-type state machine), `linked_doc_id` (Single line text — an invoice's
 source quotation, or a receipt's source invoice; blank for a document created standalone), `notes`,
 `erpnext_doctype`, `erpnext_doc_name`, `erpnext_sync_status` (`` / `pending` / `synced` /
-`failed`), `erpnext_sync_error`, `erpnext_synced_at`, `created_at`. Create this table once in
-NocoDB, then point the Worker at it the same two ways `B2B_DOCUMENTS_TABLE` works (see "B2B
-module" above): preferred — a Worker var/secret named `ACCOUNTING_DOCUMENTS_TABLE` (no redeploy
+`failed`), `erpnext_sync_error`, `erpnext_synced_at`, `doc_created_at` (**not** `created_at` —
+newer NocoDB versions auto-add their own hidden system "Created At" field to every new table,
+which collides with a custom field of that same name; a NocoDB "ERR_FIELD_NOT_FOUND" on this
+table almost always means this field was left out or named `created_at` instead). Create this
+table once in NocoDB, then point the Worker at it the same two ways `B2B_DOCUMENTS_TABLE` works
+(see "B2B module" above): preferred — a Worker var/secret named `ACCOUNTING_DOCUMENTS_TABLE` (no redeploy
 needed), or edit the `ACCOUNTING_DOCUMENTS_TABLE` constant in `worker.js` directly (replacing the
 `REPLACE_ACCOUNTING_DOCUMENTS_TABLE_ID` placeholder) and redeploy. Same "dedicated routes instead
 of the generic passthrough" reasoning as B2B Documents — this table's lowercase `client_id` column
