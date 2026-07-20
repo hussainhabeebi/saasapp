@@ -2719,6 +2719,21 @@ whether the customer asked for it or not. `detectOrderSignal` now also classifie
     alongside a confidently-matched product (`imageUrl:product.image_url`), whether or not a link
     was also included that turn.
 
+**`[ORDER_LINK]` — a real substitution placeholder for a client's own scripted wording in Main
+Prompt.** Real observed failure: a client wrote their own closing line straight into Main Prompt —
+`"Order ചെയ്യാൻ ഇവിടെ ക്ലിക്ക് ചെയ്യൂ: [ORDER_LINK]"` — expecting `[ORDER_LINK]` to become a real
+clickable link, the same way `{name}` gets substituted in follow-up messages elsewhere in this
+file. Nothing did that substitution, so the model (correctly) echoed the client's own text
+verbatim, including the literal, unusable string `[ORDER_LINK]`, straight to the customer.
+`engineSubstituteOrderLinkPlaceholder(text, c, clientId, sku)` now runs on every ecommerce reply
+right after `engineCallLlm` returns — in the product-enquiry branch (`sku` = the matched product's,
+so the link goes straight to that item), and in the general FAQ/objection routes (`sku` = `''`,
+so `buildCheckoutLink` falls back to `external_store_link` or the generic order.html catalog page,
+since there's no specific product in view there). Case-insensitive, ecommerce-only (`buildCheckoutLink`'s
+shape is ecom-specific), and a cheap no-op for any client who never uses the placeholder. Documented
+in the Main Prompt field's own hint text (dashboard.html) so a client discovers this without having
+to hit the bug first.
+
 **Product resolution now falls back to a fuzzy name match when the sku doesn't exactly match.**
 `detectOrderSignal` asks the model to copy a real product's `sku` string verbatim from the catalog
 it was given — reliable when the product is unambiguous, but an LLM reproducing an exact
