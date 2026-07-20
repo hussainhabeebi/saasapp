@@ -107,6 +107,7 @@ More columns on the **LEADS** table, written by `engine.json` and read/edited by
 | HandoverAt | Single line (ISO datetime — stamped the moment a lead first enters `human_handover`; powers the SLA-breach alert and an in-dashboard "waiting Xm" badge) |
 | SlaAlerted | Single line ("Yes"/"No" — dedupe flag so `n8n/notifications.json` only fires one SLA-breach alert per handover, reset by the engine each time a lead re-enters `human_handover`) |
 | HandoverOutcome | Single line (`Resolved-Won`/`Released`/`Lost`/`No-response` — set only when a rep clicks "Mark Done" on the Human Deals page, `removeHumanDeal()` in `dashboard.html`. Nothing else writes this; a lead handed over before this feature existed simply has it blank. Drives the Human Deals Stage transition (`HD_OUTCOME_STAGE`: Won→`won`, everything else→`new`/`lost`) and the Team page's Funnel Analytics "Handover Win Rate" stat — see "Human Deals page" below.) |
+| ClosedAt | Single line (ISO datetime — stamped once, client-side, by `reportLeadQualityChange()` in `dashboard.html` the first time a lead's Stage reaches a won or lost outcome. Powers the Team page's Revenue Forecast section — see "Revenue Forecast dashboard" below. Add this column before using that section; leads that closed before the column existed simply have it blank and the dashboard falls back to `Date` for them.) |
 
 **Known limitation**: SLA tracking only knows a lead *entered* `human_handover` — the bot stops
 writing to the lead entirely once handed over (by design, so it can never talk over a live agent),
@@ -1564,6 +1565,46 @@ call failed — same "AI primary, rule-based fallback" pattern as the intent cla
 respects `WinProbabilityManual`, so a rep's own edit is never overwritten. This can be swapped for
 a real trained model later without changing anything downstream — `Code · Prep lead` only cares
 that `sc.aiWinProbability` is a number.
+
+## Revenue Forecast dashboard (`frontend/dashboard.html` — Team page)
+Adds a trended view under 📊 Team Performance, next to the existing (snapshot-only) Funnel
+Analytics: **Forecast vs. Actual by month**, **Win Rate Trend**, **Pipeline by Stage**, and a
+**Pipeline Velocity** stat. Computed entirely client-side from `allLeads`, same pattern as Team
+Performance/Funnel Analytics — no new backend route.
+
+- **`ClosedAt`** (new LEADS column, see schema table above) is the piece that didn't already
+  exist: nothing previously recorded *when* a deal actually closed, only its current `Stage`, so
+  there was no way to bucket won/lost deals by month. Stamped once by `stampClosedAt()`, called
+  from `reportLeadQualityChange()` — the single chokepoint every Stage-changing call site
+  (`kbDrop` on the kanban, `saveLead()`, Human Deals' `removeHumanDeal()`) already routes through
+  for Meta CAPI reporting. Fires only on the won/lost transition itself, never overwrites an
+  existing value.
+- **`isWonLead()`/`isLostLead()`** — the `Stage==='won'||'converted'||(TERMINAL-but-not-
+  human_handover)` check used to be inlined separately in `renderTeamPerformance` and
+  `generateReport`; factored into one function here since the forecast section needed it in three
+  more places. `isLostLead` matches what Human Deals actually writes (`HD_OUTCOME_STAGE`'s
+  `'Lost'->'lost'`).
+- **Forecast vs. Actual (last 6 months)**: past months show only **Actual** (sum of `DealValue`
+  for leads won that month, bucketed by `ClosedAt`, falling back to `Date` for leads closed before
+  this shipped). Only the **current, still-open month** also shows a live **Forecast** figure — the
+  weighted value (`DealValue × WinProbability`) of deals still active right now. This is
+  deliberate, not a gap to fix later: nothing in this app snapshots pipeline state over time, so
+  there's no honest way to reconstruct "what the forecast looked like in March" for a past month —
+  only what actually closed by then.
+- **Win Rate Trend**: resolved (won + lost) leads per month, `won / (won + lost)`, same `ClosedAt`
+  bucketing.
+- **Pipeline by Stage**: active (not yet won/lost) deal value per pipeline stage, same stage list
+  the kanban already uses.
+- **Pipeline Velocity**: the standard `(active deals × win rate × avg deal size) / avg sales cycle
+  length` formula. Avg cycle length is `ClosedAt − Date` averaged over won leads that have both
+  fields — leads won before `ClosedAt` existed are excluded from that average rather than guessed
+  at, so the figure quietly gets more accurate as more deals close post-launch.
+- **Team Performance's per-agent table** gained a **Win Rate (30d)** column next to the existing
+  all-time Win Rate, scoped to each agent's leads resolved in the last 30 days via `ClosedAt` — a
+  lightweight per-agent trend signal without building a full per-agent time-series matrix.
+- **Not done here**: a true forecast-accuracy view (comparing what was predicted vs. what closed,
+  month over month) would need periodic pipeline snapshots, which this app doesn't store anywhere
+  — a deliberate scope cut, not an oversight.
 
 ## Campaigns module (frontend/broadcast.html — renamed from "Broadcast")
 Reworked in two ways: migrated off the master-NocoDB-token/plaintext-password pattern onto the
