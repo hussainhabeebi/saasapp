@@ -1912,6 +1912,141 @@ async function processClientAutomationFlows(env, c, allFlows, activeFlows){
   }
 }
 
+/* ── Review Request module — automated "ask for a review N days after a deal closes" ─────────
+   Deliberately its own module rather than something built on the generic Automations engine above:
+   a client would otherwise have to hand-build a flow (trigger=stage_enter, one wait step, one
+   send_whatsapp_dm step) with no click-through visibility at all, since a plain flow message has
+   no tracked link. This module adds exactly that: reuses ClosedAt (added for the Revenue Forecast
+   dashboard — see there — "when did this deal actually finish") as its trigger signal,
+   sendFlowWhatsappDm/fillFlowTokens (Automations' own Chatwoot send + templating) to actually
+   send, and the same HMAC-signed-link pattern handleEmailUnsubscribe already uses below for a
+   stateless, tamper-proof public click-tracking link with no extra token column to store. */
+let _reviewFieldsEnsured=false;
+async function ensureReviewFields(env){
+  if(_reviewFieldsEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('ReviewRequestedAt')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'ReviewRequestedAt', uidt:'SingleLineText'}});
+    if(!names.has('ReviewClickedAt')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'ReviewClickedAt', uidt:'SingleLineText'}});
+    _reviewFieldsEnsured=true;
+  }catch(e){ console.error('[reviews] ensureReviewFields failed', e.message); }
+}
+
+const REVIEW_DEFAULT_MESSAGE="Hi {name}! 🙏 So glad we could help. If you have a moment, we'd really appreciate a quick review — it means a lot to a small team like ours: {review_link}";
+
+async function reviewClickLink(env, leadId){
+  const token=await hmacHex(env, `review:${leadId}`);
+  return `${env.WORKER_BASE_URL}/reviews/click?lead_id=${leadId}&token=${token}`;
+}
+
+// Cron Trigger entry point — dispatched from the same */15 min tick as
+// runAutomationFlowsForAllClients (a multi-hour/day delay doesn't need finer granularity than
+// that). Same paginated-CLIENTS-scan shape as that function.
+async function sweepReviewRequests(env){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(c.review_request_enabled!=='Yes' || !c.review_link || !c.chatwoot_base) continue;
+      try{ await processClientReviewRequests(env, c); }
+      catch(e){ console.error('[reviews] tick failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+
+async function processClientReviewRequests(env, c){
+  let stages=[]; try{ stages=JSON.parse(c.review_request_stages||'[]'); }catch(e){}
+  if(!stages.length) return;
+  await ensureReviewFields(env);
+  const delayHours=Number(c.review_request_delay_hours)||72;
+  const stageOr=stages.map(s=>`(Stage,eq,${s})`).join('~or');
+  const where=`(ClientId,eq,${c.Id})~and(${stageOr})~and(ClosedAt,notblank)~and(ReviewRequestedAt,blank)`;
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=100&offset=${(page-1)*100}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const lead of rows){
+      if(lead.OptOut==='Yes') continue;
+      const closedMs=new Date(lead.ClosedAt).getTime();
+      if(!isFinite(closedMs) || Date.now()-closedMs<delayHours*3600000) continue;
+      const convId=flowLeadConvId(lead);
+      if(!convId) continue;
+      try{
+        const link=await reviewClickLink(env, lead.Id);
+        const template=c.review_request_message||REVIEW_DEFAULT_MESSAGE;
+        const content=fillFlowTokens(template, lead).replace(/\{review_link\}/gi, link);
+        await sendFlowWhatsappDm(c, convId, content);
+        await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, ReviewRequestedAt:new Date().toISOString()}});
+      }catch(e){ console.error('[reviews] send failed for lead', lead.Id, e.message); }
+      await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
+    }
+    if(rows.length<100) break;
+    page++;
+  }
+}
+
+// Public click-tracking redirect (`GET /reviews/click?lead_id=&token=`) — HMAC-verified with the
+// same constant-time compare handleEmailUnsubscribe uses below, no session, no extra token column
+// to store or leak. Stamps ReviewClickedAt once (never overwritten) so click-through can be
+// measured in the Reviews tab, then redirects to the client's own review_link — the destination
+// platform's (Google/Trustpilot/etc.) own analytics never sees this app's tracking step.
+async function handleReviewClick(request, env){
+  const url=new URL(request.url);
+  const leadId=parseInt(url.searchParams.get('lead_id'),10);
+  const token=url.searchParams.get('token')||'';
+  if(!leadId||!token) return new Response('Invalid link.', {status:400});
+  const expected=await hmacHex(env, `review:${leadId}`);
+  if(expected.length!==token.length) return new Response('Invalid link.', {status:400});
+  let diff=0;
+  for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^token.charCodeAt(i);
+  if(diff!==0) return new Response('Invalid link.', {status:400});
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  const lead=await leadR.json().catch(()=>null);
+  if(!leadR.ok||!lead) return new Response('Link expired.', {status:404});
+  const c=await getClientById(env, lead.ClientId);
+  if(!c?.review_link) return new Response('Link expired.', {status:404});
+  if(!lead.ReviewClickedAt){
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, ReviewClickedAt:new Date().toISOString()}});
+  }
+  return Response.redirect(c.review_link, 302);
+}
+
+// Session-gated config, same shape as handleMetaCapiConfigSet/Status above.
+const REVIEW_WRITE_FIELDS=['review_request_enabled','review_request_stages','review_request_delay_hours','review_request_message'];
+async function handleReviewsConfigSet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const fields={};
+  REVIEW_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=k==='review_request_stages'?JSON.stringify(body[k]||[]):String(body[k]??'').trim(); });
+  if(!Object.keys(fields).length) return json({error:'Nothing to save'}, 400);
+  await patchClientFields(env, payload.cid, fields);
+  return json({ok:true});
+}
+async function handleReviewsConfigGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  let stages=[]; try{ stages=JSON.parse(c?.review_request_stages||'[]'); }catch(e){}
+  return json({
+    enabled:c?.review_request_enabled==='Yes',
+    stages, delay_hours:Number(c?.review_request_delay_hours)||72,
+    message:c?.review_request_message||REVIEW_DEFAULT_MESSAGE,
+    review_link:c?.review_link||'',
+  });
+}
+
 /* ── Channels module ──────────────────────────────────────────────────────
    Automates what SETUP.md used to require by hand: creating the client's
    Chatwoot account, connecting WhatsApp via Meta Embedded Signup, and adding
@@ -5126,6 +5261,99 @@ async function engineSendHandoverLabel(c, convId){
   }catch(e){}
 }
 
+// Deterministic phone→country lookup (E.164 calling codes) — no external API, no cost, always
+// on. Sorted longest-code-first so e.g. '971' (UAE) matches before a shorter code some other
+// country shares as a prefix. NANP ('1') covers US/Canada/most Caribbean nations under one
+// calling code with no further public prefix to split them by — genuinely ambiguous without a
+// full area-code table, so it's labeled generically rather than guessed at; every other code below
+// resolves to one real country.
+const PHONE_COUNTRY_CODES = [
+  ['1242','Bahamas'],['1246','Barbados'],['1264','Anguilla'],['1268','Antigua and Barbuda'],
+  ['1284','British Virgin Islands'],['1340','U.S. Virgin Islands'],['1345','Cayman Islands'],
+  ['1441','Bermuda'],['1473','Grenada'],['1649','Turks and Caicos'],['1664','Montserrat'],
+  ['1670','Northern Mariana Islands'],['1671','Guam'],['1684','American Samoa'],
+  ['1758','Saint Lucia'],['1767','Dominica'],['1784','Saint Vincent and the Grenadines'],
+  ['1787','Puerto Rico'],['1809','Dominican Republic'],['1829','Dominican Republic'],
+  ['1849','Dominican Republic'],['1868','Trinidad and Tobago'],['1869','Saint Kitts and Nevis'],
+  ['1876','Jamaica'],['1939','Puerto Rico'],
+  ['20','Egypt'],['211','South Sudan'],['212','Morocco'],['213','Algeria'],['216','Tunisia'],
+  ['218','Libya'],['220','Gambia'],['221','Senegal'],['222','Mauritania'],['223','Mali'],
+  ['224','Guinea'],['225','Ivory Coast'],['226','Burkina Faso'],['227','Niger'],['228','Togo'],
+  ['229','Benin'],['230','Mauritius'],['231','Liberia'],['232','Sierra Leone'],['233','Ghana'],
+  ['234','Nigeria'],['235','Chad'],['236','Central African Republic'],['237','Cameroon'],
+  ['238','Cape Verde'],['239','Sao Tome and Principe'],['240','Equatorial Guinea'],['241','Gabon'],
+  ['242','Republic of the Congo'],['243','DR Congo'],['244','Angola'],['245','Guinea-Bissau'],
+  ['246','British Indian Ocean Territory'],['248','Seychelles'],['249','Sudan'],['250','Rwanda'],
+  ['251','Ethiopia'],['252','Somalia'],['253','Djibouti'],['254','Kenya'],['255','Tanzania'],
+  ['256','Uganda'],['257','Burundi'],['258','Mozambique'],['260','Zambia'],['261','Madagascar'],
+  ['262','Reunion'],['263','Zimbabwe'],['264','Namibia'],['265','Malawi'],['266','Lesotho'],
+  ['267','Botswana'],['268','Eswatini'],['269','Comoros'],['27','South Africa'],
+  ['290','Saint Helena'],['291','Eritrea'],['297','Aruba'],['298','Faroe Islands'],
+  ['299','Greenland'],['30','Greece'],['31','Netherlands'],['32','Belgium'],['33','France'],
+  ['34','Spain'],['350','Gibraltar'],['351','Portugal'],['352','Luxembourg'],['353','Ireland'],
+  ['354','Iceland'],['355','Albania'],['356','Malta'],['357','Cyprus'],['358','Finland'],
+  ['359','Bulgaria'],['36','Hungary'],['370','Lithuania'],['371','Latvia'],['372','Estonia'],
+  ['373','Moldova'],['374','Armenia'],['375','Belarus'],['376','Andorra'],['377','Monaco'],
+  ['378','San Marino'],['380','Ukraine'],['381','Serbia'],['382','Montenegro'],['383','Kosovo'],
+  ['385','Croatia'],['386','Slovenia'],['387','Bosnia and Herzegovina'],['389','North Macedonia'],
+  ['39','Italy'],['40','Romania'],['41','Switzerland'],['420','Czech Republic'],['421','Slovakia'],
+  ['423','Liechtenstein'],['43','Austria'],['44','United Kingdom'],['45','Denmark'],['46','Sweden'],
+  ['47','Norway'],['48','Poland'],['49','Germany'],['500','Falkland Islands'],['501','Belize'],
+  ['502','Guatemala'],['503','El Salvador'],['504','Honduras'],['505','Nicaragua'],
+  ['506','Costa Rica'],['507','Panama'],['508','Saint Pierre and Miquelon'],['509','Haiti'],
+  ['51','Peru'],['52','Mexico'],['53','Cuba'],['54','Argentina'],['55','Brazil'],['56','Chile'],
+  ['57','Colombia'],['58','Venezuela'],['590','Guadeloupe'],['591','Bolivia'],['592','Guyana'],
+  ['593','Ecuador'],['594','French Guiana'],['595','Paraguay'],['596','Martinique'],
+  ['597','Suriname'],['598','Uruguay'],['599','Curacao'],['60','Malaysia'],['61','Australia'],
+  ['62','Indonesia'],['63','Philippines'],['64','New Zealand'],['65','Singapore'],['66','Thailand'],
+  ['670','Timor-Leste'],['672','Norfolk Island'],['673','Brunei'],['674','Nauru'],
+  ['675','Papua New Guinea'],['676','Tonga'],['677','Solomon Islands'],['678','Vanuatu'],
+  ['679','Fiji'],['680','Palau'],['681','Wallis and Futuna'],['682','Cook Islands'],['683','Niue'],
+  ['685','Samoa'],['686','Kiribati'],['687','New Caledonia'],['688','Tuvalu'],
+  ['689','French Polynesia'],['690','Tokelau'],['691','Micronesia'],['692','Marshall Islands'],
+  ['81','Japan'],['82','South Korea'],['84','Vietnam'],['850','North Korea'],['852','Hong Kong'],
+  ['853','Macau'],['855','Cambodia'],['856','Laos'],['86','China'],['880','Bangladesh'],
+  ['886','Taiwan'],['90','Turkey'],['91','India'],['92','Pakistan'],['93','Afghanistan'],
+  ['94','Sri Lanka'],['95','Myanmar'],['960','Maldives'],['961','Lebanon'],['962','Jordan'],
+  ['963','Syria'],['964','Iraq'],['965','Kuwait'],['966','Saudi Arabia'],['967','Yemen'],
+  ['968','Oman'],['970','Palestine'],['971','United Arab Emirates'],['972','Israel'],
+  ['973','Bahrain'],['974','Qatar'],['975','Bhutan'],['976','Mongolia'],['977','Nepal'],
+  ['98','Iran'],['992','Tajikistan'],['993','Turkmenistan'],['994','Azerbaijan'],
+  ['995','Georgia'],['996','Kyrgyzstan'],['998','Uzbekistan'],
+  ['7','Russia/Kazakhstan'],['1','US/Canada/Caribbean (NANP)'],
+].sort((a,b)=>b[0].length-a[0].length);
+function phoneToCountry(phone){
+  const digits=String(phone||'').replace(/[^0-9]/g,'');
+  if(!digits) return null;
+  for(const [code,country] of PHONE_COUNTRY_CODES){
+    if(digits.startsWith(code)) return country;
+  }
+  return null;
+}
+
+// Referral/affiliate tracking — a customer shares a wa.me deep link
+// (https://wa.me/<business number>?text=REF-XXXXXX) that pre-fills a referred friend's very first
+// WhatsApp message with the referrer's own ReferralCode (generated on demand by the dashboard's
+// "Get Referral Link" button). This is the detection half: given that first message's raw text,
+// find the referrer (scoped to this same client — ReferralCode is per-client, not globally
+// unique, so two different clients' customers could coincidentally share a code) and return both
+// the referrer row and the text with the code removed, so the caller can strip it before the AI
+// ever sees it. Returns null if there's no code, or the code doesn't match any lead of this
+// client's (a stale/mistyped/foreign code) — silently, since a failed referral match shouldn't
+// block or alter the conversation in any visible way.
+const REFERRAL_CODE_RE=/\bREF-([A-Z0-9]{4,10})\b/i;
+async function engineDetectReferral(env, clientId, text){
+  const m=String(text||'').match(REFERRAL_CODE_RE);
+  if(!m) return null;
+  const code=('REF-'+m[1]).toUpperCase();
+  const where=`(ClientId,eq,${clientId})~and(ReferralCode,eq,${code})`;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=1&fields=Id,Name,Phone,ReferralCount`);
+  const data=await r.json().catch(()=>({}));
+  const referrer=(data?.list||[])[0];
+  if(!referrer) return null;
+  return {referrer, strippedText:String(text||'').replace(REFERRAL_CODE_RE,'').trim()};
+}
+
 // Mirrors "Code · Prep lead" — hot-moment/qual-score/win-probability/round-robin-owner
 // computation and the LEADS upsert body. See the file-header comment above for the ConvHistory
 // and human-handover-message fixes vs. the source workflow. `messageId` (Chatwoot's own message
@@ -5185,6 +5413,18 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     body.WinProbability=Math.max(0, Math.min(100, wp));
   }
   if(c.deal_currency && isNewLead) body.DealCurrency=c.deal_currency;
+  // Data enrichment on capture — the only signal available at this point in a WhatsApp-first
+  // conversation is the phone number itself, so this is deliberately scoped to what a calling
+  // code actually proves true. Never overwrites a rep's own manual edit (isNewLead-only; an
+  // existing lead already has whatever Country a human set or left blank on purpose).
+  if(isNewLead && !state.lead?.Country){
+    const country=phoneToCountry(state.phone);
+    if(country) body.Country=country;
+  }
+  // Referral attribution, detected earlier in handleEngineWebhook (engineDetectReferral) —
+  // written here so it lands in the same upsert as everything else about this brand-new lead,
+  // rather than a separate PATCH that could race the claim-stub write.
+  if(isNewLead && state.referredByName) body.ReferredBy=state.referredByName+(state.referredByPhone?` (${state.referredByPhone})`:'');
 
   if(isNewLead && !state.owner){
     const reps=engineParseSalesReps(c.agents);
@@ -5268,7 +5508,8 @@ async function handleEngineWebhook(request, env, secret){
   try{
     const parsed=engineParseChatwootPayload(body);
     if(!parsed) return json({ok:true, skipped:'not-actionable'});
-    const {convId, name, text, mediaType, mediaUrl}=parsed;
+    const {convId, name, mediaType, mediaUrl}=parsed;
+    let text=parsed.text;
     phone=parsed.phone;
 
     if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')) return json({ok:true, skipped:'test-mode'});
@@ -5321,6 +5562,22 @@ async function handleEngineWebhook(request, env, secret){
     // can mutate state.leadId, since engineBuildLeadUpsertBody uses "no leadId yet" to decide
     // Owner/DealCurrency assignment for a genuinely brand-new lead.
     const isNewLead=!state.leadId;
+    // Referral/affiliate tracking — only checked for a brand-new lead's very first message (an
+    // existing lead re-typing an old code by accident shouldn't re-attribute them). Strips the
+    // code from `text` before it reaches classification/the AI reply, so it never shows up in
+    // ConvHistory or confuses intent. See engineDetectReferral's own comment for the full shape.
+    if(isNewLead && text){
+      try{
+        const referral=await engineDetectReferral(env, clientId, text);
+        if(referral){
+          text=referral.strippedText;
+          state.referredByName=referral.referrer.Name||referral.referrer.Phone||'';
+          state.referredByPhone=referral.referrer.Phone||'';
+          const nextCount=(Number(referral.referrer.ReferralCount)||0)+1;
+          ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:referral.referrer.Id, ReferralCount:nextCount}}).catch(()=>{});
+        }
+      }catch(e){}
+    }
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
 
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
@@ -6334,6 +6591,9 @@ export default {
       else if(url.pathname==='/automations/flows' && request.method==='DELETE'){ res=await handleAutomationFlowDelete(request, env); }
       else if(url.pathname==='/automations/flows/enroll' && request.method==='POST'){ res=await handleAutomationFlowEnroll(request, env); }
       else if(url.pathname==='/automations/audience-preview' && request.method==='GET'){ res=await handleAutomationAudiencePreview(request, env); }
+      else if(url.pathname==='/reviews/config' && request.method==='GET'){ res=await handleReviewsConfigGet(request, env); }
+      else if(url.pathname==='/reviews/config' && request.method==='POST'){ res=await handleReviewsConfigSet(request, env); }
+      else if(url.pathname==='/reviews/click' && request.method==='GET'){ res=await handleReviewClick(request, env); }
       else if(url.pathname==='/channels/create-account' && request.method==='POST'){ res=await handleChannelsCreateAccount(request, env); }
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
@@ -6387,7 +6647,7 @@ export default {
   // Shopify abandoned-cart sweep.
   async scheduled(event, env, ctx){
     if(event.cron==='0 2 * * *') ctx.waitUntil(runDailyHealthCheckForAllClients(env));
-    else if(event.cron==='*/15 * * * *') ctx.waitUntil(runAutomationFlowsForAllClients(env));
+    else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }
 };

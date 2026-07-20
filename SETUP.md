@@ -83,6 +83,10 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | sla_minutes | Number (optional, default 15 — minutes a lead can sit in `human_handover` before `n8n/notifications.json` fires an SLA-breach alert; see "AI sales rep" section below) |
 | objection_playbook | Long text (optional — JSON array of `{category, approved_response}`, category one of `price`/`competitor`/`timing`/`trust`; grounds the engine's objection-handling response — falls back to a generic acknowledge-and-propose-next-step strategy if blank or the category isn't covered) |
 | deal_currency | Single line (default `AED` — seeds `DealCurrency` on newly created leads) |
+| review_request_enabled | Single line text (`Yes`/`No`) — Campaigns → ⭐ Reviews. Turns the Review Request module on. See "Review Request module" below. |
+| review_request_stages | Long text (JSON array of Stage names that trigger a review ask, e.g. `["won","visit_booked"]`) |
+| review_request_delay_hours | Number (default 72 if blank — hours after `ClosedAt` before the request sends) |
+| review_request_message | Long text (template; `{name}` and `{review_link}` placeholders — falls back to a built-in default message if blank) |
 
 ### LEADS table additions (for the Quotation module's sent log)
 Two more columns on the **LEADS** table (not CLIENTS) so sent quotations show up in the
@@ -107,7 +111,13 @@ More columns on the **LEADS** table, written by `engine.json` and read/edited by
 | HandoverAt | Single line (ISO datetime — stamped the moment a lead first enters `human_handover`; powers the SLA-breach alert and an in-dashboard "waiting Xm" badge) |
 | SlaAlerted | Single line ("Yes"/"No" — dedupe flag so `n8n/notifications.json` only fires one SLA-breach alert per handover, reset by the engine each time a lead re-enters `human_handover`) |
 | HandoverOutcome | Single line (`Resolved-Won`/`Released`/`Lost`/`No-response` — set only when a rep clicks "Mark Done" on the Human Deals page, `removeHumanDeal()` in `dashboard.html`. Nothing else writes this; a lead handed over before this feature existed simply has it blank. Drives the Human Deals Stage transition (`HD_OUTCOME_STAGE`: Won→`won`, everything else→`new`/`lost`) and the Team page's Funnel Analytics "Handover Win Rate" stat — see "Human Deals page" below.) |
-| ClosedAt | Single line (ISO datetime — stamped once, client-side, by `reportLeadQualityChange()` in `dashboard.html` the first time a lead's Stage reaches a won or lost outcome. Powers the Team page's Revenue Forecast section — see "Revenue Forecast dashboard" below. Add this column before using that section; leads that closed before the column existed simply have it blank and the dashboard falls back to `Date` for them.) |
+| ClosedAt | Single line (ISO datetime — stamped once, client-side, by `reportLeadQualityChange()` in `dashboard.html` the first time a lead's Stage reaches a won or lost outcome. Powers the Team page's Revenue Forecast section — see "Revenue Forecast dashboard" below. Also read by the Review Request module (see below) as its "when did this actually finish" signal. Add this column before using either section; leads that closed before the column existed simply have it blank and both features fall back to `Date` for them.) |
+| CompanyDomain | Single line (set by `dashboard.html`'s `saveLead()` from a lead's Email domain, when the domain isn't a free personal-email provider — see "Data enrichment on capture" below. Never set by the engine, which has no Email input from WhatsApp.) |
+| CompanyName | Single line (a title-cased guess from `CompanyDomain`, set alongside it. Editable — a rep's own correction is never overwritten by re-saving the same email.) |
+| ReferralCode | Single line (this lead's own shareable referral code, e.g. `A1B2C3` — generated on demand by the "Get Referral Link" button in the lead detail pane, never auto-generated, never overwritten once set. See "Referral/affiliate tracking" below.) |
+| ReferredBy | Single line (set once, server-side, the first time a brand-new lead's first message contains a matching `REF-<code>` — holds the referrer's name and phone, e.g. `Jane Doe (971501234567)`. Blank for every lead that didn't arrive via a referral link.) |
+| ReferralCount | Number (incremented each time this lead's own `ReferralCode` is detected on someone else's first message — "how many people has this customer referred so far.") |
+| ReferralRewardStatus | Single line (`Pending`/`Rewarded` — set only when a rep clicks "Mark Rewarded" in the lead detail pane on a lead that has a `ReferredBy`. Actual reward fulfillment — a discount code, a payout — is a manual business process outside this app; this only tracks whether it's been done.) |
 
 **Known limitation**: SLA tracking only knows a lead *entered* `human_handover` — the bot stops
 writing to the lead entirely once handed over (by design, so it can never talk over a live agent),
@@ -1605,6 +1615,105 @@ Performance/Funnel Analytics — no new backend route.
 - **Not done here**: a true forecast-accuracy view (comparing what was predicted vs. what closed,
   month over month) would need periodic pipeline snapshots, which this app doesn't store anywhere
   — a deliberate scope cut, not an oversight.
+
+## Data enrichment on capture (`cloudflare-worker/worker.js` + `frontend/dashboard.html`)
+Auto-fills a couple of signals a WhatsApp-first lead otherwise arrives with zero information
+about, beyond what the customer volunteers in conversation — scoped deliberately to what's
+actually derivable for free, not fabricated.
+
+- **Country, from the phone's calling code** — `phoneToCountry()` in `worker.js` is a deterministic
+  E.164 calling-code table (no external API, no cost). Applied in `engineBuildLeadUpsertBody` for
+  a brand-new lead only, and only if `Country` isn't already set — never overwrites a rep's manual
+  edit or a blank left on purpose. NANP (`+1`) covers US/Canada/most Caribbean nations under one
+  code with no shorter public prefix to split further, so it's labeled generically
+  (`US/Canada/Caribbean (NANP)`) rather than guessed at.
+  `dashboard.html` has its own smaller copy of the same table (`DASH_PHONE_COUNTRY_CODES`,
+  `phoneToCountryClient()`) so a lead added by hand through the Add Lead modal gets the same
+  enrichment an organic WhatsApp lead gets server-side — deliberately shorter (the regions this
+  CRM's own clients actually operate in), since a wrong guess on an uncommon code is worse than
+  leaving `Country` blank for a rep to fill in.
+- **Company name/domain, from the lead's Email** — `companyFromEmail()` in `dashboard.html`,
+  applied in `saveLead()` whenever an Email is entered and `CompanyDomain` isn't already set.
+  Extracts the domain, excludes free personal-email providers (gmail/yahoo/outlook/etc. — those
+  aren't a company), and title-cases the domain's first label as a `CompanyName` guess. The engine
+  never does this itself since WhatsApp gives it no Email input at all — this only fires through
+  the dashboard's own lead-editing path.
+- **Known limitation, by design**: real firmographic data — employee count, funding, verified
+  social profiles — needs a paid third-party enrichment API (Clearbit/Apollo/similar), which this
+  app doesn't integrate. Deliberately not fabricated here (e.g. guessing a LinkedIn URL from a
+  domain would be an unverified, often-wrong link); if that's wanted later, it's a new optional
+  `enrichment_api_key`-style integration, same "no-op if unconfigured" shape as Meta CAPI/Resend,
+  not an extension of the deterministic lookups above.
+
+## Review Request module (`frontend/broadcast.html` — "⭐ Reviews" tab, `cloudflare-worker/worker.js`)
+Automated "ask for a review N days after a deal closes" — a dedicated module, not built on top of
+the generic Automations engine above: a client would otherwise have to hand-build a flow
+(trigger=`stage_enter`, one `wait` step, one `send_whatsapp_dm` step) with no click-through
+visibility at all, since a plain flow message has no tracked link. This module adds exactly that.
+
+- **Trigger signal**: reuses `ClosedAt` (added for the Revenue Forecast dashboard above — "when
+  did this deal actually finish"). `review_request_stages` (CLIENTS, see schema table) is the set
+  of Stage names that count as "completed" for this purpose — a client picks their own, since Stage
+  names are freeform per client via the stage builder.
+- **Backend** (`worker.js`): `sweepReviewRequests` is a Cron Trigger entry point, piggybacked on
+  the same `*/15 * * * *` tick as `runAutomationFlowsForAllClients` (a multi-hour/day delay doesn't
+  need its own finer-grained schedule — see `wrangler.toml`). For each client with
+  `review_request_enabled==='Yes'`, finds leads whose Stage matches, `ClosedAt` is set and old
+  enough (`review_request_delay_hours`, default 72), and `ReviewRequestedAt` is still blank; sends
+  via `sendFlowWhatsappDm` (the same Chatwoot call shape Automations uses) and stamps
+  `ReviewRequestedAt` so it only ever sends once.
+- **Click tracking, no extra token column**: the link sent is
+  `{WORKER_BASE_URL}/reviews/click?lead_id=&token=`, where `token` is
+  `hmacHex(env, 'review:'+leadId)` — the exact same HMAC-signed-link pattern
+  `handleEmailUnsubscribe` already uses for its own unsubscribe link, just a different message
+  string. `handleReviewClick` verifies the token (constant-time compare), stamps `ReviewClickedAt`
+  once, then 302-redirects to the client's own `review_link` — so click-through is measurable
+  (Reviews tab stats) without depending on the destination review platform's own analytics.
+- **`ReviewRequestedAt`/`ReviewClickedAt`** (LEADS, Single line ISO datetime) are auto-created at
+  runtime by `ensureReviewFields()` the first time a client's sweep runs — no manual NocoDB step,
+  same convenience Automations' own `flow_state` field gets.
+- **Frontend** (`broadcast.html`): new "⭐ Reviews" tab — enable toggle, a Stage multi-select
+  (reusing the same `seg-chip` pattern as the Automations flow editor's audience picker), delay
+  hours, message template, and a stats card (Requests Sent / Clicked Through / Click Rate) computed
+  client-side from `allLeads`, same pattern as the Tracking tab.
+- **Config routes** (`GET/POST /reviews/config`, session-gated) read/write the four
+  `review_request_*` CLIENTS fields — same shape as `handleMetaCapiConfigSet`/`Status`.
+- Sends are skipped entirely if the client has no `review_link` set (Settings → General → Trust
+  Signals) or no Chatwoot connected — this is best-effort secondary outreach, never a hard
+  dependency for anything else in the CRM.
+
+## Referral/affiliate tracking (`cloudflare-worker/worker.js` + `frontend/dashboard.html`)
+Attributes a new lead to an existing customer's referral, via a `wa.me` deep link that pre-fills
+the referred friend's very first WhatsApp message with the referrer's own code — no landing page,
+no separate URL capture needed, since this app is WhatsApp-first and most leads never touch a web
+page at all.
+
+- **Get Referral Link** (lead detail pane, `dashboard.html`): generates a `ReferralCode` (a short
+  random base36 code, e.g. `A1B2C3`) the first time it's requested for a given lead — never
+  regenerated after that, so re-sharing the same link keeps attributing new signups to the same
+  person. Builds `https://wa.me/<business WhatsApp number>?text=REF-<code>` from
+  `clientRecord.wa_display_phone`; refuses to generate one (with an explanatory alert) if WhatsApp
+  isn't connected yet, since there'd be no number to build the link from.
+- **Detection** (`worker.js`, `engineDetectReferral`): checked only for a brand-new lead's very
+  first message (an existing lead re-typing an old code by accident shouldn't re-attribute them),
+  matched against a `REF-XXXXXX` pattern and looked up against this same client's own leads only
+  (`ReferralCode` is per-client, not globally unique — two different clients' customers could
+  otherwise coincidentally collide on the same short code). On a match: the code is stripped from
+  the text before it ever reaches intent classification or the AI reply (so it never shows up in
+  `ConvHistory` or confuses the conversation), the new lead's `ReferredBy` is set to the referrer's
+  name and phone, and the referrer's own `ReferralCount` is incremented.
+- **Reward tracking**: a lead with `ReferredBy` set shows a "Mark Rewarded" button in its detail
+  pane, toggling `ReferralRewardStatus` between `Pending`/`Rewarded`. Actual reward fulfillment (a
+  discount code, a payout) is a manual business process outside this app — this only tracks
+  whether it's been done, the same "flag it, a human completes the loop" shape as the Review
+  module's click tracking above.
+- **Known limitations**: `ReferralCode` is generated client-side with no uniqueness check against
+  existing codes for that client — collision odds are negligible at realistic lead volumes (6
+  base36 characters, ~2.1 billion combinations) but not mathematically zero, an accepted trade-off
+  rather than an extra round-trip to verify uniqueness before every generation. There's also no
+  leaderboard/top-referrers view built here — the lead detail pane's own `ReferralCount` is enough
+  to spot a top referrer one lead at a time, but a dedicated ranked view would be a natural,
+  separate follow-up.
 
 ## Campaigns module (frontend/broadcast.html — renamed from "Broadcast")
 Reworked in two ways: migrated off the master-NocoDB-token/plaintext-password pattern onto the

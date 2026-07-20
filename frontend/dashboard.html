@@ -3060,6 +3060,13 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div><label class="form-label">Currency</label><input class="form-input" id="detailDealCurrency" onchange="patchDetailField('DealCurrency',this.value)" placeholder="AED" maxlength="6" /></div>
       <div><label class="form-label">Win %</label><input class="form-input" type="number" min="0" max="100" id="detailWinProb" onchange="patchWinProbability(this.value)" placeholder="0" /></div>
     </div>
+    <!-- enrichment: auto-derived from phone (Country) / email (Company) on capture, editable -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+      <div><label class="form-label">Country</label><input class="form-input" id="detailCountry" onchange="patchDetailField('Country',this.value)" placeholder="Auto-detected from phone" /></div>
+      <div><label class="form-label">Company</label><input class="form-input" id="detailCompany" onchange="patchDetailField('CompanyName',this.value)" placeholder="Auto-detected from email" /></div>
+    </div>
+    <!-- referrals: this lead's own shareable link, and who referred them in (if anyone) -->
+    <div id="detailReferral" style="margin-bottom:14px"></div>
     <!-- sentiment / objection / SLA signals -->
     <div id="detailSignals" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
     <!-- notes -->
@@ -4559,14 +4566,50 @@ function populateFormSelects(currentOwner){
   $id('fOwner').innerHTML=teamMemberOptions(currentOwner||'');
 }
 
+// Data enrichment on capture — a small phone-calling-code table (same idea as the engine's own
+// phoneToCountry in worker.js, duplicated rather than shared since this app has no build step and
+// every page is already a self-contained file) so a lead added by hand through this modal gets the
+// same Country auto-fill an organic WhatsApp lead gets server-side. Deliberately short — covers
+// the regions this CRM's own clients actually operate in, not the full ITU list — since a wrong
+// guess on an uncommon code is worse than leaving Country blank for a rep to fill in.
+const DASH_PHONE_COUNTRY_CODES=[['971','United Arab Emirates'],['966','Saudi Arabia'],['974','Qatar'],
+  ['973','Bahrain'],['968','Oman'],['965','Kuwait'],['962','Jordan'],['961','Lebanon'],['20','Egypt'],
+  ['91','India'],['92','Pakistan'],['880','Bangladesh'],['94','Sri Lanka'],['977','Nepal'],
+  ['60','Malaysia'],['65','Singapore'],['62','Indonesia'],['63','Philippines'],['66','Thailand'],
+  ['86','China'],['81','Japan'],['82','South Korea'],['44','United Kingdom'],['49','Germany'],
+  ['33','France'],['34','Spain'],['39','Italy'],['31','Netherlands'],['61','Australia'],
+  ['64','New Zealand'],['27','South Africa'],['234','Nigeria'],['254','Kenya'],['1','US/Canada'],
+  ['7','Russia/Kazakhstan'],['90','Turkey'],['98','Iran'],['52','Mexico'],['55','Brazil'],
+].sort((a,b)=>b[0].length-a[0].length);
+function phoneToCountryClient(phone){
+  const digits=String(phone||'').replace(/[^0-9]/g,'');
+  if(!digits) return null;
+  const hit=DASH_PHONE_COUNTRY_CODES.find(([code])=>digits.startsWith(code));
+  return hit?hit[1]:null;
+}
+// Company name/domain guess from a lead's Email — free personal-email providers excluded since
+// "gmail"/"outlook" isn't a company. Real firmographic data (employee count, socials, funding)
+// needs a paid third-party enrichment API this app doesn't integrate — deliberately not fabricated
+// here; this only derives what the email address itself already proves true.
+const ENRICH_FREE_EMAIL_DOMAINS=new Set(['gmail.com','yahoo.com','outlook.com','hotmail.com','icloud.com','aol.com','proton.me','protonmail.com','live.com','msn.com','yandex.com','mail.com','gmx.com']);
+function companyFromEmail(email){
+  const m=String(email||'').match(/@([a-z0-9.-]+\.[a-z]{2,})$/i);
+  if(!m) return null;
+  const domain=m[1].toLowerCase();
+  if(ENRICH_FREE_EMAIL_DOMAINS.has(domain)) return null;
+  const name=domain.split('.')[0].replace(/[-_]/g,' ').replace(/\b\w/g,ch=>ch.toUpperCase());
+  return {domain, name};
+}
+
 async function saveLead(){
   const id=$id('fLeadId').value;
   const original=id?allLeads.find(l=>l.Id===parseInt(id)):null;
+  const email=$id('fEmail').value.trim();
   const body={
     ClientId:String(clientId),
     Name:$id('fName').value.trim(),
     Phone:$id('fPhone').value.trim().replace(/[^0-9+]/g,''),
-    Email:$id('fEmail').value.trim(),
+    Email:email,
     Stage:$id('fStage').value,
     Owner:$id('fOwner').value,
     Score:$id('fScore').value,
@@ -4576,6 +4619,17 @@ async function saveLead(){
     Date:new Date().toISOString(),
     Language:clientRecord.language||'en',
   };
+  // Enrich on capture — only for a brand-new lead (id blank) and only when the rep didn't already
+  // set these manually elsewhere in the modal (there's no Country/Company input in this form, so
+  // "already set" only matters on the edit path below, which never overwrites an existing value).
+  if(!id){
+    const country=phoneToCountryClient(body.Phone);
+    if(country) body.Country=country;
+  }
+  if(email && (!original || !original.CompanyDomain)){
+    const co=companyFromEmail(email);
+    if(co){ body.CompanyDomain=co.domain; body.CompanyName=co.name; }
+  }
   // Travel fields
   if(clientRecord?.industry==='travel'){
     const from=$id('fTravelFrom').value;const to=$id('fTravelTo').value;
@@ -4635,6 +4689,9 @@ function openDetail(id){
   $id('detailDealValue').value=lead.DealValue||'';
   $id('detailDealCurrency').value=lead.DealCurrency||clientRecord?.deal_currency||'';
   $id('detailWinProb').value=(lead.WinProbability===undefined||lead.WinProbability===null||lead.WinProbability==='')?'':lead.WinProbability;
+  $id('detailCountry').value=lead.Country||'';
+  $id('detailCompany').value=lead.CompanyName||'';
+  renderDetailReferral(lead);
   renderDetailSignals(lead);
 
   // reminder badge
@@ -4842,6 +4899,62 @@ async function addNote(){
   $id('noteInput').value='';
   renderDetailNotes(currentLead);
   await patchDetailField('NotesList',currentLead.NotesList);
+}
+
+// ── REFERRALS ── a lead's own shareable code (generated on demand, never overwritten once set —
+// re-sharing the same link keeps attributing new signups to the same person) plus who referred
+// this lead in, if anyone. Detection itself happens server-side (engineDetectReferral in
+// worker.js) the moment a referred friend's very first WhatsApp message arrives with the code
+// pre-filled by the wa.me link below — this is just the generate/display/reward-tracking UI.
+function referralWaLink(code){
+  const num=(clientRecord?.wa_display_phone||'').replace(/[^0-9]/g,'');
+  if(!num) return null;
+  return `https://wa.me/${num}?text=${encodeURIComponent('REF-'+code)}`;
+}
+function renderDetailReferral(lead){
+  const el=$id('detailReferral');
+  if(!el) return;
+  const link=lead.ReferralCode?referralWaLink(lead.ReferralCode):null;
+  let html='';
+  if(lead.ReferredBy){
+    const rewarded=lead.ReferralRewardStatus==='Rewarded';
+    html+=`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:var(--accent-soft);border-radius:8px;margin-bottom:8px">
+      <span style="font-size:12px;color:var(--accent-ink)">🎁 Referred by <b>${esc(lead.ReferredBy)}</b></span>
+      <button class="btn btn-secondary btn-sm" onclick="toggleReferralReward()">${rewarded?'✓ Rewarded':'Mark Rewarded'}</button>
+    </div>`;
+  }
+  html+=`<label class="form-label" style="margin-bottom:4px">Referral Link${lead.ReferralCount?` <span style="color:var(--muted);font-weight:400">(${lead.ReferralCount} referred so far)</span>`:''}</label>`;
+  if(link){
+    html+=`<div style="display:flex;gap:6px">
+      <input class="form-input" readonly value="${esc(link)}" style="font-size:11px" onclick="this.select()">
+      <button class="btn btn-secondary btn-sm" onclick="copyReferralLink('${esc(link)}')">Copy</button>
+    </div>`;
+  }else{
+    html+=`<button class="btn btn-secondary btn-sm" onclick="getReferralLink()">Get Referral Link</button>`;
+  }
+  el.innerHTML=html;
+}
+async function getReferralLink(){
+  if(!currentLead) return;
+  if(!clientRecord?.wa_display_phone){ alert('Connect WhatsApp in Settings → Channels first — a referral link needs your business WhatsApp number.'); return; }
+  if(!currentLead.ReferralCode){
+    const code=Math.random().toString(36).slice(2,8).toUpperCase();
+    currentLead.ReferralCode=code;
+    const idx=allLeads.findIndex(x=>x.Id===currentLead.Id); if(idx>=0) allLeads[idx].ReferralCode=code;
+    await patchDetailField('ReferralCode', code);
+  }
+  renderDetailReferral(currentLead);
+}
+function copyReferralLink(link){
+  navigator.clipboard?.writeText(link).catch(()=>{});
+}
+async function toggleReferralReward(){
+  if(!currentLead) return;
+  const next=currentLead.ReferralRewardStatus==='Rewarded'?'Pending':'Rewarded';
+  currentLead.ReferralRewardStatus=next;
+  const idx=allLeads.findIndex(x=>x.Id===currentLead.Id); if(idx>=0) allLeads[idx].ReferralRewardStatus=next;
+  await patchDetailField('ReferralRewardStatus', next);
+  renderDetailReferral(currentLead);
 }
 
 function renderDetailCalls(lead){

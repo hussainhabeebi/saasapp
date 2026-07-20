@@ -12,7 +12,10 @@ invocation_logs = true
 #  - "0 2 * * *"     Integrations tab health check, once daily for every client
 #                    (runDailyHealthCheckForAllClients in worker.js).
 #  - "*/15 * * * *"  Automations module — advances every client's active flows
-#                    (runAutomationFlowsForAllClients in worker.js).
+#                    (runAutomationFlowsForAllClients in worker.js) — AND the Review Request
+#                    module's own sweep (sweepReviewRequests in worker.js), piggybacked on the
+#                    same tick since a multi-hour/day review-request delay doesn't need its own
+#                    finer-grained schedule.
 #  - "*/20 * * * *"  Shopify module — abandoned-cart nudge sweep
 #                    (sweepAbandonedShopifyCheckouts in worker.js).
 [triggers]
