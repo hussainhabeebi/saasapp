@@ -26,24 +26,10 @@ const DEFAULT_LEADS_TABLE = 'mvg6rcw0ia5qqrx';
 // client_id column — see SETUP.md "Email Marketing module") and paste their real ids here.
 const EMAIL_CAMPAIGNS_TABLE = 'md3ghcfigac4yqs';
 const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
-// Create this table once in NocoDB (fields: client_id, lead_id, type, title, brand,
-// line_items_json, currency, subtotal, tax_pct, total, status, public_slug, view_count,
-// last_viewed_at, accepted_at, created_at, expires_at, notes — see SETUP.md "B2B module"), then
-// either set it as a Worker var/secret named B2B_DOCUMENTS_TABLE (Cloudflare dashboard → Settings
-// → Variables and Secrets, or `wrangler secret put B2B_DOCUMENTS_TABLE`) — no redeploy needed —
-// or paste its real id over the placeholder below and redeploy. b2bDocumentsTable(env) below
-// prefers the env var when set, so either path works.
-const B2B_DOCUMENTS_TABLE = 'REPLACE_B2B_DOCUMENTS_TABLE_ID';
-function b2bDocumentsTable(env){ return env.B2B_DOCUMENTS_TABLE || B2B_DOCUMENTS_TABLE; }
-// Create this table once in NocoDB (fields: client_id, lead_id, type, title, line_items_json,
-// currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_doctype,
-// erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at —
-// named doc_created_at, not created_at, because newer NocoDB versions auto-add their own hidden
-// system "Created At" field to every new table, which collides with a custom field of that same
-// name — see SETUP.md "Accounting module"), then set it as ACCOUNTING_DOCUMENTS_TABLE the same
-// way B2B_DOCUMENTS_TABLE above works (env var preferred, falls back to the placeholder below).
-const ACCOUNTING_DOCUMENTS_TABLE = 'REPLACE_ACCOUNTING_DOCUMENTS_TABLE_ID';
-function accountingDocumentsTable(env){ return env.ACCOUNTING_DOCUMENTS_TABLE || ACCOUNTING_DOCUMENTS_TABLE; }
+// B2B Documents and Accounting Documents both live in Cloudflare D1 now (env.DB — see
+// migrations/0002_accounting_b2b_documents.sql), not a NocoDB table you create and paste an id
+// for. The env-var-or-placeholder tables that used to live here (B2B_DOCUMENTS_TABLE,
+// ACCOUNTING_DOCUMENTS_TABLE) are gone — see "B2B MODULE"/"ACCOUNTING MODULE" further down.
 
 function corsHeaders(origin, env){
   const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -1910,6 +1896,149 @@ async function processClientAutomationFlows(env, c, allFlows, activeFlows){
   if(flowsChanged){
     try{ await patchClientFields(env, c.Id, {automation_flows:JSON.stringify(allFlows)}); }catch(e){}
   }
+}
+
+/* ── Review Request module — automated "ask for a review N days after a deal closes" ─────────
+   Deliberately its own module rather than something built on the generic Automations engine above:
+   a client would otherwise have to hand-build a flow (trigger=stage_enter, one wait step, one
+   send_whatsapp_dm step) with no click-through visibility at all, since a plain flow message has
+   no tracked link. This module adds exactly that: reuses ClosedAt (added for the Revenue Forecast
+   dashboard — see there — "when did this deal actually finish") as its trigger signal,
+   sendFlowWhatsappDm/fillFlowTokens (Automations' own Chatwoot send + templating) to actually
+   send, and the same HMAC-signed-link pattern handleEmailUnsubscribe already uses below for a
+   stateless, tamper-proof public click-tracking link.
+
+   Storage: Cloudflare D1 (env.DB), not NocoDB — see migrations/0001_reviews_referrals.sql. This
+   module's config (review_config) and per-lead request/click state (review_requests) are data
+   this app invented with no other reader anywhere else in it, unlike Country/CompanyName (added
+   the same week, see "Data enrichment on capture") which every existing lead view already reads
+   out of NocoDB — so only this module's own tables went to D1, not the lead record itself.
+   Stage/DealValue/OptOut/ClosedAt/ConversationID etc. are still read straight from NocoDB below;
+   this module doesn't duplicate or cache any of that. */
+const REVIEW_DEFAULT_MESSAGE="Hi {name}! 🙏 So glad we could help. If you have a moment, we'd really appreciate a quick review — it means a lot to a small team like ours: {review_link}";
+
+async function reviewClickLink(env, leadId){
+  const token=await hmacHex(env, `review:${leadId}`);
+  return `${env.WORKER_BASE_URL}/reviews/click?lead_id=${leadId}&token=${token}`;
+}
+
+// Cron Trigger entry point — dispatched from the same */15 min tick as
+// runAutomationFlowsForAllClients (a multi-hour/day delay doesn't need finer granularity than
+// that). Reads D1's own review_config table directly — only clients that ever turned this on,
+// not a full NocoDB CLIENTS scan the way the pre-D1 version of this function needed.
+async function sweepReviewRequests(env){
+  const {results}=await env.DB.prepare(`SELECT client_id, stages_json, delay_hours, message FROM review_config WHERE enabled=1`).all();
+  for(const cfg of (results||[])){
+    try{ await processClientReviewRequests(env, cfg); }
+    catch(e){ console.error('[reviews] tick failed for client', cfg.client_id, e.message); }
+  }
+}
+
+async function processClientReviewRequests(env, cfg){
+  let stages=[]; try{ stages=JSON.parse(cfg.stages_json||'[]'); }catch(e){}
+  if(!stages.length) return;
+  const c=await getClientById(env, cfg.client_id);
+  if(!c?.review_link || !c.chatwoot_base) return;
+  const delayHours=Number(cfg.delay_hours)||72;
+  // One D1 round-trip for "who's already been asked," then filtered in memory against the NocoDB
+  // candidate scan below — cheaper than a D1 SELECT per candidate lead, and D1 has no way to join
+  // against a NocoDB `where` clause directly.
+  const {results:already}=await env.DB.prepare(`SELECT lead_id FROM review_requests WHERE client_id=? AND requested_at IS NOT NULL`).bind(cfg.client_id).all();
+  const alreadySet=new Set((already||[]).map(r=>r.lead_id));
+  const stageOr=stages.map(s=>`(Stage,eq,${s})`).join('~or');
+  const where=`(ClientId,eq,${cfg.client_id})~and(${stageOr})~and(ClosedAt,notblank)`;
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=100&offset=${(page-1)*100}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const lead of rows){
+      if(alreadySet.has(lead.Id)) continue;
+      if(lead.OptOut==='Yes') continue;
+      const closedMs=new Date(lead.ClosedAt).getTime();
+      if(!isFinite(closedMs) || Date.now()-closedMs<delayHours*3600000) continue;
+      const convId=flowLeadConvId(lead);
+      if(!convId) continue;
+      try{
+        const link=await reviewClickLink(env, lead.Id);
+        const template=cfg.message||REVIEW_DEFAULT_MESSAGE;
+        const content=fillFlowTokens(template, lead).replace(/\{review_link\}/gi, link);
+        await sendFlowWhatsappDm(c, convId, content);
+        await env.DB.prepare(`INSERT INTO review_requests (lead_id, client_id, requested_at) VALUES (?,?,?)`)
+          .bind(lead.Id, Number(cfg.client_id), new Date().toISOString()).run();
+      }catch(e){ console.error('[reviews] send failed for lead', lead.Id, e.message); }
+      await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
+    }
+    if(rows.length<100) break;
+    page++;
+  }
+}
+
+// Public click-tracking redirect (`GET /reviews/click?lead_id=&token=`) — HMAC-verified with the
+// same constant-time compare handleEmailUnsubscribe uses below, no session. Stamps clicked_at in
+// D1 once (never overwritten) so click-through can be measured (Reviews tab stats), then redirects
+// to the client's own review_link — the destination platform's (Google/Trustpilot/etc.) own
+// analytics never sees this app's tracking step. `client_id` comes straight off the D1 row itself
+// (stored there at send time), so this route needs no NocoDB lead lookup at all — only one NocoDB
+// read, for the CLIENTS row's review_link, which still lives there (see file-header comment above).
+async function handleReviewClick(request, env){
+  const url=new URL(request.url);
+  const leadId=parseInt(url.searchParams.get('lead_id'),10);
+  const token=url.searchParams.get('token')||'';
+  if(!leadId||!token) return new Response('Invalid link.', {status:400});
+  const expected=await hmacHex(env, `review:${leadId}`);
+  if(expected.length!==token.length) return new Response('Invalid link.', {status:400});
+  let diff=0;
+  for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^token.charCodeAt(i);
+  if(diff!==0) return new Response('Invalid link.', {status:400});
+  const row=await env.DB.prepare(`SELECT client_id, clicked_at FROM review_requests WHERE lead_id=?`).bind(leadId).first();
+  if(!row) return new Response('Link expired.', {status:404});
+  const c=await getClientById(env, row.client_id);
+  if(!c?.review_link) return new Response('Link expired.', {status:404});
+  if(!row.clicked_at){
+    await env.DB.prepare(`UPDATE review_requests SET clicked_at=? WHERE lead_id=? AND clicked_at IS NULL`).bind(new Date().toISOString(), leadId).run();
+  }
+  return Response.redirect(c.review_link, 302);
+}
+
+// Session-gated config — reads/writes D1's review_config (one row per client), upserted via
+// SQLite's ON CONFLICT (D1 is SQLite under the hood).
+async function handleReviewsConfigSet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const enabled=body.review_request_enabled==='Yes'?1:0;
+  const stagesJson=JSON.stringify(Array.isArray(body.review_request_stages)?body.review_request_stages:[]);
+  const delayHours=parseInt(body.review_request_delay_hours)||72;
+  const message=String(body.review_request_message||'').trim()||null;
+  await env.DB.prepare(`INSERT INTO review_config (client_id, enabled, stages_json, delay_hours, message) VALUES (?,?,?,?,?)
+    ON CONFLICT(client_id) DO UPDATE SET enabled=excluded.enabled, stages_json=excluded.stages_json, delay_hours=excluded.delay_hours, message=excluded.message`)
+    .bind(Number(payload.cid), enabled, stagesJson, delayHours, message).run();
+  return json({ok:true});
+}
+async function handleReviewsConfigGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  const cfg=await env.DB.prepare(`SELECT enabled, stages_json, delay_hours, message FROM review_config WHERE client_id=?`).bind(Number(payload.cid)).first();
+  let stages=[]; try{ stages=JSON.parse(cfg?.stages_json||'[]'); }catch(e){}
+  return json({
+    enabled: !!cfg?.enabled,
+    stages, delay_hours: cfg?.delay_hours || 72,
+    message: cfg?.message || REVIEW_DEFAULT_MESSAGE,
+    review_link: c?.review_link||'',
+  });
+}
+// Session-gated stats — Requests Sent / Clicked Through, computed straight from D1 rather than
+// filtering allLeads client-side the way the pre-D1 version of the Reviews tab did (that data no
+// longer lives on the lead record at all).
+async function handleReviewsStats(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const row=await env.DB.prepare(`SELECT COUNT(*) AS requested, COUNT(clicked_at) AS clicked FROM review_requests WHERE client_id=? AND requested_at IS NOT NULL`).bind(Number(payload.cid)).first();
+  return json({requested:row?.requested||0, clicked:row?.clicked||0});
 }
 
 /* ── Channels module ──────────────────────────────────────────────────────
@@ -5126,6 +5255,177 @@ async function engineSendHandoverLabel(c, convId){
   }catch(e){}
 }
 
+// Deterministic phone→country lookup (E.164 calling codes) — no external API, no cost, always
+// on. Sorted longest-code-first so e.g. '971' (UAE) matches before a shorter code some other
+// country shares as a prefix. NANP ('1') covers US/Canada/most Caribbean nations under one
+// calling code with no further public prefix to split them by — genuinely ambiguous without a
+// full area-code table, so it's labeled generically rather than guessed at; every other code below
+// resolves to one real country.
+const PHONE_COUNTRY_CODES = [
+  ['1242','Bahamas'],['1246','Barbados'],['1264','Anguilla'],['1268','Antigua and Barbuda'],
+  ['1284','British Virgin Islands'],['1340','U.S. Virgin Islands'],['1345','Cayman Islands'],
+  ['1441','Bermuda'],['1473','Grenada'],['1649','Turks and Caicos'],['1664','Montserrat'],
+  ['1670','Northern Mariana Islands'],['1671','Guam'],['1684','American Samoa'],
+  ['1758','Saint Lucia'],['1767','Dominica'],['1784','Saint Vincent and the Grenadines'],
+  ['1787','Puerto Rico'],['1809','Dominican Republic'],['1829','Dominican Republic'],
+  ['1849','Dominican Republic'],['1868','Trinidad and Tobago'],['1869','Saint Kitts and Nevis'],
+  ['1876','Jamaica'],['1939','Puerto Rico'],
+  ['20','Egypt'],['211','South Sudan'],['212','Morocco'],['213','Algeria'],['216','Tunisia'],
+  ['218','Libya'],['220','Gambia'],['221','Senegal'],['222','Mauritania'],['223','Mali'],
+  ['224','Guinea'],['225','Ivory Coast'],['226','Burkina Faso'],['227','Niger'],['228','Togo'],
+  ['229','Benin'],['230','Mauritius'],['231','Liberia'],['232','Sierra Leone'],['233','Ghana'],
+  ['234','Nigeria'],['235','Chad'],['236','Central African Republic'],['237','Cameroon'],
+  ['238','Cape Verde'],['239','Sao Tome and Principe'],['240','Equatorial Guinea'],['241','Gabon'],
+  ['242','Republic of the Congo'],['243','DR Congo'],['244','Angola'],['245','Guinea-Bissau'],
+  ['246','British Indian Ocean Territory'],['248','Seychelles'],['249','Sudan'],['250','Rwanda'],
+  ['251','Ethiopia'],['252','Somalia'],['253','Djibouti'],['254','Kenya'],['255','Tanzania'],
+  ['256','Uganda'],['257','Burundi'],['258','Mozambique'],['260','Zambia'],['261','Madagascar'],
+  ['262','Reunion'],['263','Zimbabwe'],['264','Namibia'],['265','Malawi'],['266','Lesotho'],
+  ['267','Botswana'],['268','Eswatini'],['269','Comoros'],['27','South Africa'],
+  ['290','Saint Helena'],['291','Eritrea'],['297','Aruba'],['298','Faroe Islands'],
+  ['299','Greenland'],['30','Greece'],['31','Netherlands'],['32','Belgium'],['33','France'],
+  ['34','Spain'],['350','Gibraltar'],['351','Portugal'],['352','Luxembourg'],['353','Ireland'],
+  ['354','Iceland'],['355','Albania'],['356','Malta'],['357','Cyprus'],['358','Finland'],
+  ['359','Bulgaria'],['36','Hungary'],['370','Lithuania'],['371','Latvia'],['372','Estonia'],
+  ['373','Moldova'],['374','Armenia'],['375','Belarus'],['376','Andorra'],['377','Monaco'],
+  ['378','San Marino'],['380','Ukraine'],['381','Serbia'],['382','Montenegro'],['383','Kosovo'],
+  ['385','Croatia'],['386','Slovenia'],['387','Bosnia and Herzegovina'],['389','North Macedonia'],
+  ['39','Italy'],['40','Romania'],['41','Switzerland'],['420','Czech Republic'],['421','Slovakia'],
+  ['423','Liechtenstein'],['43','Austria'],['44','United Kingdom'],['45','Denmark'],['46','Sweden'],
+  ['47','Norway'],['48','Poland'],['49','Germany'],['500','Falkland Islands'],['501','Belize'],
+  ['502','Guatemala'],['503','El Salvador'],['504','Honduras'],['505','Nicaragua'],
+  ['506','Costa Rica'],['507','Panama'],['508','Saint Pierre and Miquelon'],['509','Haiti'],
+  ['51','Peru'],['52','Mexico'],['53','Cuba'],['54','Argentina'],['55','Brazil'],['56','Chile'],
+  ['57','Colombia'],['58','Venezuela'],['590','Guadeloupe'],['591','Bolivia'],['592','Guyana'],
+  ['593','Ecuador'],['594','French Guiana'],['595','Paraguay'],['596','Martinique'],
+  ['597','Suriname'],['598','Uruguay'],['599','Curacao'],['60','Malaysia'],['61','Australia'],
+  ['62','Indonesia'],['63','Philippines'],['64','New Zealand'],['65','Singapore'],['66','Thailand'],
+  ['670','Timor-Leste'],['672','Norfolk Island'],['673','Brunei'],['674','Nauru'],
+  ['675','Papua New Guinea'],['676','Tonga'],['677','Solomon Islands'],['678','Vanuatu'],
+  ['679','Fiji'],['680','Palau'],['681','Wallis and Futuna'],['682','Cook Islands'],['683','Niue'],
+  ['685','Samoa'],['686','Kiribati'],['687','New Caledonia'],['688','Tuvalu'],
+  ['689','French Polynesia'],['690','Tokelau'],['691','Micronesia'],['692','Marshall Islands'],
+  ['81','Japan'],['82','South Korea'],['84','Vietnam'],['850','North Korea'],['852','Hong Kong'],
+  ['853','Macau'],['855','Cambodia'],['856','Laos'],['86','China'],['880','Bangladesh'],
+  ['886','Taiwan'],['90','Turkey'],['91','India'],['92','Pakistan'],['93','Afghanistan'],
+  ['94','Sri Lanka'],['95','Myanmar'],['960','Maldives'],['961','Lebanon'],['962','Jordan'],
+  ['963','Syria'],['964','Iraq'],['965','Kuwait'],['966','Saudi Arabia'],['967','Yemen'],
+  ['968','Oman'],['970','Palestine'],['971','United Arab Emirates'],['972','Israel'],
+  ['973','Bahrain'],['974','Qatar'],['975','Bhutan'],['976','Mongolia'],['977','Nepal'],
+  ['98','Iran'],['992','Tajikistan'],['993','Turkmenistan'],['994','Azerbaijan'],
+  ['995','Georgia'],['996','Kyrgyzstan'],['998','Uzbekistan'],
+  ['7','Russia/Kazakhstan'],['1','US/Canada/Caribbean (NANP)'],
+].sort((a,b)=>b[0].length-a[0].length);
+function phoneToCountry(phone){
+  const digits=String(phone||'').replace(/[^0-9]/g,'');
+  if(!digits) return null;
+  for(const [code,country] of PHONE_COUNTRY_CODES){
+    if(digits.startsWith(code)) return country;
+  }
+  return null;
+}
+
+// Referral/affiliate tracking — a customer shares a wa.me deep link
+// (https://wa.me/<business number>?text=REF-XXXXXX) that pre-fills a referred friend's very first
+// WhatsApp message with the referrer's own code (generated on demand by the dashboard's "Get
+// Referral Link" button, stored in D1's referral_codes table — see migrations/
+// 0001_reviews_referrals.sql). This is the detection half: given that first message's raw text,
+// resolve the code to a referrer lead id (scoped to this same client — a code only needs to be
+// unique per client, so two different clients' customers could coincidentally share one) and
+// return both that id and the text with the code removed, so the caller can strip it before the
+// AI ever sees it. A pure D1 lookup — no NocoDB round-trip needed here at all, since D1 only
+// needs to resolve a lead *id*, not the referrer's Name/Phone (the dashboard resolves those
+// separately, lazily, only when someone actually opens the lead detail pane — see
+// handleReferralsLeadInfo below). Returns null if there's no code, or the code doesn't match any
+// lead of this client's (a stale/mistyped/foreign code) — silently, since a failed referral match
+// shouldn't block or alter the conversation in any visible way.
+const REFERRAL_CODE_RE=/\bREF-([A-Z0-9]{4,10})\b/i;
+async function engineDetectReferral(env, clientId, text){
+  const m=String(text||'').match(REFERRAL_CODE_RE);
+  if(!m) return null;
+  const code=('REF-'+m[1]).toUpperCase();
+  const row=await env.DB.prepare(`SELECT lead_id FROM referral_codes WHERE client_id=? AND code=?`).bind(Number(clientId), code).first();
+  if(!row) return null;
+  return {referrerLeadId:row.lead_id, strippedText:String(text||'').replace(REFERRAL_CODE_RE,'').trim()};
+}
+
+// Confirms leadId actually belongs to this session's client before any of the three dashboard
+// routes below touch it — same ownership check handleMetaCapiLeadEvent uses, since lead_id here
+// comes from the request (dashboard-supplied), not the trusted session, and D1 has no foreign key
+// into NocoDB to enforce this itself.
+async function engineLeadBelongsToClient(env, leadId, clientId){
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}?fields=Id,ClientId`);
+  const lead=await r.json().catch(()=>null);
+  return r.ok && lead && String(lead.ClientId)===String(clientId);
+}
+
+// Session-gated dashboard routes for Referral tracking. All three read/write D1 only — Name/Phone
+// for a referral's counterpart lead are fetched fresh from NocoDB here, lazily, only when a rep
+// actually opens a lead's detail pane, never duplicated/cached in D1 itself.
+async function handleReferralsLeadInfo(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const leadId=parseInt(url.searchParams.get('lead_id'),10);
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  if(!(await engineLeadBelongsToClient(env, leadId, payload.cid))) return json({error:'Not your lead'}, 403);
+
+  const codeRow=await env.DB.prepare(`SELECT code FROM referral_codes WHERE lead_id=?`).bind(leadId).first();
+  const referredByRow=await env.DB.prepare(`SELECT referrer_lead_id, referred_at, reward_status FROM referrals WHERE referred_lead_id=?`).bind(leadId).first();
+  const {results:madeRows}=await env.DB.prepare(`SELECT referred_lead_id, referred_at, reward_status FROM referrals WHERE referrer_lead_id=? ORDER BY referred_at DESC`).bind(leadId).all();
+
+  // Resolve just the Name/Phone this response actually needs, in one NocoDB batch fetch — the
+  // referrer (if any) plus every lead this one referred in.
+  const idsToResolve=[...new Set([referredByRow?.referrer_lead_id, ...(madeRows||[]).map(r=>r.referred_lead_id)].filter(Boolean))];
+  const names={};
+  if(idsToResolve.length){
+    const where=idsToResolve.map(id=>`(Id,eq,${id})`).join('~or');
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=${idsToResolve.length}&fields=Id,Name,Phone`);
+    const data=await r.json().catch(()=>({}));
+    (data?.list||[]).forEach(l=>{ names[l.Id]=l.Name||l.Phone||('Lead #'+l.Id); });
+  }
+
+  return json({
+    code: codeRow?.code||null,
+    referred_by: referredByRow ? {name:names[referredByRow.referrer_lead_id]||('Lead #'+referredByRow.referrer_lead_id), at:referredByRow.referred_at, reward_status:referredByRow.reward_status} : null,
+    referrals: (madeRows||[]).map(r=>({lead_id:r.referred_lead_id, name:names[r.referred_lead_id]||('Lead #'+r.referred_lead_id), at:r.referred_at, reward_status:r.reward_status})),
+  });
+}
+async function handleReferralsGenerateCode(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const leadId=parseInt(body.lead_id,10);
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  if(!(await engineLeadBelongsToClient(env, leadId, payload.cid))) return json({error:'Not your lead'}, 403);
+  const existing=await env.DB.prepare(`SELECT code FROM referral_codes WHERE lead_id=?`).bind(leadId).first();
+  if(existing) return json({code:existing.code});
+  // Retry on the rare code collision within this client (UNIQUE(client_id, code)) rather than
+  // failing the request — a longer code would also fix it, but a short retry loop needs no format
+  // change and keeps the 6-char codes already shared out in the wild working.
+  for(let attempt=0; attempt<5; attempt++){
+    const code=Math.random().toString(36).slice(2,8).toUpperCase();
+    try{
+      await env.DB.prepare(`INSERT INTO referral_codes (lead_id, client_id, code, created_at) VALUES (?,?,?,?)`)
+        .bind(leadId, Number(payload.cid), code, new Date().toISOString()).run();
+      return json({code});
+    }catch(e){ /* UNIQUE(client_id, code) collision — retry with a new code */ }
+  }
+  return json({error:'Could not generate a unique code, try again.'}, 500);
+}
+async function handleReferralsReward(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const leadId=parseInt(body.lead_id,10);
+  const status=body.status==='Rewarded'?'Rewarded':'Pending';
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  if(!(await engineLeadBelongsToClient(env, leadId, payload.cid))) return json({error:'Not your lead'}, 403);
+  await env.DB.prepare(`UPDATE referrals SET reward_status=? WHERE referred_lead_id=? AND client_id=?`)
+    .bind(status, leadId, Number(payload.cid)).run();
+  return json({ok:true});
+}
+
 // Mirrors "Code · Prep lead" — hot-moment/qual-score/win-probability/round-robin-owner
 // computation and the LEADS upsert body. See the file-header comment above for the ConvHistory
 // and human-handover-message fixes vs. the source workflow. `messageId` (Chatwoot's own message
@@ -5185,6 +5485,17 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     body.WinProbability=Math.max(0, Math.min(100, wp));
   }
   if(c.deal_currency && isNewLead) body.DealCurrency=c.deal_currency;
+  // Data enrichment on capture — the only signal available at this point in a WhatsApp-first
+  // conversation is the phone number itself, so this is deliberately scoped to what a calling
+  // code actually proves true. Never overwrites a rep's own manual edit (isNewLead-only; an
+  // existing lead already has whatever Country a human set or left blank on purpose).
+  if(isNewLead && !state.lead?.Country){
+    const country=phoneToCountry(state.phone);
+    if(country) body.Country=country;
+  }
+  // Referral attribution (state.referrerLeadId, detected earlier in handleEngineWebhook) is
+  // written to D1's referrals table, not here — see engineUpsertLead's call site, which is the
+  // first point in this turn a brand-new lead actually has a real id to attribute.
 
   if(isNewLead && !state.owner){
     const reps=engineParseSalesReps(c.agents);
@@ -5202,9 +5513,15 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   return {body, method:state.leadId?'PATCH':'POST', leadId:state.leadId};
 }
 
+// Returns the resolved lead id (the given leadId for a PATCH, or the id NocoDB assigns on a
+// brand-new POST) — needed by the referral-tracking D1 insert at this function's call site, which
+// only learns the new lead's real id once this upsert actually completes.
 async function engineUpsertLead(env, method, leadId, body){
   if(leadId) body.Id=leadId;
-  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
+  if(leadId) return leadId;
+  const created=await r.json().catch(()=>null);
+  return created?.Id||null;
 }
 
 // Called by handleEngineWebhook right before the slow classify/LLM work — see that call site's
@@ -5268,7 +5585,8 @@ async function handleEngineWebhook(request, env, secret){
   try{
     const parsed=engineParseChatwootPayload(body);
     if(!parsed) return json({ok:true, skipped:'not-actionable'});
-    const {convId, name, text, mediaType, mediaUrl}=parsed;
+    const {convId, name, mediaType, mediaUrl}=parsed;
+    let text=parsed.text;
     phone=parsed.phone;
 
     if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')) return json({ok:true, skipped:'test-mode'});
@@ -5321,6 +5639,19 @@ async function handleEngineWebhook(request, env, secret){
     // can mutate state.leadId, since engineBuildLeadUpsertBody uses "no leadId yet" to decide
     // Owner/DealCurrency assignment for a genuinely brand-new lead.
     const isNewLead=!state.leadId;
+    // Referral/affiliate tracking — only checked for a brand-new lead's very first message (an
+    // existing lead re-typing an old code by accident shouldn't re-attribute them). Strips the
+    // code from `text` before it reaches classification/the AI reply, so it never shows up in
+    // ConvHistory or confuses intent. See engineDetectReferral's own comment for the full shape.
+    if(isNewLead && text){
+      try{
+        const referral=await engineDetectReferral(env, clientId, text);
+        if(referral){
+          text=referral.strippedText;
+          state.referrerLeadId=referral.referrerLeadId; // written to D1 once resolvedLeadId is known, below
+        }
+      }catch(e){}
+    }
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
 
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
@@ -5461,7 +5792,17 @@ async function handleEngineWebhook(request, env, secret){
     }
 
     const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
-    await engineUpsertLead(env, method, leadId, leadBody);
+    const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
+    // this function) because a brand-new lead has no real id until this exact upsert assigns one.
+    // INSERT OR IGNORE: referred_lead_id is UNIQUE (migrations/0001_reviews_referrals.sql), so a
+    // Chatwoot webhook redelivery replaying this same turn can't double-insert the same referral.
+    if(isNewLead && state.referrerLeadId && resolvedLeadId){
+      try{
+        await env.DB.prepare(`INSERT OR IGNORE INTO referrals (client_id, referrer_lead_id, referred_lead_id, referred_at, reward_status) VALUES (?,?,?,?, 'Pending')`)
+          .bind(Number(clientId), state.referrerLeadId, resolvedLeadId, new Date().toISOString()).run();
+      }catch(e){}
+    }
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
     // background promise left running past the returned Response risks being cut off mid-flight.
@@ -5800,17 +6141,20 @@ async function handleApptPublicBook(request, env){
 
 /* ── B2B MODULE (frontend/b2b.html) — Smart Documents (quotes/catalogs) with trackable public
    links and click-to-accept. Smart Lists (saved segment rules) live as a plain b2b_segments_json
-   CLIENTS column, and Brand/Country classification live as plain LEADS columns — both are
-   read/written straight through the existing /nocodb/* passthrough from b2b.html, exactly like
-   every other CLIENTS/LEADS field in dashboard.html, since that passthrough already protects
-   LEADS via its ClientId (PascalCase) cross-tenant check and CLIENTS via its single-record-Id
-   check. Only Documents get dedicated routes here: B2B_DOCUMENTS_TABLE uses a lowercase
-   client_id column, which that same passthrough guard does NOT match (it only regexes the
-   literal "ClientId,eq,"), so ownership has to be enforced server-side instead — same reasoning
-   as why /ecom/products etc. are dedicated routes rather than raw passthrough. ── */
+   CLIENTS column, and Brand/Country classification live as plain LEADS columns — both stay on
+   NocoDB, read/written straight through the existing /nocodb/* passthrough from b2b.html, exactly
+   like every other CLIENTS/LEADS field in dashboard.html, since every existing lead view (kanban,
+   lead list, exports, Team Performance, B2B's own Brand/Country analytics) already reads those out
+   of NocoDB. Documents are the one part of this module that moved to Cloudflare D1 (env.DB, see
+   migrations/0002_accounting_b2b_documents.sql) — that data (quote/catalog line items, public
+   tracking state) has no other reader anywhere else in the app, the same "sidecar data" reasoning
+   as the Review Request/Referral tracking modules. Every route here keeps its exact pre-D1 request/
+   response shape (in particular, still returning "Id" capitalized) so frontend/b2b.html needed no
+   changes at all. ── */
 
 // Auto-creates the Brand/Country/b2b_events Leads columns the first time the B2B module touches
-// them — mirrors ensureFlowStateField above (memoized per Worker isolate, best-effort).
+// them — mirrors ensureFlowStateField above (memoized per Worker isolate, best-effort). Unrelated
+// to the D1 migration below — these three stay NocoDB LEADS columns.
 let _b2bLeadFieldsEnsured=false;
 async function ensureB2bLeadFields(env){
   if(_b2bLeadFieldsEnsured) return;
@@ -5857,20 +6201,21 @@ function computeB2bDocSubtotal(lineItems){
   (Array.isArray(lineItems)?lineItems:[]).forEach(li=>{ subtotal += (Number(li.qty)||0) * (Number(li.price)||0); });
   return subtotal;
 }
+// Maps a D1 row (lowercase `id`) onto the exact shape b2b.html already expects (capitalized `Id`,
+// matching NocoDB's own auto-id field name from before this migration) — the one difference
+// between a raw D1 row and this module's public JSON contract.
+function b2bDocOut(row){ return row ? {...row, Id:row.id} : null; }
 async function findB2bDocument(env, id){
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records/${id}`);
-  if(!r.ok) return null;
-  return r.json().catch(()=>null);
+  return await env.DB.prepare(`SELECT * FROM b2b_documents WHERE id=?`).bind(Number(id)).first();
 }
 async function findB2bDocumentBySlug(env, slug){
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records?where=${encodeURIComponent(`(public_slug,eq,${slug})`)}&limit=1`);
-  if(!r.ok) return null;
-  const data=await r.json().catch(()=>({}));
-  return data?.list?.[0]||null;
+  return await env.DB.prepare(`SELECT * FROM b2b_documents WHERE public_slug=?`).bind(slug).first();
 }
 // Appends one event to a lead's b2b_events log (capped at the last 50) — feeds Smart Lists'
-// "viewed/accepted a document in the last N days" rule. Best-effort: never blocks the public
-// view/accept response on this bookkeeping succeeding.
+// "viewed/accepted a document in the last N days" rule. Still a NocoDB LEADS field (b2b_events
+// wasn't moved — every existing lead view already reads leads out of NocoDB), so this is unchanged
+// by the D1 migration. Best-effort: never blocks the public view/accept response on this
+// bookkeeping succeeding.
 async function appendB2bLeadEvent(env, leadId, type, meta){
   if(!leadId) return;
   try{
@@ -5887,10 +6232,8 @@ async function appendB2bLeadEvent(env, leadId, type, meta){
 async function handleB2bDocumentsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&sort=-created_at&limit=500`);
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
-  return json({list:data.list||[]});
+  const {results}=await env.DB.prepare(`SELECT * FROM b2b_documents WHERE client_id=? ORDER BY created_at DESC LIMIT 500`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(b2bDocOut)});
 }
 
 async function handleB2bDocumentCreate(request, env){
@@ -5903,17 +6246,19 @@ async function handleB2bDocumentCreate(request, env){
   const taxPct=Number(body.tax_pct)||0;
   const total=subtotal + subtotal*(taxPct/100);
   const fields={
-    client_id:String(payload.cid), lead_id:body.lead_id?String(body.lead_id):'',
+    client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
     type, title:String(body.title||'').trim().slice(0,200), brand:String(body.brand||'').trim().slice(0,100),
     line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
     subtotal, tax_pct:taxPct, total, status:'draft',
-    public_slug:crypto.randomUUID().replace(/-/g,''), view_count:0, last_viewed_at:'', accepted_at:'',
-    created_at:new Date().toISOString(), expires_at:body.expires_at||'', notes:String(body.notes||'').trim().slice(0,1000)
+    public_slug:crypto.randomUUID().replace(/-/g,''), view_count:0, last_viewed_at:null, accepted_at:null,
+    created_at:new Date().toISOString(), expires_at:body.expires_at||null, notes:String(body.notes||'').trim().slice(0,1000)
   };
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'POST', body:fields});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
-  return json({...fields, Id:data.Id});
+  const r=await env.DB.prepare(`INSERT INTO b2b_documents
+    (client_id, lead_id, type, title, brand, line_items_json, currency, subtotal, tax_pct, total, status, public_slug, view_count, last_viewed_at, accepted_at, created_at, expires_at, notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.brand, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.total, fields.status, fields.public_slug, fields.view_count, fields.last_viewed_at, fields.accepted_at, fields.created_at, fields.expires_at, fields.notes)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
 }
 
 async function handleB2bDocumentUpdate(request, env){
@@ -5923,21 +6268,21 @@ async function handleB2bDocumentUpdate(request, env){
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await findB2bDocument(env, body.id);
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
-  const fields={Id:Number(body.id)};
-  if(body.title!==undefined) fields.title=String(body.title).trim().slice(0,200);
-  if(body.brand!==undefined) fields.brand=String(body.brand).trim().slice(0,100);
-  if(body.status!==undefined) fields.status=String(body.status);
-  if(body.notes!==undefined) fields.notes=String(body.notes).trim().slice(0,1000);
-  if(body.expires_at!==undefined) fields.expires_at=body.expires_at;
+  const sets=[], vals=[];
+  if(body.title!==undefined){ sets.push('title=?'); vals.push(String(body.title).trim().slice(0,200)); }
+  if(body.brand!==undefined){ sets.push('brand=?'); vals.push(String(body.brand).trim().slice(0,100)); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(String(body.status)); }
+  if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
+  if(body.expires_at!==undefined){ sets.push('expires_at=?'); vals.push(body.expires_at||null); }
   if(Array.isArray(body.line_items)){
     const subtotal=computeB2bDocSubtotal(body.line_items);
     const taxPct=body.tax_pct!==undefined?(Number(body.tax_pct)||0):(Number(existing.tax_pct)||0);
-    fields.line_items_json=JSON.stringify(body.line_items);
-    fields.subtotal=subtotal; fields.tax_pct=taxPct; fields.total=subtotal+subtotal*(taxPct/100);
+    sets.push('line_items_json=?','subtotal=?','tax_pct=?','total=?');
+    vals.push(JSON.stringify(body.line_items), subtotal, taxPct, subtotal+subtotal*(taxPct/100));
   }
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'PATCH', body:fields});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE b2b_documents SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
   return json({ok:true});
 }
 
@@ -5948,49 +6293,49 @@ async function handleB2bDocumentDelete(request, env){
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await findB2bDocument(env, body.id);
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'DELETE', body:{Id:Number(body.id)}});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
+  await env.DB.prepare(`DELETE FROM b2b_documents WHERE id=?`).bind(Number(body.id)).run();
   return json({ok:true});
 }
 
 // Public — no session, by design: hit by the B2B client's own customer opening a trackable
 // quote/catalog link (b2b.html?slug=...). Logs a view and appends a b2b_events entry on the
 // linked lead so Smart Lists can target "viewed a document in the last N days".
-const B2B_PUBLIC_DOC_FIELDS=['Id','type','title','brand','line_items_json','currency','subtotal','tax_pct','total','status','view_count','accepted_at','expires_at'];
+const B2B_PUBLIC_DOC_FIELDS=['id','type','title','brand','line_items_json','currency','subtotal','tax_pct','total','status','view_count','accepted_at','expires_at'];
 async function handleB2bDocPublicGet(request, env, slug){
-  await ensureB2bLeadFields(env);
   const doc=await findB2bDocumentBySlug(env, slug);
   if(!doc) return json({error:'Not found'}, 404);
-  const patch={view_count:(Number(doc.view_count)||0)+1, last_viewed_at:new Date().toISOString()};
-  if(doc.status==='draft'||doc.status==='sent') patch.status='viewed';
-  await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'PATCH', body:{Id:doc.Id, ...patch}});
+  const viewCount=(Number(doc.view_count)||0)+1;
+  const lastViewedAt=new Date().toISOString();
+  const nextStatus=(doc.status==='draft'||doc.status==='sent')?'viewed':doc.status;
+  await env.DB.prepare(`UPDATE b2b_documents SET view_count=?, last_viewed_at=?, status=? WHERE id=?`)
+    .bind(viewCount, lastViewedAt, nextStatus, doc.id).run();
   await appendB2bLeadEvent(env, doc.lead_id, 'doc_view', {slug});
-  const out={}; B2B_PUBLIC_DOC_FIELDS.forEach(k=>{ out[k]=doc[k]; });
-  out.view_count=patch.view_count; out.status=patch.status||doc.status;
+  const out={};
+  B2B_PUBLIC_DOC_FIELDS.forEach(k=>{ out[k==='id'?'Id':k]=doc[k]; });
+  out.view_count=viewCount; out.status=nextStatus;
   return json(out);
 }
 
 // Public — no session. Click-to-accept only (no e-signature) — records an acceptance timestamp,
 // nothing more.
 async function handleB2bDocPublicAccept(request, env, slug){
-  await ensureB2bLeadFields(env);
   const doc=await findB2bDocumentBySlug(env, slug);
   if(!doc) return json({error:'Not found'}, 404);
   if(doc.status==='accepted') return json({ok:true, already:true});
   const acceptedAt=new Date().toISOString();
-  await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'PATCH', body:{Id:doc.Id, status:'accepted', accepted_at:acceptedAt}});
+  await env.DB.prepare(`UPDATE b2b_documents SET status='accepted', accepted_at=? WHERE id=?`).bind(acceptedAt, doc.id).run();
   await appendB2bLeadEvent(env, doc.lead_id, 'doc_accepted', {slug});
   return json({ok:true, accepted_at:acceptedAt});
 }
 
-/* ── ACCOUNTING MODULE (frontend/dashboard.html — "💰 Accounting") — Quotation → Invoice →
-   Receipt lifecycle for any client's existing leads, with optional one-way push to a client's own
-   ERPNext (Frappe Cloud) site. Same ACCOUNTING_DOCUMENTS_TABLE-uses-a-lowercase-client_id-column
-   reasoning as B2B_DOCUMENTS_TABLE above (see that module's comment) — dedicated routes, not the
-   generic /nocodb/* passthrough, since ownership has to be enforced server-side here too.
-   Deliberately industry-agnostic (not gated behind b2b_enabled or any industry flag) — any
-   client's lead can be quoted/invoiced regardless of what they sell. ── */
+/* ── ACCOUNTING MODULE (frontend/accounting.html) — Quotation → Invoice → Receipt lifecycle for
+   any client's existing leads, with optional one-way push to a client's own ERPNext (Frappe Cloud)
+   site. Documents live in Cloudflare D1 (env.DB, see migrations/0002_accounting_b2b_documents.sql)
+   — same "sidecar data with no other NocoDB reader" reasoning as the B2B module's Documents above.
+   Every route here keeps its exact pre-D1 request/response shape (in particular, still returning
+   "Id" capitalized) so frontend/accounting.html needed no changes at all. Deliberately
+   industry-agnostic (not gated behind b2b_enabled or any industry flag) — any client's lead can be
+   quoted/invoiced regardless of what they sell. ── */
 
 function computeAccountingDocTotals(lineItems, taxPct){
   let subtotal=0;
@@ -6000,10 +6345,11 @@ function computeAccountingDocTotals(lineItems, taxPct){
   return {subtotal, taxAmount, total:subtotal+taxAmount};
 }
 
+// Maps a D1 row (lowercase `id`) onto the shape accounting.html already expects (capitalized
+// `Id`) — the one difference between a raw D1 row and this module's public JSON contract.
+function acctDocOut(row){ return row ? {...row, Id:row.id} : null; }
 async function findAccountingDocument(env, id){
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records/${id}`);
-  if(!r.ok) return null;
-  return r.json().catch(()=>null);
+  return await env.DB.prepare(`SELECT * FROM accounting_documents WHERE id=?`).bind(Number(id)).first();
 }
 
 async function handleAccountingDocumentsList(request, env){
@@ -6011,12 +6357,12 @@ async function handleAccountingDocumentsList(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const url=new URL(request.url);
   const leadId=url.searchParams.get('lead_id');
-  let where=`(client_id,eq,${payload.cid})`;
-  if(leadId) where+=`~and(lead_id,eq,${leadId})`;
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records?where=${encodeURIComponent(where)}&sort=-doc_created_at&limit=500`);
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
-  return json({list:data.list||[]});
+  let sql=`SELECT * FROM accounting_documents WHERE client_id=?`;
+  const binds=[Number(payload.cid)];
+  if(leadId){ sql+=` AND lead_id=?`; binds.push(Number(leadId)); }
+  sql+=` ORDER BY doc_created_at DESC LIMIT 500`;
+  const {results}=await env.DB.prepare(sql).bind(...binds).all();
+  return json({list:(results||[]).map(acctDocOut)});
 }
 
 async function handleAccountingDocumentCreate(request, env){
@@ -6029,19 +6375,21 @@ async function handleAccountingDocumentCreate(request, env){
   const taxPct=Number(body.tax_pct)||0;
   const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, taxPct);
   const fields={
-    client_id:String(payload.cid), lead_id:body.lead_id?String(body.lead_id):'',
+    client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
     type, title:String(body.title||'').trim().slice(0,200),
     line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
     subtotal, tax_pct:taxPct, tax_amount:taxAmount, total, status:'draft',
-    linked_doc_id:body.linked_doc_id?String(body.linked_doc_id):'',
+    linked_doc_id:body.linked_doc_id?Number(body.linked_doc_id):null,
     notes:String(body.notes||'').trim().slice(0,1000),
-    erpnext_doctype:'', erpnext_doc_name:'', erpnext_sync_status:'', erpnext_sync_error:'', erpnext_synced_at:'',
+    erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
     doc_created_at:new Date().toISOString(),
   };
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'POST', body:fields});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
-  return json({...fields, Id:data.Id});
+  const r=await env.DB.prepare(`INSERT INTO accounting_documents
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
 }
 
 async function handleAccountingDocumentUpdate(request, env){
@@ -6051,20 +6399,20 @@ async function handleAccountingDocumentUpdate(request, env){
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await findAccountingDocument(env, body.id);
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
-  const fields={Id:Number(body.id)};
-  if(body.title!==undefined) fields.title=String(body.title).trim().slice(0,200);
-  if(body.status!==undefined) fields.status=String(body.status);
-  if(body.notes!==undefined) fields.notes=String(body.notes).trim().slice(0,1000);
-  if(body.currency!==undefined) fields.currency=String(body.currency).trim().slice(0,10);
+  const sets=[], vals=[];
+  if(body.title!==undefined){ sets.push('title=?'); vals.push(String(body.title).trim().slice(0,200)); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(String(body.status)); }
+  if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
+  if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10)); }
   if(Array.isArray(body.line_items)){
     const taxPct=body.tax_pct!==undefined?(Number(body.tax_pct)||0):(Number(existing.tax_pct)||0);
     const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, taxPct);
-    fields.line_items_json=JSON.stringify(body.line_items);
-    fields.subtotal=subtotal; fields.tax_pct=taxPct; fields.tax_amount=taxAmount; fields.total=total;
+    sets.push('line_items_json=?','subtotal=?','tax_pct=?','tax_amount=?','total=?');
+    vals.push(JSON.stringify(body.line_items), subtotal, taxPct, taxAmount, total);
   }
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'PATCH', body:fields});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE accounting_documents SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
   return json({ok:true});
 }
 
@@ -6075,9 +6423,7 @@ async function handleAccountingDocumentDelete(request, env){
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await findAccountingDocument(env, body.id);
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'DELETE', body:{Id:Number(body.id)}});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
+  await env.DB.prepare(`DELETE FROM accounting_documents WHERE id=?`).bind(Number(body.id)).run();
   return json({ok:true});
 }
 
@@ -6096,17 +6442,19 @@ async function handleAccountingDocumentConvert(request, env){
   const toType=ACCOUNTING_CONVERT_MAP[src.type];
   if(!toType) return json({error:`Cannot convert a ${src.type} — only quotation→invoice and invoice→receipt are supported`}, 400);
   const fields={
-    client_id:String(payload.cid), lead_id:src.lead_id||'',
+    client_id:Number(payload.cid), lead_id:src.lead_id||null,
     type:toType, title:src.title||'', line_items_json:src.line_items_json||'[]',
     currency:src.currency||'', subtotal:src.subtotal||0, tax_pct:src.tax_pct||0, tax_amount:src.tax_amount||0, total:src.total||0,
-    status:'draft', linked_doc_id:String(src.Id), notes:src.notes||'',
-    erpnext_doctype:'', erpnext_doc_name:'', erpnext_sync_status:'', erpnext_sync_error:'', erpnext_synced_at:'',
+    status:'draft', linked_doc_id:src.id, notes:src.notes||'',
+    erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
     doc_created_at:new Date().toISOString(),
   };
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'POST', body:fields});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
-  return json({...fields, Id:data.Id});
+  const r=await env.DB.prepare(`INSERT INTO accounting_documents
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
 }
 
 // ── ERPNext (Frappe) push integration — per-client credentials (erpnext_base_url/
@@ -6240,16 +6588,13 @@ async function handleAccountingDocumentSyncErpnext(request, env){
     }else{
       erpName=await erpnextPushSalesDoc(c, erpDoctype, doc, lead);
     }
-    await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'PATCH', body:{
-      Id:doc.Id, erpnext_doctype:erpDoctype, erpnext_doc_name:erpName||'', erpnext_sync_status:'synced', erpnext_sync_error:'', erpnext_synced_at:new Date().toISOString()
-    }});
+    await env.DB.prepare(`UPDATE accounting_documents SET erpnext_doctype=?, erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_sync_error='', erpnext_synced_at=? WHERE id=?`)
+      .bind(erpDoctype, erpName||'', new Date().toISOString(), doc.id).run();
     return json({ok:true, erpnext_doc_name:erpName});
   }catch(e){
     const msg=String(e.message||e).slice(0,500);
-    await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'PATCH', body:{
-      Id:doc.Id, erpnext_sync_status:'failed', erpnext_sync_error:msg
-    }});
-    await reportOpsError(env, 'handleAccountingDocumentSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, docId:doc.Id, type:doc.type});
+    await env.DB.prepare(`UPDATE accounting_documents SET erpnext_sync_status='failed', erpnext_sync_error=? WHERE id=?`).bind(msg, doc.id).run();
+    await reportOpsError(env, 'handleAccountingDocumentSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, docId:doc.id, type:doc.type});
     return json({error:'ERPNext sync failed: '+msg}, 502);
   }
 }
@@ -6334,6 +6679,13 @@ export default {
       else if(url.pathname==='/automations/flows' && request.method==='DELETE'){ res=await handleAutomationFlowDelete(request, env); }
       else if(url.pathname==='/automations/flows/enroll' && request.method==='POST'){ res=await handleAutomationFlowEnroll(request, env); }
       else if(url.pathname==='/automations/audience-preview' && request.method==='GET'){ res=await handleAutomationAudiencePreview(request, env); }
+      else if(url.pathname==='/reviews/config' && request.method==='GET'){ res=await handleReviewsConfigGet(request, env); }
+      else if(url.pathname==='/reviews/config' && request.method==='POST'){ res=await handleReviewsConfigSet(request, env); }
+      else if(url.pathname==='/reviews/click' && request.method==='GET'){ res=await handleReviewClick(request, env); }
+      else if(url.pathname==='/reviews/stats' && request.method==='GET'){ res=await handleReviewsStats(request, env); }
+      else if(url.pathname==='/referrals/lead-info' && request.method==='GET'){ res=await handleReferralsLeadInfo(request, env); }
+      else if(url.pathname==='/referrals/generate-code' && request.method==='POST'){ res=await handleReferralsGenerateCode(request, env); }
+      else if(url.pathname==='/referrals/reward' && request.method==='POST'){ res=await handleReferralsReward(request, env); }
       else if(url.pathname==='/channels/create-account' && request.method==='POST'){ res=await handleChannelsCreateAccount(request, env); }
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
@@ -6387,7 +6739,7 @@ export default {
   // Shopify abandoned-cart sweep.
   async scheduled(event, env, ctx){
     if(event.cron==='0 2 * * *') ctx.waitUntil(runDailyHealthCheckForAllClients(env));
-    else if(event.cron==='*/15 * * * *') ctx.waitUntil(runAutomationFlowsForAllClients(env));
+    else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }
 };

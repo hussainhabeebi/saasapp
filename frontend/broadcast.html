@@ -242,6 +242,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <button class="tab" id="tab-templates" onclick="showTab('templates')">📋 Manage Templates</button>
     <button class="tab" id="tab-tracking" onclick="showTab('tracking')">📊 Tracking</button>
     <button class="tab" id="tab-automations" onclick="showTab('automations')">⚡ Automations</button>
+    <button class="tab" id="tab-reviews" onclick="showTab('reviews')">⭐ Reviews</button>
   </div>
 
   <!-- ══════════════════════════════════════
@@ -685,6 +686,47 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
 
   </div><!-- /view-automations -->
 
+  <!-- ══════════════════════════════════════
+       TAB: REVIEWS — a dedicated module (not built on top of Automations above), since it needs
+       its own trackable click link and doesn't need a general-purpose flow editor for what's
+       always the same shape: wait N hours after a deal closes, then ask once.
+  ══════════════════════════════════════ -->
+  <div id="view-reviews" style="display:none">
+    <div class="card">
+      <div class="card-title">⭐ Review Requests</div>
+      <div class="msg info">Automatically ask a customer for a review a set number of hours after their deal reaches one of the Stages below — reuses the same WhatsApp send as Direct Message above, with a trackable link so you can see how many customers actually clicked through.</div>
+
+      <div class="form-field">
+        <label><input type="checkbox" id="reviewsEnabled" style="width:auto;display:inline-block;margin-right:6px"> Enabled</label>
+      </div>
+
+      <label>Ask when a lead's Stage becomes one of:</label>
+      <div class="chip-row" id="reviewsStageChips" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px"></div>
+
+      <div class="form-field">
+        <label>Delay (hours after closing)</label>
+        <input type="number" id="reviewsDelayHours" min="1" value="72" style="max-width:140px">
+      </div>
+
+      <div class="form-field">
+        <label>Message — use {name} for the customer's name and {review_link} for the tracked review link</label>
+        <textarea id="reviewsMessage" rows="3" placeholder="Hi {name}! So glad we could help. If you have a moment, we'd really appreciate a quick review: {review_link}"></textarea>
+      </div>
+
+      <div class="msg warn hidden" id="reviewsLinkWarning">Set a Review Link in Settings → General (Trust Signals) first — review requests won't send without one.</div>
+
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px">
+        <button class="btn btn-primary" onclick="saveReviewsConfig()">Save</button>
+        <span id="reviewsSaveMsg" style="font-size:12.5px"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📊 Stats</div>
+      <div id="reviewsStats"></div>
+    </div>
+  </div><!-- /view-reviews -->
+
 </div><!-- /wrap -->
 </div><!-- /main -->
 
@@ -782,7 +824,7 @@ async function initApp(){
 
 // ── TABS ──
 function showTab(tab){
-  ['dm','meta','prospects','followups','templates','tracking','automations'].forEach(t=>{
+  ['dm','meta','prospects','followups','templates','tracking','automations','reviews'].forEach(t=>{
     $id('view-'+t).style.display = t===tab ? '' : 'none';
     $id('tab-'+t).classList.toggle('active', t===tab);
   });
@@ -790,6 +832,7 @@ function showTab(tab){
   if(tab==='tracking') renderTrackingTab();
   if(tab==='prospects') prospectsInit();
   if(tab==='automations') loadFlows();
+  if(tab==='reviews') loadReviewsConfig();
 }
 
 // ── LEADS ──
@@ -1383,6 +1426,78 @@ async function logBroadcastRun(type,total,sent,failed){
   if(log.length>50) log=log.slice(-50);
   clientRecord.broadcast_log=JSON.stringify(log);
   try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId), broadcast_log:clientRecord.broadcast_log}); }catch(e){ console.error('logBroadcastRun',e); }
+}
+
+// ── REVIEWS TAB ── config lives on CLIENTS (review_request_*), read/written server-side via
+// /reviews/config (session-gated) so the module can be enabled without exposing anything new to
+// the browser beyond what's already here. Stats are computed client-side from allLeads, same
+// pattern as Tracking above — no dedicated stats route needed.
+let reviewsSelectedStages=new Set();
+function renderReviewsStageChips(){
+  $id('reviewsStageChips').innerHTML = knownStages.length
+    ? knownStages.map(s=>`<span class="seg-chip ${reviewsSelectedStages.has(s)?'on':''}" data-stage="${escAttr(s)}" onclick="toggleReviewsStage(this)">${esc(s)}</span>`).join('')
+    : '<span style="font-size:12px;color:var(--muted)">No stages found yet on your leads.</span>';
+}
+function toggleReviewsStage(el){
+  const stage=el.dataset.stage;
+  if(reviewsSelectedStages.has(stage)) reviewsSelectedStages.delete(stage); else reviewsSelectedStages.add(stage);
+  el.classList.toggle('on', reviewsSelectedStages.has(stage));
+}
+async function loadReviewsConfig(){
+  renderReviewsStageChips();
+  fetchReviewsStats();
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/reviews/config`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    $id('reviewsEnabled').checked=!!data.enabled;
+    reviewsSelectedStages=new Set(data.stages||[]);
+    renderReviewsStageChips();
+    $id('reviewsDelayHours').value=data.delay_hours||72;
+    $id('reviewsMessage').value=data.message||'';
+    $id('reviewsLinkWarning').classList.toggle('hidden', !!data.review_link);
+  }catch(e){ console.error('loadReviewsConfig',e); }
+}
+async function saveReviewsConfig(){
+  $id('reviewsSaveMsg').textContent='Saving…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/reviews/config`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({
+      review_request_enabled:$id('reviewsEnabled').checked?'Yes':'No',
+      review_request_stages:[...reviewsSelectedStages],
+      review_request_delay_hours:parseInt($id('reviewsDelayHours').value)||72,
+      review_request_message:$id('reviewsMessage').value.trim(),
+    })});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    $id('reviewsSaveMsg').textContent='Saved ✓';
+    setTimeout(()=>{ if($id('reviewsSaveMsg')) $id('reviewsSaveMsg').textContent=''; },2000);
+  }catch(e){ $id('reviewsSaveMsg').textContent='Failed to save.'; }
+}
+// Fetched from D1 (see /reviews/stats in worker.js) rather than filtered out of allLeads — the
+// request/click data moved entirely to D1, so it's no longer on the lead record to filter.
+async function fetchReviewsStats(){
+  $id('reviewsStats').innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/reviews/stats`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    renderReviewsStats(data.requested||0, data.clicked||0);
+  }catch(e){ $id('reviewsStats').innerHTML='<div style="font-size:12px;color:var(--muted)">Couldn\'t load stats.</div>'; }
+}
+function renderReviewsStats(requested, clicked){
+  const rate=requested?Math.round(clicked/requested*100):0;
+  $id('reviewsStats').innerHTML=`
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(3,1fr)">
+      <div style="border:1.5px solid var(--line);border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:var(--ink)">${requested}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Requests Sent</div>
+      </div>
+      <div style="border:1.5px solid var(--line);border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:var(--ink)">${clicked}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Clicked Through</div>
+      </div>
+      <div style="border:1.5px solid var(--accent);border-radius:10px;padding:14px;text-align:center;background:var(--accent-soft)">
+        <div style="font-size:22px;font-weight:700;color:var(--accent-ink)">${rate}%</div>
+        <div style="font-size:11px;color:var(--accent-ink);margin-top:4px">Click Rate</div>
+      </div>
+    </div>`;
 }
 
 // ── PROGRESS HELPERS ──

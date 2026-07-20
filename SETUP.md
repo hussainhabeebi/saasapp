@@ -107,6 +107,9 @@ More columns on the **LEADS** table, written by `engine.json` and read/edited by
 | HandoverAt | Single line (ISO datetime — stamped the moment a lead first enters `human_handover`; powers the SLA-breach alert and an in-dashboard "waiting Xm" badge) |
 | SlaAlerted | Single line ("Yes"/"No" — dedupe flag so `n8n/notifications.json` only fires one SLA-breach alert per handover, reset by the engine each time a lead re-enters `human_handover`) |
 | HandoverOutcome | Single line (`Resolved-Won`/`Released`/`Lost`/`No-response` — set only when a rep clicks "Mark Done" on the Human Deals page, `removeHumanDeal()` in `dashboard.html`. Nothing else writes this; a lead handed over before this feature existed simply has it blank. Drives the Human Deals Stage transition (`HD_OUTCOME_STAGE`: Won→`won`, everything else→`new`/`lost`) and the Team page's Funnel Analytics "Handover Win Rate" stat — see "Human Deals page" below.) |
+| ClosedAt | Single line (ISO datetime — stamped once, client-side, by `reportLeadQualityChange()` in `dashboard.html` the first time a lead's Stage reaches a won or lost outcome. Powers the Team page's Revenue Forecast section — see "Revenue Forecast dashboard" below. Also read by the Review Request module (see below) as its "when did this actually finish" signal. Add this column before using either section; leads that closed before the column existed simply have it blank and both features fall back to `Date` for them.) |
+| CompanyDomain | Single line (set by `dashboard.html`'s `saveLead()` from a lead's Email domain, when the domain isn't a free personal-email provider — see "Data enrichment on capture" below. Never set by the engine, which has no Email input from WhatsApp.) |
+| CompanyName | Single line (a title-cased guess from `CompanyDomain`, set alongside it. Editable — a rep's own correction is never overwritten by re-saving the same email.) |
 
 **Known limitation**: SLA tracking only knows a lead *entered* `human_handover` — the bot stops
 writing to the lead entirely once handed over (by design, so it can never talk over a live agent),
@@ -1054,24 +1057,17 @@ List definitions: `[{id, name, rules:[{field, op, value}] | {field:'behavior', v
 createdAt}]`, read/written straight through `/nocodb/*` from `b2b.html`, protected by the same
 single-record-Id check the passthrough already does for every other CLIENTS field).
 
-**New NocoDB table** `b2b_documents` (quotes & catalogs, with trackable public links) — fields:
-`client_id`, `lead_id`, `type` (`quote`/`catalog`), `title`, `brand`, `line_items_json` (Long
-text, JSON array of `{name, qty, price}`), `currency`, `subtotal`, `tax_pct`, `total`, `status`
-(`draft`/`sent`/`viewed`/`accepted`/`expired`), `public_slug` (Single line text, unique — the
-`?slug=` token in the shared link), `view_count` (Number), `last_viewed_at`, `accepted_at`,
-`created_at`, `expires_at`, `notes`. Create this table once in NocoDB, then point the Worker at
-it — two ways, pick whichever fits your workflow: (a) **preferred, no redeploy needed** — add a
-Worker var or secret named `B2B_DOCUMENTS_TABLE` set to the table id (Cloudflare dashboard →
-Workers → your Worker → Settings → Variables and Secrets → Add, or `wrangler secret put
-B2B_DOCUMENTS_TABLE`); `b2bDocumentsTable(env)` in `worker.js` reads this first. (b) edit the
-`B2B_DOCUMENTS_TABLE` constant in `worker.js` directly (replacing the
-`REPLACE_B2B_DOCUMENTS_TABLE_ID` placeholder) and redeploy — same pattern as
-`SHOPIFY_CHECKOUTS_TABLE` above, used as the fallback if the env var isn't set. **Why a dedicated
-table instead of the generic `/nocodb/*` passthrough**: this table uses a lowercase `client_id`
-column, which the passthrough's
-cross-tenant guard doesn't protect (it only regex-matches the literal `ClientId,eq,` used by
-LEADS) — so Documents get dedicated, session-authed `/b2b/documents` routes in `worker.js` that
-derive `client_id` server-side from the session instead, same reasoning as `/ecom/products`.
+**Documents live in Cloudflare D1** (`env.DB`, table `b2b_documents` — see
+`migrations/0002_accounting_b2b_documents.sql` and "Storage split: NocoDB vs. Cloudflare D1"
+below), not a NocoDB table you create by hand: `client_id`, `lead_id`, `type` (`quote`/`catalog`),
+`title`, `brand`, `line_items_json` (JSON array of `{name, qty, price}`), `currency`, `subtotal`,
+`tax_pct`, `total`, `status` (`draft`/`sent`/`viewed`/`accepted`/`expired`), `public_slug` (unique
+— the `?slug=` token in the shared link), `view_count`, `last_viewed_at`, `accepted_at`,
+`created_at`, `expires_at`, `notes`. Apply the migration once (`wrangler d1 migrations apply
+leadvyne-d1 --remote`) and it's ready — no per-deployment table-creation step, no env var to set.
+Every `/b2b/documents*` route derives `client_id` server-side from the session (same as before
+this migration) rather than trusting anything client-supplied, and every response still returns
+the document's id as `Id` (capitalized) so `b2b.html` needed no changes at all.
 
 **Trackable links & CPQ**: creating a quote/catalog in b2b.html's Documents tab generates a
 `public_slug`; the shareable link is `b2b.html?slug=<slug>` (works standalone, outside the
@@ -1109,24 +1105,21 @@ in an iframe, same pattern as B2B (`?client=` + `?token=` in the query string �
 token for the same reason b2b.html does: it reads/writes Leads through the bearer-token-gated
 `/nocodb/*` passthrough).
 
-**New NocoDB table** (name it anything — a client-visible table name isn't assumed anywhere) —
-fields: `client_id`, `lead_id`, `type` (`quotation`/`invoice`/`receipt`), `title`,
-`line_items_json` (Long text, JSON array of `{name, qty, price}`), `currency`, `subtotal`,
-`tax_pct`, `tax_amount`, `total`, `status` (`draft`/`sent`/`paid`/`void`/`accepted` — used loosely
-per type, no strict per-type state machine), `linked_doc_id` (Single line text — an invoice's
-source quotation, or a receipt's source invoice; blank for a document created standalone), `notes`,
-`erpnext_doctype`, `erpnext_doc_name`, `erpnext_sync_status` (`` / `pending` / `synced` /
-`failed`), `erpnext_sync_error`, `erpnext_synced_at`, `doc_created_at` (**not** `created_at` —
-newer NocoDB versions auto-add their own hidden system "Created At" field to every new table,
-which collides with a custom field of that same name; a NocoDB "ERR_FIELD_NOT_FOUND" on this
-table almost always means this field was left out or named `created_at` instead). Create this
-table once in NocoDB, then point the Worker at it the same two ways `B2B_DOCUMENTS_TABLE` works
-(see "B2B module" above): preferred — a Worker var/secret named `ACCOUNTING_DOCUMENTS_TABLE` (no redeploy
-needed), or edit the `ACCOUNTING_DOCUMENTS_TABLE` constant in `worker.js` directly (replacing the
-`REPLACE_ACCOUNTING_DOCUMENTS_TABLE_ID` placeholder) and redeploy. Same "dedicated routes instead
-of the generic passthrough" reasoning as B2B Documents — this table's lowercase `client_id` column
-isn't covered by the passthrough's cross-tenant guard, so `/accounting/*` routes in `worker.js`
-derive `client_id` server-side from the session instead.
+**Documents live in Cloudflare D1** (`env.DB`, table `accounting_documents` — see
+`migrations/0002_accounting_b2b_documents.sql` and "Storage split: NocoDB vs. Cloudflare D1"
+below), not a NocoDB table you create by hand: `client_id`, `lead_id`, `type`
+(`quotation`/`invoice`/`receipt`), `title`, `line_items_json` (JSON array of `{name, qty, price}`),
+`currency`, `subtotal`, `tax_pct`, `tax_amount`, `total`, `status`
+(`draft`/`sent`/`paid`/`void`/`accepted` — used loosely per type, no strict per-type state
+machine), `linked_doc_id` (an invoice's source quotation, or a receipt's source invoice; `NULL`
+for a document created standalone), `notes`, `erpnext_doctype`, `erpnext_doc_name`,
+`erpnext_sync_status` (`NULL` / `synced` / `failed`), `erpnext_sync_error`, `erpnext_synced_at`,
+`doc_created_at`. Apply the migration once (`wrangler d1 migrations apply leadvyne-d1 --remote`)
+and it's ready — no per-deployment table-creation step, no env var to set, and no more
+NocoDB-specific `doc_created_at`-not-`created_at` naming trap (a plain SQL column, not subject to
+NocoDB's auto-added system field). Every `/accounting/*` route derives `client_id` server-side from
+the session (same as before this migration), and every response still returns the document's id as
+`Id` (capitalized) so `accounting.html` needed no changes at all.
 
 **Lifecycle**: create a Quotation against an existing lead (title, line items, tax %, currency,
 notes) — `handleAccountingDocumentCreate`. Once it's ready to become billable, **Convert**
@@ -1564,6 +1557,194 @@ call failed — same "AI primary, rule-based fallback" pattern as the intent cla
 respects `WinProbabilityManual`, so a rep's own edit is never overwritten. This can be swapped for
 a real trained model later without changing anything downstream — `Code · Prep lead` only cares
 that `sc.aiWinProbability` is a number.
+
+## Revenue Forecast dashboard (`frontend/dashboard.html` — Team page)
+Adds a trended view under 📊 Team Performance, next to the existing (snapshot-only) Funnel
+Analytics: **Forecast vs. Actual by month**, **Win Rate Trend**, **Pipeline by Stage**, and a
+**Pipeline Velocity** stat. Computed entirely client-side from `allLeads`, same pattern as Team
+Performance/Funnel Analytics — no new backend route.
+
+- **`ClosedAt`** (new LEADS column, see schema table above) is the piece that didn't already
+  exist: nothing previously recorded *when* a deal actually closed, only its current `Stage`, so
+  there was no way to bucket won/lost deals by month. Stamped once by `stampClosedAt()`, called
+  from `reportLeadQualityChange()` — the single chokepoint every Stage-changing call site
+  (`kbDrop` on the kanban, `saveLead()`, Human Deals' `removeHumanDeal()`) already routes through
+  for Meta CAPI reporting. Fires only on the won/lost transition itself, never overwrites an
+  existing value.
+- **`isWonLead()`/`isLostLead()`** — the `Stage==='won'||'converted'||(TERMINAL-but-not-
+  human_handover)` check used to be inlined separately in `renderTeamPerformance` and
+  `generateReport`; factored into one function here since the forecast section needed it in three
+  more places. `isLostLead` matches what Human Deals actually writes (`HD_OUTCOME_STAGE`'s
+  `'Lost'->'lost'`).
+- **Forecast vs. Actual (last 6 months)**: past months show only **Actual** (sum of `DealValue`
+  for leads won that month, bucketed by `ClosedAt`, falling back to `Date` for leads closed before
+  this shipped). Only the **current, still-open month** also shows a live **Forecast** figure — the
+  weighted value (`DealValue × WinProbability`) of deals still active right now. This is
+  deliberate, not a gap to fix later: nothing in this app snapshots pipeline state over time, so
+  there's no honest way to reconstruct "what the forecast looked like in March" for a past month —
+  only what actually closed by then.
+- **Win Rate Trend**: resolved (won + lost) leads per month, `won / (won + lost)`, same `ClosedAt`
+  bucketing.
+- **Pipeline by Stage**: active (not yet won/lost) deal value per pipeline stage, same stage list
+  the kanban already uses.
+- **Pipeline Velocity**: the standard `(active deals × win rate × avg deal size) / avg sales cycle
+  length` formula. Avg cycle length is `ClosedAt − Date` averaged over won leads that have both
+  fields — leads won before `ClosedAt` existed are excluded from that average rather than guessed
+  at, so the figure quietly gets more accurate as more deals close post-launch.
+- **Team Performance's per-agent table** gained a **Win Rate (30d)** column next to the existing
+  all-time Win Rate, scoped to each agent's leads resolved in the last 30 days via `ClosedAt` — a
+  lightweight per-agent trend signal without building a full per-agent time-series matrix.
+- **Not done here**: a true forecast-accuracy view (comparing what was predicted vs. what closed,
+  month over month) would need periodic pipeline snapshots, which this app doesn't store anywhere
+  — a deliberate scope cut, not an oversight.
+
+## Data enrichment on capture (`cloudflare-worker/worker.js` + `frontend/dashboard.html`)
+Auto-fills a couple of signals a WhatsApp-first lead otherwise arrives with zero information
+about, beyond what the customer volunteers in conversation — scoped deliberately to what's
+actually derivable for free, not fabricated.
+
+- **Country, from the phone's calling code** — `phoneToCountry()` in `worker.js` is a deterministic
+  E.164 calling-code table (no external API, no cost). Applied in `engineBuildLeadUpsertBody` for
+  a brand-new lead only, and only if `Country` isn't already set — never overwrites a rep's manual
+  edit or a blank left on purpose. NANP (`+1`) covers US/Canada/most Caribbean nations under one
+  code with no shorter public prefix to split further, so it's labeled generically
+  (`US/Canada/Caribbean (NANP)`) rather than guessed at.
+  `dashboard.html` has its own smaller copy of the same table (`DASH_PHONE_COUNTRY_CODES`,
+  `phoneToCountryClient()`) so a lead added by hand through the Add Lead modal gets the same
+  enrichment an organic WhatsApp lead gets server-side — deliberately shorter (the regions this
+  CRM's own clients actually operate in), since a wrong guess on an uncommon code is worse than
+  leaving `Country` blank for a rep to fill in.
+- **Company name/domain, from the lead's Email** — `companyFromEmail()` in `dashboard.html`,
+  applied in `saveLead()` whenever an Email is entered and `CompanyDomain` isn't already set.
+  Extracts the domain, excludes free personal-email providers (gmail/yahoo/outlook/etc. — those
+  aren't a company), and title-cases the domain's first label as a `CompanyName` guess. The engine
+  never does this itself since WhatsApp gives it no Email input at all — this only fires through
+  the dashboard's own lead-editing path.
+- **Known limitation, by design**: real firmographic data — employee count, funding, verified
+  social profiles — needs a paid third-party enrichment API (Clearbit/Apollo/similar), which this
+  app doesn't integrate. Deliberately not fabricated here (e.g. guessing a LinkedIn URL from a
+  domain would be an unverified, often-wrong link); if that's wanted later, it's a new optional
+  `enrichment_api_key`-style integration, same "no-op if unconfigured" shape as Meta CAPI/Resend,
+  not an extension of the deterministic lookups above.
+
+## Storage split: NocoDB vs. Cloudflare D1
+Every module in this app reads/writes NocoDB — it's the system of record for the lead/client
+record itself (Stage, DealValue, Name, Phone, ClosedAt, Country, CompanyName, etc.), and every
+existing view (kanban, lead list, CSV export, B2B analytics, Team Performance) already reads leads
+out of it. Four modules are the exception, each for the same reason: they invented data that no
+other part of the app reads, so instead of adding more manually-created NocoDB columns/tables for
+data nothing else needs, that data lives in **Cloudflare D1** (`env.DB`), a real SQL database bound
+directly to the Worker, schema-versioned via `cloudflare-worker/migrations/*.sql` rather than
+NocoDB's "add this field/table by hand in the UI" process:
+- **Review Request module** (who was asked for a review, and when/whether they clicked) —
+  `migrations/0001_reviews_referrals.sql`.
+- **Referral tracking** (who referred whom, reward status) —
+  `migrations/0001_reviews_referrals.sql`.
+- **B2B Documents** (quotes/catalogs — everything *except* Brand/Country/`b2b_events`, which stay
+  NocoDB LEADS columns since existing lead views already read those) —
+  `migrations/0002_accounting_b2b_documents.sql`.
+- **Accounting Documents** (Quotation/Invoice/Receipt + ERPNext sync state) —
+  `migrations/0002_accounting_b2b_documents.sql`.
+
+All four still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
+need it — D1 only holds what's genuinely new, and every route that moved keeps its exact pre-D1
+request/response shape, so no frontend page needed to change for this migration.
+
+**One-time setup** (`cloudflare-worker/wrangler.toml`):
+1. `wrangler d1 create leadvyne-d1`
+2. Paste the returned `database_id` into the `[[d1_databases]]` block in `wrangler.toml`.
+3. `wrangler d1 migrations apply leadvyne-d1 --remote` (applies every migration file in
+   `cloudflare-worker/migrations/` in order — running it again after adding a new migration file
+   only applies what's new).
+
+## Review Request module (`frontend/broadcast.html` — "⭐ Reviews" tab, `cloudflare-worker/worker.js`)
+Automated "ask for a review N days after a deal closes" — a dedicated module, not built on top of
+the generic Automations engine above: a client would otherwise have to hand-build a flow
+(trigger=`stage_enter`, one `wait` step, one `send_whatsapp_dm` step) with no click-through
+visibility at all, since a plain flow message has no tracked link. This module adds exactly that.
+
+- **Schema** (D1, `review_config`/`review_requests` — see `migrations/0001_reviews_referrals.sql`):
+  `review_config` is one row per client (enabled toggle, the Stage names that count as "completed,"
+  delay hours, message template). `review_requests` is one row per lead a request has ever been
+  sent to — `lead_id` is its own primary key, since "has this lead already been asked" is the only
+  lookup this table needs.
+- **Trigger signal**: reuses `ClosedAt` from NocoDB (added for the Revenue Forecast dashboard
+  above — "when did this deal actually finish"). The Stage names that count as "completed" are a
+  client's own choice (`review_config.stages_json`), since Stage names are freeform per client via
+  the stage builder.
+- **Backend** (`worker.js`): `sweepReviewRequests` is a Cron Trigger entry point, piggybacked on
+  the same `*/15 * * * *` tick as `runAutomationFlowsForAllClients` (a multi-hour/day delay doesn't
+  need its own finer-grained schedule — see `wrangler.toml`). Reads D1's `review_config` directly
+  for the list of enabled clients (cheaper than the full NocoDB CLIENTS scan an earlier revision of
+  this module needed), then for each: fetches the leads matching its Stage/`ClosedAt` criteria from
+  NocoDB, filters out anyone already in `review_requests` (one D1 query per client, not one per
+  lead), sends via `sendFlowWhatsappDm` (the same Chatwoot call shape Automations uses), and inserts
+  the `review_requests` row so it only ever sends once.
+- **Click tracking**: the link sent is `{WORKER_BASE_URL}/reviews/click?lead_id=&token=`, where
+  `token` is `hmacHex(env, 'review:'+leadId)` — the same HMAC-signed-link pattern
+  `handleEmailUnsubscribe` already uses for its own unsubscribe link. `handleReviewClick` verifies
+  the token (constant-time compare), reads `client_id` straight off the D1 row (no NocoDB lead
+  lookup needed for that), stamps `clicked_at` once, then 302-redirects to the client's own
+  `review_link` (still a NocoDB CLIENTS field, shared with other modules — not moved) — so
+  click-through is measurable without depending on the destination review platform's own
+  analytics.
+- **Frontend** (`broadcast.html`): "⭐ Reviews" tab — enable toggle, a Stage multi-select (reusing
+  the same `seg-chip` pattern as the Automations flow editor's audience picker), delay hours,
+  message template, and a stats card (Requests Sent / Clicked Through / Click Rate) fetched from
+  `GET /reviews/stats` (a D1 count query) — no longer computed by filtering `allLeads`, since this
+  data isn't on the lead record at all.
+- **Config routes** (`GET/POST /reviews/config`, session-gated) read/write `review_config` via a
+  SQLite `INSERT ... ON CONFLICT DO UPDATE` upsert.
+- Sends are skipped entirely if the client has no `review_link` set (Settings → General → Trust
+  Signals) or no Chatwoot connected — this is best-effort secondary outreach, never a hard
+  dependency for anything else in the CRM.
+
+## Referral/affiliate tracking (`cloudflare-worker/worker.js` + `frontend/dashboard.html`)
+Attributes a new lead to an existing customer's referral, via a `wa.me` deep link that pre-fills
+the referred friend's very first WhatsApp message with the referrer's own code — no landing page,
+no separate URL capture needed, since this app is WhatsApp-first and most leads never touch a web
+page at all.
+
+- **Schema** (D1, `referral_codes`/`referrals` — see `migrations/0001_reviews_referrals.sql`):
+  `referral_codes` is one row per lead that has ever generated a shareable code (`lead_id` primary
+  key, never regenerated). `referrals` is one row per successful referral event —
+  `referred_lead_id` is UNIQUE (a lead can only ever be credited to the first code that referred
+  them in), and `reward_status` lives per referral event, not per referrer, so a referrer who
+  brings in five people can have each one individually marked rewarded. `ReferralCount` isn't a
+  stored counter at all — it's `COUNT(*) FROM referrals WHERE referrer_lead_id=?`, computed on
+  read, which also sidesteps the increment-race a stored counter would need to guard against.
+- **Get Referral Link** (lead detail pane, `dashboard.html`): `POST /referrals/generate-code`
+  creates a short random code (retrying up to 5 times on the rare `UNIQUE(client_id, code)`
+  collision) the first time it's requested for a given lead — never regenerated after that, so
+  re-sharing the same link keeps attributing new signups to the same person. The dashboard builds
+  `https://wa.me/<business WhatsApp number>?text=REF-<code>` from `clientRecord.wa_display_phone`;
+  refuses to generate one (with an explanatory alert) if WhatsApp isn't connected yet, since
+  there'd be no number to build the link from.
+- **Detection** (`worker.js`, `engineDetectReferral`): checked only for a brand-new lead's very
+  first message (an existing lead re-typing an old code by accident shouldn't re-attribute them),
+  matched against a `REF-XXXXXX` pattern and resolved to a referrer lead id via one D1 query scoped
+  to this same client (a code only needs to be unique per client — two different clients'
+  customers could coincidentally share one). This is a pure D1 lookup with **no NocoDB round-trip
+  at detection time** — D1 only needs to resolve an id, not the referrer's Name/Phone, which the
+  dashboard fetches lazily and separately only when someone actually opens a lead's detail pane
+  (`GET /referrals/lead-info`, one batched NocoDB fetch for whichever names that response needs).
+  On a match, the code is stripped from the text before it ever reaches intent classification or
+  the AI reply, so it never shows up in `ConvHistory` or confuses the conversation. The actual
+  `referrals` row is written once `engineUpsertLead` resolves the brand-new lead's real id
+  (`INSERT OR IGNORE`, so a Chatwoot webhook redelivery replaying the same turn can't double-insert
+  the same referral — the `UNIQUE(referred_lead_id)` index is what makes that safe).
+- **Reward tracking**: a lead with a `referred_by` entry shows a "Mark Rewarded" button in its
+  detail pane (`POST /referrals/reward`, toggling that referral's `reward_status` between
+  `Pending`/`Rewarded`). Actual reward fulfillment (a discount code, a payout) is a manual business
+  process outside this app — this only tracks whether it's been done, the same "flag it, a human
+  completes the loop" shape as the Review module's click tracking above.
+- **Ownership check**: all three dashboard routes (`lead-info`/`generate-code`/`reward`) verify the
+  requested `lead_id` actually belongs to the session's client (`engineLeadBelongsToClient`, one
+  NocoDB fetch) before touching D1 — D1 has no foreign key into NocoDB to enforce that itself, and
+  `lead_id` here comes from the request, not the trusted session.
+- **Known limitation**: there's no leaderboard/top-referrers view built here — a lead's own detail
+  pane shows how many people *that* lead has referred, but a dedicated ranked view across all
+  leads would be a natural, separate follow-up.
 
 ## Campaigns module (frontend/broadcast.html — renamed from "Broadcast")
 Reworked in two ways: migrated off the master-NocoDB-token/plaintext-password pattern onto the
