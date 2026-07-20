@@ -5317,11 +5317,14 @@ async function handleEngineWebhook(request, env, secret){
     //
     // Enquiry vs. order intent are handled differently, per an explicit product requirement: never
     // share the order/checkout link until real order intent is detected — a size/color/stock/price
-    // question ("enquiry" mode) only ever gets product details + photo, no link, however confidently
-    // detectOrderSignal matched a product; only "order" mode (an explicit "order this"/"buy it"/
-    // confirmed yes) gets the checkout link, and only once a specific product is actually known — an
-    // ambiguous "order" with no resolvable product asks a clarifying question instead of sending a
-    // link to nothing in particular.
+    // question ("enquiry" mode) only ever gets product details in text, no link and no photo,
+    // however confidently detectOrderSignal matched a product, unless ecom_link_on_enquiry is
+    // switched on (see engineBuildProductEnquirySystemPrompt); only "order" mode (an explicit
+    // "order this"/"buy it"/confirmed yes) gets the checkout link, and only once a specific
+    // product is actually known — an ambiguous "order" with no resolvable product asks a
+    // clarifying question instead of sending a link to nothing in particular. The product photo
+    // is likewise only ever attached alongside an actual link, never on a link-less text reply —
+    // another explicit product requirement, don't over-send media on a plain question.
     const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
     if(c.industry==='ecommerce' && c.openrouter_key && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
@@ -5347,7 +5350,11 @@ async function handleEngineWebhook(request, env, secret){
           const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink);
           sentText=await engineCallLlm(env, c, sysPrompt, userText, 200);
           routing.reply=sentText;
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
+          // Photo only sent alongside an actual checkout link — a plain product question with no
+          // link (ecom_link_on_enquiry off, the common case) stays text-only, so a customer isn't
+          // sent a photo on every single size/color/stock question, only when there's also
+          // somewhere for that photo to lead (real product requirement: don't over-send media).
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:enquiryLink?product.image_url:undefined});
           // Only logged as a pending order when the link was actually made available this turn —
           // an enquiry reply with the toggle off shares no link, so there's nothing to log yet.
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
