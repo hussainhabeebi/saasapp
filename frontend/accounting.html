@@ -250,10 +250,10 @@ async function init(){
     document.getElementById('erpApiKey').value=clientRecord.erpnext_api_key||'';
     document.getElementById('erpApiSecret').value=clientRecord.erpnext_api_secret||'';
     await loadLeads();
-    // Documents lives in its own dedicated NocoDB table (ACCOUNTING_DOCUMENTS_TABLE in worker.js)
-    // that has to be created once by hand — see SETUP.md "Accounting module" — so it can fail
-    // (e.g. ERR_TABLE_NOT_FOUND before that setup step is done) without taking down the ERPNext
-    // settings tab.
+    // Documents live in Cloudflare D1 (see migrations/0002_accounting_b2b_documents.sql), not a
+    // NocoDB table — so this can only fail if the D1 migration hasn't been applied yet or the
+    // Worker isn't deployed with a DB binding. Caught separately so it can't take down the ERPNext
+    // settings tab above.
     try{ await loadDocuments(); }catch(e){ documentsLoadError=e.message; allDocuments=[]; }
     renderDocumentsTable();
   }catch(e){
@@ -390,7 +390,7 @@ function renderDocumentsTable(){
   const typeFilter=document.getElementById('docFilterType').value;
   const tbody=document.getElementById('documentsTbody');
   if(documentsLoadError){
-    tbody.innerHTML=`<tr><td colspan="7" class="empty-state"><div class="empty-icon">⚠️</div>Documents aren't set up yet (${esc(documentsLoadError)}).<br>Create the accounting documents table in NocoDB and set <code>ACCOUNTING_DOCUMENTS_TABLE</code> — see SETUP.md "Accounting module".</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="7" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load documents (${esc(documentsLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
     return;
   }
   const rows=allDocuments.filter(d=>(!q||(d.title||'').toLowerCase().includes(q))&&(!typeFilter||d.type===typeFilter));

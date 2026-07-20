@@ -26,24 +26,10 @@ const DEFAULT_LEADS_TABLE = 'mvg6rcw0ia5qqrx';
 // client_id column — see SETUP.md "Email Marketing module") and paste their real ids here.
 const EMAIL_CAMPAIGNS_TABLE = 'md3ghcfigac4yqs';
 const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
-// Create this table once in NocoDB (fields: client_id, lead_id, type, title, brand,
-// line_items_json, currency, subtotal, tax_pct, total, status, public_slug, view_count,
-// last_viewed_at, accepted_at, created_at, expires_at, notes — see SETUP.md "B2B module"), then
-// either set it as a Worker var/secret named B2B_DOCUMENTS_TABLE (Cloudflare dashboard → Settings
-// → Variables and Secrets, or `wrangler secret put B2B_DOCUMENTS_TABLE`) — no redeploy needed —
-// or paste its real id over the placeholder below and redeploy. b2bDocumentsTable(env) below
-// prefers the env var when set, so either path works.
-const B2B_DOCUMENTS_TABLE = 'REPLACE_B2B_DOCUMENTS_TABLE_ID';
-function b2bDocumentsTable(env){ return env.B2B_DOCUMENTS_TABLE || B2B_DOCUMENTS_TABLE; }
-// Create this table once in NocoDB (fields: client_id, lead_id, type, title, line_items_json,
-// currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_doctype,
-// erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at —
-// named doc_created_at, not created_at, because newer NocoDB versions auto-add their own hidden
-// system "Created At" field to every new table, which collides with a custom field of that same
-// name — see SETUP.md "Accounting module"), then set it as ACCOUNTING_DOCUMENTS_TABLE the same
-// way B2B_DOCUMENTS_TABLE above works (env var preferred, falls back to the placeholder below).
-const ACCOUNTING_DOCUMENTS_TABLE = 'REPLACE_ACCOUNTING_DOCUMENTS_TABLE_ID';
-function accountingDocumentsTable(env){ return env.ACCOUNTING_DOCUMENTS_TABLE || ACCOUNTING_DOCUMENTS_TABLE; }
+// B2B Documents and Accounting Documents both live in Cloudflare D1 now (env.DB — see
+// migrations/0002_accounting_b2b_documents.sql), not a NocoDB table you create and paste an id
+// for. The env-var-or-placeholder tables that used to live here (B2B_DOCUMENTS_TABLE,
+// ACCOUNTING_DOCUMENTS_TABLE) are gone — see "B2B MODULE"/"ACCOUNTING MODULE" further down.
 
 function corsHeaders(origin, env){
   const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -6155,17 +6141,20 @@ async function handleApptPublicBook(request, env){
 
 /* ── B2B MODULE (frontend/b2b.html) — Smart Documents (quotes/catalogs) with trackable public
    links and click-to-accept. Smart Lists (saved segment rules) live as a plain b2b_segments_json
-   CLIENTS column, and Brand/Country classification live as plain LEADS columns — both are
-   read/written straight through the existing /nocodb/* passthrough from b2b.html, exactly like
-   every other CLIENTS/LEADS field in dashboard.html, since that passthrough already protects
-   LEADS via its ClientId (PascalCase) cross-tenant check and CLIENTS via its single-record-Id
-   check. Only Documents get dedicated routes here: B2B_DOCUMENTS_TABLE uses a lowercase
-   client_id column, which that same passthrough guard does NOT match (it only regexes the
-   literal "ClientId,eq,"), so ownership has to be enforced server-side instead — same reasoning
-   as why /ecom/products etc. are dedicated routes rather than raw passthrough. ── */
+   CLIENTS column, and Brand/Country classification live as plain LEADS columns — both stay on
+   NocoDB, read/written straight through the existing /nocodb/* passthrough from b2b.html, exactly
+   like every other CLIENTS/LEADS field in dashboard.html, since every existing lead view (kanban,
+   lead list, exports, Team Performance, B2B's own Brand/Country analytics) already reads those out
+   of NocoDB. Documents are the one part of this module that moved to Cloudflare D1 (env.DB, see
+   migrations/0002_accounting_b2b_documents.sql) — that data (quote/catalog line items, public
+   tracking state) has no other reader anywhere else in the app, the same "sidecar data" reasoning
+   as the Review Request/Referral tracking modules. Every route here keeps its exact pre-D1 request/
+   response shape (in particular, still returning "Id" capitalized) so frontend/b2b.html needed no
+   changes at all. ── */
 
 // Auto-creates the Brand/Country/b2b_events Leads columns the first time the B2B module touches
-// them — mirrors ensureFlowStateField above (memoized per Worker isolate, best-effort).
+// them — mirrors ensureFlowStateField above (memoized per Worker isolate, best-effort). Unrelated
+// to the D1 migration below — these three stay NocoDB LEADS columns.
 let _b2bLeadFieldsEnsured=false;
 async function ensureB2bLeadFields(env){
   if(_b2bLeadFieldsEnsured) return;
@@ -6212,20 +6201,21 @@ function computeB2bDocSubtotal(lineItems){
   (Array.isArray(lineItems)?lineItems:[]).forEach(li=>{ subtotal += (Number(li.qty)||0) * (Number(li.price)||0); });
   return subtotal;
 }
+// Maps a D1 row (lowercase `id`) onto the exact shape b2b.html already expects (capitalized `Id`,
+// matching NocoDB's own auto-id field name from before this migration) — the one difference
+// between a raw D1 row and this module's public JSON contract.
+function b2bDocOut(row){ return row ? {...row, Id:row.id} : null; }
 async function findB2bDocument(env, id){
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records/${id}`);
-  if(!r.ok) return null;
-  return r.json().catch(()=>null);
+  return await env.DB.prepare(`SELECT * FROM b2b_documents WHERE id=?`).bind(Number(id)).first();
 }
 async function findB2bDocumentBySlug(env, slug){
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records?where=${encodeURIComponent(`(public_slug,eq,${slug})`)}&limit=1`);
-  if(!r.ok) return null;
-  const data=await r.json().catch(()=>({}));
-  return data?.list?.[0]||null;
+  return await env.DB.prepare(`SELECT * FROM b2b_documents WHERE public_slug=?`).bind(slug).first();
 }
 // Appends one event to a lead's b2b_events log (capped at the last 50) — feeds Smart Lists'
-// "viewed/accepted a document in the last N days" rule. Best-effort: never blocks the public
-// view/accept response on this bookkeeping succeeding.
+// "viewed/accepted a document in the last N days" rule. Still a NocoDB LEADS field (b2b_events
+// wasn't moved — every existing lead view already reads leads out of NocoDB), so this is unchanged
+// by the D1 migration. Best-effort: never blocks the public view/accept response on this
+// bookkeeping succeeding.
 async function appendB2bLeadEvent(env, leadId, type, meta){
   if(!leadId) return;
   try{
@@ -6242,10 +6232,8 @@ async function appendB2bLeadEvent(env, leadId, type, meta){
 async function handleB2bDocumentsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&sort=-created_at&limit=500`);
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
-  return json({list:data.list||[]});
+  const {results}=await env.DB.prepare(`SELECT * FROM b2b_documents WHERE client_id=? ORDER BY created_at DESC LIMIT 500`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(b2bDocOut)});
 }
 
 async function handleB2bDocumentCreate(request, env){
@@ -6258,17 +6246,19 @@ async function handleB2bDocumentCreate(request, env){
   const taxPct=Number(body.tax_pct)||0;
   const total=subtotal + subtotal*(taxPct/100);
   const fields={
-    client_id:String(payload.cid), lead_id:body.lead_id?String(body.lead_id):'',
+    client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
     type, title:String(body.title||'').trim().slice(0,200), brand:String(body.brand||'').trim().slice(0,100),
     line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
     subtotal, tax_pct:taxPct, total, status:'draft',
-    public_slug:crypto.randomUUID().replace(/-/g,''), view_count:0, last_viewed_at:'', accepted_at:'',
-    created_at:new Date().toISOString(), expires_at:body.expires_at||'', notes:String(body.notes||'').trim().slice(0,1000)
+    public_slug:crypto.randomUUID().replace(/-/g,''), view_count:0, last_viewed_at:null, accepted_at:null,
+    created_at:new Date().toISOString(), expires_at:body.expires_at||null, notes:String(body.notes||'').trim().slice(0,1000)
   };
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'POST', body:fields});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
-  return json({...fields, Id:data.Id});
+  const r=await env.DB.prepare(`INSERT INTO b2b_documents
+    (client_id, lead_id, type, title, brand, line_items_json, currency, subtotal, tax_pct, total, status, public_slug, view_count, last_viewed_at, accepted_at, created_at, expires_at, notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.brand, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.total, fields.status, fields.public_slug, fields.view_count, fields.last_viewed_at, fields.accepted_at, fields.created_at, fields.expires_at, fields.notes)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
 }
 
 async function handleB2bDocumentUpdate(request, env){
@@ -6278,21 +6268,21 @@ async function handleB2bDocumentUpdate(request, env){
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await findB2bDocument(env, body.id);
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
-  const fields={Id:Number(body.id)};
-  if(body.title!==undefined) fields.title=String(body.title).trim().slice(0,200);
-  if(body.brand!==undefined) fields.brand=String(body.brand).trim().slice(0,100);
-  if(body.status!==undefined) fields.status=String(body.status);
-  if(body.notes!==undefined) fields.notes=String(body.notes).trim().slice(0,1000);
-  if(body.expires_at!==undefined) fields.expires_at=body.expires_at;
+  const sets=[], vals=[];
+  if(body.title!==undefined){ sets.push('title=?'); vals.push(String(body.title).trim().slice(0,200)); }
+  if(body.brand!==undefined){ sets.push('brand=?'); vals.push(String(body.brand).trim().slice(0,100)); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(String(body.status)); }
+  if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
+  if(body.expires_at!==undefined){ sets.push('expires_at=?'); vals.push(body.expires_at||null); }
   if(Array.isArray(body.line_items)){
     const subtotal=computeB2bDocSubtotal(body.line_items);
     const taxPct=body.tax_pct!==undefined?(Number(body.tax_pct)||0):(Number(existing.tax_pct)||0);
-    fields.line_items_json=JSON.stringify(body.line_items);
-    fields.subtotal=subtotal; fields.tax_pct=taxPct; fields.total=subtotal+subtotal*(taxPct/100);
+    sets.push('line_items_json=?','subtotal=?','tax_pct=?','total=?');
+    vals.push(JSON.stringify(body.line_items), subtotal, taxPct, subtotal+subtotal*(taxPct/100));
   }
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'PATCH', body:fields});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE b2b_documents SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
   return json({ok:true});
 }
 
@@ -6303,49 +6293,49 @@ async function handleB2bDocumentDelete(request, env){
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await findB2bDocument(env, body.id);
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
-  const r=await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'DELETE', body:{Id:Number(body.id)}});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
+  await env.DB.prepare(`DELETE FROM b2b_documents WHERE id=?`).bind(Number(body.id)).run();
   return json({ok:true});
 }
 
 // Public — no session, by design: hit by the B2B client's own customer opening a trackable
 // quote/catalog link (b2b.html?slug=...). Logs a view and appends a b2b_events entry on the
 // linked lead so Smart Lists can target "viewed a document in the last N days".
-const B2B_PUBLIC_DOC_FIELDS=['Id','type','title','brand','line_items_json','currency','subtotal','tax_pct','total','status','view_count','accepted_at','expires_at'];
+const B2B_PUBLIC_DOC_FIELDS=['id','type','title','brand','line_items_json','currency','subtotal','tax_pct','total','status','view_count','accepted_at','expires_at'];
 async function handleB2bDocPublicGet(request, env, slug){
-  await ensureB2bLeadFields(env);
   const doc=await findB2bDocumentBySlug(env, slug);
   if(!doc) return json({error:'Not found'}, 404);
-  const patch={view_count:(Number(doc.view_count)||0)+1, last_viewed_at:new Date().toISOString()};
-  if(doc.status==='draft'||doc.status==='sent') patch.status='viewed';
-  await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'PATCH', body:{Id:doc.Id, ...patch}});
+  const viewCount=(Number(doc.view_count)||0)+1;
+  const lastViewedAt=new Date().toISOString();
+  const nextStatus=(doc.status==='draft'||doc.status==='sent')?'viewed':doc.status;
+  await env.DB.prepare(`UPDATE b2b_documents SET view_count=?, last_viewed_at=?, status=? WHERE id=?`)
+    .bind(viewCount, lastViewedAt, nextStatus, doc.id).run();
   await appendB2bLeadEvent(env, doc.lead_id, 'doc_view', {slug});
-  const out={}; B2B_PUBLIC_DOC_FIELDS.forEach(k=>{ out[k]=doc[k]; });
-  out.view_count=patch.view_count; out.status=patch.status||doc.status;
+  const out={};
+  B2B_PUBLIC_DOC_FIELDS.forEach(k=>{ out[k==='id'?'Id':k]=doc[k]; });
+  out.view_count=viewCount; out.status=nextStatus;
   return json(out);
 }
 
 // Public — no session. Click-to-accept only (no e-signature) — records an acceptance timestamp,
 // nothing more.
 async function handleB2bDocPublicAccept(request, env, slug){
-  await ensureB2bLeadFields(env);
   const doc=await findB2bDocumentBySlug(env, slug);
   if(!doc) return json({error:'Not found'}, 404);
   if(doc.status==='accepted') return json({ok:true, already:true});
   const acceptedAt=new Date().toISOString();
-  await ncFetch(env, `api/v2/tables/${b2bDocumentsTable(env)}/records`, {method:'PATCH', body:{Id:doc.Id, status:'accepted', accepted_at:acceptedAt}});
+  await env.DB.prepare(`UPDATE b2b_documents SET status='accepted', accepted_at=? WHERE id=?`).bind(acceptedAt, doc.id).run();
   await appendB2bLeadEvent(env, doc.lead_id, 'doc_accepted', {slug});
   return json({ok:true, accepted_at:acceptedAt});
 }
 
-/* ── ACCOUNTING MODULE (frontend/dashboard.html — "💰 Accounting") — Quotation → Invoice →
-   Receipt lifecycle for any client's existing leads, with optional one-way push to a client's own
-   ERPNext (Frappe Cloud) site. Same ACCOUNTING_DOCUMENTS_TABLE-uses-a-lowercase-client_id-column
-   reasoning as B2B_DOCUMENTS_TABLE above (see that module's comment) — dedicated routes, not the
-   generic /nocodb/* passthrough, since ownership has to be enforced server-side here too.
-   Deliberately industry-agnostic (not gated behind b2b_enabled or any industry flag) — any
-   client's lead can be quoted/invoiced regardless of what they sell. ── */
+/* ── ACCOUNTING MODULE (frontend/accounting.html) — Quotation → Invoice → Receipt lifecycle for
+   any client's existing leads, with optional one-way push to a client's own ERPNext (Frappe Cloud)
+   site. Documents live in Cloudflare D1 (env.DB, see migrations/0002_accounting_b2b_documents.sql)
+   — same "sidecar data with no other NocoDB reader" reasoning as the B2B module's Documents above.
+   Every route here keeps its exact pre-D1 request/response shape (in particular, still returning
+   "Id" capitalized) so frontend/accounting.html needed no changes at all. Deliberately
+   industry-agnostic (not gated behind b2b_enabled or any industry flag) — any client's lead can be
+   quoted/invoiced regardless of what they sell. ── */
 
 function computeAccountingDocTotals(lineItems, taxPct){
   let subtotal=0;
@@ -6355,10 +6345,11 @@ function computeAccountingDocTotals(lineItems, taxPct){
   return {subtotal, taxAmount, total:subtotal+taxAmount};
 }
 
+// Maps a D1 row (lowercase `id`) onto the shape accounting.html already expects (capitalized
+// `Id`) — the one difference between a raw D1 row and this module's public JSON contract.
+function acctDocOut(row){ return row ? {...row, Id:row.id} : null; }
 async function findAccountingDocument(env, id){
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records/${id}`);
-  if(!r.ok) return null;
-  return r.json().catch(()=>null);
+  return await env.DB.prepare(`SELECT * FROM accounting_documents WHERE id=?`).bind(Number(id)).first();
 }
 
 async function handleAccountingDocumentsList(request, env){
@@ -6366,12 +6357,12 @@ async function handleAccountingDocumentsList(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const url=new URL(request.url);
   const leadId=url.searchParams.get('lead_id');
-  let where=`(client_id,eq,${payload.cid})`;
-  if(leadId) where+=`~and(lead_id,eq,${leadId})`;
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records?where=${encodeURIComponent(where)}&sort=-doc_created_at&limit=500`);
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
-  return json({list:data.list||[]});
+  let sql=`SELECT * FROM accounting_documents WHERE client_id=?`;
+  const binds=[Number(payload.cid)];
+  if(leadId){ sql+=` AND lead_id=?`; binds.push(Number(leadId)); }
+  sql+=` ORDER BY doc_created_at DESC LIMIT 500`;
+  const {results}=await env.DB.prepare(sql).bind(...binds).all();
+  return json({list:(results||[]).map(acctDocOut)});
 }
 
 async function handleAccountingDocumentCreate(request, env){
@@ -6384,19 +6375,21 @@ async function handleAccountingDocumentCreate(request, env){
   const taxPct=Number(body.tax_pct)||0;
   const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, taxPct);
   const fields={
-    client_id:String(payload.cid), lead_id:body.lead_id?String(body.lead_id):'',
+    client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
     type, title:String(body.title||'').trim().slice(0,200),
     line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
     subtotal, tax_pct:taxPct, tax_amount:taxAmount, total, status:'draft',
-    linked_doc_id:body.linked_doc_id?String(body.linked_doc_id):'',
+    linked_doc_id:body.linked_doc_id?Number(body.linked_doc_id):null,
     notes:String(body.notes||'').trim().slice(0,1000),
-    erpnext_doctype:'', erpnext_doc_name:'', erpnext_sync_status:'', erpnext_sync_error:'', erpnext_synced_at:'',
+    erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
     doc_created_at:new Date().toISOString(),
   };
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'POST', body:fields});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
-  return json({...fields, Id:data.Id});
+  const r=await env.DB.prepare(`INSERT INTO accounting_documents
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
 }
 
 async function handleAccountingDocumentUpdate(request, env){
@@ -6406,20 +6399,20 @@ async function handleAccountingDocumentUpdate(request, env){
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await findAccountingDocument(env, body.id);
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
-  const fields={Id:Number(body.id)};
-  if(body.title!==undefined) fields.title=String(body.title).trim().slice(0,200);
-  if(body.status!==undefined) fields.status=String(body.status);
-  if(body.notes!==undefined) fields.notes=String(body.notes).trim().slice(0,1000);
-  if(body.currency!==undefined) fields.currency=String(body.currency).trim().slice(0,10);
+  const sets=[], vals=[];
+  if(body.title!==undefined){ sets.push('title=?'); vals.push(String(body.title).trim().slice(0,200)); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(String(body.status)); }
+  if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
+  if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10)); }
   if(Array.isArray(body.line_items)){
     const taxPct=body.tax_pct!==undefined?(Number(body.tax_pct)||0):(Number(existing.tax_pct)||0);
     const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, taxPct);
-    fields.line_items_json=JSON.stringify(body.line_items);
-    fields.subtotal=subtotal; fields.tax_pct=taxPct; fields.tax_amount=taxAmount; fields.total=total;
+    sets.push('line_items_json=?','subtotal=?','tax_pct=?','tax_amount=?','total=?');
+    vals.push(JSON.stringify(body.line_items), subtotal, taxPct, taxAmount, total);
   }
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'PATCH', body:fields});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE accounting_documents SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
   return json({ok:true});
 }
 
@@ -6430,9 +6423,7 @@ async function handleAccountingDocumentDelete(request, env){
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await findAccountingDocument(env, body.id);
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'DELETE', body:{Id:Number(body.id)}});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
+  await env.DB.prepare(`DELETE FROM accounting_documents WHERE id=?`).bind(Number(body.id)).run();
   return json({ok:true});
 }
 
@@ -6451,17 +6442,19 @@ async function handleAccountingDocumentConvert(request, env){
   const toType=ACCOUNTING_CONVERT_MAP[src.type];
   if(!toType) return json({error:`Cannot convert a ${src.type} — only quotation→invoice and invoice→receipt are supported`}, 400);
   const fields={
-    client_id:String(payload.cid), lead_id:src.lead_id||'',
+    client_id:Number(payload.cid), lead_id:src.lead_id||null,
     type:toType, title:src.title||'', line_items_json:src.line_items_json||'[]',
     currency:src.currency||'', subtotal:src.subtotal||0, tax_pct:src.tax_pct||0, tax_amount:src.tax_amount||0, total:src.total||0,
-    status:'draft', linked_doc_id:String(src.Id), notes:src.notes||'',
-    erpnext_doctype:'', erpnext_doc_name:'', erpnext_sync_status:'', erpnext_sync_error:'', erpnext_synced_at:'',
+    status:'draft', linked_doc_id:src.id, notes:src.notes||'',
+    erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
     doc_created_at:new Date().toISOString(),
   };
-  const r=await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'POST', body:fields});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json(data, r.status);
-  return json({...fields, Id:data.Id});
+  const r=await env.DB.prepare(`INSERT INTO accounting_documents
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
 }
 
 // ── ERPNext (Frappe) push integration — per-client credentials (erpnext_base_url/
@@ -6595,16 +6588,13 @@ async function handleAccountingDocumentSyncErpnext(request, env){
     }else{
       erpName=await erpnextPushSalesDoc(c, erpDoctype, doc, lead);
     }
-    await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'PATCH', body:{
-      Id:doc.Id, erpnext_doctype:erpDoctype, erpnext_doc_name:erpName||'', erpnext_sync_status:'synced', erpnext_sync_error:'', erpnext_synced_at:new Date().toISOString()
-    }});
+    await env.DB.prepare(`UPDATE accounting_documents SET erpnext_doctype=?, erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_sync_error='', erpnext_synced_at=? WHERE id=?`)
+      .bind(erpDoctype, erpName||'', new Date().toISOString(), doc.id).run();
     return json({ok:true, erpnext_doc_name:erpName});
   }catch(e){
     const msg=String(e.message||e).slice(0,500);
-    await ncFetch(env, `api/v2/tables/${accountingDocumentsTable(env)}/records`, {method:'PATCH', body:{
-      Id:doc.Id, erpnext_sync_status:'failed', erpnext_sync_error:msg
-    }});
-    await reportOpsError(env, 'handleAccountingDocumentSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, docId:doc.Id, type:doc.type});
+    await env.DB.prepare(`UPDATE accounting_documents SET erpnext_sync_status='failed', erpnext_sync_error=? WHERE id=?`).bind(msg, doc.id).run();
+    await reportOpsError(env, 'handleAccountingDocumentSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, docId:doc.id, type:doc.type});
     return json({error:'ERPNext sync failed: '+msg}, 502);
   }
 }
