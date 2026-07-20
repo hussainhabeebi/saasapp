@@ -3438,6 +3438,23 @@ function buildCheckoutLink(c, clientId, sku){
   return `https://app.leadvyne.com/order.html?client=${clientId}&sku=${encodeURIComponent(sku)}`;
 }
 
+// Client-authored template placeholder — real observed failure: an ecommerce client wrote
+// "[ORDER_LINK]" literally into their own Main Prompt script (e.g. "Order ചെയ്യാൻ ഇവിടെ ക്ലിക്ക്
+// ചെയ്യൂ: [ORDER_LINK]"), expecting it swapped for a real per-product checkout link — the same
+// idea as `{name}` being substituted in follow-up messages elsewhere in this file. Nothing did
+// that substitution here, so the model just echoed the bracket text verbatim, sending a customer
+// the literal string "[ORDER_LINK]" instead of a clickable link. Case-insensitive; only touches
+// ecommerce clients (`buildCheckoutLink`'s shape is ecom-specific — a client in another industry
+// writing this placeholder is out of scope for now). `sku` is optional — when no specific product
+// is in view (a general FAQ/objection reply, not a matched-product enquiry), falls back to
+// `buildCheckoutLink`'s own no-sku behavior (`external_store_link`, or the generic order.html
+// catalog page). Cheap early-out via the regex test so clients who never use this placeholder pay
+// nothing extra.
+function engineSubstituteOrderLinkPlaceholder(text, c, clientId, sku){
+  if(!text || c.industry!=='ecommerce' || !/\[order_link\]/i.test(text)) return text;
+  return text.replace(/\[order_link\]/gi, buildCheckoutLink(c, clientId, sku||''));
+}
+
 // Core "actually send the order link" logic — direct Meta Graph API, bypassing Chatwoot. Kept as
 // the implementation POST /ecom/order-link uses, and as sendOrderLinkViaChatwoot's fallback below.
 async function sendOrderLinkNow(env, c, clientId, phone, name, sku){
@@ -5368,6 +5385,7 @@ async function handleEngineWebhook(request, env, secret){
           const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? buildCheckoutLink(c, clientId, product.sku) : null;
           const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink);
           sentText=await engineCallLlm(env, c, sysPrompt, userText, 200);
+          sentText=engineSubstituteOrderLinkPlaceholder(sentText, c, clientId, product.sku);
           routing.reply=sentText;
           // Photo sent whenever a product is confidently identified, link or no link — a customer
           // asking about size/color/stock should see the actual item, not just read a description
@@ -5431,11 +5449,13 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
+      reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
+      reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     }
