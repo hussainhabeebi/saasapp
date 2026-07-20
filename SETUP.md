@@ -2673,12 +2673,13 @@ whether the customer asked for it or not. `detectOrderSignal` now also classifie
 `"enquiry"` or `"order"`, returned alongside `signal`/`sku`:
 - **`mode:"enquiry"` + a matched product** → `engineBuildProductEnquirySystemPrompt` +
   `engineCallLlm` generate a natural reply from the product's full detail (name, price, color,
-  size, category, stock) as context — text-only, no link, no photo, no mention of ordering beyond
-  what the model naturally includes, unless `ecom_link_on_enquiry` is on (see below), in which case
-  a checkout link and the photo (`engineSendChatwootImageReply`) are both included. The photo is
-  deliberately never attached without a link alongside it — another explicit product requirement,
-  don't over-send media (a photo with nowhere for the customer to act on it) on a plain question.
-  Originally a fixed
+  size, category, stock) as context — no link, no mention of ordering beyond what the model
+  naturally includes, unless `ecom_link_on_enquiry` is on (see below), in which case a checkout
+  link is also included. **The product photo (`engineSendChatwootImageReply`) is sent whenever a
+  product is confidently matched, independent of whether a link is included** — a customer asking
+  about size/color/stock should see the actual item, not just read about it. (Briefly restricted to
+  link-only sends in an earlier revision — reverted per explicit product direction: the photo isn't
+  "extra" media on an enquiry reply, it's part of answering what was asked.) Originally a fixed
   template (`buildProductDetailText`, since removed) that always recited every field regardless of
   what was actually asked — observed live: a plain "Hi" got a long, salesy paragraph covering
   sizes/colors nobody asked about, and price was always volunteered even for a pure availability
@@ -2714,10 +2715,9 @@ whether the customer asked for it or not. `detectOrderSignal` now also classifie
     asked "is this in stock" shouldn't get an unsolicited checkout link. A pending order is only
     logged (`logPendingOrder`) when the link was actually made available that turn, same as the
     `mode:"order"` branch — an enquiry reply with the toggle off shares no link, so there's nothing
-    to log yet. The product photo follows the same on/off switch as the link itself
-    (`imageUrl:enquiryLink?product.image_url:undefined`) — toggle on and a link resolved means both
-    the link and the photo go out together; toggle off (or on with no confident checkout link) means
-    neither does, so a plain product question never gets a photo attachment with no link to act on.
+    to log yet. The product photo is unaffected by this toggle either way — it always sends
+    alongside a confidently-matched product (`imageUrl:product.image_url`), whether or not a link
+    was also included that turn.
 
 **Product resolution now falls back to a fuzzy name match when the sku doesn't exactly match.**
 `detectOrderSignal` asks the model to copy a real product's `sku` string verbatim from the catalog
