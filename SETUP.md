@@ -2322,6 +2322,22 @@ exception to this fallback pattern — deliberately Gemini-only, no OpenRouter b
   — a no-op for `gemini-2.0-flash`, which has no thinking mode. `engineGeminiTranscribeVoice` sets
   the same flag directly on its own request body (it doesn't route through `engineGeminiGenerate`,
   since it needs to attach `inline_data` audio).
+- **`engineStripHallucinatedToolCode` strips hallucinated tool-call pseudocode out of every
+  `engineCallLlm` reply before it reaches a customer.** Real observed failure: a reply went out as
+  literal `print(get_product_images(category="SHIRT", ...))` lines followed by the actual intended
+  text. Nothing in this file ever declares a `tools`/function-calling schema to Gemini or
+  OpenRouter, so this was never a real function call to parse — the model imagined its own
+  scaffolding (models trained on agentic/tool-use data will sometimes narrate a fake
+  ` ```tool_code``` ` block even with no tools actually offered) and it leaked straight into the
+  reply text. Strips any fenced ` ```tool_code```/```python```/```json``` ` block and any bare
+  `identifier(args)`-only line (no real WhatsApp reply looks like that — a genuine parenthetical
+  like "10am to 6pm)" always has a space before the `(`, which the pattern requires *not* having).
+  Applied in `engineCallLlm` (both the Gemini and OpenRouter legs), the one chokepoint every FAQ/
+  objection/product-enquiry reply already routes through. Backed by a matching system-prompt
+  instruction ("never code, pseudocode, a function/tool call, or JSON — you have no tools to call")
+  added to `engineBuildFaqSystemPrompt`/`engineBuildObjectionSystemPrompt`/
+  `engineBuildProductEnquirySystemPrompt`, since the prompt instruction alone isn't reliably
+  followed — the strip is the actual backstop.
 - **Not yet covered by this pass** (still OpenRouter-only, same single-point-of-failure shape,
   just not touched by this change): `handleAiComplete` (`POST /ai/complete`, the dashboard's AI
   Deal Coach and other assistant features), `handleAiObjectionReply` (`POST /ai/objection-reply`),

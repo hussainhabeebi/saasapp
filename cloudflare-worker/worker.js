@@ -3415,7 +3415,7 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
   // above specify otherwise" way as the other three prompts, so main_prompt stays authoritative.
   let sys=c.main_prompt||'';
   sys+=`\n\nYou are replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}`;
-  sys+='\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Default style (follow this unless the persona/instructions above specify a different tone, reply length, or closing style — in that case, follow those instead): do not mention the price unless the customer\'s message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji.';
+  sys+='\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Default style (follow this unless the persona/instructions above specify a different tone, reply length, or closing style — in that case, follow those instead): do not mention the price unless the customer\'s message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // Opt-in per client (Ecommerce → Settings → "Share order link on product questions",
   // ecom_link_on_enquiry) — the default product behavior deliberately withholds the checkout link
   // until real order intent (see the routing comment at this prompt's call site), but a client can
@@ -4714,7 +4714,7 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // pushed toward brevity over substance. A short question is about tone/effort, not permission to
   // skip the actual fact being asked for — so the two failure modes get distinct instructions
   // instead of one rule that (as observed) can be read as license for either.
-  sys+='\n\nDefault style (follow this unless the persona/instructions above specify a different tone, reply length, closing style, or message format — in that case, follow those instead): a short greeting or small talk deserves a short, natural reply, not a long pitch covering everything you could possibly say — but a short, specific question (a number, a policy, a fact) always deserves the real, complete answer, even if that makes the reply a bit longer than the question itself; never trade accuracy or completeness for brevity. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message.';
+  sys+='\n\nDefault style (follow this unless the persona/instructions above specify a different tone, reply length, closing style, or message format — in that case, follow those instead): a short greeting or small talk deserves a short, natural reply, not a long pitch covering everything you could possibly say — but a short, specific question (a number, a policy, a fact) always deserves the real, complete answer, even if that makes the reply a bit longer than the question itself; never trade accuracy or completeness for brevity. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
 
   if(industry==='ecommerce'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
@@ -4781,11 +4781,29 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
       : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
   }
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
-  sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences.';
+  sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // See engineBuildFaqSystemPrompt's matching comment.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
   if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): after addressing the objection, if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, and do not repeat something already substantially covered (check Recent Conversation above).';
   return sys;
+}
+
+// Real observed failure: a customer-facing reply went out as literal hallucinated tool-call
+// pseudocode — `print(get_product_images(category="SHIRT", ...))` lines — followed by the actual
+// intended reply. Nothing in this file ever declares a `tools`/function-calling schema to Gemini or
+// OpenRouter (no request body anywhere sets `tools:`), so this was never a real function call to
+// parse — the model imagined its own scaffolding (a documented behavior of models trained on
+// agentic/tool-use data: they sometimes narrate a fake tool invocation in a ```tool_code``` block
+// even with no tools actually offered) and that leaked straight into what should have been plain
+// reply text. Stripped here rather than relying solely on a system-prompt instruction not to do
+// this, since that alone isn't reliably followed.
+function engineStripHallucinatedToolCode(text){
+  if(!text) return text;
+  return text
+    .replace(/```(?:tool_code|python|json)?[\s\S]*?```/gi, '')
+    .replace(/^\s*(?:print|[a-zA-Z_][\w.]*)\([^\n]*\)\s*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 // The main conversational agent — every FAQ/objection/product-enquiry reply across every client,
@@ -4804,7 +4822,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
 // principle that a customer getting nothing/genuinely-wrong is worth alerting on, ordinary
 // single-layer fallbacks elsewhere aren't (see SETUP.md "Error monitoring").
 async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
-  const geminiReply=await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL});
+  const geminiReply=engineStripHallucinatedToolCode(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL}));
   if(geminiReply) return geminiReply;
   try{
     const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -4812,7 +4830,7 @@ async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
       body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:maxTokens||300, messages:[{role:'system',content:systemPrompt},{role:'user',content:userText}]})
     });
     const data=await r.json().catch(()=>({}));
-    const text=data?.choices?.[0]?.message?.content?.trim();
+    const text=engineStripHallucinatedToolCode(data?.choices?.[0]?.message?.content?.trim());
     if(text) return text;
     await reportOpsError(env, 'engineCallLlm — Gemini and OpenRouter both returned no usable reply', new Error(JSON.stringify(data).slice(0,500)), {clientId:c?.Id});
   }catch(e){
