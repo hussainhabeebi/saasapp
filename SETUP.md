@@ -2683,6 +2683,18 @@ whether the customer asked for it or not. `detectOrderSignal` now also classifie
     product-enquiry replies. Every hardcoded instruction in this prompt is phrased the same "Default
     X — follow this unless the persona/instructions above specify otherwise" way the other three
     prompts use, so `main_prompt` is authoritative here too now.
+  - **Opt-in setting to share the link on enquiry too — `ecom_link_on_enquiry`** (new CLIENTS
+    field, Single line text, `'Yes'`/`'No'`, default off — Ecommerce module → Settings → "Order
+    Link on Product Questions"). The "never send the link until real order intent" rule above is
+    the default, but some clients want the link shared earlier — as soon as a customer asks about
+    size/color/stock/price and the answer sounds like a green light to buy. When on, the enquiry
+    branch resolves a checkout link (`buildCheckoutLink(c, clientId, product.sku)`) and passes it
+    into `engineBuildProductEnquirySystemPrompt` as something the model *may* share if it naturally
+    fits the reply — not appended unconditionally to every enquiry reply, since a customer who only
+    asked "is this in stock" shouldn't get an unsolicited checkout link. A pending order is only
+    logged (`logPendingOrder`) when the link was actually made available that turn, same as the
+    `mode:"order"` branch — an enquiry reply with the toggle off shares no link, so there's nothing
+    to log yet.
 
 **Product resolution now falls back to a fuzzy name match when the sku doesn't exactly match.**
 `detectOrderSignal` asks the model to copy a real product's `sku` string verbatim from the catalog

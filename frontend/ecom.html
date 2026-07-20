@@ -254,6 +254,22 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 <!-- SETTINGS TAB -->
 <div id="tabSettings" class="page">
   <div class="card">
+    <div class="card-title">Order Link on Product Questions</div>
+    <div class="s-sec">
+      <span class="s-lbl">Share the checkout link when a customer asks about size/color/stock/price</span>
+      <select class="s-input" id="cfgLinkOnEnquiry">
+        <option value="No">Off — only send the link once they clearly say they want to order</option>
+        <option value="Yes">On — also share it for a product question if it naturally fits (e.g. right after confirming size/stock)</option>
+      </select>
+      <div class="s-hint">Default is off: the bot only shares the checkout link once a customer clearly says they want to order (e.g. "order this", "I'll take it") — a size/color/stock/price question gets product details and a photo, no link, however confident the match. Turn this on to also let the bot share the link on a product question itself if it seems ready to help (e.g. "yes, we have that in size M" + link) — it still won't force the link into every reply, only when it fits.</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveLinkOnEnquiry()">Save</button>
+      <span class="save-msg" id="linkOnEnquiryMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">Storefront Order Button</div>
     <div class="s-sec">
       <span class="s-lbl">WhatsApp Number for Orders</span>
@@ -551,6 +567,7 @@ async function init() {
   if (clientRecord.ecom_orders_sheet)   document.getElementById('cfgOrdersSheet').value   = clientRecord.ecom_orders_sheet;
   if (clientRecord.review_link)         document.getElementById('cfgReviewLink').value    = clientRecord.review_link;
   if (clientRecord.support_phone)       document.getElementById('cfgSupportPhone').value  = clientRecord.support_phone;
+  document.getElementById('cfgLinkOnEnquiry').value = clientRecord.ecom_link_on_enquiry === 'Yes' ? 'Yes' : 'No';
   if (!clientRecord.wa_display_phone && !clientRecord.support_phone) {
     document.getElementById('cfgSupportPhone').placeholder = '+91 94969 71950 — required, no order button will show without this or Channels WhatsApp';
   }
@@ -1425,6 +1442,15 @@ async function saveTableIds() {
     loadProducts();
     loadOrders();
   } catch (e) { showMsg('tableIdsMsg', 'Error: ' + e.message, 6000); }
+}
+
+async function saveLinkOnEnquiry() {
+  const value = document.getElementById('cfgLinkOnEnquiry').value;
+  try {
+    await patchClient({ ecom_link_on_enquiry: value });
+    clientRecord.ecom_link_on_enquiry = value;
+    showMsg('linkOnEnquiryMsg', 'Saved ✓');
+  } catch (e) { showMsg('linkOnEnquiryMsg', 'Error: ' + e.message, 6000); }
 }
 
 async function saveSupportPhone() {

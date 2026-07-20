@@ -3398,7 +3398,7 @@ async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
 // paragraph reciting sizes/colors nobody asked about, and price was always volunteered even when
 // the customer only asked about availability. This tells the model everything it's allowed to say
 // but leaves *what to actually say* up to what the customer asked.
-function engineBuildProductEnquirySystemPrompt(c, product, replyLang){
+function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLink){
   const lang=replyLang||c.language||'en';
   const lines=[`Name: ${product.name}`];
   if(product.price) lines.push(`Price: ${product.currency||''} ${product.price}`.trim());
@@ -3416,6 +3416,13 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang){
   let sys=c.main_prompt||'';
   sys+=`\n\nYou are replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}`;
   sys+='\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Default style (follow this unless the persona/instructions above specify a different tone, reply length, or closing style — in that case, follow those instead): do not mention the price unless the customer\'s message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji.';
+  // Opt-in per client (Ecommerce → Settings → "Share order link on product questions",
+  // ecom_link_on_enquiry) — the default product behavior deliberately withholds the checkout link
+  // until real order intent (see the routing comment at this prompt's call site), but a client can
+  // choose to share it earlier, e.g. as soon as a customer asks about size/stock and sounds ready to
+  // move forward. Framed as available-if-natural, not forced into every reply, so a customer who
+  // only asked "is this in stock" doesn't get an unsolicited checkout link shoved at them.
+  if(checkoutLink) sys+=`\n\nYou may also share this checkout link if it naturally helps answer their question or they seem ready to move forward (for example, right after confirming their size or stock is available) — not forced into every reply, only when it fits: ${checkoutLink}`;
   sys+=`\n\nRespond ONLY in ${lang}. Never switch languages.`;
   return sys;
 }
@@ -5334,10 +5341,16 @@ async function handleEngineWebhook(request, env, secret){
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
-          const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang);
+          // Opt-in (ecom_link_on_enquiry) — see engineBuildProductEnquirySystemPrompt's own
+          // comment on this parameter for why it's off by default.
+          const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? buildCheckoutLink(c, clientId, product.sku) : null;
+          const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink);
           sentText=await engineCallLlm(env, c, sysPrompt, userText, 200);
           routing.reply=sentText;
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
+          // Only logged as a pending order when the link was actually made available this turn —
+          // an enquiry reply with the toggle off shares no link, so there's nothing to log yet.
+          if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
           orderHandledInline=true;
         }
         // enquiry with no confident product match falls through to the normal FAQ/flow handling
