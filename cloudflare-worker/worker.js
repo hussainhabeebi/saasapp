@@ -1920,20 +1920,15 @@ async function processClientAutomationFlows(env, c, allFlows, activeFlows){
    dashboard — see there — "when did this deal actually finish") as its trigger signal,
    sendFlowWhatsappDm/fillFlowTokens (Automations' own Chatwoot send + templating) to actually
    send, and the same HMAC-signed-link pattern handleEmailUnsubscribe already uses below for a
-   stateless, tamper-proof public click-tracking link with no extra token column to store. */
-let _reviewFieldsEnsured=false;
-async function ensureReviewFields(env){
-  if(_reviewFieldsEnsured) return;
-  try{
-    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
-    const existing=await existingR.json().catch(()=>({}));
-    const names=new Set((existing.list||[]).map(f=>f.title));
-    if(!names.has('ReviewRequestedAt')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'ReviewRequestedAt', uidt:'SingleLineText'}});
-    if(!names.has('ReviewClickedAt')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'ReviewClickedAt', uidt:'SingleLineText'}});
-    _reviewFieldsEnsured=true;
-  }catch(e){ console.error('[reviews] ensureReviewFields failed', e.message); }
-}
+   stateless, tamper-proof public click-tracking link.
 
+   Storage: Cloudflare D1 (env.DB), not NocoDB — see migrations/0001_reviews_referrals.sql. This
+   module's config (review_config) and per-lead request/click state (review_requests) are data
+   this app invented with no other reader anywhere else in it, unlike Country/CompanyName (added
+   the same week, see "Data enrichment on capture") which every existing lead view already reads
+   out of NocoDB — so only this module's own tables went to D1, not the lead record itself.
+   Stage/DealValue/OptOut/ClosedAt/ConversationID etc. are still read straight from NocoDB below;
+   this module doesn't duplicate or cache any of that. */
 const REVIEW_DEFAULT_MESSAGE="Hi {name}! 🙏 So glad we could help. If you have a moment, we'd really appreciate a quick review — it means a lot to a small team like ours: {review_link}";
 
 async function reviewClickLink(env, leadId){
@@ -1943,32 +1938,29 @@ async function reviewClickLink(env, leadId){
 
 // Cron Trigger entry point — dispatched from the same */15 min tick as
 // runAutomationFlowsForAllClients (a multi-hour/day delay doesn't need finer granularity than
-// that). Same paginated-CLIENTS-scan shape as that function.
+// that). Reads D1's own review_config table directly — only clients that ever turned this on,
+// not a full NocoDB CLIENTS scan the way the pre-D1 version of this function needed.
 async function sweepReviewRequests(env){
-  let page=1;
-  while(true){
-    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
-    if(!r.ok) break;
-    const data=await r.json().catch(()=>({}));
-    const rows=data?.list||[];
-    if(!rows.length) break;
-    for(const c of rows){
-      if(c.review_request_enabled!=='Yes' || !c.review_link || !c.chatwoot_base) continue;
-      try{ await processClientReviewRequests(env, c); }
-      catch(e){ console.error('[reviews] tick failed for client', c.Id, e.message); }
-    }
-    if(rows.length<200) break;
-    page++;
+  const {results}=await env.DB.prepare(`SELECT client_id, stages_json, delay_hours, message FROM review_config WHERE enabled=1`).all();
+  for(const cfg of (results||[])){
+    try{ await processClientReviewRequests(env, cfg); }
+    catch(e){ console.error('[reviews] tick failed for client', cfg.client_id, e.message); }
   }
 }
 
-async function processClientReviewRequests(env, c){
-  let stages=[]; try{ stages=JSON.parse(c.review_request_stages||'[]'); }catch(e){}
+async function processClientReviewRequests(env, cfg){
+  let stages=[]; try{ stages=JSON.parse(cfg.stages_json||'[]'); }catch(e){}
   if(!stages.length) return;
-  await ensureReviewFields(env);
-  const delayHours=Number(c.review_request_delay_hours)||72;
+  const c=await getClientById(env, cfg.client_id);
+  if(!c?.review_link || !c.chatwoot_base) return;
+  const delayHours=Number(cfg.delay_hours)||72;
+  // One D1 round-trip for "who's already been asked," then filtered in memory against the NocoDB
+  // candidate scan below — cheaper than a D1 SELECT per candidate lead, and D1 has no way to join
+  // against a NocoDB `where` clause directly.
+  const {results:already}=await env.DB.prepare(`SELECT lead_id FROM review_requests WHERE client_id=? AND requested_at IS NOT NULL`).bind(cfg.client_id).all();
+  const alreadySet=new Set((already||[]).map(r=>r.lead_id));
   const stageOr=stages.map(s=>`(Stage,eq,${s})`).join('~or');
-  const where=`(ClientId,eq,${c.Id})~and(${stageOr})~and(ClosedAt,notblank)~and(ReviewRequestedAt,blank)`;
+  const where=`(ClientId,eq,${cfg.client_id})~and(${stageOr})~and(ClosedAt,notblank)`;
   let page=1;
   while(true){
     const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=100&offset=${(page-1)*100}`);
@@ -1977,6 +1969,7 @@ async function processClientReviewRequests(env, c){
     const rows=data?.list||[];
     if(!rows.length) break;
     for(const lead of rows){
+      if(alreadySet.has(lead.Id)) continue;
       if(lead.OptOut==='Yes') continue;
       const closedMs=new Date(lead.ClosedAt).getTime();
       if(!isFinite(closedMs) || Date.now()-closedMs<delayHours*3600000) continue;
@@ -1984,10 +1977,11 @@ async function processClientReviewRequests(env, c){
       if(!convId) continue;
       try{
         const link=await reviewClickLink(env, lead.Id);
-        const template=c.review_request_message||REVIEW_DEFAULT_MESSAGE;
+        const template=cfg.message||REVIEW_DEFAULT_MESSAGE;
         const content=fillFlowTokens(template, lead).replace(/\{review_link\}/gi, link);
         await sendFlowWhatsappDm(c, convId, content);
-        await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, ReviewRequestedAt:new Date().toISOString()}});
+        await env.DB.prepare(`INSERT INTO review_requests (lead_id, client_id, requested_at) VALUES (?,?,?)`)
+          .bind(lead.Id, Number(cfg.client_id), new Date().toISOString()).run();
       }catch(e){ console.error('[reviews] send failed for lead', lead.Id, e.message); }
       await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
     }
@@ -1997,10 +1991,12 @@ async function processClientReviewRequests(env, c){
 }
 
 // Public click-tracking redirect (`GET /reviews/click?lead_id=&token=`) — HMAC-verified with the
-// same constant-time compare handleEmailUnsubscribe uses below, no session, no extra token column
-// to store or leak. Stamps ReviewClickedAt once (never overwritten) so click-through can be
-// measured in the Reviews tab, then redirects to the client's own review_link — the destination
-// platform's (Google/Trustpilot/etc.) own analytics never sees this app's tracking step.
+// same constant-time compare handleEmailUnsubscribe uses below, no session. Stamps clicked_at in
+// D1 once (never overwritten) so click-through can be measured (Reviews tab stats), then redirects
+// to the client's own review_link — the destination platform's (Google/Trustpilot/etc.) own
+// analytics never sees this app's tracking step. `client_id` comes straight off the D1 row itself
+// (stored there at send time), so this route needs no NocoDB lead lookup at all — only one NocoDB
+// read, for the CLIENTS row's review_link, which still lives there (see file-header comment above).
 async function handleReviewClick(request, env){
   const url=new URL(request.url);
   const leadId=parseInt(url.searchParams.get('lead_id'),10);
@@ -2011,40 +2007,52 @@ async function handleReviewClick(request, env){
   let diff=0;
   for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^token.charCodeAt(i);
   if(diff!==0) return new Response('Invalid link.', {status:400});
-  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
-  const lead=await leadR.json().catch(()=>null);
-  if(!leadR.ok||!lead) return new Response('Link expired.', {status:404});
-  const c=await getClientById(env, lead.ClientId);
+  const row=await env.DB.prepare(`SELECT client_id, clicked_at FROM review_requests WHERE lead_id=?`).bind(leadId).first();
+  if(!row) return new Response('Link expired.', {status:404});
+  const c=await getClientById(env, row.client_id);
   if(!c?.review_link) return new Response('Link expired.', {status:404});
-  if(!lead.ReviewClickedAt){
-    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, ReviewClickedAt:new Date().toISOString()}});
+  if(!row.clicked_at){
+    await env.DB.prepare(`UPDATE review_requests SET clicked_at=? WHERE lead_id=? AND clicked_at IS NULL`).bind(new Date().toISOString(), leadId).run();
   }
   return Response.redirect(c.review_link, 302);
 }
 
-// Session-gated config, same shape as handleMetaCapiConfigSet/Status above.
-const REVIEW_WRITE_FIELDS=['review_request_enabled','review_request_stages','review_request_delay_hours','review_request_message'];
+// Session-gated config — reads/writes D1's review_config (one row per client), upserted via
+// SQLite's ON CONFLICT (D1 is SQLite under the hood).
 async function handleReviewsConfigSet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
-  const fields={};
-  REVIEW_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=k==='review_request_stages'?JSON.stringify(body[k]||[]):String(body[k]??'').trim(); });
-  if(!Object.keys(fields).length) return json({error:'Nothing to save'}, 400);
-  await patchClientFields(env, payload.cid, fields);
+  const enabled=body.review_request_enabled==='Yes'?1:0;
+  const stagesJson=JSON.stringify(Array.isArray(body.review_request_stages)?body.review_request_stages:[]);
+  const delayHours=parseInt(body.review_request_delay_hours)||72;
+  const message=String(body.review_request_message||'').trim()||null;
+  await env.DB.prepare(`INSERT INTO review_config (client_id, enabled, stages_json, delay_hours, message) VALUES (?,?,?,?,?)
+    ON CONFLICT(client_id) DO UPDATE SET enabled=excluded.enabled, stages_json=excluded.stages_json, delay_hours=excluded.delay_hours, message=excluded.message`)
+    .bind(Number(payload.cid), enabled, stagesJson, delayHours, message).run();
   return json({ok:true});
 }
 async function handleReviewsConfigGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  let stages=[]; try{ stages=JSON.parse(c?.review_request_stages||'[]'); }catch(e){}
+  const cfg=await env.DB.prepare(`SELECT enabled, stages_json, delay_hours, message FROM review_config WHERE client_id=?`).bind(Number(payload.cid)).first();
+  let stages=[]; try{ stages=JSON.parse(cfg?.stages_json||'[]'); }catch(e){}
   return json({
-    enabled:c?.review_request_enabled==='Yes',
-    stages, delay_hours:Number(c?.review_request_delay_hours)||72,
-    message:c?.review_request_message||REVIEW_DEFAULT_MESSAGE,
-    review_link:c?.review_link||'',
+    enabled: !!cfg?.enabled,
+    stages, delay_hours: cfg?.delay_hours || 72,
+    message: cfg?.message || REVIEW_DEFAULT_MESSAGE,
+    review_link: c?.review_link||'',
   });
+}
+// Session-gated stats — Requests Sent / Clicked Through, computed straight from D1 rather than
+// filtering allLeads client-side the way the pre-D1 version of the Reviews tab did (that data no
+// longer lives on the lead record at all).
+async function handleReviewsStats(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const row=await env.DB.prepare(`SELECT COUNT(*) AS requested, COUNT(clicked_at) AS clicked FROM review_requests WHERE client_id=? AND requested_at IS NOT NULL`).bind(Number(payload.cid)).first();
+  return json({requested:row?.requested||0, clicked:row?.clicked||0});
 }
 
 /* ── Channels module ──────────────────────────────────────────────────────
@@ -5333,25 +5341,103 @@ function phoneToCountry(phone){
 
 // Referral/affiliate tracking — a customer shares a wa.me deep link
 // (https://wa.me/<business number>?text=REF-XXXXXX) that pre-fills a referred friend's very first
-// WhatsApp message with the referrer's own ReferralCode (generated on demand by the dashboard's
-// "Get Referral Link" button). This is the detection half: given that first message's raw text,
-// find the referrer (scoped to this same client — ReferralCode is per-client, not globally
-// unique, so two different clients' customers could coincidentally share a code) and return both
-// the referrer row and the text with the code removed, so the caller can strip it before the AI
-// ever sees it. Returns null if there's no code, or the code doesn't match any lead of this
-// client's (a stale/mistyped/foreign code) — silently, since a failed referral match shouldn't
-// block or alter the conversation in any visible way.
+// WhatsApp message with the referrer's own code (generated on demand by the dashboard's "Get
+// Referral Link" button, stored in D1's referral_codes table — see migrations/
+// 0001_reviews_referrals.sql). This is the detection half: given that first message's raw text,
+// resolve the code to a referrer lead id (scoped to this same client — a code only needs to be
+// unique per client, so two different clients' customers could coincidentally share one) and
+// return both that id and the text with the code removed, so the caller can strip it before the
+// AI ever sees it. A pure D1 lookup — no NocoDB round-trip needed here at all, since D1 only
+// needs to resolve a lead *id*, not the referrer's Name/Phone (the dashboard resolves those
+// separately, lazily, only when someone actually opens the lead detail pane — see
+// handleReferralsLeadInfo below). Returns null if there's no code, or the code doesn't match any
+// lead of this client's (a stale/mistyped/foreign code) — silently, since a failed referral match
+// shouldn't block or alter the conversation in any visible way.
 const REFERRAL_CODE_RE=/\bREF-([A-Z0-9]{4,10})\b/i;
 async function engineDetectReferral(env, clientId, text){
   const m=String(text||'').match(REFERRAL_CODE_RE);
   if(!m) return null;
   const code=('REF-'+m[1]).toUpperCase();
-  const where=`(ClientId,eq,${clientId})~and(ReferralCode,eq,${code})`;
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=1&fields=Id,Name,Phone,ReferralCount`);
-  const data=await r.json().catch(()=>({}));
-  const referrer=(data?.list||[])[0];
-  if(!referrer) return null;
-  return {referrer, strippedText:String(text||'').replace(REFERRAL_CODE_RE,'').trim()};
+  const row=await env.DB.prepare(`SELECT lead_id FROM referral_codes WHERE client_id=? AND code=?`).bind(Number(clientId), code).first();
+  if(!row) return null;
+  return {referrerLeadId:row.lead_id, strippedText:String(text||'').replace(REFERRAL_CODE_RE,'').trim()};
+}
+
+// Confirms leadId actually belongs to this session's client before any of the three dashboard
+// routes below touch it — same ownership check handleMetaCapiLeadEvent uses, since lead_id here
+// comes from the request (dashboard-supplied), not the trusted session, and D1 has no foreign key
+// into NocoDB to enforce this itself.
+async function engineLeadBelongsToClient(env, leadId, clientId){
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}?fields=Id,ClientId`);
+  const lead=await r.json().catch(()=>null);
+  return r.ok && lead && String(lead.ClientId)===String(clientId);
+}
+
+// Session-gated dashboard routes for Referral tracking. All three read/write D1 only — Name/Phone
+// for a referral's counterpart lead are fetched fresh from NocoDB here, lazily, only when a rep
+// actually opens a lead's detail pane, never duplicated/cached in D1 itself.
+async function handleReferralsLeadInfo(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const leadId=parseInt(url.searchParams.get('lead_id'),10);
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  if(!(await engineLeadBelongsToClient(env, leadId, payload.cid))) return json({error:'Not your lead'}, 403);
+
+  const codeRow=await env.DB.prepare(`SELECT code FROM referral_codes WHERE lead_id=?`).bind(leadId).first();
+  const referredByRow=await env.DB.prepare(`SELECT referrer_lead_id, referred_at, reward_status FROM referrals WHERE referred_lead_id=?`).bind(leadId).first();
+  const {results:madeRows}=await env.DB.prepare(`SELECT referred_lead_id, referred_at, reward_status FROM referrals WHERE referrer_lead_id=? ORDER BY referred_at DESC`).bind(leadId).all();
+
+  // Resolve just the Name/Phone this response actually needs, in one NocoDB batch fetch — the
+  // referrer (if any) plus every lead this one referred in.
+  const idsToResolve=[...new Set([referredByRow?.referrer_lead_id, ...(madeRows||[]).map(r=>r.referred_lead_id)].filter(Boolean))];
+  const names={};
+  if(idsToResolve.length){
+    const where=idsToResolve.map(id=>`(Id,eq,${id})`).join('~or');
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=${idsToResolve.length}&fields=Id,Name,Phone`);
+    const data=await r.json().catch(()=>({}));
+    (data?.list||[]).forEach(l=>{ names[l.Id]=l.Name||l.Phone||('Lead #'+l.Id); });
+  }
+
+  return json({
+    code: codeRow?.code||null,
+    referred_by: referredByRow ? {name:names[referredByRow.referrer_lead_id]||('Lead #'+referredByRow.referrer_lead_id), at:referredByRow.referred_at, reward_status:referredByRow.reward_status} : null,
+    referrals: (madeRows||[]).map(r=>({lead_id:r.referred_lead_id, name:names[r.referred_lead_id]||('Lead #'+r.referred_lead_id), at:r.referred_at, reward_status:r.reward_status})),
+  });
+}
+async function handleReferralsGenerateCode(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const leadId=parseInt(body.lead_id,10);
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  if(!(await engineLeadBelongsToClient(env, leadId, payload.cid))) return json({error:'Not your lead'}, 403);
+  const existing=await env.DB.prepare(`SELECT code FROM referral_codes WHERE lead_id=?`).bind(leadId).first();
+  if(existing) return json({code:existing.code});
+  // Retry on the rare code collision within this client (UNIQUE(client_id, code)) rather than
+  // failing the request — a longer code would also fix it, but a short retry loop needs no format
+  // change and keeps the 6-char codes already shared out in the wild working.
+  for(let attempt=0; attempt<5; attempt++){
+    const code=Math.random().toString(36).slice(2,8).toUpperCase();
+    try{
+      await env.DB.prepare(`INSERT INTO referral_codes (lead_id, client_id, code, created_at) VALUES (?,?,?,?)`)
+        .bind(leadId, Number(payload.cid), code, new Date().toISOString()).run();
+      return json({code});
+    }catch(e){ /* UNIQUE(client_id, code) collision — retry with a new code */ }
+  }
+  return json({error:'Could not generate a unique code, try again.'}, 500);
+}
+async function handleReferralsReward(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const leadId=parseInt(body.lead_id,10);
+  const status=body.status==='Rewarded'?'Rewarded':'Pending';
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  if(!(await engineLeadBelongsToClient(env, leadId, payload.cid))) return json({error:'Not your lead'}, 403);
+  await env.DB.prepare(`UPDATE referrals SET reward_status=? WHERE referred_lead_id=? AND client_id=?`)
+    .bind(status, leadId, Number(payload.cid)).run();
+  return json({ok:true});
 }
 
 // Mirrors "Code · Prep lead" — hot-moment/qual-score/win-probability/round-robin-owner
@@ -5421,10 +5507,9 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     const country=phoneToCountry(state.phone);
     if(country) body.Country=country;
   }
-  // Referral attribution, detected earlier in handleEngineWebhook (engineDetectReferral) —
-  // written here so it lands in the same upsert as everything else about this brand-new lead,
-  // rather than a separate PATCH that could race the claim-stub write.
-  if(isNewLead && state.referredByName) body.ReferredBy=state.referredByName+(state.referredByPhone?` (${state.referredByPhone})`:'');
+  // Referral attribution (state.referrerLeadId, detected earlier in handleEngineWebhook) is
+  // written to D1's referrals table, not here — see engineUpsertLead's call site, which is the
+  // first point in this turn a brand-new lead actually has a real id to attribute.
 
   if(isNewLead && !state.owner){
     const reps=engineParseSalesReps(c.agents);
@@ -5442,9 +5527,15 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   return {body, method:state.leadId?'PATCH':'POST', leadId:state.leadId};
 }
 
+// Returns the resolved lead id (the given leadId for a PATCH, or the id NocoDB assigns on a
+// brand-new POST) — needed by the referral-tracking D1 insert at this function's call site, which
+// only learns the new lead's real id once this upsert actually completes.
 async function engineUpsertLead(env, method, leadId, body){
   if(leadId) body.Id=leadId;
-  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
+  if(leadId) return leadId;
+  const created=await r.json().catch(()=>null);
+  return created?.Id||null;
 }
 
 // Called by handleEngineWebhook right before the slow classify/LLM work — see that call site's
@@ -5571,10 +5662,7 @@ async function handleEngineWebhook(request, env, secret){
         const referral=await engineDetectReferral(env, clientId, text);
         if(referral){
           text=referral.strippedText;
-          state.referredByName=referral.referrer.Name||referral.referrer.Phone||'';
-          state.referredByPhone=referral.referrer.Phone||'';
-          const nextCount=(Number(referral.referrer.ReferralCount)||0)+1;
-          ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:referral.referrer.Id, ReferralCount:nextCount}}).catch(()=>{});
+          state.referrerLeadId=referral.referrerLeadId; // written to D1 once resolvedLeadId is known, below
         }
       }catch(e){}
     }
@@ -5718,7 +5806,17 @@ async function handleEngineWebhook(request, env, secret){
     }
 
     const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
-    await engineUpsertLead(env, method, leadId, leadBody);
+    const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
+    // this function) because a brand-new lead has no real id until this exact upsert assigns one.
+    // INSERT OR IGNORE: referred_lead_id is UNIQUE (migrations/0001_reviews_referrals.sql), so a
+    // Chatwoot webhook redelivery replaying this same turn can't double-insert the same referral.
+    if(isNewLead && state.referrerLeadId && resolvedLeadId){
+      try{
+        await env.DB.prepare(`INSERT OR IGNORE INTO referrals (client_id, referrer_lead_id, referred_lead_id, referred_at, reward_status) VALUES (?,?,?,?, 'Pending')`)
+          .bind(Number(clientId), state.referrerLeadId, resolvedLeadId, new Date().toISOString()).run();
+      }catch(e){}
+    }
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
     // background promise left running past the returned Response risks being cut off mid-flight.
@@ -6594,6 +6692,10 @@ export default {
       else if(url.pathname==='/reviews/config' && request.method==='GET'){ res=await handleReviewsConfigGet(request, env); }
       else if(url.pathname==='/reviews/config' && request.method==='POST'){ res=await handleReviewsConfigSet(request, env); }
       else if(url.pathname==='/reviews/click' && request.method==='GET'){ res=await handleReviewClick(request, env); }
+      else if(url.pathname==='/reviews/stats' && request.method==='GET'){ res=await handleReviewsStats(request, env); }
+      else if(url.pathname==='/referrals/lead-info' && request.method==='GET'){ res=await handleReferralsLeadInfo(request, env); }
+      else if(url.pathname==='/referrals/generate-code' && request.method==='POST'){ res=await handleReferralsGenerateCode(request, env); }
+      else if(url.pathname==='/referrals/reward' && request.method==='POST'){ res=await handleReferralsReward(request, env); }
       else if(url.pathname==='/channels/create-account' && request.method==='POST'){ res=await handleChannelsCreateAccount(request, env); }
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }

@@ -4902,28 +4902,41 @@ async function addNote(){
 }
 
 // ── REFERRALS ── a lead's own shareable code (generated on demand, never overwritten once set —
-// re-sharing the same link keeps attributing new signups to the same person) plus who referred
-// this lead in, if anyone. Detection itself happens server-side (engineDetectReferral in
-// worker.js) the moment a referred friend's very first WhatsApp message arrives with the code
-// pre-filled by the wa.me link below — this is just the generate/display/reward-tracking UI.
+// re-sharing the same link keeps attributing new signups to the same person), who referred this
+// lead in (if anyone), and who this lead has referred in turn. Storage lives in Cloudflare D1 (see
+// worker.js's /referrals/* routes and migrations/0001_reviews_referrals.sql) — this data has no
+// other reader anywhere in the app, unlike Country/CompanyName (which stayed as NocoDB LEADS
+// fields since the kanban/lead list/CSV export/B2B analytics already read those out of NocoDB).
+// Detection itself happens server-side (engineDetectReferral in worker.js) the moment a referred
+// friend's very first WhatsApp message arrives with the code pre-filled by the wa.me link below —
+// this is just the generate/display/reward-tracking UI, fetched fresh each time a lead's detail
+// pane opens (there's nothing to cache client-side the way NocoDB fields were cached in allLeads).
 function referralWaLink(code){
   const num=(clientRecord?.wa_display_phone||'').replace(/[^0-9]/g,'');
   if(!num) return null;
   return `https://wa.me/${num}?text=${encodeURIComponent('REF-'+code)}`;
 }
-function renderDetailReferral(lead){
+async function renderDetailReferral(lead){
   const el=$id('detailReferral');
   if(!el) return;
-  const link=lead.ReferralCode?referralWaLink(lead.ReferralCode):null;
+  el.innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';
+  let info={};
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/referrals/lead-info?lead_id=${lead.Id}`,{headers:ncAuthHeaders()});
+    info=await r.json();
+  }catch(e){ el.innerHTML=''; return; }
+  if(!currentLead || currentLead.Id!==lead.Id) return; // detail pane moved to a different lead while this was loading
+
+  const link=info.code?referralWaLink(info.code):null;
   let html='';
-  if(lead.ReferredBy){
-    const rewarded=lead.ReferralRewardStatus==='Rewarded';
+  if(info.referred_by){
+    const rewarded=info.referred_by.reward_status==='Rewarded';
     html+=`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:var(--accent-soft);border-radius:8px;margin-bottom:8px">
-      <span style="font-size:12px;color:var(--accent-ink)">🎁 Referred by <b>${esc(lead.ReferredBy)}</b></span>
-      <button class="btn btn-secondary btn-sm" onclick="toggleReferralReward()">${rewarded?'✓ Rewarded':'Mark Rewarded'}</button>
+      <span style="font-size:12px;color:var(--accent-ink)">🎁 Referred by <b>${esc(info.referred_by.name)}</b></span>
+      <button class="btn btn-secondary btn-sm" onclick="toggleReferralReward(${lead.Id},${rewarded})">${rewarded?'✓ Rewarded':'Mark Rewarded'}</button>
     </div>`;
   }
-  html+=`<label class="form-label" style="margin-bottom:4px">Referral Link${lead.ReferralCount?` <span style="color:var(--muted);font-weight:400">(${lead.ReferralCount} referred so far)</span>`:''}</label>`;
+  html+=`<label class="form-label" style="margin-bottom:4px">Referral Link${info.referrals?.length?` <span style="color:var(--muted);font-weight:400">(${info.referrals.length} referred so far)</span>`:''}</label>`;
   if(link){
     html+=`<div style="display:flex;gap:6px">
       <input class="form-input" readonly value="${esc(link)}" style="font-size:11px" onclick="this.select()">
@@ -4932,28 +4945,39 @@ function renderDetailReferral(lead){
   }else{
     html+=`<button class="btn btn-secondary btn-sm" onclick="getReferralLink()">Get Referral Link</button>`;
   }
+  if(info.referrals?.length){
+    html+=`<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">
+      ${info.referrals.map(r=>{ const rw=r.reward_status==='Rewarded'; return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--muted)">
+        <span>${esc(r.name)} · ${fmtDate(r.at)}</span>
+        <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="toggleReferralReward(${r.lead_id},${rw})">${rw?'✓ Rewarded':'Mark Rewarded'}</button>
+      </div>`; }).join('')}
+    </div>`;
+  }
   el.innerHTML=html;
 }
 async function getReferralLink(){
   if(!currentLead) return;
   if(!clientRecord?.wa_display_phone){ alert('Connect WhatsApp in Settings → Channels first — a referral link needs your business WhatsApp number.'); return; }
-  if(!currentLead.ReferralCode){
-    const code=Math.random().toString(36).slice(2,8).toUpperCase();
-    currentLead.ReferralCode=code;
-    const idx=allLeads.findIndex(x=>x.Id===currentLead.Id); if(idx>=0) allLeads[idx].ReferralCode=code;
-    await patchDetailField('ReferralCode', code);
-  }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/referrals/generate-code`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:currentLead.Id})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+  }catch(e){ alert('Could not generate a referral link — try again.'); return; }
   renderDetailReferral(currentLead);
 }
 function copyReferralLink(link){
   navigator.clipboard?.writeText(link).catch(()=>{});
 }
-async function toggleReferralReward(){
+// leadId is whichever lead is actually the *referred* one — the currently open lead if it was
+// itself referred in, or one of the leads listed under "referred so far" if the open lead is the
+// referrer. currentlyRewarded is passed in from the already-rendered button rather than re-fetched
+// first, since renderDetailReferral just loaded this exact state. This doesn't touch currentLead
+// directly, so a full re-render (not a local mutate-in-place) is needed after the write.
+async function toggleReferralReward(leadId, currentlyRewarded){
   if(!currentLead) return;
-  const next=currentLead.ReferralRewardStatus==='Rewarded'?'Pending':'Rewarded';
-  currentLead.ReferralRewardStatus=next;
-  const idx=allLeads.findIndex(x=>x.Id===currentLead.Id); if(idx>=0) allLeads[idx].ReferralRewardStatus=next;
-  await patchDetailField('ReferralRewardStatus', next);
+  const next=currentlyRewarded?'Pending':'Rewarded';
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/referrals/reward`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:leadId, status:next})});
+  }catch(e){}
   renderDetailReferral(currentLead);
 }
 

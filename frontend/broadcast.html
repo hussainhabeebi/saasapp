@@ -1445,7 +1445,7 @@ function toggleReviewsStage(el){
 }
 async function loadReviewsConfig(){
   renderReviewsStageChips();
-  renderReviewsStats();
+  fetchReviewsStats();
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/reviews/config`,{headers:ncAuthHeaders()});
     const data=await r.json();
@@ -1471,18 +1471,26 @@ async function saveReviewsConfig(){
     setTimeout(()=>{ if($id('reviewsSaveMsg')) $id('reviewsSaveMsg').textContent=''; },2000);
   }catch(e){ $id('reviewsSaveMsg').textContent='Failed to save.'; }
 }
-function renderReviewsStats(){
-  const requested=allLeads.filter(l=>l.ReviewRequestedAt);
-  const clicked=requested.filter(l=>l.ReviewClickedAt);
-  const rate=requested.length?Math.round(clicked.length/requested.length*100):0;
+// Fetched from D1 (see /reviews/stats in worker.js) rather than filtered out of allLeads — the
+// request/click data moved entirely to D1, so it's no longer on the lead record to filter.
+async function fetchReviewsStats(){
+  $id('reviewsStats').innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/reviews/stats`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    renderReviewsStats(data.requested||0, data.clicked||0);
+  }catch(e){ $id('reviewsStats').innerHTML='<div style="font-size:12px;color:var(--muted)">Couldn\'t load stats.</div>'; }
+}
+function renderReviewsStats(requested, clicked){
+  const rate=requested?Math.round(clicked/requested*100):0;
   $id('reviewsStats').innerHTML=`
     <div style="display:grid;gap:12px;grid-template-columns:repeat(3,1fr)">
       <div style="border:1.5px solid var(--line);border-radius:10px;padding:14px;text-align:center">
-        <div style="font-size:22px;font-weight:700;color:var(--ink)">${requested.length}</div>
+        <div style="font-size:22px;font-weight:700;color:var(--ink)">${requested}</div>
         <div style="font-size:11px;color:var(--muted);margin-top:4px">Requests Sent</div>
       </div>
       <div style="border:1.5px solid var(--line);border-radius:10px;padding:14px;text-align:center">
-        <div style="font-size:22px;font-weight:700;color:var(--ink)">${clicked.length}</div>
+        <div style="font-size:22px;font-weight:700;color:var(--ink)">${clicked}</div>
         <div style="font-size:11px;color:var(--muted);margin-top:4px">Clicked Through</div>
       </div>
       <div style="border:1.5px solid var(--accent);border-radius:10px;padding:14px;text-align:center;background:var(--accent-soft)">

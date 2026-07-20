@@ -21,6 +21,19 @@ invocation_logs = true
 [triggers]
 crons = ["0 2 * * *", "*/15 * * * *", "*/20 * * * *"]
 
+# D1 — sidecar storage for the Review Request and Referral tracking modules only (see
+# migrations/0001_reviews_referrals.sql and SETUP.md). Everything else in this app still lives in
+# NocoDB; these two modules invented data with no other reader in the app, so it didn't need to go
+# through NocoDB's per-field-by-hand schema process.
+# One-time setup:
+#   1. wrangler d1 create leadvyne-d1
+#   2. Paste the returned database_id below over the placeholder.
+#   3. wrangler d1 migrations apply leadvyne-d1 --remote
+[[d1_databases]]
+binding = "DB"
+database_name = "leadvyne-d1"
+database_id = "REPLACE_D1_DATABASE_ID"
+
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
 [vars]
