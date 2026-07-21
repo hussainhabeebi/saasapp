@@ -2529,12 +2529,17 @@ async function syncShopifyOrderToEcom(env, c, order, status){
     customer_phone:order.phone||order.shipping_address?.phone||order.customer?.phone||'',
     order_date:(order.created_at||'').slice(0,10),
     items:(order.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
-    total:order.total_price||'', currency:order.currency||'',
+    total:order.total_price||0, currency:order.currency||'',
     delivery_address:[order.shipping_address?.address1, order.shipping_address?.city, order.shipping_address?.country].filter(Boolean).join(', '),
   };
   const existing=await findEcomOrderByShopifyId(env, tableId, c.Id, fields.shopify_order_id);
-  if(existing) await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:existing.Id, ...fields}});
-  else await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:fields});
+  const r=existing
+    ? await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:existing.Id, ...fields}})
+    : await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:fields});
+  if(!r.ok){
+    const data=await r.json().catch(()=>({}));
+    await reportOpsError(env, 'syncShopifyOrderToEcom', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId:c.Id, shopifyOrderId:fields.shopify_order_id, tableId});
+  }
 }
 
 // Webhook receiver — server-to-server from Shopify, so auth is the HMAC header, not a session.
@@ -3399,6 +3404,7 @@ const ECOM_SORT_MAP={
   price_asc:'price', price_desc:'-price',
   newest:'-CreatedAt', oldest:'CreatedAt',
   stock_desc:'-stock', name_asc:'name',
+  order_date:'order_date', '-order_date':'-order_date',
 };
 // Strips characters that have syntactic meaning in NocoDB's `where=(field,op,value)` filter DSL,
 // so a color/size/category value can't break out of its own clause or inject another one.

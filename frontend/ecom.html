@@ -1043,6 +1043,7 @@ async function loadOrders() {
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders?client_id=${encodeURIComponent(clientId)}&sort=-order_date&limit=200`);
     const data = await r.json();
+    if (!r.ok) { tbody.innerHTML = `<tr><td colspan="7" class="loading-row">Error: ${esc(data.error||'Failed to load orders')}</td></tr>`; return; }
     allOrders = data.list || [];
     renderOrdersTable();
   } catch(e) {
