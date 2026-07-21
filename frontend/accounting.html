@@ -196,9 +196,16 @@ tbody tr:hover{background:var(--bg)}
         <select class="s-input" id="docErpCustomer"><option value="">— None —</option></select>
         <div class="s-hint" id="docErpCustomerHint" style="margin-top:4px"></div>
       </div>
-      <div><label class="s-lbl">Currency</label><input class="s-input" id="docCurrency" placeholder="e.g. AED" value="AED"></div>
-      <div><label class="s-lbl">Tax %</label><input class="s-input" id="docTaxPct" type="number" value="0"></div>
+      <div><label class="s-lbl">Company (ERPNext)</label>
+        <select class="s-input" id="docCompany" onchange="onDocCompanyChange()"><option value="">— None —</option></select>
+        <div class="s-hint" id="docCompanyHint" style="margin-top:4px"></div>
+      </div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="docCurrency" list="erpCurrenciesDatalist" placeholder="e.g. AED" value="AED"></div>
+      <div><label class="s-lbl">Debtors Account</label>
+        <select class="s-input" id="docErpDebtorsAccount"><option value="">— Default —</option></select>
+      </div>
     </div>
+    <datalist id="erpCurrenciesDatalist"></datalist>
     <label class="s-lbl">Line Items</label>
     <div class="s-hint" style="margin-bottom:6px">Type a product/description — matching an existing ERPNext item name lets "Sync to ERPNext" reuse that exact item; otherwise a new one is created automatically on sync.</div>
     <datalist id="erpItemsDatalist"></datalist>
@@ -274,6 +281,9 @@ let allDocuments = [];
 let documentsLoadError = '';
 let allErpCustomers = [];
 let allErpItems = [];
+let allErpCompanies = [];
+let allErpCurrencies = [];
+let allErpDebtorsAccounts = [];
 let erpCustomersLoadError = '';
 function erpAvailable(){ return !!(clientRecord?.erpnext_base_url&&clientRecord?.erpnext_api_key&&clientRecord?.erpnext_api_secret); }
 
@@ -327,9 +337,12 @@ async function init(){
     if(erpAvailable()){
       try{ await loadErpCustomers(); }catch(e){ erpCustomersLoadError=e.message; allErpCustomers=[]; }
       try{ await loadErpItems(); }catch(e){ allErpItems=[]; }
+      try{ const d=await acctFetch('/erpnext/companies',{method:'GET'}); allErpCompanies=d.list||[]; }catch(e){ allErpCompanies=[]; }
+      try{ const d=await acctFetch('/erpnext/currencies',{method:'GET'}); allErpCurrencies=d.list||[]; }catch(e){ allErpCurrencies=[]; }
     }
     renderCustomersTable();
     populateItemsDatalist();
+    populateCurrenciesDatalist();
   }catch(e){
     document.getElementById('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
   }
@@ -353,6 +366,21 @@ async function loadErpItems(){
 function populateItemsDatalist(){
   const dl=document.getElementById('erpItemsDatalist');
   dl.innerHTML=allErpItems.map(it=>`<option value="${escAttr(it.item_name||it.name)}">`).join('');
+}
+function populateCurrenciesDatalist(){
+  const dl=document.getElementById('erpCurrenciesDatalist');
+  dl.innerHTML=allErpCurrencies.map(c=>`<option value="${escAttr(c.name)}">`).join('');
+}
+function populateErpCompanySelect(selected){
+  const sel=document.getElementById('docCompany');
+  sel.innerHTML='<option value="">— None —</option>'+allErpCompanies.map(c=>`<option value="${escAttr(c.name)}">${esc(c.name)}</option>`).join('');
+  sel.value=selected||'';
+  document.getElementById('docCompanyHint').textContent=erpAvailable()?'':'Connect ERPNext (⚙️ tab) to pick a company here.';
+}
+function populateErpDebtorsAccountSelect(selected){
+  const sel=document.getElementById('docErpDebtorsAccount');
+  sel.innerHTML='<option value="">— Default —</option>'+allErpDebtorsAccounts.map(a=>`<option value="${escAttr(a.name)}">${esc(a.account_name||a.name)}</option>`).join('');
+  sel.value=selected||'';
 }
 function populateErpCustomerSelect(selected){
   const sel=document.getElementById('docErpCustomer');
@@ -448,7 +476,6 @@ function openDocumentModal(type, prefill){
   document.getElementById('docTitle').value=prefill?.title||'';
   document.getElementById('docLeadSearch').value='';
   document.getElementById('docCurrency').value=prefill?.currency||clientRecord?.deal_currency||'AED';
-  document.getElementById('docTaxPct').value=prefill?.tax_pct||'0';
   document.getElementById('docNotes').value=prefill?.notes||'';
   document.getElementById('docLineItems').innerHTML='';
   const items=prefill?.line_items?.length?prefill.line_items:[{name:'',qty:1,price:0}];
@@ -456,8 +483,31 @@ function openDocumentModal(type, prefill){
   renderLeadPicker();
   if(prefill?.lead_id) document.getElementById('docLeadId').value=prefill.lead_id;
   populateErpCustomerSelect(prefill?.erpnext_customer||'');
+  populateErpCompanySelect(prefill?.company||'');
+  if(prefill?.company){
+    // Re-fetch the company-scoped debtors account list up front so a prefilled selection (e.g.
+    // re-opening a document from Convert, or the Customers tab's New Invoice shortcut) has
+    // somewhere to resolve to instead of showing blank until Company's own onchange fires.
+    acctFetch(`/erpnext/accounts?company=${encodeURIComponent(prefill.company)}`,{method:'GET'})
+      .then(d=>{ allErpDebtorsAccounts=d.list||[]; populateErpDebtorsAccountSelect(prefill?.erpnext_debtors_account||''); })
+      .catch(()=>{ allErpDebtorsAccounts=[]; populateErpDebtorsAccountSelect(''); });
+  }else{
+    populateErpDebtorsAccountSelect(prefill?.erpnext_debtors_account||'');
+  }
   document.getElementById('documentModal').classList.add('active');
   updateDocTotalPreview();
+}
+// Debtors accounts are company-scoped in ERPNext — re-fetch the list whenever Company changes,
+// keeping whatever was already selected if it's still in the new list.
+async function onDocCompanyChange(){
+  const acctSel=document.getElementById('docErpDebtorsAccount');
+  const current=acctSel.value;
+  const company=document.getElementById('docCompany').value;
+  const companyRec=allErpCompanies.find(c=>c.name===company);
+  if(companyRec?.default_currency) document.getElementById('docCurrency').value=companyRec.default_currency;
+  try{ allErpDebtorsAccounts=(await acctFetch(`/erpnext/accounts?company=${encodeURIComponent(company)}`,{method:'GET'})).list||[]; }
+  catch(e){ allErpDebtorsAccounts=[]; }
+  populateErpDebtorsAccountSelect(current);
 }
 function closeDocumentModal(){ document.getElementById('documentModal').classList.remove('active'); }
 function renderLeadPicker(){
@@ -488,6 +538,7 @@ function collectLineItems(){
     price:Number(row.querySelector('.li-price').value)||0
   })).filter(li=>li.name);
 }
+// No GST — this module never charges tax, so the total is always just the line items' subtotal.
 function updateDocTotalPreview(){
   const items=[...document.querySelectorAll('#docLineItems .li-row')];
   let subtotal=0;
@@ -498,11 +549,9 @@ function updateDocTotalPreview(){
     subtotal+=total;
     row.querySelector('.li-total').textContent=total.toLocaleString();
   });
-  const taxPct=Number(document.getElementById('docTaxPct').value)||0;
   const cur=document.getElementById('docCurrency').value||'';
-  document.getElementById('docTotalPreview').textContent=`Total: ${fmtMoney(subtotal+subtotal*taxPct/100,cur)}`;
+  document.getElementById('docTotalPreview').textContent=`Total: ${fmtMoney(subtotal,cur)}`;
 }
-document.getElementById('docTaxPct').addEventListener('input',updateDocTotalPreview);
 
 async function saveDocument(){
   const title=document.getElementById('docTitle').value.trim();
@@ -513,9 +562,10 @@ async function saveDocument(){
     type:document.getElementById('docType').value,
     title, lead_id:document.getElementById('docLeadId').value||null,
     currency:document.getElementById('docCurrency').value.trim(),
-    tax_pct:Number(document.getElementById('docTaxPct').value)||0,
     notes:document.getElementById('docNotes').value.trim(),
     erpnext_customer:document.getElementById('docErpCustomer').value||null,
+    company:document.getElementById('docCompany').value||null,
+    erpnext_debtors_account:document.getElementById('docErpDebtorsAccount').value||null,
     line_items:lineItems
   };
   try{
@@ -630,11 +680,16 @@ function buildDocumentPdf(id){
     margin:{left:marginX,right:marginX},
     head:[['Item','Qty','Unit Price','Line Total']],
     body:items.map(it=>[it.name,String(it.qty),fmtMoney(it.price,d.currency),fmtMoney((Number(it.qty)||0)*(Number(it.price)||0),d.currency)]),
-    foot:[
+    // No GST — new documents always have tax_pct 0, so only Subtotal+Total print for them; the Tax
+    // row only still appears on a document created before this rule, so its historical PDF still
+    // matches what was actually charged.
+    foot:(Number(d.tax_pct)>0?[
       ['','','Subtotal',fmtMoney(d.subtotal,d.currency)],
-      ['','',`Tax (${d.tax_pct||0}%)`,fmtMoney(d.tax_amount,d.currency)],
+      ['','',`Tax (${d.tax_pct}%)`,fmtMoney(d.tax_amount,d.currency)],
       ['','','Total',fmtMoney(d.total,d.currency)],
-    ],
+    ]:[
+      ['','','Total',fmtMoney(d.total,d.currency)],
+    ]),
     theme:'grid',
     headStyles:{fillColor:[194,65,12]},
     footStyles:{fillColor:[255,247,237],textColor:0,fontStyle:'bold'},
