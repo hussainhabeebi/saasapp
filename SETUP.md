@@ -106,7 +106,7 @@ More columns on the **LEADS** table, written by `engine.json` and read/edited by
 | WinProbabilityManual | Single line ("Yes"/"No" — set by the dashboard when a rep manually edits `WinProbability`) |
 | HandoverAt | Single line (ISO datetime — stamped the moment a lead first enters `human_handover`; powers the SLA-breach alert and an in-dashboard "waiting Xm" badge) |
 | SlaAlerted | Single line ("Yes"/"No" — dedupe flag so `n8n/notifications.json` only fires one SLA-breach alert per handover, reset by the engine each time a lead re-enters `human_handover`) |
-| HandoverOutcome | Single line (`Resolved-Won`/`Released`/`Lost`/`No-response` — set only when a rep clicks "Mark Done" on the Human Deals page, `removeHumanDeal()` in `dashboard.html`. Nothing else writes this; a lead handed over before this feature existed simply has it blank. Drives the Human Deals Stage transition (`HD_OUTCOME_STAGE`: Won→`won`, everything else→`new`/`lost`) and the Team page's Funnel Analytics "Handover Win Rate" stat — see "Human Deals page" below.) |
+| HandoverOutcome | Single line (`Resolved-Won`/`Released`/`Lost`/`No-response`/`Spam` — set only when a rep resolves a lead on the Human Deals page, via the card's ✅ Won/🚫 Spam buttons or the ✕ close-icon modal, `applyHumanDealOutcome()` in `dashboard.html`. Nothing else writes this; a lead handed over before this feature existed simply has it blank. Drives the Human Deals Stage transition (`HD_OUTCOME_STAGE`: Won→`won`, Spam→`lost`, everything else→`new`/`lost`) and the Team page's Funnel Analytics "Handover Win Rate" stat (Spam excluded from that stat's denominator) — see "Human Deals page" below.) |
 | ClosedAt | Single line (ISO datetime — stamped once, client-side, by `reportLeadQualityChange()` in `dashboard.html` the first time a lead's Stage reaches a won or lost outcome. Powers the Team page's Revenue Forecast section — see "Revenue Forecast dashboard" below. Also read by the Review Request module (see below) as its "when did this actually finish" signal. Add this column before using either section; leads that closed before the column existed simply have it blank and both features fall back to `Date` for them.) |
 | CompanyDomain | Single line (set by `dashboard.html`'s `saveLead()` from a lead's Email domain, when the domain isn't a free personal-email provider — see "Data enrichment on capture" below. Never set by the engine, which has no Email input from WhatsApp.) |
 | CompanyName | Single line (a title-cased guess from `CompanyDomain`, set alongside it. Editable — a rep's own correction is never overwritten by re-saving the same email.) |
@@ -1131,7 +1131,11 @@ with search and a "+ Add Customer" action (`POST /erpnext/customers`, `handleErp
 — creates the Customer directly in ERPNext, unlike `erpnextResolveCustomer`'s silent
 search-or-create) and a "🧾 New Invoice" action per row that opens the Document modal pre-filled
 with that customer. Both routes 400 with a clear message if the account hasn't connected ERPNext
-yet (⚙️ tab) — this tab is simply hidden behind that same gate, not its own separate setup step.
+yet (⚙️ tab) — this tab is simply hidden behind that same gate, not its own separate setup step. A
+third route, `POST /erpnext/customers/ensure` (`handleErpnextCustomerEnsure`), wraps
+`erpnextResolveCustomer` itself (search-or-create, safe to call repeatedly) — used by the Human
+Deals page's "✅ Won" button (see "Human Deals page" below) to land a won lead in this same
+Customers list without a document ever needing to exist.
 
 **Customer/item picking in the Document modal** — a "ERPNext Customer" dropdown
 (populated from the same `/erpnext/customers` list) lets a document be tied to a real ERPNext
@@ -3426,12 +3430,25 @@ table/Pipeline kanban — no dedicated view for "what's actually waiting on a hu
   value/win %, filterable by owner/sentiment) — `renderHumanDeals()`, `humanDealCard()`.
 - **Stats strip**: queue size, SLA breaches (`sla_minutes`), average wait, total `DealValue`
   waiting — `renderHdStats()`.
-- **"Mark Done" outcome flow** (`openHdRemoveModal()`/`removeHumanDeal()`) — tags the lead with
+- **Outcome flow** (`applyHumanDealOutcome()`, shared by every path below) — tags the lead with
   `HandoverOutcome` (see CLIENTS/LEADS field tables above) and clears `Handover`/`HandoverAt`/
   `SlaAlerted` so it drops out of the queue and stale SLA state doesn't linger. `HD_OUTCOME_STAGE`
   maps the outcome to a `Stage`: Won→`won` (reusing the same generic terminal value already
-  checked in a few places in this file, e.g. `renderHome`'s conversion counts), everything else→
-  `new`/`lost`.
+  checked in a few places in this file, e.g. `renderHome`'s conversion counts), Spam→`lost`,
+  everything else→`new`/`lost`.
+  - **✅ Won** (`markHumanDealWon()`) — one click, no modal. Also best-effort ensures this lead
+    exists as a real ERPNext Customer (`POST /erpnext/customers/ensure` →
+    `erpnextResolveCustomer`, search-or-create so repeat clicks or a later document sync never
+    duplicate it) if the client has ERPNext connected, so a won deal shows up in the Accounting
+    module's Customers tab immediately rather than only once/if a document happens to get synced.
+  - **🚫 Spam** (`markHumanDealSpam()`) — one click (behind a `confirm()`, since it's the one
+    action here that changes future bot behavior). Sets `OptOut='Yes'` — the exact same flag a
+    genuine customer-initiated WhatsApp "STOP" sets (`handleEngineWebhook` checks it before
+    generating any reply) — so the bot goes silent for this lead going forward, with no separate
+    "spam" concept anywhere on the engine side. Excluded from the Team page's Handover Win Rate
+    denominator (`renderTeamFunnelStats`) since it was never a real sales conversation.
+  - **✕ close icon** (top-right of the card, `openHdRemoveModal()`) — opens a small modal for the
+    remaining, less common outcomes: Release back to bot, Lost, No response.
 - Nav badge (`dnHdBadge`/`bnHdBadge`) lights up with the current SLA-breach count, computed on
   every Home render (`updateHdBadge()`), not just when the tab is open.
 

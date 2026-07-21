@@ -1385,7 +1385,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div class="page-pad">
         <div style="margin-bottom:18px">
           <div class="card-title" style="margin-bottom:2px">🤝 Human Deals</div>
-          <div style="font-size:13px;color:var(--muted)">Leads currently waiting on a human — triage by wait time, sentiment, or deal value, and mark one done when you're finished with it.</div>
+          <div style="font-size:13px;color:var(--muted)">Leads currently waiting on a human — triage by wait time, sentiment, or deal value. ✅ Won and 🚫 Spam are one click; ✕ closes a deal for any other reason (released back to the bot, lost, no response).</div>
         </div>
 
         <div id="hdStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px"></div>
@@ -1413,14 +1413,15 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
-    <!-- Outcome modal for removing a lead from Human Deals -->
+    <!-- Close modal for removing a lead from Human Deals — Won and Spam are now one-click buttons
+         directly on the card (see humanDealCard), so this only covers the remaining, less common
+         outcomes. Opened via the card's ✕ icon. -->
     <div class="modal" id="modalHdRemove" style="width:360px">
       <span class="modal-drag"></span>
-      <div class="modal-hd"><div class="modal-title">Mark this deal done</div><button class="icon-btn" onclick="closeModal('modalHdRemove')">✕</button></div>
+      <div class="modal-hd"><div class="modal-title">Close this deal</div><button class="icon-btn" onclick="closeModal('modalHdRemove')">✕</button></div>
       <div class="modal-body">
         <div style="font-size:12.5px;color:var(--muted);margin-bottom:14px">This clears it from the Human Deals queue. What happened?</div>
         <div style="display:flex;flex-direction:column;gap:8px">
-          <button class="btn btn-secondary" onclick="removeHumanDeal('Resolved-Won')">✅ Resolved — Won</button>
           <button class="btn btn-secondary" onclick="removeHumanDeal('Released')">🤖 Release back to bot</button>
           <button class="btn btn-secondary" onclick="removeHumanDeal('Lost')">❌ Lost</button>
           <button class="btn btn-secondary" onclick="removeHumanDeal('No-response')">🔕 No response</button>
@@ -4458,7 +4459,10 @@ function humanDealCard(l){
         <div style="font-weight:700;font-size:14px">${esc(l.Name||l.Phone||'Unknown')}</div>
         <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">${maskPhone(l.Phone)}</div>
       </div>
-      ${wait?`<span class="tag" style="background:${wait.overdue?'#FEE2E2':'#F1F5F9'};color:${wait.overdue?'#991B1B':'var(--muted)'};white-space:nowrap">⏱ ${wait.mins}m${wait.overdue?' ⚠️':''}</span>`:''}
+      <div style="display:flex;align-items:center;gap:4px" onclick="event.stopPropagation()">
+        ${wait?`<span class="tag" style="background:${wait.overdue?'#FEE2E2':'#F1F5F9'};color:${wait.overdue?'#991B1B':'var(--muted)'};white-space:nowrap">⏱ ${wait.mins}m${wait.overdue?' ⚠️':''}</span>`:''}
+        <button class="icon-btn" style="width:26px;height:26px;font-size:13px" title="Close this deal" onclick="openHdRemoveModal(${l.Id})">✕</button>
+      </div>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
       ${sentimentFlag?`<span class="tag" style="background:#FEE2E2;color:#991B1B">${sentimentFlag}</span>`:''}
@@ -4473,7 +4477,8 @@ function humanDealCard(l){
     <div style="display:flex;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">
       <button class="btn btn-secondary btn-sm" onclick="openQuoteFor(${l.Id},'quote')">📤 Quote</button>
       <button class="btn btn-secondary btn-sm" onclick="openQuoteFor(${l.Id},'invoice')">🧾 Invoice</button>
-      <button class="btn btn-secondary btn-sm" onclick="openHdRemoveModal(${l.Id})">✓ Mark Done</button>
+      <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markHumanDealWon(${l.Id})">✅ Won</button>
+      <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markHumanDealSpam(${l.Id})">🚫 Spam</button>
     </div>
   </div>`;
 }
@@ -4487,10 +4492,11 @@ function closeHdRemoveModal(){ _hdActiveLeadId=null; closeModal('modalHdRemove')
 // Team page's handover-conversion-rate stat needs). 'won'/'lost' reuse the same generic terminal
 // Stage values already checked elsewhere in this file (TERMINAL/'won' comparisons in renderHome
 // etc.) rather than inventing new ones flow_json wouldn't recognize. 'Released' (back to bot) is
-// resolved dynamically below to Stage 2, not looked up here — see removeHumanDeal.
-const HD_OUTCOME_STAGE={'Resolved-Won':'won','Released':'stage_2','Lost':'lost','No-response':'new'};
-async function removeHumanDeal(outcome){
-  const leadId=_hdActiveLeadId; if(!leadId) return;
+// resolved dynamically below to Stage 2, not looked up here — see applyHumanDealOutcome. 'Spam'
+// lands on the same terminal 'lost' stage as a real Lost outcome — the distinction that matters
+// (never replying again) comes from the OptOut flag set below, not a separate Stage value.
+const HD_OUTCOME_STAGE={'Resolved-Won':'won','Released':'stage_2','Lost':'lost','No-response':'new','Spam':'lost'};
+async function applyHumanDealOutcome(leadId, outcome){
   const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
   const prevStage=lead.Stage;
   let nextStage=HD_OUTCOME_STAGE[outcome]||'new';
@@ -4505,15 +4511,24 @@ async function removeHumanDeal(outcome){
     nextStage=stageIds[1]||stageIds[0]||'new';
   }
   const patch={Id:leadId, Stage:nextStage, Handover:'No', HandoverAt:'', SlaAlerted:'No', HandoverOutcome:outcome};
+  // Reuses the same WhatsApp opt-out flag a genuine customer-initiated STOP sets
+  // (handleEngineWebhook checks OptOut before generating any reply) — marking a lead Spam means
+  // the bot goes silent for them going forward exactly the same way a real opt-out does, with no
+  // separate "spam" concept needed anywhere on the engine side.
+  if(outcome==='Spam') patch.OptOut='Yes';
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
+  Object.assign(lead, patch);
+  reportLeadQualityChange(leadId, {Stage:prevStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:nextStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency});
+}
+async function removeHumanDeal(outcome){
+  const leadId=_hdActiveLeadId; if(!leadId) return;
   // Buttons disabled + wrapped in try/catch so a failed save shows an error and re-enables the
   // buttons instead of leaving the modal stuck open with no feedback (previously an unhandled
   // rejection here just left the "Mark this deal done" modal hanging with no explanation).
   const buttons=document.querySelectorAll('#modalHdRemove .modal-body button');
   buttons.forEach(b=>b.disabled=true);
   try{
-    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
-    Object.assign(lead, patch);
-    reportLeadQualityChange(leadId, {Stage:prevStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:nextStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency});
+    await applyHumanDealOutcome(leadId, outcome);
     closeHdRemoveModal();
     renderHumanDeals();
   }catch(e){
@@ -4521,6 +4536,31 @@ async function removeHumanDeal(outcome){
   }finally{
     buttons.forEach(b=>b.disabled=false);
   }
+}
+
+// One-click "Won" straight from the card — same outcome-application as the modal above, plus a
+// best-effort push into the Accounting module's ERPNext Customers list (search-or-create, so
+// re-clicking or a later document sync for the same lead never creates a duplicate) so a won deal
+// shows up there right away instead of only once/if a document happens to be synced later.
+async function markHumanDealWon(leadId){
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  try{
+    await applyHumanDealOutcome(leadId, 'Resolved-Won');
+    renderHumanDeals();
+  }catch(e){ showToast('Failed to save: '+e.message,'err'); return; }
+  if(clientRecord.erpnext_base_url && clientRecord.erpnext_api_key && clientRecord.erpnext_api_secret){
+    fetch(`${CONFIG.WORKER_BASE}/erpnext/customers/ensure`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:lead.Name, phone:lead.Phone, email:lead.Email})}).catch(()=>{});
+  }
+}
+
+// One-click "Spam" — see applyHumanDealOutcome's OptOut note above for what this actually does
+// (the bot stops replying to this lead entirely, same as a real customer-initiated opt-out).
+async function markHumanDealSpam(leadId){
+  if(!confirm('Mark as spam? The bot will stop replying to this lead going forward (same as an opt-out).')) return;
+  try{
+    await applyHumanDealOutcome(leadId, 'Spam');
+    renderHumanDeals();
+  }catch(e){ showToast('Failed to save: '+e.message,'err'); }
 }
 
 function renderHumanDeals(){
@@ -8954,10 +8994,11 @@ function renderTeamFunnelAnalytics(){
     ? objCats.map((c,i)=>`<div class="bar-row"><div style="min-width:90px;font-size:11px;text-transform:capitalize">${esc(c)}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(objCounts[i]/maxObj*100)}%"></div></div><div class="bar-val">${objCounts[i]}</div></div>`).join('')
     : '<div style="color:var(--muted);font-size:12px">No open objections right now.</div>';
 
-  // Handover conversion — needs HandoverOutcome (set by Human Deals' "Mark this deal done" flow);
-  // leads handed over before that existed just won't have one, so this is scoped to what's
-  // actually been tagged, not a lifetime total.
-  const resolved=allLeads.filter(l=>l.HandoverOutcome);
+  // Handover conversion — needs HandoverOutcome (set by Human Deals' Won/Spam/✕ actions); leads
+  // handed over before that existed just won't have one, so this is scoped to what's actually been
+  // tagged, not a lifetime total. Spam is excluded from the denominator entirely — it was never a
+  // real sales conversation, so counting it against the win rate would understate it.
+  const resolved=allLeads.filter(l=>l.HandoverOutcome && l.HandoverOutcome!=='Spam');
   const won=resolved.filter(l=>l.HandoverOutcome==='Resolved-Won').length;
   const convRate=resolved.length?Math.round(won/resolved.length*100):null;
   const queueNow=allLeads.filter(l=>l.Stage==='human_handover').length;
