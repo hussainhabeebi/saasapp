@@ -1174,6 +1174,33 @@ Tax % field is gone from the Document modal, and `erpnextPushSalesDoc` no longer
 (`buildDocumentPdf` only prints the Tax row when `tax_pct > 0`) and still has its stored
 `tax_amount`/`total` untouched — this only changes what new documents can do going forward.
 
+**"📮 Publish" — submitting the synced document in ERPNext** (`migrations/0006_accounting_erpnext_submit.sql`
+— `accounting_documents.erpnext_submitted_at`). "🔄 Sync to ERPNext" only ever creates the document
+over there as a Draft (Frappe `docstatus 0`) — it doesn't post to the ledger until it's Submitted
+(`docstatus 1`), which is a separate, explicit action in ERPNext itself. A "📮 Publish" button
+appears once a document is synced and not yet submitted (`POST /accounting/documents/submit-erpnext`,
+`handleAccountingDocumentSubmitErpnext`) — fetches the full current document from ERPNext, then
+calls Frappe's whitelisted `frappe.client.submit` method with it (rather than trying to PATCH
+`docstatus` directly on the resource endpoint, which isn't reliably supported across Frappe
+versions). One-way: a submitted Frappe document generally can't go back to Draft without a Cancel
+first, which this integration doesn't do, so the button asks for confirmation. The ERPNext badge
+distinguishes the three states: "Not synced" → "✓ Synced (draft)" → "✓ Published". Not
+live-verified against a real Frappe Cloud site in this session, same honest caveat as the rest of
+this ERPNext integration.
+
+**Richer PDF — logo, accent color, Terms, Payment Method, footer address, and the real ERPNext
+invoice number** (`buildDocumentPdf`) — this PDF was previously plain (itemized table only, no
+branding). It now draws the same logo/accent-color/header-title/footer-address/payment-method/
+terms fields the Quotation feature already has (`quote_logo_url`, `quote_accent_color`,
+`quote_header_title`, `quote_footer_address`, `quote_payment_methods`, `quote_terms`/
+`invoice_terms` — all CLIENTS columns, unchanged), read straight off the same `clientRecord` this
+page already loads. Deliberately **not** a second copy of those settings — there is exactly one
+place to edit logo/terms/etc. (a lead's Quote/Invoice page under Human Deals), and every PDF this
+module generates, plus the Quotation feature's own, picks up the same values; the Document modal
+says so directly. The document number printed is `erpnext_doc_name` once the document has been
+synced (e.g. `SINV-2026-00001`, the real ERPNext-issued number) — falling back to this document's
+own local `#<id>` before that, since there's nothing else to show yet.
+
 **Send Invoice by Email** — a "📧" action per document row builds the same PDF the download button
 does (`buildDocumentPdf`, refactored so both share one jsPDF build), then posts it as a base64
 Resend attachment (`POST /accounting/documents/send-email`,

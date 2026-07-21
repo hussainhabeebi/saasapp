@@ -216,6 +216,7 @@ tbody tr:hover{background:var(--bg)}
       <label class="s-lbl">Notes</label>
       <textarea class="s-input" id="docNotes" rows="2" style="resize:vertical"></textarea>
     </div>
+    <div class="s-hint" style="margin-top:10px">Logo, Terms &amp; Conditions, Payment Method, Footer Address and Accent Color on the generated PDF are shared with the Quotation feature — edit them from a lead's <b>Quote</b>/<b>Invoice</b> page (Human Deals) and every document here picks them up too.</div>
     <div class="modal-actions">
       <button class="save-btn sec" onclick="closeDocumentModal()">Cancel</button>
       <button class="save-btn" onclick="saveDocument()">Save</button>
@@ -287,6 +288,29 @@ let allErpDebtorsAccounts = [];
 let erpCustomersLoadError = '';
 function erpAvailable(){ return !!(clientRecord?.erpnext_base_url&&clientRecord?.erpnext_api_key&&clientRecord?.erpnext_api_secret); }
 
+// Branding for the generated PDF (buildDocumentPdf) is shared with dashboard.html's Quotation
+// feature — quote_logo_url/quote_accent_color/quote_footer_address/quote_header_title/
+// quote_payment_methods/quote_terms/invoice_terms all live on the same CLIENTS record and are
+// edited from there (Human Deals → Quote/Invoice), not duplicated into a second settings screen
+// here. Logo dimensions need measuring once (image onload) before jsPDF can draw it without
+// distortion — same approach as dashboard.html's quoteLoadLogoDims.
+let _acctLogoDims=null;
+function loadAcctLogoDims(url){
+  return new Promise(resolve=>{
+    if(!url){ _acctLogoDims=null; resolve(); return; }
+    const img=new Image();
+    img.onload=()=>{ _acctLogoDims={w:img.naturalWidth,h:img.naturalHeight}; resolve(); };
+    img.onerror=()=>{ _acctLogoDims=null; resolve(); };
+    img.src=url;
+  });
+}
+function hexToRgb(hex){
+  const m=/^#?([0-9a-f]{6})$/i.exec((hex||'').trim());
+  if(!m) return null;
+  const n=parseInt(m[1],16);
+  return [(n>>16)&255,(n>>8)&255,n&255];
+}
+
 function esc(str){ return String(str==null?'':str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function escAttr(str){ return esc(str).replace(/"/g,'&quot;'); }
 function fmtMoney(n,cur){ return `${cur||''} ${Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2})}`.trim(); }
@@ -325,6 +349,7 @@ async function init(){
     document.getElementById('erpBaseUrl').value=clientRecord.erpnext_base_url||'';
     document.getElementById('erpApiKey').value=clientRecord.erpnext_api_key||'';
     document.getElementById('erpApiSecret').value=clientRecord.erpnext_api_secret||'';
+    await loadAcctLogoDims(clientRecord.quote_logo_url||'');
     await loadLeads();
     // Documents live in Cloudflare D1 (see migrations/0002_accounting_b2b_documents.sql), not a
     // NocoDB table — so this can only fail if the D1 migration hasn't been applied yet or the
@@ -578,7 +603,10 @@ async function saveDocument(){
 
 function erpBadge(doc){
   if(!doc.erpnext_sync_status) return '<span class="badge notsynced">Not synced</span>';
-  if(doc.erpnext_sync_status==='synced') return `<span class="badge synced" title="${escAttr(doc.erpnext_doc_name||'')}">✓ Synced</span>`;
+  if(doc.erpnext_sync_status==='synced'){
+    if(doc.erpnext_submitted_at) return `<span class="badge paid" title="${escAttr(doc.erpnext_doc_name||'')}">✓ Published</span>`;
+    return `<span class="badge synced" title="${escAttr(doc.erpnext_doc_name||'')} — still a Draft in ERPNext until Published">✓ Synced (draft)</span>`;
+  }
   if(doc.erpnext_sync_status==='failed') return `<span class="badge failed" title="${escAttr(doc.erpnext_sync_error||'Sync failed')}">⚠ Failed</span>`;
   return '<span class="badge pending">Pending</span>';
 }
@@ -610,6 +638,7 @@ function renderDocumentsTable(){
         <button class="icon-btn" title="Send by email" onclick="openEmailModal(${d.Id})">📧</button>
         ${nextType?`<button class="icon-btn" title="Convert to ${nextType}" onclick="convertDocument(${d.Id},'${nextType}')">→ ${DOC_TYPE_LABEL[nextType]}</button>`:''}
         <button class="icon-btn" title="${erpReady?'Sync to ERPNext':'Connect ERPNext first (⚙️ tab)'}" ${erpReady?'':'disabled'} onclick="syncDocumentToErpnext(${d.Id})">🔄 ERPNext</button>
+        ${d.erpnext_sync_status==='synced'&&!d.erpnext_submitted_at?`<button class="icon-btn" title="Publish — submits it in ERPNext so it posts to the ledger" onclick="submitDocumentToErpnext(${d.Id})">📮 Publish</button>`:''}
         <button class="icon-btn danger" onclick="deleteDocument(${d.Id})">🗑</button>
       </td>
     </tr>`;
@@ -641,15 +670,53 @@ async function syncDocumentToErpnext(id){
   }
 }
 
+// Publish — submits the synced ERPNext document (docstatus 0→1), the step that actually posts it
+// to the ledger; a merely-synced document is still an editable Draft in ERPNext. One-way, so a
+// confirm() here — same reasoning as the Spam confirm() on the Human Deals page, an action whose
+// consequence extends past this app.
+async function submitDocumentToErpnext(id){
+  if(!confirm('Publish this document in ERPNext? Once submitted it posts to the ledger and generally can\'t be edited or un-submitted from here.')) return;
+  const doc=allDocuments.find(d=>d.Id===id);
+  try{
+    const result=await acctFetch('/accounting/documents/submit-erpnext',{method:'POST',body:JSON.stringify({id})});
+    if(doc) doc.erpnext_submitted_at=result.erpnext_submitted_at||new Date().toISOString();
+    renderDocumentsTable();
+  }catch(e){ alert('Publish failed: '+e.message); }
+}
+
 async function deleteDocument(id){
   if(!confirm('Delete this document?')) return;
   try{ await acctFetch('/accounting/documents',{method:'DELETE',body:JSON.stringify({id})}); allDocuments=allDocuments.filter(d=>d.Id!==id); renderDocumentsTable(); }
   catch(e){ alert('Failed: '+e.message); }
 }
 
-/* ── PDF EXPORT — simple itemized table, no logo/branding complexity (that lives in the
-   Agency Quotation feature in dashboard.html; this is deliberately plainer since it spans every
-   industry, not just travel). Shared by the download button and the send-by-email flow below. ── */
+// Stamps a footer (rule + optional business address + "Page X of N") on every page — called last,
+// after all content/pagination has happened, since the final page count isn't known until then.
+// Same shape as dashboard.html's stampQuoteFooter, reading the same shared clientRecord field.
+function stampAcctFooter(doc,marginX){
+  const address=(clientRecord?.quote_footer_address||'').trim();
+  const pageW=doc.internal.pageSize.getWidth();
+  const pageH=doc.internal.pageSize.getHeight();
+  const totalPages=doc.internal.getNumberOfPages();
+  for(let p=1;p<=totalPages;p++){
+    doc.setPage(p);
+    const fy=pageH-38;
+    doc.setDrawColor(220);doc.setLineWidth(0.6);
+    doc.line(marginX,fy,pageW-marginX,fy);
+    doc.setFont('helvetica','normal');doc.setFontSize(8);doc.setTextColor(120);
+    if(address){
+      const lines=doc.splitTextToSize(address,pageW-marginX*2-90);
+      doc.text(lines,marginX,fy+13);
+    }
+    doc.text(`Page ${p} of ${totalPages}`,pageW-marginX,fy+13,{align:'right'});
+    doc.setTextColor(0);
+  }
+}
+
+/* ── PDF EXPORT — itemized table plus the same branding fields as the Quotation feature (logo,
+   accent color, header title, terms, payment method, footer address — all read straight off
+   clientRecord, edited from there, not duplicated here). Shared by the download button and the
+   send-by-email flow below. ── */
 function buildDocumentPdf(id){
   const d=allDocuments.find(x=>x.Id===id);
   if(!d) return null;
@@ -659,15 +726,39 @@ function buildDocumentPdf(id){
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
   const marginX=40;
+  const pageH=doc.internal.pageSize.getHeight();
   let y=50;
   const typeLabel={quotation:'Quotation', invoice:'Invoice', receipt:'Receipt'}[d.type]||'Document';
+  const accentRgb=hexToRgb(clientRecord?.quote_accent_color)||[194,65,12];
+  const softRgb=[255,247,237];
 
+  let headerX=marginX;
+  if(clientRecord?.quote_logo_url){
+    try{
+      const mime=/data:image\/(png|jpe?g|webp)/.exec(clientRecord.quote_logo_url);
+      const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
+      // Fit within a 90x45 box without distorting the aspect ratio.
+      const maxW=90,maxH=45;
+      let w=maxW,h=maxH;
+      if(_acctLogoDims?.w&&_acctLogoDims?.h){
+        const ratio=Math.min(maxW/_acctLogoDims.w,maxH/_acctLogoDims.h);
+        w=_acctLogoDims.w*ratio; h=_acctLogoDims.h*ratio;
+      }
+      doc.addImage(clientRecord.quote_logo_url,fmt,marginX,y,w,h,undefined,'FAST');
+      headerX=marginX+110;
+    }catch(e){}
+  }
+
+  // Invoice number: the real ERPNext-issued number (e.g. "SINV-2026-00001") once synced, since
+  // that's the number that actually means something in the client's books — falls back to this
+  // document's own local id for one that hasn't been synced yet.
+  const docNumber=d.erpnext_doc_name||`#${d.Id}`;
   doc.setFont('helvetica','bold');doc.setFontSize(18);
-  doc.text(clientRecord?.client_name||typeLabel,marginX,y);
+  doc.text(clientRecord?.quote_header_title||clientRecord?.client_name||typeLabel,headerX,y+14);
   doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(100);
-  doc.text(`${typeLabel} #${d.Id}`,marginX,y+18);
+  doc.text(`${typeLabel} ${docNumber}`,headerX,y+32);
   doc.setTextColor(0);
-  y+=50;
+  y+=64;
 
   const customerLabel=lead?(lead.Name||lead.Phone):(erpCustomer?(erpCustomer.customer_name||erpCustomer.name):'Customer');
   doc.setFontSize(11);
@@ -691,19 +782,48 @@ function buildDocumentPdf(id){
       ['','','Total',fmtMoney(d.total,d.currency)],
     ]),
     theme:'grid',
-    headStyles:{fillColor:[194,65,12]},
-    footStyles:{fillColor:[255,247,237],textColor:0,fontStyle:'bold'},
+    headStyles:{fillColor:accentRgb},
+    footStyles:{fillColor:softRgb,textColor:0,fontStyle:'bold'},
     styles:{fontSize:10},
   });
 
   y=((doc.lastAutoTable&&doc.lastAutoTable.finalY)||y+40)+26;
   if(d.notes){
+    if(y>pageH-100){doc.addPage();y=50;}
     doc.setFont('helvetica','bold');doc.setFontSize(11);
     doc.text('Notes',marginX,y);
     y+=16;
     doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
-    doc.splitTextToSize(d.notes,515).forEach(line=>{ doc.text(line,marginX,y); y+=12; });
+    doc.splitTextToSize(d.notes,515).forEach(line=>{ if(y>pageH-40){doc.addPage();y=50;} doc.text(line,marginX,y); y+=12; });
+    doc.setTextColor(0);
   }
+
+  // Terms & Conditions — shared with the Quotation feature (invoice_terms falls back to
+  // quote_terms, same convention as quoteBuildPdfDoc/quoteApplyModeUi in dashboard.html).
+  const terms=(d.type==='invoice'?(clientRecord?.invoice_terms||clientRecord?.quote_terms||''):(clientRecord?.quote_terms||'')).trim();
+  if(terms){
+    if(y>pageH-100){doc.addPage();y=50;}
+    doc.setFont('helvetica','bold');doc.setFontSize(11);
+    doc.text(d.type==='invoice'?'Terms':'Terms & Conditions',marginX,y);
+    y+=16;
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
+    doc.splitTextToSize(terms,515).forEach(line=>{ if(y>pageH-40){doc.addPage();y=50;} doc.text(line,marginX,y); y+=12; });
+    doc.setTextColor(0);
+    y+=6;
+  }
+
+  const paymentMethods=(clientRecord?.quote_payment_methods||'').trim();
+  if(paymentMethods){
+    if(y>pageH-100){doc.addPage();y=50;}
+    doc.setFont('helvetica','bold');doc.setFontSize(11);
+    doc.text('Payment Method',marginX,y);
+    y+=16;
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
+    doc.splitTextToSize(paymentMethods,515).forEach(line=>{ if(y>pageH-40){doc.addPage();y=50;} doc.text(line,marginX,y); y+=12; });
+    doc.setTextColor(0);
+  }
+
+  stampAcctFooter(doc,marginX);
 
   const filename=`${typeLabel}-${customerLabel.replace(/[^a-z0-9]+/gi,'-')}.pdf`;
   return {doc, d, typeLabel, filename, customerLabel, erpCustomer};
