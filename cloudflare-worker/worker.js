@@ -6703,6 +6703,43 @@ async function handleAccountingDocumentSyncErpnext(request, env){
   }
 }
 
+// "Publish" — submits the already-synced ERPNext document (Frappe's docstatus 0→1), the action
+// that actually posts it to the ledger; a merely-synced document just sits as an editable Draft in
+// ERPNext and doesn't count anywhere yet. A separate, explicit step from Sync since submitting is
+// effectively one-way (a submitted Frappe document can't go back to Draft without a Cancel first,
+// which this integration doesn't do). Uses the documented `frappe.client.submit` whitelisted
+// method (needs the full current doc, not just its name) rather than trying to PATCH docstatus
+// directly on the resource endpoint, which isn't reliably supported across Frappe versions — not
+// live-verified against a real Frappe Cloud site in this session, same honest caveat as the rest
+// of this ERPNext integration.
+async function handleAccountingDocumentSubmitErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const doc=await findAccountingDocument(env, body.id);
+  if(!doc || String(doc.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(!doc.erpnext_doc_name || !doc.erpnext_doctype) return json({error:'Sync this document to ERPNext first.'}, 400);
+  if(doc.erpnext_submitted_at) return json({ok:true, already:true});
+  try{
+    const getR=await erpnextFetch(c, `/api/resource/${encodeURIComponent(doc.erpnext_doctype)}/${encodeURIComponent(doc.erpnext_doc_name)}`);
+    const getData=await getR.json().catch(()=>({}));
+    if(!getR.ok) throw new Error(erpnextErrorMessage(getData, getR.status));
+    const submitR=await erpnextFetch(c, '/api/method/frappe.client.submit', {method:'POST', body:JSON.stringify({doc:JSON.stringify(getData.data)})});
+    const submitData=await submitR.json().catch(()=>({}));
+    if(!submitR.ok) throw new Error(erpnextErrorMessage(submitData, submitR.status));
+    const submittedAt=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_documents SET erpnext_submitted_at=? WHERE id=?`).bind(submittedAt, doc.id).run();
+    return json({ok:true, erpnext_submitted_at:submittedAt});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await reportOpsError(env, 'handleAccountingDocumentSubmitErpnext — ERPNext submit failed', e, {clientId:payload.cid, docId:doc.id, type:doc.type});
+    return json({error:'ERPNext submit failed: '+msg}, 502);
+  }
+}
+
 // ── ERPNext Customers / Items — live lookups for the accounting.html Customers tab and the
 // Document modal's customer/item pickers. Always fetched live, no local cache/mirror table — same
 // "no persisted local mapping" choice as erpnextResolveCustomer/erpnextResolveItem above, just
@@ -6976,6 +7013,7 @@ export default {
       else if(url.pathname==='/accounting/documents' && request.method==='DELETE'){ res=await handleAccountingDocumentDelete(request, env); }
       else if(url.pathname==='/accounting/documents/convert' && request.method==='POST'){ res=await handleAccountingDocumentConvert(request, env); }
       else if(url.pathname==='/accounting/documents/sync-erpnext' && request.method==='POST'){ res=await handleAccountingDocumentSyncErpnext(request, env); }
+      else if(url.pathname==='/accounting/documents/submit-erpnext' && request.method==='POST'){ res=await handleAccountingDocumentSubmitErpnext(request, env); }
       else if(url.pathname==='/accounting/documents/send-email' && request.method==='POST'){ res=await handleAccountingDocumentSendEmail(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }
