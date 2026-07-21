@@ -2495,7 +2495,6 @@ const TODAY = new Date().toISOString().slice(0,10);
               <div id="billingCurrencyToggle" style="display:flex;gap:6px"></div>
             </div>
             <div class="s-note">One-time purchases — not auto-renewing, so buying these never requires re-authorizing a recurring mandate.</div>
-            <div class="s-note">WhatsApp credits balance: <strong id="billingWaCredits">0</strong> · Voice add-on: <strong id="billingVoiceStatus">Not active</strong></div>
             <div id="billingAddonList" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px"></div>
             <span class="save-msg" id="billingAddonMsg"></span>
           </div>
@@ -2506,6 +2505,7 @@ const TODAY = new Date().toISOString().slice(0,10);
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">📊 Usage This Month</div>
             <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px">
+              <div class="stat"><div class="stat-lbl">WhatsApp Credits</div><div class="stat-val" id="billingWaCredits">0</div></div>
               <div class="stat"><div class="stat-lbl">Messages Sent</div><div class="stat-val" id="billingUsageMessages">0</div></div>
               <div class="stat"><div class="stat-lbl">Leads Captured</div><div class="stat-val" id="billingUsageLeads">0</div></div>
               <div class="stat"><div class="stat-lbl">Conversion Rate</div><div class="stat-val" id="billingUsageConv">0%</div></div>
@@ -6988,7 +6988,6 @@ function renderBillingPage(){
     loadBillingPlans();
   }
   $id('billingWaCredits').textContent=clientRecord.wa_credits_balance||0;
-  $id('billingVoiceStatus').textContent=clientRecord.voice_addon_active==='Yes'?'Active':'Not active';
 
   const usage=computeBillingUsage();
   $id('billingUsageMessages').textContent=usage.messages;
@@ -7014,8 +7013,13 @@ async function billingInit(){
     if(billingResult==='success' && sessionId){
       try{
         const r=await fetch(`${CONFIG.WORKER_BASE}/billing/confirm-session?session_id=${encodeURIComponent(sessionId)}`,{headers:ncAuthHeaders()});
-        if(!r.ok){ const d=await r.json().catch(()=>({})); throw new Error(d.error||'HTTP '+r.status); }
-        banner.innerHTML='<div class="s-note" style="color:var(--accent-ink)">✅ Subscription confirmed.</div>';
+        const d=await r.json().catch(()=>({}));
+        if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+        // mode tells us which kind of purchase this was — an add-on (one-time, e.g. WA credits)
+        // never had a subscription to confirm, so it shouldn't say "Subscription confirmed."
+        banner.innerHTML=d.mode==='payment'
+          ? '<div class="s-note" style="color:var(--accent-ink)">✅ Add-on purchased — your balance below is up to date.</div>'
+          : '<div class="s-note" style="color:var(--accent-ink)">✅ Subscription confirmed.</div>';
       }catch(e){
         banner.innerHTML=`<div class="s-note">Payment received, but confirming with Stripe failed (${esc(e.message)}) — try "Sync Subscription Now" below.</div>`;
       }
