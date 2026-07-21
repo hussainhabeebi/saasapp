@@ -105,6 +105,7 @@ tbody tr:hover{background:var(--bg)}
 
   <div id="tabs">
     <button class="tab active" data-tab="documents" onclick="showTab('documents')">🧾 Documents</button>
+    <button class="tab" data-tab="customers" onclick="showTab('customers')">👤 Customers</button>
     <button class="tab" data-tab="erpnext" onclick="showTab('erpnext')">⚙️ ERPNext</button>
   </div>
 
@@ -131,6 +132,27 @@ tbody tr:hover{background:var(--bg)}
           <table>
             <thead><tr><th>Title</th><th>Type</th><th>Lead</th><th>Total</th><th>Status</th><th>ERPNext</th><th>Actions</th></tr></thead>
             <tbody id="documentsTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- CUSTOMERS — live list from this account's own ERPNext (Frappe Cloud) site. No local
+         mirror table: same "fetch live, no persisted mapping" choice as the rest of this module's
+         ERPNext integration. -->
+    <div id="tabCustomers" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">ERPNext Customers</div>
+          <div class="card-actions">
+            <input class="search-input" id="custSearch" type="text" placeholder="🔍 Search…" oninput="renderCustomersTable()">
+            <button class="save-btn" onclick="openCustomerModal()">+ Add Customer</button>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Actions</th></tr></thead>
+            <tbody id="customersTbody"><tr class="loading-row"><td colspan="4"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -166,14 +188,20 @@ tbody tr:hover{background:var(--bg)}
     <input type="hidden" id="docType" value="quotation">
     <div class="modal-grid">
       <div><label class="s-lbl">Title</label><input class="s-input" id="docTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
-      <div><label class="s-lbl">Lead / Customer</label>
+      <div><label class="s-lbl">Lead (CRM, optional)</label>
         <input class="s-input" id="docLeadSearch" placeholder="🔍 Search leads…" oninput="renderLeadPicker()">
         <select class="s-input" id="docLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+      </div>
+      <div><label class="s-lbl">ERPNext Customer</label>
+        <select class="s-input" id="docErpCustomer"><option value="">— None —</option></select>
+        <div class="s-hint" id="docErpCustomerHint" style="margin-top:4px"></div>
       </div>
       <div><label class="s-lbl">Currency</label><input class="s-input" id="docCurrency" placeholder="e.g. AED" value="AED"></div>
       <div><label class="s-lbl">Tax %</label><input class="s-input" id="docTaxPct" type="number" value="0"></div>
     </div>
     <label class="s-lbl">Line Items</label>
+    <div class="s-hint" style="margin-bottom:6px">Type a product/description — matching an existing ERPNext item name lets "Sync to ERPNext" reuse that exact item; otherwise a new one is created automatically on sync.</div>
+    <datalist id="erpItemsDatalist"></datalist>
     <div id="docLineItems"></div>
     <button class="save-btn sec" type="button" onclick="addLineItemRow()" style="margin-top:6px">+ Add Line Item</button>
     <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docTotalPreview">Total: —</div>
@@ -185,6 +213,40 @@ tbody tr:hover{background:var(--bg)}
       <button class="save-btn sec" onclick="closeDocumentModal()">Cancel</button>
       <button class="save-btn" onclick="saveDocument()">Save</button>
     </div>
+  </div>
+</div>
+
+<!-- ── ADD CUSTOMER MODAL (creates a real ERPNext Customer) ── -->
+<div class="modal-overlay" id="customerModal">
+  <div class="modal-card" style="max-width:440px">
+    <div class="modal-title">Add Customer</div>
+    <div class="modal-grid" style="grid-template-columns:1fr">
+      <div><label class="s-lbl">Name</label><input class="s-input" id="custName" placeholder="e.g. Acme Corp"></div>
+      <div><label class="s-lbl">Email</label><input class="s-input" id="custEmail" type="email" placeholder="billing@acme.com"></div>
+      <div><label class="s-lbl">Phone</label><input class="s-input" id="custPhone" placeholder="+971 50 123 4567"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeCustomerModal()">Cancel</button>
+      <button class="save-btn" onclick="saveCustomer()">Create</button>
+    </div>
+    <div class="save-msg" id="custSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ── SEND EMAIL MODAL ── -->
+<div class="modal-overlay" id="emailModal">
+  <div class="modal-card" style="max-width:440px">
+    <div class="modal-title">Send by Email</div>
+    <input type="hidden" id="emailDocId">
+    <div class="modal-grid" style="grid-template-columns:1fr">
+      <div><label class="s-lbl">To</label><input class="s-input" id="emailTo" type="email" placeholder="customer@example.com"></div>
+      <div><label class="s-lbl">Subject</label><input class="s-input" id="emailSubject"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeEmailModal()">Cancel</button>
+      <button class="save-btn" onclick="confirmSendDocumentEmail()">Send</button>
+    </div>
+    <div class="save-msg" id="emailSaveMsg" style="margin-top:8px"></div>
   </div>
 </div>
 
@@ -210,6 +272,10 @@ let clientRecord = null;
 let allLeads = [];
 let allDocuments = [];
 let documentsLoadError = '';
+let allErpCustomers = [];
+let allErpItems = [];
+let erpCustomersLoadError = '';
+function erpAvailable(){ return !!(clientRecord?.erpnext_base_url&&clientRecord?.erpnext_api_key&&clientRecord?.erpnext_api_secret); }
 
 function esc(str){ return String(str==null?'':str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function escAttr(str){ return esc(str).replace(/"/g,'&quot;'); }
@@ -256,6 +322,14 @@ async function init(){
     // settings tab above.
     try{ await loadDocuments(); }catch(e){ documentsLoadError=e.message; allDocuments=[]; }
     renderDocumentsTable();
+    // ERPNext customers/items are only reachable once the client has saved a connection — best
+    // effort, and skipped entirely rather than surfacing an error if they haven't gotten there yet.
+    if(erpAvailable()){
+      try{ await loadErpCustomers(); }catch(e){ erpCustomersLoadError=e.message; allErpCustomers=[]; }
+      try{ await loadErpItems(); }catch(e){ allErpItems=[]; }
+    }
+    renderCustomersTable();
+    populateItemsDatalist();
   }catch(e){
     document.getElementById('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
   }
@@ -267,6 +341,24 @@ async function loadLeads(){
 async function loadDocuments(){
   const data=await acctFetch('/accounting/documents',{method:'GET'});
   allDocuments=data.list||[];
+}
+async function loadErpCustomers(){
+  const data=await acctFetch('/erpnext/customers',{method:'GET'});
+  allErpCustomers=data.list||[];
+}
+async function loadErpItems(){
+  const data=await acctFetch('/erpnext/items',{method:'GET'});
+  allErpItems=data.list||[];
+}
+function populateItemsDatalist(){
+  const dl=document.getElementById('erpItemsDatalist');
+  dl.innerHTML=allErpItems.map(it=>`<option value="${escAttr(it.item_name||it.name)}">`).join('');
+}
+function populateErpCustomerSelect(selected){
+  const sel=document.getElementById('docErpCustomer');
+  sel.innerHTML='<option value="">— None —</option>'+allErpCustomers.map(c=>`<option value="${escAttr(c.name)}">${esc(c.customer_name||c.name)}</option>`).join('');
+  sel.value=selected||'';
+  document.getElementById('docErpCustomerHint').textContent=erpAvailable()?'':'Connect ERPNext (⚙️ tab) to pick a customer here.';
 }
 
 function showTab(name){
@@ -291,6 +383,60 @@ async function saveErpnextSettings(){
   setTimeout(()=>msg.textContent='',3000);
 }
 
+/* ── CUSTOMERS (live ERPNext Customer list) ── */
+function renderCustomersTable(){
+  const tbody=document.getElementById('customersTbody');
+  if(!erpAvailable()){
+    tbody.innerHTML='<tr><td colspan="4" class="empty-state"><div class="empty-icon">⚙️</div>Connect ERPNext (⚙️ tab) to see and manage customers here.</td></tr>';
+    return;
+  }
+  if(erpCustomersLoadError){
+    tbody.innerHTML=`<tr><td colspan="4" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load customers (${esc(erpCustomersLoadError)}).</td></tr>`;
+    return;
+  }
+  const q=(document.getElementById('custSearch').value||'').toLowerCase();
+  const rows=allErpCustomers.filter(c=>!q||(c.customer_name||'').toLowerCase().includes(q)||(c.email_id||'').toLowerCase().includes(q));
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="4" class="empty-state">No customers yet — add one, or it\'ll appear here once you sync a document to ERPNext.</td></tr>'; return; }
+  tbody.innerHTML=rows.map(c=>{
+    const idx=allErpCustomers.indexOf(c);
+    return `<tr>
+    <td>${esc(c.customer_name||c.name)}</td>
+    <td>${esc(c.email_id||'—')}</td>
+    <td>${esc(c.mobile_no||'—')}</td>
+    <td class="row-actions"><button class="save-btn sec" onclick="newInvoiceForCustomer(${idx})">🧾 New Invoice</button></td>
+  </tr>`;
+  }).join('');
+}
+function newInvoiceForCustomer(idx){
+  const c=allErpCustomers[idx];
+  if(!c) return;
+  openDocumentModal('invoice',{title:(c.customer_name||c.name)+' — Invoice', erpnext_customer:c.name});
+}
+function openCustomerModal(){
+  document.getElementById('custName').value='';
+  document.getElementById('custEmail').value='';
+  document.getElementById('custPhone').value='';
+  document.getElementById('custSaveMsg').textContent='';
+  document.getElementById('customerModal').classList.add('active');
+}
+function closeCustomerModal(){ document.getElementById('customerModal').classList.remove('active'); }
+async function saveCustomer(){
+  const name=document.getElementById('custName').value.trim();
+  const msg=document.getElementById('custSaveMsg');
+  if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
+  msg.textContent='Creating…'; msg.className='save-msg';
+  try{
+    await acctFetch('/erpnext/customers',{method:'POST',body:JSON.stringify({
+      customer_name:name,
+      email_id:document.getElementById('custEmail').value.trim(),
+      mobile_no:document.getElementById('custPhone').value.trim(),
+    })});
+    await loadErpCustomers();
+    closeCustomerModal();
+    renderCustomersTable();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
 /* ── DOCUMENTS (Quotation / Invoice / Receipt) ── */
 const DOC_TYPE_LABEL={quotation:'🧾 Quotation', invoice:'📄 Invoice', receipt:'🧾 Receipt'};
 const DOC_TYPE_TITLE={quotation:'New Quotation', invoice:'New Invoice', receipt:'New Receipt'};
@@ -309,6 +455,7 @@ function openDocumentModal(type, prefill){
   items.forEach(li=>addLineItemRow(li));
   renderLeadPicker();
   if(prefill?.lead_id) document.getElementById('docLeadId').value=prefill.lead_id;
+  populateErpCustomerSelect(prefill?.erpnext_customer||'');
   document.getElementById('documentModal').classList.add('active');
   updateDocTotalPreview();
 }
@@ -325,7 +472,7 @@ function addLineItemRow(li){
   li=li||{name:'',qty:1,price:0};
   const row=document.createElement('div'); row.className='li-row';
   row.innerHTML=`
-    <input class="li-name" placeholder="Product / description" value="${escAttr(li.name)}">
+    <input class="li-name" list="erpItemsDatalist" placeholder="Product / description" value="${escAttr(li.name)}">
     <input class="li-qty" type="number" placeholder="Qty" value="${esc(li.qty)}">
     <input class="li-price" type="number" placeholder="Price" value="${esc(li.price)}">
     <span class="li-total" style="font-family:var(--mono);font-size:13px;text-align:right"></span>
@@ -368,6 +515,7 @@ async function saveDocument(){
     currency:document.getElementById('docCurrency').value.trim(),
     tax_pct:Number(document.getElementById('docTaxPct').value)||0,
     notes:document.getElementById('docNotes').value.trim(),
+    erpnext_customer:document.getElementById('docErpCustomer').value||null,
     line_items:lineItems
   };
   try{
@@ -409,6 +557,7 @@ function renderDocumentsTable(){
       <td>${erpBadge(d)}</td>
       <td class="row-actions">
         <button class="icon-btn" title="Download PDF" onclick="downloadDocumentPdf(${d.Id})">⬇️</button>
+        <button class="icon-btn" title="Send by email" onclick="openEmailModal(${d.Id})">📧</button>
         ${nextType?`<button class="icon-btn" title="Convert to ${nextType}" onclick="convertDocument(${d.Id},'${nextType}')">→ ${DOC_TYPE_LABEL[nextType]}</button>`:''}
         <button class="icon-btn" title="${erpReady?'Sync to ERPNext':'Connect ERPNext first (⚙️ tab)'}" ${erpReady?'':'disabled'} onclick="syncDocumentToErpnext(${d.Id})">🔄 ERPNext</button>
         <button class="icon-btn danger" onclick="deleteDocument(${d.Id})">🗑</button>
@@ -450,11 +599,12 @@ async function deleteDocument(id){
 
 /* ── PDF EXPORT — simple itemized table, no logo/branding complexity (that lives in the
    Agency Quotation feature in dashboard.html; this is deliberately plainer since it spans every
-   industry, not just travel). ── */
-function downloadDocumentPdf(id){
+   industry, not just travel). Shared by the download button and the send-by-email flow below. ── */
+function buildDocumentPdf(id){
   const d=allDocuments.find(x=>x.Id===id);
-  if(!d) return;
+  if(!d) return null;
   const lead=allLeads.find(l=>String(l.Id)===String(d.lead_id));
+  const erpCustomer=allErpCustomers.find(c=>c.name===d.erpnext_customer);
   let items=[]; try{ items=JSON.parse(d.line_items_json||'[]'); }catch(e){}
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
@@ -469,8 +619,9 @@ function downloadDocumentPdf(id){
   doc.setTextColor(0);
   y+=50;
 
+  const customerLabel=lead?(lead.Name||lead.Phone):(erpCustomer?(erpCustomer.customer_name||erpCustomer.name):'Customer');
   doc.setFontSize(11);
-  doc.text(`Prepared for: ${lead?(lead.Name||lead.Phone):'Customer'}`,marginX,y);
+  doc.text(`Prepared for: ${customerLabel}`,marginX,y);
   doc.text(`Date: ${d.doc_created_at?new Date(d.doc_created_at).toLocaleDateString():new Date().toLocaleDateString()}`,400,y);
   y+=24;
 
@@ -499,7 +650,48 @@ function downloadDocumentPdf(id){
     doc.splitTextToSize(d.notes,515).forEach(line=>{ doc.text(line,marginX,y); y+=12; });
   }
 
-  doc.save(`${typeLabel}-${(lead?(lead.Name||lead.Phone):'document').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
+  const filename=`${typeLabel}-${customerLabel.replace(/[^a-z0-9]+/gi,'-')}.pdf`;
+  return {doc, d, typeLabel, filename, customerLabel, erpCustomer};
+}
+
+function downloadDocumentPdf(id){
+  const built=buildDocumentPdf(id);
+  if(!built) return;
+  built.doc.save(built.filename);
+}
+
+/* ── SEND BY EMAIL — reuses the same PDF as the download button, attached as base64 via the
+   Worker's Resend passthrough (client-side jsPDF has no server-side equivalent, so the Worker
+   never generates this PDF itself, just relays the bytes this page already built). ── */
+function openEmailModal(id){
+  const built=buildDocumentPdf(id);
+  if(!built) return;
+  document.getElementById('emailDocId').value=id;
+  document.getElementById('emailTo').value=built.erpCustomer?.email_id||'';
+  document.getElementById('emailSubject').value=`${built.typeLabel} from ${clientRecord?.client_name||'us'}`;
+  document.getElementById('emailSaveMsg').textContent='';
+  document.getElementById('emailModal').classList.add('active');
+}
+function closeEmailModal(){ document.getElementById('emailModal').classList.remove('active'); }
+async function confirmSendDocumentEmail(){
+  const id=Number(document.getElementById('emailDocId').value);
+  const to=document.getElementById('emailTo').value.trim();
+  const msg=document.getElementById('emailSaveMsg');
+  if(!to){ msg.textContent='Recipient email is required.'; msg.className='save-msg err'; return; }
+  const built=buildDocumentPdf(id);
+  if(!built){ msg.textContent='Document not found.'; msg.className='save-msg err'; return; }
+  msg.textContent='Sending…'; msg.className='save-msg';
+  try{
+    const dataUri=built.doc.output('datauristring');
+    const base64=dataUri.slice(dataUri.indexOf(',')+1);
+    await acctFetch('/accounting/documents/send-email',{method:'POST',body:JSON.stringify({
+      id, to, subject:document.getElementById('emailSubject').value.trim(), pdf_base64:base64, filename:built.filename
+    })});
+    const doc=allDocuments.find(x=>x.Id===id);
+    if(doc&&doc.status==='draft') doc.status='sent';
+    closeEmailModal();
+    renderDocumentsTable();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
 init();

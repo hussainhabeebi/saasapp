@@ -1106,20 +1106,65 @@ token for the same reason b2b.html does: it reads/writes Leads through the beare
 `/nocodb/*` passthrough).
 
 **Documents live in Cloudflare D1** (`env.DB`, table `accounting_documents` — see
-`migrations/0002_accounting_b2b_documents.sql` and "Storage split: NocoDB vs. Cloudflare D1"
-below), not a NocoDB table you create by hand: `client_id`, `lead_id`, `type`
-(`quotation`/`invoice`/`receipt`), `title`, `line_items_json` (JSON array of `{name, qty, price}`),
-`currency`, `subtotal`, `tax_pct`, `tax_amount`, `total`, `status`
+`migrations/0002_accounting_b2b_documents.sql`, `migrations/0004_accounting_erpnext_customer.sql`
+and "Storage split: NocoDB vs. Cloudflare D1" below), not a NocoDB table you create by hand:
+`client_id`, `lead_id`, `type` (`quotation`/`invoice`/`receipt`), `title`, `line_items_json` (JSON
+array of `{name, qty, price}`, optionally `item_code` when the line was picked from the live
+ERPNext item list — see below), `currency`, `subtotal`, `tax_pct`, `tax_amount`, `total`, `status`
 (`draft`/`sent`/`paid`/`void`/`accepted` — used loosely per type, no strict per-type state
 machine), `linked_doc_id` (an invoice's source quotation, or a receipt's source invoice; `NULL`
-for a document created standalone), `notes`, `erpnext_doctype`, `erpnext_doc_name`,
-`erpnext_sync_status` (`NULL` / `synced` / `failed`), `erpnext_sync_error`, `erpnext_synced_at`,
-`doc_created_at`. Apply the migration once (`wrangler d1 migrations apply leadvyne-d1 --remote`)
-and it's ready — no per-deployment table-creation step, no env var to set, and no more
-NocoDB-specific `doc_created_at`-not-`created_at` naming trap (a plain SQL column, not subject to
-NocoDB's auto-added system field). Every `/accounting/*` route derives `client_id` server-side from
-the session (same as before this migration), and every response still returns the document's id as
-`Id` (capitalized) so `accounting.html` needed no changes at all.
+for a document created standalone), `notes`, `erpnext_customer` (an ERPNext `Customer.name`,
+optional — set when the document was created against a picked ERPNext customer rather than a CRM
+lead), `erpnext_doctype`, `erpnext_doc_name`, `erpnext_sync_status` (`NULL` / `synced` / `failed`),
+`erpnext_sync_error`, `erpnext_synced_at`, `doc_created_at`. Apply the migrations once
+(`wrangler d1 migrations apply leadvyne-d1 --remote`) and it's ready — no per-deployment
+table-creation step, no env var to set, and no more NocoDB-specific `doc_created_at`-not-`created_at`
+naming trap (a plain SQL column, not subject to NocoDB's auto-added system field). Every
+`/accounting/*` route derives `client_id` server-side from the session (same as before this
+migration), and every response still returns the document's id as `Id` (capitalized) so
+`accounting.html` needed no changes at all.
+
+**Customers tab** (`accounting.html`, "👤 Customers") — a live list of this account's own ERPNext
+`Customer` records (`GET /erpnext/customers`, `handleErpnextCustomersList`; no local mirror table,
+fetched fresh on every page load, same "no persisted mapping" choice as the resolve helpers below),
+with search and a "+ Add Customer" action (`POST /erpnext/customers`, `handleErpnextCustomerCreate`
+— creates the Customer directly in ERPNext, unlike `erpnextResolveCustomer`'s silent
+search-or-create) and a "🧾 New Invoice" action per row that opens the Document modal pre-filled
+with that customer. Both routes 400 with a clear message if the account hasn't connected ERPNext
+yet (⚙️ tab) — this tab is simply hidden behind that same gate, not its own separate setup step.
+
+**Customer/item picking in the Document modal** — a "ERPNext Customer" dropdown
+(populated from the same `/erpnext/customers` list) lets a document be tied to a real ERPNext
+customer directly (`erpnext_customer` column above) instead of always going through the CRM lead
+picker; when set, `erpnextPushSalesDoc`/`erpnextPushPaymentEntry` use it as-is and skip the
+by-name resolve entirely. Line items get a `<datalist>` of live ERPNext item names
+(`GET /erpnext/items`, `handleErpnextItemsList`) so typing a product suggests existing ERPNext
+items — matching one exactly still goes through `erpnextResolveItem`'s by-name lookup at sync time
+(no `item_code` is captured client-side for a typed/free-text line), so this is picking by name,
+not a strict foreign-key reference; a genuinely unambiguous per-line item reference would need a
+real `<select>` per row instead of a datalist, which wasn't built here.
+
+**Send Invoice by Email** — a "📧" action per document row builds the same PDF the download button
+does (`buildDocumentPdf`, refactored so both share one jsPDF build), then posts it as a base64
+Resend attachment (`POST /accounting/documents/send-email`,
+`handleAccountingDocumentSendEmail` → `sendClientResendEmail`'s new `attachments` param — Resend's
+own `[{filename, content}]` shape, `content` base64). Requires the client's own Resend connection
+(Settings → Bulk Marketing, `resend_api_key`/`resend_from_email` — the same per-client Resend
+account the Email Marketing module uses, not a platform-level key) — same "best-effort, never a
+hard dependency" pattern as everywhere else Resend is used in this file: sending fails with a clear
+error if unset rather than silently no-op'ing, but nothing else in the Accounting module depends
+on it. A draft document is marked `sent` once the email succeeds, same as a WhatsApp send.
+
+**Connected to the Human Deals Quotation/Invoice flow** (`dashboard.html`'s `openQuoteFor`/
+`quoteSend`, opened from a Human Deals lead card's Send Quote/Invoice button) — every WhatsApp
+send now also best-effort creates a matching `accounting_documents` row (status `sent`,
+line items mapped from that flow's own service catalog) and, if the client has already connected
+ERPNext, immediately fires `sync-erpnext` for it too — so a quote/invoice sent straight from a
+lead's chat shows up in the Accounting module and (if connected) in ERPNext automatically, with no
+separate manual "save to accounting" step. This mirroring can silently fail (network hiccup, D1
+briefly unavailable) without affecting the WhatsApp send itself, same tolerance as the existing
+ConvHistory/Tags logging in that function — check the Documents tab if a send doesn't appear there
+as expected.
 
 **Lifecycle**: create a Quotation against an existing lead (title, line items, tax %, currency,
 notes) — `handleAccountingDocumentCreate`. Once it's ready to become billable, **Convert**
@@ -1643,8 +1688,9 @@ NocoDB's "add this field/table by hand in the UI" process:
 - **B2B Documents** (quotes/catalogs — everything *except* Brand/Country/`b2b_events`, which stay
   NocoDB LEADS columns since existing lead views already read those) —
   `migrations/0002_accounting_b2b_documents.sql`.
-- **Accounting Documents** (Quotation/Invoice/Receipt + ERPNext sync state) —
-  `migrations/0002_accounting_b2b_documents.sql`.
+- **Accounting Documents** (Quotation/Invoice/Receipt + ERPNext sync state, plus the optional
+  `erpnext_customer` link) — `migrations/0002_accounting_b2b_documents.sql` and
+  `migrations/0004_accounting_erpnext_customer.sql`.
 - **Meta CAPI event log** (an audit trail of events actually sent to Meta, for the Meta Ads ROI
   Report's own use — not a NocoDB replacement for anything, just new data that never existed
   before) — `migrations/0003_meta_capi_log.sql`.
