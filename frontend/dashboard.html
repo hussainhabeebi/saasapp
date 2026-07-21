@@ -6292,7 +6292,25 @@ async function quoteSend(){
     msg.textContent='✓ Sent';msg.className='save-msg';
   }catch(e){
     msg.textContent='✓ Sent (log not saved — will still show as sent in Chatwoot)';msg.className='save-msg';
-  }finally{
+  }
+  // Mirrors this send into the Accounting module (D1) so it shows up alongside documents created
+  // directly in Settings → Accounting, and auto-pushes to ERPNext if the client has already
+  // connected one there — best-effort like the ConvHistory logging above, since the WhatsApp
+  // message has already gone out regardless of whether either of these succeeds.
+  try{
+    const acctBody={
+      type:isInvoice?'invoice':'quotation', lead_id:lead.Id,
+      title:`${isInvoice?'Invoice':'Quotation'} — ${lead.Name||lead.Phone||'Lead'}`,
+      currency, tax_pct:Number($id('quoteTaxPercent').value)||0, status:'sent',
+      line_items:items.map(it=>({name:it.name,qty:it.qty,price:it.unitPrice})),
+    };
+    const r=await fetch(`${CONFIG.WORKER_BASE}/accounting/documents`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(acctBody)});
+    const acctDoc=await r.json().catch(()=>null);
+    if(r.ok && acctDoc?.Id && clientRecord.erpnext_base_url && clientRecord.erpnext_api_key && clientRecord.erpnext_api_secret){
+      fetch(`${CONFIG.WORKER_BASE}/accounting/documents/sync-erpnext`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:acctDoc.Id})}).catch(()=>{});
+    }
+  }catch(e){ /* best-effort — never surfaced, the WhatsApp send already succeeded */ }
+  finally{
     btn.disabled=false;
     _quoteSelectedLead=null;
     _quoteSelectedItems={};

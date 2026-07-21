@@ -795,13 +795,16 @@ async function handleMetaCapiLogTrend(request, env){
 // Shared by handleEmailTest and the campaign send-one route below — the only difference between
 // a test send and a campaign send is the subject/html, so this is the one place that talks to
 // Resend on a client's own account.
-async function sendClientResendEmail(c, {to, subject, html}){
+async function sendClientResendEmail(c, {to, subject, html, attachments}){
   if(!c?.resend_api_key) return {ok:false, error:'Connect Resend first.'};
   if(!c?.resend_from_email) return {ok:false, error:'Set a from-email first.'};
   const from=`${c.resend_from_name||c.client_name||'Bulk Marketing'} <${c.resend_from_email}>`;
+  const body={from, to:[to], subject, html};
+  // attachments: [{filename, content}] — content is a base64 string, Resend's own expected shape.
+  if(Array.isArray(attachments)&&attachments.length) body.attachments=attachments;
   const r=await fetch('https://api.resend.com/emails', {
     method:'POST', headers:{Authorization:`Bearer ${c.resend_api_key}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({from, to:[to], subject, html})
+    body:JSON.stringify(body)
   });
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return {ok:false, error:data?.message||'Resend API HTTP '+r.status};
@@ -6440,6 +6443,7 @@ async function handleAccountingDocumentsList(request, env){
   return json({list:(results||[]).map(acctDocOut)});
 }
 
+const ACCOUNTING_VALID_STATUS=new Set(['draft','sent','paid','void','accepted']);
 async function handleAccountingDocumentCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -6453,16 +6457,18 @@ async function handleAccountingDocumentCreate(request, env){
     client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
     type, title:String(body.title||'').trim().slice(0,200),
     line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
-    subtotal, tax_pct:taxPct, tax_amount:taxAmount, total, status:'draft',
+    subtotal, tax_pct:taxPct, tax_amount:taxAmount, total,
+    status:ACCOUNTING_VALID_STATUS.has(body.status)?body.status:'draft',
     linked_doc_id:body.linked_doc_id?Number(body.linked_doc_id):null,
     notes:String(body.notes||'').trim().slice(0,1000),
+    erpnext_customer:body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null,
     erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_customer, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_customer, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -6479,6 +6485,7 @@ async function handleAccountingDocumentUpdate(request, env){
   if(body.status!==undefined){ sets.push('status=?'); vals.push(String(body.status)); }
   if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
   if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10)); }
+  if(body.erpnext_customer!==undefined){ sets.push('erpnext_customer=?'); vals.push(body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null); }
   if(Array.isArray(body.line_items)){
     const taxPct=body.tax_pct!==undefined?(Number(body.tax_pct)||0):(Number(existing.tax_pct)||0);
     const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, taxPct);
@@ -6597,11 +6604,13 @@ async function erpnextResolveItem(c, itemName){
 // created), then posts the document with a flat percentage tax line if tax_pct is set. Returns the
 // new document's ERPNext name (e.g. "SINV-2026-00001").
 async function erpnextPushSalesDoc(c, erpDoctype, doc, lead){
-  const customer=await erpnextResolveCustomer(c, lead?.Name, lead?.Phone);
+  const customer=doc.erpnext_customer||await erpnextResolveCustomer(c, lead?.Name, lead?.Phone);
   const lineItems=engineParseJsonField(doc.line_items_json, []);
   const items=[];
   for(const li of lineItems){
-    const itemCode=await erpnextResolveItem(c, li.name);
+    // item_code: set when the line was picked from the live ERPNext item list (accounting.html's
+    // Documents modal) — skips the by-name search/create round-trip and can't ever mismatch it.
+    const itemCode=li.item_code||await erpnextResolveItem(c, li.name);
     items.push({item_code:itemCode, qty:Number(li.qty)||1, rate:Number(li.price)||0});
   }
   if(!items.length) throw new Error('No line items to send');
@@ -6619,7 +6628,7 @@ async function erpnextPushSalesDoc(c, erpDoctype, doc, lead){
 // against that invoice; without a linked/synced invoice it's still recorded as an unallocated
 // receipt against the customer rather than blocking the sync entirely).
 async function erpnextPushPaymentEntry(c, doc, lead, invoiceErpnextName){
-  const customer=await erpnextResolveCustomer(c, lead?.Name, lead?.Phone);
+  const customer=doc.erpnext_customer||await erpnextResolveCustomer(c, lead?.Name, lead?.Phone);
   const amount=Number(doc.total)||0;
   const payload={
     payment_type:'Receive', party_type:'Customer', party:customer,
@@ -6672,6 +6681,84 @@ async function handleAccountingDocumentSyncErpnext(request, env){
     await reportOpsError(env, 'handleAccountingDocumentSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, docId:doc.id, type:doc.type});
     return json({error:'ERPNext sync failed: '+msg}, 502);
   }
+}
+
+// ── ERPNext Customers / Items — live lookups for the accounting.html Customers tab and the
+// Document modal's customer/item pickers. Always fetched live, no local cache/mirror table — same
+// "no persisted local mapping" choice as erpnextResolveCustomer/erpnextResolveItem above, just
+// exposed as a real list instead of a silent search-or-create.
+async function handleErpnextCustomersList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in the ⚙️ ERPNext tab.'}, 400);
+  const url=new URL(request.url);
+  const q=(url.searchParams.get('q')||'').trim();
+  const fields=encodeURIComponent(JSON.stringify(['name','customer_name','email_id','mobile_no']));
+  let path=`/api/resource/Customer?fields=${fields}&limit_page_length=200&order_by=customer_name asc`;
+  if(q) path+=`&filters=${encodeURIComponent(JSON.stringify([['customer_name','like',`%${q}%`]]))}`;
+  const r=await erpnextFetch(c, path);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
+  return json({list:data?.data||[]});
+}
+
+async function handleErpnextCustomerCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in the ⚙️ ERPNext tab.'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const customerName=String(body.customer_name||'').trim().slice(0,140);
+  if(!customerName) return json({error:'customer_name required'}, 400);
+  const payloadOut={customer_name:customerName, customer_type:'Individual'};
+  if(body.email_id) payloadOut.email_id=String(body.email_id).trim().slice(0,200);
+  if(body.mobile_no) payloadOut.mobile_no=String(body.mobile_no).trim().slice(0,40);
+  const r=await erpnextFetch(c, '/api/resource/Customer', {method:'POST', body:JSON.stringify(payloadOut)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
+  return json({ok:true, customer:data?.data});
+}
+
+async function handleErpnextItemsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in the ⚙️ ERPNext tab.'}, 400);
+  const url=new URL(request.url);
+  const q=(url.searchParams.get('q')||'').trim();
+  const fields=encodeURIComponent(JSON.stringify(['name','item_name','standard_rate']));
+  let path=`/api/resource/Item?fields=${fields}&limit_page_length=200&order_by=item_name asc`;
+  if(q) path+=`&filters=${encodeURIComponent(JSON.stringify([['item_name','like',`%${q}%`]]))}`;
+  const r=await erpnextFetch(c, path);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
+  return json({list:data?.data||[]});
+}
+
+// Sends an already-generated document PDF (built client-side, same jsPDF doc as the download
+// button) as a Resend email attachment — the Worker never generates the PDF itself, just relays
+// the caller's own bytes, since accounting.html's PDF layout has no server-side equivalent.
+async function handleAccountingDocumentSendEmail(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  if(!body.to) return json({error:'to required'}, 400);
+  if(!body.pdf_base64) return json({error:'pdf_base64 required'}, 400);
+  const doc=await findAccountingDocument(env, body.id);
+  if(!doc || String(doc.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const c=await getClientById(env, payload.cid);
+  const typeLabel={quotation:'Quotation', invoice:'Invoice', receipt:'Receipt'}[doc.type]||'Document';
+  const subject=body.subject||`${typeLabel} from ${c?.client_name||'us'}`;
+  const html=body.html||`<p>Please find your ${typeLabel.toLowerCase()} attached.</p>`;
+  const result=await sendClientResendEmail(c, {
+    to:body.to, subject, html,
+    attachments:[{filename:String(body.filename||`${typeLabel}.pdf`), content:String(body.pdf_base64)}]
+  });
+  if(!result.ok) return json({error:result.error}, result.error==='Connect Resend first.'||result.error==='Set a from-email first.'?400:502);
+  if(doc.status==='draft') await env.DB.prepare(`UPDATE accounting_documents SET status='sent' WHERE id=?`).bind(doc.id).run();
+  return json({ok:true});
 }
 
 export default {
@@ -6800,6 +6887,10 @@ export default {
       else if(url.pathname==='/accounting/documents' && request.method==='DELETE'){ res=await handleAccountingDocumentDelete(request, env); }
       else if(url.pathname==='/accounting/documents/convert' && request.method==='POST'){ res=await handleAccountingDocumentConvert(request, env); }
       else if(url.pathname==='/accounting/documents/sync-erpnext' && request.method==='POST'){ res=await handleAccountingDocumentSyncErpnext(request, env); }
+      else if(url.pathname==='/accounting/documents/send-email' && request.method==='POST'){ res=await handleAccountingDocumentSendEmail(request, env); }
+      else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
+      else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }
+      else if(url.pathname==='/erpnext/items' && request.method==='GET'){ res=await handleErpnextItemsList(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);
