@@ -239,6 +239,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <button class="tab" id="tab-meta" onclick="showTab('meta')">📣 Template Broadcast</button>
     <button class="tab" id="tab-prospects" onclick="showTab('prospects')">🎯 Import Prospects</button>
     <button class="tab" id="tab-followups" onclick="showTab('followups')">🔁 Follow-ups</button>
+    <button class="tab" id="tab-fuengine" onclick="showTab('fuengine')">💪 Follow-up Engine</button>
     <button class="tab" id="tab-templates" onclick="showTab('templates')">📋 Manage Templates</button>
     <button class="tab" id="tab-tracking" onclick="showTab('tracking')">📊 Tracking</button>
     <button class="tab" id="tab-automations" onclick="showTab('automations')">⚡ Automations</button>
@@ -519,6 +520,32 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       <div id="fuEmpty" class="msg info hidden">No leads currently in a follow-up sequence.</div>
     </div>
   </div><!-- /view-followups -->
+
+  <!-- ══════════════════════════════════════
+       TAB: FOLLOW-UP ENGINE — A/B message variants for the classic follow-up sequence above (does
+       NOT change when a step fires — followup_count/followup_hours in Settings still decide that
+       — only what gets sent). Each variant can carry its own time-limited incentive and
+       social-proof line. Since this whole send path only ever fires for a lead who's already gone
+       quiet (same path as "Send Next Now" above), an incentive/social-proof line configured here
+       is structurally never shown to a fresh, still-engaged lead — nothing extra to configure for
+       that.
+  ══════════════════════════════════════ -->
+  <div id="view-fuengine" style="display:none">
+    <div class="card">
+      <div class="card-title">💪 Follow-up Engine</div>
+      <div class="msg info">Give each classic follow-up step up to two message variants — Variant A and B are sent 50/50 so you can see which gets more replies. Leave Variant B blank to always send Variant A. Add a time-limited incentive or a social-proof line to either variant; both only ever go out with a follow-up (i.e. to a lead who's already gone quiet), never to a fresh lead.</div>
+      <div id="fuEngineSteps"></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:6px">
+        <button class="btn btn-primary" onclick="saveFollowupEngine()">Save All Steps</button>
+        <span id="fuEngineSaveMsg" style="font-size:12.5px"></span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📊 Variant Performance</div>
+      <div class="msg info">Reply rate = the share of sends where the lead sent any real message afterward. "Legacy" is any follow-up sent before a variant was configured for that step.</div>
+      <div id="fuEngineStats"></div>
+    </div>
+  </div><!-- /view-fuengine -->
 
   <!-- ══════════════════════════════════════
        TAB 4: MANAGE TEMPLATES
@@ -824,11 +851,12 @@ async function initApp(){
 
 // ── TABS ──
 function showTab(tab){
-  ['dm','meta','prospects','followups','templates','tracking','automations','reviews'].forEach(t=>{
+  ['dm','meta','prospects','followups','fuengine','templates','tracking','automations','reviews'].forEach(t=>{
     $id('view-'+t).style.display = t===tab ? '' : 'none';
     $id('tab-'+t).classList.toggle('active', t===tab);
   });
   if(tab==='followups') renderFollowupsTab();
+  if(tab==='fuengine') loadFollowupEngine();
   if(tab==='tracking') renderTrackingTab();
   if(tab==='prospects') prospectsInit();
   if(tab==='automations') loadFlows();
@@ -1401,6 +1429,89 @@ async function sendFollowupNow(leadId,btn){
     alert('Failed to send follow-up: '+e.message);
     if(btn){ btn.disabled=false; btn.textContent='Send Next Now'; }
   }
+}
+
+// ── FOLLOW-UP ENGINE TAB ── config lives in D1 (migrations/0007_followup_engine.sql), read/
+// written server-side via /followups/variants and /followups/stats (session-gated), same "not a
+// second copy of anything already in the browser" reasoning as the Reviews tab above.
+let fuEngineVariants=[];
+function fuEngineFieldId(step,variant,field){ return `fuv_${step}_${variant}_${field}`; }
+function renderFollowupEngineSteps(){
+  const byStep={};
+  fuEngineVariants.forEach(v=>{ (byStep[v.step]=byStep[v.step]||{})[v.variant]=v; });
+  $id('fuEngineSteps').innerHTML=[1,2,3].map(step=>{
+    const cols=['A','B'].map(variant=>{
+      const v=byStep[step]?.[variant]||{message:'',cta:'',incentive_text:'',incentive_expires_hours:'',social_proof:false,active:true};
+      return `<div style="flex:1;min-width:260px;border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px">
+        <div style="font-weight:700;font-size:13px;margin-bottom:8px">Variant ${variant}</div>
+        <div class="form-field">
+          <label>Message ${variant==='A'?'(required to use this step)':'(optional — leave blank to always send A)'}</label>
+          <textarea id="${fuEngineFieldId(step,variant,'message')}" rows="3" placeholder="Use {name} for the customer's name">${esc(v.message)}</textarea>
+        </div>
+        <div class="form-field"><label>CTA (appended as its own line)</label><input type="text" id="${fuEngineFieldId(step,variant,'cta')}" value="${escAttr(v.cta)}" placeholder="e.g. Reply YES to lock this in"></div>
+        <div style="display:flex;gap:8px">
+          <div class="form-field" style="flex:1"><label>Incentive</label><input type="text" id="${fuEngineFieldId(step,variant,'incentive_text')}" value="${escAttr(v.incentive_text)}" placeholder="e.g. 10% off"></div>
+          <div class="form-field" style="width:110px"><label>Expires (h)</label><input type="number" min="1" id="${fuEngineFieldId(step,variant,'incentive_expires_hours')}" value="${esc(v.incentive_expires_hours||'')}"></div>
+        </div>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin-right:16px;font-size:12.5px"><input type="checkbox" style="width:auto" id="${fuEngineFieldId(step,variant,'social_proof')}" ${v.social_proof?'checked':''}> Include social proof</label>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" style="width:auto" id="${fuEngineFieldId(step,variant,'active')}" ${v.active?'checked':''}> Active</label>
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom:18px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:8px">Step ${step}</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">${cols}</div>
+    </div>`;
+  }).join('');
+}
+async function loadFollowupEngine(){
+  $id('fuEngineSteps').innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/variants`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    fuEngineVariants=data.list||[];
+  }catch(e){ fuEngineVariants=[]; }
+  renderFollowupEngineSteps();
+  fetchFollowupEngineStats();
+}
+async function saveFollowupEngine(){
+  const msg=$id('fuEngineSaveMsg');
+  msg.textContent='Saving…';
+  const variants=[];
+  [1,2,3].forEach(step=>{
+    ['A','B'].forEach(variant=>{
+      variants.push({
+        step, variant,
+        message:$id(fuEngineFieldId(step,variant,'message')).value.trim(),
+        cta:$id(fuEngineFieldId(step,variant,'cta')).value.trim(),
+        incentive_text:$id(fuEngineFieldId(step,variant,'incentive_text')).value.trim(),
+        incentive_expires_hours:parseInt($id(fuEngineFieldId(step,variant,'incentive_expires_hours')).value)||null,
+        social_proof:$id(fuEngineFieldId(step,variant,'social_proof')).checked,
+        active:$id(fuEngineFieldId(step,variant,'active')).checked,
+      });
+    });
+  });
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/variants`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({variants})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    fuEngineVariants=variants;
+    msg.textContent='Saved ✓';
+    setTimeout(()=>{ if($id('fuEngineSaveMsg')) $id('fuEngineSaveMsg').textContent=''; },2000);
+  }catch(e){ msg.textContent='Failed to save.'; }
+}
+async function fetchFollowupEngineStats(){
+  $id('fuEngineStats').innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/stats`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    renderFollowupEngineStats(data.list||[]);
+  }catch(e){ $id('fuEngineStats').innerHTML='<div style="font-size:12px;color:var(--muted)">Couldn\'t load stats.</div>'; }
+}
+function renderFollowupEngineStats(rows){
+  if(!rows.length){ $id('fuEngineStats').innerHTML='<div style="font-size:12px;color:var(--muted)">No follow-ups sent yet.</div>'; return; }
+  $id('fuEngineStats').innerHTML=`<div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th>Step</th><th>Variant</th><th>Sent</th><th>Replied</th><th>Reply Rate</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${esc(r.step)}</td><td>${esc(r.variant)}</td><td>${esc(r.sent)}</td><td>${esc(r.replied)}</td><td>${esc(r.reply_rate)}%</td></tr>`).join('')}</tbody>
+  </table></div>`;
 }
 
 // ── TRACKING ──

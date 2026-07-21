@@ -1762,8 +1762,10 @@ NocoDB's "add this field/table by hand in the UI" process:
 - **Meta CAPI event log** (an audit trail of events actually sent to Meta, for the Meta Ads ROI
   Report's own use — not a NocoDB replacement for anything, just new data that never existed
   before) — `migrations/0003_meta_capi_log.sql`.
+- **Follow-up Engine** (A/B message variants for the classic follow-up sequence, plus the resulting
+  send/reply log) — `migrations/0007_followup_engine.sql`.
 
-All five still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
+All six still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
 need it — D1 only holds what's genuinely new, and every route that moved keeps its exact pre-D1
 request/response shape, so no frontend page needed to change for this migration.
 
@@ -1918,6 +1920,40 @@ own escalation timing that a one-off manual send would desync. New Worker route:
 /broadcast/followup-send` (`{lead_id}`) — sends the next unconfigured classic step via Chatwoot
 and marks the corresponding `Follow up N` field, reusing the same message templates the automated
 `followup-template.json` workflow already uses.
+
+**New tab: 💪 Follow-up Engine** — makes the classic follow-up sequence's messages themselves
+stronger, without changing *when* a step fires (`followup_count`/`followup_hours` in Settings
+still decide that entirely). Storage: two new D1 tables
+(`migrations/0007_followup_engine.sql`, `env.DB`) — `followup_variants`
+(`client_id, step, variant('A'|'B'), message, cta, incentive_text, incentive_expires_hours,
+social_proof, active`, unique on `(client_id, step, variant)`) and `followup_sends` (one row per
+actual send: `client_id, lead_id, step, variant, sent_at, replied_at`).
+- **A/B testing** — a step can have up to two message variants; `pickFollowupVariant()`
+  (`handleBroadcastFollowupSend`'s helper) picks between an active, non-blank A and B 50/50 per
+  send (not per lead — the same lead can get either variant on different steps). A client with no
+  variants configured for a step falls straight back to the plain `followup_messages` text exactly
+  as before — this is purely additive, never a required setup step.
+- **Time-limited incentive shown only to droppers** — an optional `incentive_text` +
+  `incentive_expires_hours` per variant, appended to the message as `⏳ {incentive_text} — offer
+  expires in {N}h.`. No separate "is this a fresh lead" check exists or is needed: this whole send
+  path (`handleBroadcastFollowupSend`) only exists because a lead already went quiet long enough to
+  need a follow-up, so a still-engaged fresh lead structurally never reaches it.
+- **Social proof at the drop-off point** — an optional per-variant toggle appends a real count:
+  "`{N} customer(s) closed with us in the last 7 days`", computed server-side by
+  `computeFollowupSocialProofCount()` — a Worker-side port of `dashboard.html`'s
+  `getRecentBookingsCount()` (same "won-ish" stage set — `won`/`converted`/`consultation_booked`/
+  `visit_booked`/`appt_booked` — same 7-day window, same "lead's own `Date` as a conversion-time
+  proxy" caveat, since the Worker has no access to the browser's `allLeads`).
+- **Continuous A/B stats** — `GET /followups/stats` groups `followup_sends` by `(step, variant)`
+  and computes a reply rate. "Replied" is stamped the moment a lead who has any unresolved
+  (`replied_at IS NULL`) follow-up send later sends any real inbound message at all
+  (`handleEngineWebhook`, right after the lead upsert) — not scoped to a stage change, so a
+  same-stage reply still counts. Sends made before any variant existed for that step log under a
+  synthetic `'legacy'` variant, so the new system's performance can be compared against the old
+  plain-text baseline.
+- **Config UI**: `GET`/`POST /followups/variants` (`handleFollowupVariantsList`/
+  `handleFollowupVariantsSave`), a full 3-step × 2-variant grid always returned/saved in one call —
+  same "bulk save, not per-field" pattern the rest of this app's config screens use.
 
 **New tab: 📊 Tracking** — every Direct Message / Template Broadcast / manual follow-up run gets
 logged to a new CLIENTS field, `broadcast_log` (Long text, JSON array of `{ts, type, total, sent,
