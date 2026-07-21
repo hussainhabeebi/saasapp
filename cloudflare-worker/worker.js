@@ -6451,24 +6451,28 @@ async function handleAccountingDocumentCreate(request, env){
   const VALID_TYPES=new Set(['quotation','invoice','receipt']);
   const type=VALID_TYPES.has(body.type)?body.type:'quotation';
   const lineItems=Array.isArray(body.line_items)?body.line_items:[];
-  const taxPct=Number(body.tax_pct)||0;
-  const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, taxPct);
+  // No GST — this module never charges tax, so tax_pct/tax_amount are always 0 regardless of what
+  // a caller sends; the columns stay (existing documents from before this rule may still have a
+  // nonzero value) but nothing new can create one.
+  const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, 0);
   const fields={
     client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
     type, title:String(body.title||'').trim().slice(0,200),
     line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
-    subtotal, tax_pct:taxPct, tax_amount:taxAmount, total,
+    subtotal, tax_pct:0, tax_amount:taxAmount, total,
     status:ACCOUNTING_VALID_STATUS.has(body.status)?body.status:'draft',
     linked_doc_id:body.linked_doc_id?Number(body.linked_doc_id):null,
     notes:String(body.notes||'').trim().slice(0,1000),
     erpnext_customer:body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null,
+    company:body.company?String(body.company).trim().slice(0,140):null,
+    erpnext_debtors_account:body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null,
     erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_customer, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_customer, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -6486,11 +6490,13 @@ async function handleAccountingDocumentUpdate(request, env){
   if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
   if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10)); }
   if(body.erpnext_customer!==undefined){ sets.push('erpnext_customer=?'); vals.push(body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null); }
+  if(body.company!==undefined){ sets.push('company=?'); vals.push(body.company?String(body.company).trim().slice(0,140):null); }
+  if(body.erpnext_debtors_account!==undefined){ sets.push('erpnext_debtors_account=?'); vals.push(body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null); }
   if(Array.isArray(body.line_items)){
-    const taxPct=body.tax_pct!==undefined?(Number(body.tax_pct)||0):(Number(existing.tax_pct)||0);
-    const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, taxPct);
+    // No GST — see handleAccountingDocumentCreate's own note; tax is always 0 here too.
+    const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, 0);
     sets.push('line_items_json=?','subtotal=?','tax_pct=?','tax_amount=?','total=?');
-    vals.push(JSON.stringify(body.line_items), subtotal, taxPct, taxAmount, total);
+    vals.push(JSON.stringify(body.line_items), subtotal, 0, taxAmount, total);
   }
   if(!sets.length) return json({ok:true});
   vals.push(Number(body.id));
@@ -6528,13 +6534,14 @@ async function handleAccountingDocumentConvert(request, env){
     type:toType, title:src.title||'', line_items_json:src.line_items_json||'[]',
     currency:src.currency||'', subtotal:src.subtotal||0, tax_pct:src.tax_pct||0, tax_amount:src.tax_amount||0, total:src.total||0,
     status:'draft', linked_doc_id:src.id, notes:src.notes||'',
+    erpnext_customer:src.erpnext_customer||null, company:src.company||null, erpnext_debtors_account:src.erpnext_debtors_account||null,
     erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -6604,8 +6611,13 @@ async function erpnextResolveItem(c, itemName){
 
 // Pushes a quotation/invoice as a real ERPNext Quotation or Sales Invoice — resolves the customer
 // and every line item's Item first (both required to exist before the parent document can be
-// created), then posts the document with a flat percentage tax line if tax_pct is set. Returns the
-// new document's ERPNext name (e.g. "SINV-2026-00001").
+// created), then posts the document. No GST/tax line is ever added — this module doesn't charge
+// tax, full stop, so accounting_documents.tax_pct is always 0 (see handleAccountingDocumentCreate/
+// Update) and nothing here needs to look at it. `company` is passed through when set (required by
+// Frappe once a site has more than one Company); `debit_to` (the Sales Invoice doctype's own name
+// for its receivable/debtors account) is set from erpnext_debtors_account when picked, otherwise
+// left for ERPNext to default from the Customer/Company as it normally would. Returns the new
+// document's ERPNext name (e.g. "SINV-2026-00001").
 async function erpnextPushSalesDoc(c, erpDoctype, doc, lead){
   const customer=doc.erpnext_customer||await erpnextResolveCustomer(c, lead?.Name, lead?.Phone);
   const lineItems=engineParseJsonField(doc.line_items_json, []);
@@ -6618,8 +6630,8 @@ async function erpnextPushSalesDoc(c, erpDoctype, doc, lead){
   }
   if(!items.length) throw new Error('No line items to send');
   const payload={customer, items};
-  const taxPct=Number(doc.tax_pct)||0;
-  if(taxPct>0) payload.taxes=[{charge_type:'On Net Total', description:'Tax', rate:taxPct, account_head:''}];
+  if(doc.company) payload.company=doc.company;
+  if(erpDoctype==='Sales Invoice' && doc.erpnext_debtors_account) payload.debit_to=doc.erpnext_debtors_account;
   const r=await erpnextFetch(c, `/api/resource/${encodeURIComponent(erpDoctype)}`, {method:'POST', body:JSON.stringify(payload)});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
@@ -6629,7 +6641,10 @@ async function erpnextPushSalesDoc(c, erpDoctype, doc, lead){
 // Pushes a receipt as an ERPNext Payment Entry — a "Receive" payment from the customer, linked
 // back to the source invoice's own ERPNext document if one was pushed (allocates the payment
 // against that invoice; without a linked/synced invoice it's still recorded as an unallocated
-// receipt against the customer rather than blocking the sync entirely).
+// receipt against the customer rather than blocking the sync entirely). `paid_from` is Payment
+// Entry's own name for the source account on a Receive payment (normally the customer's
+// receivable/debtors account) — set from erpnext_debtors_account when picked, otherwise left for
+// ERPNext to default as it normally would.
 async function erpnextPushPaymentEntry(c, doc, lead, invoiceErpnextName){
   const customer=doc.erpnext_customer||await erpnextResolveCustomer(c, lead?.Name, lead?.Phone);
   const amount=Number(doc.total)||0;
@@ -6638,6 +6653,8 @@ async function erpnextPushPaymentEntry(c, doc, lead, invoiceErpnextName){
     paid_amount:amount, received_amount:amount,
     references:invoiceErpnextName?[{reference_doctype:'Sales Invoice', reference_name:invoiceErpnextName, allocated_amount:amount}]:[],
   };
+  if(doc.company) payload.company=doc.company;
+  if(doc.erpnext_debtors_account) payload.paid_from=doc.erpnext_debtors_account;
   const r=await erpnextFetch(c, '/api/resource/Payment Entry', {method:'POST', body:JSON.stringify(payload)});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
@@ -6753,6 +6770,56 @@ async function handleErpnextItemsList(request, env){
   let path=`/api/resource/Item?fields=${fields}&limit_page_length=200&order_by=item_name asc`;
   if(q) path+=`&filters=${encodeURIComponent(JSON.stringify([['item_name','like',`%${q}%`]]))}`;
   const r=await erpnextFetch(c, path);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
+  return json({list:data?.data||[]});
+}
+
+// Companies — for the Document modal's Company picker (accounting_documents.company, passed
+// through to every synced doctype below since Frappe requires it once a site has more than one).
+async function handleErpnextCompaniesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in the ⚙️ ERPNext tab.'}, 400);
+  const fields=encodeURIComponent(JSON.stringify(['name','default_currency']));
+  const r=await erpnextFetch(c, `/api/resource/Company?fields=${fields}&limit_page_length=100&order_by=name asc`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
+  return json({list:data?.data||[]});
+}
+
+// Currencies — for the Document modal's Currency field (a `<datalist>`, not a hard `<select>`, so
+// it still degrades to a plain text input if ERPNext isn't connected — see accounting.html).
+async function handleErpnextCurrenciesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in the ⚙️ ERPNext tab.'}, 400);
+  const fields=encodeURIComponent(JSON.stringify(['name']));
+  const filters=encodeURIComponent(JSON.stringify([['enabled','=',1]]));
+  const r=await erpnextFetch(c, `/api/resource/Currency?fields=${fields}&filters=${filters}&limit_page_length=200&order_by=name asc`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
+  return json({list:data?.data||[]});
+}
+
+// Debtors (Receivable) accounts — for the Document modal's Debtors Account picker
+// (accounting_documents.erpnext_debtors_account). ERPNext's Account doctype is company-scoped, so
+// this is only useful once a Company has been picked (accounting.html re-fetches on company
+// change); ?company= is optional here purely so the route doesn't hard-fail before that.
+async function handleErpnextAccountsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in the ⚙️ ERPNext tab.'}, 400);
+  const url=new URL(request.url);
+  const company=(url.searchParams.get('company')||'').trim();
+  const fields=encodeURIComponent(JSON.stringify(['name','account_name','company']));
+  const filterList=[['account_type','=','Receivable']];
+  if(company) filterList.push(['company','=',company]);
+  const filters=encodeURIComponent(JSON.stringify(filterList));
+  const r=await erpnextFetch(c, `/api/resource/Account?fields=${fields}&filters=${filters}&limit_page_length=200&order_by=account_name asc`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
   return json({list:data?.data||[]});
@@ -6914,6 +6981,9 @@ export default {
       else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }
       else if(url.pathname==='/erpnext/customers/ensure' && request.method==='POST'){ res=await handleErpnextCustomerEnsure(request, env); }
       else if(url.pathname==='/erpnext/items' && request.method==='GET'){ res=await handleErpnextItemsList(request, env); }
+      else if(url.pathname==='/erpnext/companies' && request.method==='GET'){ res=await handleErpnextCompaniesList(request, env); }
+      else if(url.pathname==='/erpnext/currencies' && request.method==='GET'){ res=await handleErpnextCurrenciesList(request, env); }
+      else if(url.pathname==='/erpnext/accounts' && request.method==='GET'){ res=await handleErpnextAccountsList(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

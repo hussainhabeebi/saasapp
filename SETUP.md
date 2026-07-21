@@ -1106,8 +1106,9 @@ token for the same reason b2b.html does: it reads/writes Leads through the beare
 `/nocodb/*` passthrough).
 
 **Documents live in Cloudflare D1** (`env.DB`, table `accounting_documents` — see
-`migrations/0002_accounting_b2b_documents.sql`, `migrations/0004_accounting_erpnext_customer.sql`
-and "Storage split: NocoDB vs. Cloudflare D1" below), not a NocoDB table you create by hand:
+`migrations/0002_accounting_b2b_documents.sql`, `migrations/0004_accounting_erpnext_customer.sql`,
+`migrations/0005_accounting_company_debtors.sql` and "Storage split: NocoDB vs. Cloudflare D1"
+below), not a NocoDB table you create by hand:
 `client_id`, `lead_id`, `type` (`quotation`/`invoice`/`receipt`), `title`, `line_items_json` (JSON
 array of `{name, qty, price}`, optionally `item_code` when the line was picked from the live
 ERPNext item list — see below), `currency`, `subtotal`, `tax_pct`, `tax_amount`, `total`, `status`
@@ -1147,6 +1148,31 @@ items — matching one exactly still goes through `erpnextResolveItem`'s by-name
 (no `item_code` is captured client-side for a typed/free-text line), so this is picking by name,
 not a strict foreign-key reference; a genuinely unambiguous per-line item reference would need a
 real `<select>` per row instead of a datalist, which wasn't built here.
+
+**Company + Debtors Account picking** (`migrations/0005_accounting_company_debtors.sql` —
+`accounting_documents.company`/`erpnext_debtors_account`) — a "Company (ERPNext)" dropdown
+(`GET /erpnext/companies`, `handleErpnextCompaniesList`) and a "Debtors Account" dropdown
+(`GET /erpnext/accounts`, `handleErpnextAccountsList` — filtered to `account_type='Receivable'`,
+and to that Company once one's picked, since ERPNext's `Account` doctype is itself
+company-scoped; `onDocCompanyChange()` re-fetches the account list whenever Company changes, and
+also adopts that company's `default_currency` into the Currency field as a starting point, still
+overridable). `company` is passed straight through to whichever doctype gets synced — every one of
+Quotation/Sales Invoice/Payment Entry accepts it, and Frappe requires it once a site has more than
+one Company. `erpnext_debtors_account` only means something on Sales Invoice (`debit_to`) and
+Payment Entry (`paid_from`) — a Quotation has no such field, so it's simply unused for that type.
+Left blank on either, ERPNext resolves its own default account from the Customer/Company exactly
+as it would without this feature. Currency itself stays a plain text input, not a hard `<select>`
+— given a `<datalist>` of live ERPNext currencies (`GET /erpnext/currencies`,
+`handleErpnextCurrenciesList`) instead, so typing still works (and the field still functions) even
+without ERPNext connected, rather than hard-requiring an ERPNext round-trip just to type a currency
+code.
+
+**No GST, by design** — this module never adds a tax line: `tax_pct` is forced to `0` on every
+create/update regardless of what a caller sends (`handleAccountingDocumentCreate`/`Update`), the
+Tax % field is gone from the Document modal, and `erpnextPushSalesDoc` no longer ever builds a
+`taxes` array. A document created before this rule still shows its original tax on its PDF
+(`buildDocumentPdf` only prints the Tax row when `tax_pct > 0`) and still has its stored
+`tax_amount`/`total` untouched — this only changes what new documents can do going forward.
 
 **Send Invoice by Email** — a "📧" action per document row builds the same PDF the download button
 does (`buildDocumentPdf`, refactored so both share one jsPDF build), then posts it as a base64
@@ -1693,8 +1719,9 @@ NocoDB's "add this field/table by hand in the UI" process:
   NocoDB LEADS columns since existing lead views already read those) —
   `migrations/0002_accounting_b2b_documents.sql`.
 - **Accounting Documents** (Quotation/Invoice/Receipt + ERPNext sync state, plus the optional
-  `erpnext_customer` link) — `migrations/0002_accounting_b2b_documents.sql` and
-  `migrations/0004_accounting_erpnext_customer.sql`.
+  `erpnext_customer`/`company`/`erpnext_debtors_account` links) —
+  `migrations/0002_accounting_b2b_documents.sql`, `migrations/0004_accounting_erpnext_customer.sql`
+  and `migrations/0005_accounting_company_debtors.sql`.
 - **Meta CAPI event log** (an audit trail of events actually sent to Meta, for the Meta Ads ROI
   Report's own use — not a NocoDB replacement for anything, just new data that never existed
   before) — `migrations/0003_meta_capi_log.sql`.
