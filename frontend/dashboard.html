@@ -1030,16 +1030,16 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="chats">💬 Chats</button>
     <button class="dnTab" data-page="leads">👥 Leads</button>
     <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
-    <button class="dnTab" data-page="team">📊 Team</button>
-    <button class="dnTab" data-page="knowledgebase">📚 Knowledge Base</button>
-    <button class="dnTab" data-page="accounting">💰 Accounting</button>
+    <button class="dnTab" data-page="team" id="dnTeamTab">📊 Team</button>
+    <button class="dnTab" data-page="knowledgebase" id="dnKbTab">📚 Knowledge Base</button>
+    <button class="dnTab" data-page="accounting" id="dnAccountingTab">💰 Accounting</button>
     <button class="dnTab" data-page="billing">💳 Billing<span id="dnBillingBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce">🛒 Ecommerce</button>
     <button class="dnTab" data-page="b2b" id="dnB2bTab" style="display:none">🤝 B2B</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
     <button class="dnTab" data-page="appointments" id="dnApptTab" style="display:none">📅 Appointments</button>
-    <button class="dnTab" data-page="broadcast">📢 Campaigns</button>
+    <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
 
@@ -1655,19 +1655,22 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
           </div>
         </div>
 
-        <!-- BUSINESS SETUP — Industry + Modules, shown first: these two gate what every other
-             section on this page even means (Industry drives labels/theme/which module
-             auto-enables; Modules turns whole dashboard tabs on/off), so a new client should set
-             them before anything else, not stumble onto Industry at position #4 and Modules dead
-             last the way this page used to be ordered. id="bizSetupCard" is targeted by the
-             onboarding checklist's pulse-highlight (see renderOnboardingChecklist/highlightCard). -->
+        <!-- BUSINESS SETUP — Industry, shown first: it drives labels/theme/terminology throughout
+             the CRM and which module auto-enables, so a new client should set it before anything
+             else, not stumble onto it at position #4 the way this page used to be ordered.
+             Modules itself moved to its own "🧩 Modules" settings sub-page — see pageModules below
+             — since "choose which optional modules/tabs are on" is a big enough decision to
+             deserve its own page rather than living inside this one. id="bizSetupCard" is targeted
+             by the onboarding checklist's pulse-highlight (see renderOnboardingChecklist/
+             highlightCard). -->
         <div class="card" style="margin-bottom:14px" id="bizSetupCard">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🏗️ Business Setup</div>
-            <div class="s-note">Start here — these two settings shape what the rest of this dashboard looks like and does.</div>
+            <div class="s-note">Start here — this shapes what the rest of this dashboard looks like and does. Turning modules/tabs on or off lives on its own <a href="#" onclick="navigate('modules');return false">🧩 Modules</a> page.</div>
           </div>
 
           <div class="settings-section">
@@ -1685,52 +1688,6 @@ const TODAY = new Date().toISOString().slice(0,10);
               </div>
               <button class="save-btn" id="saveIndustryBtn" onclick="saveIndustry()">Save</button>
               <span class="save-msg" id="saveIndustryMsg"></span>
-            </div>
-          </div>
-
-          <hr class="div">
-
-          <!-- MODULES — one place to enable/disable every optional module and its dashboard tab.
-               Consolidates what used to be three separate settings-section blocks (Travel Agency,
-               and Recruitment duplicated twice with a hidden dead toggle shadowing the visible
-               one — $id() always resolved to the first DOM match, so the visible Recruit select
-               silently did nothing). Same ids, same initTaSettings()/initRcSettings()/existing
-               click listeners — this fix is just correct, non-duplicated markup; Appointments is
-               the only genuinely new module/toggle here. -->
-          <div class="settings-section">
-            <div class="s-head">🧩 Modules</div>
-            <div class="s-note">Enable or disable optional modules — each adds its own dashboard tab when on. Industry above auto-enables the matching module, but every module can also be toggled manually here.</div>
-
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
-              <div style="flex:1;min-width:180px"><b>🏢 Travel Agency</b><div class="s-note" style="margin:2px 0 0">Packages, itineraries, Umrah/Hajj groups, bookings, finance.</div></div>
-              <select class="form-input" id="cfgTaEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
-              <button class="save-btn" id="saveTaEnabled">Save</button>
-              <span class="save-msg" id="saveTaEnabledMsg"></span>
-              <span id="taModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
-            </div>
-
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
-              <div style="flex:1;min-width:180px"><b>💼 Recruitment &amp; Consultancy</b><div class="s-note" style="margin:2px 0 0">Job postings, candidate pipeline, AI screening, placements, fees.</div></div>
-              <select class="form-input" id="cfgRecruitEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
-              <button class="save-btn" id="saveRecruitEnabled">Save</button>
-              <span class="save-msg" id="saveRecruitEnabledMsg"></span>
-              <span id="rcModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
-            </div>
-
-            <div id="apptModuleRow" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
-              <div style="flex:1;min-width:180px"><b>📅 Appointment Booking</b><div class="s-note" style="margin:2px 0 0">Services, bookings calendar, and optional Cal.com sync — for healthcare, consultancy, and other services businesses.</div></div>
-              <select class="form-input" id="cfgApptEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
-              <button class="save-btn" id="saveApptEnabled">Save</button>
-              <span class="save-msg" id="saveApptEnabledMsg"></span>
-              <span id="apptModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
-            </div>
-
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
-              <div style="flex:1;min-width:180px"><b>🤝 B2B Suite</b><div class="s-note" style="margin:2px 0 0">Smart Lists, trackable quotes/catalogs (CPQ), brand classification, and B2B analytics — for wholesale, distribution, and other B2B sales teams.</div></div>
-              <select class="form-input" id="cfgB2bEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
-              <button class="save-btn" id="saveB2bEnabled">Save</button>
-              <span class="save-msg" id="saveB2bEnabledMsg"></span>
-              <span id="b2bModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
           </div>
         </div>
@@ -1768,59 +1725,9 @@ const TODAY = new Date().toISOString().slice(0,10);
             </div>
           </div>
         </div>
-        <!-- CONNECTION INFO -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🔗 Chatwoot Webhook</div>
-            <div class="s-note">Paste this URL into your Chatwoot inbox webhook settings so your AI bot receives messages.</div>
-            <div class="webhook-box" id="webhookBox">
-              <span class="webhook-url" id="webhookUrlDisplay">Not configured yet</span>
-              <button class="webhook-copy" id="webhookCopyBtn" onclick="copyWebhookUrl()" style="display:none">Copy</button>
-            </div>
-            <div class="webhook-steps">
-              <div class="webhook-step"><div class="wh-num">1</div><span>In Chatwoot, go to <strong>Settings → Inboxes → [Your Inbox] → Configuration</strong></span></div>
-              <div class="webhook-step"><div class="wh-num">2</div><span>Scroll to <strong>Webhook URL</strong> and paste the URL above</span></div>
-              <div class="webhook-step"><div class="wh-num">3</div><span>Enable the <strong>Messages Created</strong> event and save</span></div>
-            </div>
-            <div style="margin-top:14px">
-              <label class="form-label">Chatwoot Base URL</label>
-              <input class="form-input" id="cfgCwBase" type="url" placeholder="https://app.chatwoot.com" style="margin-bottom:8px" />
-              <label class="form-label">Chatwoot Account ID</label>
-              <input class="form-input" id="cfgCwAccountId" type="text" placeholder="e.g. 12345" style="margin-bottom:8px" />
-              <label class="form-label">Chatwoot Inbox ID</label>
-              <input class="form-input" id="cfgCwInboxId" type="text" placeholder="e.g. 6789" style="margin-bottom:8px" />
-              <label class="form-label">Chatwoot User Token</label>
-              <input class="form-input" id="cfgCwToken" type="text" placeholder="Chatwoot API access token" style="margin-bottom:8px" />
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <button class="save-btn" onclick="saveChatwootConfig()">Save</button>
-                <span class="save-msg" id="saveCwBaseMsg"></span>
-              </div>
-              <div style="font-size:11px;color:var(--muted);margin-top:5px">All four are required for the Chats tab, Quotation sending, and Prospects to reach WhatsApp.</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ADDITIONAL CHATWOOT ACCOUNTS — separate Chatwoot accounts this client already owns
-             elsewhere (e.g. a second brand/store), kept as a quick-access directory. These are
-             NOT wired into the Chats tab/AI bot — only the primary account above is. -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🗂️ Additional Chatwoot Accounts</div>
-            <div class="s-note">Link other Chatwoot accounts you already have (a second brand, another store) for quick access. These stay separate from the primary account above — this dashboard's Chats tab and AI bot only ever use that one.</div>
-            <div id="extraCwList" style="margin:10px 0;display:flex;flex-direction:column;gap:8px"></div>
-            <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
-              <input class="form-input" id="cfgExtraCwLabel" type="text" placeholder="Label, e.g. Second Store">
-              <input class="form-input" id="cfgExtraCwBase" type="url" placeholder="https://app.chatwoot.com">
-              <input class="form-input" id="cfgExtraCwAccountId" type="text" placeholder="Account ID, e.g. 12345">
-              <input class="form-input" id="cfgExtraCwToken" type="text" placeholder="API access token (optional)">
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
-              <button class="save-btn" onclick="addExtraChatwootAccount()">Add Account</button>
-              <span class="save-msg" id="extraCwMsg"></span>
-            </div>
-          </div>
-        </div>
-
+        <!-- Chatwoot Webhook + Additional Chatwoot Accounts moved to the 🧩 Integrations page
+             (Data Sync section) — see there. Both belong next to Channels/Integrations, not under
+             General; this page no longer has their markup. -->
         <div class="card" style="margin-bottom:14px">
 
           <div class="settings-section">
@@ -2055,40 +1962,8 @@ const TODAY = new Date().toISOString().slice(0,10);
             </div>
           </div>
 
-          <hr class="div">
-
-          <div class="settings-section">
-            <div class="s-head">📊 Google Sheets Sync</div>
-            <div class="s-note">Sync your lead data to a Google Sheet automatically. Paste the sheet link and choose which columns to export.</div>
-            <div class="field" style="margin-top:12px">
-              <label style="font-size:12px;font-weight:600;color:var(--muted)">Google Sheet URL</label>
-              <input id="cfgGsheetUrl" type="url" class="form-input" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-size:12px" />
-            </div>
-            <div style="margin-top:12px">
-              <label style="font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:8px">Columns to Sync</label>
-              <div style="display:flex;flex-wrap:wrap;gap:8px" id="gsheetColPicker">
-                <label class="gcol-check"><input type="checkbox" value="Phone" checked> Phone</label>
-                <label class="gcol-check"><input type="checkbox" value="Name" checked> Name</label>
-                <label class="gcol-check"><input type="checkbox" value="Stage" checked> Stage</label>
-                <label class="gcol-check"><input type="checkbox" value="Score" checked> Score</label>
-                <label class="gcol-check"><input type="checkbox" value="Language"> Language</label>
-                <label class="gcol-check"><input type="checkbox" value="Date" checked> Date</label>
-                <label class="gcol-check"><input type="checkbox" value="LastMsgAt"> Last Message</label>
-                <label class="gcol-check"><input type="checkbox" value="Handover"> Handover</label>
-                <label class="gcol-check"><input type="checkbox" value="HotMoment"> Hot Moment</label>
-                <label class="gcol-check"><input type="checkbox" value="QualScore"> Qual Score</label>
-                <label class="gcol-check"><input type="checkbox" value="BookingTime"> Booking Time</label>
-                <label class="gcol-check"><input type="checkbox" value="QualAnswers"> Qual Answers</label>
-              </div>
-            </div>
-            <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <button class="save-btn" onclick="saveGsheetConfig()">Save Config</button>
-              <button class="save-btn" onclick="triggerGsheetSync()" style="background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)">▶ Sync Now</button>
-              <span class="save-msg" id="gsheetMsg"></span>
-            </div>
-          </div>
-
         </div>
+        <!-- Google Sheets Sync moved to the 🧩 Integrations page (Data Sync section) — see there. -->
         <div id="summaryWrap" style="padding:0 16px 16px;display:none">
           <button id="summaryBtn" style="padding:7px 16px;background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--disp)">✨ Generate AI Summary</button>
           <div id="summaryCard" class="summary-card" style="display:none"></div>
@@ -2105,6 +1980,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🔌 Channels</div>
@@ -2221,6 +2097,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🧩 Integrations</div>
@@ -2370,6 +2247,96 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
+        <!-- DATA SYNC — Chatwoot Webhook, Additional Chatwoot Accounts, and Google Sheets Sync
+             moved here from the General page: these are all "how data moves in/out" plumbing, the
+             same category as everything else on this Integrations page, not a General setting. -->
+        <div class="card-title" style="margin-bottom:14px;margin-top:24px">🔄 Data Sync</div>
+
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🔗 Chatwoot Webhook</div>
+            <div class="s-note">Paste this URL into your Chatwoot inbox webhook settings so your AI bot receives messages.</div>
+            <div class="webhook-box" id="webhookBox">
+              <span class="webhook-url" id="webhookUrlDisplay">Not configured yet</span>
+              <button class="webhook-copy" id="webhookCopyBtn" onclick="copyWebhookUrl()" style="display:none">Copy</button>
+            </div>
+            <div class="webhook-steps">
+              <div class="webhook-step"><div class="wh-num">1</div><span>In Chatwoot, go to <strong>Settings → Inboxes → [Your Inbox] → Configuration</strong></span></div>
+              <div class="webhook-step"><div class="wh-num">2</div><span>Scroll to <strong>Webhook URL</strong> and paste the URL above</span></div>
+              <div class="webhook-step"><div class="wh-num">3</div><span>Enable the <strong>Messages Created</strong> event and save</span></div>
+            </div>
+            <div style="margin-top:14px">
+              <label class="form-label">Chatwoot Base URL</label>
+              <input class="form-input" id="cfgCwBase" type="url" placeholder="https://app.chatwoot.com" style="margin-bottom:8px" />
+              <label class="form-label">Chatwoot Account ID</label>
+              <input class="form-input" id="cfgCwAccountId" type="text" placeholder="e.g. 12345" style="margin-bottom:8px" />
+              <label class="form-label">Chatwoot Inbox ID</label>
+              <input class="form-input" id="cfgCwInboxId" type="text" placeholder="e.g. 6789" style="margin-bottom:8px" />
+              <label class="form-label">Chatwoot User Token</label>
+              <input class="form-input" id="cfgCwToken" type="text" placeholder="Chatwoot API access token" style="margin-bottom:8px" />
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <button class="save-btn" onclick="saveChatwootConfig()">Save</button>
+                <span class="save-msg" id="saveCwBaseMsg"></span>
+              </div>
+              <div style="font-size:11px;color:var(--muted);margin-top:5px">All four are required for the Chats tab, Quotation sending, and Prospects to reach WhatsApp.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ADDITIONAL CHATWOOT ACCOUNTS — separate Chatwoot accounts this client already owns
+             elsewhere (e.g. a second brand/store), kept as a quick-access directory. These are
+             NOT wired into the Chats tab/AI bot — only the primary account above is. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🗂️ Additional Chatwoot Accounts</div>
+            <div class="s-note">Link other Chatwoot accounts you already have (a second brand, another store) for quick access. These stay separate from the primary account above — this dashboard's Chats tab and AI bot only ever use that one.</div>
+            <div id="extraCwList" style="margin:10px 0;display:flex;flex-direction:column;gap:8px"></div>
+            <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
+              <input class="form-input" id="cfgExtraCwLabel" type="text" placeholder="Label, e.g. Second Store">
+              <input class="form-input" id="cfgExtraCwBase" type="url" placeholder="https://app.chatwoot.com">
+              <input class="form-input" id="cfgExtraCwAccountId" type="text" placeholder="Account ID, e.g. 12345">
+              <input class="form-input" id="cfgExtraCwToken" type="text" placeholder="API access token (optional)">
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+              <button class="save-btn" onclick="addExtraChatwootAccount()">Add Account</button>
+              <span class="save-msg" id="extraCwMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📊 Google Sheets Sync</div>
+            <div class="s-note">Sync your lead data to a Google Sheet automatically. Paste the sheet link and choose which columns to export.</div>
+            <div class="field" style="margin-top:12px">
+              <label style="font-size:12px;font-weight:600;color:var(--muted)">Google Sheet URL</label>
+              <input id="cfgGsheetUrl" type="url" class="form-input" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-size:12px" />
+            </div>
+            <div style="margin-top:12px">
+              <label style="font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:8px">Columns to Sync</label>
+              <div style="display:flex;flex-wrap:wrap;gap:8px" id="gsheetColPicker">
+                <label class="gcol-check"><input type="checkbox" value="Phone" checked> Phone</label>
+                <label class="gcol-check"><input type="checkbox" value="Name" checked> Name</label>
+                <label class="gcol-check"><input type="checkbox" value="Stage" checked> Stage</label>
+                <label class="gcol-check"><input type="checkbox" value="Score" checked> Score</label>
+                <label class="gcol-check"><input type="checkbox" value="Language"> Language</label>
+                <label class="gcol-check"><input type="checkbox" value="Date" checked> Date</label>
+                <label class="gcol-check"><input type="checkbox" value="LastMsgAt"> Last Message</label>
+                <label class="gcol-check"><input type="checkbox" value="Handover"> Handover</label>
+                <label class="gcol-check"><input type="checkbox" value="HotMoment"> Hot Moment</label>
+                <label class="gcol-check"><input type="checkbox" value="QualScore"> Qual Score</label>
+                <label class="gcol-check"><input type="checkbox" value="BookingTime"> Booking Time</label>
+                <label class="gcol-check"><input type="checkbox" value="QualAnswers"> Qual Answers</label>
+              </div>
+            </div>
+            <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <button class="save-btn" onclick="saveGsheetConfig()">Save Config</button>
+              <button class="save-btn" onclick="triggerGsheetSync()" style="background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)">▶ Sync Now</button>
+              <span class="save-msg" id="gsheetMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- Health Check -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -2401,6 +2368,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🎙️ Voice</div>
@@ -2442,6 +2410,106 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
+    <!-- MODULES & TABS — its own settings sub-page (moved out of General/Business Setup, which
+         used to bury the 4 industry-module toggles at the very bottom of a 20-section page).
+         Two groups: Industry Modules (Travel Agency/Recruitment/Appointments/B2B — each is a real
+         module with its own schema/pages) and Dashboard Tabs (Campaigns/Team/Knowledge Base/
+         Accounting — existing general-purpose tabs every client already has, just individually
+         hideable now; defaults to shown, see setupFeatureTabToggle's own comment for why that
+         default direction is the opposite of the Industry Modules below). -->
+    <div class="page hidden" id="pageModules">
+      <div class="page-pad">
+        <!-- SETTINGS SUB-NAV -->
+        <div class="card" style="margin-bottom:14px;padding:10px 14px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🧩 Industry Modules</div>
+            <div class="s-note">Enable or disable optional modules — each adds its own dashboard tab when on. Industry (General page) auto-enables the matching module, but every module can also be toggled manually here.</div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>🏢 Travel Agency</b><div class="s-note" style="margin:2px 0 0">Packages, itineraries, Umrah/Hajj groups, bookings, finance.</div></div>
+              <select class="form-input" id="cfgTaEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveTaEnabled">Save</button>
+              <span class="save-msg" id="saveTaEnabledMsg"></span>
+              <span id="taModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>💼 Recruitment &amp; Consultancy</b><div class="s-note" style="margin:2px 0 0">Job postings, candidate pipeline, AI screening, placements, fees.</div></div>
+              <select class="form-input" id="cfgRecruitEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveRecruitEnabled">Save</button>
+              <span class="save-msg" id="saveRecruitEnabledMsg"></span>
+              <span id="rcModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div id="apptModuleRow" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>📅 Appointment Booking</b><div class="s-note" style="margin:2px 0 0">Services, bookings calendar, and optional Cal.com sync — for healthcare, consultancy, and other services businesses.</div></div>
+              <select class="form-input" id="cfgApptEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveApptEnabled">Save</button>
+              <span class="save-msg" id="saveApptEnabledMsg"></span>
+              <span id="apptModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
+              <div style="flex:1;min-width:180px"><b>🤝 B2B Suite</b><div class="s-note" style="margin:2px 0 0">Smart Lists, trackable quotes/catalogs (CPQ), brand classification, and B2B analytics — for wholesale, distribution, and other B2B sales teams.</div></div>
+              <select class="form-input" id="cfgB2bEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveB2bEnabled">Save</button>
+              <span class="save-msg" id="saveB2bEnabledMsg"></span>
+              <span id="b2bModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🗂️ Dashboard Tabs</div>
+            <div class="s-note">Hide tabs your team doesn't use — they're all on by default, and this only changes your own dashboard's navigation. Nothing behind a hidden tab stops working; it's just out of the way.</div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>📢 Campaigns</b><div class="s-note" style="margin:2px 0 0">Direct messages, template broadcasts, follow-ups, automations.</div></div>
+              <select class="form-input" id="cfgFeatCampaignsEnabled" style="max-width:160px"><option value="Yes">Enabled</option><option value="No">Disabled</option></select>
+              <button class="save-btn" id="saveFeatCampaignsEnabled">Save</button>
+              <span class="save-msg" id="saveFeatCampaignsEnabledMsg"></span>
+              <span id="campaignsTabStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>📊 Team</b><div class="s-note" style="margin:2px 0 0">Per-agent performance, funnel analytics, revenue forecast.</div></div>
+              <select class="form-input" id="cfgFeatTeamEnabled" style="max-width:160px"><option value="Yes">Enabled</option><option value="No">Disabled</option></select>
+              <button class="save-btn" id="saveFeatTeamEnabled">Save</button>
+              <span class="save-msg" id="saveFeatTeamEnabledMsg"></span>
+              <span id="teamTabStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>📚 Knowledge Base</b><div class="s-note" style="margin:2px 0 0">Documents/FAQs the bot draws on when answering.</div></div>
+              <select class="form-input" id="cfgFeatKbEnabled" style="max-width:160px"><option value="Yes">Enabled</option><option value="No">Disabled</option></select>
+              <button class="save-btn" id="saveFeatKbEnabled">Save</button>
+              <span class="save-msg" id="saveFeatKbEnabledMsg"></span>
+              <span id="kbTabStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
+              <div style="flex:1;min-width:180px"><b>💰 Accounting</b><div class="s-note" style="margin:2px 0 0">Quotation → Invoice → Receipt, with optional ERPNext push.</div></div>
+              <select class="form-input" id="cfgFeatAccountingEnabled" style="max-width:160px"><option value="Yes">Enabled</option><option value="No">Disabled</option></select>
+              <button class="save-btn" id="saveFeatAccountingEnabled">Save</button>
+              <span class="save-msg" id="saveFeatAccountingEnabledMsg"></span>
+              <span id="accountingTabStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- BILLING -->
     <div class="page hidden" id="pageBilling">
       <div class="page-pad">
@@ -2451,6 +2519,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">💳 Billing</div>
@@ -2555,10 +2624,10 @@ const TODAY = new Date().toISOString().slice(0,10);
     <div class="more-sheet-title">More</div>
     <div class="more-sheet-grid">
       <button class="more-item" data-page="leads"><span class="bnIcon">👥</span><span class="bnLabel">Leads</span></button>
-      <button class="more-item" data-page="broadcast"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
-      <button class="more-item" data-page="team"><span class="bnIcon">📊</span><span class="bnLabel">Team</span></button>
-      <button class="more-item" data-page="knowledgebase"><span class="bnIcon">📚</span><span class="bnLabel">Knowledge Base</span></button>
-      <button class="more-item" data-page="accounting"><span class="bnIcon">💰</span><span class="bnLabel">Accounting</span></button>
+      <button class="more-item" data-page="broadcast" id="moreCampaignsTab"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
+      <button class="more-item" data-page="team" id="moreTeamTab"><span class="bnIcon">📊</span><span class="bnLabel">Team</span></button>
+      <button class="more-item" data-page="knowledgebase" id="moreKbTab"><span class="bnIcon">📚</span><span class="bnLabel">Knowledge Base</span></button>
+      <button class="more-item" data-page="accounting" id="moreAccountingTab"><span class="bnIcon">💰</span><span class="bnLabel">Accounting</span></button>
       <button class="more-item" data-page="billing" style="position:relative"><span class="bnIcon">💳</span><span class="bnLabel">Billing</span><span id="bnBillingBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
       <button class="more-item industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce"><span class="bnIcon">🛒</span><span class="bnLabel">Ecommerce</span></button>
       <button class="more-item" data-page="b2b" id="moreB2bTab" style="display:none"><span class="bnIcon">🤝</span><span class="bnLabel">B2B</span></button>
@@ -3821,13 +3890,13 @@ $id('hLogout').addEventListener('click',()=>{
 $id('hRefresh').addEventListener('click',()=>loadAll());
 
 /* ── NAVIGATION ── */
-const SETTINGS_GROUP=['settings','channels','integrations','voice']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
+const SETTINGS_GROUP=['settings','channels','integrations','voice','modules']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
 // Quotation no longer has its own nav entry — it's opened from a specific lead on the Human
 // Deals page (openQuoteFor()) instead, so it highlights that tab rather than nothing at all.
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','settings','channels','integrations','billing'];
+const MORE_GROUP=['broadcast','team','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','settings','channels','integrations','voice','modules','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -3856,6 +3925,7 @@ function navigate(page){
   if(page==='recruit') renderRecruit();
   if(page==='appointments') renderAppointments();
   if(page==='settings') populateSettings();
+  if(page==='modules') populateModulesPage();
   if(page==='chats') openChatsTab();
   if(page==='channels') channelsInit();
   if(page==='integrations') integrationsInit();
@@ -3899,6 +3969,7 @@ function showApp(){
   updateRecruitTabVisibility();
   updateApptTabVisibility();
   updateB2bTabVisibility();
+  updateFeatureTabVisibility();
   loadAll();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
@@ -5465,21 +5536,8 @@ async function removeTeamMember(email){
 function populateSettings(){
   if(!clientRecord)return;
   renderTeamMembers();
-  renderExtraChatwootAccounts();
-  showWebhookUrl();
-  // chatwoot config
-  $id('cfgCwBase').value=clientRecord.chatwoot_base||'';
-  $id('cfgCwAccountId').value=clientRecord.chatwoot_account_id||'';
-  $id('cfgCwInboxId').value=clientRecord.chatwoot_inbox_id||'';
-  $id('cfgCwToken').value=clientRecord.chatwoot_token||'';
-  // gsheet
-  if(clientRecord.gsheet_url) $id('cfgGsheetUrl').value=clientRecord.gsheet_url;
-  if(clientRecord.gsheet_cols){
-    try{
-      const saved=JSON.parse(clientRecord.gsheet_cols);
-      document.querySelectorAll('#gsheetColPicker input').forEach(i=>{ i.checked=saved.includes(i.value); });
-    }catch(e){}
-  }
+  // Chatwoot Webhook/Additional Accounts/Google Sheets Sync population moved to
+  // integrationsInit() below — that markup now lives on the Integrations page (Data Sync).
   // industry
   const indEl=$id('cfgIndustry');
   indEl.innerHTML=Object.entries(INDUSTRIES).map(([k,v])=>`<option value="${k}"${clientRecord.industry===k?' selected':''}>${v.label}</option>`).join('');
@@ -5536,14 +5594,8 @@ function populateSettings(){
   let stages=[];
   try{stages=flowJsonToStages(JSON.parse(clientRecord.flow_json||'{}'));}catch(e){}
   renderStages(stages);
-  // travel agency
-  initTaSettings();
-  // recruitment
-  initRcSettings();
-  // appointment booking — only offered as a module for services-style industries (isBookingIndustry())
-  initApptSettings();
-  // b2b suite
-  initB2bSettings();
+  // Module toggles (Travel Agency/Recruitment/Appointments/B2B) moved to their own "🧩 Modules"
+  // settings page — see populateModulesPage() — since this page no longer has that markup.
 }
 
 /* ── SERVICES ── */
@@ -6494,7 +6546,7 @@ function channelsInit(){
 
 /* ── INTEGRATIONS TAB (Bulk Marketing module: WhatsApp status, Resend, Sheets, Health Check) ── */
 const INT_SHEETS=[
-  {field:'gsheet_url', label:'Leads Export', page:'settings'},
+  {field:'gsheet_url', label:'Leads Export', page:'integrations'}, // moved from General to Integrations' own Data Sync section
   {field:'prospect_gsheet_url', label:'Prospect Import', page:null, external:'broadcast.html'}, // moved into Campaigns' own Import Prospects tab
   {field:'ecom_products_sheet', label:'Ecom Products', page:null},
   {field:'ecom_orders_sheet', label:'Ecom Orders', page:null},
@@ -6507,6 +6559,21 @@ function integrationsInit(){
   loadEmailStatus();
   loadMetaCapiStatus();
   renderHealthResults();
+  // Data Sync — Chatwoot Webhook, Additional Chatwoot Accounts, Google Sheets Sync. Moved here
+  // from populateSettings()/General along with their markup (see "DATA SYNC" comment above).
+  renderExtraChatwootAccounts();
+  showWebhookUrl();
+  $id('cfgCwBase').value=clientRecord.chatwoot_base||'';
+  $id('cfgCwAccountId').value=clientRecord.chatwoot_account_id||'';
+  $id('cfgCwInboxId').value=clientRecord.chatwoot_inbox_id||'';
+  $id('cfgCwToken').value=clientRecord.chatwoot_token||'';
+  if(clientRecord.gsheet_url) $id('cfgGsheetUrl').value=clientRecord.gsheet_url;
+  if(clientRecord.gsheet_cols){
+    try{
+      const saved=JSON.parse(clientRecord.gsheet_cols);
+      document.querySelectorAll('#gsheetColPicker input').forEach(i=>{ i.checked=saved.includes(i.value); });
+    }catch(e){}
+  }
 }
 
 // pageVoice — Voice-to-Voice Reply (moved from Integrations) + Voice Follow-ups.
@@ -11857,6 +11924,74 @@ $id('saveB2bEnabled').addEventListener('click',async()=>{
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
+
+/* ── DASHBOARD TABS (🧩 Modules page, "Dashboard Tabs" card) ──
+   Campaigns/Team/Knowledge Base/Accounting aren't modules with their own schema like Travel
+   Agency/Recruitment/Appointments/B2B above — they're existing general-purpose tabs every client
+   already has, just individually hideable now. That's why the default direction is the opposite
+   of the Industry Modules above: a blank/missing field here means "still on" (`!=='No'`), not
+   "never turned on" — every client already had these tabs before this feature shipped, and a
+   field that doesn't exist yet on an older CLIENTS row must not make their nav suddenly shrink. */
+async function ensureClientColumn(name){
+  const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+  const cols=(info.columns||[]).map(c=>c.title);
+  if(!cols.includes(name)){
+    await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:name,title:name,uidt:'SingleLineText'}).catch(()=>{});
+  }
+}
+// One shared factory instead of four more copy-pasted select+button+badge blocks like the
+// Industry Modules above — those were written one at a time as each module shipped separately;
+// these four are all genuinely identical in shape, so a factory is the honest representation
+// instead of pretending they're four independent features. Returns a populate() function the
+// caller runs on page load (and again right after a successful save) to sync select/badge/tab
+// visibility from clientRecord.
+function setupFeatureTabToggle({field, selectId, saveBtnId, msgId, badgeId, tabIds}){
+  const updateVisibility=()=>{
+    const enabled=(clientRecord[field]!=='No');
+    tabIds.forEach(id=>{const el=$id(id); if(el) el.style.display=enabled?'':'none';});
+  };
+  const populate=()=>{
+    const sel=$id(selectId); if(sel) sel.value=(clientRecord[field]==='No')?'No':'Yes';
+    _renderModuleBadge(badgeId, clientRecord[field]!=='No');
+    updateVisibility();
+  };
+  $id(saveBtnId).addEventListener('click', async()=>{
+    const btn=$id(saveBtnId), msg=$id(msgId);
+    btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+    try{
+      await ensureClientColumn(field);
+      const val=$id(selectId).value;
+      await patchClient({[field]:val});
+      clientRecord[field]=val;
+      populate();
+      msg.textContent='✓ Saved';
+    }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+    finally{ btn.disabled=false; setTimeout(()=>msg.textContent='',3000); }
+  });
+  return populate;
+}
+const _populateCampaignsTab=setupFeatureTabToggle({field:'feat_campaigns_enabled', selectId:'cfgFeatCampaignsEnabled', saveBtnId:'saveFeatCampaignsEnabled', msgId:'saveFeatCampaignsEnabledMsg', badgeId:'campaignsTabStatusBadge', tabIds:['dnCampaignsTab','moreCampaignsTab']});
+const _populateTeamTab=setupFeatureTabToggle({field:'feat_team_enabled', selectId:'cfgFeatTeamEnabled', saveBtnId:'saveFeatTeamEnabled', msgId:'saveFeatTeamEnabledMsg', badgeId:'teamTabStatusBadge', tabIds:['dnTeamTab','moreTeamTab']});
+const _populateKbTab=setupFeatureTabToggle({field:'feat_kb_enabled', selectId:'cfgFeatKbEnabled', saveBtnId:'saveFeatKbEnabled', msgId:'saveFeatKbEnabledMsg', badgeId:'kbTabStatusBadge', tabIds:['dnKbTab','moreKbTab']});
+const _populateAccountingTab=setupFeatureTabToggle({field:'feat_accounting_enabled', selectId:'cfgFeatAccountingEnabled', saveBtnId:'saveFeatAccountingEnabled', msgId:'saveFeatAccountingEnabledMsg', badgeId:'accountingTabStatusBadge', tabIds:['dnAccountingTab','moreAccountingTab']});
+
+// Called once at boot (showApp) so tab visibility is correct immediately, not only after a client
+// happens to visit the Modules page — mirrors how updateAgencyTabVisibility()/etc. are also
+// called from showApp() for the Industry Modules above.
+function updateFeatureTabVisibility(){
+  _populateCampaignsTab(); _populateTeamTab(); _populateKbTab(); _populateAccountingTab();
+}
+
+// Populates the whole "🧩 Modules" page — both cards. The Industry Modules card reuses the exact
+// same init functions the old (now-removed) General-page Modules section called; only their call
+// site moved.
+function populateModulesPage(){
+  initTaSettings();
+  initRcSettings();
+  initApptSettings();
+  initB2bSettings();
+  updateFeatureTabVisibility();
+}
 
 /* ── NOTIFICATIONS ── */
 async function pollNotifications(){
