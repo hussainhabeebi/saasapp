@@ -100,6 +100,16 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .onb-check{width:20px;height:20px;border-radius:50%;border:2px solid var(--ls);flex:none;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff}
 .onb-item.done .onb-check{background:var(--accent);border-color:var(--accent)}
 .onb-label{font-size:13px;font-weight:500}
+/* Animated highlight — used by the onboarding checklist to draw the eye to a specific settings
+   card (e.g. "Choose your Industry" jumping to Business Setup) rather than leaving a new client
+   to hunt for it themselves. Pulses a few times, then the JS side removes the class — this is
+   purely visual, no persistent state. */
+@keyframes highlightPulse{
+  0%{box-shadow:0 0 0 0 rgba(13,156,147,.55)}
+  70%{box-shadow:0 0 0 14px rgba(13,156,147,0)}
+  100%{box-shadow:0 0 0 0 rgba(13,156,147,0)}
+}
+.highlight-pulse{animation:highlightPulse 1.2s ease-out 3;border-color:var(--accent) !important}
 .hact-btn{background:rgba(255,255,255,.12);color:#fff;border:1.5px solid rgba(255,255,255,.18);border-radius:10px;padding:9px 18px;font-family:var(--disp);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap;backdrop-filter:blur(4px)}
 .hact-btn:hover{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.3)}
 .hact-btn.primary-act{background:linear-gradient(135deg,#0D9C93,#2DD4BF);border-color:transparent}
@@ -1647,6 +1657,84 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
           </div>
         </div>
+
+        <!-- BUSINESS SETUP — Industry + Modules, shown first: these two gate what every other
+             section on this page even means (Industry drives labels/theme/which module
+             auto-enables; Modules turns whole dashboard tabs on/off), so a new client should set
+             them before anything else, not stumble onto Industry at position #4 and Modules dead
+             last the way this page used to be ordered. id="bizSetupCard" is targeted by the
+             onboarding checklist's pulse-highlight (see renderOnboardingChecklist/highlightCard). -->
+        <div class="card" style="margin-bottom:14px" id="bizSetupCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🏗️ Business Setup</div>
+            <div class="s-note">Start here — these two settings shape what the rest of this dashboard looks like and does.</div>
+          </div>
+
+          <div class="settings-section">
+            <div class="s-head">Industry</div>
+            <div class="s-note">Adapts labels, tags, terminology and <b>dashboard theme colour</b> throughout the CRM. Travel & Tourism unlocks the ✈️ Travel module.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div>
+                <label class="form-label">Industry</label>
+                <select class="form-input" id="cfgIndustry" style="max-width:260px" onchange="previewTheme(this.value)"></select>
+              </div>
+              <div id="themePreviewBox" style="display:flex;gap:6px;align-items:center;padding:8px 12px;border:1px solid var(--line);border-radius:8px;font-size:12px;color:var(--muted)">
+                <span id="themeSwatchA" style="width:14px;height:14px;border-radius:50%;background:var(--accent);display:inline-block"></span>
+                <span id="themeSwatchB" style="width:14px;height:14px;border-radius:50%;background:var(--accent-soft);display:inline-block"></span>
+                <span id="themeLabel">Current theme</span>
+              </div>
+              <button class="save-btn" id="saveIndustryBtn" onclick="saveIndustry()">Save</button>
+              <span class="save-msg" id="saveIndustryMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <!-- MODULES — one place to enable/disable every optional module and its dashboard tab.
+               Consolidates what used to be three separate settings-section blocks (Travel Agency,
+               and Recruitment duplicated twice with a hidden dead toggle shadowing the visible
+               one — $id() always resolved to the first DOM match, so the visible Recruit select
+               silently did nothing). Same ids, same initTaSettings()/initRcSettings()/existing
+               click listeners — this fix is just correct, non-duplicated markup; Appointments is
+               the only genuinely new module/toggle here. -->
+          <div class="settings-section">
+            <div class="s-head">🧩 Modules</div>
+            <div class="s-note">Enable or disable optional modules — each adds its own dashboard tab when on. Industry above auto-enables the matching module, but every module can also be toggled manually here.</div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>🏢 Travel Agency</b><div class="s-note" style="margin:2px 0 0">Packages, itineraries, Umrah/Hajj groups, bookings, finance.</div></div>
+              <select class="form-input" id="cfgTaEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveTaEnabled">Save</button>
+              <span class="save-msg" id="saveTaEnabledMsg"></span>
+              <span id="taModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>💼 Recruitment &amp; Consultancy</b><div class="s-note" style="margin:2px 0 0">Job postings, candidate pipeline, AI screening, placements, fees.</div></div>
+              <select class="form-input" id="cfgRecruitEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveRecruitEnabled">Save</button>
+              <span class="save-msg" id="saveRecruitEnabledMsg"></span>
+              <span id="rcModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div id="apptModuleRow" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>📅 Appointment Booking</b><div class="s-note" style="margin:2px 0 0">Services, bookings calendar, and optional Cal.com sync — for healthcare, consultancy, and other services businesses.</div></div>
+              <select class="form-input" id="cfgApptEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveApptEnabled">Save</button>
+              <span class="save-msg" id="saveApptEnabledMsg"></span>
+              <span id="apptModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
+              <div style="flex:1;min-width:180px"><b>🤝 B2B Suite</b><div class="s-note" style="margin:2px 0 0">Smart Lists, trackable quotes/catalogs (CPQ), brand classification, and B2B analytics — for wholesale, distribution, and other B2B sales teams.</div></div>
+              <select class="form-input" id="cfgB2bEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveB2bEnabled">Save</button>
+              <span class="save-msg" id="saveB2bEnabledMsg"></span>
+              <span id="b2bModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- USER MANAGEMENT -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -1734,26 +1822,6 @@ const TODAY = new Date().toISOString().slice(0,10);
         </div>
 
         <div class="card" style="margin-bottom:14px">
-
-          <div class="settings-section">
-            <div class="s-head">Industry</div>
-            <div class="s-note">Adapts labels, tags, terminology and <b>dashboard theme colour</b> throughout the CRM. Travel & Tourism unlocks the ✈️ Travel module.</div>
-            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-              <div>
-                <label class="form-label">Industry</label>
-                <select class="form-input" id="cfgIndustry" style="max-width:260px" onchange="previewTheme(this.value)"></select>
-              </div>
-              <div id="themePreviewBox" style="display:flex;gap:6px;align-items:center;padding:8px 12px;border:1px solid var(--line);border-radius:8px;font-size:12px;color:var(--muted)">
-                <span id="themeSwatchA" style="width:14px;height:14px;border-radius:50%;background:var(--accent);display:inline-block"></span>
-                <span id="themeSwatchB" style="width:14px;height:14px;border-radius:50%;background:var(--accent-soft);display:inline-block"></span>
-                <span id="themeLabel">Current theme</span>
-              </div>
-              <button class="save-btn" id="saveIndustryBtn" onclick="saveIndustry()">Save</button>
-              <span class="save-msg" id="saveIndustryMsg"></span>
-            </div>
-          </div>
-
-          <hr class="div">
 
           <div class="settings-section">
             <div class="s-head">🔔 Notification Email</div>
@@ -2017,52 +2085,6 @@ const TODAY = new Date().toISOString().slice(0,10);
               <button class="save-btn" onclick="saveGsheetConfig()">Save Config</button>
               <button class="save-btn" onclick="triggerGsheetSync()" style="background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)">▶ Sync Now</button>
               <span class="save-msg" id="gsheetMsg"></span>
-            </div>
-          </div>
-
-          <hr class="div">
-
-          <!-- MODULES — one place to enable/disable every optional module and its dashboard tab.
-               Consolidates what used to be three separate settings-section blocks (Travel Agency,
-               and Recruitment duplicated twice with a hidden dead toggle shadowing the visible
-               one — $id() always resolved to the first DOM match, so the visible Recruit select
-               silently did nothing). Same ids, same initTaSettings()/initRcSettings()/existing
-               click listeners — this fix is just correct, non-duplicated markup; Appointments is
-               the only genuinely new module/toggle here. -->
-          <div class="settings-section">
-            <div class="s-head">🧩 Modules</div>
-            <div class="s-note">Enable or disable optional modules — each adds its own dashboard tab when on. Industry (General tab above) auto-enables the matching module, but every module can also be toggled manually here.</div>
-
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
-              <div style="flex:1;min-width:180px"><b>🏢 Travel Agency</b><div class="s-note" style="margin:2px 0 0">Packages, itineraries, Umrah/Hajj groups, bookings, finance.</div></div>
-              <select class="form-input" id="cfgTaEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
-              <button class="save-btn" id="saveTaEnabled">Save</button>
-              <span class="save-msg" id="saveTaEnabledMsg"></span>
-              <span id="taModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
-            </div>
-
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
-              <div style="flex:1;min-width:180px"><b>💼 Recruitment &amp; Consultancy</b><div class="s-note" style="margin:2px 0 0">Job postings, candidate pipeline, AI screening, placements, fees.</div></div>
-              <select class="form-input" id="cfgRecruitEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
-              <button class="save-btn" id="saveRecruitEnabled">Save</button>
-              <span class="save-msg" id="saveRecruitEnabledMsg"></span>
-              <span id="rcModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
-            </div>
-
-            <div id="apptModuleRow" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
-              <div style="flex:1;min-width:180px"><b>📅 Appointment Booking</b><div class="s-note" style="margin:2px 0 0">Services, bookings calendar, and optional Cal.com sync — for healthcare, consultancy, and other services businesses.</div></div>
-              <select class="form-input" id="cfgApptEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
-              <button class="save-btn" id="saveApptEnabled">Save</button>
-              <span class="save-msg" id="saveApptEnabledMsg"></span>
-              <span id="apptModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
-            </div>
-
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
-              <div style="flex:1;min-width:180px"><b>🤝 B2B Suite</b><div class="s-note" style="margin:2px 0 0">Smart Lists, trackable quotes/catalogs (CPQ), brand classification, and B2B analytics — for wholesale, distribution, and other B2B sales teams.</div></div>
-              <select class="form-input" id="cfgB2bEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
-              <button class="save-btn" id="saveB2bEnabled">Save</button>
-              <span class="save-msg" id="saveB2bEnabledMsg"></span>
-              <span id="b2bModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
           </div>
 
@@ -4040,10 +4062,28 @@ function renderHomeBillingBanners(){
 /* ── GETTING STARTED CHECKLIST (Home) — shown until every step is complete,
    then auto-dismissed; a customer can also hide it manually at any point ── */
 let _onbSteps=[];
+// Scrolls a settings card into view and pulses its border a few times — used by the onboarding
+// checklist to point a new client straight at a specific card instead of leaving them to hunt for
+// it among everything else on the page. Purely visual/transient: no state is stored, the class is
+// just removed again once the animation's had time to run (3 pulses at 1.2s each, see the
+// .highlight-pulse keyframes).
+function highlightCard(id){
+  const el=$id(id);
+  if(!el) return;
+  el.scrollIntoView({behavior:'smooth', block:'center'});
+  el.classList.add('highlight-pulse');
+  setTimeout(()=>el.classList.remove('highlight-pulse'), 3800);
+}
+
 function renderOnboardingChecklist(){
   const wrap=$id('onboardingChecklist'); if(!wrap) return;
   const c=clientRecord||{};
   const steps=[
+    // First step, deliberately — Industry (and Modules, same card) gate what the rest of Settings
+    // even shows, so a new client should set this before anything else. go() navigates to Settings
+    // and highlights the Business Setup card (see highlightCard above) rather than just landing on
+    // the page and leaving them to find it themselves.
+    {label:'Choose your Industry', done:!!c.industry, go:()=>{ navigate('settings'); setTimeout(()=>highlightCard('bizSetupCard'),80); }},
     {label:'Connect a channel (WhatsApp/website)', done:!!c.chatwoot_inbox_id, go:()=>navigate('channels')},
     {label:"Set up your bot's prompt", done:!!(c.main_prompt&&c.main_prompt.trim()), go:()=>navigate('settings')},
     {label:'Activate your plan', done:!!c.stripe_subscription_id, go:()=>navigate('billing')},
