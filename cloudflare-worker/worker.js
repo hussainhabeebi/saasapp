@@ -6568,13 +6568,16 @@ function erpnextErrorMessage(data, status){
 // Finds an existing Customer by name, or creates a minimal one. ERPNext's Quotation/Sales
 // Invoice/Payment Entry doctypes all require a real Customer record to exist first — there's no
 // way to post a sales document against a bare name string.
-async function erpnextResolveCustomer(c, leadName, leadPhone){
+async function erpnextResolveCustomer(c, leadName, leadPhone, leadEmail){
   const name=String(leadName||leadPhone||'Customer').trim().slice(0,140)||'Customer';
   const filters=encodeURIComponent(JSON.stringify([['customer_name','=',name]]));
   const searchR=await erpnextFetch(c, `/api/resource/Customer?filters=${filters}&limit_page_length=1`);
   const searchData=await searchR.json().catch(()=>({}));
   if(searchR.ok && searchData?.data?.[0]?.name) return searchData.data[0].name;
-  const createR=await erpnextFetch(c, '/api/resource/Customer', {method:'POST', body:JSON.stringify({customer_name:name, customer_type:'Individual'})});
+  const createPayload={customer_name:name, customer_type:'Individual'};
+  if(leadEmail) createPayload.email_id=String(leadEmail).trim().slice(0,200);
+  if(leadPhone) createPayload.mobile_no=String(leadPhone).trim().slice(0,40);
+  const createR=await erpnextFetch(c, '/api/resource/Customer', {method:'POST', body:JSON.stringify(createPayload)});
   const createData=await createR.json().catch(()=>({}));
   if(!createR.ok) throw new Error('Customer — '+erpnextErrorMessage(createData, createR.status));
   return createData?.data?.name;
@@ -6718,6 +6721,25 @@ async function handleErpnextCustomerCreate(request, env){
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
   return json({ok:true, customer:data?.data});
+}
+
+// Search-or-create by name (via erpnextResolveCustomer, the same helper the ERPNext push routes
+// use), unlike handleErpnextCustomerCreate above which always creates — used by the Human Deals
+// "✅ Won" one-click button so marking a lead Won can safely be clicked more than once, or land on
+// a lead that gets synced into a real ERPNext document later, without ever creating a duplicate
+// Customer record for the same name.
+async function handleErpnextCustomerEnsure(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in the ⚙️ ERPNext tab.'}, 400);
+  const body=await request.json().catch(()=>({}));
+  try{
+    const name=await erpnextResolveCustomer(c, body.name, body.phone, body.email);
+    return json({ok:true, name});
+  }catch(e){
+    return json({error:String(e.message||e).slice(0,500)}, 502);
+  }
 }
 
 async function handleErpnextItemsList(request, env){
@@ -6890,6 +6912,7 @@ export default {
       else if(url.pathname==='/accounting/documents/send-email' && request.method==='POST'){ res=await handleAccountingDocumentSendEmail(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }
+      else if(url.pathname==='/erpnext/customers/ensure' && request.method==='POST'){ res=await handleErpnextCustomerEnsure(request, env); }
       else if(url.pathname==='/erpnext/items' && request.method==='GET'){ res=await handleErpnextItemsList(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
