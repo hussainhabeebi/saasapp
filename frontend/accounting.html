@@ -713,10 +713,12 @@ function stampAcctFooter(doc,marginX){
   }
 }
 
-/* ── PDF EXPORT — itemized table plus the same branding fields as the Quotation feature (logo,
-   accent color, header title, terms, payment method, footer address — all read straight off
-   clientRecord, edited from there, not duplicated here). Shared by the download button and the
-   send-by-email flow below. ── */
+/* ── PDF EXPORT — a full-page invoice/quotation layout (logo mark + large document-type wordmark,
+   Billed-to block, clean-lined item table, a highlighted Total bar, a Thank You note, Payment
+   Information and a signature block) modeled on a typical modern invoice template. Branding
+   (logo, accent color, header title, terms, payment info, footer address) is the same shared
+   Quotation-feature data clientRecord already carries — edited from there, not duplicated here.
+   Shared by the download button and the send-by-email flow below. ── */
 function buildDocumentPdf(id){
   const d=allDocuments.find(x=>x.Id===id);
   if(!d) return null;
@@ -725,101 +727,168 @@ function buildDocumentPdf(id){
   let items=[]; try{ items=JSON.parse(d.line_items_json||'[]'); }catch(e){}
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
-  const marginX=40;
+  const marginX=48;
+  const pageW=doc.internal.pageSize.getWidth();
   const pageH=doc.internal.pageSize.getHeight();
-  let y=50;
+  const contentW=pageW-marginX*2;
+  let y=56;
   const typeLabel={quotation:'Quotation', invoice:'Invoice', receipt:'Receipt'}[d.type]||'Document';
-  const accentRgb=hexToRgb(clientRecord?.quote_accent_color)||[194,65,12];
-  const softRgb=[255,247,237];
+  // Defaults to black/white (the reference template's own look) — still overridable via the
+  // existing Accent Color setting for a client who wants their own brand color instead.
+  const accentRgb=hexToRgb(clientRecord?.quote_accent_color)||[0,0,0];
 
-  let headerX=marginX;
+  // ── Header: logo mark top-left, large document-type wordmark top-right ──
+  let logoBottom=y;
   if(clientRecord?.quote_logo_url){
     try{
       const mime=/data:image\/(png|jpe?g|webp)/.exec(clientRecord.quote_logo_url);
       const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'PNG';
-      // Fit within a 90x45 box without distorting the aspect ratio.
-      const maxW=90,maxH=45;
+      const maxW=56,maxH=56;
       let w=maxW,h=maxH;
       if(_acctLogoDims?.w&&_acctLogoDims?.h){
         const ratio=Math.min(maxW/_acctLogoDims.w,maxH/_acctLogoDims.h);
         w=_acctLogoDims.w*ratio; h=_acctLogoDims.h*ratio;
       }
       doc.addImage(clientRecord.quote_logo_url,fmt,marginX,y,w,h,undefined,'FAST');
-      headerX=marginX+110;
+      logoBottom=y+h;
     }catch(e){}
+  }else{
+    // No logo set — fall back to the account/header name so this corner isn't blank.
+    doc.setFont('helvetica','bold');doc.setFontSize(13);doc.setTextColor(0);
+    doc.text(clientRecord?.quote_header_title||clientRecord?.client_name||'',marginX,y+16);
+    logoBottom=y+24;
   }
+  doc.setFont('times','bolditalic');doc.setFontSize(30);doc.setTextColor(0);
+  doc.text(typeLabel,pageW-marginX,y+24,{align:'right'});
+  y=Math.max(logoBottom,y+40)+26;
+
+  // ── Billed to (left) / document no. + date (right) ──
+  const billLines=[];
+  if(lead){ billLines.push(lead.Name||lead.Phone||'Customer'); if(lead.Phone) billLines.push(lead.Phone); if(lead.Email) billLines.push(lead.Email); }
+  else if(erpCustomer){ billLines.push(erpCustomer.customer_name||erpCustomer.name); if(erpCustomer.mobile_no) billLines.push(erpCustomer.mobile_no); if(erpCustomer.email_id) billLines.push(erpCustomer.email_id); }
+  else billLines.push('Customer');
+  const customerLabel=billLines[0];
+
+  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(0);
+  doc.text('Billed to:',marginX,y);
+  doc.setFont('helvetica','normal');doc.setFontSize(10);
+  billLines.forEach((line,i)=>doc.text(line,marginX,y+15+i*13));
 
   // Invoice number: the real ERPNext-issued number (e.g. "SINV-2026-00001") once synced, since
   // that's the number that actually means something in the client's books — falls back to this
   // document's own local id for one that hasn't been synced yet.
-  const docNumber=d.erpnext_doc_name||`#${d.Id}`;
-  doc.setFont('helvetica','bold');doc.setFontSize(18);
-  doc.text(clientRecord?.quote_header_title||clientRecord?.client_name||typeLabel,headerX,y+14);
-  doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(100);
-  doc.text(`${typeLabel} ${docNumber}`,headerX,y+32);
-  doc.setTextColor(0);
-  y+=64;
+  const docNumber=d.erpnext_doc_name||String(d.Id);
+  const dateStr=d.doc_created_at?new Date(d.doc_created_at).toLocaleDateString(undefined,{day:'2-digit',month:'long',year:'numeric'}):new Date().toLocaleDateString();
+  doc.text(`${typeLabel} No. ${docNumber}`,pageW-marginX,y,{align:'right'});
+  doc.text(dateStr,pageW-marginX,y+15,{align:'right'});
 
-  const customerLabel=lead?(lead.Name||lead.Phone):(erpCustomer?(erpCustomer.customer_name||erpCustomer.name):'Customer');
-  doc.setFontSize(11);
-  doc.text(`Prepared for: ${customerLabel}`,marginX,y);
-  doc.text(`Date: ${d.doc_created_at?new Date(d.doc_created_at).toLocaleDateString():new Date().toLocaleDateString()}`,400,y);
-  y+=24;
+  y+=15+billLines.length*13+28;
 
+  // ── Item table — clean row dividers, no filled header, matching the reference's plain style ──
   doc.autoTable({
     startY:y,
     margin:{left:marginX,right:marginX},
-    head:[['Item','Qty','Unit Price','Line Total']],
+    head:[['Item','Quantity','Unit Price','Total']],
     body:items.map(it=>[it.name,String(it.qty),fmtMoney(it.price,d.currency),fmtMoney((Number(it.qty)||0)*(Number(it.price)||0),d.currency)]),
-    // No GST — new documents always have tax_pct 0, so only Subtotal+Total print for them; the Tax
-    // row only still appears on a document created before this rule, so its historical PDF still
-    // matches what was actually charged.
-    foot:(Number(d.tax_pct)>0?[
-      ['','','Subtotal',fmtMoney(d.subtotal,d.currency)],
-      ['','',`Tax (${d.tax_pct}%)`,fmtMoney(d.tax_amount,d.currency)],
-      ['','','Total',fmtMoney(d.total,d.currency)],
-    ]:[
-      ['','','Total',fmtMoney(d.total,d.currency)],
-    ]),
-    theme:'grid',
-    headStyles:{fillColor:accentRgb},
-    footStyles:{fillColor:softRgb,textColor:0,fontStyle:'bold'},
-    styles:{fontSize:10},
+    theme:'plain',
+    styles:{fontSize:10,cellPadding:{top:8,bottom:8,left:0,right:0},textColor:[20,20,20]},
+    headStyles:{fontStyle:'bold',textColor:[0,0,0],fontSize:10.5},
+    columnStyles:{1:{halign:'left',cellWidth:80},2:{halign:'right',cellWidth:90},3:{halign:'right',cellWidth:90}},
+    didDrawCell:(data)=>{
+      const isHead=data.section==='head';
+      doc.setDrawColor(isHead?0:225);
+      doc.setLineWidth(isHead?1.1:0.6);
+      doc.line(data.cell.x,data.cell.y+data.cell.height,data.cell.x+data.cell.width,data.cell.y+data.cell.height);
+    },
   });
 
-  y=((doc.lastAutoTable&&doc.lastAutoTable.finalY)||y+40)+26;
-  if(d.notes){
-    if(y>pageH-100){doc.addPage();y=50;}
-    doc.setFont('helvetica','bold');doc.setFontSize(11);
-    doc.text('Notes',marginX,y);
-    y+=16;
-    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
-    doc.splitTextToSize(d.notes,515).forEach(line=>{ if(y>pageH-40){doc.addPage();y=50;} doc.text(line,marginX,y); y+=12; });
+  y=((doc.lastAutoTable&&doc.lastAutoTable.finalY)||y+40)+18;
+
+  // ── Summary: Subtotal / Tax (if any, pre-existing documents only — see "No GST" note) / Total ──
+  // Total gets a filled bar (accent color, white text) the same way the reference highlights it.
+  const summaryX=pageW-marginX-160;
+  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(0);
+  doc.text('Subtotal',summaryX,y);
+  doc.setFont('helvetica','normal');
+  doc.text(fmtMoney(d.subtotal,d.currency),pageW-marginX,y,{align:'right'});
+  y+=18;
+  if(Number(d.tax_pct)>0){
+    doc.setFont('helvetica','bold');
+    doc.text(`Tax (${d.tax_pct}%)`,summaryX,y);
+    doc.setFont('helvetica','normal');
+    doc.text(fmtMoney(d.tax_amount,d.currency),pageW-marginX,y,{align:'right'});
+    y+=18;
+  }
+  y+=18;
+  const barH=30;
+  doc.setFillColor(...accentRgb);
+  doc.rect(summaryX-16,y-barH+9,pageW-marginX-(summaryX-16),barH,'F');
+  doc.setTextColor(255);doc.setFont('helvetica','bold');doc.setFontSize(12);
+  doc.text('Total',summaryX,y+9);
+  doc.text(fmtMoney(d.total,d.currency),pageW-marginX,y+9,{align:'right'});
+  doc.setTextColor(0);
+  y+=barH+34;
+
+  // ── Thank you — an italic serif flourish standing in for a script font (jsPDF only ships the
+  // core Helvetica/Times/Courier faces; embedding a custom script font is a heavier lift not
+  // taken on here) ──
+  if(y>pageH-160){doc.addPage();y=56;}
+  doc.setFont('times','italic');doc.setFontSize(24);doc.setTextColor(0);
+  doc.text('Thank you!',marginX,y);
+  y+=32;
+
+  // ── Payment Information (left, from the shared Payment Information field — can be as simple as
+  // "Bank Transfer, Cash" or full bank details, one per line) / signature block (right) ──
+  const paymentInfo=(clientRecord?.quote_payment_methods||'').trim();
+  let leftY=y, rightY=y;
+  if(paymentInfo){
+    doc.setFont('helvetica','bold');doc.setFontSize(10);
+    doc.text('Payment Information',marginX,leftY);
+    leftY+=16;
+    doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.setTextColor(60);
+    paymentInfo.split('\n').forEach(rawLine=>{
+      doc.splitTextToSize(rawLine,contentW*0.5).forEach(line=>{
+        if(leftY>pageH-40){doc.addPage();leftY=56;}
+        doc.text(line,marginX,leftY); leftY+=13;
+      });
+    });
     doc.setTextColor(0);
   }
 
-  // Terms & Conditions — shared with the Quotation feature (invoice_terms falls back to
-  // quote_terms, same convention as quoteBuildPdfDoc/quoteApplyModeUi in dashboard.html).
-  const terms=(d.type==='invoice'?(clientRecord?.invoice_terms||clientRecord?.quote_terms||''):(clientRecord?.quote_terms||'')).trim();
-  if(terms){
-    if(y>pageH-100){doc.addPage();y=50;}
-    doc.setFont('helvetica','bold');doc.setFontSize(11);
-    doc.text(d.type==='invoice'?'Terms':'Terms & Conditions',marginX,y);
+  doc.setFont('times','normal');doc.setFontSize(12);
+  doc.text(clientRecord?.client_name||'',pageW-marginX,rightY,{align:'right'});
+  rightY+=15;
+  const footerAddr=(clientRecord?.quote_footer_address||'').trim();
+  if(footerAddr){
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
+    doc.splitTextToSize(footerAddr,220).forEach(line=>{ doc.text(line,pageW-marginX,rightY,{align:'right'}); rightY+=12; });
+    doc.setTextColor(0);
+  }
+
+  y=Math.max(leftY,rightY)+22;
+
+  // ── Notes (document-specific) and Terms & Conditions (shared with the Quotation feature —
+  // invoice_terms falls back to quote_terms, same convention as quoteApplyModeUi in
+  // dashboard.html) — kept from the previous layout, placed after the styled sections above ──
+  if(d.notes){
+    if(y>pageH-100){doc.addPage();y=56;}
+    doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(0);
+    doc.text('Notes',marginX,y);
     y+=16;
     doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
-    doc.splitTextToSize(terms,515).forEach(line=>{ if(y>pageH-40){doc.addPage();y=50;} doc.text(line,marginX,y); y+=12; });
+    doc.splitTextToSize(d.notes,contentW).forEach(line=>{ if(y>pageH-40){doc.addPage();y=56;} doc.text(line,marginX,y); y+=12; });
     doc.setTextColor(0);
     y+=6;
   }
 
-  const paymentMethods=(clientRecord?.quote_payment_methods||'').trim();
-  if(paymentMethods){
-    if(y>pageH-100){doc.addPage();y=50;}
-    doc.setFont('helvetica','bold');doc.setFontSize(11);
-    doc.text('Payment Method',marginX,y);
+  const terms=(d.type==='invoice'?(clientRecord?.invoice_terms||clientRecord?.quote_terms||''):(clientRecord?.quote_terms||'')).trim();
+  if(terms){
+    if(y>pageH-100){doc.addPage();y=56;}
+    doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(0);
+    doc.text(d.type==='invoice'?'Terms':'Terms & Conditions',marginX,y);
     y+=16;
     doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
-    doc.splitTextToSize(paymentMethods,515).forEach(line=>{ if(y>pageH-40){doc.addPage();y=50;} doc.text(line,marginX,y); y+=12; });
+    doc.splitTextToSize(terms,contentW).forEach(line=>{ if(y>pageH-40){doc.addPage();y=56;} doc.text(line,marginX,y); y+=12; });
     doc.setTextColor(0);
   }
 
