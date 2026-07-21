@@ -1188,18 +1188,28 @@ distinguishes the three states: "Not synced" → "✓ Synced (draft)" → "✓ P
 live-verified against a real Frappe Cloud site in this session, same honest caveat as the rest of
 this ERPNext integration.
 
-**Richer PDF — logo, accent color, Terms, Payment Method, footer address, and the real ERPNext
-invoice number** (`buildDocumentPdf`) — this PDF was previously plain (itemized table only, no
-branding). It now draws the same logo/accent-color/header-title/footer-address/payment-method/
-terms fields the Quotation feature already has (`quote_logo_url`, `quote_accent_color`,
-`quote_header_title`, `quote_footer_address`, `quote_payment_methods`, `quote_terms`/
-`invoice_terms` — all CLIENTS columns, unchanged), read straight off the same `clientRecord` this
-page already loads. Deliberately **not** a second copy of those settings — there is exactly one
-place to edit logo/terms/etc. (a lead's Quote/Invoice page under Human Deals), and every PDF this
-module generates, plus the Quotation feature's own, picks up the same values; the Document modal
-says so directly. The document number printed is `erpnext_doc_name` once the document has been
+**Full-page PDF layout** (`buildDocumentPdf`) — modeled on a typical modern invoice template: a
+logo mark top-left with a large italic-serif document-type wordmark ("Invoice"/"Quotation"/
+"Receipt") top-right, a "Billed to:" block against the document number and date, a clean-lined
+item table (no filled header — just a bold rule under the column names and thin gray row
+dividers), a Subtotal/Tax/**Total** summary with Total picked out in a solid color bar (white
+text), an italic "Thank you!" line (jsPDF only ships the core Helvetica/Times/Courier faces, so
+this stands in for a true script font rather than being one), a "Payment Information" block, and a
+signature block (business name + address) bottom-right. All branding — logo, accent color
+(defaults to black/white now, matching this template's own look, still overridable), header title,
+footer address, payment info, terms — is the same `quote_logo_url`/`quote_accent_color`/
+`quote_header_title`/`quote_footer_address`/`quote_payment_methods`/`quote_terms`/`invoice_terms`
+CLIENTS data the Quotation feature already has, read straight off the same `clientRecord` this page
+already loads — deliberately **not** a second copy of those settings; there is exactly one place to
+edit logo/terms/etc. (a lead's Quote/Invoice page under Human Deals), and every PDF this module
+generates, plus the Quotation feature's own, picks up the same values (the Document modal says so
+directly). `quote_payment_methods` (Human Deals → Quote/Invoice → "Payment Information") is now a
+multi-line field, not a single-line one, so it can hold full bank details (bank name, account name,
+account number — one per line) instead of only a short list of accepted methods; existing
+single-line values keep working unchanged. The document number printed is `erpnext_doc_name` once
 synced (e.g. `SINV-2026-00001`, the real ERPNext-issued number) — falling back to this document's
-own local `#<id>` before that, since there's nothing else to show yet.
+own local id before that, since there's nothing else to show yet. There's no invented "due date" —
+nothing in this app tracks one today, so nothing is shown rather than fabricating a date.
 
 **Send Invoice by Email** — a "📧" action per document row builds the same PDF the download button
 does (`buildDocumentPdf`, refactored so both share one jsPDF build), then posts it as a base64

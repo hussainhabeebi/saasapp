@@ -1270,8 +1270,8 @@ const TODAY = new Date().toISOString().slice(0,10);
 
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
             <div>
-              <label class="form-label">Payment Methods</label>
-              <input class="form-input" id="quotePaymentMethods" type="text" placeholder="e.g. Bank Transfer, Cash, Card">
+              <label class="form-label">Payment Information</label>
+              <textarea class="form-input" id="quotePaymentMethods" rows="3" placeholder="e.g. Bank Transfer, Cash, Card&#10;Or full bank details — Bank Name, Account Name, Account No — one per line, printed as-is on the PDF's Payment Information section"></textarea>
             </div>
             <div>
               <label class="form-label">Tax %</label>
