@@ -2435,31 +2435,11 @@ const TODAY = new Date().toISOString().slice(0,10);
 
         <div id="billingBanner" style="display:none;margin-bottom:14px"></div>
 
-        <!-- Company Profile -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🏢 Company Profile</div>
-            <div class="s-note">Used on your Stripe invoices/receipts and as your account name.</div>
-            <label class="form-label">Company Name</label>
-            <input class="form-input" id="cfgCompanyName" type="text" placeholder="Your company name" style="margin-bottom:8px">
-            <label class="form-label">Billing Email</label>
-            <div class="s-note" style="margin-top:0">Where invoices, payment receipts and renewal reminders are sent — defaults to your login email, which may not be who should actually receive billing mail.</div>
-            <input class="form-input" id="cfgBillingEmail" type="email" placeholder="billing@yourcompany.com" style="margin-bottom:8px">
-            <label class="form-label">Billing Address</label>
-            <textarea class="form-input" id="cfgCompanyAddress" rows="2" placeholder="Street, city, state, PIN/postal code, country" style="margin-bottom:8px"></textarea>
-            <button class="save-btn" onclick="saveCompanyProfile()">Save</button>
-            <span class="save-msg" id="companyProfileMsg"></span>
-          </div>
-        </div>
-
-        <!-- Customer Portal -->
+        <!-- Customer Portal — plan status and any payment warnings first, since that's what a
+             client actually needs to see before anything else on this page. -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🧾 Customer Portal</div>
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-              <button class="save-btn" onclick="syncBillingNow()" style="opacity:.85">🔄 Sync Subscription Now</button>
-              <span class="save-msg" id="billingSyncMsg"></span>
-            </div>
             <div id="billingNoPlan">
               <div class="s-note">Choose a plan to get started.</div>
               <div class="s-note" id="billingEmailNotice"></div>
@@ -2477,9 +2457,32 @@ const TODAY = new Date().toISOString().slice(0,10);
                 Status: <strong id="billingPlanStatus"></strong>
               </div>
               <div class="s-note" id="billingRenewalLine"></div>
-              <button class="save-btn" onclick="openBillingPortal()" style="margin-top:8px">Open Customer Portal (invoices, upgrade/downgrade, payment method, cancel)</button>
-              <span class="save-msg" id="billingPortalMsg"></span>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
+                <button class="save-btn" onclick="openBillingPortal()">Open Customer Portal (invoices, upgrade/downgrade, payment method, cancel)</button>
+                <span class="save-msg" id="billingPortalMsg"></span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+                <button class="save-btn" onclick="syncBillingNow()" style="opacity:.85">🔄 Sync Subscription Now</button>
+                <span class="save-msg" id="billingSyncMsg"></span>
+              </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Company Profile — administrative/settings info, secondary to actual plan status above. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🏢 Company Profile</div>
+            <div class="s-note">Used on your Stripe invoices/receipts and as your account name.</div>
+            <label class="form-label">Company Name</label>
+            <input class="form-input" id="cfgCompanyName" type="text" placeholder="Your company name" style="margin-bottom:8px">
+            <label class="form-label">Billing Email</label>
+            <div class="s-note" style="margin-top:0">Where invoices, payment receipts and renewal reminders are sent — defaults to your login email, which may not be who should actually receive billing mail.</div>
+            <input class="form-input" id="cfgBillingEmail" type="email" placeholder="billing@yourcompany.com" style="margin-bottom:8px">
+            <label class="form-label">Billing Address</label>
+            <textarea class="form-input" id="cfgCompanyAddress" rows="2" placeholder="Street, city, state, PIN/postal code, country" style="margin-bottom:8px"></textarea>
+            <button class="save-btn" onclick="saveCompanyProfile()">Save</button>
+            <span class="save-msg" id="companyProfileMsg"></span>
           </div>
         </div>
 
