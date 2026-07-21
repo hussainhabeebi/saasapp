@@ -1546,6 +1546,51 @@ async function handleBroadcastSendTemplate(request, env){
   return json({ok:true, data:await r.json().catch(()=>({}))});
 }
 
+// Server-side mirror of dashboard.html's getRecentBookingsCount (client-side, used for the AI-assist
+// reply-suggestion prompt) — this Worker route has no access to the browser's allLeads array, so
+// it needs its own copy for the Follow-up Engine's "social proof" line. Same set of "won-ish"
+// stages (dashboard.html's isWonLead) and the same "lead's own Date as a proxy for when they
+// converted" caveat — no dedicated stage-change timestamp exists to do better than that.
+const FOLLOWUP_SOCIAL_PROOF_STAGES=new Set(['won','converted','consultation_booked','visit_booked','appt_booked']);
+async function computeFollowupSocialProofCount(env, clientId){
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=500&sort=-Date&fields=Stage,Date`);
+  if(!r.ok) return 0;
+  const data=await r.json().catch(()=>({list:[]}));
+  const cutoff=Date.now()-7*86400000;
+  return (data.list||[]).filter(l=>FOLLOWUP_SOCIAL_PROOF_STAGES.has(l.Stage)&&l.Date&&new Date(l.Date).getTime()>=cutoff).length;
+}
+
+// Picks which message to actually send for a given classic-sequence step — either an A/B variant
+// configured in the Follow-up Engine (D1, migrations/0007_followup_engine.sql) or, for a client
+// who hasn't set any up, the plain followup_messages text exactly as before. When both Variant A
+// and B are configured and active, one is picked 50/50 per send (not per lead — a lead who
+// receives step 1 and later step 2 can get either variant independently each time) so the sample
+// splits roughly evenly over time. Building the incentive/social-proof line has no separate
+// "is this lead a fresh lead" check: this function is only ever reached from
+// handleBroadcastFollowupSend, whose caller only exists because a lead already went quiet long
+// enough to need a follow-up in the first place — a fresh, still-engaged lead never reaches here.
+async function pickFollowupVariant(env, clientId, step, fallbackText, leadName){
+  const {results}=await env.DB.prepare(`SELECT * FROM followup_variants WHERE client_id=? AND step=? AND active=1 AND message!=''`)
+    .bind(Number(clientId), step).all();
+  const rows=results||[];
+  let chosen=null, variantLabel='legacy';
+  if(rows.length){
+    chosen=rows.length>1?rows[Math.random()<0.5?0:1]:rows[0];
+    variantLabel=chosen.variant;
+  }
+  let text=(chosen?chosen.message:fallbackText).replace(/\{name\}/gi, leadName||'there');
+  if(chosen?.cta) text+=`\n\n${chosen.cta}`;
+  if(chosen?.incentive_text){
+    const expiry=chosen.incentive_expires_hours?` — offer expires in ${chosen.incentive_expires_hours}h`:'';
+    text+=`\n\n⏳ ${chosen.incentive_text}${expiry}.`;
+  }
+  if(chosen?.social_proof){
+    const count=await computeFollowupSocialProofCount(env, clientId);
+    if(count>0) text+=`\n\n${count} customer(s) closed with us in the last 7 days.`;
+  }
+  return {text, variantLabel};
+}
+
 // Manual "send next follow-up now" — a rep's on-demand override alongside the automated
 // classic follow-up sequence (followup-template.json) and the recovery ladder (recovery.js).
 // Only covers the classic followup_messages sequence, not the recovery_* ladder, which stays
@@ -1572,7 +1617,7 @@ async function handleBroadcastFollowupSend(request, env){
   if(nextIdx===-1) return json({error:'No follow-up steps left to send for this lead.'}, 400);
   const tmpl=messages[nextIdx]||messages[messages.length-1];
   if(!tmpl) return json({error:'No follow-up message configured for this client.'}, 400);
-  const text=tmpl.replace(/\{name\}/gi, lead.Name||'there');
+  const {text, variantLabel}=await pickFollowupVariant(env, payload.cid, nextIdx+1, tmpl, lead.Name);
   const clientId=String(payload.cid);
 
   // Voice Follow-ups (Settings → Voice) — same Sarvam pipeline as live voice-to-voice replies,
@@ -1606,7 +1651,63 @@ async function handleBroadcastFollowupSend(request, env){
   }
 
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), ['Follow up '+(nextIdx+1)]:'Yes'}});
-  return json({ok:true, stage:nextIdx+1, sentText:text, sentViaVoice});
+  try{
+    await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
+      .bind(Number(payload.cid), Number(lead_id), nextIdx+1, variantLabel, new Date().toISOString()).run();
+  }catch(e){ /* best-effort — the message already went out regardless of whether this logs */ }
+  return json({ok:true, stage:nextIdx+1, sentText:text, sentViaVoice, variant:variantLabel});
+}
+
+async function handleFollowupVariantsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM followup_variants WHERE client_id=?`).bind(Number(payload.cid)).all();
+  const byKey={};
+  (results||[]).forEach(r=>{ byKey[`${r.step}_${r.variant}`]=r; });
+  const list=[];
+  for(let step=1; step<=3; step++){
+    for(const variant of ['A','B']){
+      const r=byKey[`${step}_${variant}`];
+      list.push(r
+        ?{step, variant, message:r.message, cta:r.cta, incentive_text:r.incentive_text, incentive_expires_hours:r.incentive_expires_hours, social_proof:!!r.social_proof, active:!!r.active}
+        :{step, variant, message:'', cta:'', incentive_text:'', incentive_expires_hours:null, social_proof:false, active:true});
+    }
+  }
+  return json({list});
+}
+
+async function handleFollowupVariantsSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const variants=Array.isArray(body.variants)?body.variants:[];
+  const now=new Date().toISOString();
+  for(const v of variants){
+    const step=parseInt(v.step);
+    const variant=v.variant==='B'?'B':'A';
+    if(!(step>=1&&step<=3)) continue;
+    await env.DB.prepare(`INSERT INTO followup_variants (client_id, step, variant, message, cta, incentive_text, incentive_expires_hours, social_proof, active, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(client_id, step, variant) DO UPDATE SET message=excluded.message, cta=excluded.cta, incentive_text=excluded.incentive_text, incentive_expires_hours=excluded.incentive_expires_hours, social_proof=excluded.social_proof, active=excluded.active, updated_at=excluded.updated_at`)
+      .bind(Number(payload.cid), step, variant,
+        String(v.message||'').trim().slice(0,1000),
+        String(v.cta||'').trim().slice(0,200),
+        String(v.incentive_text||'').trim().slice(0,300),
+        v.incentive_expires_hours?Number(v.incentive_expires_hours):null,
+        v.social_proof?1:0, v.active===false?0:1, now)
+      .run();
+  }
+  return json({ok:true});
+}
+
+async function handleFollowupStats(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT step, variant, COUNT(*) as sent, SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) as replied
+    FROM followup_sends WHERE client_id=? GROUP BY step, variant ORDER BY step, variant`)
+    .bind(Number(payload.cid)).all();
+  const list=(results||[]).map(r=>({step:r.step, variant:r.variant, sent:r.sent, replied:r.replied, reply_rate:r.sent?Math.round(r.replied/r.sent*100):0}));
+  return json({list});
 }
 
 /* ── Automations & Flow module (frontend/broadcast.html — "⚡ Automations" tab) ─────────────
@@ -5887,6 +5988,15 @@ async function handleEngineWebhook(request, env, secret){
           .bind(Number(clientId), state.referrerLeadId, resolvedLeadId, new Date().toISOString()).run();
       }catch(e){}
     }
+    // Follow-up Engine reply tracking (migrations/0007_followup_engine.sql) — any real inbound
+    // message from a lead with an outstanding (unreplied) follow-up send counts as that follow-up
+    // having worked, regardless of whether it also happened to change Stage.
+    if(userText && resolvedLeadId){
+      try{
+        await env.DB.prepare(`UPDATE followup_sends SET replied_at=? WHERE lead_id=? AND replied_at IS NULL`)
+          .bind(new Date().toISOString(), resolvedLeadId).run();
+      }catch(e){}
+    }
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
     // background promise left running past the returned Response risks being cut off mid-flight.
@@ -6969,6 +7079,9 @@ export default {
       else if(url.pathname==='/broadcast/send-dm' && request.method==='POST'){ res=await handleBroadcastSendDm(request, env); }
       else if(url.pathname==='/broadcast/send-template' && request.method==='POST'){ res=await handleBroadcastSendTemplate(request, env); }
       else if(url.pathname==='/broadcast/followup-send' && request.method==='POST'){ res=await handleBroadcastFollowupSend(request, env); }
+      else if(url.pathname==='/followups/variants' && request.method==='GET'){ res=await handleFollowupVariantsList(request, env); }
+      else if(url.pathname==='/followups/variants' && request.method==='POST'){ res=await handleFollowupVariantsSave(request, env); }
+      else if(url.pathname==='/followups/stats' && request.method==='GET'){ res=await handleFollowupStats(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='GET'){ res=await handleAutomationFlowsList(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='POST'){ res=await handleAutomationFlowCreate(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='PATCH'){ res=await handleAutomationFlowUpdate(request, env); }
