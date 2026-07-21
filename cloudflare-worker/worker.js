@@ -3404,6 +3404,7 @@ const ECOM_SORT_MAP={
   price_asc:'price', price_desc:'-price',
   newest:'-CreatedAt', oldest:'CreatedAt',
   stock_desc:'-stock', name_asc:'name',
+  order_date:'order_date', '-order_date':'-order_date',
 };
 // Strips characters that have syntactic meaning in NocoDB's `where=(field,op,value)` filter DSL,
 // so a color/size/category value can't break out of its own clause or inject another one.
