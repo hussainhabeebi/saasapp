@@ -2747,7 +2747,16 @@ async function handleBillingConfirmSession(request, env){
     const {ok:subOk, data:sub}=await stripeFetch(env, 'GET', `subscriptions/${session.subscription}`);
     if(subOk) await syncSubscriptionFields(env, payload.cid, sub);
   }
-  return json({ok:true});
+  // Add-on purchases (mode='payment', e.g. WA credits) have no subscription to sync — this closes
+  // the identical race the subscription branch above exists for: a client redirected back here
+  // before Stripe's webhook has fired would otherwise see their WA credits balance still showing
+  // the pre-purchase amount. fulfillAddon is already idempotent (keyed on this same Checkout
+  // Session id via fulfilled_addon_events), so calling it here is safe even if the webhook has
+  // already landed first — whichever runs first wins, the other is a no-op.
+  if(session.mode==='payment' && session.metadata?.price_id){
+    await fulfillAddon(env, payload.cid, session.metadata.price_id, session.id);
+  }
+  return json({ok:true, mode:session.mode});
 }
 
 // Shared by the customer's own "Sync Subscription Now" button and the admin's per-client
