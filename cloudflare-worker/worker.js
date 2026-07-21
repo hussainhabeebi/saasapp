@@ -650,7 +650,7 @@ async function handleEmailStatus(request, env){
 // ctwa_clid (Click-to-WhatsApp ad click id) capture yet since WhatsApp inbound messages are
 // handled by the n8n engine, outside this repo; if that's ever wired through, add it to
 // user_data.ctwa_clid below (unhashed) for much stronger attribution. See SETUP.md.
-const META_CAPI_WRITE_FIELDS=['meta_pixel_id','meta_capi_token'];
+const META_CAPI_WRITE_FIELDS=['meta_pixel_id','meta_capi_token','meta_ad_account_id'];
 const META_CAPI_EVENTS={
   lead:         {name:'Lead'},         // fired once, when a lead is first captured
   qualified:    {name:'QualifiedLead'},// custom event — lead scored Hot / marked good
@@ -690,6 +690,17 @@ async function sendMetaCapiEvent(env, c, eventKey, lead, extra={}){
     method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({data:[event]})
   });
   const data=await r.json().catch(()=>({}));
+  // Logged to D1 (meta_capi_events — see migrations/0003_meta_capi_log.sql) only on a real
+  // successful send, never on skip/failure — this is what the Reports page's "events actually
+  // sent to Meta" audit trail reads from. Previously this call was fire-and-forget with no record
+  // anywhere, so there was no way to sanity-check CAPI was really firing vs. silently no-op'ing.
+  // Best-effort: a logging failure must never surface as if the CAPI send itself failed.
+  if(r.ok){
+    try{
+      await env.DB.prepare(`INSERT INTO meta_capi_events (client_id, event, lead_id, sent_at) VALUES (?,?,?,?)`)
+        .bind(Number(c.Id), eventKey, lead?.Id||null, new Date().toISOString()).run();
+    }catch(e){}
+  }
   return {ok:r.ok, status:r.status, data};
 }
 async function handleMetaCapiLeadEvent(request, env){
@@ -723,7 +734,62 @@ async function handleMetaCapiStatus(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  return json({connected:!!(c?.meta_pixel_id&&c?.meta_capi_token), pixel_id:c?.meta_pixel_id||''});
+  return json({
+    connected:!!(c?.meta_pixel_id&&c?.meta_capi_token), pixel_id:c?.meta_pixel_id||'',
+    ad_account_id:c?.meta_ad_account_id||'',
+    // Ads Insights (spend) needs a token with ads_read — the same CAPI token often has this too
+    // if it's a System User token with both permissions granted, but not guaranteed, so this is
+    // reported separately from `connected` above (which only means "CAPI events can send").
+    ads_read_configured:!!(c?.meta_ad_account_id&&c?.meta_capi_token),
+  });
+}
+
+/* ── Meta Ads ROI Report (Team → Reports page) ────────────────────────────────────────────────
+   Conversions API is one-way (events sent TO Meta for ad-optimization) — it never returns spend
+   or campaign data back. Ad spend has to come from a completely different API, Meta's Marketing
+   API (Ads Insights), which is why this reuses meta_capi_token (common case: a System User token
+   with both ads_management/CAPI and ads_read granted) but needs its own meta_ad_account_id — the
+   Conversions API has no concept of an ad account at all, only a Pixel/Dataset id. If the token
+   doesn't actually have ads_read, this call fails and the report shows conversions only, same
+   "best-effort, never a hard dependency" shape as every other optional integration in this file. */
+async function handleMetaAdsSpendTrend(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.meta_ad_account_id||!c?.meta_capi_token) return json({connected:false, months:[]});
+  const months=Math.min(12, parseInt(new URL(request.url).searchParams.get('months'))||6);
+  const since=new Date(); since.setMonth(since.getMonth()-(months-1)); since.setDate(1);
+  const sinceStr=since.toISOString().slice(0,10);
+  const untilStr=new Date().toISOString().slice(0,10);
+  const acct=c.meta_ad_account_id.replace(/^act_/,'');
+  const url=`https://graph.facebook.com/v18.0/act_${acct}/insights?level=account&fields=spend&time_increment=monthly&time_range=${encodeURIComponent(JSON.stringify({since:sinceStr,until:untilStr}))}&access_token=${encodeURIComponent(c.meta_capi_token)}`;
+  const r=await fetch(url);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({connected:false, error:data?.error?.message||'Meta rejected the request — check the ad account id and that this token has ads_read.', months:[]});
+  const rows=(data?.data||[]).map(row=>({
+    key:(row.date_start||'').slice(0,7), // YYYY-MM, matches the frontend's own month bucketing
+    spend:Number(row.spend)||0,
+  }));
+  return json({connected:true, currency:data?.data?.[0]?.account_currency||'', months:rows});
+}
+
+// Per-month counts of CAPI events actually sent (D1 meta_capi_events), keyed the same "YYYY-MM"
+// shape as the spend trend above and the frontend's own closedMonthKey — lets the Reports page
+// line the two up in one table without a third date-parsing convention.
+async function handleMetaCapiLogTrend(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const months=Math.min(12, parseInt(new URL(request.url).searchParams.get('months'))||6);
+  const since=new Date(); since.setMonth(since.getMonth()-(months-1)); since.setDate(1);
+  const {results}=await env.DB.prepare(`SELECT event, sent_at FROM meta_capi_events WHERE client_id=? AND sent_at>=?`)
+    .bind(Number(payload.cid), since.toISOString()).all();
+  const byMonth={};
+  (results||[]).forEach(row=>{
+    const key=String(row.sent_at).slice(0,7);
+    if(!byMonth[key]) byMonth[key]={key, lead:0, qualified:0, disqualified:0, booked:0};
+    if(byMonth[key][row.event]!==undefined) byMonth[key][row.event]++;
+  });
+  return json({months:Object.values(byMonth).sort((a,b)=>a.key.localeCompare(b.key))});
 }
 
 // Shared by handleEmailTest and the campaign send-one route below — the only difference between
@@ -6644,6 +6710,8 @@ export default {
       else if(url.pathname==='/meta/capi/lead-event' && request.method==='POST'){ res=await handleMetaCapiLeadEvent(request, env); }
       else if(url.pathname==='/meta/capi/config' && request.method==='POST'){ res=await handleMetaCapiConfigSet(request, env); }
       else if(url.pathname==='/meta/capi/status' && request.method==='GET'){ res=await handleMetaCapiStatus(request, env); }
+      else if(url.pathname==='/meta/ads/spend-trend' && request.method==='GET'){ res=await handleMetaAdsSpendTrend(request, env); }
+      else if(url.pathname==='/meta/capi/log-trend' && request.method==='GET'){ res=await handleMetaCapiLogTrend(request, env); }
       else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }

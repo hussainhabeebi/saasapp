@@ -1602,6 +1602,18 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- TEAM PERFORMANCE -->
     <div class="page hidden" id="pageTeam">
       <div class="page-pad">
+        <!-- TEAM SUB-NAV — local view toggle, not a navigate() page change, same "internal tab"
+             pattern broadcast.html's showTab() uses. Reports is a separate view rather than yet
+             another section stacked onto Performance, since it's a genuinely different kind of
+             question ("is ad spend paying off") from everything above it. -->
+        <div class="card" style="margin-bottom:14px;padding:10px 14px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="save-btn team-subnav-btn" data-teamview="performance" onclick="showTeamView('performance')" style="opacity:1">📊 Performance</button>
+            <button class="save-btn team-subnav-btn" data-teamview="reports" onclick="showTeamView('reports')" style="opacity:.55">📈 Reports</button>
+          </div>
+        </div>
+
+        <div id="teamViewPerformance">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
           <div class="card-title" style="margin-bottom:0">📊 Team Performance</div>
         </div>
@@ -1642,6 +1654,28 @@ const TODAY = new Date().toISOString().slice(0,10);
             <div id="forecastByStage"></div>
           </div>
         </div>
+        </div><!-- /teamViewPerformance -->
+
+        <!-- REPORTS — Meta Ads ROI: spend (Meta Marketing API, needs meta_ad_account_id) against
+             conversions/revenue this CRM already tracks. Conversions API itself only ever sends
+             events TO Meta — it can't report spend back, which is why ad spend needs a separate
+             API/credential (see the Meta Ads Integrations card's own note). If that's not
+             connected, everything except spend/ROAS/cost-per-X still renders. -->
+        <div id="teamViewReports" style="display:none">
+          <div style="margin-bottom:14px"><div class="card-title" style="margin-bottom:0">📈 Meta Ads ROI Report</div><div class="s-note">Ad spend vs. conversions and revenue, last 6 months. Spend comes from Meta's Marketing API (Ad Account ID, Settings → Integrations); conversions/revenue come from this CRM's own leads — Meta's Conversions API has no way to report spend itself.</div></div>
+          <div id="metaRoiNotConnected" class="card" style="display:none;margin-bottom:14px">
+            <div class="s-note">Ad spend isn't connected yet — <a href="#" onclick="navigate('integrations');return false">add your Ad Account ID in Settings → Integrations → Meta Ads</a> to see spend, ROAS, and cost-per-conversion here. The conversion/revenue numbers below already work either way.</div>
+          </div>
+          <div id="metaRoiStats" style="display:grid;gap:12px;grid-template-columns:repeat(5,1fr);margin-bottom:14px"></div>
+          <div class="card" style="margin-bottom:14px">
+            <div class="s-head" style="margin-bottom:8px">Monthly Breakdown</div>
+            <div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:700px" id="metaRoiTable"></table></div>
+          </div>
+          <div class="card">
+            <div class="s-head" style="margin-bottom:8px">CAPI Events Sent to Meta <span style="font-weight:400;color:var(--muted);font-size:11px">(audit trail — confirms events are actually reaching Meta, separate from the CRM conversion counts above)</span></div>
+            <div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:600px" id="metaCapiLogTable"></table></div>
+          </div>
+        </div><!-- /teamViewReports -->
       </div>
     </div>
 
@@ -2231,7 +2265,10 @@ const TODAY = new Date().toISOString().slice(0,10);
             <input class="form-input" id="cfgMetaPixelId" type="text" placeholder="123456789012345" style="margin-bottom:8px">
             <label class="form-label">Conversions API Access Token</label>
             <input class="form-input" id="cfgMetaCapiToken" type="password" placeholder="Leave blank to keep the current token" style="margin-bottom:8px">
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <label class="form-label">Ad Account ID <span style="font-weight:400;color:var(--muted)">(for the ROI report's ad spend — Team → Reports)</span></label>
+            <input class="form-input" id="cfgMetaAdAccountId" type="text" placeholder="123456789012345 (with or without the act_ prefix)" style="margin-bottom:8px">
+            <div class="s-note">Conversions API only ever sends events to Meta — it can't report spend back. Ad spend needs Meta's separate Marketing API, which uses this Ad Account ID plus the same token above (it needs the <b>ads_read</b> permission too — check this under the token's System User in Business Settings if the ROI report shows "not connected").</div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
               <button class="save-btn" onclick="saveMetaCapiConfig()">Save</button>
               <span class="save-msg" id="saveMetaCapiMsg"></span>
             </div>
@@ -6740,19 +6777,22 @@ async function saveEmailConfig(){
 
 async function loadMetaCapiStatus(){
   $id('cfgMetaPixelId').value=clientRecord?.meta_pixel_id||'';
+  $id('cfgMetaAdAccountId').value=clientRecord?.meta_ad_account_id||'';
   const el=$id('intMetaCapiStatus');
   el.textContent='Checking…';
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/meta/capi/status`,{headers:ncAuthHeaders()});
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    el.innerHTML=data.connected?'✅ Connected — lead events are being reported':'Not connected yet — add your Pixel ID and access token below.';
+    let html=data.connected?'✅ Connected — lead events are being reported':'Not connected yet — add your Pixel ID and access token below.';
+    if(data.connected) html+=data.ads_read_configured?' · Ad spend: Ad Account ID set (see Team → Reports for the ROI report).':' · Ad spend not set up — add an Ad Account ID above for the ROI report (Team → Reports).';
+    el.innerHTML=html;
   }catch(e){ el.textContent='Could not check status: '+e.message; }
 }
 
 async function saveMetaCapiConfig(){
   const msg=$id('saveMetaCapiMsg'); msg.textContent='Saving…'; msg.className='save-msg';
-  const fields={meta_pixel_id:$id('cfgMetaPixelId').value.trim()};
+  const fields={meta_pixel_id:$id('cfgMetaPixelId').value.trim(), meta_ad_account_id:$id('cfgMetaAdAccountId').value.trim()};
   const token=$id('cfgMetaCapiToken').value.trim();
   if(token) fields.meta_capi_token=token;
   try{
@@ -6760,6 +6800,7 @@ async function saveMetaCapiConfig(){
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     clientRecord.meta_pixel_id=fields.meta_pixel_id;
+    clientRecord.meta_ad_account_id=fields.meta_ad_account_id;
     $id('cfgMetaCapiToken').value='';
     msg.textContent='✓ Saved'; msg.className='save-msg ok';
     loadMetaCapiStatus();
@@ -9094,6 +9135,95 @@ function renderRevenueForecast(){
       <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(r.value/maxStageVal*100)}%"></div></div>
       <div class="bar-val">${fmtMoney(r.value)} <span style="color:var(--muted);font-weight:400">(${r.count})</span></div>
     </div>`).join('') : '<div style="color:var(--muted);font-size:12px">No active deal values recorded yet.</div>';
+}
+
+/* ── TEAM → REPORTS (local view toggle, not a navigate() page change) ── */
+function showTeamView(view){
+  document.querySelectorAll('.team-subnav-btn').forEach(b=>{ b.style.opacity=b.dataset.teamview===view?'1':'.55'; });
+  $id('teamViewPerformance').style.display=view==='performance'?'':'none';
+  $id('teamViewReports').style.display=view==='reports'?'':'none';
+  if(view==='reports') renderMetaRoiReport();
+}
+
+/* ── META ADS ROI REPORT ──
+   Conversions API only ever sends events TO Meta — it has no way to report spend back, so spend
+   comes from a separate call to Meta's Marketing API (Ads Insights, via the Worker's
+   /meta/ads/spend-trend route) using the Ad Account ID configured in Integrations. Conversions
+   and revenue are computed client-side from allLeads, same pattern as Revenue Forecast above
+   (reuses isWonLead/closedMonthKey from there) — no reason to duplicate that logic server-side
+   when the frontend already has every lead loaded. If spend isn't connected, this still renders
+   conversions/revenue with spend-dependent figures (ROAS, cost-per-X) shown as "—" rather than
+   hiding the whole report. */
+async function renderMetaRoiReport(){
+  const statsEl=$id('metaRoiStats'), tableEl=$id('metaRoiTable'), logEl=$id('metaCapiLogTable'), notConnEl=$id('metaRoiNotConnected');
+  statsEl.innerHTML='<div style="color:var(--muted);font-size:13px">Loading…</div>';
+
+  const months=[];
+  const now=new Date();
+  for(let i=5;i>=0;i--){
+    const d=new Date(now.getFullYear(), now.getMonth()-i, 1);
+    months.push({key:d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'), label:d.toLocaleString('default',{month:'short',year:'2-digit'})});
+  }
+
+  const won=allLeads.filter(isWonLead);
+  const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
+  const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
+
+  let spendConnected=false, spendByMonth={}, capiByMonth={};
+  try{
+    const [spendRes, capiRes]=await Promise.all([
+      fetch(`${CONFIG.WORKER_BASE}/meta/ads/spend-trend?months=6`,{headers:ncAuthHeaders()}).then(r=>r.json()),
+      fetch(`${CONFIG.WORKER_BASE}/meta/capi/log-trend?months=6`,{headers:ncAuthHeaders()}).then(r=>r.json()),
+    ]);
+    spendConnected=!!spendRes.connected;
+    (spendRes.months||[]).forEach(m=>{ spendByMonth[m.key]=m.spend; });
+    (capiRes.months||[]).forEach(m=>{ capiByMonth[m.key]=m; });
+  }catch(e){}
+  notConnEl.style.display=spendConnected?'none':'block';
+
+  const rows=months.map(m=>{
+    const leadsThisMonth=allLeads.filter(l=>(l.Date||'').slice(0,7)===m.key).length;
+    const wonThisMonth=won.filter(l=>closedMonthKey(l)===m.key);
+    const revenue=wonThisMonth.reduce((s,l)=>s+(Number(l.DealValue)||0),0);
+    const spend=spendByMonth[m.key]||0;
+    const roas=(spendConnected&&spend)?revenue/spend:null;
+    return {...m, leads:leadsThisMonth, booked:wonThisMonth.length, revenue, spend, roas};
+  });
+
+  const totalSpend=rows.reduce((s,r)=>s+r.spend,0);
+  const totalRevenue=rows.reduce((s,r)=>s+r.revenue,0);
+  const totalLeads=rows.reduce((s,r)=>s+r.leads,0);
+  const totalBooked=rows.reduce((s,r)=>s+r.booked,0);
+  const overallRoas=(spendConnected&&totalSpend)?totalRevenue/totalSpend:null;
+  const cpl=(spendConnected&&totalSpend&&totalLeads)?totalSpend/totalLeads:null;
+  const cpBooking=(spendConnected&&totalSpend&&totalBooked)?totalSpend/totalBooked:null;
+
+  statsEl.innerHTML=`
+    <div class="stat"><div class="stat-lbl">Total Spend (6mo)</div><div class="stat-val">${spendConnected?fmtMoney(totalSpend):'—'}</div></div>
+    <div class="stat"><div class="stat-lbl">Total Revenue (6mo)</div><div class="stat-val">${fmtMoney(totalRevenue)}</div></div>
+    <div class="stat accent"><div class="stat-lbl">ROAS</div><div class="stat-val">${overallRoas!=null?overallRoas.toFixed(2)+'x':'—'}</div></div>
+    <div class="stat"><div class="stat-lbl">Cost / Lead</div><div class="stat-val">${cpl!=null?fmtMoney(cpl):'—'}</div></div>
+    <div class="stat"><div class="stat-lbl">Cost / Booking</div><div class="stat-val">${cpBooking!=null?fmtMoney(cpBooking):'—'}</div></div>
+  `;
+
+  tableEl.innerHTML=`
+    <thead><tr><th>Month</th><th>Spend</th><th>Leads</th><th>Booked</th><th>Revenue</th><th>ROAS</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr>
+      <td>${r.label}</td>
+      <td>${spendConnected?fmtMoney(r.spend):'—'}</td>
+      <td>${r.leads}</td>
+      <td>${r.booked}</td>
+      <td>${fmtMoney(r.revenue)}</td>
+      <td>${r.roas!=null?r.roas.toFixed(2)+'x':'—'}</td>
+    </tr>`).join('')}</tbody>
+  `;
+
+  logEl.innerHTML=`
+    <thead><tr><th>Month</th><th>Lead</th><th>Qualified</th><th>Disqualified</th><th>Booked</th></tr></thead>
+    <tbody>${months.map(m=>{ const c=capiByMonth[m.key]||{lead:0,qualified:0,disqualified:0,booked:0}; return `<tr>
+      <td>${m.label}</td><td>${c.lead||0}</td><td>${c.qualified||0}</td><td>${c.disqualified||0}</td><td>${c.booked||0}</td>
+    </tr>`; }).join('')}</tbody>
+  `;
 }
 
 /* ── PDF REPORT ── */

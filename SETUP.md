@@ -1645,8 +1645,11 @@ NocoDB's "add this field/table by hand in the UI" process:
   `migrations/0002_accounting_b2b_documents.sql`.
 - **Accounting Documents** (Quotation/Invoice/Receipt + ERPNext sync state) —
   `migrations/0002_accounting_b2b_documents.sql`.
+- **Meta CAPI event log** (an audit trail of events actually sent to Meta, for the Meta Ads ROI
+  Report's own use — not a NocoDB replacement for anything, just new data that never existed
+  before) — `migrations/0003_meta_capi_log.sql`.
 
-All four still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
+All five still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
 need it — D1 only holds what's genuinely new, and every route that moved keeps its exact pre-D1
 request/response shape, so no frontend page needed to change for this migration.
 
@@ -2393,19 +2396,25 @@ Feeds CRM lead-quality signals (captured → qualified/disqualified → booked) 
 server-side Conversions API calls, so ad delivery optimizes for real conversions instead of just
 WhatsApp message volume. Built as plain Worker code, same pattern as the Email Marketing module.
 
-### Schema — one new pair of fields on the Clients table (`mxl33bg4wi70fqj`)
+### Schema — Clients table (`mxl33bg4wi70fqj`)
 - `meta_pixel_id` (Single line text) — the Meta Pixel/Dataset ID from Events Manager.
 - `meta_capi_token` (Single line text) — a Conversions API access token generated for that Pixel
   (Events Manager → Data Sources → Pixel → Settings → Conversions API → Generate Access Token).
   A true secret, like `resend_api_key`: stripped by `safeClient()` so it never reaches the
   browser, and only ever written server-side via `/meta/capi/config` — never through the generic
   `/nocodb/` passthrough the dashboard uses for its own Clients row.
+- `meta_ad_account_id` (Single line text) — added for the Meta Ads ROI Report below. Not a secret
+  (no `safeClient()` stripping needed) — it's just an account identifier, same sensitivity as
+  `meta_pixel_id`.
 
 ### Worker routes (`cloudflare-worker/worker.js`)
-- `POST /meta/capi/config` — session-gated, writes `meta_pixel_id`/`meta_capi_token` (token only
-  if a non-empty value was submitted — same "leave blank to keep the current value" pattern as
-  `/email/client`'s `resend_api_key`).
-- `GET /meta/capi/status` — session-gated, returns `{connected, pixel_id}` only — never the token.
+- `POST /meta/capi/config` — session-gated, writes `meta_pixel_id`/`meta_capi_token`/
+  `meta_ad_account_id` (token only if a non-empty value was submitted — same "leave blank to keep
+  the current value" pattern as `/email/client`'s `resend_api_key`).
+- `GET /meta/capi/status` — session-gated, returns `{connected, pixel_id, ad_account_id,
+  ads_read_configured}` — never the token. `ads_read_configured` is a separate flag from
+  `connected`: CAPI working (`connected`) doesn't guarantee the same token also has the `ads_read`
+  permission the ROI Report's spend call needs.
 - `POST /meta/capi/lead-event` — session-gated, body `{lead_id, event, value?, currency?}`. Looks
   up the lead (ownership-checked against the session's `cid`, same pattern as
   `handleBroadcastFollowupSend`), hashes its `Email`/`Phone` (SHA-256, per Meta's spec) into
@@ -2443,6 +2452,60 @@ Note this limitation is specific to the n8n engine path — a client migrated on
 Ecom Conversation Engine (below) receives the raw Chatwoot webhook payload directly and could
 capture `ctwa_clid` the same way, if wired up; not done here since it's out of scope for the
 migration itself.
+
+## Meta Ads ROI Report (`frontend/dashboard.html` — Team → Reports)
+Ad spend against conversions and revenue this CRM already tracks, last 6 months. Built as its own
+view inside the Team page (a local tab toggle, `showTeamView()` — not a separate top-level nav
+tab), since it's a genuinely different question ("is ad spend paying off") from Team Performance/
+Funnel Analytics/Revenue Forecast above it, but still belongs in the same "how's the business
+doing" place rather than a new nav entry.
+
+**Why this needed a second Meta credential, not just CAPI**: Conversions API is one-way — it only
+ever *sends* events to Meta so ad delivery optimizes; it has no endpoint that returns spend or
+campaign data back. Ad spend comes from a completely different API, Meta's **Marketing API** (Ads
+Insights), which has no concept of a Pixel at all — only an **Ad Account**. `meta_ad_account_id`
+(schema table above) is the new field this needed; the same `meta_capi_token` is reused for the
+Insights call rather than asking for a third credential, since a System User token commonly has
+both `ads_management`/CAPI and `ads_read` granted together — but isn't guaranteed to, which is
+exactly what `ads_read_configured` (see `/meta/capi/status` above) exists to signal.
+
+**Known limitation, honestly scoped**: this is a **blended/account-level** ROI, not true
+per-campaign attribution. Without `ctwa_clid` capture (see the CAPI module's own "Known
+limitation" above), there's no way to know *which* leads actually came from a Meta ad vs. organic/
+referral/other channels — so "conversions" here means every lead captured in the period, and spend
+is the whole ad account's spend, not spend-per-campaign matched to its own leads. That's still a
+directionally useful "are we profitable on ads overall" number (what many small businesses actually
+track as blended ROAS), just not a precise per-campaign breakdown — building that would need
+`ctwa_clid` capture wired into the engine first, a separate, larger piece of work.
+
+### Schema — Cloudflare D1 (`env.DB`, table `meta_capi_events` — see
+`migrations/0003_meta_capi_log.sql`)
+`sendMetaCapiEvent()` previously fired-and-forgot every CAPI call with no record anywhere — this
+logs every **successful** send (never skips/failures) to D1: `client_id`, `event`, `lead_id`,
+`sent_at`. This is what the report's "CAPI Events Sent to Meta" table reads from — an audit trail
+letting a client sanity-check CAPI is actually firing, distinct from the CRM's own conversion
+counts (which come from `allLeads`, not this log).
+
+### Worker routes (`cloudflare-worker/worker.js`)
+- `GET /meta/ads/spend-trend?months=6` — session-gated. Calls Meta's Ads Insights endpoint
+  (`GET /act_<ad_account_id>/insights?time_increment=monthly`) for one combined call returning
+  every month's spend at once, rather than one request per month. Returns `{connected:false,
+  months:[]}` (not an error) if `meta_ad_account_id`/`meta_capi_token` aren't set, or if Meta
+  rejects the call (e.g. the token lacks `ads_read`) — best-effort, same "never a hard dependency"
+  shape as the rest of this file's optional integrations.
+- `GET /meta/capi/log-trend?months=6` — session-gated. Buckets `meta_capi_events` by month
+  (`YYYY-MM`, matching both the spend trend's own key shape and `closedMonthKey()`'s convention in
+  Revenue Forecast) and counts per event type.
+
+### Frontend (`dashboard.html`)
+- Integrations tab's existing "Meta Ads (Conversions API)" card gained an **Ad Account ID** field
+  (`cfgMetaAdAccountId`) and a note explaining the CAPI-can't-report-spend distinction above.
+- `renderMetaRoiReport()` — fetches both new routes in parallel, computes conversions/leads/revenue
+  per month **client-side from `allLeads`** (reusing `isWonLead`/`closedMonthKey` from Revenue
+  Forecast — no reason to duplicate that logic server-side when the frontend already has every
+  lead loaded), and joins them by month key. Stat tiles (Total Spend, Total Revenue, ROAS, Cost/
+  Lead, Cost/Booking) and the monthly table show spend-dependent figures as `—` rather than hiding
+  the whole report when `ads_read` isn't connected.
 
 ## Conversation Engine (`POST /engine/webhook/<secret>`) — replaces the n8n engine for every industry
 Every client, regardless of `industry`, now runs on this one Worker endpoint instead of n8n — it
