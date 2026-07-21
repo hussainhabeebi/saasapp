@@ -32,7 +32,7 @@ crons = ["0 2 * * *", "*/15 * * * *", "*/20 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "leadvyne-d1"
-database_id = "REPLACE_D1_DATABASE_ID"
+database_id = "eeb0ce10-dd0d-4e5a-92c1-d9ebe485ea52"
 
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
