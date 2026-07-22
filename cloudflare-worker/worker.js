@@ -5793,6 +5793,29 @@ async function handleEngineWebhook(request, env, secret){
   const accountId=String(body.account?.id||body.conversation?.account_id||'');
   if(accountId && c.chatwoot_account_id && accountId!==String(c.chatwoot_account_id)) return json({ok:true, skipped:'account-mismatch'});
 
+  // Fast, near-atomic dedup gate — checked before any NocoDB round trip (state fetch, lead
+  // lookup, etc), to close the race window the LastProcessedMessageId/engineClaimMessage
+  // mechanism further down still has (see its own comment for the full history): that check
+  // reads/writes NocoDB several round trips deep into a turn, so if Chatwoot's Agent Bot
+  // integration times out waiting for this handler (a full turn can be several LLM + NocoDB
+  // round-trips) and redelivers the same message_created event, the redelivery's own state fetch
+  // can race ahead of the first delivery's claim-write and both end up running the full
+  // classify/LLM/reply pipeline independently — observed live as two differently-phrased AI
+  // replies to the same inbound message, right after Chatwoot logs "marked open ... due to an
+  // error with the agent bot" (its own timeout/error signal). A single D1 UNIQUE-indexed INSERT
+  // is one fast write, not several round trips, so this shrinks the window down to essentially
+  // nothing. Doesn't replace the NocoDB-based check below — that's still needed since not every
+  // Chatwoot payload has an id this table can key on, and it also backs the eager
+  // first-lead-row creation engineClaimMessage does.
+  const earlyMessageId=String(body.id||body.message?.id||'');
+  if(earlyMessageId){
+    try{
+      const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`)
+        .bind(Number(clientId), earlyMessageId, new Date().toISOString()).run();
+      if(!dedupR.meta.changes) return json({ok:true, skipped:'duplicate-delivery-fast'});
+    }catch(e){ /* best-effort — a D1 hiccup should never block a real customer message */ }
+  }
+
   let phone=null;
   try{
     const parsed=engineParseChatwootPayload(body);
