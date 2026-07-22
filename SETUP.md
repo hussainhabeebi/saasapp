@@ -1084,7 +1084,15 @@ in the next 7 days).
 `#hospContent` container):
 - **📊 Dashboard** — stat tiles (units, occupancy, upcoming check-ins, revenue) + upcoming
   check-in/check-out lists.
-- **🏠 Units** — a card grid (name, capacity, nightly rate, amenity chips), add/edit modal.
+- **🏠 Units** — an editable table (`renderHospUnits()`/`hospUnitRow()`), not a card grid or a
+  create/edit modal: every core field (name, type, currency, capacity, rates, amenities) is an
+  inline `<input>` in its own cell, autosaving via a `PATCH /hospitality/units` call on blur/change
+  (`hospUnitCellChange()`) — a spreadsheet-style flow rather than opening a popup per unit.
+  "+ Add Unit" (`hospAddUnitRow()`) creates a unit with placeholder defaults immediately (`POST
+  /hospitality/units`) and focuses its Name cell so it's ready to type over. The one remaining
+  modal (`modalHospUnit`, opened via each row's 🖼 button) is scoped to just Description +
+  photos/video — the two things that don't fit as inline table cells (a multi-line textarea and
+  file uploads).
 - **📅 Availability** — a real month-grid calendar per unit (`.hosp-day` cells, color-coded
   available/blocked/booked), with Prev/Next month nav and a click-a-day popover to toggle
   blocked/available or set that date's rate override. Built by hand with vanilla JS (no calendar
@@ -1093,9 +1101,9 @@ in the next 7 days).
   calculation from the unit's rate as check-in/check-out change.
 
 **Unit photos/video + auto-send to chat** (`migrations/0010_hospitality_media.sql`) — each unit can
-carry up to 3 photos and 1 video, uploaded from the Edit Unit modal (a new unit must be saved once
-first — `saveHospUnit()` switches straight into edit mode after creating one specifically so this
-doesn't require a second reopen). This is the first real binary media this Worker has ever stored,
+carry up to 3 photos and 1 video, uploaded from the Description/Media modal (`openHospUnitMedia()`)
+— since units are created immediately with a real id (see Units above), there's no "save first"
+step before media can be attached. This is the first real binary media this Worker has ever stored,
 so it's the one piece of the Hospitality module that isn't D1/NocoDB:
 - **Storage**: Cloudflare R2 (`HOSPITALITY_MEDIA` binding, `wrangler.toml`) — one-time setup is
   `wrangler r2 bucket create leadvyne-hospitality-media`, no id/paste-in step needed (R2 buckets
