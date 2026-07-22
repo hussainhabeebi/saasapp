@@ -1658,6 +1658,35 @@ async function handleBroadcastFollowupSend(request, env){
   return json({ok:true, stage:nextIdx+1, sentText:text, sentViaVoice, variant:variantLabel});
 }
 
+// Human Deals "🧭 Coach" panel — surfaces the same Sentiment/LastObjectionCategory signals the
+// engine already computes on every inbound message, matched against this client's own Objection
+// Playbook (Settings → Objection Playbook, unchanged — no new config screen), plus the
+// coach_signals timeline (migrations/0008_coach_signals.sql) so a rep can see where a chat's tone
+// or objections shifted over the conversation, not just its current snapshot.
+async function handleHumanDealsCoach(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const leadId=url.searchParams.get('lead_id');
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  const lead=await leadR.json();
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Not your lead'}, 403);
+  const c=await getClientById(env, payload.cid);
+  let playbook=[]; try{ playbook=JSON.parse(c?.objection_playbook||'[]'); }catch(e){}
+  const category=lead.LastObjectionCategory||'';
+  const entry=playbook.find(o=>(o.category||'').toLowerCase()===category.toLowerCase());
+  const {results}=await env.DB.prepare(`SELECT sentiment, objection_category, at FROM coach_signals WHERE lead_id=? ORDER BY at DESC LIMIT 20`)
+    .bind(Number(leadId)).all();
+  return json({
+    sentiment: lead.Sentiment||'',
+    objection_category: category,
+    approved_response: entry?.approved_response||'',
+    timeline: (results||[]).reverse(),
+  });
+}
+
 async function handleFollowupVariantsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -5991,6 +6020,15 @@ async function handleEngineWebhook(request, env, secret){
           .bind(new Date().toISOString(), resolvedLeadId).run();
       }catch(e){}
     }
+    // Human Deals "🧭 Coach" panel's timeline (migrations/0008_coach_signals.sql) — logs this
+    // turn's Sentiment/LastObjectionCategory even when neither changed, so the timeline reads as a
+    // real per-message history rather than only recording the moments something shifted.
+    if(userText && resolvedLeadId && (leadBody.Sentiment||leadBody.LastObjectionCategory)){
+      try{
+        await env.DB.prepare(`INSERT INTO coach_signals (client_id, lead_id, sentiment, objection_category, at) VALUES (?,?,?,?,?)`)
+          .bind(Number(clientId), resolvedLeadId, leadBody.Sentiment||null, leadBody.LastObjectionCategory||null, new Date().toISOString()).run();
+      }catch(e){}
+    }
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
     // background promise left running past the returned Response risks being cut off mid-flight.
@@ -7073,6 +7111,7 @@ export default {
       else if(url.pathname==='/broadcast/send-dm' && request.method==='POST'){ res=await handleBroadcastSendDm(request, env); }
       else if(url.pathname==='/broadcast/send-template' && request.method==='POST'){ res=await handleBroadcastSendTemplate(request, env); }
       else if(url.pathname==='/broadcast/followup-send' && request.method==='POST'){ res=await handleBroadcastFollowupSend(request, env); }
+      else if(url.pathname==='/human-deals/coach' && request.method==='GET'){ res=await handleHumanDealsCoach(request, env); }
       else if(url.pathname==='/followups/variants' && request.method==='GET'){ res=await handleFollowupVariantsList(request, env); }
       else if(url.pathname==='/followups/variants' && request.method==='POST'){ res=await handleFollowupVariantsSave(request, env); }
       else if(url.pathname==='/followups/stats' && request.method==='GET'){ res=await handleFollowupStats(request, env); }
