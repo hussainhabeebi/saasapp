@@ -1429,6 +1429,18 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
+    <!-- Coach panel — surfaces the engine's own Sentiment/LastObjectionCategory signals plus the
+         matching Settings → Objection Playbook response and a recent timeline, so a rep handling a
+         Human Deals chat gets in-the-moment coaching instead of having to notice the drift
+         themselves. Read-only data, one action (send the approved response straight to the chat). -->
+    <div class="modal" id="modalCoach" style="width:420px">
+      <span class="modal-drag"></span>
+      <div class="modal-hd"><div class="modal-title">🧭 Coach</div><button class="icon-btn" onclick="closeModal('modalCoach')">✕</button></div>
+      <div class="modal-body" id="coachBody">
+        <div style="font-size:13px;color:var(--muted)">Loading…</div>
+      </div>
+    </div>
+
     <!-- KNOWLEDGE BASE -->
     <div class="page hidden" id="pageKnowledgebase">
       <div class="page-pad">
@@ -4475,6 +4487,7 @@ function humanDealCard(l){
       <span>${l.Owner?'👤 '+esc(l.Owner):'Unassigned'}</span>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">
+      <button class="btn btn-secondary btn-sm" onclick="openCoachModal(${l.Id})">🧭 Coach</button>
       <button class="btn btn-secondary btn-sm" onclick="openQuoteFor(${l.Id},'quote')">📤 Quote</button>
       <button class="btn btn-secondary btn-sm" onclick="openQuoteFor(${l.Id},'invoice')">🧾 Invoice</button>
       <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markHumanDealWon(${l.Id})">✅ Won</button>
@@ -4561,6 +4574,93 @@ async function markHumanDealSpam(leadId){
     await applyHumanDealOutcome(leadId, 'Spam');
     renderHumanDeals();
   }catch(e){ showToast('Failed to save: '+e.message,'err'); }
+}
+
+// ── COACH PANEL — reads the engine's own Sentiment/LastObjectionCategory signals plus this
+// client's Objection Playbook (Settings) and a recent timeline (D1, migrations/0008_coach_signals.sql,
+// GET /human-deals/coach) so a rep handling a Human Deals chat gets in-the-moment coaching instead
+// of having to notice sentiment/objection drift themselves. ──
+const COACH_SENTIMENT_COLORS={Frustrated:['#FEE2E2','#991B1B'],Negative:['#FEF3C7','#92400E'],Neutral:['#F1F5F9','var(--muted)'],Positive:['#D1FAE5','#065F46']};
+const COACH_OBJECTION_LABELS={price:'💰 Price',competitor:'⚔️ Competitor',timing:'⏳ Timing',trust:'🤝 Trust'};
+let _coachLeadId=null, _coachApprovedResponse='';
+
+async function openCoachModal(leadId){
+  _coachLeadId=leadId; _coachApprovedResponse='';
+  openModal('modalCoach');
+  const body=$id('coachBody');
+  body.innerHTML='<div style="font-size:13px;color:var(--muted)">Loading…</div>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/human-deals/coach?lead_id=${leadId}`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    renderCoachBody(data);
+  }catch(e){
+    body.innerHTML=`<div style="font-size:13px;color:#DC2626">Couldn't load coaching data: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderCoachBody(data){
+  const body=$id('coachBody');
+  const [bg,fg]=COACH_SENTIMENT_COLORS[data.sentiment]||['#F1F5F9','var(--muted)'];
+  const sentimentHtml=data.sentiment
+    ?`<span class="tag" style="background:${bg};color:${fg}">${esc(data.sentiment)}</span>`
+    :'<span style="font-size:12px;color:var(--muted)">No sentiment recorded yet.</span>';
+  const objLabel=COACH_OBJECTION_LABELS[data.objection_category]||data.objection_category;
+
+  let html=`<div style="margin-bottom:14px"><div class="form-label" style="margin-bottom:4px">Current sentiment</div>${sentimentHtml}</div>`;
+
+  if(data.objection_category && data.objection_category!=='none'){
+    _coachApprovedResponse=data.approved_response||'';
+    html+=`<div style="margin-bottom:14px">
+      <div class="form-label" style="margin-bottom:4px">Current objection</div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:6px">${esc(objLabel)}</div>
+      ${data.approved_response
+        ?`<div style="background:var(--accent-soft);border-radius:8px;padding:10px 12px;font-size:12.5px;margin-bottom:8px">${esc(data.approved_response)}</div>
+           <button class="btn btn-secondary btn-sm" id="coachSendBtn" onclick="sendCoachApprovedResponse()">📤 Send this reply</button>`
+        :'<div style="font-size:12px;color:var(--muted)">No approved response set for this objection — add one in Settings → Objection Playbook.</div>'}
+    </div>`;
+  }else{
+    html+='<div style="font-size:12px;color:var(--muted);margin-bottom:14px">No open objection detected right now.</div>';
+  }
+
+  if(data.timeline && data.timeline.length){
+    html+=`<div class="form-label" style="margin-bottom:6px">Recent timeline</div>
+      <div style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:6px">
+        ${data.timeline.map(t=>{
+          const time=t.at?new Date(t.at).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
+          const tObjLabel=COACH_OBJECTION_LABELS[t.objection_category]||t.objection_category||'';
+          return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:11.5px;padding:6px 0;border-bottom:1px solid var(--line)">
+            <span style="color:var(--muted)">${esc(time)}</span>
+            <span>${esc(t.sentiment||'—')}${tObjLabel?' · '+esc(tObjLabel):''}</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+  }else{
+    html+='<div style="font-size:12px;color:var(--muted)">No timeline recorded yet — this builds up as the lead sends more messages.</div>';
+  }
+
+  body.innerHTML=html;
+}
+
+async function sendCoachApprovedResponse(){
+  const lead=allLeads.find(l=>l.Id===_coachLeadId);
+  const convId=leadConvId(lead);
+  if(!convId){ showToast('No Chatwoot conversation linked for this lead.','err'); return; }
+  if(!_coachApprovedResponse) return;
+  const btn=$id('coachSendBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
+  try{
+    const fd=new FormData();
+    fd.append('conv_id',convId);
+    fd.append('content',_coachApprovedResponse);
+    const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/send-dm`,{method:'POST',headers:ncAuthHeaders(),body:fd});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    if(btn) btn.textContent='✓ Sent';
+  }catch(e){
+    showToast('Failed to send: '+e.message,'err');
+    if(btn){ btn.disabled=false; btn.textContent='📤 Send this reply'; }
+  }
 }
 
 function renderHumanDeals(){

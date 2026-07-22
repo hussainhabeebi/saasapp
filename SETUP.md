@@ -1764,8 +1764,10 @@ NocoDB's "add this field/table by hand in the UI" process:
   before) — `migrations/0003_meta_capi_log.sql`.
 - **Follow-up Engine** (A/B message variants for the classic follow-up sequence, plus the resulting
   send/reply log) — `migrations/0007_followup_engine.sql`.
+- **Human Deals Coach panel** (a per-turn Sentiment/LastObjectionCategory log — the Leads row only
+  ever keeps the latest value, never a history) — `migrations/0008_coach_signals.sql`.
 
-All six still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
+All seven still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
 need it — D1 only holds what's genuinely new, and every route that moved keeps its exact pre-D1
 request/response shape, so no frontend page needed to change for this migration.
 
@@ -3551,6 +3553,18 @@ table/Pipeline kanban — no dedicated view for "what's actually waiting on a hu
     remaining, less common outcomes: Release back to bot, Lost, No response.
 - Nav badge (`dnHdBadge`/`bnHdBadge`) lights up with the current SLA-breach count, computed on
   every Home render (`updateHdBadge()`), not just when the tab is open.
+- **🧭 Coach** (`openCoachModal()`/`renderCoachBody()`, `GET /human-deals/coach`) — real-time
+  coaching for the rep actually handling a handed-over chat, using signals the engine already
+  computes on every inbound message rather than a new AI pass: current `Sentiment`, current
+  `LastObjectionCategory` matched against this client's own Settings → Objection Playbook entry
+  (approved response shown inline, with a one-click "📤 Send this reply" that posts it straight to
+  the chat via the same `/broadcast/send-dm` route Direct Message uses), and a recent timeline of
+  both signals so a rep/manager can see where a chat's tone or objections shifted, not just its
+  current snapshot. The timeline needed one new piece of storage: `coach_signals`
+  (`migrations/0008_coach_signals.sql`, D1) — a per-turn log written from `handleEngineWebhook`
+  right after the lead upsert, since the Leads row itself only ever keeps the *latest*
+  Sentiment/LastObjectionCategory value, never a history. Same "sidecar data with no other reader"
+  reasoning as the Review Request/Referral/Follow-up Engine D1 tables.
 
 ### Quotation moved into Human Deals + Invoice mode
 The Quotation tab no longer has its own top-level nav entry — `openQuoteFor(leadId, mode)` opens
