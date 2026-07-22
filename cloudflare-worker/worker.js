@@ -6029,6 +6029,11 @@ async function handleEngineWebhook(request, env, secret){
           .bind(Number(clientId), resolvedLeadId, leadBody.Sentiment||null, leadBody.LastObjectionCategory||null, new Date().toISOString()).run();
       }catch(e){}
     }
+    // Hospitality module (migrations/0009_hospitality.sql/0010_hospitality_media.sql) — the first
+    // time this lead's message mentions a unit by name, send its photos/video straight into the
+    // chat, once per (lead, unit) ever (hospitality_media_sent) rather than re-sent on every
+    // later message that happens to mention the same unit again.
+    await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText);
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
     // background promise left running past the returned Response risks being cut off mid-flight.
@@ -7115,7 +7120,129 @@ async function handleHospitalityUnitDelete(request, env){
   await env.DB.prepare(`DELETE FROM hospitality_units WHERE id=?`).bind(Number(body.id)).run();
   await env.DB.prepare(`DELETE FROM hospitality_blocked_dates WHERE unit_id=?`).bind(Number(body.id)).run();
   await env.DB.prepare(`DELETE FROM hospitality_rate_overrides WHERE unit_id=?`).bind(Number(body.id)).run();
+  await env.DB.prepare(`DELETE FROM hospitality_media_sent WHERE unit_id=?`).bind(Number(body.id)).run();
+  await hospitalityDeleteAllUnitMedia(env, payload.cid, body.id);
   return json({ok:true});
+}
+
+// ── Unit media (2-3 photos + 1 video, SETUP.md "Hospitality module") — actual bytes live in R2
+// (HOSPITALITY_MEDIA binding); hospitality_units' image_url_*/video_url columns just hold this
+// Worker's own serving URL, same "store a reference, fetch bytes at send time" pattern
+// engineSendChatwootImageReply already uses for ecommerce product images. R2 key extension isn't
+// tracked separately in D1, so delete/replace try every extension that upload validation could
+// ever have accepted — an R2 delete on a nonexistent key is a harmless no-op.
+const HOSPITALITY_MEDIA_SLOTS={image1:'image_url_1', image2:'image_url_2', image3:'image_url_3', video:'video_url'};
+const HOSPITALITY_MEDIA_MAX_BYTES=9*1024*1024;
+const HOSPITALITY_IMAGE_EXTS=['jpg','jpeg','png','webp','gif'];
+const HOSPITALITY_VIDEO_EXTS=['mp4','mov','webm','mkv','avi'];
+function hospitalityMediaKey(clientId, unitId, slot, ext){ return `hosp/${clientId}/${unitId}/${slot}.${ext}`; }
+async function hospitalityDeleteAllUnitMedia(env, clientId, unitId){
+  for(const slot of Object.keys(HOSPITALITY_MEDIA_SLOTS)){
+    const exts=slot==='video'?HOSPITALITY_VIDEO_EXTS:HOSPITALITY_IMAGE_EXTS;
+    for(const ext of exts){ try{ await env.HOSPITALITY_MEDIA.delete(hospitalityMediaKey(clientId, unitId, slot, ext)); }catch(e){} }
+  }
+}
+
+async function handleHospitalityUnitMediaUpload(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const form=await request.formData().catch(()=>null);
+  if(!form) return json({error:'multipart form data required'}, 400);
+  const unitId=form.get('unit_id'), slot=form.get('slot'), file=form.get('file');
+  if(!unitId||!slot||!file) return json({error:'unit_id, slot and file required'}, 400);
+  const column=HOSPITALITY_MEDIA_SLOTS[slot];
+  if(!column) return json({error:'Invalid slot'}, 400);
+  const unit=await findHospitalityUnit(env, unitId);
+  if(!unit || String(unit.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(file.size>HOSPITALITY_MEDIA_MAX_BYTES) return json({error:'File is too large — max 9 MB.'}, 400);
+  const isVideoSlot=slot==='video';
+  const mime=(file.type||'').split(';')[0];
+  if(isVideoSlot && !mime.startsWith('video/')) return json({error:'The video slot needs a video file.'}, 400);
+  if(!isVideoSlot && !mime.startsWith('image/')) return json({error:'Photo slots need an image file.'}, 400);
+  const ext=(mime.split('/')[1]||'').replace(/[^a-z0-9]/gi,'').toLowerCase()||(isVideoSlot?'mp4':'jpg');
+  const key=hospitalityMediaKey(payload.cid, unitId, slot, ext);
+  await env.HOSPITALITY_MEDIA.put(key, await file.arrayBuffer(), {httpMetadata:{contentType:mime||'application/octet-stream'}});
+  const url=`${env.WORKER_BASE_URL}/hospitality/media/${key}`;
+  await env.DB.prepare(`UPDATE hospitality_units SET ${column}=? WHERE id=?`).bind(url, Number(unitId)).run();
+  return json({ok:true, url, slot});
+}
+
+async function handleHospitalityUnitMediaDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const {unit_id, slot}=body;
+  if(!unit_id||!slot) return json({error:'unit_id and slot required'}, 400);
+  const column=HOSPITALITY_MEDIA_SLOTS[slot];
+  if(!column) return json({error:'Invalid slot'}, 400);
+  const unit=await findHospitalityUnit(env, unit_id);
+  if(!unit || String(unit.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const exts=slot==='video'?HOSPITALITY_VIDEO_EXTS:HOSPITALITY_IMAGE_EXTS;
+  for(const ext of exts){ try{ await env.HOSPITALITY_MEDIA.delete(hospitalityMediaKey(payload.cid, unit_id, slot, ext)); }catch(e){} }
+  await env.DB.prepare(`UPDATE hospitality_units SET ${column}=NULL WHERE id=?`).bind(Number(unit_id)).run();
+  return json({ok:true});
+}
+
+// Public, no session — Chatwoot/WhatsApp's own media fetch and a plain <img>/<video> tag in the
+// browser both need to load this with no Authorization header. The key (client/unit/slot, no
+// guessable sequence) isn't obscured further than that — same trust model as the ecommerce
+// product image URLs this Worker already forwards from Shopify's own public CDN, and this is
+// lower-sensitivity content (marketing photos of a room/houseboat) to begin with.
+async function handleHospitalityMediaServe(env, key){
+  if(!key) return json({error:'Not found'}, 404);
+  const obj=await env.HOSPITALITY_MEDIA.get(key);
+  if(!obj) return json({error:'Not found'}, 404);
+  const headers=new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set('etag', obj.httpEtag);
+  headers.set('Cache-Control','public, max-age=86400');
+  return new Response(obj.body, {headers});
+}
+
+// Auto-sends a matching unit's photos/video into the chat the first time a lead's message
+// mentions it by name — simple case-insensitive substring name-matching, not an LLM call, so it's
+// cheap and predictable but can both under- and over-match on very short/generic unit names (see
+// SETUP.md). "Once per session" here means once per (lead, unit) ever (hospitality_media_sent),
+// not re-sent on every later message that happens to mention the same unit again in the same
+// conversation. Reads straight from the R2 binding rather than looping the stored URL back through
+// this Worker's own HTTP route, since it's the same process serving that route anyway.
+async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText){
+  if(c.hospitality_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const {results:units}=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+    const lower=userText.toLowerCase();
+    const unit=(units||[]).find(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()));
+    if(!unit) return;
+    const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, unit.id).first();
+    if(already) return;
+    const items=[
+      {url:unit.image_url_1, name:'photo1.jpg'},
+      {url:unit.image_url_2, name:'photo2.jpg'},
+      {url:unit.image_url_3, name:'photo3.jpg'},
+      {url:unit.video_url, name:'video.mp4'},
+    ].filter(m=>m.url);
+    if(!items.length) return;
+    let sentAny=false;
+    for(let i=0;i<items.length;i++){
+      const marker='/hospitality/media/';
+      const idx=items[i].url.indexOf(marker);
+      if(idx===-1) continue;
+      const key=items[i].url.slice(idx+marker.length);
+      const obj=await env.HOSPITALITY_MEDIA.get(key);
+      if(!obj) continue;
+      const fd=new FormData();
+      fd.append('content', i===0?`Here's a look at ${unit.name} 📸`:'');
+      fd.append('message_type','outgoing'); fd.append('private','false');
+      fd.append('attachments[]', await obj.blob(), items[i].name);
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok) sentAny=true;
+    }
+    if(sentAny){
+      await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
+        .bind(Number(clientId), resolvedLeadId, unit.id, new Date().toISOString()).run();
+    }
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendHospitalityMedia', e, {clientId, convId}); }
 }
 
 async function handleHospitalityBlockedDateCreate(request, env){
@@ -7508,6 +7635,9 @@ export default {
       else if(url.pathname==='/erpnext/companies' && request.method==='GET'){ res=await handleErpnextCompaniesList(request, env); }
       else if(url.pathname==='/erpnext/currencies' && request.method==='GET'){ res=await handleErpnextCurrenciesList(request, env); }
       else if(url.pathname==='/erpnext/accounts' && request.method==='GET'){ res=await handleErpnextAccountsList(request, env); }
+      else if(url.pathname==='/hospitality/units/media' && request.method==='POST'){ res=await handleHospitalityUnitMediaUpload(request, env); }
+      else if(url.pathname==='/hospitality/units/media' && request.method==='DELETE'){ res=await handleHospitalityUnitMediaDelete(request, env); }
+      else if(url.pathname.startsWith('/hospitality/media/') && request.method==='GET'){ res=await handleHospitalityMediaServe(env, url.pathname.slice('/hospitality/media/'.length)); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

@@ -1092,6 +1092,34 @@ in the next 7 days).
 - **📖 Bookings** — a filterable table (status), add/edit modal with automatic nights/total
   calculation from the unit's rate as check-in/check-out change.
 
+**Unit photos/video + auto-send to chat** (`migrations/0010_hospitality_media.sql`) — each unit can
+carry up to 3 photos and 1 video, uploaded from the Edit Unit modal (a new unit must be saved once
+first — `saveHospUnit()` switches straight into edit mode after creating one specifically so this
+doesn't require a second reopen). This is the first real binary media this Worker has ever stored,
+so it's the one piece of the Hospitality module that isn't D1/NocoDB:
+- **Storage**: Cloudflare R2 (`HOSPITALITY_MEDIA` binding, `wrangler.toml`) — one-time setup is
+  `wrangler r2 bucket create leadvyne-hospitality-media`, no id/paste-in step needed (R2 buckets
+  are addressed by name, unlike D1's UUID). `hospitality_units.image_url_1/2/3`/`video_url` just
+  hold this Worker's own serving URL (`GET /hospitality/media/<key>`, public/no session — the same
+  "store a reference, fetch bytes at send time" pattern `engineSendChatwootImageReply` already uses
+  for ecommerce product images) rather than the bytes themselves.
+- **Upload**: `POST /hospitality/units/media` (multipart: `unit_id`, `slot`, `file`) — validates
+  the slot's mime type (image slots require `image/*`, the video slot requires `video/*`) and a
+  hard **9 MB per file** cap, checked both client-side (before the upload even starts) and
+  server-side (the real enforcement — the client-side check is just to fail fast). Re-uploading a
+  slot overwrites the same R2 key, so there's no orphaned-object cleanup needed on replace.
+- **Auto-send to chat, once per (lead, unit)** — `engineMaybeSendHospitalityMedia()`, called from
+  `handleEngineWebhook` right after the lead upsert on every real inbound message. Simple
+  case-insensitive substring match of each active unit's `name` against the message text — not an
+  LLM call, so it's cheap and predictable, but it can both under-match (a guest describing a unit
+  without using its exact name) and over-match (a very short/generic unit name appearing inside an
+  unrelated word) — a client naming units something distinctive avoids both. "Once per session"
+  means once per (lead, unit) **ever**, tracked in `hospitality_media_sent` (unique on
+  `lead_id, unit_id`) — not re-sent on every later message that happens to mention the same unit
+  again in the same conversation. Sent as separate Chatwoot attachment messages (one per photo/
+  video, same multipart-attachment mechanism the rest of this file already uses for Chatwoot
+  sends), with a short caption on the first one only.
+
 **Timezone note**: the calendar's month-boundary date math is done with plain string/number
 arithmetic, not a `Date` → `toISOString()` round-trip — the latter converts a local midnight
 through UTC, which silently shifts the date by a day for any positive-UTC-offset user (IST, GST,
@@ -1833,7 +1861,10 @@ NocoDB's "add this field/table by hand in the UI" process:
 - **Hospitality module** (units, blocked dates, rate overrides, and bookings for the houseboat/
   hotel/tourism-stay module — a whole new module's data, not sidecar fields on an existing NocoDB
   record, though a booking can still optionally link back to a NocoDB lead via `lead_id`) —
-  `migrations/0009_hospitality.sql`.
+  `migrations/0009_hospitality.sql`. Its unit photos/video (`migrations/0010_hospitality_media.sql`)
+  are the one piece of this module that's neither D1 nor NocoDB — the actual bytes live in
+  Cloudflare R2 (`HOSPITALITY_MEDIA` binding), the first real binary-object storage this Worker
+  uses; D1 only holds the serving URL, same as everywhere else in this list holds text/JSON.
 
 All eight still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
 need it — D1 only holds what's genuinely new, and every route that moved keeps its exact pre-D1

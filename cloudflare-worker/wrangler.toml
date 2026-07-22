@@ -34,6 +34,16 @@ binding = "DB"
 database_name = "leadvyne-d1"
 database_id = "eeb0ce10-dd0d-4e5a-92c1-d9ebe485ea52"
 
+# R2 — object storage for the Hospitality module's unit photos/video (SETUP.md "Hospitality
+# module"). Everything else this app stores is either NocoDB rows or small D1 text/JSON — this is
+# the first real binary media this Worker holds, hence a bucket rather than a database column
+# (D1/NocoDB rows have no sane way to hold a 9 MB video). One-time setup:
+#   1. wrangler r2 bucket create leadvyne-hospitality-media
+#   2. No id/paste-in needed — R2 buckets are addressed by name, unlike D1's UUID.
+[[r2_buckets]]
+binding = "HOSPITALITY_MEDIA"
+bucket_name = "leadvyne-hospitality-media"
+
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
 [vars]
