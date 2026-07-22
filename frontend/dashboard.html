@@ -418,6 +418,9 @@ tr:hover td{background:#FAFCFB}
 .leads-tbl th{background:var(--bg);padding:10px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.04em;text-transform:uppercase;border-bottom:2px solid var(--line);white-space:nowrap}
 .leads-tbl td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis}
 .leads-tbl tr:hover td{background:var(--accent-soft);cursor:pointer}
+.hosp-units-tbl td{max-width:none;overflow:visible;white-space:normal;padding:6px 8px}
+.hosp-units-tbl tr:hover td{background:transparent;cursor:default}
+.hosp-units-tbl input.hosp-cell{padding:7px 9px;font-size:13px}
 .search-input{flex:1;min-width:160px;padding:10px 14px;border:1.5px solid var(--line);border-radius:var(--r-sm);font-size:14px;background:var(--card);color:var(--ink);transition:border-color .15s;box-shadow:var(--shadow)}
 .search-input:focus{outline:none;border-color:var(--accent)}
 .btn{padding:10px 18px;border:none;border-radius:var(--r-sm);font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:background .15s,transform .1s}
@@ -1595,40 +1598,20 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- Hospitality: Unit modal -->
     <div class="modal" id="modalHospUnit" style="width:480px">
       <span class="modal-drag"></span>
-      <div class="modal-hd"><div class="modal-title" id="hospUnitModalTitle">New Unit</div><button class="icon-btn" onclick="closeModal('modalHospUnit')">✕</button></div>
+      <div class="modal-hd"><div class="modal-title" id="hospUnitModalTitle">Unit details</div><button class="icon-btn" onclick="closeModal('modalHospUnit')">✕</button></div>
       <div class="modal-body">
         <input type="hidden" id="hospUnitId">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px;padding:10px 12px;background:var(--bg);border-radius:var(--r-sm)">
-          <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="hospUnitName" placeholder="e.g. AC Deluxe Houseboat" style="min-width:200px"></div>
-          <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;padding-top:18px"><input type="checkbox" style="width:auto" id="hospUnitActive" checked> Active (bookable)</label>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group"><label class="form-label">Type / Category</label><input class="form-input" id="hospUnitType" placeholder="e.g. Deluxe, Standard"></div>
-          <div class="form-group"><label class="form-label">Currency</label><input class="form-input" id="hospUnitCurrency" value="INR" maxlength="6"></div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group"><label class="form-label">Capacity — Adults</label><input class="form-input" type="number" min="1" id="hospUnitCapAdults" value="2"></div>
-          <div class="form-group"><label class="form-label">Capacity — Children</label><input class="form-input" type="number" min="0" id="hospUnitCapChildren" value="0"></div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group"><label class="form-label">Base Rate (per night)</label><input class="form-input" type="number" min="0" id="hospUnitBaseRate" value="0"></div>
-          <div class="form-group"><label class="form-label">Weekend Rate (optional)</label><input class="form-input" type="number" min="0" id="hospUnitWeekendRate" placeholder="Leave blank to use base rate"></div>
-        </div>
-        <div class="form-group"><label class="form-label">Amenities (comma separated)</label><input class="form-input" id="hospUnitAmenities" placeholder="e.g. AC, WiFi, Sun Deck, Meals Included"></div>
-        <div class="form-group"><label class="form-label">Description</label><textarea class="form-input" id="hospUnitDescription" rows="2"></textarea></div>
-        <div class="form-group" id="hospUnitMediaSection" style="display:none">
+        <div class="form-group"><label class="form-label">Description</label><textarea class="form-input" id="hospUnitDescription" rows="3" onblur="hospUnitDescriptionBlur()"></textarea></div>
+        <div class="form-group" id="hospUnitMediaSection">
           <label class="form-label">Photos &amp; Video</label>
           <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Sent automatically to a guest's chat the first time they mention this unit by name — once per guest, max 9 MB per file.</div>
           <div id="hospUnitMediaSlotsWrap" style="display:flex;gap:10px;flex-wrap:wrap"></div>
           <div id="hospUnitMediaHint" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
           <input type="file" id="hospUnitMediaFileInput" style="display:none" onchange="hospOnMediaFileChosen(this)">
         </div>
-        <div id="hospUnitMediaNewHint" style="font-size:12px;color:var(--muted)"></div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-primary" onclick="saveHospUnit()">Save</button>
-        <span class="save-msg" id="hospUnitSaveMsg"></span>
-        <button class="btn btn-secondary" onclick="closeModal('modalHospUnit')">Cancel</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalHospUnit')">Done</button>
       </div>
     </div>
 
@@ -13857,61 +13840,103 @@ async function renderHospDashboard(){
 }
 
 /* ── Units sub-page ── */
-function hospAmenityChips(amenities){
-  return (amenities||'').split(',').map(a=>a.trim()).filter(Boolean).map(a=>`<span class="tag">${esc(a)}</span>`).join('');
+// Each row is edited in place (autosaves per-field on blur/change) instead of opening a modal —
+// the modal is now reserved for description + photos/video only, opened via the 🖼 button, since
+// a multi-line textarea and file uploads don't fit as inline table cells.
+const HOSP_UNIT_FIELDS=[
+  {field:'name', label:'Name', type:'text', width:160, placeholder:'Unit name'},
+  {field:'unit_type', label:'Type', type:'text', width:110, placeholder:'Deluxe'},
+  {field:'currency', label:'Currency', type:'text', width:64},
+  {field:'capacity_adults', label:'Adults', type:'number', width:56, min:1},
+  {field:'capacity_children', label:'Children', type:'number', width:56, min:0},
+  {field:'base_rate', label:'Base Rate', type:'number', width:90, min:0},
+  {field:'weekend_rate', label:'Weekend Rate', type:'number', width:90, min:0, placeholder:'—'},
+  {field:'amenities', label:'Amenities', type:'text', width:220, placeholder:'AC, WiFi, Sun Deck…'},
+];
+function hospUnitRow(u){
+  const cells=HOSP_UNIT_FIELDS.map(f=>{
+    const val=u[f.field]==null?'':u[f.field];
+    return `<td><input ${f.type==='number'?`type="number"${f.min!=null?` min="${f.min}"`:''}`:'type="text"'} class="form-input hosp-cell" style="width:${f.width}px" value="${esc(val)}" placeholder="${esc(f.placeholder||'')}" data-field="${f.field}" onblur="hospUnitCellChange(${u.Id},this)" onkeydown="if(event.key==='Enter')this.blur()"></td>`;
+  }).join('');
+  return `<tr data-unit-row="${u.Id}" style="${u.active?'':'opacity:.55'}">
+    <td style="text-align:center"><input type="checkbox" ${u.active?'checked':''} data-field="active" onchange="hospUnitCellChange(${u.Id},this)"></td>
+    ${cells}
+    <td style="text-align:center"><button class="btn-ghost" onclick="openHospUnitMedia(${u.Id})" title="Description, photos &amp; video">🖼</button></td>
+    <td style="text-align:center"><button class="btn-ghost" onclick="deleteHospUnit(${u.Id})" title="Delete">🗑</button></td>
+  </tr>`;
 }
 function renderHospUnits(){
   const el=$id('hospContent');
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
       <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🏠 Units &amp; Room Types <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospUnits.length})</span></div>
-      <button class="btn btn-primary btn-sm" onclick="openAddHospUnit()">+ Add Unit</button>
+      <button class="btn btn-primary btn-sm" onclick="hospAddUnitRow()">+ Add Unit</button>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">
-      ${hospUnits.length?hospUnits.map(u=>`
-        <div class="card" style="cursor:pointer;${u.active?'':'opacity:.55'}" onclick="openEditHospUnit(${u.Id})">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-            <div>
-              <div style="font-weight:700;font-size:14px">${esc(u.name)}</div>
-              <div style="font-size:11px;color:var(--muted)">${esc(u.unit_type||'—')} · ${u.capacity_adults} adults${u.capacity_children?' + '+u.capacity_children+' children':''}</div>
-            </div>
-            <button class="btn-ghost" onclick="event.stopPropagation();deleteHospUnit(${u.Id})">🗑</button>
-          </div>
-          <div style="margin:8px 0;font-family:var(--disp);font-weight:700;font-size:16px">${esc(u.currency)} ${Number(u.base_rate).toLocaleString()}<span style="font-size:11px;color:var(--muted);font-weight:500"> /night</span></div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">${hospAmenityChips(u.amenities)}</div>
-          ${!u.active?'<div style="margin-top:8px"><span class="badge gray">Inactive</span></div>':''}
-        </div>`).join(''):'<div class="empty-state"><div class="ei">🏠</div>No units yet. Add your first room/unit type.</div>'}
-    </div>`;
+    ${hospUnits.length?`
+    <div class="tbl-wrap"><table class="leads-tbl hosp-units-tbl">
+      <thead><tr>
+        <th>Active</th><th>Name</th><th>Type</th><th>Currency</th><th>Adults</th><th>Children</th><th>Base Rate</th><th>Weekend Rate</th><th>Amenities</th><th>Details</th><th></th>
+      </tr></thead>
+      <tbody>${hospUnits.map(hospUnitRow).join('')}</tbody>
+    </table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">Click into any field to edit — it saves automatically when you tab or click away.</div>`
+    :'<div class="empty-state"><div class="ei">🏠</div>No units yet. Click "+ Add Unit" to create your first room/unit type.</div>'}`;
 }
-function openAddHospUnit(){
-  _hospEditUnitId=null;
-  $id('hospUnitModalTitle').textContent='New Unit';
-  $id('hospUnitId').value=''; $id('hospUnitName').value=''; $id('hospUnitType').value='';
-  $id('hospUnitCurrency').value='INR'; $id('hospUnitCapAdults').value=2; $id('hospUnitCapChildren').value=0;
-  $id('hospUnitBaseRate').value=0; $id('hospUnitWeekendRate').value=''; $id('hospUnitAmenities').value='';
-  $id('hospUnitDescription').value=''; $id('hospUnitActive').checked=true;
-  $id('hospUnitSaveMsg').textContent='';
-  // Media needs a real unit_id to attach to — hidden until the unit exists.
-  $id('hospUnitMediaSection').style.display='none';
-  $id('hospUnitMediaNewHint').textContent='Save the unit first, then come back to add photos/video.';
-  openModal('modalHospUnit');
+async function hospAddUnitRow(){
+  const body={name:'New unit', unit_type:'', currency:'INR', capacity_adults:2, capacity_children:0, base_rate:0, weekend_rate:null, amenities:'', description:'', active:true};
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+    const created=await r.json();
+    hospUnits.push(created);
+    renderHospUnits();
+    const row=document.querySelector(`tr[data-unit-row="${created.Id}"]`);
+    const nameInput=row&&row.querySelector('input[data-field="name"]');
+    if(nameInput){ nameInput.focus(); nameInput.select(); }
+  }catch(e){ alert('Failed to add unit: '+e.message); }
 }
-function openEditHospUnit(id){
+async function hospUnitCellChange(id, el){
+  const field=el.dataset.field;
+  const u=hospUnits.find(x=>x.Id===id); if(!u) return;
+  let value;
+  if(field==='active') value=el.checked;
+  else if(field==='capacity_adults') value=parseInt(el.value)||1;
+  else if(field==='capacity_children') value=parseInt(el.value)||0;
+  else if(field==='base_rate') value=parseFloat(el.value)||0;
+  else if(field==='weekend_rate') value=el.value===''?null:(parseFloat(el.value)||0);
+  else if(field==='currency') value=el.value.trim().toUpperCase()||'INR';
+  else value=el.value.trim();
+  if(field==='name'&&!value){ alert('Name is required.'); el.value=u.name; return; }
+  if(el.type!=='checkbox') el.value=value===null?'':value;
+  if(u[field]===value) return;
+  const prev=u[field];
+  u[field]=value;
+  if(field==='active'){ const row=el.closest('tr'); if(row) row.style.opacity=value?'':'.55'; }
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id,[field]:value})});
+  }catch(e){
+    u[field]=prev;
+    alert('Failed to save: '+e.message);
+    renderHospUnits();
+  }
+}
+function openHospUnitMedia(id){
   const u=hospUnits.find(x=>x.Id===id); if(!u) return;
   _hospEditUnitId=id;
-  $id('hospUnitModalTitle').textContent='Edit Unit';
+  $id('hospUnitModalTitle').textContent=u.name||'Unit details';
   $id('hospUnitId').value=id;
-  $id('hospUnitName').value=u.name||''; $id('hospUnitType').value=u.unit_type||'';
-  $id('hospUnitCurrency').value=u.currency||'INR';
-  $id('hospUnitCapAdults').value=u.capacity_adults||2; $id('hospUnitCapChildren').value=u.capacity_children||0;
-  $id('hospUnitBaseRate').value=u.base_rate||0; $id('hospUnitWeekendRate').value=u.weekend_rate||'';
-  $id('hospUnitAmenities').value=u.amenities||''; $id('hospUnitDescription').value=u.description||'';
-  $id('hospUnitActive').checked=!!u.active;
-  $id('hospUnitSaveMsg').textContent='';
-  $id('hospUnitMediaSection').style.display='';
-  $id('hospUnitMediaNewHint').textContent='';
+  $id('hospUnitDescription').value=u.description||'';
   renderHospUnitMediaSlots(u);
   openModal('modalHospUnit');
+}
+async function hospUnitDescriptionBlur(){
+  const u=hospUnits.find(x=>x.Id===_hospEditUnitId); if(!u) return;
+  const value=$id('hospUnitDescription').value.trim();
+  if(u.description===value) return;
+  const prev=u.description;
+  u.description=value;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:_hospEditUnitId, description:value})});
+  }catch(e){ u.description=prev; alert('Failed to save description: '+e.message); }
 }
 
 /* ── Unit media (photos/video) ── */
@@ -13970,36 +13995,6 @@ async function hospRemoveUnitMedia(slot){
     if(unit) unit[col]=null;
     renderHospUnitMediaSlots(unit);
   }catch(e){ alert('Failed: '+e.message); }
-}
-async function saveHospUnit(){
-  const msg=$id('hospUnitSaveMsg');
-  const name=$id('hospUnitName').value.trim();
-  if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
-  const body={
-    name, unit_type:$id('hospUnitType').value.trim(), currency:$id('hospUnitCurrency').value.trim()||'INR',
-    capacity_adults:parseInt($id('hospUnitCapAdults').value)||2, capacity_children:parseInt($id('hospUnitCapChildren').value)||0,
-    base_rate:parseFloat($id('hospUnitBaseRate').value)||0,
-    weekend_rate:$id('hospUnitWeekendRate').value?parseFloat($id('hospUnitWeekendRate').value):null,
-    amenities:$id('hospUnitAmenities').value.trim(), description:$id('hospUnitDescription').value.trim(),
-    active:$id('hospUnitActive').checked,
-  };
-  msg.textContent='Saving…'; msg.className='save-msg';
-  try{
-    if(_hospEditUnitId){
-      await fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:_hospEditUnitId,...body})});
-      Object.assign(hospUnits.find(u=>u.Id===_hospEditUnitId), body);
-      closeModal('modalHospUnit');
-      renderHospUnits();
-    }else{
-      const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
-      const created=await r.json();
-      hospUnits.push(created);
-      renderHospUnits();
-      // Switch straight into edit mode instead of closing — media needs a real unit_id to attach
-      // to, so this lets photos/video be added right away instead of having to reopen the unit.
-      openEditHospUnit(created.Id);
-    }
-  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 async function deleteHospUnit(id){
   if(!confirm('Delete this unit? Its blocked dates and rate overrides will be removed too.')) return;
