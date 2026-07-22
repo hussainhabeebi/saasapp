@@ -7035,6 +7035,327 @@ async function handleAccountingDocumentSendEmail(request, env){
   return json({ok:true});
 }
 
+// ── Hospitality module (frontend/dashboard.html "🏨 Hospitality" nav tab — houseboats/hotels/
+// tourism stays) — fully D1 (migrations/0009_hospitality.sql), unlike the Agency/Recruit/
+// Appointments modules' per-client dynamic NocoDB tables: a date-range + occupancy-pricing data
+// shape nothing else in the app reads, so there's no reason to pay NocoDB's per-client
+// table-creation overhead for it. Every route below derives client_id from the session and checks
+// row ownership the same way the Accounting module's routes do. ──
+const HOSPITALITY_BOOKING_STATUSES=new Set(['inquiry','confirmed','checked_in','checked_out','cancelled']);
+// A unit is considered "occupied" for overlap/availability purposes only once a booking is past
+// the inquiry stage — an unconfirmed inquiry shouldn't block someone else from booking the same
+// dates.
+const HOSPITALITY_OCCUPYING_STATUSES=new Set(['confirmed','checked_in','checked_out']);
+
+async function handleHospitalityUnitsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? ORDER BY name ASC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+
+async function handleHospitalityUnitCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name) return json({error:'name required'}, 400);
+  const fields={
+    client_id:Number(payload.cid), name:String(body.name).trim().slice(0,140),
+    unit_type:String(body.unit_type||'').trim().slice(0,80),
+    capacity_adults:Number(body.capacity_adults)||2, capacity_children:Number(body.capacity_children)||0,
+    amenities:String(body.amenities||'').trim().slice(0,500),
+    base_rate:Number(body.base_rate)||0, weekend_rate:body.weekend_rate?Number(body.weekend_rate):null,
+    currency:String(body.currency||'INR').trim().slice(0,10).toUpperCase(),
+    description:String(body.description||'').trim().slice(0,1000),
+    active:body.active===false?0:1, created_at:new Date().toISOString(),
+  };
+  const r=await env.DB.prepare(`INSERT INTO hospitality_units
+    (client_id, name, unit_type, capacity_adults, capacity_children, amenities, base_rate, weekend_rate, currency, description, active, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.name, fields.unit_type, fields.capacity_adults, fields.capacity_children, fields.amenities, fields.base_rate, fields.weekend_rate, fields.currency, fields.description, fields.active, fields.created_at)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
+}
+
+async function findHospitalityUnit(env, id){
+  return await env.DB.prepare(`SELECT * FROM hospitality_units WHERE id=?`).bind(Number(id)).first();
+}
+
+async function handleHospitalityUnitUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findHospitalityUnit(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).trim().slice(0,140)); }
+  if(body.unit_type!==undefined){ sets.push('unit_type=?'); vals.push(String(body.unit_type).trim().slice(0,80)); }
+  if(body.capacity_adults!==undefined){ sets.push('capacity_adults=?'); vals.push(Number(body.capacity_adults)||2); }
+  if(body.capacity_children!==undefined){ sets.push('capacity_children=?'); vals.push(Number(body.capacity_children)||0); }
+  if(body.amenities!==undefined){ sets.push('amenities=?'); vals.push(String(body.amenities).trim().slice(0,500)); }
+  if(body.base_rate!==undefined){ sets.push('base_rate=?'); vals.push(Number(body.base_rate)||0); }
+  if(body.weekend_rate!==undefined){ sets.push('weekend_rate=?'); vals.push(body.weekend_rate?Number(body.weekend_rate):null); }
+  if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10).toUpperCase()); }
+  if(body.description!==undefined){ sets.push('description=?'); vals.push(String(body.description).trim().slice(0,1000)); }
+  if(body.active!==undefined){ sets.push('active=?'); vals.push(body.active?1:0); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE hospitality_units SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleHospitalityUnitDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findHospitalityUnit(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM hospitality_units WHERE id=?`).bind(Number(body.id)).run();
+  await env.DB.prepare(`DELETE FROM hospitality_blocked_dates WHERE unit_id=?`).bind(Number(body.id)).run();
+  await env.DB.prepare(`DELETE FROM hospitality_rate_overrides WHERE unit_id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+
+async function handleHospitalityBlockedDateCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.unit_id||!body.date) return json({error:'unit_id and date required'}, 400);
+  const unit=await findHospitalityUnit(env, body.unit_id);
+  if(!unit || String(unit.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`INSERT OR REPLACE INTO hospitality_blocked_dates (client_id, unit_id, date, reason, created_at) VALUES (?,?,?,?,?)`)
+    .bind(Number(payload.cid), Number(body.unit_id), String(body.date), String(body.reason||'').trim().slice(0,200), new Date().toISOString()).run();
+  return json({ok:true});
+}
+
+async function handleHospitalityBlockedDateDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.unit_id||!body.date) return json({error:'unit_id and date required'}, 400);
+  const unit=await findHospitalityUnit(env, body.unit_id);
+  if(!unit || String(unit.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM hospitality_blocked_dates WHERE unit_id=? AND date=?`).bind(Number(body.unit_id), String(body.date)).run();
+  return json({ok:true});
+}
+
+async function handleHospitalityRateOverrideSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.unit_id||!body.date) return json({error:'unit_id and date required'}, 400);
+  const unit=await findHospitalityUnit(env, body.unit_id);
+  if(!unit || String(unit.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(body.rate===null || body.rate===''){
+    await env.DB.prepare(`DELETE FROM hospitality_rate_overrides WHERE unit_id=? AND date=?`).bind(Number(body.unit_id), String(body.date)).run();
+    return json({ok:true, cleared:true});
+  }
+  await env.DB.prepare(`INSERT OR REPLACE INTO hospitality_rate_overrides (client_id, unit_id, date, rate, created_at) VALUES (?,?,?,?,?)`)
+    .bind(Number(payload.cid), Number(body.unit_id), String(body.date), Number(body.rate), new Date().toISOString()).run();
+  return json({ok:true});
+}
+
+// Calendar view for one unit over a date range — blocked dates, rate overrides, and booked ranges
+// (from hospitality_bookings, occupying statuses only) merged into one per-date status list, so
+// the frontend can render a month grid without stitching three separate fetches together itself.
+async function handleHospitalityAvailability(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const unitId=url.searchParams.get('unit_id');
+  const start=url.searchParams.get('start');
+  const end=url.searchParams.get('end');
+  if(!unitId||!start||!end) return json({error:'unit_id, start and end required'}, 400);
+  const unit=await findHospitalityUnit(env, unitId);
+  if(!unit || String(unit.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+
+  const {results:blocked}=await env.DB.prepare(`SELECT date, reason FROM hospitality_blocked_dates WHERE unit_id=? AND date>=? AND date<?`)
+    .bind(Number(unitId), start, end).all();
+  const {results:rates}=await env.DB.prepare(`SELECT date, rate FROM hospitality_rate_overrides WHERE unit_id=? AND date>=? AND date<?`)
+    .bind(Number(unitId), start, end).all();
+  const {results:bookings}=await env.DB.prepare(`SELECT id, check_in, check_out, guest_name, status FROM hospitality_bookings WHERE unit_id=? AND status IN ('confirmed','checked_in','checked_out') AND check_in<? AND check_out>?`)
+    .bind(Number(unitId), end, start).all();
+
+  const blockedMap={}; (blocked||[]).forEach(r=>{ blockedMap[r.date]=r.reason||''; });
+  const rateMap={}; (rates||[]).forEach(r=>{ rateMap[r.date]=r.rate; });
+  // Expand each booking's [check_in, check_out) range into individual occupied dates — a stay's
+  // check-out date itself is not occupied (that's the turnover day a new guest can check in).
+  const bookedMap={};
+  (bookings||[]).forEach(b=>{
+    let d=new Date(b.check_in+'T00:00:00Z');
+    const outD=new Date(b.check_out+'T00:00:00Z');
+    while(d<outD){
+      const iso=d.toISOString().slice(0,10);
+      if(iso>=start && iso<end) bookedMap[iso]={booking_id:b.id, guest_name:b.guest_name, status:b.status};
+      d.setUTCDate(d.getUTCDate()+1);
+    }
+  });
+
+  const days=[];
+  let cur=new Date(start+'T00:00:00Z');
+  const endD=new Date(end+'T00:00:00Z');
+  while(cur<endD){
+    const iso=cur.toISOString().slice(0,10);
+    const dow=cur.getUTCDay();
+    const isWeekend=dow===0||dow===6;
+    const rate=rateMap[iso]!==undefined?rateMap[iso]:(isWeekend&&unit.weekend_rate?unit.weekend_rate:unit.base_rate);
+    let status='available';
+    if(bookedMap[iso]) status='booked'; else if(blockedMap[iso]!==undefined) status='blocked';
+    days.push({date:iso, status, rate, reason:blockedMap[iso]||null, booking:bookedMap[iso]||null});
+    cur.setUTCDate(cur.getUTCDate()+1);
+  }
+  return json({unit:{...unit, Id:unit.id}, days});
+}
+
+async function findHospitalityBooking(env, id){
+  return await env.DB.prepare(`SELECT * FROM hospitality_bookings WHERE id=?`).bind(Number(id)).first();
+}
+
+// Overlap check shared by create/update — an occupying-status booking on the same unit whose
+// [check_in, check_out) range intersects the requested range blocks it. excludeId lets an update
+// check against every OTHER booking without tripping over itself.
+async function hospitalityHasOverlap(env, clientId, unitId, checkIn, checkOut, excludeId){
+  let sql=`SELECT id FROM hospitality_bookings WHERE client_id=? AND unit_id=? AND status IN ('confirmed','checked_in','checked_out') AND check_in<? AND check_out>?`;
+  const binds=[Number(clientId), Number(unitId), checkOut, checkIn];
+  if(excludeId){ sql+=` AND id!=?`; binds.push(Number(excludeId)); }
+  const {results}=await env.DB.prepare(sql).bind(...binds).all();
+  return (results||[]).length>0;
+}
+
+async function handleHospitalityBookingsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const unitId=url.searchParams.get('unit_id');
+  let sql=`SELECT * FROM hospitality_bookings WHERE client_id=?`;
+  const binds=[Number(payload.cid)];
+  if(unitId){ sql+=` AND unit_id=?`; binds.push(Number(unitId)); }
+  sql+=` ORDER BY check_in DESC LIMIT 1000`;
+  const {results}=await env.DB.prepare(sql).bind(...binds).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+
+function hospitalityNights(checkIn, checkOut){
+  const ms=new Date(checkOut+'T00:00:00Z').getTime()-new Date(checkIn+'T00:00:00Z').getTime();
+  return Math.max(1, Math.round(ms/86400000));
+}
+
+async function handleHospitalityBookingCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.unit_id||!body.check_in||!body.check_out) return json({error:'unit_id, check_in and check_out required'}, 400);
+  if(!(body.check_out>body.check_in)) return json({error:'check_out must be after check_in'}, 400);
+  const unit=await findHospitalityUnit(env, body.unit_id);
+  if(!unit || String(unit.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const status=HOSPITALITY_BOOKING_STATUSES.has(body.status)?body.status:'inquiry';
+  if(HOSPITALITY_OCCUPYING_STATUSES.has(status) && await hospitalityHasOverlap(env, payload.cid, body.unit_id, body.check_in, body.check_out, null)){
+    return json({error:'This unit is already booked for part of that date range.'}, 409);
+  }
+  const nights=hospitalityNights(body.check_in, body.check_out);
+  const rate=Number(body.rate_per_night)||unit.base_rate||0;
+  const fields={
+    client_id:Number(payload.cid), unit_id:Number(body.unit_id), lead_id:body.lead_id?Number(body.lead_id):null,
+    guest_name:String(body.guest_name||'').trim().slice(0,140), guest_phone:String(body.guest_phone||'').trim().slice(0,40),
+    check_in:String(body.check_in), check_out:String(body.check_out), nights,
+    adults:Number(body.adults)||1, children:Number(body.children)||0,
+    rate_per_night:rate, total_amount:body.total_amount!==undefined?Number(body.total_amount):rate*nights,
+    deposit_amount:Number(body.deposit_amount)||0, currency:String(body.currency||unit.currency||'INR').trim().slice(0,10).toUpperCase(),
+    status, notes:String(body.notes||'').trim().slice(0,1000), created_at:new Date().toISOString(),
+  };
+  const r=await env.DB.prepare(`INSERT INTO hospitality_bookings
+    (client_id, unit_id, lead_id, guest_name, guest_phone, check_in, check_out, nights, adults, children, rate_per_night, total_amount, deposit_amount, currency, status, notes, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.unit_id, fields.lead_id, fields.guest_name, fields.guest_phone, fields.check_in, fields.check_out, fields.nights, fields.adults, fields.children, fields.rate_per_night, fields.total_amount, fields.deposit_amount, fields.currency, fields.status, fields.notes, fields.created_at)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
+}
+
+async function handleHospitalityBookingUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findHospitalityBooking(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const nextCheckIn=body.check_in!==undefined?String(body.check_in):existing.check_in;
+  const nextCheckOut=body.check_out!==undefined?String(body.check_out):existing.check_out;
+  const nextUnitId=body.unit_id!==undefined?Number(body.unit_id):existing.unit_id;
+  const nextStatus=body.status!==undefined&&HOSPITALITY_BOOKING_STATUSES.has(body.status)?body.status:existing.status;
+  if(!(nextCheckOut>nextCheckIn)) return json({error:'check_out must be after check_in'}, 400);
+  if(HOSPITALITY_OCCUPYING_STATUSES.has(nextStatus) && await hospitalityHasOverlap(env, payload.cid, nextUnitId, nextCheckIn, nextCheckOut, existing.id)){
+    return json({error:'This unit is already booked for part of that date range.'}, 409);
+  }
+  const sets=['unit_id=?','check_in=?','check_out=?','nights=?','status=?'];
+  const vals=[nextUnitId, nextCheckIn, nextCheckOut, hospitalityNights(nextCheckIn, nextCheckOut), nextStatus];
+  if(body.guest_name!==undefined){ sets.push('guest_name=?'); vals.push(String(body.guest_name).trim().slice(0,140)); }
+  if(body.guest_phone!==undefined){ sets.push('guest_phone=?'); vals.push(String(body.guest_phone).trim().slice(0,40)); }
+  if(body.adults!==undefined){ sets.push('adults=?'); vals.push(Number(body.adults)||1); }
+  if(body.children!==undefined){ sets.push('children=?'); vals.push(Number(body.children)||0); }
+  if(body.rate_per_night!==undefined){ sets.push('rate_per_night=?'); vals.push(Number(body.rate_per_night)||0); }
+  if(body.total_amount!==undefined){ sets.push('total_amount=?'); vals.push(Number(body.total_amount)||0); }
+  if(body.deposit_amount!==undefined){ sets.push('deposit_amount=?'); vals.push(Number(body.deposit_amount)||0); }
+  if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10).toUpperCase()); }
+  if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE hospitality_bookings SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleHospitalityBookingDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findHospitalityBooking(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM hospitality_bookings WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+
+// Dashboard stats — occupancy rate is booked-nights / (active-units × nights-in-month) for the
+// current calendar month; "active units" excludes any unit marked inactive, same as everywhere
+// else active/inactive is respected.
+async function handleHospitalityStats(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const now=new Date();
+  const monthStart=`${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-01`;
+  const nextMonth=new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth()+1, 1));
+  const monthEnd=nextMonth.toISOString().slice(0,10);
+  const daysInMonth=Math.round((nextMonth.getTime()-new Date(monthStart+'T00:00:00Z').getTime())/86400000);
+
+  const {results:units}=await env.DB.prepare(`SELECT id FROM hospitality_units WHERE client_id=? AND active=1`).bind(clientId).all();
+  const activeUnitCount=(units||[]).length;
+
+  const {results:monthBookings}=await env.DB.prepare(`SELECT check_in, check_out, total_amount FROM hospitality_bookings WHERE client_id=? AND status IN ('confirmed','checked_in','checked_out') AND check_in<? AND check_out>?`)
+    .bind(clientId, monthEnd, monthStart).all();
+  let bookedNights=0, revenue=0;
+  (monthBookings||[]).forEach(b=>{
+    const from=b.check_in>monthStart?b.check_in:monthStart;
+    const to=b.check_out<monthEnd?b.check_out:monthEnd;
+    const nights=Math.max(0, Math.round((new Date(to+'T00:00:00Z').getTime()-new Date(from+'T00:00:00Z').getTime())/86400000));
+    bookedNights+=nights;
+    revenue+=Number(b.total_amount)||0;
+  });
+  const occupancyRate=activeUnitCount>0?Math.round(bookedNights/(activeUnitCount*daysInMonth)*100):0;
+
+  const today=now.toISOString().slice(0,10);
+  const in7=new Date(Date.now()+7*86400000).toISOString().slice(0,10);
+  const {results:upcomingCheckIns}=await env.DB.prepare(`SELECT id, unit_id, guest_name, check_in, check_out FROM hospitality_bookings WHERE client_id=? AND status IN ('confirmed','checked_in') AND check_in>=? AND check_in<=? ORDER BY check_in ASC LIMIT 20`)
+    .bind(clientId, today, in7).all();
+  const {results:upcomingCheckOuts}=await env.DB.prepare(`SELECT id, unit_id, guest_name, check_in, check_out FROM hospitality_bookings WHERE client_id=? AND status='checked_in' AND check_out>=? AND check_out<=? ORDER BY check_out ASC LIMIT 20`)
+    .bind(clientId, today, in7).all();
+
+  return json({
+    total_units:activeUnitCount, occupancy_rate:occupancyRate, revenue_this_month:revenue,
+    upcoming_check_ins:upcomingCheckIns||[], upcoming_check_outs:upcomingCheckOuts||[],
+  });
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -7167,6 +7488,19 @@ export default {
       else if(url.pathname==='/accounting/documents/sync-erpnext' && request.method==='POST'){ res=await handleAccountingDocumentSyncErpnext(request, env); }
       else if(url.pathname==='/accounting/documents/submit-erpnext' && request.method==='POST'){ res=await handleAccountingDocumentSubmitErpnext(request, env); }
       else if(url.pathname==='/accounting/documents/send-email' && request.method==='POST'){ res=await handleAccountingDocumentSendEmail(request, env); }
+      else if(url.pathname==='/hospitality/units' && request.method==='GET'){ res=await handleHospitalityUnitsList(request, env); }
+      else if(url.pathname==='/hospitality/units' && request.method==='POST'){ res=await handleHospitalityUnitCreate(request, env); }
+      else if(url.pathname==='/hospitality/units' && request.method==='PATCH'){ res=await handleHospitalityUnitUpdate(request, env); }
+      else if(url.pathname==='/hospitality/units' && request.method==='DELETE'){ res=await handleHospitalityUnitDelete(request, env); }
+      else if(url.pathname==='/hospitality/blocked-dates' && request.method==='POST'){ res=await handleHospitalityBlockedDateCreate(request, env); }
+      else if(url.pathname==='/hospitality/blocked-dates' && request.method==='DELETE'){ res=await handleHospitalityBlockedDateDelete(request, env); }
+      else if(url.pathname==='/hospitality/rates' && request.method==='POST'){ res=await handleHospitalityRateOverrideSave(request, env); }
+      else if(url.pathname==='/hospitality/availability' && request.method==='GET'){ res=await handleHospitalityAvailability(request, env); }
+      else if(url.pathname==='/hospitality/bookings' && request.method==='GET'){ res=await handleHospitalityBookingsList(request, env); }
+      else if(url.pathname==='/hospitality/bookings' && request.method==='POST'){ res=await handleHospitalityBookingCreate(request, env); }
+      else if(url.pathname==='/hospitality/bookings' && request.method==='PATCH'){ res=await handleHospitalityBookingUpdate(request, env); }
+      else if(url.pathname==='/hospitality/bookings' && request.method==='DELETE'){ res=await handleHospitalityBookingDelete(request, env); }
+      else if(url.pathname==='/hospitality/stats' && request.method==='GET'){ res=await handleHospitalityStats(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }
       else if(url.pathname==='/erpnext/customers/ensure' && request.method==='POST'){ res=await handleErpnextCustomerEnsure(request, env); }

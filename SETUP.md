@@ -1035,6 +1035,70 @@ natively — the "Order Delivered" notification is best-effort and won't fire fo
 domain/token on this side. It does not revoke the app from the Shopify Admin — for a full
 uninstall the merchant should also remove the app from their store's Apps page.
 
+## Hospitality module (`frontend/dashboard.html` — 🏨 Hospitality tab; houseboats/hotels/tourism stays)
+A new industry (`hospitality`) plus an independently-toggleable module (`hospitality_enabled`,
+Settings → 🧩 Modules — same pattern as Travel Agency/Recruit/Appointments/B2B: industry selection
+auto-enables it, but it can also be toggled manually), for businesses that manage their own stay
+inventory — houseboats, hotels, resorts — rather than an agency arranging trips to third-party
+destinations (that's Travel Agency) or a single time-slot service (that's Appointments). The core
+thing neither of those two modules has is a **date-range + unit-type availability calendar with
+occupancy-based pricing**, which is what this module actually is.
+
+**Architecturally different from Agency/Recruit/Appointments**: those three each provision their
+own dynamic per-client NocoDB tables through the generic `/nocodb/*` passthrough. Hospitality is
+instead **fully Cloudflare D1** (`env.DB`, `migrations/0009_hospitality.sql`) via dedicated
+`/hospitality/*` Worker routes — a genuinely new data shape (date ranges, per-date rate overrides,
+overlap-checked bookings) with no NocoDB view anywhere already reading it, so there's no reason to
+pay NocoDB's per-client-table-creation overhead for it. Same reasoning as the Accounting/Follow-up
+Engine/Coach D1 tables elsewhere in this file.
+
+**Schema** (`migrations/0009_hospitality.sql`):
+- `hospitality_units` — unit/room types (name, type/category, adult/child capacity, amenities
+  (a plain comma-separated string, not JSON — kept simple since it's just rendered as chips, never
+  parsed/queried), `base_rate`, an optional flat `weekend_rate`, currency, active flag).
+- `hospitality_blocked_dates` — manually blocked dates per unit (maintenance, owner-blocked, etc.).
+  Sparse — availability is "open unless a confirmed/checked_in/checked_out booking or a row here
+  says no," not a dense per-date table pre-populated for the whole future.
+- `hospitality_rate_overrides` — sparse per-date price overrides (peak season, festival pricing)
+  beyond a unit's own flat `weekend_rate`.
+- `hospitality_bookings` — a date-range stay (`check_in`/`check_out`, not a single time-slot),
+  `lead_id` linking back to the CRM lead when the booking came from a WhatsApp conversation
+  (`guest_name`/`guest_phone` stand alone for one entered directly with no CRM lead behind it),
+  `status` (`inquiry`/`confirmed`/`checked_in`/`checked_out`/`cancelled`) — only the three
+  non-inquiry, non-cancelled statuses ("occupying" statuses) actually block the same
+  unit/date-range for another booking, so an unconfirmed inquiry never blocks someone else.
+
+**Worker routes** (`cloudflare-worker/worker.js`, all session-gated with ownership checks, same
+pattern as the Accounting module's routes): `GET/POST/PATCH/DELETE /hospitality/units`,
+`POST/DELETE /hospitality/blocked-dates`, `POST /hospitality/rates`, `GET /hospitality/availability`
+(merges blocked dates + rate overrides + booked ranges for one unit over a date range into a
+per-date status list — the calendar UI's single data source, so it isn't stitching three fetches
+together itself), `GET/POST/PATCH/DELETE /hospitality/bookings` (create/update reject with a 409 if
+the requested range overlaps another occupying-status booking on the same unit), `GET
+/hospitality/stats` (dashboard totals — active unit count, this-month occupancy rate as
+booked-nights ÷ (active units × days in month), this-month revenue, upcoming check-ins/check-outs
+in the next 7 days).
+
+**Frontend** (`frontend/dashboard.html`) — same sub-nav/lazy-load convention as Recruit/Appointments
+(`renderHospitality()` → `renderHospSubPage(page)`, a `.hosp-tab`/`data-hosp` sub-nav, one shared
+`#hospContent` container):
+- **📊 Dashboard** — stat tiles (units, occupancy, upcoming check-ins, revenue) + upcoming
+  check-in/check-out lists.
+- **🏠 Units** — a card grid (name, capacity, nightly rate, amenity chips), add/edit modal.
+- **📅 Availability** — a real month-grid calendar per unit (`.hosp-day` cells, color-coded
+  available/blocked/booked), with Prev/Next month nav and a click-a-day popover to toggle
+  blocked/available or set that date's rate override. Built by hand with vanilla JS (no calendar
+  library) — a `days-in-month` grid is simple enough not to need one.
+- **📖 Bookings** — a filterable table (status), add/edit modal with automatic nights/total
+  calculation from the unit's rate as check-in/check-out change.
+
+**Timezone note**: the calendar's month-boundary date math is done with plain string/number
+arithmetic, not a `Date` → `toISOString()` round-trip — the latter converts a local midnight
+through UTC, which silently shifts the date by a day for any positive-UTC-offset user (IST, GST,
+etc. — this app's actual client base), truncating the calendar's last day. Worth remembering if
+this module grows more date logic — Cloudflare Workers themselves have no such trap (there's no
+"local timezone" server-side, `Date` is always UTC there), but browser-side JS very much does.
+
 ## B2B module (Smart Lists, trackable Documents/CPQ, brand classification, B2B analytics)
 A new industry (`b2b`) plus an independently-toggleable module, following the same pattern as
 Travel Agency/Recruitment/Appointments: **Settings → Modules → 🤝 B2B Suite** turns on a `🤝 B2B`
@@ -1766,8 +1830,12 @@ NocoDB's "add this field/table by hand in the UI" process:
   send/reply log) — `migrations/0007_followup_engine.sql`.
 - **Human Deals Coach panel** (a per-turn Sentiment/LastObjectionCategory log — the Leads row only
   ever keeps the latest value, never a history) — `migrations/0008_coach_signals.sql`.
+- **Hospitality module** (units, blocked dates, rate overrides, and bookings for the houseboat/
+  hotel/tourism-stay module — a whole new module's data, not sidecar fields on an existing NocoDB
+  record, though a booking can still optionally link back to a NocoDB lead via `lead_id`) —
+  `migrations/0009_hospitality.sql`.
 
-All seven still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
+All eight still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
 need it — D1 only holds what's genuinely new, and every route that moved keeps its exact pre-D1
 request/response shape, so no frontend page needed to change for this migration.
 

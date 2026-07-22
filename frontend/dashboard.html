@@ -677,6 +677,14 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .rc-tab.active{color:#1D4ED8;border-bottom-color:#2563EB}
 .appt-tab{font-family:var(--disp);font-size:12px;font-weight:600;padding:11px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
 .appt-tab.active{color:#0891B2;border-bottom-color:#0891B2}
+.hosp-tab{font-family:var(--disp);font-size:12px;font-weight:600;padding:11px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
+.hosp-tab.active{color:#B45309;border-bottom-color:#D97706}
+.hosp-day{aspect-ratio:1;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:11px;cursor:pointer;border:1.5px solid var(--line);gap:2px;transition:transform .1s}
+.hosp-day:hover{transform:scale(1.05)}
+.hosp-day.available{background:#F0FDF4;color:#166534;border-color:#BBF7D0}
+.hosp-day.blocked{background:#F1F5F9;color:var(--muted);border-color:var(--line)}
+.hosp-day.booked{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
+.hosp-day.other-month{opacity:.35}
 .job-card{background:var(--card);border-radius:var(--r);padding:18px;box-shadow:var(--shadow);margin-bottom:12px;border:1.5px solid var(--line);cursor:pointer;transition:box-shadow .15s,border-color .15s}
 .job-card:hover{box-shadow:var(--shadow-md);border-color:#2563EB}
 .job-title{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:2px}
@@ -981,6 +989,8 @@ const INDUSTRIES = {
   b2b: { label:'B2B / Wholesale', booked:'Deals Closed', active:'Active Enquiries', tags:['Hot Lead','Quote Sent','Sample Requested','Negotiating','Not Interested'],
     theme:{accent:'#0F766E',accentInk:'#115E59',accentSoft:'#CCFBF1',bg:'#F0FDFA',line:'#99F6E4'},
     extraFields:['Brand','Country'] },
+  hospitality: { label:'Hospitality (Houseboats/Hotels/Stays)', booked:'Stays Booked', active:'Active Inquiries', tags:['Hot Lead','Dates Confirmed','No Answer','Price Query','Not Interested'],
+    theme:{accent:'#EA580C',accentInk:'#C2410C',accentSoft:'#FFEDD5',bg:'#FFF7ED',line:'#FED7AA'} },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -1039,6 +1049,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
     <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
     <button class="dnTab" data-page="appointments" id="dnApptTab" style="display:none">📅 Appointments</button>
+    <button class="dnTab" data-page="hospitality" id="dnHospitalityTab" style="display:none">🏨 Hospitality</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
@@ -1561,6 +1572,104 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div class="page-pad" id="appointmentsContent">
         <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
       </div>
+    </div>
+
+    <!-- HOSPITALITY MODULE (houseboats/hotels/tourism stays) — fully D1-backed, unlike the
+         Agency/Recruit/Appointments modules above which each provision their own dynamic NocoDB
+         tables per client. See cloudflare-worker/migrations/0009_hospitality.sql. -->
+    <div class="page hidden" id="pageHospitality">
+      <div id="hospSubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
+        <button class="hosp-tab active" data-hosp="dashboard">📊 Dashboard</button>
+        <button class="hosp-tab" data-hosp="units">🏠 Units</button>
+        <button class="hosp-tab" data-hosp="availability">📅 Availability</button>
+        <button class="hosp-tab" data-hosp="bookings">📖 Bookings</button>
+      </div>
+      <div class="page-pad" id="hospContent">
+        <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Hospitality: Unit modal -->
+    <div class="modal" id="modalHospUnit" style="width:480px">
+      <span class="modal-drag"></span>
+      <div class="modal-hd"><div class="modal-title" id="hospUnitModalTitle">New Unit</div><button class="icon-btn" onclick="closeModal('modalHospUnit')">✕</button></div>
+      <div class="modal-body">
+        <input type="hidden" id="hospUnitId">
+        <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="hospUnitName" placeholder="e.g. AC Deluxe Houseboat"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group"><label class="form-label">Type / Category</label><input class="form-input" id="hospUnitType" placeholder="e.g. Deluxe, Standard"></div>
+          <div class="form-group"><label class="form-label">Currency</label><input class="form-input" id="hospUnitCurrency" value="INR" maxlength="6"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group"><label class="form-label">Capacity — Adults</label><input class="form-input" type="number" min="1" id="hospUnitCapAdults" value="2"></div>
+          <div class="form-group"><label class="form-label">Capacity — Children</label><input class="form-input" type="number" min="0" id="hospUnitCapChildren" value="0"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group"><label class="form-label">Base Rate (per night)</label><input class="form-input" type="number" min="0" id="hospUnitBaseRate" value="0"></div>
+          <div class="form-group"><label class="form-label">Weekend Rate (optional)</label><input class="form-input" type="number" min="0" id="hospUnitWeekendRate" placeholder="Leave blank to use base rate"></div>
+        </div>
+        <div class="form-group"><label class="form-label">Amenities (comma separated)</label><input class="form-input" id="hospUnitAmenities" placeholder="e.g. AC, WiFi, Sun Deck, Meals Included"></div>
+        <div class="form-group"><label class="form-label">Description</label><textarea class="form-input" id="hospUnitDescription" rows="2"></textarea></div>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" style="width:auto" id="hospUnitActive" checked> Active (bookable)</label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="saveHospUnit()">Save</button>
+        <span class="save-msg" id="hospUnitSaveMsg"></span>
+        <button class="btn btn-secondary" onclick="closeModal('modalHospUnit')">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Hospitality: Booking modal -->
+    <div class="modal" id="modalHospBooking" style="width:520px">
+      <span class="modal-drag"></span>
+      <div class="modal-hd"><div class="modal-title" id="hospBookingModalTitle">New Booking</div><button class="icon-btn" onclick="closeModal('modalHospBooking')">✕</button></div>
+      <div class="modal-body">
+        <input type="hidden" id="hospBookingId">
+        <div class="form-group"><label class="form-label">Unit</label><select class="form-input" id="hospBookingUnitId" onchange="hospOnBookingUnitChange()"></select></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group"><label class="form-label">Guest Name</label><input class="form-input" id="hospBookingGuestName"></div>
+          <div class="form-group"><label class="form-label">Guest Phone</label><input class="form-input" id="hospBookingGuestPhone"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group"><label class="form-label">Check-in</label><input class="form-input" type="date" id="hospBookingCheckIn" onchange="hospRecalcBookingTotal()"></div>
+          <div class="form-group"><label class="form-label">Check-out</label><input class="form-input" type="date" id="hospBookingCheckOut" onchange="hospRecalcBookingTotal()"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group"><label class="form-label">Adults</label><input class="form-input" type="number" min="1" id="hospBookingAdults" value="1"></div>
+          <div class="form-group"><label class="form-label">Children</label><input class="form-input" type="number" min="0" id="hospBookingChildren" value="0"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+          <div class="form-group"><label class="form-label">Rate/Night</label><input class="form-input" type="number" min="0" id="hospBookingRate" onchange="hospRecalcBookingTotal()"></div>
+          <div class="form-group"><label class="form-label">Total</label><input class="form-input" type="number" min="0" id="hospBookingTotal"></div>
+          <div class="form-group"><label class="form-label">Deposit</label><input class="form-input" type="number" min="0" id="hospBookingDeposit" value="0"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group"><label class="form-label">Currency</label><input class="form-input" id="hospBookingCurrency" value="INR" maxlength="6"></div>
+          <div class="form-group"><label class="form-label">Status</label>
+            <select class="form-input" id="hospBookingStatus">
+              <option value="inquiry">Inquiry</option>
+              <option value="confirmed">Confirmed</option>
+              <option value="checked_in">Checked In</option>
+              <option value="checked_out">Checked Out</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
+        </div>
+        <div id="hospBookingNightsHint" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+        <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="hospBookingNotes" rows="2"></textarea></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="saveHospBooking()">Save</button>
+        <span class="save-msg" id="hospBookingSaveMsg"></span>
+        <button class="btn btn-secondary" onclick="closeModal('modalHospBooking')">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Hospitality: day popover (block/unblock a date + set a rate override) -->
+    <div class="modal" id="modalHospDay" style="width:340px">
+      <span class="modal-drag"></span>
+      <div class="modal-hd"><div class="modal-title" id="hospDayModalTitle">Day</div><button class="icon-btn" onclick="closeModal('modalHospDay')">✕</button></div>
+      <div class="modal-body" id="hospDayModalBody"></div>
     </div>
 
     <!-- CHATS -->
@@ -2509,12 +2618,20 @@ const TODAY = new Date().toISOString().slice(0,10);
               <span id="apptModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
               <div style="flex:1;min-width:180px"><b>🤝 B2B Suite</b><div class="s-note" style="margin:2px 0 0">Smart Lists, trackable quotes/catalogs (CPQ), brand classification, and B2B analytics — for wholesale, distribution, and other B2B sales teams.</div></div>
               <select class="form-input" id="cfgB2bEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
               <button class="save-btn" id="saveB2bEnabled">Save</button>
               <span class="save-msg" id="saveB2bEnabledMsg"></span>
               <span id="b2bModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
+              <div style="flex:1;min-width:180px"><b>🏨 Hospitality</b><div class="s-note" style="margin:2px 0 0">Unit/room types, an availability calendar, and bookings — for houseboats, hotels, and other stay-based tourism businesses.</div></div>
+              <select class="form-input" id="cfgHospitalityEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveHospitalityEnabled">Save</button>
+              <span class="save-msg" id="saveHospitalityEnabledMsg"></span>
+              <span id="hospitalityModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
           </div>
         </div>
@@ -2684,6 +2801,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <button class="more-item" data-page="agency" id="moreAgencyTab" style="display:none"><span class="bnIcon">🏢</span><span class="bnLabel">Agency</span></button>
       <button class="more-item" data-page="recruit" id="moreRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
       <button class="more-item" data-page="appointments" id="moreApptTab" style="display:none"><span class="bnIcon">📅</span><span class="bnLabel">Appointments</span></button>
+      <button class="more-item" data-page="hospitality" id="moreHospitalityTab" style="display:none"><span class="bnIcon">🏨</span><span class="bnLabel">Hospitality</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
     </div>
   </div>
@@ -3946,7 +4064,7 @@ const SETTINGS_GROUP=['settings','channels','integrations','voice','modules']; /
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','settings','channels','integrations','voice','modules','billing'];
+const MORE_GROUP=['broadcast','team','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','settings','channels','integrations','voice','modules','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -3974,6 +4092,7 @@ function navigate(page){
   if(page==='agency') renderAgency();
   if(page==='recruit') renderRecruit();
   if(page==='appointments') renderAppointments();
+  if(page==='hospitality') renderHospitality();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
   if(page==='chats') openChatsTab();
@@ -4018,6 +4137,7 @@ function showApp(){
   updateAgencyTabVisibility();
   updateRecruitTabVisibility();
   updateApptTabVisibility();
+  updateHospitalityTabVisibility();
   updateB2bTabVisibility();
   updateFeatureTabVisibility();
   loadAll();
@@ -5843,10 +5963,13 @@ async function saveIndustry(){
     else{patch.ta_enabled='No';clientRecord.ta_enabled='No';taSaveLocal('ta_enabled','No');}
     if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';rcSaveLocal('recruit_enabled','Yes');}
     else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
+    if(ind==='hospitality'){patch.hospitality_enabled='Yes';clientRecord.hospitality_enabled='Yes';}
+    else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
     await patchClient(patch);
     clientRecord.industry=ind;
     applyTheme(ind);
     updateRecruitTabVisibility();
+    updateHospitalityTabVisibility();
     _renderModuleBadge('taModuleStatusBadge',ind==='travel');
     _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
     msg.textContent='✓ Saved — theme applied';
@@ -5865,10 +5988,13 @@ $id('saveGeneral').addEventListener('click',async()=>{
     else{patch.ta_enabled='No';clientRecord.ta_enabled='No';taSaveLocal('ta_enabled','No');}
     if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';rcSaveLocal('recruit_enabled','Yes');}
     else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
+    if(ind==='hospitality'){patch.hospitality_enabled='Yes';clientRecord.hospitality_enabled='Yes';}
+    else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
     await patchClient(patch);
     clientRecord.industry=ind;
     applyTheme(ind);
     updateRecruitTabVisibility();
+    updateHospitalityTabVisibility();
     _renderModuleBadge('taModuleStatusBadge',ind==='travel');
     _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
     msg.textContent='✓ Saved — theme applied';
@@ -12279,6 +12405,7 @@ function populateModulesPage(){
   initRcSettings();
   initApptSettings();
   initB2bSettings();
+  initHospitalitySettings();
   updateFeatureTabVisibility();
 }
 
@@ -13196,6 +13323,33 @@ function updateApptTabVisibility(){
   [$id('dnApptTab'),$id('bnApptTab'),$id('moreApptTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
 }
 
+function updateHospitalityTabVisibility(){
+  const enabled=(clientRecord.hospitality_enabled==='Yes');
+  [$id('dnHospitalityTab'),$id('moreHospitalityTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+}
+
+function initHospitalitySettings(){
+  const sel=$id('cfgHospitalityEnabled'); if(sel) sel.value=(clientRecord.hospitality_enabled==='Yes')?'Yes':'No';
+  _renderModuleBadge('hospitalityModuleStatusBadge',clientRecord.hospitality_enabled==='Yes');
+  updateHospitalityTabVisibility();
+}
+
+$id('saveHospitalityEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveHospitalityEnabled'),msg=$id('saveHospitalityEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgHospitalityEnabled').value;
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('hospitality_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_enabled',title:'hospitality_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    await patchClient({hospitality_enabled:val});
+    updateHospitalityTabVisibility();
+    _renderModuleBadge('hospitalityModuleStatusBadge',val==='Yes');
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
 // The module toggle itself is only offered to services-style industries (isBookingIndustry() —
 // every industry except Ecommerce, same gate as Settings → Booking Link) since an ecom client has
 // no use for an appointments calendar.
@@ -13598,6 +13752,414 @@ function renderRecoveryChip(lead){
     <span class="recovery-chip-stage">${done?'COMPLETE':`STEP ${stage} / ${total}`}</span>
     <div>${esc(stepLabel)}${lastMsg}</div>${sentAt}`;
   wrap.style.display='';
+}
+
+/* ── HOSPITALITY MODULE (houseboats/hotels/tourism stays) ── fully D1-backed
+   (cloudflare-worker/migrations/0009_hospitality.sql) via dedicated /hospitality/* Worker routes —
+   unlike Agency/Recruit/Appointments above, no per-client dynamic NocoDB tables here. ── */
+let _hospPage='dashboard', _hospLoaded=false;
+let hospUnits=[], hospBookings=[];
+let _hospEditUnitId=null, _hospEditBookingId=null;
+let _hospCalUnitId=null, _hospCalYear=null, _hospCalMonth=null, _hospCalDays=[];
+
+async function renderHospitality(){
+  const el=$id('hospContent');
+  if(!_hospLoaded){
+    el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
+    await hospLoad();
+  }
+  renderHospSubPage(_hospPage);
+}
+async function hospLoad(){
+  try{
+    const [unitsR, bookingsR]=await Promise.all([
+      fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{headers:ncAuthHeaders()}),
+      fetch(`${CONFIG.WORKER_BASE}/hospitality/bookings`,{headers:ncAuthHeaders()}),
+    ]);
+    hospUnits=(await unitsR.json()).list||[];
+    hospBookings=(await bookingsR.json()).list||[];
+    _hospLoaded=true;
+  }catch(e){ hospUnits=[]; hospBookings=[]; }
+}
+function renderHospSubPage(page){
+  _hospPage=page;
+  document.querySelectorAll('.hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.hosp===page));
+  switch(page){
+    case'dashboard':renderHospDashboard();break;
+    case'units':renderHospUnits();break;
+    case'availability':renderHospAvailability();break;
+    case'bookings':renderHospBookings();break;
+  }
+}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('.hosp-tab');
+  if(t&&t.dataset.hosp) renderHospSubPage(t.dataset.hosp);
+});
+
+/* ── Dashboard sub-page ── */
+async function renderHospDashboard(){
+  const el=$id('hospContent');
+  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
+  let stats={total_units:0,occupancy_rate:0,revenue_this_month:0,upcoming_check_ins:[],upcoming_check_outs:[]};
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/stats`,{headers:ncAuthHeaders()});
+    stats=await r.json();
+  }catch(e){}
+  const unitName=id=>{ const u=hospUnits.find(x=>x.Id===id); return u?u.name:'Unit'; };
+  const rowsIn=(stats.upcoming_check_ins||[]).map(b=>`
+    <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px">
+      <span>${esc(b.guest_name||'Guest')} — ${esc(unitName(b.unit_id))}</span>
+      <span style="color:var(--muted)">${fmtDateShort(b.check_in)}</span>
+    </div>`).join('') || '<div style="font-size:12px;color:var(--muted)">No check-ins in the next 7 days.</div>';
+  const rowsOut=(stats.upcoming_check_outs||[]).map(b=>`
+    <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px">
+      <span>${esc(b.guest_name||'Guest')} — ${esc(unitName(b.unit_id))}</span>
+      <span style="color:var(--muted)">${fmtDateShort(b.check_out)}</span>
+    </div>`).join('') || '<div style="font-size:12px;color:var(--muted)">No check-outs in the next 7 days.</div>';
+
+  el.innerHTML=`
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px">
+      <div class="stat"><div class="stat-lbl">Total Units</div><div class="stat-val">${stats.total_units}</div></div>
+      <div class="stat accent"><div class="stat-lbl">Occupancy (this month)</div><div class="stat-val">${stats.occupancy_rate}%</div></div>
+      <div class="stat"><div class="stat-lbl">Check-ins (7d)</div><div class="stat-val">${(stats.upcoming_check_ins||[]).length}</div></div>
+      <div class="stat"><div class="stat-lbl">Revenue (this month)</div><div class="stat-val" style="font-size:18px">${(stats.revenue_this_month||0).toLocaleString()}</div></div>
+    </div>
+    <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+      <div class="card"><div class="card-title">📥 Upcoming Check-ins</div>${rowsIn}</div>
+      <div class="card"><div class="card-title">📤 Upcoming Check-outs</div>${rowsOut}</div>
+    </div>`;
+}
+
+/* ── Units sub-page ── */
+function hospAmenityChips(amenities){
+  return (amenities||'').split(',').map(a=>a.trim()).filter(Boolean).map(a=>`<span class="tag">${esc(a)}</span>`).join('');
+}
+function renderHospUnits(){
+  const el=$id('hospContent');
+  el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🏠 Units &amp; Room Types <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospUnits.length})</span></div>
+      <button class="btn btn-primary btn-sm" onclick="openAddHospUnit()">+ Add Unit</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">
+      ${hospUnits.length?hospUnits.map(u=>`
+        <div class="card" style="cursor:pointer;${u.active?'':'opacity:.55'}" onclick="openEditHospUnit(${u.Id})">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div>
+              <div style="font-weight:700;font-size:14px">${esc(u.name)}</div>
+              <div style="font-size:11px;color:var(--muted)">${esc(u.unit_type||'—')} · ${u.capacity_adults} adults${u.capacity_children?' + '+u.capacity_children+' children':''}</div>
+            </div>
+            <button class="btn-ghost" onclick="event.stopPropagation();deleteHospUnit(${u.Id})">🗑</button>
+          </div>
+          <div style="margin:8px 0;font-family:var(--disp);font-weight:700;font-size:16px">${esc(u.currency)} ${Number(u.base_rate).toLocaleString()}<span style="font-size:11px;color:var(--muted);font-weight:500"> /night</span></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${hospAmenityChips(u.amenities)}</div>
+          ${!u.active?'<div style="margin-top:8px"><span class="badge gray">Inactive</span></div>':''}
+        </div>`).join(''):'<div class="empty-state"><div class="ei">🏠</div>No units yet. Add your first room/unit type.</div>'}
+    </div>`;
+}
+function openAddHospUnit(){
+  _hospEditUnitId=null;
+  $id('hospUnitModalTitle').textContent='New Unit';
+  $id('hospUnitId').value=''; $id('hospUnitName').value=''; $id('hospUnitType').value='';
+  $id('hospUnitCurrency').value='INR'; $id('hospUnitCapAdults').value=2; $id('hospUnitCapChildren').value=0;
+  $id('hospUnitBaseRate').value=0; $id('hospUnitWeekendRate').value=''; $id('hospUnitAmenities').value='';
+  $id('hospUnitDescription').value=''; $id('hospUnitActive').checked=true;
+  $id('hospUnitSaveMsg').textContent='';
+  openModal('modalHospUnit');
+}
+function openEditHospUnit(id){
+  const u=hospUnits.find(x=>x.Id===id); if(!u) return;
+  _hospEditUnitId=id;
+  $id('hospUnitModalTitle').textContent='Edit Unit';
+  $id('hospUnitId').value=id;
+  $id('hospUnitName').value=u.name||''; $id('hospUnitType').value=u.unit_type||'';
+  $id('hospUnitCurrency').value=u.currency||'INR';
+  $id('hospUnitCapAdults').value=u.capacity_adults||2; $id('hospUnitCapChildren').value=u.capacity_children||0;
+  $id('hospUnitBaseRate').value=u.base_rate||0; $id('hospUnitWeekendRate').value=u.weekend_rate||'';
+  $id('hospUnitAmenities').value=u.amenities||''; $id('hospUnitDescription').value=u.description||'';
+  $id('hospUnitActive').checked=!!u.active;
+  $id('hospUnitSaveMsg').textContent='';
+  openModal('modalHospUnit');
+}
+async function saveHospUnit(){
+  const msg=$id('hospUnitSaveMsg');
+  const name=$id('hospUnitName').value.trim();
+  if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
+  const body={
+    name, unit_type:$id('hospUnitType').value.trim(), currency:$id('hospUnitCurrency').value.trim()||'INR',
+    capacity_adults:parseInt($id('hospUnitCapAdults').value)||2, capacity_children:parseInt($id('hospUnitCapChildren').value)||0,
+    base_rate:parseFloat($id('hospUnitBaseRate').value)||0,
+    weekend_rate:$id('hospUnitWeekendRate').value?parseFloat($id('hospUnitWeekendRate').value):null,
+    amenities:$id('hospUnitAmenities').value.trim(), description:$id('hospUnitDescription').value.trim(),
+    active:$id('hospUnitActive').checked,
+  };
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    if(_hospEditUnitId){
+      await fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:_hospEditUnitId,...body})});
+      Object.assign(hospUnits.find(u=>u.Id===_hospEditUnitId), body);
+    }else{
+      const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+      hospUnits.push(await r.json());
+    }
+    closeModal('modalHospUnit');
+    renderHospUnits();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function deleteHospUnit(id){
+  if(!confirm('Delete this unit? Its blocked dates and rate overrides will be removed too.')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id})});
+    hospUnits=hospUnits.filter(u=>u.Id!==id);
+    renderHospUnits();
+  }catch(e){ alert('Failed to delete: '+e.message); }
+}
+
+/* ── Availability sub-page (month calendar) ── */
+function renderHospAvailability(){
+  const el=$id('hospContent');
+  if(!hospUnits.length){
+    el.innerHTML='<div class="empty-state"><div class="ei">📅</div>Add a unit first, then come back here to manage its availability.</div>';
+    return;
+  }
+  if(!_hospCalUnitId || !hospUnits.some(u=>u.Id===_hospCalUnitId)) _hospCalUnitId=hospUnits[0].Id;
+  if(_hospCalYear==null){ const now=new Date(); _hospCalYear=now.getFullYear(); _hospCalMonth=now.getMonth(); }
+  el.innerHTML=`
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+      <select class="form-input" id="hospCalUnitSelect" style="max-width:220px" onchange="hospCalUnitChange()">
+        ${hospUnits.map(u=>`<option value="${u.Id}" ${u.Id===_hospCalUnitId?'selected':''}>${esc(u.name)}</option>`).join('')}
+      </select>
+      <button class="btn btn-secondary btn-sm" onclick="hospCalNav(-1)">◀ Prev</button>
+      <div id="hospCalMonthLabel" style="font-weight:700;min-width:140px;text-align:center"></div>
+      <button class="btn btn-secondary btn-sm" onclick="hospCalNav(1)">Next ▶</button>
+      <div style="display:flex;gap:10px;margin-left:auto;font-size:11px;color:var(--muted)">
+        <span>🟩 Available</span><span>⬜ Blocked</span><span>🟥 Booked</span>
+      </div>
+    </div>
+    <div id="hospCalGrid"></div>`;
+  hospLoadCalendar();
+}
+function hospCalUnitChange(){ _hospCalUnitId=parseInt($id('hospCalUnitSelect').value); hospLoadCalendar(); }
+function hospCalNav(delta){
+  _hospCalMonth+=delta;
+  if(_hospCalMonth<0){_hospCalMonth=11;_hospCalYear--;}
+  if(_hospCalMonth>11){_hospCalMonth=0;_hospCalYear++;}
+  hospLoadCalendar();
+}
+async function hospLoadCalendar(){
+  const grid=$id('hospCalGrid'); if(!grid) return;
+  grid.innerHTML='<div style="text-align:center;padding:30px;color:var(--muted)">Loading…</div>';
+  const monthNames=['January','February','March','April','May','June','July','August','September','October','November','December'];
+  $id('hospCalMonthLabel').textContent=`${monthNames[_hospCalMonth]} ${_hospCalYear}`;
+  const start=`${_hospCalYear}-${String(_hospCalMonth+1).padStart(2,'0')}-01`;
+  // Pure string/number arithmetic, not a Date→toISOString() round-trip — the latter converts a
+  // local midnight through UTC, which shifts the date by a day for any positive-UTC-offset user
+  // (IST, GST/AED, etc. — this app's actual client base), e.g. "Jul 1 00:00 IST" becomes
+  // "Jun 30 18:30 UTC" and silently truncates the calendar's last day.
+  let endYear=_hospCalYear, endMonth=_hospCalMonth+1;
+  if(endMonth>11){ endMonth=0; endYear++; }
+  const end=`${endYear}-${String(endMonth+1).padStart(2,'0')}-01`;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/availability?unit_id=${_hospCalUnitId}&start=${start}&end=${end}`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    _hospCalDays=data.days||[];
+  }catch(e){ _hospCalDays=[]; }
+  renderHospCalGrid();
+}
+function renderHospCalGrid(){
+  const grid=$id('hospCalGrid'); if(!grid) return;
+  const firstDow=new Date(_hospCalYear,_hospCalMonth,1).getDay();
+  const cells=[];
+  for(let i=0;i<firstDow;i++) cells.push('<div></div>');
+  _hospCalDays.forEach(d=>{
+    const dayNum=parseInt(d.date.slice(8,10));
+    const tooltip=d.status==='booked'?`${d.booking?.guest_name||'Guest'} (${d.booking?.status||''})`:(d.status==='blocked'?(d.reason||'Blocked'):`Available — ${d.rate}`);
+    cells.push(`<div class="hosp-day ${d.status}" title="${esc(tooltip)}" onclick="openHospDayModal('${d.date}')">
+      <div style="font-weight:700">${dayNum}</div>
+      <div style="font-size:9px">${d.status==='booked'?'●':Math.round(d.rate)}</div>
+    </div>`);
+  });
+  grid.innerHTML=`<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">
+    ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div style="text-align:center;font-size:11px;color:var(--muted);font-weight:700">${d}</div>`).join('')}
+    ${cells.join('')}
+  </div>`;
+}
+function openHospDayModal(date){
+  const day=_hospCalDays.find(d=>d.date===date);
+  if(!day) return;
+  $id('hospDayModalTitle').textContent=new Date(date+'T00:00:00Z').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+  const unit=hospUnits.find(u=>u.Id===_hospCalUnitId);
+  let body='';
+  if(day.status==='booked'){
+    body=`<div style="font-size:13px;margin-bottom:10px">Booked — ${esc(day.booking?.guest_name||'Guest')} (${esc(day.booking?.status||'')})</div>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('modalHospDay');renderHospSubPage('bookings')">View in Bookings</button>`;
+  }else{
+    body=`
+      <div style="margin-bottom:14px">
+        <label class="form-label">Status</label>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button class="btn ${day.status==='available'?'btn-primary':'btn-secondary'} btn-sm" onclick="hospSetDayBlocked('${date}',false)">Available</button>
+          <button class="btn ${day.status==='blocked'?'btn-primary':'btn-secondary'} btn-sm" onclick="hospSetDayBlocked('${date}',true)">Blocked</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Rate override for this date</label>
+        <div style="display:flex;gap:8px">
+          <input class="form-input" type="number" id="hospDayRateInput" value="${day.rate}">
+          <button class="btn btn-secondary btn-sm" onclick="hospSaveDayRate('${date}')">Set</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Base rate: ${esc(unit?.currency||'')} ${unit?.base_rate||0}</div>
+      </div>`;
+  }
+  $id('hospDayModalBody').innerHTML=body;
+  openModal('modalHospDay');
+}
+async function hospSetDayBlocked(date, blocked){
+  try{
+    if(blocked) await fetch(`${CONFIG.WORKER_BASE}/hospitality/blocked-dates`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({unit_id:_hospCalUnitId,date,reason:''})});
+    else await fetch(`${CONFIG.WORKER_BASE}/hospitality/blocked-dates`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({unit_id:_hospCalUnitId,date})});
+    closeModal('modalHospDay');
+    hospLoadCalendar();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function hospSaveDayRate(date){
+  const raw=$id('hospDayRateInput').value;
+  const rate=raw===''?null:parseFloat(raw);
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/rates`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({unit_id:_hospCalUnitId,date,rate})});
+    closeModal('modalHospDay');
+    hospLoadCalendar();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── Bookings sub-page ── */
+const HOSP_STATUS_LABELS={inquiry:'Inquiry',confirmed:'Confirmed',checked_in:'Checked In',checked_out:'Checked Out',cancelled:'Cancelled'};
+const HOSP_STATUS_BADGE_CLASS={inquiry:'gray',confirmed:'green',checked_in:'green',checked_out:'gray',cancelled:'red'};
+function renderHospBookings(filter=''){
+  const el=$id('hospContent');
+  const rows=filter?hospBookings.filter(b=>b.status===filter):hospBookings;
+  el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">📖 Bookings <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospBookings.length})</span></div>
+      <select class="form-input" id="hospBookingFilter" style="max-width:150px;padding:8px 10px" onchange="renderHospBookings(this.value)">
+        <option value=""${!filter?' selected':''}>All Status</option>
+        ${Object.keys(HOSP_STATUS_LABELS).map(s=>`<option value="${s}"${filter===s?' selected':''}>${HOSP_STATUS_LABELS[s]}</option>`).join('')}
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="openAddHospBooking()">+ New Booking</button>
+    </div>
+    <div class="tbl-wrap">
+      <table class="leads-tbl" style="width:100%">
+        <thead><tr><th>Guest</th><th>Unit</th><th>Check-in</th><th>Check-out</th><th>Nights</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${rows.length?rows.map(b=>{
+            const unit=hospUnits.find(u=>u.Id===b.unit_id);
+            return `<tr>
+              <td>${esc(b.guest_name||'—')}</td>
+              <td>${esc(unit?unit.name:'—')}</td>
+              <td>${fmtDateShort(b.check_in)}</td>
+              <td>${fmtDateShort(b.check_out)}</td>
+              <td>${b.nights}</td>
+              <td>${esc(b.currency)} ${Number(b.total_amount).toLocaleString()}</td>
+              <td><span class="badge ${HOSP_STATUS_BADGE_CLASS[b.status]||'gray'}">${HOSP_STATUS_LABELS[b.status]||b.status}</span></td>
+              <td style="white-space:nowrap">
+                <button class="icon-btn" title="Edit" onclick="openEditHospBooking(${b.Id})">✏️</button>
+                <button class="btn-ghost" title="Delete" onclick="deleteHospBooking(${b.Id})">🗑</button>
+              </td>
+            </tr>`;
+          }).join(''):'<tr><td colspan="8" class="empty-state">No bookings yet.</td></tr>'}
+        </tbody>
+      </table>
+    </div>`;
+}
+function hospPopulateBookingUnitSelect(selectedUnitId){
+  const sel=$id('hospBookingUnitId');
+  sel.innerHTML=hospUnits.map(u=>`<option value="${u.Id}">${esc(u.name)}</option>`).join('');
+  if(selectedUnitId) sel.value=selectedUnitId;
+}
+function hospOnBookingUnitChange(){
+  const unit=hospUnits.find(u=>u.Id===parseInt($id('hospBookingUnitId').value));
+  if(!unit) return;
+  $id('hospBookingRate').value=unit.base_rate||0;
+  $id('hospBookingCurrency').value=unit.currency||'INR';
+  hospRecalcBookingTotal();
+}
+function hospRecalcBookingTotal(){
+  const ci=$id('hospBookingCheckIn').value, co=$id('hospBookingCheckOut').value;
+  const hint=$id('hospBookingNightsHint');
+  if(!ci||!co||!(co>ci)){ hint.textContent=co&&ci&&co<=ci?'Check-out must be after check-in.':''; return; }
+  const nights=Math.round((new Date(co+'T00:00:00Z')-new Date(ci+'T00:00:00Z'))/86400000);
+  const rate=parseFloat($id('hospBookingRate').value)||0;
+  $id('hospBookingTotal').value=(nights*rate)||0;
+  hint.textContent=`${nights} night${nights===1?'':'s'}`;
+}
+function openAddHospBooking(prefillUnitId){
+  _hospEditBookingId=null;
+  $id('hospBookingModalTitle').textContent='New Booking';
+  $id('hospBookingId').value='';
+  hospPopulateBookingUnitSelect(prefillUnitId||_hospCalUnitId);
+  $id('hospBookingGuestName').value=''; $id('hospBookingGuestPhone').value='';
+  $id('hospBookingCheckIn').value=''; $id('hospBookingCheckOut').value='';
+  $id('hospBookingAdults').value=1; $id('hospBookingChildren').value=0;
+  const unit=hospUnits.find(u=>u.Id===parseInt($id('hospBookingUnitId').value));
+  $id('hospBookingRate').value=unit?unit.base_rate:0; $id('hospBookingTotal').value=0; $id('hospBookingDeposit').value=0;
+  $id('hospBookingCurrency').value=unit?unit.currency:'INR'; $id('hospBookingStatus').value='inquiry';
+  $id('hospBookingNotes').value=''; $id('hospBookingNightsHint').textContent='';
+  $id('hospBookingSaveMsg').textContent='';
+  openModal('modalHospBooking');
+}
+function openEditHospBooking(id){
+  const b=hospBookings.find(x=>x.Id===id); if(!b) return;
+  _hospEditBookingId=id;
+  $id('hospBookingModalTitle').textContent='Edit Booking';
+  $id('hospBookingId').value=id;
+  hospPopulateBookingUnitSelect(b.unit_id);
+  $id('hospBookingGuestName').value=b.guest_name||''; $id('hospBookingGuestPhone').value=b.guest_phone||'';
+  $id('hospBookingCheckIn').value=b.check_in; $id('hospBookingCheckOut').value=b.check_out;
+  $id('hospBookingAdults').value=b.adults||1; $id('hospBookingChildren').value=b.children||0;
+  $id('hospBookingRate').value=b.rate_per_night||0; $id('hospBookingTotal').value=b.total_amount||0;
+  $id('hospBookingDeposit').value=b.deposit_amount||0; $id('hospBookingCurrency').value=b.currency||'INR';
+  $id('hospBookingStatus').value=b.status||'inquiry'; $id('hospBookingNotes').value=b.notes||'';
+  $id('hospBookingNightsHint').textContent=`${b.nights} night${b.nights===1?'':'s'}`;
+  $id('hospBookingSaveMsg').textContent='';
+  openModal('modalHospBooking');
+}
+async function saveHospBooking(){
+  const msg=$id('hospBookingSaveMsg');
+  const checkIn=$id('hospBookingCheckIn').value, checkOut=$id('hospBookingCheckOut').value;
+  if(!checkIn||!checkOut||!(checkOut>checkIn)){ msg.textContent='Pick a valid check-in/check-out range.'; msg.className='save-msg err'; return; }
+  const body={
+    unit_id:parseInt($id('hospBookingUnitId').value),
+    guest_name:$id('hospBookingGuestName').value.trim(), guest_phone:$id('hospBookingGuestPhone').value.trim(),
+    check_in:checkIn, check_out:checkOut,
+    adults:parseInt($id('hospBookingAdults').value)||1, children:parseInt($id('hospBookingChildren').value)||0,
+    rate_per_night:parseFloat($id('hospBookingRate').value)||0, total_amount:parseFloat($id('hospBookingTotal').value)||0,
+    deposit_amount:parseFloat($id('hospBookingDeposit').value)||0, currency:$id('hospBookingCurrency').value.trim()||'INR',
+    status:$id('hospBookingStatus').value, notes:$id('hospBookingNotes').value.trim(),
+  };
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    if(_hospEditBookingId){
+      const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/bookings`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:_hospEditBookingId,...body})});
+      const data=await r.json();
+      if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+      Object.assign(hospBookings.find(b=>b.Id===_hospEditBookingId), body, {nights:Math.round((new Date(checkOut+'T00:00:00Z')-new Date(checkIn+'T00:00:00Z'))/86400000)});
+    }else{
+      const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/bookings`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+      const created=await r.json();
+      if(!r.ok) throw new Error(created.error||'HTTP '+r.status);
+      hospBookings.unshift(created);
+    }
+    closeModal('modalHospBooking');
+    renderHospSubPage('bookings');
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function deleteHospBooking(id){
+  if(!confirm('Delete this booking?')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/bookings`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id})});
+    hospBookings=hospBookings.filter(b=>b.Id!==id);
+    renderHospBookings();
+  }catch(e){ alert('Failed to delete: '+e.message); }
 }
 
 /* ── CHATS TAB ── */
