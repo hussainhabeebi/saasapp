@@ -7205,49 +7205,76 @@ async function handleHospitalityMediaServe(env, key){
   return new Response(obj.body, {headers});
 }
 
-// Auto-sends a matching unit's photos/video into the chat the first time a lead's message
-// mentions it by name — simple case-insensitive substring name-matching, not an LLM call, so it's
-// cheap and predictable but can both under- and over-match on very short/generic unit names (see
-// SETUP.md). "Once per session" here means once per (lead, unit) ever (hospitality_media_sent),
-// not re-sent on every later message that happens to mention the same unit again in the same
-// conversation. Reads straight from the R2 binding rather than looping the stored URL back through
-// this Worker's own HTTP route, since it's the same process serving that route anyway.
+// A general-enquiry heuristic for engineMaybeSendHospitalityMedia's fallback path below — not an
+// LLM call (same "cheap and predictable, can over/under-match" tradeoff as the unit-name
+// substring match), just a keyword list for "asking what's available at all" phrasing.
+const HOSPITALITY_GENERAL_ENQUIRY_RE=/\b(rooms?|units?|houseboats?|stays?|accommodations?|available|availability|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
+
+// Sends one unit's photos/video into the chat as real attachments (fetched straight from the R2
+// binding rather than looping the stored URL back through this Worker's own HTTP route, since
+// it's the same process serving that route anyway) and marks it sent so it's never repeated for
+// this lead. Shared by both engineMaybeSendHospitalityMedia branches below (a specific unit named,
+// or the whole active catalog on a general enquiry).
+async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
+  const items=[
+    {url:unit.image_url_1, name:'photo1.jpg'},
+    {url:unit.image_url_2, name:'photo2.jpg'},
+    {url:unit.image_url_3, name:'photo3.jpg'},
+    {url:unit.video_url, name:'video.mp4'},
+  ].filter(m=>m.url);
+  if(!items.length) return false;
+  let sentAny=false;
+  for(let i=0;i<items.length;i++){
+    const marker='/hospitality/media/';
+    const idx=items[i].url.indexOf(marker);
+    if(idx===-1) continue;
+    const key=items[i].url.slice(idx+marker.length);
+    const obj=await env.HOSPITALITY_MEDIA.get(key);
+    if(!obj) continue;
+    const fd=new FormData();
+    fd.append('content', i===0?`Here's a look at ${unit.name} 📸`:'');
+    fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', await obj.blob(), items[i].name);
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(r.ok) sentAny=true;
+  }
+  if(sentAny){
+    await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
+      .bind(Number(clientId), leadId, unit.id, new Date().toISOString()).run();
+  }
+  return sentAny;
+}
+
+// Auto-sends unit photos/video into the chat, in two modes:
+//  - Specific enquiry: a lead's message names one active unit — send only that unit's media,
+//    simple case-insensitive substring match on the unit's name (see SETUP.md for why this isn't
+//    an LLM call and its known over/under-match tradeoff).
+//  - General enquiry: no specific unit named, but the message reads like someone asking what's
+//    available at all (HOSPITALITY_GENERAL_ENQUIRY_RE) — send every active unit's photos once,
+//    so a first-time enquirer sees the whole catalog instead of getting nothing until they happen
+//    to name a unit. Gated on this lead never having received ANY hospitality media before
+//    (hospitality_media_sent), so it only ever fires once per lead, not on every message that
+//    happens to contain a word like "available".
+// "Once per session" in both modes means once per (lead, unit) ever, not re-sent on every later
+// message that happens to mention the same unit (or ask about availability) again.
 async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText){
   if(c.hospitality_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
     const {results:units}=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+    if(!units || !units.length) return;
     const lower=userText.toLowerCase();
-    const unit=(units||[]).find(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()));
-    if(!unit) return;
-    const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, unit.id).first();
-    if(already) return;
-    const items=[
-      {url:unit.image_url_1, name:'photo1.jpg'},
-      {url:unit.image_url_2, name:'photo2.jpg'},
-      {url:unit.image_url_3, name:'photo3.jpg'},
-      {url:unit.video_url, name:'video.mp4'},
-    ].filter(m=>m.url);
-    if(!items.length) return;
-    let sentAny=false;
-    for(let i=0;i<items.length;i++){
-      const marker='/hospitality/media/';
-      const idx=items[i].url.indexOf(marker);
-      if(idx===-1) continue;
-      const key=items[i].url.slice(idx+marker.length);
-      const obj=await env.HOSPITALITY_MEDIA.get(key);
-      if(!obj) continue;
-      const fd=new FormData();
-      fd.append('content', i===0?`Here's a look at ${unit.name} 📸`:'');
-      fd.append('message_type','outgoing'); fd.append('private','false');
-      fd.append('attachments[]', await obj.blob(), items[i].name);
-      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-      if(r.ok) sentAny=true;
+    const specificUnit=units.find(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()));
+    if(specificUnit){
+      const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, specificUnit.id).first();
+      if(already) return;
+      await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
+      return;
     }
-    if(sentAny){
-      await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
-        .bind(Number(clientId), resolvedLeadId, unit.id, new Date().toISOString()).run();
-    }
+    if(!HOSPITALITY_GENERAL_ENQUIRY_RE.test(lower)) return;
+    const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+    if(alreadyAny) return;
+    for(const unit of units) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit);
   }catch(e){ await reportOpsError(env, 'engineMaybeSendHospitalityMedia', e, {clientId, convId}); }
 }
 

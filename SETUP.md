@@ -1118,16 +1118,25 @@ isn't D1/NocoDB:
   server-side (the real enforcement — the client-side check is just to fail fast). Re-uploading a
   slot overwrites the same R2 key, so there's no orphaned-object cleanup needed on replace.
 - **Auto-send to chat, once per (lead, unit)** — `engineMaybeSendHospitalityMedia()`, called from
-  `handleEngineWebhook` right after the lead upsert on every real inbound message. Simple
-  case-insensitive substring match of each active unit's `name` against the message text — not an
-  LLM call, so it's cheap and predictable, but it can both under-match (a guest describing a unit
-  without using its exact name) and over-match (a very short/generic unit name appearing inside an
-  unrelated word) — a client naming units something distinctive avoids both. "Once per session"
-  means once per (lead, unit) **ever**, tracked in `hospitality_media_sent` (unique on
-  `lead_id, unit_id`) — not re-sent on every later message that happens to mention the same unit
-  again in the same conversation. Sent as separate Chatwoot attachment messages (one per photo/
-  video, same multipart-attachment mechanism the rest of this file already uses for Chatwoot
-  sends), with a short caption on the first one only.
+  `handleEngineWebhook` right after the lead upsert on every real inbound message, in two modes:
+  - **Specific enquiry** — the message names one active unit (simple case-insensitive substring
+    match of the unit's `name`, not an LLM call, so it's cheap and predictable but can both
+    under-match — a guest describing a unit without its exact name — and over-match — a very
+    short/generic unit name appearing inside an unrelated word; a client naming units something
+    distinctive avoids both). Only that unit's media is sent.
+  - **General enquiry** — no specific unit named, but the message reads like someone asking what's
+    available at all (`HOSPITALITY_GENERAL_ENQUIRY_RE` — a keyword list: room(s), available,
+    options, rates, packages, etc., same "cheap heuristic, not an LLM call" tradeoff). Every active
+    unit's media is sent, one at a time, so a first-time enquirer sees the whole catalog instead of
+    getting nothing until they happen to name a unit by chance.
+  Both modes share `hospitalitySendUnitMedia()` for the actual send. "Once per session" means once
+  per (lead, unit) **ever**, tracked in `hospitality_media_sent` (unique on `lead_id, unit_id`) —
+  a unit already sent (from either mode) is never resent to that lead, and the general-enquiry mode
+  additionally only fires at all if this lead has never received *any* unit's media yet (so asking
+  "any rooms available?" twice doesn't re-flood the chat with the whole catalog every time). Each
+  unit's media sends as separate Chatwoot attachment messages (one per photo/video, same
+  multipart-attachment mechanism the rest of this file already uses for Chatwoot sends — a real
+  image, not a link) with a short caption on the first one only.
 
 **Timezone note**: the calendar's month-boundary date math is done with plain string/number
 arithmetic, not a `Date` → `toISOString()` round-trip — the latter converts a local midnight
