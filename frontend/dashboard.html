@@ -691,6 +691,11 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .hosp-media-slot{width:90px;height:90px;border:1.5px dashed var(--line);border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;overflow:hidden;background:var(--bg);font-size:10px;color:var(--muted);text-align:center;flex-shrink:0}
 .hosp-media-slot img,.hosp-media-slot video{width:100%;height:100%;object-fit:cover}
 .hosp-media-remove{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:11px;cursor:pointer;line-height:1;padding:0}
+.hosp-media-inline{display:flex;gap:5px}
+.hosp-media-slot-sm{width:32px;height:32px;border:1.5px dashed var(--ls);border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;overflow:hidden;background:var(--bg);font-size:15px;color:var(--muted);flex-shrink:0}
+.hosp-media-slot-sm img,.hosp-media-slot-sm video{width:100%;height:100%;object-fit:cover}
+.hosp-media-slot-sm.hosp-media-uploading{cursor:wait;font-size:9px}
+.hosp-media-remove-sm{position:absolute;top:-1px;right:-1px;background:rgba(0,0,0,.65);color:#fff;border:none;border-radius:50%;width:14px;height:14px;font-size:8px;cursor:pointer;line-height:1;padding:0}
 .job-card{background:var(--card);border-radius:var(--r);padding:18px;box-shadow:var(--shadow);margin-bottom:12px;border:1.5px solid var(--line);cursor:pointer;transition:box-shadow .15s,border-color .15s}
 .job-card:hover{box-shadow:var(--shadow-md);border-color:#2563EB}
 .job-title{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:2px}
@@ -1592,26 +1597,6 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
       <div class="page-pad" id="hospContent">
         <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
-      </div>
-    </div>
-
-    <!-- Hospitality: Unit modal -->
-    <div class="modal" id="modalHospUnit" style="width:480px">
-      <span class="modal-drag"></span>
-      <div class="modal-hd"><div class="modal-title" id="hospUnitModalTitle">Unit details</div><button class="icon-btn" onclick="closeModal('modalHospUnit')">✕</button></div>
-      <div class="modal-body">
-        <input type="hidden" id="hospUnitId">
-        <div class="form-group"><label class="form-label">Description</label><textarea class="form-input" id="hospUnitDescription" rows="3" onblur="hospUnitDescriptionBlur()"></textarea></div>
-        <div class="form-group" id="hospUnitMediaSection">
-          <label class="form-label">Photos &amp; Video</label>
-          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Sent automatically to a guest's chat the first time they mention this unit by name — once per guest, max 9 MB per file.</div>
-          <div id="hospUnitMediaSlotsWrap" style="display:flex;gap:10px;flex-wrap:wrap"></div>
-          <div id="hospUnitMediaHint" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
-          <input type="file" id="hospUnitMediaFileInput" style="display:none" onchange="hospOnMediaFileChosen(this)">
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('modalHospUnit')">Done</button>
       </div>
     </div>
 
@@ -13768,7 +13753,7 @@ function renderRecoveryChip(lead){
    unlike Agency/Recruit/Appointments above, no per-client dynamic NocoDB tables here. ── */
 let _hospPage='dashboard', _hospLoaded=false;
 let hospUnits=[], hospBookings=[];
-let _hospEditUnitId=null, _hospEditBookingId=null;
+let _hospEditBookingId=null;
 let _hospCalUnitId=null, _hospCalYear=null, _hospCalMonth=null, _hospCalDays=[];
 
 async function renderHospitality(){
@@ -13840,18 +13825,19 @@ async function renderHospDashboard(){
 }
 
 /* ── Units sub-page ── */
-// Each row is edited in place (autosaves per-field on blur/change) instead of opening a modal —
-// the modal is now reserved for description + photos/video only, opened via the 🖼 button, since
-// a multi-line textarea and file uploads don't fit as inline table cells.
+// Every field — including description and media — is edited in place; there is no Add/Edit
+// popup for units at all. Autosaves per-field on blur/change via the existing PATCH endpoint
+// (which already supports partial single-field updates).
 const HOSP_UNIT_FIELDS=[
-  {field:'name', label:'Name', type:'text', width:160, placeholder:'Unit name'},
-  {field:'unit_type', label:'Type', type:'text', width:110, placeholder:'Deluxe'},
-  {field:'currency', label:'Currency', type:'text', width:64},
-  {field:'capacity_adults', label:'Adults', type:'number', width:56, min:1},
-  {field:'capacity_children', label:'Children', type:'number', width:56, min:0},
-  {field:'base_rate', label:'Base Rate', type:'number', width:90, min:0},
-  {field:'weekend_rate', label:'Weekend Rate', type:'number', width:90, min:0, placeholder:'—'},
-  {field:'amenities', label:'Amenities', type:'text', width:220, placeholder:'AC, WiFi, Sun Deck…'},
+  {field:'name', label:'Name', type:'text', width:150, placeholder:'Unit name'},
+  {field:'unit_type', label:'Type', type:'text', width:100, placeholder:'Deluxe'},
+  {field:'currency', label:'Currency', type:'text', width:60},
+  {field:'capacity_adults', label:'Adults', type:'number', width:52, min:1},
+  {field:'capacity_children', label:'Children', type:'number', width:52, min:0},
+  {field:'base_rate', label:'Base Rate', type:'number', width:85, min:0},
+  {field:'weekend_rate', label:'Weekend Rate', type:'number', width:85, min:0, placeholder:'—'},
+  {field:'amenities', label:'Amenities', type:'text', width:180, placeholder:'AC, WiFi, Sun Deck…'},
+  {field:'description', label:'Description', type:'text', width:180, placeholder:'Short description'},
 ];
 function hospUnitRow(u){
   const cells=HOSP_UNIT_FIELDS.map(f=>{
@@ -13861,7 +13847,7 @@ function hospUnitRow(u){
   return `<tr data-unit-row="${u.Id}" style="${u.active?'':'opacity:.55'}">
     <td style="text-align:center"><input type="checkbox" ${u.active?'checked':''} data-field="active" onchange="hospUnitCellChange(${u.Id},this)"></td>
     ${cells}
-    <td style="text-align:center"><button class="btn-ghost" onclick="openHospUnitMedia(${u.Id})" title="Description, photos &amp; video">🖼</button></td>
+    <td>${hospMediaCellHtml(u)}</td>
     <td style="text-align:center"><button class="btn-ghost" onclick="deleteHospUnit(${u.Id})" title="Delete">🗑</button></td>
   </tr>`;
 }
@@ -13875,12 +13861,13 @@ function renderHospUnits(){
     ${hospUnits.length?`
     <div class="tbl-wrap"><table class="leads-tbl hosp-units-tbl">
       <thead><tr>
-        <th>Active</th><th>Name</th><th>Type</th><th>Currency</th><th>Adults</th><th>Children</th><th>Base Rate</th><th>Weekend Rate</th><th>Amenities</th><th>Details</th><th></th>
+        <th>Active</th><th>Name</th><th>Type</th><th>Currency</th><th>Adults</th><th>Children</th><th>Base Rate</th><th>Weekend Rate</th><th>Amenities</th><th>Description</th><th>Photos &amp; Video</th><th></th>
       </tr></thead>
       <tbody>${hospUnits.map(hospUnitRow).join('')}</tbody>
     </table></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:8px">Click into any field to edit — it saves automatically when you tab or click away.</div>`
-    :'<div class="empty-state"><div class="ei">🏠</div>No units yet. Click "+ Add Unit" to create your first room/unit type.</div>'}`;
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">Click into any field to edit — it saves automatically when you tab or click away. Click a media slot to upload — max 9 MB per file.</div>`
+    :'<div class="empty-state"><div class="ei">🏠</div>No units yet. Click "+ Add Unit" to create your first room/unit type.</div>'}
+    <input type="file" id="hospUnitMediaFileInput" style="display:none" onchange="hospOnMediaFileChosen(this)">`;
 }
 async function hospAddUnitRow(){
   const body={name:'New unit', unit_type:'', currency:'INR', capacity_adults:2, capacity_children:0, base_rate:0, weekend_rate:null, amenities:'', description:'', active:true};
@@ -13919,81 +13906,70 @@ async function hospUnitCellChange(id, el){
     renderHospUnits();
   }
 }
-function openHospUnitMedia(id){
-  const u=hospUnits.find(x=>x.Id===id); if(!u) return;
-  _hospEditUnitId=id;
-  $id('hospUnitModalTitle').textContent=u.name||'Unit details';
-  $id('hospUnitId').value=id;
-  $id('hospUnitDescription').value=u.description||'';
-  renderHospUnitMediaSlots(u);
-  openModal('modalHospUnit');
-}
-async function hospUnitDescriptionBlur(){
-  const u=hospUnits.find(x=>x.Id===_hospEditUnitId); if(!u) return;
-  const value=$id('hospUnitDescription').value.trim();
-  if(u.description===value) return;
-  const prev=u.description;
-  u.description=value;
-  try{
-    await fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:_hospEditUnitId, description:value})});
-  }catch(e){ u.description=prev; alert('Failed to save description: '+e.message); }
-}
-
-/* ── Unit media (photos/video) ── */
+/* ── Unit media (photos/video) — inline slots in each row, no modal ── */
 const HOSP_MEDIA_SLOTS=[
   {slot:'image1', column:'image_url_1', label:'Photo 1', accept:'image/*'},
   {slot:'image2', column:'image_url_2', label:'Photo 2', accept:'image/*'},
   {slot:'image3', column:'image_url_3', label:'Photo 3', accept:'image/*'},
   {slot:'video', column:'video_url', label:'Video', accept:'video/*'},
 ];
-function renderHospUnitMediaSlots(unit){
-  const wrap=$id('hospUnitMediaSlotsWrap');
-  wrap.innerHTML=HOSP_MEDIA_SLOTS.map(s=>{
-    const url=unit?unit[s.column]:null;
+function hospMediaCellHtml(u){
+  const inner=HOSP_MEDIA_SLOTS.map(s=>{
+    const url=u[s.column];
     if(url){
-      const inner=s.slot==='video'?`<video src="${esc(url)}" muted></video>`:`<img src="${esc(url)}">`;
-      return `<div class="hosp-media-slot" title="${esc(s.label)}">${inner}<button class="hosp-media-remove" onclick="event.stopPropagation();hospRemoveUnitMedia('${s.slot}')">✕</button></div>`;
+      const media=s.slot==='video'?`<video src="${esc(url)}" muted></video>`:`<img src="${esc(url)}">`;
+      return `<div class="hosp-media-slot-sm" title="${esc(s.label)}">${media}<button class="hosp-media-remove-sm" onclick="event.stopPropagation();hospRemoveUnitMedia(${u.Id},'${s.slot}')">✕</button></div>`;
     }
-    return `<div class="hosp-media-slot" onclick="hospTriggerMediaUpload('${s.slot}')">+ ${esc(s.label)}<br>max 9MB</div>`;
+    return `<div class="hosp-media-slot-sm" onclick="hospTriggerMediaUpload(${u.Id},'${s.slot}')" title="${esc(s.label)} — max 9MB">+</div>`;
   }).join('');
+  return `<div class="hosp-media-inline" data-media-cell="${u.Id}">${inner}</div>`;
 }
-function hospTriggerMediaUpload(slot){
+function hospRerenderMediaCell(unitId){
+  const u=hospUnits.find(x=>x.Id===unitId); if(!u) return;
+  const cell=document.querySelector(`[data-media-cell="${unitId}"]`);
+  if(cell) cell.outerHTML=hospMediaCellHtml(u);
+}
+function hospTriggerMediaUpload(unitId, slot){
   const input=$id('hospUnitMediaFileInput');
+  input.dataset.unitId=unitId;
   input.dataset.slot=slot;
   input.accept=HOSP_MEDIA_SLOTS.find(s=>s.slot===slot).accept;
   input.click();
 }
 async function hospOnMediaFileChosen(input){
+  const unitId=Number(input.dataset.unitId);
   const slot=input.dataset.slot;
   const file=input.files[0];
   input.value='';
   if(!file) return;
   if(file.size>9*1024*1024){ alert('That file is larger than 9 MB — please choose a smaller one.'); return; }
-  const hint=$id('hospUnitMediaHint');
-  hint.textContent='Uploading…';
+  const cell=document.querySelector(`[data-media-cell="${unitId}"]`);
+  if(cell) cell.style.opacity='.5';
   try{
     const fd=new FormData();
-    fd.append('unit_id', _hospEditUnitId);
+    fd.append('unit_id', unitId);
     fd.append('slot', slot);
     fd.append('file', file);
     const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/units/media`,{method:'POST',headers:ncAuthHeaders(),body:fd});
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    const unit=hospUnits.find(u=>u.Id===_hospEditUnitId);
+    const unit=hospUnits.find(u=>u.Id===unitId);
     const col=HOSP_MEDIA_SLOTS.find(s=>s.slot===slot).column;
     if(unit) unit[col]=data.url;
-    renderHospUnitMediaSlots(unit);
-    hint.textContent='';
-  }catch(e){ hint.textContent='Error: '+e.message; }
+    hospRerenderMediaCell(unitId);
+  }catch(e){
+    if(cell) cell.style.opacity='';
+    alert('Upload failed: '+e.message);
+  }
 }
-async function hospRemoveUnitMedia(slot){
+async function hospRemoveUnitMedia(unitId, slot){
   if(!confirm('Remove this media?')) return;
   try{
-    await fetch(`${CONFIG.WORKER_BASE}/hospitality/units/media`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({unit_id:_hospEditUnitId, slot})});
-    const unit=hospUnits.find(u=>u.Id===_hospEditUnitId);
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/units/media`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({unit_id:unitId, slot})});
+    const unit=hospUnits.find(u=>u.Id===unitId);
     const col=HOSP_MEDIA_SLOTS.find(s=>s.slot===slot).column;
     if(unit) unit[col]=null;
-    renderHospUnitMediaSlots(unit);
+    hospRerenderMediaCell(unitId);
   }catch(e){ alert('Failed: '+e.message); }
 }
 async function deleteHospUnit(id){
