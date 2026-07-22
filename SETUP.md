@@ -1084,15 +1084,14 @@ in the next 7 days).
 `#hospContent` container):
 - **📊 Dashboard** — stat tiles (units, occupancy, upcoming check-ins, revenue) + upcoming
   check-in/check-out lists.
-- **🏠 Units** — an editable table (`renderHospUnits()`/`hospUnitRow()`), not a card grid or a
-  create/edit modal: every core field (name, type, currency, capacity, rates, amenities) is an
-  inline `<input>` in its own cell, autosaving via a `PATCH /hospitality/units` call on blur/change
-  (`hospUnitCellChange()`) — a spreadsheet-style flow rather than opening a popup per unit.
-  "+ Add Unit" (`hospAddUnitRow()`) creates a unit with placeholder defaults immediately (`POST
-  /hospitality/units`) and focuses its Name cell so it's ready to type over. The one remaining
-  modal (`modalHospUnit`, opened via each row's 🖼 button) is scoped to just Description +
-  photos/video — the two things that don't fit as inline table cells (a multi-line textarea and
-  file uploads).
+- **🏠 Units** — an editable table (`renderHospUnits()`/`hospUnitRow()`), not a card grid and no
+  Add/Edit popup at all: every field — name, type, currency, capacity, rates, amenities,
+  description, and even photos/video — is edited inline in its own cell, autosaving via a `PATCH
+  /hospitality/units` call on blur/change (`hospUnitCellChange()`). "+ Add Unit"
+  (`hospAddUnitRow()`) creates a unit with placeholder defaults immediately (`POST
+  /hospitality/units`) and focuses its Name cell so it's ready to type over. Photos/video are 4
+  small inline slots per row (`hospMediaCellHtml()`) — click a slot to upload directly, no modal to
+  open first (see "Unit photos/video" below).
 - **📅 Availability** — a real month-grid calendar per unit (`.hosp-day` cells, color-coded
   available/blocked/booked), with Prev/Next month nav and a click-a-day popover to toggle
   blocked/available or set that date's rate override. Built by hand with vanilla JS (no calendar
@@ -1101,10 +1100,12 @@ in the next 7 days).
   calculation from the unit's rate as check-in/check-out change.
 
 **Unit photos/video + auto-send to chat** (`migrations/0010_hospitality_media.sql`) — each unit can
-carry up to 3 photos and 1 video, uploaded from the Description/Media modal (`openHospUnitMedia()`)
-— since units are created immediately with a real id (see Units above), there's no "save first"
-step before media can be attached. This is the first real binary media this Worker has ever stored,
-so it's the one piece of the Hospitality module that isn't D1/NocoDB:
+carry up to 3 photos and 1 video, uploaded straight from its row's 4 inline media slots (no modal —
+`hospTriggerMediaUpload()` opens the file picker for that unit/slot directly, `hospOnMediaFileChosen()`
+uploads and re-renders just that row's media cell). Since units are created immediately with a real
+id (see Units above), there's no "save first" step before media can be attached. This is the first
+real binary media this Worker has ever stored, so it's the one piece of the Hospitality module that
+isn't D1/NocoDB:
 - **Storage**: Cloudflare R2 (`HOSPITALITY_MEDIA` binding, `wrangler.toml`) — one-time setup is
   `wrangler r2 bucket create leadvyne-hospitality-media`, no id/paste-in step needed (R2 buckets
   are addressed by name, unlike D1's UUID). `hospitality_units.image_url_1/2/3`/`video_url` just
