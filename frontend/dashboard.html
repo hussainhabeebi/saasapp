@@ -5965,6 +5965,7 @@ async function saveIndustry(){
     else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
     if(ind==='hospitality'){patch.hospitality_enabled='Yes';clientRecord.hospitality_enabled='Yes';}
     else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
+    await ensureHospitalityEnabledColumn();
     await patchClient(patch);
     clientRecord.industry=ind;
     applyTheme(ind);
@@ -5975,6 +5976,19 @@ async function saveIndustry(){
     msg.textContent='✓ Saved — theme applied';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+}
+
+// hospitality_enabled is a brand-new CLIENTS column (unlike ta_enabled/recruit_enabled, which
+// already exist on every live CLIENTS table) — created on demand here and in
+// saveHospitalityEnabled below, so picking "Hospitality" from the Industry dropdown works on the
+// very first try instead of throwing patchClient()'s "Save didn't take effect" error against a
+// column that doesn't exist yet. A no-op (cheap columns-list fetch) once the column is there.
+async function ensureHospitalityEnabledColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('hospitality_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_enabled',title:'hospitality_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
 }
 
 $id('saveGeneral').addEventListener('click',async()=>{
@@ -5990,6 +6004,7 @@ $id('saveGeneral').addEventListener('click',async()=>{
     else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
     if(ind==='hospitality'){patch.hospitality_enabled='Yes';clientRecord.hospitality_enabled='Yes';}
     else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
+    await ensureHospitalityEnabledColumn();
     await patchClient(patch);
     clientRecord.industry=ind;
     applyTheme(ind);
@@ -13339,9 +13354,7 @@ $id('saveHospitalityEnabled').addEventListener('click',async()=>{
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   const val=$id('cfgHospitalityEnabled').value;
   try{
-    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
-    const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('hospitality_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_enabled',title:'hospitality_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    await ensureHospitalityEnabledColumn();
     await patchClient({hospitality_enabled:val});
     updateHospitalityTabVisibility();
     _renderModuleBadge('hospitalityModuleStatusBadge',val==='Yes');
