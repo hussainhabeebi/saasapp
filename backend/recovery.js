@@ -307,9 +307,11 @@ async function sarvamTts(text, targetLangCode) {
 
 // Returns true on a successful voice send, false on any failure (caller falls back to
 // sendPlainMessage's normal text send) — never throws, since a voice hiccup should never cost a
-// lead their follow-up entirely.
-async function sendVoiceMessage(client, convId, text) {
-  const bcp47 = TTS_LANG_MAP[(client.language || 'en').toLowerCase()];
+// lead their follow-up entirely. leadLanguage (lead.Language, stamped by the live bot engine on
+// every inbound message) takes priority over the client's static default — a follow-up should
+// speak back in whatever language the customer was actually last using.
+async function sendVoiceMessage(client, convId, text, leadLanguage) {
+  const bcp47 = TTS_LANG_MAP[(leadLanguage || client.language || 'en').toLowerCase()];
   if (!bcp47) return false; // Sarvam TTS is Indic-language-focused, same scope limit as the live-reply pipeline
   const audioBuf = await sarvamTts(text, bcp47);
   if (!audioBuf) return false;
@@ -364,7 +366,7 @@ async function processClient(client) {
         sentText = `[template:${plan.templateName}]`;
       } else {
         sentText = await personalize(plan.message, lead, client);
-        const sentViaVoice = truthy(client.voice_followup_enabled) && (await sendVoiceMessage(client, convId, sentText));
+        const sentViaVoice = truthy(client.voice_followup_enabled) && (await sendVoiceMessage(client, convId, sentText, lead.Language));
         if (!sentViaVoice) await sendPlainMessage(client, convId, sentText);
       }
 
