@@ -3619,6 +3619,20 @@ if they match.
   race window from "the whole turn" down to "the handful of synchronous checks before the claim" —
   not a true atomic compare-and-swap (NocoDB has no such primitive available here), so it isn't
   airtight, just far smaller than before.
+- **A second, D1-backed dedup gate now runs even earlier, before that.** Still observed live even
+  with the above in place: Chatwoot's Agent Bot integration logs "Conversation was marked open by
+  system due to an error with the agent bot" (its own timeout signal) right before two
+  differently-phrased AI replies land back to back — the redelivery's NocoDB state fetch was still
+  winning the race against the first delivery's `engineClaimMessage` write often enough to matter,
+  since that's several round trips of daylight, not zero. `engine_processed_messages`
+  (`migrations/0011_engine_message_dedup.sql`, unique on `client_id, message_id`) is checked via a
+  single `INSERT OR IGNORE` immediately after the account-id check — before `engineGetLeadState` or
+  any other NocoDB call — so a redelivery is rejected on one fast D1 write instead of racing a
+  multi-round-trip NocoDB claim. Doesn't replace `LastProcessedMessageId`/`engineClaimMessage`
+  above: not every Chatwoot payload carries an id this table can key on, and the NocoDB claim still
+  does its other job of eagerly creating a brand-new lead's stub row. Same fail-open philosophy —
+  a D1 write failure here just falls through to the existing checks rather than dropping a real
+  customer message.
 
 ### Error monitoring
 `reportOpsError(env, context, error, extra)` (`worker.js`) is a small, dependency-free alerting
