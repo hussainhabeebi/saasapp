@@ -1595,7 +1595,10 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div class="modal-hd"><div class="modal-title" id="hospUnitModalTitle">New Unit</div><button class="icon-btn" onclick="closeModal('modalHospUnit')">✕</button></div>
       <div class="modal-body">
         <input type="hidden" id="hospUnitId">
-        <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="hospUnitName" placeholder="e.g. AC Deluxe Houseboat"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px;padding:10px 12px;background:var(--bg);border-radius:var(--r-sm)">
+          <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="hospUnitName" placeholder="e.g. AC Deluxe Houseboat" style="min-width:200px"></div>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;padding-top:18px"><input type="checkbox" style="width:auto" id="hospUnitActive" checked> Active (bookable)</label>
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div class="form-group"><label class="form-label">Type / Category</label><input class="form-input" id="hospUnitType" placeholder="e.g. Deluxe, Standard"></div>
           <div class="form-group"><label class="form-label">Currency</label><input class="form-input" id="hospUnitCurrency" value="INR" maxlength="6"></div>
@@ -1610,7 +1613,6 @@ const TODAY = new Date().toISOString().slice(0,10);
         </div>
         <div class="form-group"><label class="form-label">Amenities (comma separated)</label><input class="form-input" id="hospUnitAmenities" placeholder="e.g. AC, WiFi, Sun Deck, Meals Included"></div>
         <div class="form-group"><label class="form-label">Description</label><textarea class="form-input" id="hospUnitDescription" rows="2"></textarea></div>
-        <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" style="width:auto" id="hospUnitActive" checked> Active (bookable)</label>
       </div>
       <div class="modal-footer">
         <button class="btn btn-primary" onclick="saveHospUnit()">Save</button>
