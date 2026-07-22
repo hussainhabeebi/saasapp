@@ -2293,7 +2293,17 @@ leads table (auto-created on first run) — it never writes `Stage`, `ConvHistor
   the TTS call itself failing), so a follow-up is never skipped over a voice hiccup. Requires
   `SARVAM_API_KEY` as an env var on this container specifically (`backend/.env.example`,
   `backend/docker-compose.yml`'s `leadvyne-recovery` service) — same key as the Worker's own secret,
-  just needs setting again here since it's a different deployment.
+  just needs setting again here since it's a different deployment. `sendVoiceMessage` targets
+  `lead.Language` (the lead's own last-detected language, same field the live bot engine stamps —
+  see "Every reply now follows the customer's own detected language" above), falling back to
+  `client.language` only if this lead has never had a language detected — not the client's static
+  setting, so a win-back voice note replies in whatever language the customer was last actually
+  speaking.
+- **This ladder runs fully automatically** — `docker compose up -d leadvyne-recovery` schedules it
+  hourly via `node-cron` (`RUN_NOW=1` for a single on-demand run); no rep action is needed for a
+  silent lead to get nudged, voice included. This is distinct from the classic `followup_messages`
+  sequence's Voice Follow-ups (see "Follow-up Engine" above), which is manual only — sent by a rep
+  clicking "Send Next Now", not on any schedule.
 
 ## Ecom bot memory (`ecom_prefs`) and product filtering
 Two additions that fix the ecom WhatsApp bot forgetting a customer's stated size/color mid-order
@@ -3371,6 +3381,14 @@ unconditionally.
 - **`LEADS.Language`** now reflects the detected customer language (`routing.customerLanguage`),
   falling back to `CLIENTS.language` only when detection didn't return one — previously always just
   mirrored the client's fixed setting regardless of what language the customer actually used.
+- **Voice follow-ups were a leftover gap in this same principle** — both places that send a Voice
+  Follow-up (`cloudflare-worker/worker.js`'s `handleBroadcastFollowupSend`, the manual "Send Next
+  Now" button, and `backend/recovery.js`'s `sendVoiceMessage` in the automated recovery/win-back
+  ladder — see "Recovery / win-back engine" below) picked their Sarvam TTS language from
+  `client.language` only, the same bug this section fixed for AI replies. Both now prefer
+  `lead.Language` (falling back to `client.language` only when the lead has never had a language
+  detected yet, e.g. an outbound-only lead) — a follow-up now speaks back in whatever language the
+  customer was actually last using, not whatever the account happens to be configured for.
 - **`mode:"enquiry"` + no confident product match** → falls through to the normal FAQ/flow handling
   untouched (no canned reply, no link) — the context-aware FAQ LLM can respond naturally, e.g. "we
   don't carry that, but here's what we do have."

@@ -1626,9 +1626,13 @@ async function handleBroadcastFollowupSend(request, env){
   // UI, so a failed voice send falls through to the normal text send below rather than silently
   // reporting success — same "customer never gets nothing" principle, but the rep still sees the
   // true outcome instead of it being swallowed into an ops-only alert.
+  // Language: prefer this lead's own last-detected language (lead.Language, stamped by the live
+  // engine's engineClassifyIntent on every inbound message) over the client's static default —
+  // a follow-up should speak back in whatever language the customer was actually last using, not
+  // whatever the account happens to be configured for.
   let sentViaVoice=false;
   if(c.voice_followup_enabled==='Yes'){
-    const bcp47=ENGINE_TTS_LANG_MAP[(c.language||'en').toLowerCase()];
+    const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
     if(bcp47){
       const audioBuf=await engineSarvamTts(env, text, bcp47);
       if(audioBuf){
