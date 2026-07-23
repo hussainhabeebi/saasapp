@@ -3943,6 +3943,17 @@ table/Pipeline kanban — no dedicated view for "what's actually waiting on a hu
     denominator (`renderTeamFunnelStats`) since it was never a real sales conversation.
   - **✕ close icon** (top-right of the card, `openHdRemoveModal()`) — opens a small modal for the
     remaining, less common outcomes: Release back to bot, Lost, No response.
+  - **Also reachable from the Leads page** — `markLeadWon()`/`markLeadSpam()` (`dashboard.html`)
+    are thin wrappers around the same `applyHumanDealOutcome()` (Won still does the best-effort
+    ERPNext customer-ensure; Spam still confirms first) but re-render whichever Leads view is on
+    screen instead of `renderHumanDeals()`, so a rep can close out a deal without first navigating
+    to Human Deals. Kept as separate functions from `markHumanDealWon()`/`markHumanDealSpam()`
+    rather than reusing them directly, since those hard-code a `renderHumanDeals()` refresh. Shown
+    in both `renderLeadsList()` (card view, under the name/stage line) and `renderLeadsTable()`
+    (table view, new rightmost "Actions" column) — hidden once a lead is already `isWonLead()`,
+    `isLostLead()`, or opted out (`OptOut==='Yes'`), since re-clicking Won/Spam on an
+    already-closed lead has no useful effect. Buttons stop click propagation so they don't also
+    trigger the row/card's own `openDetail()`.
 - Nav badge (`dnHdBadge`/`bnHdBadge`) lights up with the current SLA-breach count, computed on
   every Home render (`updateHdBadge()`), not just when the tab is open.
 - **🧭 Coach** (`openCoachModal()`/`renderCoachBody()`, `GET /human-deals/coach`) — real-time
