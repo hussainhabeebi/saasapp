@@ -1606,7 +1606,12 @@ const TODAY = new Date().toISOString().slice(0,10);
 
     <!-- TASKS -->
     <div class="page hidden" id="pageTasks">
+      <div id="tasksSubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
+        <button class="hosp-tab active" data-tasks="list">📋 List</button>
+        <button class="hosp-tab" data-tasks="notes">📝 Notes</button>
+      </div>
       <div class="page-pad">
+        <div id="tasksViewList">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
           <div class="card-title" style="margin-bottom:0">✅ Tasks</div>
           <div style="display:flex;gap:8px">
@@ -1618,6 +1623,24 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px" id="taskSecondaryRow"></div>
         <div class="card">
           <div id="tasksList"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+        </div>
+        </div><!-- /tasksViewList -->
+
+        <!-- NOTES — aggregates every free-text "notes"/"remarks" field already scattered across
+             the app (Leads' NotesList timeline, manual Tasks, and whichever industry module a
+             client has active — Hospitality bookings, Appointments, Recruit, Travel Agency incl.
+             its Car Rental sub-module) into one browsable, searchable list. See
+             computeAllNotes()'s own comment for the "best-effort, already-loaded-data-only"
+             caveat: a module a client hasn't visited this session yet simply hasn't loaded its
+             array, so its notes won't appear here until it has. -->
+        <div id="tasksViewNotes" style="display:none">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+            <div class="card-title" style="margin-bottom:0">📝 All Notes</div>
+            <input class="search-input" id="notesSearchInput" type="text" placeholder="🔍 Search notes…" oninput="renderTasksNotesPage()" style="max-width:240px">
+          </div>
+          <div class="s-note" style="margin-bottom:14px">Every note left on a lead, a task, or a booking/job/candidate in whichever module you use — in one place. Click a note to jump to where it lives.</div>
+          <div id="notesFilterRow" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+          <div class="card"><div id="notesListWrap"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
         </div>
       </div>
     </div>
@@ -8049,6 +8072,108 @@ function updateBillingBadge(){
   if(dnBadge){ dnBadge.style.display=flagged?'inline-block':'none'; dnBadge.textContent='!'; }
   if(bnBadge){ bnBadge.style.display=flagged?'block':'none'; }
 }
+
+/* ── Tasks sub-nav (List / Notes) — same `.hosp-tab`/data-* sub-nav convention as Hospitality/
+   Reports, scoped to #tasksSubNav so its click listener doesn't collide with those modules' own
+   page-wide listeners (see Reports' own comment on why each module scopes its selector). Tasks'
+   "List" view (renderTasks(), unchanged) is also kept fresh by loadAll() every 60s regardless of
+   which sub-tab is showing, same as before this was added — only Notes is lazy/on-demand, since
+   it's pure in-memory aggregation with nothing to refresh on a timer. ── */
+let _tasksPage='list';
+function renderTasksSubPage(page){
+  _tasksPage=page;
+  document.querySelectorAll('#tasksSubNav .hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.tasks===page));
+  $id('tasksViewList').style.display=page==='list'?'':'none';
+  $id('tasksViewNotes').style.display=page==='notes'?'':'none';
+  if(page==='notes') renderTasksNotesPage();
+}
+document.addEventListener('click', e=>{
+  const t=e.target.closest('#tasksSubNav .hosp-tab');
+  if(t&&t.dataset.tasks) renderTasksSubPage(t.dataset.tasks);
+});
+
+/* ── All Notes — aggregates every free-text notes/remarks field already scattered across the
+   app into one browsable list, per the user's ask to "connect notes in leads and other notes in
+   system". Two kinds of source, both best-effort:
+   - Leads' NotesList (the real append-only notes timeline, renderDetailNotes/addNote) and manual
+     Tasks' own `notes` field — both always in memory (allLeads/getTasksState load unconditionally
+     at boot), so these are always complete.
+   - Every other module's per-entity `notes`/`remarks` field (Hospitality bookings, Appointments,
+     Recruit jobs/candidates/placements, Travel Agency incl. its Car Rental sub-module) — these
+     only appear once that module's own page has been visited this session, since each one
+     lazy-loads its own array only on navigate() (same "cheap reuse of already-loaded data, no new
+     fetch" approach computeAllTasks() itself already uses for its virtual-task sources). A
+     client's notes from a module they haven't opened yet simply won't show until they do —
+     visiting that module's tab once is enough, no page reload needed.
+   entityLabel falls back generically across several common name fields rather than one per
+   entity type, since chasing the exact field name for a dozen entity shapes isn't worth the
+   precision for a fallback label — worst case shows the generic source label instead of a real
+   name, never a crash or a blank entry. */
+function computeAllNotes(){
+  const out=[];
+  allLeads.forEach(l=>{
+    let list=[]; try{ list=JSON.parse(l.NotesList||'[]'); }catch(e){}
+    list.forEach(n=>{ if(n&&n.text&&n.text.trim()) out.push({text:n.text, date:n.date||'', source:'Lead', entityLabel:l.Name||l.Phone||('Lead #'+l.Id), onClick:()=>openDetail(l.Id)}); });
+  });
+  (getTasksState().items||[]).forEach(t=>{
+    if(t.notes&&t.notes.trim()) out.push({text:t.notes, date:t.created_at||'', source:'Task', entityLabel:t.title||'Task', onClick:()=>openTaskModal(t.id)});
+  });
+  const pushEntries=(arr,source,noteField,onClick)=>{
+    (arr||[]).forEach(x=>{
+      const v=x[noteField];
+      if(!v||!String(v).trim()) return;
+      const entityLabel=x.name||x.client_name||x.customer_name||x.guest_name||x.candidate_name||x.title||source;
+      out.push({text:v, date:x.created_at||x.check_in||x.appt_date||'', source, entityLabel, onClick});
+    });
+  };
+  pushEntries(typeof hospBookings!=='undefined'?hospBookings:[], 'Hospitality Booking', 'notes', ()=>navigate('hospitality'));
+  pushEntries(typeof _apptBookings!=='undefined'?_apptBookings:[], 'Appointment', 'notes', ()=>navigate('appointments'));
+  pushEntries(typeof _rcJobs!=='undefined'?_rcJobs:[], 'Recruit Job', 'notes', ()=>navigate('recruit'));
+  pushEntries(typeof _rcCandidates!=='undefined'?_rcCandidates:[], 'Recruit Candidate', 'notes', ()=>navigate('recruit'));
+  pushEntries(typeof _rcCandidates!=='undefined'?_rcCandidates:[], 'Recruit Candidate (resume)', 'resume_notes', ()=>navigate('recruit'));
+  pushEntries(typeof _rcPlacements!=='undefined'?_rcPlacements:[], 'Recruit Placement', 'notes', ()=>navigate('recruit'));
+  pushEntries(typeof _taPackages!=='undefined'?_taPackages:[], 'Travel Package', 'notes', ()=>navigate('agency'));
+  pushEntries(typeof _taBookings!=='undefined'?_taBookings:[], 'Travel Booking', 'notes', ()=>navigate('agency'));
+  pushEntries(typeof _taCases!=='undefined'?_taCases:[], 'Travel Service Case', 'notes', ()=>navigate('agency'));
+  pushEntries(typeof _taItineraries!=='undefined'?_taItineraries:[], 'Travel Itinerary', 'notes', ()=>navigate('agency'));
+  pushEntries(typeof _taUmrahGroups!=='undefined'?_taUmrahGroups:[], 'Umrah Group', 'notes', ()=>navigate('agency'));
+  pushEntries(typeof _taCars!=='undefined'?_taCars:[], 'Fleet Car', 'notes', ()=>navigate('agency'));
+  pushEntries(typeof _taCarBookings!=='undefined'?_taCarBookings:[], 'Car Booking', 'notes', ()=>navigate('agency'));
+  pushEntries(typeof _taGroupFares!=='undefined'?_taGroupFares:[], 'Group Fare', 'remarks', ()=>navigate('agency'));
+  pushEntries(typeof _taSpecialFares!=='undefined'?_taSpecialFares:[], 'Series Fare', 'remarks', ()=>navigate('agency'));
+  out.sort((a,b)=>new Date(b.date||0)-new Date(a.date||0));
+  return out;
+}
+function renderTasksNotesPage(){
+  const wrap=$id('notesListWrap'), filterEl=$id('notesFilterRow');
+  const all=computeAllNotes();
+  const bySource={};
+  all.forEach(n=>{ bySource[n.source]=(bySource[n.source]||0)+1; });
+  filterEl.innerHTML=`<button class="btn-ghost${!_notesSourceFilter?' active':''}" style="${!_notesSourceFilter?'background:var(--accent-soft);color:var(--accent-ink)':''}" onclick="setNotesSourceFilter('')">All (${all.length})</button>` +
+    Object.keys(bySource).sort().map(s=>`<button class="btn-ghost${_notesSourceFilter===s?' active':''}" style="${_notesSourceFilter===s?'background:var(--accent-soft);color:var(--accent-ink)':''}" onclick="setNotesSourceFilter('${esc(s)}')">${esc(s)} (${bySource[s]})</button>`).join('');
+
+  const q=($id('notesSearchInput')?.value||'').trim().toLowerCase();
+  let list=all;
+  if(_notesSourceFilter) list=list.filter(n=>n.source===_notesSourceFilter);
+  if(q) list=list.filter(n=>n.text.toLowerCase().includes(q)||n.entityLabel.toLowerCase().includes(q));
+
+  if(!list.length){
+    wrap.innerHTML='<div class="empty-state"><div class="ei">📝</div>No notes found yet.</div>';
+    return;
+  }
+  wrap.innerHTML=list.map((n,i)=>`
+    <div style="padding:12px 0;border-bottom:1px solid var(--line);cursor:pointer" onclick="_notesClick(${i})">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-bottom:4px">
+        <div style="font-size:12px;font-weight:700;color:var(--accent-ink)">${esc(n.source)} · ${esc(n.entityLabel)}</div>
+        <div style="font-size:11px;color:var(--muted);white-space:nowrap">${n.date?esc(fmtDateShort(n.date)):''}</div>
+      </div>
+      <div style="font-size:13px;white-space:pre-wrap">${esc(n.text)}</div>
+    </div>`).join('');
+  window._notesRenderList=list;
+}
+function _notesClick(i){ const n=window._notesRenderList?.[i]; if(n) n.onClick(); }
+let _notesSourceFilter='';
+function setNotesSourceFilter(s){ _notesSourceFilter=s; renderTasksNotesPage(); }
 
 function renderTasks(){
   const all=computeAllTasks();

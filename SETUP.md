@@ -2111,6 +2111,46 @@ blank, or from one of a few starter templates (`PROJECT_TEMPLATES`: New Client O
 Close Push, Campaign Launch) that pre-populate a standard checklist as ordinary manual tasks
 (no special linkage back to the template after creation).
 
+### All Notes (Tasks page — 📝 Notes sub-tab)
+A dedicated page inside Task Manager that aggregates every free-text notes field already
+scattered across the app into one browsable, searchable list — Leads' notes, manual tasks' own
+notes, and whichever industry module a client has active. Added a `📋 List`/`📝 Notes` sub-nav to
+the Tasks page (same `.hosp-tab`/`data-*` sub-nav convention as Hospitality/Reports, scoped to
+`#tasksSubNav` so its click listener doesn't collide with those modules' own page-wide ones) —
+the existing Tasks list (`renderTasks()`) is now the "List" tab, unchanged and still kept fresh by
+`loadAll()` on its usual 60s timer regardless of which sub-tab is showing.
+
+- **`computeAllNotes()`** (dashboard.html) — pure in-memory aggregation, no new backend route,
+  same "reuse already-loaded data" approach `computeAllTasks()` itself already uses for its
+  virtual-task sources:
+  - **Leads' `NotesList`** (the real append-only notes timeline — see `renderDetailNotes()`/
+    `addNote()`) and **manual tasks' own `notes` field** are always complete, since `allLeads` and
+    `manual_tasks` both load unconditionally at boot.
+  - **Every other module's per-entity `notes`/`remarks` field** — Hospitality bookings
+    (`hospBookings`), Appointments (`_apptBookings`), Recruit jobs/candidates (incl.
+    `resume_notes`)/placements (`_rcJobs`/`_rcCandidates`/`_rcPlacements`), and Travel Agency incl.
+    its Car Rental sub-module (`_taPackages`/`_taBookings`/`_taCases`/`_taItineraries`/
+    `_taUmrahGroups`/`_taCars`/`_taCarBookings`/`_taGroupFares`/`_taSpecialFares`) — only appear
+    once that module's own page has been visited this session, since each one lazy-loads its own
+    array only on `navigate()`. A client's notes from a module they haven't opened yet simply
+    won't show here until they do (visiting the tab once is enough — no reload needed); an
+    accepted, honestly-scoped limitation rather than adding a fresh fetch per module just for
+    this page.
+  - `entityLabel` falls back generically across several common name fields (`name`/`client_name`/
+    `customer_name`/`guest_name`/`candidate_name`/`title`) rather than one exact field per entity
+    type — chasing the precise field name across a dozen entity shapes isn't worth it for a
+    fallback label; worst case shows the generic source label instead of a real name, never a
+    crash or a blank entry.
+- **Click-through**: a Lead or Task note jumps straight to that lead's detail pane
+  (`openDetail()`) or that task's modal (`openTaskModal()`); every other module's note navigates
+  to that module's own tab (`navigate('hospitality'|'appointments'|'recruit'|'agency')`) rather
+  than deep-linking the exact record's own edit modal — the dozen entity types across Recruit/
+  Travel Agency don't share one consistent "open by id" function name, so this stays a safe,
+  always-correct simplification instead of guessing.
+- **Filter/search**: a source chip row (`All (N)`, `Lead (N)`, `Task (N)`, …) plus a text search
+  matching note content or entity label, both computed client-side over `computeAllNotes()`'s
+  output — no server round-trip.
+
 ### Stage-gated workflow engine (dependencies, auto-unlock, notifications, AI client summaries)
 Projects/tasks amended in place to also work as a stage-gated delivery workflow — no new NocoDB
 table or column; everything below still lives inside the same `manual_tasks` field described above.
