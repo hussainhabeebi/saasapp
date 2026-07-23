@@ -2479,6 +2479,22 @@ const TODAY = new Date().toISOString().slice(0,10);
             <span class="save-msg" id="saveVoiceFollowupEnabledMsg"></span>
           </div>
         </div>
+
+        <!-- Advanced Pipeline follow-up cadence — see SETUP.md "Advanced Pipeline follow-up
+             cadence". On by default (opt-out, same convention as Recovery/Automations), unlike the
+             Voice toggles above which default off. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🗺️ Advanced Pipeline Follow-ups</div>
+            <div class="s-note">Whenever a lead's Stage changes, automatically queues a follow-up task in Task Manager so no lead sits without a next action — escalating Day 1 → Day 3 → Day 7 → Day 14 → monthly, tagged by mode (text → voice note → video) and, if a lead never replies to either of the first two, flagged "cold" with the channel switched to a phone call then email.</div>
+            <label class="tgl-wrap" id="pipelineFollowupToggleWrap">
+              <input type="checkbox" id="cfgPipelineFollowupEnabled" onchange="savePipelineFollowupToggle()">
+              <span class="tgl-track"></span>
+              <span class="tgl-label" id="pipelineFollowupToggleLabel">On — follow-up tasks auto-created</span>
+            </label>
+            <span class="save-msg" id="savePipelineFollowupEnabledMsg"></span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -3644,6 +3660,25 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="btn btn-primary" id="saveTaskBtn" onclick="saveTaskFromModal()">Save Task</button>
     <span class="save-msg" id="taskModalMsg"></span>
     <button class="btn btn-secondary" onclick="closeModal('modalTask')">Cancel</button>
+  </div>
+</div>
+
+<!-- Advanced Pipeline follow-up cadence: record/upload a short video and send it to a lead
+     (SETUP.md "Advanced Pipeline follow-up cadence"). Body-level sibling of #overlay like every
+     other modal — see SETUP.md's "Frontend modal convention" for why. -->
+<div class="modal" id="modalVideoFollowup" style="width:460px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title">🎥 Video Follow-up</div><button class="icon-btn" onclick="closeVideoFollowupModal()">✕</button></div>
+  <div class="modal-body">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">A short, personal 30-45s clip — "hey, following up on X" — reads far more genuine than text at this point in the conversation. Record one on your phone/laptop, or pick an existing file.</div>
+    <div class="form-group"><label class="form-label">Video file</label><input class="form-input" type="file" id="vfFile" accept="video/*" capture="user" onchange="onVideoFollowupFileChosen()"></div>
+    <video id="vfPreview" style="width:100%;border-radius:10px;display:none;margin-bottom:10px" controls></video>
+    <div class="form-group"><label class="form-label">Message (sent alongside the video)</label><textarea class="form-input" id="vfCaption" rows="2"></textarea></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="vfSendBtn" onclick="sendPipelineVideoFollowup()">Send</button>
+    <span class="save-msg" id="vfMsg"></span>
+    <button class="btn btn-secondary" onclick="closeVideoFollowupModal()">Cancel</button>
   </div>
 </div>
 
@@ -6804,6 +6839,17 @@ function reportLeadQualityChange(leadId, before, after){
   if((isWonLead(after)||isLostLead(after)) && !(isWonLead(before)||isLostLead(before))){
     stampClosedAt(leadId);
   }
+  // Advanced Pipeline follow-up cadence (SETUP.md) — fire-and-forget, same pattern as
+  // sendLeadCapiEvent above: resets the cadence and queues the Day-1 follow-up task the moment a
+  // Stage actually changes, at every one of this function's existing Stage-changing call sites
+  // (kbDrop, saveLead, patchDetailField, Human Deals' applyHumanDealOutcome) for free.
+  if(after.Stage && after.Stage!==before?.Stage) reportPipelineStageChange(leadId, after.Stage);
+}
+function reportPipelineStageChange(leadId, stage){
+  fetch(`${CONFIG.WORKER_BASE}/pipeline/followups/on-stage-change`,{
+    method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+    body:JSON.stringify({lead_id:leadId, stage})
+  }).catch(()=>{});
 }
 function stampClosedAt(leadId){
   const idx=allLeads.findIndex(x=>x.Id===leadId);
@@ -6963,6 +7009,7 @@ function integrationsInit(){
 function voiceInit(){
   renderVoiceAddonCard();
   renderVoiceFollowupCard();
+  renderPipelineFollowupCard();
 }
 
 // Voice-to-Voice Reply toggle. Deliberately the ONLY gate on this feature — not tied to
@@ -7020,6 +7067,36 @@ async function saveVoiceFollowupToggle(){
   }catch(e){
     input.checked=!input.checked;
     label.textContent=input.checked?'On — follow-ups sent as voice':'Off — follow-ups sent as text';
+    msg.textContent='Error: '+e.message;msg.className='save-msg err';
+  }finally{
+    input.disabled=false;
+    setTimeout(()=>msg.textContent='',3000);
+  }
+}
+
+// Advanced Pipeline follow-up cadence toggle — opt-out (blank/anything but the literal "No"
+// means enabled), same convention as backend/recovery.js's recovery_enabled, unlike the two Voice
+// toggles above which default off.
+function renderPipelineFollowupCard(){
+  const input=$id('cfgPipelineFollowupEnabled');
+  if(!input) return;
+  const enabled=clientRecord?.pipeline_followup_enabled!=='No';
+  input.checked=enabled;
+  $id('pipelineFollowupToggleLabel').textContent=enabled?'On — follow-up tasks auto-created':'Off — no auto follow-up tasks';
+}
+async function savePipelineFollowupToggle(){
+  const input=$id('cfgPipelineFollowupEnabled'),msg=$id('savePipelineFollowupEnabledMsg'),label=$id('pipelineFollowupToggleLabel');
+  const value=input.checked?'Yes':'No';
+  label.textContent=input.checked?'On — follow-up tasks auto-created':'Off — no auto follow-up tasks';
+  msg.textContent='';msg.className='save-msg';
+  input.disabled=true;
+  try{
+    await patchClient({pipeline_followup_enabled:value});
+    clientRecord.pipeline_followup_enabled=value;
+    msg.textContent='✓ Saved';
+  }catch(e){
+    input.checked=!input.checked;
+    label.textContent=input.checked?'On — follow-up tasks auto-created':'Off — no auto follow-up tasks';
     msg.textContent='Error: '+e.message;msg.className='save-msg err';
   }finally{
     input.disabled=false;
@@ -8038,7 +8115,11 @@ function computeAllTasks(){
       title:t.title, meta:[t.notes,t.lead_name?('Re: '+t.lead_name):'',t.assignee_email?('→ '+t.assignee_email):'',locked?'🔒 waiting on a dependency':''].filter(Boolean).join(' · '),
       due:t.due_date, dueTime:t.due_time, assignee:t.assignee_email||'', urgency,
       category:t.category||'', projectId:t.project_id||'', projectName:proj?.name||'', projectColor:proj?.color||'',
-      status:t.status||'open', locked});
+      status:t.status||'open', locked,
+      // Advanced Pipeline follow-up cadence (SETUP.md) — auto-generated tasks carry a channel
+      // (whatsapp/call/email) + mode (text/voice/video/call) so a rep sees at a glance which
+      // "mode" to use next, without opening the task.
+      autoGenerated:!!t.auto_generated, channel:t.channel||'', mode:t.mode||'', followupStep:t.followup_step||0});
   });
 
   return out;
@@ -8330,7 +8411,40 @@ function renderTasksCalendar(manualTasks){
 function taskTagsHtml(t){
   const catTag=t.category?(()=>{const s=categoryStyle(t.category);return `<span class="task-tag" style="background:${s.bg};color:${s.color}">${esc(t.category)}</span>`;})():'';
   const projTag=t.projectName?`<span class="task-tag" style="background:${t.projectColor}22;color:${t.projectColor}">📁 ${esc(t.projectName)}</span>`:'';
-  return catTag+projTag;
+  return catTag+projTag+pipelineFollowupTagHtml(t);
+}
+
+// Advanced Pipeline follow-up cadence (SETUP.md) — the channel/mode chip an auto-generated task
+// carries, so a rep sees at a glance which "mode" to use next (💬 WhatsApp text/voice note, 📞 a
+// real phone call, 📧 email) without opening the task. `PIPELINE_MODE_LABEL` covers the escalation
+// this feature implements: 1st touch = text, 2nd = voice note, 3rd = video (or a channel switch to
+// call/email if the lead never replied to either of the first two — see the Worker's
+// pipelineFollowupPlan for the exact rule).
+const PIPELINE_CHANNEL_ICON={whatsapp:'💬',call:'📞',email:'📧'};
+const PIPELINE_MODE_LABEL={text:'Text',voice:'Voice note',video:'Video',call:'Call'};
+function pipelineFollowupTagHtml(t){
+  if(!t.autoGenerated) return '';
+  const icon=PIPELINE_CHANNEL_ICON[t.channel]||'💬';
+  const modeLabel=PIPELINE_MODE_LABEL[t.mode]||'';
+  return `<span class="task-tag" style="background:#E0F2FE;color:#075985" title="Advanced Pipeline follow-up, step ${t.followupStep}">${icon} ${esc(modeLabel)}</span>`;
+}
+
+// Advanced Pipeline follow-up cadence (SETUP.md) — the two channel-specific actions text/voice
+// don't already cover: a one-tap dialer link for a 'call' step (nothing here can automate an
+// actual phone call, so this is just a convenience), and the "🎥 Record & Send" button that opens
+// the new video-follow-up modal for a 'video' step — the one genuinely new send capability this
+// feature needed, everything else reuses the existing WA Follow-up button/route.
+function pipelineFollowupActionsHtml(t){
+  if(!t.autoGenerated || !t.leadId) return '';
+  const lead=allLeads.find(l=>l.Id===t.leadId);
+  if(t.channel==='call'){
+    const phone=lead?.Phone||'';
+    return phone?`<a class="task-action-btn" href="tel:${esc(phone.replace(/[^+\d]/g,''))}" onclick="event.stopPropagation()">📞 Call</a>`:'';
+  }
+  if(t.mode==='video'){
+    return `<button class="task-action-btn" onclick="event.stopPropagation();openVideoFollowupModal('${t.id}',${t.leadId})">🎥 Record &amp; Send</button>`;
+  }
+  return '';
 }
 
 function taskItemHtml(t){
@@ -8354,7 +8468,8 @@ function taskItemHtml(t){
     <div class="task-actions">
       ${t._type==='manual'?`<button class="task-action-btn" onclick="event.stopPropagation();openTaskModal('${t.id}')">Edit</button>`:''}
       ${t._type==='manual'&&t.assignee?`<button class="task-action-btn" onclick="event.stopPropagation();sendTaskEmailFollowUp('${t.id}')">📧 Follow Up</button>`:''}
-      ${t.leadId?`<button class="task-action-btn" onclick="event.stopPropagation();sendTaskWaFollowUp(${t.leadId},this)">💬 WA Follow-up</button>`:''}
+      ${pipelineFollowupActionsHtml(t)}
+      ${t.leadId&&t.channel!=='call'&&t.channel!=='email'?`<button class="task-action-btn" onclick="event.stopPropagation();sendTaskWaFollowUp(${t.leadId},this)">💬 WA Follow-up</button>`:''}
       ${t._type==='reminder'?`<button class="task-action-btn" onclick="event.stopPropagation();snoozeReminderLead(${t.leadId})">+1d</button>`:''}
       ${t._type==='manual'?`<button class="task-action-btn" onclick="event.stopPropagation();snoozeManualTask('${t.id}')">+1d</button>`:''}
       ${t.locked?'<span class="task-action-btn" title="Waiting on a dependency to finish" style="cursor:default;opacity:.7">🔒 Locked</span>':`<button class="task-action-btn primary" onclick="event.stopPropagation();${t._virtual?`dismissVirtualTask('${t._dismissKey}')`:`toggleTaskDone('${t.id}')`}">✓ Done</button>`}
@@ -8767,6 +8882,53 @@ async function sendTaskWaFollowUp(leadId,btn){
     alert('✓ Follow-up sent to '+(lead.Name||lead.Phone));
   }catch(e){ alert('Could not send follow-up: '+e.message); }
   finally{ if(btn){ btn.disabled=false; btn.textContent='💬 WA Follow-up'; } }
+}
+
+// Advanced Pipeline follow-up cadence — the "video" step's send flow. The rep records/picks a
+// clip client-side, it's relayed straight through the Worker to Chatwoot (POST
+// /pipeline/followups/video-send, same FormData-relay shape as the existing Quote/Invoice send —
+// see handleQuoteSend in worker.js) so the Chatwoot token never reaches the browser and nothing
+// needs to be stored in R2 first, since it's only ever sent once.
+let _vfTaskId=null, _vfLeadId=null;
+function openVideoFollowupModal(taskId, leadId){
+  _vfTaskId=taskId; _vfLeadId=leadId;
+  const lead=allLeads.find(l=>l.Id===leadId);
+  $id('vfFile').value='';
+  $id('vfPreview').style.display='none'; $id('vfPreview').removeAttribute('src');
+  $id('vfCaption').value=`Hey ${lead?.Name||'there'}, quick follow-up video for you 👇`;
+  $id('vfMsg').textContent=''; $id('vfMsg').className='save-msg';
+  openModal('modalVideoFollowup');
+}
+function closeVideoFollowupModal(){ closeModal('modalVideoFollowup'); }
+function onVideoFollowupFileChosen(){
+  const file=$id('vfFile').files[0];
+  const preview=$id('vfPreview');
+  if(!file){ preview.style.display='none'; return; }
+  preview.src=URL.createObjectURL(file);
+  preview.style.display='';
+}
+async function sendPipelineVideoFollowup(){
+  const lead=allLeads.find(l=>l.Id===_vfLeadId);
+  const convId=lead&&leadConvId(lead);
+  const file=$id('vfFile').files[0];
+  const msg=$id('vfMsg'), btn=$id('vfSendBtn');
+  if(!convId){ msg.textContent='This lead has no linked WhatsApp conversation yet.'; msg.className='save-msg err'; return; }
+  if(!file){ msg.textContent='Choose a video file first.'; msg.className='save-msg err'; return; }
+  btn.disabled=true; msg.textContent='Sending…'; msg.className='save-msg';
+  try{
+    const fd=new FormData();
+    fd.append('conv_id',convId);
+    fd.append('caption',$id('vfCaption').value||'');
+    fd.append('task_id',_vfTaskId||'');
+    fd.append('file',file,file.name||'follow-up.mp4');
+    const r=await fetch(`${CONFIG.WORKER_BASE}/pipeline/followups/video-send`,{method:'POST',headers:ncAuthHeaders(),body:fd});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    closeVideoFollowupModal();
+    showToast('✓ Video sent to '+(lead.Name||lead.Phone),'ok');
+    renderTasks();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; }
 }
 
 let _editingTaskId=null;

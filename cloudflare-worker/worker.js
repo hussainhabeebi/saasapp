@@ -4150,6 +4150,263 @@ async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolv
   }catch(e){ await reportOpsError(env, 'engineMaybeSendEcomCategoryMedia', e, {clientId, convId}); }
 }
 
+/* ── ADVANCED PIPELINE — escalating follow-up cadence (SETUP.md "Advanced Pipeline follow-up
+   cadence") ──
+   Whenever a lead's Stage changes, this makes sure a rep always has exactly one open, tagged
+   follow-up task queued for that lead — "no lead sits without a next action". The cadence itself
+   (migrations/0013_pipeline_followups.sql, `pipeline_followups`, one row per lead) tracks how far
+   a lead has drifted since it last entered its *current* Stage; the actual to-do items reps see
+   still live in the existing Tasks module (`manual_tasks` CLIENTS field) — this table only tracks
+   progress, it never duplicates task content.
+   Two entry points, mirroring the Automations/recovery.js split already used elsewhere in this
+   file for the same reason (a multi-day cadence can't depend on a browser tab staying open):
+   - `handlePipelineStageChange` — fired immediately (fire-and-forget) by dashboard.html the
+     moment a rep changes a lead's Stage, so the Day-1 task appears right away instead of waiting
+     for the next cron tick.
+   - `runPipelineFollowupsForAllClients` — the daily cron tick (piggybacked on the existing
+     `0 2 * * *` health-check schedule; day-granularity cadence doesn't need the 15-minute tick).
+     Also the safety net for Stage changes the dashboard route never saw at all — a stage move
+     driven by the Conversation Engine itself (bot-driven flow progression) has no browser call
+     site to fire the instant route from, so this tick detects "stored stage !== lead's current
+     Stage" itself and resets the cadence the same way, just up to a day later. */
+const PIPELINE_TERMINAL_STAGES=new Set(['won','converted','lost','human_handover','consultation_booked','visit_booked','appt_booked','Converted','Lost','Closed','Opt Out']);
+// Step 1 fires the moment a lead enters a stage; steps 2-4 fire on/after these many days since
+// then; step 5+ repeats every 30 days after that ("...then monthly if stuck").
+const PIPELINE_FOLLOWUP_DAY_THRESHOLDS=[1,3,7,14];
+function pipelineFollowupTargetStep(elapsedDays){
+  let step=0;
+  for(let i=0;i<PIPELINE_FOLLOWUP_DAY_THRESHOLDS.length;i++){
+    if(elapsedDays>=PIPELINE_FOLLOWUP_DAY_THRESHOLDS[i]) step=i+1;
+  }
+  if(step===PIPELINE_FOLLOWUP_DAY_THRESHOLDS.length){
+    const lastThreshold=PIPELINE_FOLLOWUP_DAY_THRESHOLDS[PIPELINE_FOLLOWUP_DAY_THRESHOLDS.length-1];
+    step+=Math.floor((elapsedDays-lastThreshold)/30);
+  }
+  return step;
+}
+const PIPELINE_CHANNEL_ICON={whatsapp:'💬', call:'📞', email:'📧'};
+// The escalation policy the user asked for, made deterministic: 1st touch = text, 2nd = voice
+// note, 3rd = video (a personal 30-45s clip reads best right after a lead went quiet, per the
+// request) — UNLESS the lead never replied to either of the first two, in which case that's the
+// "no reply after 2 follow-ups" trigger: flag the lead cold and escalate the *channel* instead
+// (WhatsApp → phone call → email), same as the request's channel-switch rule. `hasReplied` is
+// recomputed fresh every time from the lead's own LastMsgAt vs. stage_entered_at, so a lead that
+// goes quiet, gets flagged cold, then genuinely replies later in the same stage-run naturally
+// clears the flag on the next tick — never a one-way ratchet.
+function pipelineFollowupPlan(step, hasReplied){
+  if(step<=1) return {channel:'whatsapp', mode:'text', label:'Day 1 follow-up', cold:false};
+  if(step===2) return {channel:'whatsapp', mode:'voice', label:'Day 3 follow-up — send a voice note', cold:false};
+  if(step===3) return hasReplied
+    ? {channel:'whatsapp', mode:'video', label:'Day 7 follow-up — send a short personal video', cold:false}
+    : {channel:'call', mode:'call', label:'Day 7 follow-up — no response yet, call the lead directly', cold:true};
+  if(step===4) return hasReplied
+    ? {channel:'whatsapp', mode:'text', label:'Day 14 follow-up', cold:false}
+    : {channel:'email', mode:'text', label:'Day 14 follow-up — try email', cold:true};
+  return hasReplied
+    ? {channel:'whatsapp', mode:'text', label:'Monthly check-in — still active in this stage', cold:false}
+    : {channel:'email', mode:'text', label:'Monthly check-in — try email', cold:true};
+}
+function pipelineBuildTaskItem(lead, stage, step, plan){
+  const now=new Date();
+  const icon=PIPELINE_CHANNEL_ICON[plan.channel]||'💬';
+  return {
+    id:'pf_'+now.getTime().toString(36)+Math.random().toString(36).slice(2,7),
+    title:`${icon} Follow up with ${lead.Name||lead.Phone||'lead'}`,
+    notes:plan.label, due_date:now.toISOString().slice(0,10), due_time:'',
+    lead_id:lead.Id, lead_name:lead.Name||lead.Phone||'', assignee_email:lead.Owner||'',
+    category:'Follow-up', project_id:'', status:'open', created_at:now.toISOString(), completed_at:'',
+    auto_generated:true, followup_step:step, stage_at_creation:stage, channel:plan.channel, mode:plan.mode,
+  };
+}
+// Same capped-JSON-array-on-CLIENTS read/write as dashboard.html's own getTasksState/
+// saveTasksState (manual_tasks holds {items, dismissed, projects, notificationLog}) — this is the
+// Worker's side of that same field, needed because the cadence advances on a schedule with no
+// browser tab guaranteed open. Replaces (not appends alongside) any still-open auto-generated task
+// already queued for this lead, so a lead's cadence never shows two auto follow-ups at once.
+async function pipelineAppendTask(env, clientId, lead, stage, step, plan){
+  const c=await getClientById(env, clientId);
+  if(!c) return;
+  let state={items:[],dismissed:[],projects:[],notificationLog:[]};
+  try{ const parsed=JSON.parse(c.manual_tasks||'{}'); state={items:Array.isArray(parsed.items)?parsed.items:[], dismissed:Array.isArray(parsed.dismissed)?parsed.dismissed:[], projects:Array.isArray(parsed.projects)?parsed.projects:[], notificationLog:Array.isArray(parsed.notificationLog)?parsed.notificationLog:[]}; }catch(e){}
+  state.items=state.items.filter(t=>!(t.auto_generated && t.lead_id===lead.Id && t.status==='open'));
+  const item=pipelineBuildTaskItem(lead, stage, step, plan);
+  state.items.push(item);
+  const openItems=state.items.filter(t=>t.status!=='done');
+  const doneItems=state.items.filter(t=>t.status==='done').slice(-100);
+  state.items=[...openItems,...doneItems];
+  await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), manual_tasks:JSON.stringify(state)}});
+  return item;
+}
+// Drops a lead's cadence entirely (D1 row + any still-open auto task) once it reaches a terminal
+// stage — Won/Spam/Lost/human-handover all close the loop this feature exists to chase.
+async function pipelineClearLead(env, clientId, leadId){
+  await env.DB.prepare(`DELETE FROM pipeline_followups WHERE lead_id=?`).bind(leadId).run();
+  const c=await getClientById(env, clientId);
+  if(!c) return;
+  try{
+    const parsed=JSON.parse(c.manual_tasks||'{}');
+    const items=Array.isArray(parsed.items)?parsed.items:[];
+    const filtered=items.filter(t=>!(t.auto_generated && t.lead_id===leadId && t.status==='open'));
+    if(filtered.length!==items.length){
+      await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), manual_tasks:JSON.stringify({...parsed, items:filtered})}});
+    }
+  }catch(e){}
+}
+async function pipelineMaybeTagCold(env, clientId, lead, cold){
+  const tags=(lead.Tags||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const hasCold=tags.includes('cold');
+  if(cold && !hasCold){ tags.push('cold'); }
+  else if(!cold && hasCold){ const i=tags.indexOf('cold'); tags.splice(i,1); }
+  else return;
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, Tags:tags.join(', ')}});
+}
+// The instant path — dashboard.html's reportLeadQualityChange fires this fire-and-forget the
+// moment a rep changes a lead's Stage (kbDrop, saveLead, patchDetailField, applyHumanDealOutcome
+// all already funnel through that one function). Resets the cadence to step 1 and creates the
+// Day-1 task right away, so "no lead sits without a next action" holds true immediately rather
+// than waiting for tomorrow's cron tick.
+async function handlePipelineStageChange(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {lead_id, stage}=await request.json().catch(()=>({}));
+  if(!lead_id||!stage) return json({error:'lead_id and stage required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(c.pipeline_followup_enabled==='No') return json({ok:true, skipped:'disabled'});
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
+  const lead=await leadR.json().catch(()=>null);
+  if(!leadR.ok||!lead) return json({error:'Lead not found'}, 404);
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Not your lead'}, 403);
+  if(PIPELINE_TERMINAL_STAGES.has(stage)){
+    await pipelineClearLead(env, payload.cid, Number(lead_id));
+    return json({ok:true, skipped:'terminal'});
+  }
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO pipeline_followups (client_id, lead_id, stage, stage_entered_at, step, cold, channel, created_at, updated_at)
+    VALUES (?,?,?,?,1,0,'whatsapp',?,?)
+    ON CONFLICT(lead_id) DO UPDATE SET client_id=excluded.client_id, stage=excluded.stage, stage_entered_at=excluded.stage_entered_at, step=1, cold=0, channel='whatsapp', updated_at=excluded.updated_at`)
+    .bind(Number(payload.cid), Number(lead_id), stage, now, now, now).run();
+  await pipelineMaybeTagCold(env, payload.cid, lead, false);
+  const item=await pipelineAppendTask(env, payload.cid, lead, stage, 1, pipelineFollowupPlan(1, false));
+  return json({ok:true, task_id:item?.id||null});
+}
+// The daily cron path — advances every lead already mid-cadence whose next threshold has passed,
+// and catches any Stage change the instant route above never saw (a bot-driven stage move has no
+// browser call site). One manual_tasks read+write per client (not per lead) even when several of
+// that client's leads advance on the same tick, matching this file's existing "bulk save, not
+// per-field" convention for CLIENTS JSON blobs.
+async function runPipelineFollowupsForAllClients(env){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(c.pipeline_followup_enabled==='No') continue;
+      try{ await pipelineProcessClient(env, c); }
+      catch(e){ console.error('[pipeline-followups] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+async function pipelineProcessClient(env, c){
+  const clientId=c.Id;
+  const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`)}&limit=1000&fields=Id,Name,Phone,Owner,Stage,LastMsgAt,Tags`);
+  if(!leadsR.ok) return;
+  const leads=(await leadsR.json().catch(()=>({})))?.list||[];
+  if(!leads.length) return;
+  const {results:rows}=await env.DB.prepare(`SELECT * FROM pipeline_followups WHERE client_id=?`).bind(Number(clientId)).all();
+  const byLead=new Map((rows||[]).map(row=>[row.lead_id, row]));
+  const now=new Date();
+  const nowIso=now.toISOString();
+  const newTasks=[];
+  for(const lead of leads){
+    const stage=lead.Stage||'new';
+    const existing=byLead.get(lead.Id);
+    if(PIPELINE_TERMINAL_STAGES.has(stage)){
+      if(existing) await pipelineClearLead(env, clientId, lead.Id);
+      continue;
+    }
+    if(!existing){
+      // Bootstrap: this lead has no cadence row at all (feature just enabled, or its
+      // on-stage-change call never landed). Seed step 0 with "now" as the stage-entry point rather
+      // than guessing when it actually entered — the first real task appears on tomorrow's tick
+      // once a day has genuinely elapsed, an accepted one-day delay for this edge case only.
+      await env.DB.prepare(`INSERT INTO pipeline_followups (client_id, lead_id, stage, stage_entered_at, step, cold, channel, created_at, updated_at) VALUES (?,?,?,?,0,0,'whatsapp',?,?)`)
+        .bind(Number(clientId), lead.Id, stage, nowIso, nowIso, nowIso).run();
+      continue;
+    }
+    if(existing.stage!==stage){
+      // A Stage change the instant route never saw (bot-driven, or the rep's own call failed) —
+      // reset exactly like handlePipelineStageChange would, just up to a day late.
+      await env.DB.prepare(`UPDATE pipeline_followups SET stage=?, stage_entered_at=?, step=1, cold=0, channel='whatsapp', updated_at=? WHERE lead_id=?`)
+        .bind(stage, nowIso, nowIso, lead.Id).run();
+      await pipelineMaybeTagCold(env, clientId, lead, false);
+      newTasks.push({lead, stage, step:1, plan:pipelineFollowupPlan(1, false)});
+      continue;
+    }
+    const elapsedDays=Math.floor((now.getTime()-new Date(existing.stage_entered_at).getTime())/86400000);
+    const targetStep=pipelineFollowupTargetStep(elapsedDays);
+    if(targetStep<=existing.step) continue;
+    const nextStep=existing.step+1;
+    const hasReplied=!!lead.LastMsgAt && new Date(lead.LastMsgAt).getTime()>new Date(existing.stage_entered_at).getTime();
+    const plan=pipelineFollowupPlan(nextStep, hasReplied);
+    await env.DB.prepare(`UPDATE pipeline_followups SET step=?, cold=?, channel=?, updated_at=? WHERE lead_id=?`)
+      .bind(nextStep, plan.cold?1:0, plan.channel, nowIso, lead.Id).run();
+    await pipelineMaybeTagCold(env, clientId, lead, plan.cold);
+    newTasks.push({lead, stage, step:nextStep, plan});
+  }
+  if(!newTasks.length) return;
+  // One read-modify-write of this client's manual_tasks for every lead that advanced this tick.
+  const fresh=await getClientById(env, clientId);
+  if(!fresh) return;
+  let state={items:[],dismissed:[],projects:[],notificationLog:[]};
+  try{ const parsed=JSON.parse(fresh.manual_tasks||'{}'); state={items:Array.isArray(parsed.items)?parsed.items:[], dismissed:Array.isArray(parsed.dismissed)?parsed.dismissed:[], projects:Array.isArray(parsed.projects)?parsed.projects:[], notificationLog:Array.isArray(parsed.notificationLog)?parsed.notificationLog:[]}; }catch(e){}
+  newTasks.forEach(({lead, stage, step, plan})=>{
+    state.items=state.items.filter(t=>!(t.auto_generated && t.lead_id===lead.Id && t.status==='open'));
+    state.items.push(pipelineBuildTaskItem(lead, stage, step, plan));
+  });
+  const openItems=state.items.filter(t=>t.status!=='done');
+  const doneItems=state.items.filter(t=>t.status==='done').slice(-100);
+  state.items=[...openItems,...doneItems];
+  await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), manual_tasks:JSON.stringify(state)}});
+}
+// Rep-triggered ad-hoc video send — the genuinely new capability this feature needed (everything
+// else reuses existing send paths: WA text/voice both go through the existing
+// POST /broadcast/followup-send, call/email steps are just task labels since neither can be
+// automated). Same Chatwoot FormData-relay shape as handleQuoteSend (conv_id + file straight
+// through, Worker holds the Chatwoot token so it never reaches the browser) — deliberately not
+// persisted to R2 first, since Chatwoot only ever needs the bytes once, at send time; nothing else
+// in the app needs to re-serve this clip later the way Hospitality/Ecom category photos do.
+async function handlePipelineVideoSend(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const form=await request.formData().catch(()=>null);
+  if(!form) return json({error:'multipart form data required'}, 400);
+  const conv_id=form.get('conv_id'), caption=form.get('caption')||'', file=form.get('file'), task_id=form.get('task_id');
+  if(!conv_id||!file) return json({error:'conv_id and file required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+  const fd=new FormData();
+  fd.append('message_type','outgoing'); fd.append('private','false'); fd.append('content', caption);
+  fd.append('attachments[]', file, file.name||'follow-up.mp4');
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  if(task_id){
+    try{
+      const parsed=JSON.parse(c.manual_tasks||'{}');
+      const items=Array.isArray(parsed.items)?parsed.items:[];
+      const idx=items.findIndex(t=>t.id===task_id);
+      if(idx>=0){ items[idx]={...items[idx], status:'done', completed_at:new Date().toISOString()}; }
+      await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(payload.cid), manual_tasks:JSON.stringify({...parsed, items})}});
+    }catch(e){}
+  }
+  return json({ok:true, data:await r.json().catch(()=>({}))});
+}
+
 // Automation entry point for "order intent detected" — meant to be called by the client's own
 // conversational bot (the external n8n engine, not this repo — see SETUP.md's "Trust Signals"
 // section for why) the moment it decides a customer wants to buy, without a dashboard session:
@@ -8124,6 +8381,8 @@ export default {
       else if(url.pathname==='/ecom/categories' && request.method==='DELETE'){ res=await handleEcomCategoryDelete(request, env); }
       else if(url.pathname==='/ecom/categories/media' && request.method==='POST'){ res=await handleEcomCategoryMediaUpload(request, env); }
       else if(url.pathname==='/ecom/categories/media' && request.method==='DELETE'){ res=await handleEcomCategoryMediaDelete(request, env); }
+      else if(url.pathname==='/pipeline/followups/on-stage-change' && request.method==='POST'){ res=await handlePipelineStageChange(request, env); }
+      else if(url.pathname==='/pipeline/followups/video-send' && request.method==='POST'){ res=await handlePipelineVideoSend(request, env); }
       else if(url.pathname==='/ecom/order-link' && request.method==='POST'){ res=await handleEcomOrderLink(request, env); }
       else if(url.pathname==='/leads/booking-link' && request.method==='POST'){ res=await handleLeadBookingLink(request, env); }
       else if(url.pathname.startsWith('/calcom/webhook/') && request.method==='POST'){ res=await handleCalcomWebhook(request, env, url.pathname.slice('/calcom/webhook/'.length)); }
@@ -8243,10 +8502,11 @@ export default {
   },
 
   // Cloudflare Cron Triggers — see wrangler.toml [triggers]. Three schedules share this one
-  // entry point: the daily health check, the Automations module's flow-advance tick, and the
-  // Shopify abandoned-cart sweep.
+  // entry point: the daily health check (now also advancing the Advanced Pipeline follow-up
+  // cadence, same tick — see runPipelineFollowupsForAllClients above), the Automations module's
+  // flow-advance tick, and the Shopify abandoned-cart sweep.
   async scheduled(event, env, ctx){
-    if(event.cron==='0 2 * * *') ctx.waitUntil(runDailyHealthCheckForAllClients(env));
+    if(event.cron==='0 2 * * *'){ ctx.waitUntil(runDailyHealthCheckForAllClients(env)); ctx.waitUntil(runPipelineFollowupsForAllClients(env)); }
     else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }

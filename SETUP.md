@@ -2283,6 +2283,115 @@ already makes (previously discarded) — the frontend stores it as `sessionStora
 the `myEmail` JS var, used to filter manual tasks assigned to whoever is actually logged in right
 now, and to visually mark "(you)" in the assignee dropdown.
 
+## Advanced Pipeline follow-up cadence
+Whenever a lead's Stage changes, makes sure a rep always has exactly one open, tagged follow-up
+task queued for it — "no lead sits without a next action" — escalating Day 1 → Day 3 → Day 7 →
+Day 14 → every 30 days after that while a lead stays stuck in the same stage. Built on top of two
+already-existing systems rather than a new one: the cadence *tracking* is a new D1 sidecar table
+(no NocoDB reader, same reasoning as every other D1 table in this file), and the actual to-do items
+a rep sees are ordinary entries in the existing Tasks module's `manual_tasks` (see "Task manager"
+above) — this feature never introduces a second task list.
+
+**Why this is separate from the classic `followup_messages` sequence, the Follow-up Engine, the
+recovery ladder (`backend/recovery.js`), and Automations flows** — all four of those *send messages
+automatically*; this feature only ever *creates a task for a human to act on*, tagged with which
+channel/mode to use. A client can have all of these running at once with no conflict: the classic
+sequence/recovery ladder/Automations nudge a *silent* lead via WhatsApp on their own schedule
+regardless of Stage, while this feature reacts specifically to *Stage changes* and always leaves a
+rep-visible task behind, whichever (if any) of the other systems also fired.
+
+### Schema
+**Clients table** — one new field: `pipeline_followup_enabled` (Single line, "Yes"/"No") — opt-out,
+same convention as `recovery_enabled`: blank or anything but the literal "No" means enabled.
+Settings toggle on the Voice page (`cfgPipelineFollowupEnabled`/`renderPipelineFollowupCard`/
+`savePipelineFollowupToggle`, `dashboard.html`), right below the two Voice Follow-up toggles it's
+otherwise unrelated to — kept there since that's the existing "nudge automation" settings group
+rather than inventing a new settings section for one toggle.
+
+**D1** (`migrations/0013_pipeline_followups.sql`) — `pipeline_followups`, one row per lead
+(`UNIQUE(lead_id)`): `client_id, lead_id, stage, stage_entered_at, step, cold, channel,
+last_task_id, created_at, updated_at`. Tracks progress only — deleted entirely once a lead reaches
+a terminal stage (`pipelineClearLead`), at which point its cadence is simply over.
+
+### The cadence rule (`pipelineFollowupTargetStep`/`pipelineFollowupPlan`, `worker.js`)
+`PIPELINE_FOLLOWUP_DAY_THRESHOLDS = [1,3,7,14]`, then every 30 days after that. At each threshold,
+exactly one new task is created (never more than one per tick, even if a slow tick skipped past
+several thresholds at once — it simply catches up over the following days):
+
+| Step | Fires | Channel/mode if the lead has replied since the stage began | If **not** (the "no reply after 2 follow-ups" case) |
+|---|---|---|---|
+| 1 | Day 1 | 💬 WhatsApp, text | — |
+| 2 | Day 3 | 💬 WhatsApp, voice note | — |
+| 3 | Day 7 | 💬 WhatsApp, **video** — a short personal clip reads best right after a lead goes quiet | 📞 **Call** the lead directly — flagged **cold** |
+| 4 | Day 14 | 💬 WhatsApp, text | 📧 **Email** — flagged cold |
+| 5+ | every 30 days | 💬 WhatsApp, text ("Monthly check-in") | 📧 Email ("Monthly check-in — try email") — flagged cold |
+
+`hasReplied` is recomputed fresh every tick from the lead's own `LastMsgAt` vs. the stored
+`stage_entered_at` (not a one-way ratchet) — a lead flagged cold after two silent steps that later
+genuinely replies clears the flag and the channel/mode plan on the very next tick, same as it was
+set. The **cold flag surfaces as an ordinary Tag** (`pipelineMaybeTagCold` appends/removes `"cold"`
+on the lead's existing `Tags` field) rather than new UI plumbing — it already renders everywhere
+(kanban card, lead list/table, lead detail) via the existing `parseTags`/`tagClass` machinery, so
+"tag follow-ups by type" and "flag cold" both reuse the same mechanism the rest of the app already
+has for exactly this.
+
+**Two firing paths**, mirroring the same reasoning Automations/recovery.js already established for
+a multi-day cadence ("nothing guarantees the tab that built this stays open that long"):
+- **Instant**: `dashboard.html`'s `reportLeadQualityChange` — the one function every Stage-changing
+  call site already routes through (`kbDrop`, `saveLead`, `patchDetailField`, Human Deals'
+  `applyHumanDealOutcome`) — fire-and-forgets `POST /pipeline/followups/on-stage-change` the moment
+  `after.Stage!==before.Stage`. Resets the D1 row to step 1 and creates the Day-1 task right away.
+- **Daily cron**: `runPipelineFollowupsForAllClients`, piggybacked on the existing `0 2 * * *`
+  health-check tick (`wrangler.toml`). Advances every lead already mid-cadence whose next threshold
+  has passed, AND catches any Stage change the instant route never saw — a bot-driven Stage move
+  from the Conversation Engine has no browser call site to fire that route from, so this tick
+  detects `stored stage !== lead's current Stage` itself and resets exactly the same way, just up
+  to a day late. Also the path that cleans up a lead's cadence once it reaches a terminal stage
+  (`won`/`converted`/`lost`/`human_handover`/the legacy n8n terminal names), and the one-day
+  bootstrap for a lead with no cadence row yet (feature just turned on, or the instant call failed)
+  — accepted, documented limitations rather than added complexity to backfill exactly.
+- Batches to **one `manual_tasks` read-modify-write per client per tick**, even when several of
+  that client's leads advance on the same run — same "bulk save, not per-field" convention this
+  file already uses for other CLIENTS JSON blobs.
+
+### The one genuinely new send capability: video follow-up
+Everything else reuses an existing send path — the text/voice steps go through the exact same
+`POST /broadcast/followup-send` the Tasks page's "💬 WA Follow-up" button already used (which
+already tries a Sarvam voice note if `voice_followup_enabled` is on, so step 2 needs zero new code,
+just correct labeling); the call/email steps are just task labels, since neither can be automated
+(a `tel:` link is offered for one-tap dialing; email has no lead-facing send path in this app to
+reuse — see "Known scope" below).
+
+The video step needed a real new capability: a rep records/picks a short clip and sends it to that
+one lead. `handlePipelineVideoSend` (`POST /pipeline/followups/video-send`) mirrors `handleQuoteSend`
+exactly — a FormData relay straight through to Chatwoot (`conv_id` + `file`), so the Chatwoot token
+never reaches the browser — deliberately **not** persisted to R2 first, unlike Hospitality/Ecom
+category media: those get re-served to many different leads over time, this clip is sent once and
+never needs serving again. `dashboard.html`'s new `modalVideoFollowup` (a body-level modal, per the
+"Frontend modal convention" above) offers a native file picker (`accept="video/*" capture="user"`,
+so it opens the camera directly on mobile) with a preview and an editable caption, wired from a new
+"🎥 Record & Send" button that only appears on a task whose `mode==='video'`
+(`pipelineFollowupActionsHtml`, `taskItemHtml`).
+
+### Task shape
+Auto-generated tasks are ordinary `manual_tasks.items` entries (category `'Follow-up'`, same
+palette as every other task) with a few extra fields: `auto_generated:true`, `followup_step`,
+`stage_at_creation`, `channel`, `mode`. `assignee_email` is set straight from the lead's own
+`Owner` — already the same identity space as `getTeamMembers()` (see "Task manager" above) — so it
+shows up in that rep's own "Mine" filter without any extra lookup. `computeAllTasks()` carries
+`channel`/`mode`/`auto_generated`/`followup_step` through onto the rendered task object;
+`taskTagsHtml`/`pipelineFollowupTagHtml` render a small channel-icon + mode-label chip (e.g. "💬
+Video", "📞 Call") on top of the usual category/project tags, so a rep sees which mode to use next
+without opening the task.
+
+### Known scope
+- **No automated call/email sending** — a phone call obviously can't be automated, and this app
+  has no existing lead-facing (as opposed to internal task-notify) email send path to reuse, so
+  building one was out of scope here; both steps stay task labels + a `tel:` convenience link.
+- **The daily-cron bootstrap for a pre-existing lead** treats "now" as its stage-entry point rather
+  than reconstructing the real one, so a lead that already existed when this feature shipped gets
+  its first task up to a day later than a freshly-Stage-changed lead would.
+
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
 - **Wrapper** — open that client's generated workflow; add nodes around `Run engine`
