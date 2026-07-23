@@ -4708,6 +4708,31 @@ async function markHumanDealSpam(leadId){
   }catch(e){ showToast('Failed to save: '+e.message,'err'); }
 }
 
+// Same one-click Won/Spam as above, reachable straight from the Leads page (list card + table row)
+// so a rep doesn't have to jump to Human Deals first. Reuses applyHumanDealOutcome exactly like
+// markHumanDealWon/markHumanDealSpam above, but refreshes whichever Leads view is on screen instead
+// of Human Deals — kept as separate functions rather than changing the two above so Human Deals'
+// working behavior is never at risk of a regression from this change.
+async function markLeadWon(leadId, ev){
+  ev?.stopPropagation();
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  try{
+    await applyHumanDealOutcome(leadId, 'Resolved-Won');
+    if(_leadsTableView) renderLeadsTable(); else renderLeadsList();
+  }catch(e){ showToast('Failed to save: '+e.message,'err'); return; }
+  if(clientRecord.erpnext_base_url && clientRecord.erpnext_api_key && clientRecord.erpnext_api_secret){
+    fetch(`${CONFIG.WORKER_BASE}/erpnext/customers/ensure`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:lead.Name, phone:lead.Phone, email:lead.Email})}).catch(()=>{});
+  }
+}
+async function markLeadSpam(leadId, ev){
+  ev?.stopPropagation();
+  if(!confirm('Mark as spam? The bot will stop replying to this lead going forward (same as an opt-out).')) return;
+  try{
+    await applyHumanDealOutcome(leadId, 'Spam');
+    if(_leadsTableView) renderLeadsTable(); else renderLeadsList();
+  }catch(e){ showToast('Failed to save: '+e.message,'err'); }
+}
+
 // ── COACH PANEL — reads the engine's own Sentiment/LastObjectionCategory signals plus this
 // client's Objection Playbook (Settings) and a recent timeline (D1, migrations/0008_coach_signals.sql,
 // GET /human-deals/coach) so a rep handling a Human Deals chat gets in-the-moment coaching instead
@@ -4853,12 +4878,17 @@ function renderLeadsList(){
   el.innerHTML=visible.map(l=>{
     const initials=(l.Name||l.Phone||'?').charAt(0).toUpperCase();
     const tags=parseTags(l.Tags);
+    const showOutcomeBtns=!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes';
     return `<div class="lead-item" onclick="openDetail(${l.Id})">
       <div class="li-avatar">${initials}</div>
       <div class="li-body">
         <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub">${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${tags.length?`<div class="tags-row" style="margin-top:4px">${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}</div>`:''}
+        ${showOutcomeBtns?`<div style="display:flex;gap:6px;margin-top:8px" onclick="event.stopPropagation()">
+          <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
+          <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
+        </div>`:''}
       </div>
       <div class="li-right">
         ${scoreBadge(l.Score)}
@@ -4923,10 +4953,11 @@ function renderLeadsTable(){
   el.innerHTML=`<table class="leads-tbl"><thead><tr>
     <th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Owner</th>
     <th>Age</th><th>Profession</th><th>Email</th><th>City</th><th>Country</th><th>Budget</th><th>Language</th><th>Source</th>
-    <th>Date</th>
+    <th>Date</th><th>Actions</th>
   </tr></thead><tbody>${rows.map(l=>{
     let qa={};try{qa=JSON.parse(l.QualAnswers||'{}');}catch(e){}
     const qGet=k=>{const lk=k.toLowerCase();return Object.entries(qa).find(([key])=>key.toLowerCase()===lk)?.[1]||l[k]||l[k.charAt(0).toUpperCase()+k.slice(1)]||'';}
+    const showOutcomeBtns=!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes';
     return `<tr onclick="openDetail(${l.Id})">
       <td>${esc(l.Name||'Unknown')}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
@@ -4942,6 +4973,10 @@ function renderLeadsTable(){
       <td>${esc(l.Language||qGet('language'))}</td>
       <td>${esc(l.Source||qGet('source'))}</td>
       <td>${esc(fmtDateShort(l.Date))}</td>
+      <td>${showOutcomeBtns?`<div style="display:flex;gap:6px" onclick="event.stopPropagation()">
+        <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669;white-space:nowrap" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
+        <button class="btn btn-secondary btn-sm" style="color:#DC2626;white-space:nowrap" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
+      </div>`:'—'}</td>
     </tr>`;
   }).join('')}</tbody></table>`;
   if(remaining>0){
