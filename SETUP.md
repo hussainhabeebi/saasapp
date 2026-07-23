@@ -2732,12 +2732,12 @@ Ecom Conversation Engine (below) receives the raw Chatwoot webhook payload direc
 capture `ctwa_clid` the same way, if wired up; not done here since it's out of scope for the
 migration itself.
 
-## Meta Ads ROI Report (`frontend/dashboard.html` — Team → Reports)
-Ad spend against conversions and revenue this CRM already tracks, last 6 months. Built as its own
-view inside the Team page (a local tab toggle, `showTeamView()` — not a separate top-level nav
-tab), since it's a genuinely different question ("is ad spend paying off") from Team Performance/
-Funnel Analytics/Revenue Forecast above it, but still belongs in the same "how's the business
-doing" place rather than a new nav entry.
+## Meta Ads ROI Report (`frontend/dashboard.html` — now the 📈 Reports page's Marketing tab)
+Ad spend against conversions and revenue this CRM already tracks, last 6 months. **Originally**
+built as its own view inside the Team page (a local tab toggle, `showTeamView()`); **since
+promoted** into the dedicated 📊 Reports page (see "Reports page" section below) alongside seven
+other report tabs — the underlying computation described here is unchanged, only its container
+ids and page location moved (`renderMetaRoiReport()` → `renderReportsMarketing()`).
 
 **Why this needed a second Meta credential, not just CAPI**: Conversions API is one-way — it only
 ever *sends* events to Meta so ad delivery optimizes; it has no endpoint that returns spend or
@@ -2785,6 +2785,119 @@ counts (which come from `allLeads`, not this log).
   lead loaded), and joins them by month key. Stat tiles (Total Spend, Total Revenue, ROAS, Cost/
   Lead, Cost/Booking) and the monthly table show spend-dependent figures as `—` rather than hiding
   the whole report when `ads_read` isn't connected.
+
+## Reports page (`frontend/dashboard.html` — 📈 Reports tab; `feat_reports_enabled`)
+A dedicated top-level nav tab (promoted out from under Team, which used to have a single-report
+"📈 Reports" sub-view — see the Meta Ads ROI Report section above) with eight sub-tabs, one per
+report area requested: Overview, Sales, Team, Marketing, WhatsApp, Shopify, Product, SEO. Same
+sub-nav/lazy-load convention as Recruit/Appointments/Hospitality (`renderReports()` →
+`renderReportsSubPage(page)`, a `.hosp-tab`/`data-reports` sub-nav — reusing that CSS class rather
+than inventing a near-identical fourth one — one shared `#reportsContent` container). Toggleable
+like the other Dashboard Tabs (`feat_reports_enabled`, Settings → Modules → Dashboard Tabs).
+
+Every sub-tab fetches/computes fresh on each visit rather than sharing a preload+cache step —
+none of the eight is expensive enough to justify the coordination Hospitality's units/bookings
+cache needs.
+
+### Sales / Team — reused computation, new container ids, no new backend
+`renderReportsSales()`/`renderReportsTeamReport()` are second copies of Revenue Forecast's and
+Team Performance's per-agent table's own computation (same `allLeads`-driven logic,
+`isWonLead`/`isLostLead`/`closedMonthKey`/`getTeamMembers`/`getTasksState`), targeting this page's
+own container ids (`reportsSalesStats`/`reportsSalesTrend`/etc., `reportsTeamStats`/
+`reportsTeamTable`) instead of the Team page's. Deliberately a second copy rather than a shared-id
+refactor of the already-live Team page functions — safer (zero risk of regressing a working
+feature) given how tightly `renderRevenueForecast()`/`renderTeamPerformance()` are bound to their
+own hardcoded ids. The Team page itself is untouched and still shows the same content.
+
+### Marketing — Meta Ads ROI (moved, see its own section above) + Budget
+Budget vs. actual spend for the current month. `monthly_ad_budget` is a plain new CLIENTS field
+(Number) — saved directly via `patchClient()` like every other simple settings field (e.g.
+`deal_currency`), no new Worker route needed. Compared against the current month's Meta spend
+(already fetched for the ROI report above it) as a simple progress bar, red past 100%. Add this
+column to CLIENTS before using it (same "add this column" pattern as every other new field this
+session).
+
+### WhatsApp — `GET /reports/whatsapp?days=30` (`handleReportsWhatsapp`, worker.js)
+Surfaces `ENGINE_ANALYTICS_TABLE` (`engineLogAnalytics`, one row per real inbound message — see
+"Conversation Engine" above), which had been **write-only** since it was added: no route anywhere
+read it back until this one. Returns message volume (daily buckets), intent breakdown, route
+breakdown, average bot response time (`ResponseMs`), and error rate, over the requested window
+(max 90 days). Capped at 5 NocoDB pages / 1000 rows for a bounded worst-case cost on a busy client
+— a client sending more than ~1000 messages in the window sees an undercount (`capped:true` in the
+response) rather than an ever-growing per-request bill. Fine for a trend/breakdown report; would
+not be fine for anything billing-accuracy-sensitive (nothing here is).
+
+### Shopify — `GET /shopify/analytics` (`handleShopifyAnalytics`, worker.js)
+Requires Shopify connected (Settings → Integrations) — shows a "connect it" empty state otherwise,
+same as every other unconnected-integration report tab.
+- **Revenue trend/order count/AOV** come from the Ecommerce Orders table's `total` field (always
+  present on any order, cancelled orders excluded) — no new schema needed for these.
+- **Top products** prefer a new `line_items_json` column on that same orders table (Long text,
+  JSON array of `{title, quantity, price, sku}`), populated going forward by
+  `syncShopifyOrderToEcom()` alongside the pre-existing flattened `items` text column (kept
+  unchanged — `items` is what `ecom.html`'s own Orders table already renders). Orders synced
+  **before** this column existed have no `line_items_json`, so the report falls back to
+  best-effort parsing the flattened `items` string ("2x Product Name" lines) for those —
+  quantity-only, since the flattened string never carried a per-line price. This means
+  per-product revenue only fully covers orders from here on; an accepted, honestly-scoped
+  reporting-only gap (same tradeoff class as every other retrofitted-field limitation in this
+  file). Add the `line_items_json` column to both the shared default orders table and any client's
+  own override before this fills in for new orders.
+- **Cart abandonment rate** comes from the existing `shopify_checkouts` table's `completed`
+  lifecycle (already tracked by `sweepAbandonedShopifyCheckouts`) — `(total − completed) / total`
+  over the same 6-month window.
+
+### Product — `GET /reports/products` (`handleReportsProducts`, worker.js)
+Two independent sources, whichever modules a client actually has:
+- **Services** (Appointment Booking module) — bookings grouped by `service_id`, joined against
+  that service's currently-listed price. Only `confirmed`/`completed` bookings count as real
+  revenue (`requested`/`cancelled`/`no_show` never converted). Revenue is
+  booked-count × list price — an approximation, since nothing in the Appointments module tracks a
+  per-booking custom/discounted amount anywhere.
+- **Top Shopify products** — reuses `handleShopifyAnalytics`' own top-products aggregation
+  wholesale (calls it server-side rather than re-scanning the same orders table twice), same
+  line-items caveat as the Shopify tab above.
+Renders an empty state if a client has neither module's data yet.
+
+### SEO — Google Search Console OAuth + `GET /reports/seo` (worker.js)
+The one report needing its own new external connection — this repo previously had **zero**
+website/SEO data source of any kind (no Search Console, no GA4, no site analytics). One-click
+OAuth, same shape as the Shopify module's connect flow:
+- **`signOauthState`/`verifyOauthState`** (renamed from `signShopifyState`/`verifyShopifyState` —
+  the HMAC-sign-a-`{cid,exp}`-through-the-redirect logic was never Shopify-specific, just named
+  that way since Shopify was the first OAuth connection built; now shared by both) carry the
+  client id through Google's redirect round-trip with no server-side session store, same as
+  Shopify's own `state` param.
+- **New CLIENTS fields**: `gsc_refresh_token` (a true secret — stripped by `safeClient()`, which
+  now also exposes a `gsc_connected` boolean the same way it does `meta_capi_connected`),
+  `gsc_site_url` (the chosen Search Console property, e.g. `https://example.com/` or
+  `sc-domain:example.com`), `gsc_connected_at`.
+- **New secrets**: `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` — a Google Cloud OAuth 2.0 Client
+  (Web application type) with this Worker's `/gsc/oauth/callback` URL as an authorized redirect
+  URI, and the Search Console API enabled on that Cloud project. One shared OAuth app for all
+  clients (each connects their own property through it), same pattern as `SHOPIFY_API_KEY`.
+- **Routes**: `POST /gsc/oauth/start` (returns Google's consent URL, `access_type=offline` +
+  `prompt=consent` so a refresh_token is always issued, even on a reconnect), `GET
+  /gsc/oauth/callback` (browser redirect target — exchanges `code` for tokens, stores
+  `gsc_refresh_token`, redirects back to `?client=<id>&gsc=connected`, same "no frontend JS
+  listens on this response" shape as Shopify's callback), `GET /gsc/sites` (lists verified
+  properties on the connected Google account, for the frontend's picker — an account can have
+  several), `POST /gsc/site` (saves the chosen one), `POST /gsc/disconnect`.
+- **`gscGetAccessToken()`** exchanges the stored refresh_token for a fresh access_token on
+  **every** call (Google access tokens expire in ~1h; this Worker is stateless per-request
+  anyway) — no caching, same tradeoff as every other per-call external token exchange in this
+  file.
+- **`GET /reports/seo`**: calls the Search Analytics API (`searchAnalytics/query`) three times in
+  parallel — `dimensions:['date']` for the trend, `['query']`/`['page']` (rowLimit 10 each) for
+  top queries/pages — over the 28 days ending **3 days ago**, not today: Search Console's own data
+  has a ~2-3 day processing lag (Google's documented latency), and requesting a fresher end date
+  just returns rows of zeros for days it hasn't finished processing yet.
+- **Frontend flow** (`renderReportsSeo()`): not-connected → "Connect Google Search Console" button
+  (`connectGsc()`, navigates the whole tab to the OAuth URL, same as Shopify's connect flow — not
+  a popup) → connected-but-no-site-chosen → a property picker (`saveGscSite()`) → full report
+  (stat tiles, daily click trend, top queries/pages tables, a Disconnect link). `showApp()`'s
+  `gscParam` handling mirrors the existing `shopifyParam` one for the `?gsc=connected`/
+  `?gsc=error` redirect.
 
 ## Frontend modal convention — every `.modal` must be a direct child of `<body>`
 Bug fixed: several popups across the app (the Human Deals "close this deal" outcome modal, the
