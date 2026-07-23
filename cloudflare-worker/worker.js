@@ -198,8 +198,8 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
 // the rest of this object (clientRecord) sits in a page-lifetime JS variable in
 // dashboard.html/broadcast.html, inspectable via devtools for as long as the tab is open.
 function safeClient(rec){
-  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, ...safe}=rec;
-  return {...safe, meta_capi_connected:!!meta_capi_token};
+  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, ...safe}=rec;
+  return {...safe, meta_capi_connected:!!meta_capi_token, gsc_connected:!!gsc_refresh_token};
 }
 
 /* ── Session token: HMAC-signed, not a full JWT — just enough to avoid a
@@ -790,6 +790,48 @@ async function handleMetaCapiLogTrend(request, env){
     if(byMonth[key][row.event]!==undefined) byMonth[key][row.event]++;
   });
   return json({months:Object.values(byMonth).sort((a,b)=>a.key.localeCompare(b.key))});
+}
+
+// WhatsApp/Bot Analytics — Reports page's "💬 WhatsApp" tab. ENGINE_ANALYTICS_TABLE
+// (engineLogAnalytics, defined further down — one row per real inbound message, written every
+// turn) has been write-only since it was added: no route anywhere read it back until this one.
+// Capped at 5 pages / 1000 rows for a bounded worst-case cost on a busy client within the
+// requested window — a client sending more than ~1000 messages in that window sees an undercount
+// (flagged via `capped`) rather than an ever-growing per-request NocoDB bill. Fine for a trend/
+// breakdown report; would not be fine for anything billing-accuracy-sensitive (nothing here is).
+async function handleReportsWhatsapp(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const days=Math.min(90, parseInt(new URL(request.url).searchParams.get('days'))||30);
+  const since=new Date(); since.setDate(since.getDate()-days);
+  const where=`(ClientId,eq,${payload.cid})~and(Timestamp,gte,${since.toISOString()})`;
+  let rows=[];
+  for(let page=1; page<=5; page++){
+    const r=await ncFetch(env, `api/v2/tables/${ENGINE_ANALYTICS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=Intent,Route,ResponseMs,IsError,Timestamp`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const list=data?.list||[];
+    rows=rows.concat(list);
+    if(list.length<200) break;
+  }
+  const byDay={}, byIntent={}, byRoute={};
+  let totalResponseMs=0, responseCount=0, errorCount=0;
+  rows.forEach(row=>{
+    const day=String(row.Timestamp||'').slice(0,10);
+    if(day) byDay[day]=(byDay[day]||0)+1;
+    const intent=row.Intent||'(none)'; byIntent[intent]=(byIntent[intent]||0)+1;
+    const route=row.Route||'(none)'; byRoute[route]=(byRoute[route]||0)+1;
+    if(row.ResponseMs){ totalResponseMs+=Number(row.ResponseMs)||0; responseCount++; }
+    if(row.IsError===true||row.IsError==='true'||row.IsError===1) errorCount++;
+  });
+  return json({
+    total_messages:rows.length, days, capped:rows.length>=1000,
+    daily:Object.entries(byDay).map(([date,count])=>({date,count})).sort((a,b)=>a.date.localeCompare(b.date)),
+    intent_breakdown:Object.entries(byIntent).map(([intent,count])=>({intent,count})).sort((a,b)=>b.count-a.count),
+    route_breakdown:Object.entries(byRoute).map(([route,count])=>({route,count})).sort((a,b)=>b.count-a.count),
+    avg_response_ms:responseCount?Math.round(totalResponseMs/responseCount):0,
+    error_rate:rows.length?Math.round((errorCount/rows.length)*1000)/10:0,
+  });
 }
 
 // Shared by handleEmailTest and the campaign send-one route below — the only difference between
@@ -2460,16 +2502,18 @@ const SHOPIFY_EVENT_KINDS=['received','paid','shipped','delivered','abandoned'];
 
 function isValidShopDomain(shop){ return /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(String(shop||'')); }
 
-// Same HMAC scheme as signAdminSession/hmacSignB64 above, reused so the OAuth `state` param can
-// carry the client id through Shopify's redirect round-trip with no server-side session store —
-// Shopify hands `state` back verbatim on the callback. 10-minute expiry: this only needs to
-// survive one redirect hop, not a whole session.
-async function signShopifyState(env, clientId){
+// Same HMAC scheme as signAdminSession/hmacSignB64 above, reused so any OAuth `state` param can
+// carry the client id through a redirect round-trip with no server-side session store — the
+// provider hands `state` back verbatim on the callback. Generic across every OAuth connection
+// this Worker does (Shopify below, Google Search Console further down) — not provider-specific
+// despite living next to the Shopify module first. 10-minute expiry: this only needs to survive
+// one redirect hop, not a whole session.
+async function signOauthState(env, clientId){
   const payload={cid:String(clientId), exp:Math.floor(Date.now()/1000)+600, n:crypto.randomUUID()};
   const body=btoa(JSON.stringify(payload));
   return `${body}.${await hmacSignB64(env, body)}`;
 }
-async function verifyShopifyState(env, token){
+async function verifyOauthState(env, token){
   if(!token) return null;
   const [body, sig]=String(token).split('.');
   if(!body||!sig) return null;
@@ -2524,7 +2568,7 @@ async function handleShopifyOauthStart(request, env){
   if(!c) return json({error:'Client not found'}, 404);
   if(c.shopify_shop_domain && c.shopify_access_token) return json({error:'A Shopify store is already connected for this client. Disconnect it first to switch stores.'}, 400);
 
-  const state=await signShopifyState(env, payload.cid);
+  const state=await signOauthState(env, payload.cid);
   const redirectUri=`${env.WORKER_BASE_URL}/shopify/oauth/callback`;
   const url=`https://${shop}/admin/oauth/authorize?client_id=${env.SHOPIFY_API_KEY}&scope=${encodeURIComponent(SHOPIFY_SCOPES)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
   return json({ok:true, url});
@@ -2544,7 +2588,7 @@ async function handleShopifyOauthCallback(request, env){
   const code=url.searchParams.get('code');
   const state=url.searchParams.get('state');
   if(!isValidShopDomain(shop)||!code) return fail('Invalid callback from Shopify');
-  const statePayload=await verifyShopifyState(env, state);
+  const statePayload=await verifyOauthState(env, state);
   if(!statePayload) return fail('This connection link expired — try connecting again from Integrations');
 
   const collision=await findOtherClientByField(env, 'shopify_shop_domain', shop, statePayload.cid);
@@ -2575,6 +2619,148 @@ async function handleShopifyDisconnect(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   await patchClientFields(env, payload.cid, {shopify_shop_domain:'', shopify_access_token:'', shopify_connected_at:''});
   return json({ok:true});
+}
+
+/* ── Google Search Console module (Reports page's "🔍 SEO" tab) ────────────────────────────
+   A one-click OAuth connect (same signOauthState/verifyOauthState + browser-redirect-callback
+   shape as the Shopify module above), storing only a refresh_token — Google access tokens expire
+   in ~1h, so every read exchanges the refresh_token for a fresh one rather than caching (this
+   Worker is stateless per-request anyway, same "no caching" tradeoff as every other per-call
+   external token exchange in this file). Requires GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET (a Google
+   Cloud OAuth 2.0 Client — Web application type, with this Worker's own /gsc/oauth/callback URL
+   as an authorized redirect URI, and the Search Console API enabled on that project) — see
+   SETUP.md "Reports page". ── */
+const GSC_SCOPE='https://www.googleapis.com/auth/webmasters.readonly';
+
+async function handleGscOauthStart(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET) return json({error:'Google Search Console credentials are not configured on the server.'}, 500);
+  const state=await signOauthState(env, payload.cid);
+  const redirectUri=`${env.WORKER_BASE_URL}/gsc/oauth/callback`;
+  // access_type=offline + prompt=consent — Google only issues a refresh_token on a consent
+  // screen, never on a silent re-approval; without prompt=consent a client reconnecting after a
+  // token was lost (e.g. this row got cleared) could silently get no refresh_token back at all.
+  const url=`https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(env.GOOGLE_CLIENT_ID)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(GSC_SCOPE)}&access_type=offline&prompt=consent&state=${encodeURIComponent(state)}`;
+  return json({ok:true, url});
+}
+
+// Browser redirect target, not an XHR call — Google lands the user here after they approve
+// access, so failures redirect back into the dashboard with a query param instead of returning
+// JSON (there's no frontend JS listening on this response) — same shape as
+// handleShopifyOauthCallback above.
+async function handleGscOauthCallback(request, env){
+  const url=new URL(request.url);
+  const appBase=env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html';
+  const fail=(msg)=>Response.redirect(`${appBase}?gsc=error&msg=${encodeURIComponent(msg)}`, 302);
+  if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET) return fail('Google Search Console credentials are not configured on the server.');
+  const err=url.searchParams.get('error');
+  if(err) return fail(err==='access_denied'?'Access was denied':err);
+  const code=url.searchParams.get('code');
+  const state=url.searchParams.get('state');
+  if(!code) return fail('Invalid callback from Google');
+  const statePayload=await verifyOauthState(env, state);
+  if(!statePayload) return fail('This connection link expired — try connecting again from Reports');
+
+  const redirectUri=`${env.WORKER_BASE_URL}/gsc/oauth/callback`;
+  const tokenR=await fetch('https://oauth2.googleapis.com/token', {
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({code, client_id:env.GOOGLE_CLIENT_ID, client_secret:env.GOOGLE_CLIENT_SECRET, redirect_uri:redirectUri, grant_type:'authorization_code'})
+  });
+  const tokenData=await tokenR.json().catch(()=>({}));
+  if(!tokenR.ok||!tokenData.refresh_token) return fail(tokenData?.error_description||'Google did not return a refresh token — remove Leadvyne from your Google Account\'s third-party access first, then reconnect.');
+
+  await patchClientFields(env, statePayload.cid, {gsc_refresh_token:tokenData.refresh_token, gsc_connected_at:new Date().toISOString()});
+  return Response.redirect(`${appBase}?client=${statePayload.cid}&gsc=connected`, 302);
+}
+
+async function gscGetAccessToken(env, c){
+  if(!c.gsc_refresh_token) return null;
+  const r=await fetch('https://oauth2.googleapis.com/token', {
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({refresh_token:c.gsc_refresh_token, client_id:env.GOOGLE_CLIENT_ID, client_secret:env.GOOGLE_CLIENT_SECRET, grant_type:'refresh_token'})
+  });
+  const data=await r.json().catch(()=>({}));
+  return r.ok?data.access_token:null;
+}
+
+// Lists Search Console properties this Google account has verified access to, so the frontend can
+// offer a picker rather than guessing which one is this client's actual site — a connected Google
+// account can have several (main domain, subdomains, old properties never removed).
+async function handleGscSitesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.gsc_refresh_token) return json({error:'Connect Google Search Console first.'}, 400);
+  const token=await gscGetAccessToken(env, c);
+  if(!token) return json({error:'Failed to refresh Google access token — try reconnecting.'}, 502);
+  const r=await fetch('https://www.googleapis.com/webmasters/v3/sites', {headers:{Authorization:`Bearer ${token}`}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'Google rejected the request'}, 502);
+  return json({sites:(data.siteEntry||[]).map(s=>({site_url:s.siteUrl, permission_level:s.permissionLevel})), current:c.gsc_site_url||''});
+}
+
+async function handleGscSiteSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {site_url}=await request.json().catch(()=>({}));
+  if(!site_url) return json({error:'site_url required'}, 400);
+  await patchClientFields(env, payload.cid, {gsc_site_url:site_url});
+  return json({ok:true});
+}
+
+async function handleGscDisconnect(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await patchClientFields(env, payload.cid, {gsc_refresh_token:'', gsc_site_url:'', gsc_connected_at:''});
+  return json({ok:true});
+}
+
+// SEO report — Reports page's "🔍 SEO" tab. Search Console's own data has a ~2-3 day reporting
+// lag (Google's documented processing latency, not something this Worker can work around) — "last
+// 28 days" here means the 28 days ending 3 days ago, not today; requesting a fresher end date just
+// gets back rows of zeros for days Google hasn't finished processing yet.
+async function handleReportsSeo(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.gsc_refresh_token||!c?.gsc_site_url) return json({connected:false});
+  const token=await gscGetAccessToken(env, c);
+  if(!token) return json({connected:false, error:'Failed to refresh Google access token — try reconnecting.'});
+
+  const end=new Date(); end.setDate(end.getDate()-3);
+  const start=new Date(end); start.setDate(start.getDate()-27);
+  const fmt=d=>d.toISOString().slice(0,10);
+  const siteUrl=encodeURIComponent(c.gsc_site_url);
+
+  const query=async(dimensions, rowLimit)=>{
+    const r=await fetch(`https://www.googleapis.com/webmasters/v3/sites/${siteUrl}/searchAnalytics/query`, {
+      method:'POST', headers:{Authorization:`Bearer ${token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({startDate:fmt(start), endDate:fmt(end), dimensions, rowLimit:rowLimit||1000})
+    });
+    const data=await r.json().catch(()=>({}));
+    return r.ok?(data.rows||[]):[];
+  };
+
+  const [dailyRows, queryRows, pageRows]=await Promise.all([query(['date']), query(['query'],10), query(['page'],10)]);
+
+  const daily=dailyRows.map(row=>({
+    date:row.keys[0], clicks:row.clicks||0, impressions:row.impressions||0,
+    ctr:Math.round((row.ctr||0)*1000)/10, position:Math.round((row.position||0)*10)/10,
+  }));
+  const totalClicks=daily.reduce((s,d)=>s+d.clicks,0);
+  const totalImpressions=daily.reduce((s,d)=>s+d.impressions,0);
+  const avgPosition=totalImpressions?Math.round((dailyRows.reduce((s,r)=>s+(r.position||0)*(r.impressions||0),0)/totalImpressions)*10)/10:0;
+
+  const shapeRow=(row,keyName)=>({[keyName]:row.keys[0], clicks:row.clicks||0, impressions:row.impressions||0, ctr:Math.round((row.ctr||0)*1000)/10, position:Math.round((row.position||0)*10)/10});
+
+  return json({
+    connected:true, site_url:c.gsc_site_url, range:{start:fmt(start), end:fmt(end)},
+    totals:{clicks:totalClicks, impressions:totalImpressions, ctr:totalImpressions?Math.round((totalClicks/totalImpressions)*1000)/10:0, avg_position:avgPosition},
+    daily,
+    top_queries:queryRows.map(row=>shapeRow(row,'query')),
+    top_pages:pageRows.map(row=>shapeRow(row,'page')),
+  });
 }
 
 // Fires a WhatsApp template straight through Meta's Graph API (same shape as
@@ -2663,6 +2849,14 @@ async function syncShopifyOrderToEcom(env, c, order, status){
     customer_phone:order.phone||order.shipping_address?.phone||order.customer?.phone||'',
     order_date:(order.created_at||'').slice(0,10),
     items:(order.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
+    // Structured alongside the flattened `items` text above rather than replacing it — `items` is
+    // what ecom.html's Orders table already renders. This is purely additive, for the Reports
+    // page's Shopify top-products breakdown (handleShopifyAnalytics below), which needs real
+    // per-line price/qty/sku that the flattened string doesn't carry. Requires a `line_items_json`
+    // column (Long text) on the orders table, same "add this column" pattern as shopify_order_id —
+    // see SETUP.md. Orders synced before this column existed have no line_items_json, so
+    // per-product analytics only cover orders from here on; an accepted reporting-only gap.
+    line_items_json:JSON.stringify((order.line_items||[]).map(li=>({title:li.title||'', quantity:Number(li.quantity)||0, price:Number(li.price)||0, sku:li.sku||''}))),
     total:order.total_price||0, currency:order.currency||'',
     delivery_address:[order.shipping_address?.address1, order.shipping_address?.city, order.shipping_address?.country].filter(Boolean).join(', '),
   };
@@ -2674,6 +2868,153 @@ async function syncShopifyOrderToEcom(env, c, order, status){
     const data=await r.json().catch(()=>({}));
     await reportOpsError(env, 'syncShopifyOrderToEcom', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId:c.Id, shopifyOrderId:fields.shopify_order_id, tableId});
   }
+}
+
+// Shopify Analytics — Reports page's "🛍️ Shopify" tab (and reused by handleReportsProducts below
+// for its top-products section, so that route doesn't re-scan the same orders table twice).
+// Revenue trend/AOV/order count come from the orders table's `total` (always present, any order).
+// Top products prefer the structured `line_items_json` (see syncShopifyOrderToEcom above) and
+// fall back to best-effort parsing the older flattened `items` text ("2x Product Name" lines) for
+// orders synced before that column existed — quantity-only for those, since the flattened string
+// never carried a per-line price. Cart abandonment rate comes from the separate
+// shopify_checkouts table (nudge_sent/completed lifecycle already tracked by
+// sweepAbandonedShopifyCheckouts).
+async function handleShopifyAnalytics(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const tableId=await ecomResolveTable(env, payload.cid, 'orders');
+  if(!tableId) return json({connected:!!c.shopify_shop_domain, months:[], order_count:0, total_revenue:0, aov:0, top_products:[], abandonment_rate:0});
+
+  const months=6;
+  const since=new Date(); since.setMonth(since.getMonth()-(months-1)); since.setDate(1);
+  const sinceStr=since.toISOString().slice(0,10);
+
+  let orders=[];
+  for(let page=1; page<=10; page++){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})~and(order_date,gte,${sinceStr})`)}&limit=200&offset=${(page-1)*200}&fields=order_date,total,currency,items,line_items_json,status`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const list=data?.list||[];
+    orders=orders.concat(list);
+    if(list.length<200) break;
+  }
+
+  const byMonth={}, productTotals={};
+  let totalRevenue=0, orderCount=0;
+  orders.forEach(o=>{
+    if(String(o.status||'').toLowerCase()==='cancelled') return;
+    orderCount++;
+    const month=String(o.order_date||'').slice(0,7);
+    const total=Number(o.total)||0;
+    totalRevenue+=total;
+    if(month){ if(!byMonth[month]) byMonth[month]={key:month, orders:0, revenue:0}; byMonth[month].orders++; byMonth[month].revenue+=total; }
+    let lineItems=null;
+    if(o.line_items_json){ try{ lineItems=JSON.parse(o.line_items_json); }catch(e){} }
+    if(Array.isArray(lineItems)&&lineItems.length){
+      lineItems.forEach(li=>{
+        const title=li.title||'Unknown';
+        if(!productTotals[title]) productTotals[title]={title, quantity:0, revenue:0};
+        productTotals[title].quantity+=Number(li.quantity)||0;
+        productTotals[title].revenue+=(Number(li.price)||0)*(Number(li.quantity)||0);
+      });
+    }else if(o.items){
+      String(o.items).split(',').map(s=>s.trim()).filter(Boolean).forEach(part=>{
+        const m=part.match(/^(\d+)x\s+(.+)$/i);
+        if(!m) return;
+        const title=m[2].trim();
+        if(!productTotals[title]) productTotals[title]={title, quantity:0, revenue:0};
+        productTotals[title].quantity+=parseInt(m[1])||0;
+      });
+    }
+  });
+
+  let totalCheckouts=0, completedCheckouts=0;
+  try{
+    let checkouts=[];
+    for(let page=1; page<=10; page++){
+      const r=await ncFetch(env, `api/v2/tables/${SHOPIFY_CHECKOUTS_TABLE}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})~and(created_at,gte,${since.toISOString()})`)}&limit=200&offset=${(page-1)*200}&fields=completed`);
+      if(!r.ok) break;
+      const data=await r.json().catch(()=>({}));
+      const list=data?.list||[];
+      checkouts=checkouts.concat(list);
+      if(list.length<200) break;
+    }
+    totalCheckouts=checkouts.length;
+    completedCheckouts=checkouts.filter(ch=>ch.completed==='Yes').length;
+  }catch(e){}
+
+  return json({
+    connected:!!c.shopify_shop_domain,
+    currency:orders[0]?.currency||'',
+    months:Object.values(byMonth).sort((a,b)=>a.key.localeCompare(b.key)),
+    order_count:orderCount,
+    total_revenue:Math.round(totalRevenue*100)/100,
+    aov:orderCount?Math.round((totalRevenue/orderCount)*100)/100:0,
+    top_products:Object.values(productTotals).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
+    total_checkouts:totalCheckouts, completed_checkouts:completedCheckouts,
+    abandonment_rate:totalCheckouts?Math.round(((totalCheckouts-completedCheckouts)/totalCheckouts)*1000)/10:0,
+  });
+}
+
+// Product & Service Performance — Reports page's "🧩 Product" tab. Two independent sources,
+// whichever modules a client actually has: the Appointment Booking module's own service catalog
+// (bookings grouped by service_id, only `confirmed`/`completed` counted as real revenue —
+// `requested`/`cancelled`/`no_show` never converted) joined against each service's currently-
+// listed price, and Shopify's top-products (reuses handleShopifyAnalytics' own aggregation
+// wholesale rather than re-scanning the same orders table). Revenue-per-service is
+// booked-count × list price — an approximation (assumes every booking went at the listed price;
+// nothing tracks a per-booking custom/discounted amount anywhere in this module), same "cheap and
+// predictable, documented limitation" tradeoff used elsewhere in this file.
+async function handleReportsProducts(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+
+  const services=[];
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  const servicesTable=apptResolveTable(c, 'services');
+  if(bookingsTable && servicesTable){
+    const svcR=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${payload.cid})&limit=200&fields=Id,name,price,currency`);
+    const svcData=await svcR.json().catch(()=>({}));
+    const svcById={};
+    (svcData?.list||[]).forEach(s=>{ svcById[String(s.Id)]={name:s.name, price:Number(s.price)||0, currency:s.currency||''}; });
+
+    let bookings=[];
+    for(let page=1; page<=10; page++){
+      const r=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&limit=200&offset=${(page-1)*200}&fields=service_id,service_name,status`);
+      if(!r.ok) break;
+      const data=await r.json().catch(()=>({}));
+      const list=data?.list||[];
+      bookings=bookings.concat(list);
+      if(list.length<200) break;
+    }
+    const byService={};
+    bookings.forEach(b=>{
+      const key=b.service_id||b.service_name||'(unspecified)';
+      if(!byService[key]) byService[key]={service_id:b.service_id||'', name:b.service_name||svcById[b.service_id]?.name||'Unknown', bookings:0, booked:0};
+      byService[key].bookings++;
+      if(b.status==='confirmed'||b.status==='completed') byService[key].booked++;
+    });
+    Object.values(byService).forEach(row=>{
+      const svc=svcById[row.service_id];
+      row.price=svc?.price||0; row.currency=svc?.currency||'';
+      row.revenue=Math.round(row.booked*row.price*100)/100;
+      services.push(row);
+    });
+    services.sort((a,b)=>b.revenue-a.revenue||b.bookings-a.bookings);
+  }
+
+  let topProducts=[], shopifyConnected=false;
+  try{
+    const shopifyData=await (await handleShopifyAnalytics(request, env)).json();
+    topProducts=shopifyData.top_products||[];
+    shopifyConnected=!!shopifyData.connected;
+  }catch(e){}
+
+  return json({services, top_products:topProducts, shopify_connected:shopifyConnected});
 }
 
 // Webhook receiver — server-to-server from Shopify, so auth is the HMAC header, not a session.
@@ -7581,6 +7922,15 @@ export default {
       else if(url.pathname==='/meta/capi/status' && request.method==='GET'){ res=await handleMetaCapiStatus(request, env); }
       else if(url.pathname==='/meta/ads/spend-trend' && request.method==='GET'){ res=await handleMetaAdsSpendTrend(request, env); }
       else if(url.pathname==='/meta/capi/log-trend' && request.method==='GET'){ res=await handleMetaCapiLogTrend(request, env); }
+      else if(url.pathname==='/reports/whatsapp' && request.method==='GET'){ res=await handleReportsWhatsapp(request, env); }
+      else if(url.pathname==='/reports/products' && request.method==='GET'){ res=await handleReportsProducts(request, env); }
+      else if(url.pathname==='/reports/seo' && request.method==='GET'){ res=await handleReportsSeo(request, env); }
+      else if(url.pathname==='/shopify/analytics' && request.method==='GET'){ res=await handleShopifyAnalytics(request, env); }
+      else if(url.pathname==='/gsc/oauth/start' && request.method==='POST'){ res=await handleGscOauthStart(request, env); }
+      else if(url.pathname==='/gsc/oauth/callback' && request.method==='GET'){ res=await handleGscOauthCallback(request, env); }
+      else if(url.pathname==='/gsc/sites' && request.method==='GET'){ res=await handleGscSitesList(request, env); }
+      else if(url.pathname==='/gsc/site' && request.method==='POST'){ res=await handleGscSiteSave(request, env); }
+      else if(url.pathname==='/gsc/disconnect' && request.method==='POST'){ res=await handleGscDisconnect(request, env); }
       else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }
