@@ -1435,34 +1435,6 @@ const TODAY = new Date().toISOString().slice(0,10);
       </div>
     </div>
 
-    <!-- Close modal for removing a lead from Human Deals — Won and Spam are now one-click buttons
-         directly on the card (see humanDealCard), so this only covers the remaining, less common
-         outcomes. Opened via the card's ✕ icon. -->
-    <div class="modal" id="modalHdRemove" style="width:360px">
-      <span class="modal-drag"></span>
-      <div class="modal-hd"><div class="modal-title">Close this deal</div><button class="icon-btn" onclick="closeModal('modalHdRemove')">✕</button></div>
-      <div class="modal-body">
-        <div style="font-size:12.5px;color:var(--muted);margin-bottom:14px">This clears it from the Human Deals queue. What happened?</div>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <button class="btn btn-secondary" onclick="removeHumanDeal('Released')">🤖 Release back to bot</button>
-          <button class="btn btn-secondary" onclick="removeHumanDeal('Lost')">❌ Lost</button>
-          <button class="btn btn-secondary" onclick="removeHumanDeal('No-response')">🔕 No response</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Coach panel — surfaces the engine's own Sentiment/LastObjectionCategory signals plus the
-         matching Settings → Objection Playbook response and a recent timeline, so a rep handling a
-         Human Deals chat gets in-the-moment coaching instead of having to notice the drift
-         themselves. Read-only data, one action (send the approved response straight to the chat). -->
-    <div class="modal" id="modalCoach" style="width:420px">
-      <span class="modal-drag"></span>
-      <div class="modal-hd"><div class="modal-title">🧭 Coach</div><button class="icon-btn" onclick="closeModal('modalCoach')">✕</button></div>
-      <div class="modal-body" id="coachBody">
-        <div style="font-size:13px;color:var(--muted)">Loading…</div>
-      </div>
-    </div>
-
     <!-- KNOWLEDGE BASE -->
     <div class="page hidden" id="pageKnowledgebase">
       <div class="page-pad">
@@ -1598,59 +1570,6 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div class="page-pad" id="hospContent">
         <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
       </div>
-    </div>
-
-    <!-- Hospitality: Booking modal -->
-    <div class="modal" id="modalHospBooking" style="width:520px">
-      <span class="modal-drag"></span>
-      <div class="modal-hd"><div class="modal-title" id="hospBookingModalTitle">New Booking</div><button class="icon-btn" onclick="closeModal('modalHospBooking')">✕</button></div>
-      <div class="modal-body">
-        <input type="hidden" id="hospBookingId">
-        <div class="form-group"><label class="form-label">Unit</label><select class="form-input" id="hospBookingUnitId" onchange="hospOnBookingUnitChange()"></select></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group"><label class="form-label">Guest Name</label><input class="form-input" id="hospBookingGuestName"></div>
-          <div class="form-group"><label class="form-label">Guest Phone</label><input class="form-input" id="hospBookingGuestPhone"></div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group"><label class="form-label">Check-in</label><input class="form-input" type="date" id="hospBookingCheckIn" onchange="hospRecalcBookingTotal()"></div>
-          <div class="form-group"><label class="form-label">Check-out</label><input class="form-input" type="date" id="hospBookingCheckOut" onchange="hospRecalcBookingTotal()"></div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group"><label class="form-label">Adults</label><input class="form-input" type="number" min="1" id="hospBookingAdults" value="1"></div>
-          <div class="form-group"><label class="form-label">Children</label><input class="form-input" type="number" min="0" id="hospBookingChildren" value="0"></div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-          <div class="form-group"><label class="form-label">Rate/Night</label><input class="form-input" type="number" min="0" id="hospBookingRate" onchange="hospRecalcBookingTotal()"></div>
-          <div class="form-group"><label class="form-label">Total</label><input class="form-input" type="number" min="0" id="hospBookingTotal"></div>
-          <div class="form-group"><label class="form-label">Deposit</label><input class="form-input" type="number" min="0" id="hospBookingDeposit" value="0"></div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group"><label class="form-label">Currency</label><input class="form-input" id="hospBookingCurrency" value="INR" maxlength="6"></div>
-          <div class="form-group"><label class="form-label">Status</label>
-            <select class="form-input" id="hospBookingStatus">
-              <option value="inquiry">Inquiry</option>
-              <option value="confirmed">Confirmed</option>
-              <option value="checked_in">Checked In</option>
-              <option value="checked_out">Checked Out</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-          </div>
-        </div>
-        <div id="hospBookingNightsHint" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
-        <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="hospBookingNotes" rows="2"></textarea></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-primary" onclick="saveHospBooking()">Save</button>
-        <span class="save-msg" id="hospBookingSaveMsg"></span>
-        <button class="btn btn-secondary" onclick="closeModal('modalHospBooking')">Cancel</button>
-      </div>
-    </div>
-
-    <!-- Hospitality: day popover (block/unblock a date + set a rate override) -->
-    <div class="modal" id="modalHospDay" style="width:340px">
-      <span class="modal-drag"></span>
-      <div class="modal-hd"><div class="modal-title" id="hospDayModalTitle">Day</div><button class="icon-btn" onclick="closeModal('modalHospDay')">✕</button></div>
-      <div class="modal-body" id="hospDayModalBody"></div>
     </div>
 
     <!-- CHATS -->
@@ -2791,6 +2710,88 @@ const TODAY = new Date().toISOString().slice(0,10);
 
 <!-- OVERLAY -->
 <div id="overlay" onclick="closeAllModals()"></div>
+
+<!-- Close modal for removing a lead from Human Deals — Won and Spam are now one-click buttons
+     directly on the card (see humanDealCard), so this only covers the remaining, less common
+     outcomes. Opened via the card's ✕ icon. -->
+<div class="modal" id="modalHdRemove" style="width:360px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title">Close this deal</div><button class="icon-btn" onclick="closeModal('modalHdRemove')">✕</button></div>
+  <div class="modal-body">
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:14px">This clears it from the Human Deals queue. What happened?</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button class="btn btn-secondary" onclick="removeHumanDeal('Released')">🤖 Release back to bot</button>
+      <button class="btn btn-secondary" onclick="removeHumanDeal('Lost')">❌ Lost</button>
+      <button class="btn btn-secondary" onclick="removeHumanDeal('No-response')">🔕 No response</button>
+    </div>
+  </div>
+</div>
+
+<!-- Coach panel — surfaces the engine's own Sentiment/LastObjectionCategory signals plus the
+     matching Settings → Objection Playbook response and a recent timeline, so a rep handling a
+     Human Deals chat gets in-the-moment coaching instead of having to notice the drift
+     themselves. Read-only data, one action (send the approved response straight to the chat). -->
+<div class="modal" id="modalCoach" style="width:420px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title">🧭 Coach</div><button class="icon-btn" onclick="closeModal('modalCoach')">✕</button></div>
+  <div class="modal-body" id="coachBody">
+    <div style="font-size:13px;color:var(--muted)">Loading…</div>
+  </div>
+</div>
+
+<!-- Hospitality: Booking modal -->
+<div class="modal" id="modalHospBooking" style="width:520px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="hospBookingModalTitle">New Booking</div><button class="icon-btn" onclick="closeModal('modalHospBooking')">✕</button></div>
+  <div class="modal-body">
+    <input type="hidden" id="hospBookingId">
+    <div class="form-group"><label class="form-label">Unit</label><select class="form-input" id="hospBookingUnitId" onchange="hospOnBookingUnitChange()"></select></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Guest Name</label><input class="form-input" id="hospBookingGuestName"></div>
+      <div class="form-group"><label class="form-label">Guest Phone</label><input class="form-input" id="hospBookingGuestPhone"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Check-in</label><input class="form-input" type="date" id="hospBookingCheckIn" onchange="hospRecalcBookingTotal()"></div>
+      <div class="form-group"><label class="form-label">Check-out</label><input class="form-input" type="date" id="hospBookingCheckOut" onchange="hospRecalcBookingTotal()"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Adults</label><input class="form-input" type="number" min="1" id="hospBookingAdults" value="1"></div>
+      <div class="form-group"><label class="form-label">Children</label><input class="form-input" type="number" min="0" id="hospBookingChildren" value="0"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Rate/Night</label><input class="form-input" type="number" min="0" id="hospBookingRate" onchange="hospRecalcBookingTotal()"></div>
+      <div class="form-group"><label class="form-label">Total</label><input class="form-input" type="number" min="0" id="hospBookingTotal"></div>
+      <div class="form-group"><label class="form-label">Deposit</label><input class="form-input" type="number" min="0" id="hospBookingDeposit" value="0"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Currency</label><input class="form-input" id="hospBookingCurrency" value="INR" maxlength="6"></div>
+      <div class="form-group"><label class="form-label">Status</label>
+        <select class="form-input" id="hospBookingStatus">
+          <option value="inquiry">Inquiry</option>
+          <option value="confirmed">Confirmed</option>
+          <option value="checked_in">Checked In</option>
+          <option value="checked_out">Checked Out</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </div>
+    </div>
+    <div id="hospBookingNightsHint" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+    <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="hospBookingNotes" rows="2"></textarea></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" onclick="saveHospBooking()">Save</button>
+    <span class="save-msg" id="hospBookingSaveMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalHospBooking')">Cancel</button>
+  </div>
+</div>
+
+<!-- Hospitality: day popover (block/unblock a date + set a rate override) -->
+<div class="modal" id="modalHospDay" style="width:340px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="hospDayModalTitle">Day</div><button class="icon-btn" onclick="closeModal('modalHospDay')">✕</button></div>
+  <div class="modal-body" id="hospDayModalBody"></div>
+</div>
+
 <!-- TA: PACKAGE MODAL -->
   <div class="modal" id="modalPkg" style="width:580px">
     <span class="modal-drag"></span>

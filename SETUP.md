@@ -2786,6 +2786,30 @@ counts (which come from `allLeads`, not this log).
   Lead, Cost/Booking) and the monthly table show spend-dependent figures as `—` rather than hiding
   the whole report when `ads_read` isn't connected.
 
+## Frontend modal convention — every `.modal` must be a direct child of `<body>`
+Bug fixed: several popups across the app (the Human Deals "close this deal" outcome modal, the
+Coach panel, and both Hospitality Booking/day-picker modals) were completely unclickable — the
+modal visibly opened, but clicking anything inside it did nothing, because `#overlay` (the
+dimmed backdrop, `onclick="closeAllModals()"`) was silently intercepting every click instead.
+
+Root cause: `#overlay` and the ~30 working `.modal` divs all live as **direct children of
+`<body>`**, sibling to `#app`, so `#overlay`'s `z-index:100` vs. a modal's `z-index:101` decide
+stacking directly. The four broken modals, though, were physically written *inside* `#app`/
+`#pages` — nested next to the page content they belonged to (Human Deals, Hospitality) instead of
+down with the rest of the top-level modal markup. Once a modal is nested inside another element,
+its `z-index:101` only competes against siblings *within that nested container's own stacking
+context* — compared against `#overlay`, the entire `#app`/`#pages` subtree paints as one unit at
+whatever (unindexed) level its container sits at, which loses to `#overlay`'s explicit
+`z-index:100` regardless of the modal's own `z-index` value deep inside it. Confirmed via a
+headless-browser click test (Playwright reported "`#overlay` intercepts pointer events" on a
+trial click) rather than guessed from reading the CSS — z-index numbers alone looked correct.
+
+**Fix**: moved all four `.modal` divs (`modalHdRemove`, `modalCoach`, `modalHospBooking`,
+`modalHospDay`) to be direct children of `<body>`, immediately after `#overlay`, matching where
+every other modal already lives. **Any new modal added in the future must go there too** — not
+nested inside a `.page` div, however locally convenient that seems while writing it — or it will
+silently reproduce this exact bug.
+
 ## Conversation Engine (`POST /engine/webhook/<secret>`) — replaces the n8n engine for every industry
 Every client, regardless of `industry`, now runs on this one Worker endpoint instead of n8n — it
 does the entire job the external n8n workflow (`engine.json`, "Leadvyne · Engine v3" — not in this
