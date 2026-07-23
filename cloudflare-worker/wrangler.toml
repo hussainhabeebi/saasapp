@@ -44,6 +44,15 @@ database_id = "eeb0ce10-dd0d-4e5a-92c1-d9ebe485ea52"
 binding = "HOSPITALITY_MEDIA"
 bucket_name = "leadvyne-hospitality-media"
 
+# R2 — object storage for the Ecommerce module's category photos (SETUP.md "Ecommerce
+# categories"), same rationale as HOSPITALITY_MEDIA above (a dedicated bucket per media domain,
+# rather than one shared bucket, matches that existing precedent). One-time setup:
+#   1. wrangler r2 bucket create leadvyne-ecom-category-media
+#   2. No id/paste-in needed — R2 buckets are addressed by name, unlike D1's UUID.
+[[r2_buckets]]
+binding = "ECOM_CATEGORY_MEDIA"
+bucket_name = "leadvyne-ecom-category-media"
+
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
 [vars]

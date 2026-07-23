@@ -108,6 +108,14 @@ tbody tr:hover{background:var(--bg)}
 .modal-grid .s-sec{margin-bottom:0}
 textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 
+/* CATEGORY MEDIA SLOTS */
+.cat-media-inline{display:flex;gap:5px}
+.cat-media-slot{width:36px;height:36px;border:1.5px dashed var(--ls);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;overflow:hidden;background:var(--bg);font-size:16px;color:var(--muted);flex-shrink:0}
+.cat-media-slot img{width:100%;height:100%;object-fit:cover}
+.cat-media-remove{position:absolute;top:-1px;right:-1px;background:rgba(0,0,0,.65);color:#fff;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;cursor:pointer;line-height:1;padding:0}
+.cat-name-input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);min-width:160px}
+.cat-name-input:focus{outline:none;border-color:var(--accent);background:#fff}
+
 /* LOADING */
 .spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -127,6 +135,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 
 <div id="tabs">
   <button class="tab active" data-tab="products" onclick="showTab('products')">📦 Products</button>
+  <button class="tab" data-tab="categories" onclick="showTab('categories')">🏷️ Categories</button>
   <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
   <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
@@ -166,6 +175,32 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         </tbody>
       </table>
     </div>
+  </div>
+</div>
+
+<!-- CATEGORIES TAB — each category can carry up to 3 photos, auto-sent to chat the first time a
+     customer's message names that category (separate from and in addition to the existing
+     per-product photo sent when a specific product is identified — that flow is unchanged).
+     Same directly-editable-table pattern as dashboard.html's Hospitality Units page: click a
+     field to edit, it saves on blur; click an empty photo slot to upload. No Add/Edit popup. -->
+<div id="tabCategories" class="page">
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">Categories</div>
+      <div class="card-actions">
+        <button class="save-btn" onclick="addCategoryRow()">+ Add Category</button>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:12px">Give a category its own photos — the bot sends them once a customer's message names that category (e.g. "show me your bags"), separate from the photo already sent when a specific product is identified. Click a name to edit it; click a photo slot to upload (max 9 MB each).</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Photos</th><th>Actions</th></tr></thead>
+        <tbody id="categoriesTbody">
+          <tr class="loading-row"><td colspan="3"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <input type="file" id="categoryMediaFileInput" accept="image/*" style="display:none" onchange="onCategoryMediaFileChosen(this)">
   </div>
 </div>
 
@@ -368,7 +403,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     <div class="modal-grid">
       <div class="s-sec"><span class="s-lbl">Name *</span><input class="s-input" id="pmName" type="text"></div>
       <div class="s-sec"><span class="s-lbl">SKU</span><input class="s-input" id="pmSku" type="text"></div>
-      <div class="s-sec"><span class="s-lbl">Category</span><input class="s-input" id="pmCategory" type="text"></div>
+      <div class="s-sec"><span class="s-lbl">Category</span><select class="s-input" id="pmCategory" onchange="onCategorySelectChange(this)"></select></div>
       <div class="s-sec"><span class="s-lbl">Color</span><input class="s-input" id="pmColor" type="text" placeholder="e.g. Black"></div>
       <div class="s-sec"><span class="s-lbl">Size</span><input class="s-input" id="pmSize" type="text" placeholder="e.g. M, 42, 10ml"></div>
       <div class="s-sec"><span class="s-lbl">Price</span><input class="s-input" id="pmPrice" type="number" step="0.01"></div>
@@ -501,6 +536,7 @@ let columnMaps = { products: {}, orders: {} };
 let sheetHeaders = { products: [], orders: [] };
 let allProducts = [];
 let selectedProductIds = new Set();
+let allCategories = [];
 let allOrders = [];
 const ORDER_STATUS_OPTIONS = ['pending','received','processing','shipped','delivered','cancelled'];
 
@@ -596,6 +632,7 @@ async function init() {
   renderShopifyLog();
 
   loadProducts();
+  loadCategories();
   loadOrders();
 }
 
@@ -627,6 +664,7 @@ function renderShopifyLog() {
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.getElementById('tabProducts').classList.toggle('active', name === 'products');
+  document.getElementById('tabCategories').classList.toggle('active', name === 'categories');
   document.getElementById('tabOrders').classList.toggle('active', name === 'orders');
   document.getElementById('tabShopify').classList.toggle('active', name === 'shopify');
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
@@ -765,6 +803,7 @@ function openEditProductModal(id) {
   document.getElementById('pmId').value = p.Id;
   document.getElementById('pmName').value = p.name || '';
   document.getElementById('pmSku').value = p.sku || '';
+  ensureCategoryOptionExists(p.category);
   document.getElementById('pmCategory').value = p.category || '';
   document.getElementById('pmColor').value = p.color || '';
   document.getElementById('pmSize').value = p.size || '';
@@ -1031,6 +1070,185 @@ async function confirmImport() {
   msg.textContent = failed ? `Done — ${done} imported, ${failed} failed` : `✓ Imported ${done} product(s)`;
   loadProducts();
   if (!failed) setTimeout(closeImportModal, 1200);
+}
+
+// ── CATEGORIES ──────────────────────────────────────
+// A proper entity for the free-text `category` field products already had (see PRODUCT_FIELDS
+// above) — D1-backed (env.DB on the Worker), not NocoDB, since this is genuinely new structured
+// data with no existing NocoDB reader. Same directly-editable pattern as dashboard.html's
+// Hospitality Units page: no Add/Edit popup, every field autosaves on blur/change.
+const CATEGORY_MEDIA_SLOTS = ['image1', 'image2', 'image3'];
+async function loadCategories() {
+  const tbody = document.getElementById('categoriesTbody');
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/categories?client_id=${encodeURIComponent(clientId)}`);
+    const data = await r.json();
+    allCategories = data.list || [];
+    renderCategoriesTable();
+    populateCategorySelect();
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="3" class="loading-row">Error: ${e.message}</td></tr>`;
+  }
+}
+function categoryMediaCellHtml(cat) {
+  const slots = CATEGORY_MEDIA_SLOTS.map((slot, i) => {
+    const url = cat['image_url_' + (i+1)];
+    if (url) return `<div class="cat-media-slot" title="Photo ${i+1}"><img src="${escAttr(url)}"><button class="cat-media-remove" onclick="event.stopPropagation();removeCategoryMedia(${cat.Id},'${slot}')">✕</button></div>`;
+    return `<div class="cat-media-slot" onclick="triggerCategoryMediaUpload(${cat.Id},'${slot}')" title="Photo ${i+1} — max 9MB">+</div>`;
+  }).join('');
+  return `<div class="cat-media-inline" data-cat-media="${cat.Id}">${slots}</div>`;
+}
+function renderCategoriesTable() {
+  const tbody = document.getElementById('categoriesTbody');
+  if (!allCategories.length) {
+    tbody.innerHTML = `<tr><td colspan="3"><div class="empty-state"><div class="empty-icon">🏷️</div>No categories yet. Click "+ Add Category" to create your first one.</div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = allCategories.map(cat => `
+    <tr data-cat-row="${cat.Id}">
+      <td><input class="cat-name-input" value="${escAttr(cat.name)}" onblur="onCategoryNameChange(${cat.Id},this)" onkeydown="if(event.key==='Enter')this.blur()"></td>
+      <td>${categoryMediaCellHtml(cat)}</td>
+      <td><button class="icon-btn danger" onclick="deleteCategory(${cat.Id})" title="Delete">🗑</button></td>
+    </tr>`).join('');
+}
+async function addCategoryRow() {
+  const name = prompt('Category name:');
+  if (!name || !name.trim()) return;
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/categories`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ client_id: clientId, name: name.trim() })
+    });
+    const created = await r.json();
+    if (!r.ok) throw new Error(created.error || 'HTTP ' + r.status);
+    allCategories.push(created);
+    renderCategoriesTable();
+    populateCategorySelect();
+  } catch(e) { alert('Failed to add category: ' + e.message); }
+}
+async function onCategoryNameChange(id, el) {
+  const cat = allCategories.find(c => c.Id === id);
+  if (!cat) return;
+  const value = el.value.trim();
+  if (!value) { el.value = cat.name; return; }
+  if (cat.name === value) return;
+  const prev = cat.name;
+  cat.name = value;
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/categories`, {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ client_id: clientId, Id: id, name: value })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    populateCategorySelect();
+  } catch(e) {
+    cat.name = prev; el.value = prev;
+    alert('Failed to save: ' + e.message);
+  }
+}
+async function deleteCategory(id) {
+  if (!confirm('Delete this category? Its photos will be removed too.')) return;
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/categories`, {
+      method: 'DELETE', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ client_id: clientId, Id: id })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    allCategories = allCategories.filter(c => c.Id !== id);
+    renderCategoriesTable();
+    populateCategorySelect();
+  } catch(e) { alert('Failed to delete: ' + e.message); }
+}
+function triggerCategoryMediaUpload(categoryId, slot) {
+  const input = document.getElementById('categoryMediaFileInput');
+  input.dataset.categoryId = categoryId;
+  input.dataset.slot = slot;
+  input.click();
+}
+async function onCategoryMediaFileChosen(input) {
+  const categoryId = Number(input.dataset.categoryId);
+  const slot = input.dataset.slot;
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  if (file.size > 9*1024*1024) { alert('That file is larger than 9 MB — please choose a smaller one.'); return; }
+  const cell = document.querySelector(`[data-cat-media="${categoryId}"]`);
+  if (cell) cell.style.opacity = '.5';
+  try {
+    const fd = new FormData();
+    fd.append('client_id', clientId);
+    fd.append('category_id', categoryId);
+    fd.append('slot', slot);
+    fd.append('file', file);
+    const r = await fetch(`${WORKER_BASE}/ecom/categories/media`, { method: 'POST', body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    const cat = allCategories.find(c => c.Id === categoryId);
+    const slotIdx = CATEGORY_MEDIA_SLOTS.indexOf(slot) + 1;
+    if (cat) cat['image_url_' + slotIdx] = data.url;
+    if (cell) cell.outerHTML = categoryMediaCellHtml(cat);
+  } catch(e) {
+    if (cell) cell.style.opacity = '';
+    alert('Upload failed: ' + e.message);
+  }
+}
+async function removeCategoryMedia(categoryId, slot) {
+  if (!confirm('Remove this photo?')) return;
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/categories/media`, {
+      method: 'DELETE', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ client_id: clientId, category_id: categoryId, slot })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const cat = allCategories.find(c => c.Id === categoryId);
+    const slotIdx = CATEGORY_MEDIA_SLOTS.indexOf(slot) + 1;
+    if (cat) cat['image_url_' + slotIdx] = null;
+    const cell = document.querySelector(`[data-cat-media="${categoryId}"]`);
+    if (cell) cell.outerHTML = categoryMediaCellHtml(cat);
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+// Adds a one-off <option> for a legacy category string (typed freely before this dropdown
+// existed) if it doesn't match any managed category — without this, setting a <select>'s .value
+// to a string with no matching <option> silently selects nothing, and saving the product would
+// then overwrite its real category with blank. Called from openEditProductModal right before it
+// sets pmCategory's value.
+function ensureCategoryOptionExists(value) {
+  const sel = document.getElementById('pmCategory');
+  if (!sel || !value) return;
+  if ([...sel.options].some(o => o.value === value)) return;
+  const opt = document.createElement('option');
+  opt.value = value; opt.textContent = value + ' (not in Categories list)';
+  sel.insertBefore(opt, sel.firstChild);
+}
+// Populates the Add/Edit Product modal's Category dropdown — replaces what used to be a plain
+// free-text input. Existing products keep whatever string they already had even if it doesn't
+// match any managed category (see openEditProductModal); this only changes how a category gets
+// *picked* going forward, not what's already stored.
+function populateCategorySelect() {
+  const sel = document.getElementById('pmCategory');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— None —</option>' +
+    allCategories.map(c => `<option value="${escAttr(c.name)}">${escAttr(c.name)}</option>`).join('') +
+    '<option value="__new__">+ Add new category…</option>';
+  ensureCategoryOptionExists(current);
+  sel.value = current || '';
+}
+async function onCategorySelectChange(sel) {
+  if (sel.value !== '__new__') return;
+  const name = prompt('New category name:');
+  if (!name || !name.trim()) { sel.value = ''; return; }
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/categories`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ client_id: clientId, name: name.trim() })
+    });
+    const created = await r.json();
+    if (!r.ok) throw new Error(created.error || 'HTTP ' + r.status);
+    allCategories.push(created);
+    populateCategorySelect();
+    sel.value = created.name;
+  } catch(e) { alert('Failed to add category: ' + e.message); sel.value = ''; }
 }
 
 // ── ORDERS ──────────────────────────────────────

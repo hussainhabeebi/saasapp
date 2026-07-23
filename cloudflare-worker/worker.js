@@ -3988,6 +3988,168 @@ async function handleEcomDelete(request, env, kind){
   return json({deleted, requested:ids.length});
 }
 
+/* ── Ecommerce categories (SETUP.md "Ecommerce categories") — a proper entity for the
+   free-text `category` field products already had, so a category can carry its own photos and
+   get auto-sent to chat once a customer names it (engineMaybeSendEcomCategoryMedia below) —
+   separate from and in addition to the existing per-product image-on-enquiry send. D1-backed
+   (env.DB), not NocoDB: a genuinely new data shape with no existing NocoDB reader, same reasoning
+   as the Hospitality module's units/bookings. Same client_id-based auth as the rest of /ecom/*
+   (ecom.html has no session token to send) — not requireSession-gated, matching this file's own
+   existing (weaker, already-accepted) trust model rather than introducing a second one. ── */
+async function handleEcomCategoriesList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=? ORDER BY name ASC`).bind(Number(clientId)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleEcomCategoryCreate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const name=String(body.name||'').trim().slice(0,80);
+  if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const r=await env.DB.prepare(`INSERT INTO ecom_categories (client_id, name, created_at) VALUES (?,?,?)`)
+    .bind(Number(clientId), name, new Date().toISOString()).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
+}
+async function findEcomCategory(env, id){
+  return await env.DB.prepare(`SELECT * FROM ecom_categories WHERE id=?`).bind(Number(id)).first();
+}
+async function handleEcomCategoryUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEcomCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  if(body.name===undefined) return json({ok:true});
+  const name=String(body.name).trim().slice(0,80);
+  if(!name) return json({error:'name cannot be blank'},400);
+  await env.DB.prepare(`UPDATE ecom_categories SET name=? WHERE id=?`).bind(name, id).run();
+  return json({ok:true});
+}
+async function ecomCategoryDeleteAllMedia(env, clientId, categoryId){
+  for(const slot of Object.keys(ECOM_CATEGORY_MEDIA_SLOTS)){
+    for(const ext of ECOM_CATEGORY_IMAGE_EXTS){ try{ await env.ECOM_CATEGORY_MEDIA.delete(ecomCategoryMediaKey(clientId, categoryId, slot, ext)); }catch(e){} }
+  }
+}
+async function handleEcomCategoryDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEcomCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await ecomCategoryDeleteAllMedia(env, clientId, id);
+  await env.DB.prepare(`DELETE FROM ecom_category_media_sent WHERE category_id=?`).bind(id).run();
+  await env.DB.prepare(`DELETE FROM ecom_categories WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+// Up to 3 photos per category (no video slot — unlike Hospitality's units, a category is a
+// grouping concept, not a bookable thing worth a walkthrough video). R2 key extension isn't
+// tracked separately in D1, so delete/replace try every extension validation could ever have
+// accepted — an R2 delete on a nonexistent key is a harmless no-op. Mirrors
+// HOSPITALITY_MEDIA_SLOTS/hospitalityMediaKey exactly.
+const ECOM_CATEGORY_MEDIA_SLOTS={image1:'image_url_1', image2:'image_url_2', image3:'image_url_3'};
+const ECOM_CATEGORY_MEDIA_MAX_BYTES=9*1024*1024;
+const ECOM_CATEGORY_IMAGE_EXTS=['jpg','jpeg','png','webp','gif'];
+function ecomCategoryMediaKey(clientId, categoryId, slot, ext){ return `ecomcat/${clientId}/${categoryId}/${slot}.${ext}`; }
+
+async function handleEcomCategoryMediaUpload(request, env){
+  const form=await request.formData().catch(()=>null);
+  if(!form) return json({error:'multipart form data required'}, 400);
+  const clientId=String(form.get('client_id')||'');
+  const categoryId=form.get('category_id'), slot=form.get('slot'), file=form.get('file');
+  if(!clientId||!categoryId||!slot||!file) return json({error:'client_id, category_id, slot and file required'}, 400);
+  const column=ECOM_CATEGORY_MEDIA_SLOTS[slot];
+  if(!column) return json({error:'Invalid slot'}, 400);
+  const category=await findEcomCategory(env, categoryId);
+  if(!category || String(category.client_id)!==clientId) return json({error:'Not found'}, 404);
+  if(file.size>ECOM_CATEGORY_MEDIA_MAX_BYTES) return json({error:'File is too large — max 9 MB.'}, 400);
+  const mime=(file.type||'').split(';')[0];
+  if(!mime.startsWith('image/')) return json({error:'Category photos need an image file.'}, 400);
+  const ext=(mime.split('/')[1]||'').replace(/[^a-z0-9]/gi,'').toLowerCase()||'jpg';
+  const key=ecomCategoryMediaKey(clientId, categoryId, slot, ext);
+  await env.ECOM_CATEGORY_MEDIA.put(key, await file.arrayBuffer(), {httpMetadata:{contentType:mime||'application/octet-stream'}});
+  const url=`${env.WORKER_BASE_URL}/ecom/category-media/${key}`;
+  await env.DB.prepare(`UPDATE ecom_categories SET ${column}=? WHERE id=?`).bind(url, Number(categoryId)).run();
+  return json({ok:true, url, slot});
+}
+async function handleEcomCategoryMediaDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const {category_id, slot}=body;
+  if(!clientId||!category_id||!slot) return json({error:'client_id, category_id and slot required'}, 400);
+  const column=ECOM_CATEGORY_MEDIA_SLOTS[slot];
+  if(!column) return json({error:'Invalid slot'}, 400);
+  const category=await findEcomCategory(env, category_id);
+  if(!category || String(category.client_id)!==clientId) return json({error:'Not found'}, 404);
+  for(const ext of ECOM_CATEGORY_IMAGE_EXTS){ try{ await env.ECOM_CATEGORY_MEDIA.delete(ecomCategoryMediaKey(clientId, category_id, slot, ext)); }catch(e){} }
+  await env.DB.prepare(`UPDATE ecom_categories SET ${column}=NULL WHERE id=?`).bind(Number(category_id)).run();
+  return json({ok:true});
+}
+// Public, no session — same trust model as handleHospitalityMediaServe (Chatwoot/WhatsApp's own
+// media fetch and a plain <img> tag can't send an Authorization header; the key itself, keyed by
+// client+category+slot, isn't guessable).
+async function handleEcomCategoryMediaServe(env, key){
+  if(!key) return json({error:'Not found'}, 404);
+  const obj=await env.ECOM_CATEGORY_MEDIA.get(key);
+  if(!obj) return json({error:'Not found'}, 404);
+  const headers=new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set('etag', obj.httpEtag);
+  headers.set('Cache-Control','public, max-age=86400');
+  return new Response(obj.body, {headers});
+}
+
+// Auto-sends a category's photos into the chat the first time a lead's message names it —
+// simple case-insensitive substring match on the category name, same "cheap and predictable,
+// documented over/under-match tradeoff" as engineMaybeSendHospitalityMedia. Deliberately separate
+// from and never overriding the existing per-product image send (detectOrderSignal/
+// ecomResolveProduct/product.image_url, handleEngineWebhook's ecommerce block above) — only runs
+// when this turn did NOT already handle a specific product (orderHandledInline false), so a
+// customer asking about one exact item never gets a redundant category photo dump in the same
+// reply. "Once per session" means once per (lead, category) ever (ecom_category_media_sent), not
+// re-sent on every later message that happens to mention the same category again.
+async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline){
+  if(c.industry!=='ecommerce' || orderHandledInline || !userText || !resolvedLeadId || !convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=?`).bind(Number(clientId)).all();
+    const lower=userText.toLowerCase();
+    const category=(categories||[]).find(cat=>cat.name && cat.name.trim().length>=3 && lower.includes(cat.name.trim().toLowerCase()));
+    if(!category) return;
+    const already=await env.DB.prepare(`SELECT id FROM ecom_category_media_sent WHERE lead_id=? AND category_id=?`).bind(resolvedLeadId, category.id).first();
+    if(already) return;
+    const items=[
+      {url:category.image_url_1, name:'photo1.jpg'},
+      {url:category.image_url_2, name:'photo2.jpg'},
+      {url:category.image_url_3, name:'photo3.jpg'},
+    ].filter(m=>m.url);
+    if(!items.length) return;
+    let sentAny=false;
+    for(let i=0;i<items.length;i++){
+      const marker='/ecom/category-media/';
+      const idx=items[i].url.indexOf(marker);
+      if(idx===-1) continue;
+      const key=items[i].url.slice(idx+marker.length);
+      const obj=await env.ECOM_CATEGORY_MEDIA.get(key);
+      if(!obj) continue;
+      const fd=new FormData();
+      fd.append('content', i===0?`Here's our ${category.name} range 📸`:'');
+      fd.append('message_type','outgoing'); fd.append('private','false');
+      fd.append('attachments[]', await obj.blob(), items[i].name);
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok) sentAny=true;
+    }
+    if(sentAny){
+      await env.DB.prepare(`INSERT OR IGNORE INTO ecom_category_media_sent (client_id, lead_id, category_id, sent_at) VALUES (?,?,?,?)`)
+        .bind(Number(clientId), resolvedLeadId, category.id, new Date().toISOString()).run();
+    }
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendEcomCategoryMedia', e, {clientId, convId}); }
+}
+
 // Automation entry point for "order intent detected" — meant to be called by the client's own
 // conversational bot (the external n8n engine, not this repo — see SETUP.md's "Trust Signals"
 // section for why) the moment it decides a customer wants to buy, without a dashboard session:
@@ -6417,6 +6579,11 @@ async function handleEngineWebhook(request, env, secret){
     // chat, once per (lead, unit) ever (hospitality_media_sent) rather than re-sent on every
     // later message that happens to mention the same unit again.
     await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText);
+    // Ecommerce categories (migrations/0012_ecom_categories.sql) — separate from and never
+    // overriding the per-product image send above (orderHandledInline gates it out when a
+    // specific product was already handled this turn); see engineMaybeSendEcomCategoryMedia's own
+    // comment for the full split.
+    await engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline);
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
     // background promise left running past the returned Response risks being cut off mid-flight.
@@ -7951,6 +8118,12 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='POST'){ res=await handleEcomCreate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
+      else if(url.pathname==='/ecom/categories' && request.method==='GET'){ res=await handleEcomCategoriesList(request, env); }
+      else if(url.pathname==='/ecom/categories' && request.method==='POST'){ res=await handleEcomCategoryCreate(request, env); }
+      else if(url.pathname==='/ecom/categories' && request.method==='PATCH'){ res=await handleEcomCategoryUpdate(request, env); }
+      else if(url.pathname==='/ecom/categories' && request.method==='DELETE'){ res=await handleEcomCategoryDelete(request, env); }
+      else if(url.pathname==='/ecom/categories/media' && request.method==='POST'){ res=await handleEcomCategoryMediaUpload(request, env); }
+      else if(url.pathname==='/ecom/categories/media' && request.method==='DELETE'){ res=await handleEcomCategoryMediaDelete(request, env); }
       else if(url.pathname==='/ecom/order-link' && request.method==='POST'){ res=await handleEcomOrderLink(request, env); }
       else if(url.pathname==='/leads/booking-link' && request.method==='POST'){ res=await handleLeadBookingLink(request, env); }
       else if(url.pathname.startsWith('/calcom/webhook/') && request.method==='POST'){ res=await handleCalcomWebhook(request, env, url.pathname.slice('/calcom/webhook/'.length)); }
@@ -8057,6 +8230,7 @@ export default {
       else if(url.pathname==='/hospitality/units/media' && request.method==='POST'){ res=await handleHospitalityUnitMediaUpload(request, env); }
       else if(url.pathname==='/hospitality/units/media' && request.method==='DELETE'){ res=await handleHospitalityUnitMediaDelete(request, env); }
       else if(url.pathname.startsWith('/hospitality/media/') && request.method==='GET'){ res=await handleHospitalityMediaServe(env, url.pathname.slice('/hospitality/media/'.length)); }
+      else if(url.pathname.startsWith('/ecom/category-media/') && request.method==='GET'){ res=await handleEcomCategoryMediaServe(env, url.pathname.slice('/ecom/category-media/'.length)); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);
