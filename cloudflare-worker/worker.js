@@ -868,9 +868,10 @@ async function handleEmailTest(request, env){
    Campaigns/Sends are shared platform-wide tables (like the ecom module's products/orders),
    rows scoped by client_id, with an email_table_ids override field for a client who wants a
    bespoke table — same two-tier pattern as ecomResolveTable/ecom_table_ids. Every route below
-   derives the client from the session (payload.cid), never a client-supplied id — the stronger
-   of the two auth patterns already in this codebase (the weaker one, trusting a client-supplied
-   client_id, is what the older ecom.html routes do and is documented there as a known gap). ── */
+   derives the client from the session (payload.cid), never a client-supplied id — same
+   requireSession-gated pattern the dashboard-facing /ecom/* routes now use too (the n8n-facing
+   /ai/*, /ecom/order-link, /ecom/order-lookup routes remain client_id-based since n8n has no
+   Authentik session to send — a separate, tracked follow-up). ── */
 async function emailResolveTable(env, clientId, kind){
   const c=await getClientById(env, clientId);
   if(!c) return null;
@@ -3730,10 +3731,9 @@ async function ecomResolveTable(env, clientId, kind){
 }
 
 async function handleEcomClientGet(request, env){
-  const url=new URL(request.url);
-  const clientId=String(url.searchParams.get('client_id')||'');
-  if(!clientId) return json({error:'client_id required'},400);
-  const c=await getClientById(env, clientId);
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'},404);
   const out={};
   ECOM_CLIENT_READ_FIELDS.forEach(k=>{ out[k]=c[k]; });
@@ -3766,26 +3766,25 @@ async function ncPatchVerified(env, clientId, fields){
 }
 
 async function handleEcomClientUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
-  const clientId=String(body.client_id||'');
-  if(!clientId) return json({error:'client_id required'},400);
   const fields={};
   ECOM_CLIENT_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=body[k]; });
   if(!Object.keys(fields).length) return json({error:'No valid fields to update'},400);
-  const result=await ncPatchVerified(env, clientId, fields);
+  const result=await ncPatchVerified(env, payload.cid, fields);
   return json(result.data, result.status);
 }
 
-// client_id-based like the rest of /ecom/* (see the comment on handleEcomList below) — ecom.html
-// has no Authentik session of its own, so the Shopify Notifications page's template picker needs
-// a route it can call directly instead of going through session-authed /wa/templates. Same Graph
-// API call as handleWaTemplatesGet, just keyed by client_id instead of a session token, and with
-// no n8n hop (unlike the existing "Order Delivery Notifications" section's loadWaTemplates()).
+// requireSession-gated like the rest of dashboard-facing /ecom/* now (ecom.html sends the session
+// token dashboard.html passes into its iframe) — the Shopify Notifications page's template picker
+// needs its own route instead of going through /wa/templates only because it's keyed by whichever
+// client the caller's session belongs to. Same Graph API call as handleWaTemplatesGet, just via
+// this session-authed path, and with no n8n hop (unlike "Order Delivery Notifications"' loadWaTemplates()).
 async function handleEcomWaTemplatesGet(request, env){
-  const url=new URL(request.url);
-  const clientId=String(url.searchParams.get('client_id')||'');
-  if(!clientId) return json({error:'client_id required'},400);
-  const c=await getClientById(env, clientId);
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
   if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
   const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates?fields=name,status,language,category,components&limit=200`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
   const data=await r.json().catch(()=>({}));
@@ -3830,11 +3829,13 @@ const SHOPIFY_TEMPLATE_PRESETS={
   },
 };
 async function handleEcomWaTemplatesCreatePreset(request, env){
-  const {client_id, kind}=await request.json().catch(()=>({}));
-  if(!client_id||!kind) return json({error:'client_id and kind required'}, 400);
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {kind}=await request.json().catch(()=>({}));
+  if(!kind) return json({error:'kind required'}, 400);
   const preset=SHOPIFY_TEMPLATE_PRESETS[kind];
   if(!preset) return json({error:'Unknown template kind'}, 400);
-  const c=await getClientById(env, client_id);
+  const c=await getClientById(env, payload.cid);
   if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
   const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
     method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
@@ -3866,11 +3867,13 @@ const SHOPIFY_LIBRARY_TEMPLATES={
   shipped:{ name:'order_shipped_leadvyne', library_template_name:'shipment_confirmation_1', language:'en_US', category:'UTILITY' },
 };
 async function handleEcomWaTemplatesCreateFromLibrary(request, env){
-  const {client_id, kind}=await request.json().catch(()=>({}));
-  if(!client_id||!kind) return json({error:'client_id and kind required'}, 400);
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {kind}=await request.json().catch(()=>({}));
+  if(!kind) return json({error:'kind required'}, 400);
   const lib=SHOPIFY_LIBRARY_TEMPLATES[kind];
   if(!lib) return json({error:'No library template available for this event yet'}, 400);
-  const c=await getClientById(env, client_id);
+  const c=await getClientById(env, payload.cid);
   if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
   const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
     method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
@@ -3881,9 +3884,9 @@ async function handleEcomWaTemplatesCreateFromLibrary(request, env){
   return json({ok:true, name:lib.name, language:lib.language, status:data?.status||'APPROVED'});
 }
 
-// Sort is a small whitelist mapped to real NocoDB sort strings, not passed through raw — this
-// endpoint has no session of its own (see ecomResolveTable's comment above), so an arbitrary
-// caller-supplied sort field would be an unnecessary way to let a stranger probe column names.
+// Sort is a small whitelist mapped to real NocoDB sort strings, not passed through raw — an
+// arbitrary caller-supplied sort field would be an unnecessary way to let a caller probe column
+// names, even from an authenticated session.
 const ECOM_SORT_MAP={
   price_asc:'price', price_desc:'-price',
   newest:'-CreatedAt', oldest:'CreatedAt',
@@ -3895,9 +3898,10 @@ const ECOM_SORT_MAP={
 function ecomSanitizeFilterValue(v){ return String(v).replace(/[(),~]/g,'').trim(); }
 
 async function handleEcomList(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=String(payload.cid);
   const url=new URL(request.url);
-  const clientId=String(url.searchParams.get('client_id')||'');
-  if(!clientId) return json({error:'client_id required'},400);
   const tableId=await ecomResolveTable(env, clientId, kind);
   if(!tableId) return json({list:[]});
   const limit=Math.min(parseInt(url.searchParams.get('limit')||'200',10)||200, 1000);
@@ -3937,9 +3941,10 @@ async function handleEcomList(request, env, kind){
 }
 
 async function handleEcomCreate(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=String(payload.cid);
   const body=await request.json().catch(()=>({}));
-  const clientId=String(body.client_id||'');
-  if(!clientId) return json({error:'client_id required'},400);
   const tableId=await ecomResolveTable(env, clientId, kind);
   if(!tableId) return json({error:kind+' table not configured for this client'},400);
   const { client_id, Id, ...fields }=body;
@@ -3949,10 +3954,12 @@ async function handleEcomCreate(request, env, kind){
 }
 
 async function handleEcomUpdate(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=String(payload.cid);
   const body=await request.json().catch(()=>({}));
-  const clientId=String(body.client_id||'');
   const id=parseInt(body.Id,10);
-  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  if(!id) return json({error:'Id required'},400);
   const tableId=await ecomResolveTable(env, clientId, kind);
   if(!tableId) return json({error:kind+' table not configured for this client'},400);
   const existingR=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
@@ -3965,10 +3972,12 @@ async function handleEcomUpdate(request, env, kind){
 }
 
 async function handleEcomDelete(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=String(payload.cid);
   const body=await request.json().catch(()=>({}));
-  const clientId=String(body.client_id||'');
   const ids=(Array.isArray(body.ids)?body.ids:[body.Id]).map(v=>parseInt(v,10)).filter(Boolean);
-  if(!clientId||!ids.length) return json({error:'client_id and ids required'},400);
+  if(!ids.length) return json({error:'ids required'},400);
   const tableId=await ecomResolveTable(env, clientId, kind);
   if(!tableId) return json({error:kind+' table not configured for this client'},400);
   // Confirm ownership of every requested Id in one query, then only delete that
@@ -3993,35 +4002,37 @@ async function handleEcomDelete(request, env, kind){
    get auto-sent to chat once a customer names it (engineMaybeSendEcomCategoryMedia below) —
    separate from and in addition to the existing per-product image-on-enquiry send. D1-backed
    (env.DB), not NocoDB: a genuinely new data shape with no existing NocoDB reader, same reasoning
-   as the Hospitality module's units/bookings. Same client_id-based auth as the rest of /ecom/*
-   (ecom.html has no session token to send) — not requireSession-gated, matching this file's own
-   existing (weaker, already-accepted) trust model rather than introducing a second one. ── */
+   as the Hospitality module's units/bookings. requireSession-gated like B2B/Accounting/Hospitality
+   (dashboard.html now passes its session token into ecom.html's iframe src, same as it already did
+   for b2b.html/accounting.html) — client_id is derived from the verified session, never trusted
+   from the request, closing the IDOR the old client_id-based trust model had. ── */
 async function handleEcomCategoriesList(request, env){
-  const url=new URL(request.url);
-  const clientId=String(url.searchParams.get('client_id')||'');
-  if(!clientId) return json({error:'client_id required'},400);
-  const {results}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=? ORDER BY name ASC`).bind(Number(clientId)).all();
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=? ORDER BY name ASC`).bind(Number(payload.cid)).all();
   return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
 }
 async function handleEcomCategoryCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
-  const clientId=String(body.client_id||'');
   const name=String(body.name||'').trim().slice(0,80);
-  if(!clientId||!name) return json({error:'client_id and name required'},400);
+  if(!name) return json({error:'name required'},400);
   const r=await env.DB.prepare(`INSERT INTO ecom_categories (client_id, name, created_at) VALUES (?,?,?)`)
-    .bind(Number(clientId), name, new Date().toISOString()).run();
-  return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
+    .bind(Number(payload.cid), name, new Date().toISOString()).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(payload.cid), name});
 }
 async function findEcomCategory(env, id){
   return await env.DB.prepare(`SELECT * FROM ecom_categories WHERE id=?`).bind(Number(id)).first();
 }
 async function handleEcomCategoryUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
-  const clientId=String(body.client_id||'');
   const id=parseInt(body.Id,10);
-  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  if(!id) return json({error:'Id required'},400);
   const existing=await findEcomCategory(env, id);
-  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'},404);
   if(body.name===undefined) return json({ok:true});
   const name=String(body.name).trim().slice(0,80);
   if(!name) return json({error:'name cannot be blank'},400);
@@ -4034,13 +4045,14 @@ async function ecomCategoryDeleteAllMedia(env, clientId, categoryId){
   }
 }
 async function handleEcomCategoryDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
-  const clientId=String(body.client_id||'');
   const id=parseInt(body.Id,10);
-  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  if(!id) return json({error:'Id required'},400);
   const existing=await findEcomCategory(env, id);
-  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
-  await ecomCategoryDeleteAllMedia(env, clientId, id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'},404);
+  await ecomCategoryDeleteAllMedia(env, payload.cid, id);
   await env.DB.prepare(`DELETE FROM ecom_category_media_sent WHERE category_id=?`).bind(id).run();
   await env.DB.prepare(`DELETE FROM ecom_categories WHERE id=?`).bind(id).run();
   return json({ok:true});
@@ -4057,11 +4069,13 @@ const ECOM_CATEGORY_IMAGE_EXTS=['jpg','jpeg','png','webp','gif'];
 function ecomCategoryMediaKey(clientId, categoryId, slot, ext){ return `ecomcat/${clientId}/${categoryId}/${slot}.${ext}`; }
 
 async function handleEcomCategoryMediaUpload(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
   const form=await request.formData().catch(()=>null);
   if(!form) return json({error:'multipart form data required'}, 400);
-  const clientId=String(form.get('client_id')||'');
+  const clientId=String(payload.cid);
   const categoryId=form.get('category_id'), slot=form.get('slot'), file=form.get('file');
-  if(!clientId||!categoryId||!slot||!file) return json({error:'client_id, category_id, slot and file required'}, 400);
+  if(!categoryId||!slot||!file) return json({error:'category_id, slot and file required'}, 400);
   const column=ECOM_CATEGORY_MEDIA_SLOTS[slot];
   if(!column) return json({error:'Invalid slot'}, 400);
   const category=await findEcomCategory(env, categoryId);
@@ -4077,10 +4091,12 @@ async function handleEcomCategoryMediaUpload(request, env){
   return json({ok:true, url, slot});
 }
 async function handleEcomCategoryMediaDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
-  const clientId=String(body.client_id||'');
+  const clientId=String(payload.cid);
   const {category_id, slot}=body;
-  if(!clientId||!category_id||!slot) return json({error:'client_id, category_id and slot required'}, 400);
+  if(!category_id||!slot) return json({error:'category_id and slot required'}, 400);
   const column=ECOM_CATEGORY_MEDIA_SLOTS[slot];
   if(!column) return json({error:'Invalid slot'}, 400);
   const category=await findEcomCategory(env, category_id);

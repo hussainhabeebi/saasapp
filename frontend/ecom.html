@@ -499,6 +499,12 @@ const N8N_BASE = 'https://apps.leadvyne.com';
 
 const params = new URLSearchParams(location.search);
 let clientId = params.get('client') || '';
+// dashboard.html passes its own session token in here (same as it already does for b2b.html/
+// accounting.html) — every dashboard-facing /ecom/* call below sends this as a bearer token, and
+// the Worker derives client_id from it server-side rather than trusting the query param above,
+// which is kept only so this page has something to show/pass through in its own UI/links.
+let sessionToken = params.get('token') || '';
+function authHeaders(extra){ return {'Authorization':'Bearer '+sessionToken, ...extra}; }
 // Set when opened inside dashboard.html's own Ecommerce tab (an iframe, not a separate browser
 // tab) — dashboard.html already has its own header/nav/notifications around this page, so this
 // page's own header (brand, chip, "Back to CRM" button) would just be a redundant duplicate.
@@ -585,10 +591,12 @@ async function init() {
     if (hdr) hdr.style.display = 'none';
     document.body.style.height = '100%';
   }
-  if (!clientId) { clientId = prompt('Enter your Client ID:') || ''; }
-  if (!clientId) return;
+  if (!clientId || !sessionToken) {
+    document.body.innerHTML = '<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>Missing client/session — open this page from the Ecommerce tab inside your dashboard.</div>';
+    return;
+  }
 
-  const res = await fetch(`${WORKER_BASE}/ecom/client?client_id=${encodeURIComponent(clientId)}`);
+  const res = await fetch(`${WORKER_BASE}/ecom/client`, { headers: authHeaders() });
   clientRecord = await res.json();
   if (clientRecord.error) { alert(clientRecord.error); return; }
   try { ecomTableIds = JSON.parse(clientRecord.ecom_table_ids || '{}'); } catch(e) { ecomTableIds = {}; }
@@ -678,7 +686,7 @@ async function loadProducts() {
     return;
   }
   try {
-    const r = await fetch(`${WORKER_BASE}/ecom/products?client_id=${encodeURIComponent(clientId)}&limit=200`);
+    const r = await fetch(`${WORKER_BASE}/ecom/products?limit=200`, { headers: authHeaders() });
     const data = await r.json();
     allProducts = data.list || [];
     const liveIds = new Set(allProducts.map(p => p.Id));
@@ -766,8 +774,8 @@ async function bulkDeleteProducts() {
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/products`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, ids })
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ ids })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json().catch(() => ({}));
@@ -841,13 +849,12 @@ async function submitProductForm() {
     image_url: document.getElementById('pmImage').value.trim(),
     description: document.getElementById('pmDescription').value.trim()
   };
-  body.client_id = clientId;
   if (editId) body.Id = parseInt(editId, 10);
   showMsg('productModalMsg', 'Saving…', 10000);
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/products`, {
       method: editId ? 'PATCH' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body)
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -868,8 +875,8 @@ async function updateProductStock(id, value) {
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/products`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, Id: id, stock })
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ Id: id, stock })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const p = allProducts.find(x => x.Id === id);
@@ -885,8 +892,8 @@ async function deleteProduct(id, name) {
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/products`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, ids: [id] })
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ ids: [id] })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     selectedProductIds.delete(id);
@@ -1052,12 +1059,12 @@ async function confirmImport() {
   let done = 0, failed = 0;
   for (const r of valid) {
     msg.textContent = `Importing… ${done + failed}/${valid.length}`;
-    const body = { ...r.data, client_id: clientId };
+    const body = { ...r.data };
     if (r.existingId) body.Id = r.existingId;
     try {
       const resp = await fetch(`${WORKER_BASE}/ecom/products`, {
         method: r.existingId ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body)
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -1081,7 +1088,7 @@ const CATEGORY_MEDIA_SLOTS = ['image1', 'image2', 'image3'];
 async function loadCategories() {
   const tbody = document.getElementById('categoriesTbody');
   try {
-    const r = await fetch(`${WORKER_BASE}/ecom/categories?client_id=${encodeURIComponent(clientId)}`);
+    const r = await fetch(`${WORKER_BASE}/ecom/categories`, { headers: authHeaders() });
     const data = await r.json();
     allCategories = data.list || [];
     renderCategoriesTable();
@@ -1116,8 +1123,8 @@ async function addCategoryRow() {
   if (!name || !name.trim()) return;
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/categories`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ client_id: clientId, name: name.trim() })
+      method: 'POST', headers: authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ name: name.trim() })
     });
     const created = await r.json();
     if (!r.ok) throw new Error(created.error || 'HTTP ' + r.status);
@@ -1136,8 +1143,8 @@ async function onCategoryNameChange(id, el) {
   cat.name = value;
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/categories`, {
-      method: 'PATCH', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ client_id: clientId, Id: id, name: value })
+      method: 'PATCH', headers: authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ Id: id, name: value })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     populateCategorySelect();
@@ -1150,8 +1157,8 @@ async function deleteCategory(id) {
   if (!confirm('Delete this category? Its photos will be removed too.')) return;
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/categories`, {
-      method: 'DELETE', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ client_id: clientId, Id: id })
+      method: 'DELETE', headers: authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ Id: id })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     allCategories = allCategories.filter(c => c.Id !== id);
@@ -1176,11 +1183,10 @@ async function onCategoryMediaFileChosen(input) {
   if (cell) cell.style.opacity = '.5';
   try {
     const fd = new FormData();
-    fd.append('client_id', clientId);
     fd.append('category_id', categoryId);
     fd.append('slot', slot);
     fd.append('file', file);
-    const r = await fetch(`${WORKER_BASE}/ecom/categories/media`, { method: 'POST', body: fd });
+    const r = await fetch(`${WORKER_BASE}/ecom/categories/media`, { method: 'POST', headers: authHeaders(), body: fd });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
     const cat = allCategories.find(c => c.Id === categoryId);
@@ -1196,8 +1202,8 @@ async function removeCategoryMedia(categoryId, slot) {
   if (!confirm('Remove this photo?')) return;
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/categories/media`, {
-      method: 'DELETE', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ client_id: clientId, category_id: categoryId, slot })
+      method: 'DELETE', headers: authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ category_id: categoryId, slot })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const cat = allCategories.find(c => c.Id === categoryId);
@@ -1240,8 +1246,8 @@ async function onCategorySelectChange(sel) {
   if (!name || !name.trim()) { sel.value = ''; return; }
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/categories`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ client_id: clientId, name: name.trim() })
+      method: 'POST', headers: authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ name: name.trim() })
     });
     const created = await r.json();
     if (!r.ok) throw new Error(created.error || 'HTTP ' + r.status);
@@ -1259,7 +1265,7 @@ async function loadOrders() {
     return;
   }
   try {
-    const r = await fetch(`${WORKER_BASE}/ecom/orders?client_id=${encodeURIComponent(clientId)}&sort=-order_date&limit=200`);
+    const r = await fetch(`${WORKER_BASE}/ecom/orders?sort=-order_date&limit=200`, { headers: authHeaders() });
     const data = await r.json();
     if (!r.ok) { tbody.innerHTML = `<tr><td colspan="7" class="loading-row">Error: ${esc(data.error||'Failed to load orders')}</td></tr>`; return; }
     allOrders = data.list || [];
@@ -1325,7 +1331,6 @@ async function submitAddOrder() {
   const phone = document.getElementById('omCustomerPhone').value.trim();
   if (!phone) { showMsg('orderModalMsg', 'Customer phone is required'); return; }
   const body = {
-    client_id: clientId,
     order_id: document.getElementById('omOrderId').value.trim() || ('ORD-' + Date.now()),
     customer_name: document.getElementById('omCustomerName').value.trim(),
     customer_phone: phone.replace(/[^0-9+]/g,''),
@@ -1342,7 +1347,7 @@ async function submitAddOrder() {
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body)
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -1362,8 +1367,8 @@ async function updateOrderStatus(id, newStatus) {
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, Id: id, status: newStatus })
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ Id: id, status: newStatus })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const o = allOrders.find(x => x.Id === id);
@@ -1379,8 +1384,8 @@ async function deleteOrder(id, label) {
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, ids: [id] })
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ ids: [id] })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     loadOrders();
@@ -1514,12 +1519,12 @@ async function saveWaTemplates() {
 
 // ── SHOPIFY NOTIFICATION TEMPLATES ────────────────
 // Same picker UX as the WhatsApp Templates block above, but backed by the Worker's own
-// /ecom/wa-templates (client_id-based, no session needed here) instead of the n8n webhook —
-// the Shopify module's webhook handler sends straight through Meta's Graph API, no n8n involved.
+// session-authed /ecom/wa-templates instead of the n8n webhook — the Shopify module's webhook
+// handler sends straight through Meta's Graph API, no n8n involved.
 async function loadShopifyTemplates() {
   showMsg('shopifyTemplatesMsg', 'Loading…', 10000);
   try {
-    const r = await fetch(`${WORKER_BASE}/ecom/wa-templates?client_id=${encodeURIComponent(clientId)}`);
+    const r = await fetch(`${WORKER_BASE}/ecom/wa-templates`, { headers: authHeaders() });
     const data = await r.json();
     if (data.error) { showMsg('shopifyTemplatesMsg', data.error, 6000); return; }
     shopifyTemplates = data.data || data.templates || [];
@@ -1567,8 +1572,8 @@ async function createShopifyPresetTemplate(kind) {
   btn.disabled = true; btn.textContent = 'Submitting…';
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/wa-templates/create-preset`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ client_id: clientId, kind })
+      method: 'POST', headers: authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ kind })
     });
     const data = await r.json();
     if (data.error) { showMsg('shopifyTemplatesMsg', data.error, 8000); return; }
@@ -1594,8 +1599,8 @@ async function createShopifyLibraryTemplate(kind) {
   btn.disabled = true; btn.textContent = 'Creating…';
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/wa-templates/create-from-library`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ client_id: clientId, kind })
+      method: 'POST', headers: authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ kind })
     });
     const data = await r.json();
     if (data.error) { showMsg('shopifyTemplatesMsg', data.error, 8000); return; }
@@ -1730,8 +1735,8 @@ async function syncSheet(type) {
 async function patchClient(body) {
   const r = await fetch(`${WORKER_BASE}/ecom/client`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: clientId, ...body })
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body)
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);

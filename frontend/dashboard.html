@@ -4573,10 +4573,14 @@ async function kbDrop(e,stage){
 // Loads the embedded Ecommerce iframe once — not on every nav visit, so switching away and back
 // doesn't reset whichever sub-tab (Products/Orders/Shopify/Settings) the rep was on inside it.
 // embed=1 tells ecom.html to hide its own header/"Back to CRM" button, since this dashboard's own
-// header/nav already surrounds it.
+// header/nav already surrounds it. Now also passes the session token, same as renderB2b/
+// renderAccounting below — ecom.html's dashboard-facing /ecom/* calls are requireSession-gated,
+// closing the IDOR the old client_id-only trust model had (client_id is still in the URL only so
+// ecom.html can show something readable in its UI; the Worker itself now derives it from the
+// verified session, not this query param).
 function renderEcommerce(){
   const frame=$id('ecommerceFrame');
-  if(frame && !frame.getAttribute('src')) frame.src=`ecom.html?client=${clientId}&embed=1`;
+  if(frame && !frame.getAttribute('src')) frame.src=`ecom.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
 }
 
 // Unlike ecom.html, b2b.html also gets the session token — it reads/writes Leads fields
