@@ -2827,25 +2827,33 @@ breakdown, average bot response time (`ResponseMs`), and error rate, over the re
 response) rather than an ever-growing per-request bill. Fine for a trend/breakdown report; would
 not be fine for anything billing-accuracy-sensitive (nothing here is).
 
-### Shopify — `GET /shopify/analytics` (`handleShopifyAnalytics`, worker.js)
-Requires Shopify connected (Settings → Integrations) — shows a "connect it" empty state otherwise,
-same as every other unconnected-integration report tab.
+### Ecommerce — `GET /shopify/analytics` (`handleShopifyAnalytics`, worker.js; tab labeled
+"🛍️ Ecommerce" in the UI — route/function names kept for history, see below)
+**Bug fixed**: this originally required Shopify specifically connected (`shopify_shop_domain`) to
+show anything at all — a client using only the built-in storefront checkout (`onshope.com`,
+`handleEcomPublicOrder`) got an empty "connect Shopify" wall despite having real orders sitting in
+the exact same Ecommerce Orders table `syncShopifyOrderToEcom` (Shopify) and
+`handleEcomPublicOrder` (built-in storefront) both write to. Every order source lands in the same
+table, so the report now only gates on **whether an orders table resolves at all**
+(`has_orders_table` — i.e. the Ecommerce module is set up), never on Shopify specifically.
+`shopify_connected` is still returned, but purely as an optional "also connect Shopify to
+auto-sync those orders too" nudge shown *alongside* the real data, not a wall in front of it.
 - **Revenue trend/order count/AOV** come from the Ecommerce Orders table's `total` field (always
-  present on any order, cancelled orders excluded) — no new schema needed for these.
+  present on any order regardless of source, cancelled orders excluded) — no new schema needed.
 - **Top products** prefer a new `line_items_json` column on that same orders table (Long text,
-  JSON array of `{title, quantity, price, sku}`), populated going forward by
-  `syncShopifyOrderToEcom()` alongside the pre-existing flattened `items` text column (kept
-  unchanged — `items` is what `ecom.html`'s own Orders table already renders). Orders synced
-  **before** this column existed have no `line_items_json`, so the report falls back to
-  best-effort parsing the flattened `items` string ("2x Product Name" lines) for those —
-  quantity-only, since the flattened string never carried a per-line price. This means
-  per-product revenue only fully covers orders from here on; an accepted, honestly-scoped
-  reporting-only gap (same tradeoff class as every other retrofitted-field limitation in this
-  file). Add the `line_items_json` column to both the shared default orders table and any client's
-  own override before this fills in for new orders.
-- **Cart abandonment rate** comes from the existing `shopify_checkouts` table's `completed`
-  lifecycle (already tracked by `sweepAbandonedShopifyCheckouts`) — `(total − completed) / total`
-  over the same 6-month window.
+  JSON array of `{title, quantity, price, sku}`), populated by `syncShopifyOrderToEcom()`
+  (Shopify-synced orders only — the built-in storefront's `handleEcomPublicOrder` only ever
+  creates one line per order and doesn't populate it) alongside the pre-existing flattened `items`
+  text column (kept unchanged — `items` is what `ecom.html`'s own Orders table already renders,
+  and every order source populates it). Orders with no `line_items_json` fall back to best-effort
+  parsing that flattened `items` string ("2x Product Name" lines) — quantity-only, since the
+  flattened string never carried a per-line price. This means per-product *revenue* only fully
+  covers Shopify-synced orders; an accepted, honestly-scoped reporting-only gap (same tradeoff
+  class as every other retrofitted-field limitation in this file) — quantity still shows for every
+  order source.
+- **Cart abandonment rate** is Shopify-only (the `shopify_checkouts` table's `completed` lifecycle,
+  already tracked by `sweepAbandonedShopifyCheckouts`) — the built-in storefront has no abandoned-
+  checkout concept of its own, so this stays `—` for a Shopify-less client rather than guessing.
 
 ### Product — `GET /reports/products` (`handleReportsProducts`, worker.js)
 Two independent sources, whichever modules a client actually has:
@@ -2854,9 +2862,10 @@ Two independent sources, whichever modules a client actually has:
   revenue (`requested`/`cancelled`/`no_show` never converted). Revenue is
   booked-count × list price — an approximation, since nothing in the Appointments module tracks a
   per-booking custom/discounted amount anywhere.
-- **Top Shopify products** — reuses `handleShopifyAnalytics`' own top-products aggregation
-  wholesale (calls it server-side rather than re-scanning the same orders table twice), same
-  line-items caveat as the Shopify tab above.
+- **Top products** — reuses `handleShopifyAnalytics`' own top-products aggregation wholesale
+  (calls it server-side rather than re-scanning the same orders table twice) — covers the whole
+  Ecommerce module (built-in storefront + Shopify), same as the Ecommerce tab above, not
+  Shopify-only despite the field's internal name.
 Renders an empty state if a client has neither module's data yet.
 
 ### SEO — Google Search Console OAuth + `GET /reports/seo` (worker.js)

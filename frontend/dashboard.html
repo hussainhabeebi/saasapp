@@ -1682,7 +1682,7 @@ const TODAY = new Date().toISOString().slice(0,10);
         <button class="hosp-tab" data-reports="team">📊 Team</button>
         <button class="hosp-tab" data-reports="marketing">📣 Marketing</button>
         <button class="hosp-tab" data-reports="whatsapp">💬 WhatsApp</button>
-        <button class="hosp-tab" data-reports="shopify">🛍️ Shopify</button>
+        <button class="hosp-tab" data-reports="shopify">🛍️ Ecommerce</button>
         <button class="hosp-tab" data-reports="product">🧩 Product</button>
         <button class="hosp-tab" data-reports="seo">🔍 SEO</button>
       </div>
@@ -9483,7 +9483,7 @@ async function renderReportsOverview(){
   const se=seoR.status==='fulfilled'?seoR.value:null;
 
   cards.push({label:'WhatsApp Messages (30d)', value:wa?wa.total_messages:'—', tab:'whatsapp'});
-  cards.push({label:'Shopify Revenue (30d)', value:(sh&&sh.connected)?(sh.currency?sh.currency+' ':'')+Math.round(sh.total_revenue).toLocaleString():'—', tab:'shopify'});
+  cards.push({label:'Ecommerce Revenue (6mo)', value:(sh&&sh.has_orders_table)?(sh.currency?sh.currency+' ':'')+Math.round(sh.total_revenue).toLocaleString():'—', tab:'shopify'});
   cards.push({label:'SEO Clicks (28d)', value:(se&&se.connected)?se.totals.clicks:'—', tab:'seo'});
 
   el.innerHTML=`
@@ -9784,28 +9784,33 @@ async function renderReportsWhatsapp(){
 async function renderReportsShopify(){
   const el=$id('reportsContent');
   el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
-  let d={connected:false, months:[], order_count:0, total_revenue:0, aov:0, top_products:[], total_checkouts:0, completed_checkouts:0, abandonment_rate:0};
+  let d={has_orders_table:false, shopify_connected:false, months:[], order_count:0, total_revenue:0, aov:0, top_products:[], total_checkouts:0, completed_checkouts:0, abandonment_rate:0};
   try{ d=await (await fetch(`${CONFIG.WORKER_BASE}/shopify/analytics`,{headers:ncAuthHeaders()})).json(); }catch(e){}
 
-  if(!d.connected){
-    el.innerHTML='<div class="empty-state"><div class="ei">🛍️</div>Shopify isn\'t connected yet. <a href="#" onclick="navigate(\'integrations\');return false">Connect it in Settings → Integrations</a> to see revenue, top products and cart abandonment here.</div>';
+  // Covers every order source landing in the Ecommerce module's orders table — Shopify-synced,
+  // the built-in storefront checkout (onshope.com), or manual entry — not just Shopify. Only
+  // blocked entirely if this client has no Ecommerce module/orders table set up at all; whether
+  // Shopify itself is connected is shown as an optional nudge below, never a gate on the report.
+  if(!d.has_orders_table){
+    el.innerHTML='<div class="empty-state"><div class="ei">🛍️</div>The Ecommerce module isn\'t set up for this account yet. Enable it in Settings → Modules, then orders from your storefront and/or a connected Shopify store will show up here.</div>';
     return;
   }
   const fmtMoney=n=>(d.currency?d.currency+' ':'')+Math.round(n).toLocaleString();
   const maxMonth=Math.max(1,...d.months.map(m=>m.revenue));
   el.innerHTML=`
+    ${d.shopify_connected?'':'<div class="s-note" style="margin-bottom:14px">Shopify isn\'t connected — this still reflects orders from your built-in storefront. <a href="#" onclick="navigate(\'integrations\');return false">Connect Shopify</a> too if you also sell there, to auto-sync those orders and get cart abandonment tracking.</div>'}
     <div style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
       <div class="stat"><div class="stat-lbl">Revenue (6mo)</div><div class="stat-val">${fmtMoney(d.total_revenue)}</div></div>
       <div class="stat accent"><div class="stat-lbl">Orders</div><div class="stat-val">${d.order_count}</div></div>
       <div class="stat"><div class="stat-lbl">Avg Order Value</div><div class="stat-val">${fmtMoney(d.aov)}</div></div>
-      <div class="stat"><div class="stat-lbl">Cart Abandonment</div><div class="stat-val"${d.abandonment_rate>70?' style="color:var(--red)"':''}>${d.abandonment_rate}%</div></div>
+      <div class="stat"><div class="stat-lbl">Cart Abandonment</div><div class="stat-val"${d.abandonment_rate>70?' style="color:var(--red)"':''}>${d.shopify_connected?d.abandonment_rate+'%':'—'}</div></div>
     </div>
     <div class="card" style="margin-bottom:14px">
       <div class="s-head" style="margin-bottom:8px">Revenue Trend</div>
       ${d.months.length?d.months.map(m=>`<div class="bar-row"><div style="min-width:60px;font-size:11px">${esc(m.key)}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(m.revenue/maxMonth*100)}%"></div></div><div class="bar-val">${fmtMoney(m.revenue)} <span style="color:var(--muted);font-weight:400">(${m.orders})</span></div></div>`).join(''):'<div style="color:var(--muted);font-size:12px">No orders in this window yet.</div>'}
     </div>
     <div class="card">
-      <div class="s-head" style="margin-bottom:8px">Top Products <span style="font-weight:400;color:var(--muted);font-size:11px">(orders synced before line-item tracking was added only count toward quantity, not revenue)</span></div>
+      <div class="s-head" style="margin-bottom:8px">Top Products <span style="font-weight:400;color:var(--muted);font-size:11px">(orders with no per-line price on record only count toward quantity, not revenue)</span></div>
       ${d.top_products.length?`<div style="overflow-x:auto"><table class="leads-tbl" style="width:100%"><thead><tr><th>Product</th><th>Quantity</th><th>Revenue</th></tr></thead><tbody>${d.top_products.map(p=>`<tr><td>${esc(p.title)}</td><td>${p.quantity}</td><td>${p.revenue?fmtMoney(p.revenue):'—'}</td></tr>`).join('')}</tbody></table></div>`:'<div style="color:var(--muted);font-size:12px">No product data yet.</div>'}
     </div>`;
 }
@@ -9816,11 +9821,11 @@ async function renderReportsShopify(){
 async function renderReportsProduct(){
   const el=$id('reportsContent');
   el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
-  let d={services:[], top_products:[], shopify_connected:false};
+  let d={services:[], top_products:[], has_orders_table:false};
   try{ d=await (await fetch(`${CONFIG.WORKER_BASE}/reports/products`,{headers:ncAuthHeaders()})).json(); }catch(e){}
 
   if(!d.services.length && !d.top_products.length){
-    el.innerHTML='<div class="empty-state"><div class="ei">🧩</div>No product/service performance yet — this fills in once you have Appointment bookings and/or a connected Shopify store with orders.</div>';
+    el.innerHTML='<div class="empty-state"><div class="ei">🧩</div>No product/service performance yet — this fills in once you have Appointment bookings and/or orders through the Ecommerce module (built-in storefront or a connected Shopify store).</div>';
     return;
   }
   el.innerHTML=`
@@ -9832,7 +9837,7 @@ async function renderReportsProduct(){
       </tbody></table></div>
     </div>`:''}
     ${d.top_products.length?`<div class="card">
-      <div class="s-head" style="margin-bottom:8px">Top Shopify Products</div>
+      <div class="s-head" style="margin-bottom:8px">Top Products (Ecommerce)</div>
       <div style="overflow-x:auto"><table class="leads-tbl" style="width:100%"><thead><tr><th>Product</th><th>Quantity</th><th>Revenue</th></tr></thead><tbody>
       ${d.top_products.map(p=>`<tr><td>${esc(p.title)}</td><td>${p.quantity}</td><td>${p.revenue?p.revenue.toLocaleString():'—'}</td></tr>`).join('')}
       </tbody></table></div>

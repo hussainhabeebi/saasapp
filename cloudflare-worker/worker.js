@@ -2870,22 +2870,31 @@ async function syncShopifyOrderToEcom(env, c, order, status){
   }
 }
 
-// Shopify Analytics — Reports page's "🛍️ Shopify" tab (and reused by handleReportsProducts below
-// for its top-products section, so that route doesn't re-scan the same orders table twice).
-// Revenue trend/AOV/order count come from the orders table's `total` (always present, any order).
-// Top products prefer the structured `line_items_json` (see syncShopifyOrderToEcom above) and
-// fall back to best-effort parsing the older flattened `items` text ("2x Product Name" lines) for
-// orders synced before that column existed — quantity-only for those, since the flattened string
-// never carried a per-line price. Cart abandonment rate comes from the separate
-// shopify_checkouts table (nudge_sent/completed lifecycle already tracked by
-// sweepAbandonedShopifyCheckouts).
+// Ecommerce Analytics — Reports page's "🛍️ Ecommerce" tab (and reused by handleReportsProducts
+// below for its top-products section, so that route doesn't re-scan the same orders table
+// twice). Despite the function name (kept for the route/call-site history — see SETUP.md), this
+// is NOT Shopify-specific: it reads the same orders table every order lands in regardless of
+// source — Shopify-synced (syncShopifyOrderToEcom), the built-in storefront checkout
+// (handleEcomPublicOrder/onshope.com), or manual entry — so a client using only the built-in
+// storefront sees real revenue/product data here too, not an empty "connect Shopify" prompt.
+// `shopify_connected` is returned purely as an informational flag for an optional "auto-sync your
+// Shopify store too" nudge, never a gate on showing the report itself. Revenue trend/AOV/order
+// count come from the orders table's `total` (always present, any order, any source). Top
+// products prefer the structured `line_items_json` (see syncShopifyOrderToEcom above, Shopify-only
+// — the built-in storefront's `handleEcomPublicOrder` doesn't populate it since it only ever
+// creates one line per order) and fall back to best-effort parsing the flattened `items` text
+// ("2x Product Name" lines, populated by every order source) — quantity-only in that fallback,
+// since the flattened string never carried a per-line price. Cart abandonment rate is Shopify-only
+// (shopify_checkouts table, sweepAbandonedShopifyCheckouts) — the built-in storefront has no
+// abandoned-checkout concept of its own, so this stays 0/0 for a Shopify-less client rather than
+// guessing.
 async function handleShopifyAnalytics(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   const tableId=await ecomResolveTable(env, payload.cid, 'orders');
-  if(!tableId) return json({connected:!!c.shopify_shop_domain, months:[], order_count:0, total_revenue:0, aov:0, top_products:[], abandonment_rate:0});
+  if(!tableId) return json({has_orders_table:false, shopify_connected:!!c.shopify_shop_domain, months:[], order_count:0, total_revenue:0, aov:0, top_products:[], abandonment_rate:0});
 
   const months=6;
   const since=new Date(); since.setMonth(since.getMonth()-(months-1)); since.setDate(1);
@@ -2946,7 +2955,7 @@ async function handleShopifyAnalytics(request, env){
   }catch(e){}
 
   return json({
-    connected:!!c.shopify_shop_domain,
+    has_orders_table:true, shopify_connected:!!c.shopify_shop_domain,
     currency:orders[0]?.currency||'',
     months:Object.values(byMonth).sort((a,b)=>a.key.localeCompare(b.key)),
     order_count:orderCount,
@@ -3007,14 +3016,14 @@ async function handleReportsProducts(request, env){
     services.sort((a,b)=>b.revenue-a.revenue||b.bookings-a.bookings);
   }
 
-  let topProducts=[], shopifyConnected=false;
+  let topProducts=[], hasOrdersTable=false;
   try{
-    const shopifyData=await (await handleShopifyAnalytics(request, env)).json();
-    topProducts=shopifyData.top_products||[];
-    shopifyConnected=!!shopifyData.connected;
+    const ecomData=await (await handleShopifyAnalytics(request, env)).json();
+    topProducts=ecomData.top_products||[];
+    hasOrdersTable=!!ecomData.has_orders_table;
   }catch(e){}
 
-  return json({services, top_products:topProducts, shopify_connected:shopifyConnected});
+  return json({services, top_products:topProducts, has_orders_table:hasOrdersTable});
 }
 
 // Webhook receiver — server-to-server from Shopify, so auth is the HMAC header, not a session.
