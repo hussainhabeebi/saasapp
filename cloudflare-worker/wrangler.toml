@@ -10,7 +10,10 @@ invocation_logs = true
 
 # Three schedules, dispatched by event.cron in `scheduled()`:
 #  - "0 2 * * *"     Integrations tab health check, once daily for every client
-#                    (runDailyHealthCheckForAllClients in worker.js).
+#                    (runDailyHealthCheckForAllClients in worker.js) — AND the Advanced Pipeline
+#                    module's follow-up cadence advance (runPipelineFollowupsForAllClients),
+#                    piggybacked on the same tick since day-granularity cadence steps don't need
+#                    their own finer-grained schedule.
 #  - "*/15 * * * *"  Automations module — advances every client's active flows
 #                    (runAutomationFlowsForAllClients in worker.js) — AND the Review Request
 #                    module's own sweep (sweepReviewRequests in worker.js), piggybacked on the
