@@ -2378,6 +2378,63 @@ detail in chat.
   `https://app.leadvyne.com/store.html?client=<client_id>&sku=<sku>` to every matched product,
   and the prompt tells the AI to reuse that link verbatim rather than inventing or shortening it.
 
+## Ecommerce categories (`frontend/ecom.html` — 🏷️ Categories tab)
+`category` on a product row (`PRODUCT_FIELDS` in ecom.html) has always been a plain free-text
+field — no dedicated entity, no images. This adds a proper Categories entity so a category can
+carry its own photos, auto-sent to a customer's chat the first time their message names that
+category — **entirely separate from, and never overriding, the existing per-product image send**
+(`engineDeliverReply`'s `imageUrl:product.image_url`, fired from the `detectOrderSignal`/
+`ecomResolveProduct` block in `handleEngineWebhook` — untouched by this feature).
+
+### Schema — Cloudflare D1 (`env.DB`, `migrations/0012_ecom_categories.sql`)
+D1-backed, not NocoDB — a genuinely new data shape with no existing NocoDB reader, same reasoning
+as the Hospitality module's units/bookings.
+- **`ecom_categories`**: `id, client_id, name, image_url_1/2/3, created_at`. Up to 3 photos per
+  category (no video slot — unlike Hospitality's units, a category is a grouping concept, not a
+  bookable thing worth a walkthrough video).
+- **`ecom_category_media_sent`**: `client_id, lead_id, category_id, sent_at`, unique on
+  `(lead_id, category_id)` — same "once per (lead, category) ever" dedup as
+  `hospitality_media_sent`.
+
+### Media storage — Cloudflare R2 (`ECOM_CATEGORY_MEDIA` binding, `wrangler.toml`)
+Same "store a reference, fetch bytes at send time" pattern as the Hospitality module's unit
+photos: `hospitalityMediaKey`'s exact shape, mirrored as `ecomCategoryMediaKey(clientId,
+categoryId, slot, ext) → ecomcat/<clientId>/<categoryId>/<slot>.<ext>`. One-time setup:
+`wrangler r2 bucket create leadvyne-ecom-category-media` (no id/paste-in needed — R2 buckets are
+addressed by name). 9 MB max per file, images only (`image/*`).
+
+### Worker routes (`cloudflare-worker/worker.js`)
+`GET/POST/PATCH/DELETE /ecom/categories`, `POST/DELETE /ecom/categories/media`, `GET
+/ecom/category-media/*` (public serve, no auth — same trust model as
+`handleHospitalityMediaServe`: Chatwoot/WhatsApp's own media fetch and a plain `<img>` tag can't
+send an Authorization header, and the key itself isn't guessable). **Not `requireSession`-gated**
+— same client_id-based auth as every other `/ecom/*` route (`ecom.html` has no session token to
+send; see `ECOM_CLIENT_READ_FIELDS`'s own comment for why this is an accepted trade-off for this
+whole module), not a second, inconsistent trust model just for this feature.
+
+### Auto-send — `engineMaybeSendEcomCategoryMedia()`
+Called from `handleEngineWebhook` right alongside `engineMaybeSendHospitalityMedia`, after the
+lead upsert. Simple case-insensitive substring match of each category's `name` against the
+message text — not an LLM call, same "cheap and predictable, documented over/under-match
+tradeoff" as the Hospitality module's unit-name matching (see its own SETUP.md entry).
+**Deliberately gated on `orderHandledInline` being false** — if this turn already resolved a
+specific product and sent its photo (the existing per-product flow), the category auto-send is
+skipped entirely, so a customer asking about one exact item never gets a redundant category photo
+dump appended to the same reply. Only fires for `industry==='ecommerce'`.
+
+### Frontend (`frontend/ecom.html`)
+- **🏷️ Categories tab** — directly-editable table, same convention as `dashboard.html`'s
+  Hospitality Units page (no Add/Edit popup): click a name to edit it (autosaves on blur), click
+  an empty photo slot to upload directly, click ✕ on a filled slot to remove it. "+ Add Category"
+  creates one immediately (prompts for a name).
+- **Product modal's Category field** changed from a free-text `<input>` to a `<select>`
+  (`pmCategory`) populated from the managed categories list, plus a "+ Add new category…" option
+  that creates one inline without leaving the modal. **Existing products keep whatever string
+  they already had** even if it doesn't match any managed category — `ensureCategoryOptionExists()`
+  adds a one-off `"<value> (not in Categories list)"` option before the field's value is set, so
+  opening an old product for edit never silently blanks out (and then overwrites on save) a
+  legacy category value that predates this feature.
+
 ## onshope.com — dedicated storefront domain, client slugs, and the real WhatsApp number
 `store.html` above lives under `app.leadvyne.com`, which reads as "the SaaS backend" to a
 customer and produces long, tracking-parameter-looking links (`?client=1&sku=...`). onshope.com
