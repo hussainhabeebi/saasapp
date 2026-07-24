@@ -486,6 +486,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <div class="card" id="metaSendCard" style="display:none">
       <div class="card-title"><span class="step-num">4</span> Send Broadcast</div>
       <div class="msg warn">⚠️ WhatsApp only allows template messages to contacts who haven't messaged in 24h. Ensure your template is approved by Meta.</div>
+      <div class="msg info">ℹ️ Leads with no WhatsApp conversation yet (e.g. imported from a Google Sheet) are sent to directly via your connected WhatsApp Business API instead of failing — connect it in Settings → Channels if you haven't already.</div>
       <div style="display:flex;gap:12px;margin-top:14px;flex-wrap:wrap;align-items:center">
         <button class="btn btn-primary" id="tplSendBtn" onclick="sendTemplateBroadcast()">📣 Send to selected leads</button>
         <span id="tplSendStatus" style="font-size:13px;color:var(--muted)"></span>
@@ -773,7 +774,10 @@ const CONFIG = {
 const MS_24H = 24 * 60 * 60 * 1000;
 
 let clientId=null, clientRecord=null, allLeads=[];
-let sessionToken = sessionStorage.getItem('lv_session') || '';
+// localStorage, not sessionStorage — dashboard.html moved lv_cid/lv_session/lv_me_email to
+// localStorage (see SETUP.md "Session persistence") so a session survives closing a tab/browser;
+// this page needs to read the same storage dashboard.html actually writes to.
+let sessionToken = localStorage.getItem('lv_session') || '';
 let dmFilteredLeads=[], dmSelectedIds=new Set();
 let metaFilteredLeads=[], metaSelectedIds=new Set();
 let followupLeads=[];
@@ -814,13 +818,14 @@ async function ncPatch(url,body){
 }
 
 // ── AUTH — this page only ever opens from an already-logged-in dashboard.html tab
-// (window.open, same origin), which shares its sessionStorage into the new tab per spec —
-// so lv_cid/lv_session are already present here. There is no separate login form anymore
-// (it used to compare a plaintext dashboard_password client-side against a record fetched
+// (window.open, same origin) — lv_cid/lv_session/lv_me_email live in localStorage (see
+// SETUP.md "Session persistence"), which is directly readable here since it's the same origin,
+// no sharing/copying needed the way sessionStorage would require. There is no separate login form
+// anymore (it used to compare a plaintext dashboard_password client-side against a record fetched
 // with the master NocoDB token — the same vulnerability already fixed in dashboard.html's
 // move to Authentik, see SETUP.md). If there's no session, just send them to sign in there.
 async function tryAutoLogin(){
-  const id = sessionStorage.getItem('lv_cid');
+  const id = localStorage.getItem('lv_cid');
   if(!id || !sessionToken){ goBack(); return; }
   try{
     const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${id}`);
@@ -830,8 +835,8 @@ async function tryAutoLogin(){
 }
 
 function logout(){
-  sessionStorage.removeItem('lv_cid');
-  sessionStorage.removeItem('lv_session');
+  localStorage.removeItem('lv_cid');
+  localStorage.removeItem('lv_session');
   goBack();
 }
 
@@ -1303,9 +1308,41 @@ async function sendTemplateBroadcast(){
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
     const convId=leadConvId(lead);
-    if(!convId){ failed++; appendLog('tpl',`⚠️ ${lead.Name||lead.Phone} — no conversation ID`); setProgress('tpl',i+1,leads.length); await sleep(400); continue; }
-
     const resolvedVars=vars.map((v,idx)=>idx===0&&personalize?(lead.Name||v):v);
+
+    // No existing WhatsApp conversation (e.g. a Google Sheet import that's never messaged in) —
+    // Chatwoot has nothing to deliver into, but an approved template can still reach a cold phone
+    // number straight through Meta's own WhatsApp Cloud API, if this account has that connected
+    // (wa_phone_id/wa_token — Settings → Channels). See SETUP.md "Template Broadcast: cold-lead
+    // fallback". handleWaSendTemplate (Worker) wants Meta's own components/parameters shape, not
+    // Chatwoot's flat processed_params map.
+    if(!convId){
+      if(clientRecord?.wa_phone_id && lead.Phone){
+        try{
+          const components=resolvedVars.length?[{type:'body',parameters:resolvedVars.map(v=>({type:'text',text:v||''}))}]:[];
+          const r=await fetch(`${CONFIG.WORKER_BASE}/wa/send-template`,{
+            method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+            body:JSON.stringify({phone:lead.Phone, template_name:selectedTemplate.name, language:selectedTemplate.language||selectedTemplate.language_code||'en', components})
+          });
+          const data=await r.json().catch(()=>({}));
+          if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
+          sent++;
+          appendLog('tpl',`✅ ${lead.Name||lead.Phone} — sent directly (no prior conversation)`);
+        }catch(e){
+          failed++;
+          appendLog('tpl',`❌ ${lead.Name||lead.Phone} — no conversation, direct send failed: ${e.message}`);
+        }
+      }else{
+        failed++;
+        appendLog('tpl', clientRecord?.wa_phone_id
+          ? `⚠️ ${lead.Name||'lead'} — no conversation ID and no phone number on file`
+          : `⚠️ ${lead.Name||lead.Phone} — no conversation ID (connect WhatsApp Business API in Settings → Channels to reach cold leads like this)`);
+      }
+      setProgress('tpl',i+1,leads.length);
+      await sleep(400);
+      continue;
+    }
+
     // Chatwoot's template_params.processed_params is a flat {"1":val,"2":val,...} map keyed by
     // the template's numbered placeholders, not Meta's components/parameters array shape.
     const processedParams={};
