@@ -623,6 +623,19 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .task-action-btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .seg-chip{display:inline-block;border:1.5px solid var(--line);border-radius:20px;padding:6px 13px;font-size:12.5px;cursor:pointer;user-select:none;transition:all .15s;margin:0 4px 4px 0}
 .seg-chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.progress-bar-bg{background:var(--line);border-radius:6px;height:8px;overflow:hidden;margin:8px 0}
+.progress-bar-fill{background:linear-gradient(90deg,var(--accent),#0CB870);height:100%;border-radius:6px;transition:width .3s}
+.log-box{background:var(--bg);border-radius:var(--r-sm);padding:12px;max-height:180px;overflow-y:auto;font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:8px}
+/* Leads page: persistent detail panel — see openDetail()'s leads-detail-dock check and
+   SETUP.md "Leads page: persistent detail panel". Only applied while on the Leads list/table view;
+   every other page still gets the normal centered modal, untouched. */
+.modal.docked{top:0!important;right:0!important;left:auto!important;bottom:0!important;transform:none!important;width:420px!important;max-width:92vw;height:100vh;max-height:100vh;border-radius:0;box-shadow:-8px 0 30px rgba(0,0,0,.15)}
+.modal.docked.open{transform:none!important;opacity:1;pointer-events:auto}
+.leads-view-tabs .lv-tab{font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
+.leads-view-tabs .lv-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.leads-view-tabs .lv-tab .lv-x{opacity:.7;margin-left:2px}
+.leads-view-tabs .lv-tab .lv-x:hover{opacity:1}
+.li-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .task-filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
 .task-filter-btn{font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer}
 .task-filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -1377,20 +1390,48 @@ const TODAY = new Date().toISOString().slice(0,10);
 
       <div id="leadsListView">
         <div class="page-pad" style="padding-top:0">
+          <!-- Momentum strip — positive framing over the same stats the app already computes
+               elsewhere (Home/Team), so opening Leads feels like a scoreboard, not a chore list. -->
+          <div id="leadsMomentumStrip" style="margin-bottom:14px"></div>
+
+          <!-- View tabs — Needs Action Today (default) / All Leads / saved views / Reconnect.
+               See renderLeadsViewTabs()/SETUP.md "Leads page: Saved Views & Needs Action". -->
+          <div id="leadsViewTabs" class="leads-view-tabs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"></div>
+
           <div class="leads-toolbar">
-            <input class="search-input" id="leadSearch" type="text" placeholder="Search name or phone…" oninput="filterLeads()" />
-            <select class="form-input" id="leadStageFilter" onchange="filterLeads()" style="flex:0 0 140px;padding:9px 10px">
-              <option value="">All stages</option>
-            </select>
-            <select class="form-input" id="leadOwnerFilter" onchange="filterLeads()" style="flex:0 0 120px;padding:9px 10px">
+            <input class="search-input" id="leadSearch" type="text" placeholder="Search name or phone…" oninput="onLeadsFilterChange()" />
+            <select class="form-input" id="leadOwnerFilter" onchange="onLeadsFilterChange()" style="flex:0 0 130px;padding:9px 10px">
               <option value="">All owners</option>
             </select>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted);white-space:nowrap">
+              <input type="checkbox" id="leadMineOnly" onchange="onLeadsFilterChange()"> Mine
+            </label>
+            <select class="form-input" id="leadScoreFilter" onchange="onLeadsFilterChange()" style="flex:0 0 110px;padding:9px 10px">
+              <option value="">All scores</option>
+              <option value="Hot">🔥 Hot</option>
+              <option value="Warm">Warm</option>
+              <option value="Cold">Cold</option>
+            </select>
             <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
+            <button class="btn btn-secondary btn-sm" onclick="toggleLeadsAdvFilters()" title="Filter by stage or tag">🔎 Stage/Tag</button>
             <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
             <button class="btn btn-primary btn-sm" onclick="openAddLead()">+ Add Lead</button>
             <button class="btn btn-secondary btn-sm" onclick="exportCsv()">📥 CSV</button>
             <button class="btn btn-secondary btn-sm" onclick="openImport()">📤 Import</button>
           </div>
+
+          <div id="leadsAdvFilters" class="card" style="display:none;margin-bottom:12px;padding:12px 14px">
+            <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--muted)">Stages <span style="font-weight:400">(select any that apply)</span></div>
+            <div id="leadsStageChips" style="margin-bottom:10px"></div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input class="form-input" id="leadsTagFilter" placeholder="Filter by tag…" style="max-width:220px" oninput="onLeadsFilterChange()">
+              <button class="btn btn-secondary btn-sm" onclick="clearLeadsAdvFilters()">Clear stage/tag filters</button>
+            </div>
+          </div>
+
+          <!-- Bulk action bar — appears once 1+ leads are checked. -->
+          <div id="leadsBulkBar" class="card" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;margin-bottom:12px;background:var(--accent-soft)"></div>
+
           <div class="card" style="padding:0;overflow:hidden">
             <div id="leadsList"></div>
             <div id="leadsTable" style="display:none;overflow-x:auto"></div>
@@ -3772,6 +3813,45 @@ const TODAY = new Date().toISOString().slice(0,10);
   </div>
 </div>
 
+<!-- Leads page: quick Send Template — single lead (row action) or bulk (selected leads).
+     Reuses the same template list/var-substitution machinery Calendar Events already loads
+     (_ceTemplates/loadCalendarEventTemplates/ceTemplateBody/ceTemplateVarCount) and the same
+     Chatwoot-conversation-vs-Meta-direct fallback Template Broadcast uses for cold leads. See
+     SETUP.md "Leads page: quick Send Template". Body-level sibling of #overlay. -->
+<div class="modal" id="modalSendTemplate" style="width:480px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="stModalTitle">Send Template</div><button class="icon-btn" onclick="closeModal('modalSendTemplate')">✕</button></div>
+  <div class="modal-body">
+    <div class="s-note" id="stRecipientNote" style="margin-bottom:10px"></div>
+    <div class="form-group">
+      <label class="form-label">Template</label>
+      <div style="display:flex;gap:8px">
+        <select class="form-input" id="stTemplateSelect" onchange="onSendTemplateChange()"><option value="">Select a template…</option></select>
+        <button type="button" class="task-action-btn" onclick="syncSendTemplates()">🔄 Sync</button>
+      </div>
+      <div id="stTemplateMsg" style="font-size:12px;color:var(--muted);margin-top:4px"></div>
+    </div>
+    <div id="stVarFields"></div>
+    <div class="form-group" id="stPersonalizeWrap" style="display:none;align-items:center;gap:8px">
+      <input type="checkbox" id="stPersonalizeFirst" style="width:16px;height:16px" onchange="updateSendTemplatePreview()">
+      <label for="stPersonalizeFirst" style="font-size:13px;color:var(--muted);margin:0">Fill {{1}} with each recipient's own name</label>
+    </div>
+    <div id="stPreviewWrap" style="display:none;background:var(--bg);border-radius:10px;padding:10px;font-size:13px;margin-bottom:10px"><strong>Preview:</strong> <span id="stPreview"></span></div>
+    <div id="stProgressWrap" style="display:none">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px">
+        <span id="stProgLabel">Sending…</span><span id="stProgPct">0%</span>
+      </div>
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="stProgBar" style="width:0%"></div></div>
+      <div class="log-box" id="stLogBox" style="max-height:160px;overflow-y:auto"></div>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="stSendBtn" onclick="sendLeadsTemplate()">📣 Send</button>
+    <span class="save-msg" id="stModalMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalSendTemplate')">Cancel</button>
+  </div>
+</div>
+
 <!-- MODAL: Project Settings (client info + AI summary toggle) -->
 <div class="modal" id="modalProject" style="width:480px">
   <span class="modal-drag"></span>
@@ -4217,6 +4297,11 @@ function renderSettingsSubnav(active){
 
 function navigate(page){
   const dd=$id('notifDropdown');if(dd)dd.style.display='none';
+  if(_leadsDocked && page!=='leads'){
+    const modal=$id('modalDetail');
+    modal.classList.remove('docked','open');
+  }
+  _leadsDocked=(page==='leads');
   document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
   document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>b.classList.remove('active'));
   $id('page'+cap(page)).classList.remove('hidden');
@@ -4994,48 +5079,299 @@ function renderHumanDeals(){
 }
 
 /* ── LEADS LIST ── */
-function renderLeadsList(){
-  const q=$id('leadSearch')?.value.toLowerCase()||'';
-  const sf=$id('leadStageFilter')?.value||'';
-  const of=$id('leadOwnerFilter')?.value||'';
-  const filtered=allLeads.filter(l=>{
-    if(q){
+/* ── LEADS PAGE REBUILD (SETUP.md "Leads page rebuild") ──
+   Saved Views + a "Needs Action Today" default, bulk actions, a fuller per-row action bar, a
+   Reconnect (reactivation) view, and a persistent detail panel — all layered onto the existing
+   list/table/kanban rendering rather than replacing it. */
+
+// One shared filter object drives both renderLeadsList and renderLeadsTable, replacing the two
+// near-duplicate ad-hoc filters they used to each build inline.
+let _leadsFilter={ stages:[], tag:'' };
+let _leadsActiveView='needs_action'; // 'needs_action' | 'all' | 'reactivate' | a saved view's id
+let _leadsSavedViews=null; // lazy-loaded from clientRecord.lead_saved_views
+
+function getLeadSavedViews(){
+  if(_leadsSavedViews) return _leadsSavedViews;
+  try{ _leadsSavedViews=JSON.parse(clientRecord?.lead_saved_views||'[]'); }catch(e){ _leadsSavedViews=[]; }
+  return _leadsSavedViews;
+}
+async function saveLeadSavedViewsList(list){
+  _leadsSavedViews=list;
+  await patchClient({lead_saved_views:JSON.stringify(list)});
+}
+
+// "Needs Action Today" priority — never negative-ranks a closed-out lead (won/lost/opted-out
+// never "need action" again), then ranks an overdue reminder highest, a hot buying signal next,
+// then a genuinely stale conversation, with a gentle staleness tiebreaker underneath all of that.
+function leadNeedsActionScore(l){
+  if(isWonLead(l)||isLostLead(l)||l.OptOut==='Yes') return -1;
+  let score=0;
+  if(l.ReminderDate && l.ReminderDate<=TODAY) score+=1000;
+  if(l.HotMoment==='Yes') score+=500;
+  if(l.Score==='Hot') score+=300;
+  const lastMs=l.LastMsgAt?new Date(l.LastMsgAt).getTime():(l.Date?new Date(l.Date).getTime():0);
+  const hrsSince=lastMs?(Date.now()-lastMs)/3600000:0;
+  if(hrsSince>48 && (l['Follow up 1']||'No')==='No') score+=200;
+  score+=Math.min(hrsSince,720)/10;
+  return score;
+}
+// Reconnect/reactivation candidates — a lead marked Lost, or tagged "cold" by the Advanced
+// Pipeline follow-up cadence (SETUP.md) after two follow-ups with no reply. Opted-out leads are
+// excluded — the bot won't message them regardless of stage, so "reactivating" one would be a
+// no-op that just confuses the count.
+function isReactivationCandidate(l){
+  return l.OptOut!=='Yes' && (isLostLead(l) || parseTags(l.Tags).some(t=>t.toLowerCase()==='cold'));
+}
+
+function applyLeadsViewFilter(leads){
+  let out=leads;
+  if(_leadsActiveView==='needs_action') out=out.filter(l=>leadNeedsActionScore(l)>0);
+  else if(_leadsActiveView==='reactivate') out=out.filter(isReactivationCandidate);
+
+  const q=($id('leadSearch')?.value||'').toLowerCase();
+  if(q){
+    out=out.filter(l=>{
       const nameMatch=(l.Name||'').toLowerCase().includes(q);
       const phoneMatch=(l.Phone||'').includes(q);
       let convMatch=false;
-      if(_convSearchActive){
-        try{const h=JSON.parse(l.ConvHistory||'[]');convMatch=h.some(m=>(m.content||'').toLowerCase().includes(q));}catch(e){}
-      }
-      if(!nameMatch&&!phoneMatch&&!convMatch)return false;
-    }
-    if(sf&&l.Stage!==sf)return false;
-    if(of&&(l.Owner||'')!==of)return false;
-    return true;
-  });
-  // populate filters
-  const stageSet=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))];
+      if(_convSearchActive){ try{const h=JSON.parse(l.ConvHistory||'[]');convMatch=h.some(m=>(m.content||'').toLowerCase().includes(q));}catch(e){} }
+      return nameMatch||phoneMatch||convMatch;
+    });
+  }
+  const of=$id('leadOwnerFilter')?.value||'';
+  const mineOnly=$id('leadMineOnly')?.checked;
+  if(mineOnly) out=out.filter(l=>myEmail&&l.Owner===myEmail);
+  else if(of) out=out.filter(l=>(l.Owner||'')===of);
+  const sf=$id('leadScoreFilter')?.value||'';
+  if(sf) out=out.filter(l=>l.Score===sf);
+  if(_leadsFilter.stages.length) out=out.filter(l=>_leadsFilter.stages.includes(l.Stage));
+  if(_leadsFilter.tag) out=out.filter(l=>parseTags(l.Tags).some(t=>t.toLowerCase()===_leadsFilter.tag.toLowerCase()));
+  return out;
+}
+function sortLeadsForView(list){
+  if(_leadsActiveView==='needs_action') return [...list].sort((a,b)=>leadNeedsActionScore(b)-leadNeedsActionScore(a));
+  return [...list].sort((a,b)=>new Date(b.Date||0)-new Date(a.Date||0));
+}
+function onLeadsFilterChange(){ _leadsPage=1; renderLeadsCurrentView(); }
+function renderLeadsCurrentView(){
+  renderLeadsViewTabs();
+  renderLeadsMomentumStrip();
+  if(_leadsTableView) renderLeadsTable(); else renderLeadsList();
+}
+
+function toggleLeadsAdvFilters(){
+  const el=$id('leadsAdvFilters');
+  const showing=el.style.display!=='none';
+  el.style.display=showing?'none':'block';
+  if(!showing) renderLeadsStageChips();
+}
+function renderLeadsStageChips(){
+  const stages=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))];
+  $id('leadsStageChips').innerHTML=stages.length
+    ? stages.map(s=>`<span class="seg-chip${_leadsFilter.stages.includes(s)?' on':''}" data-stage="${esc(s)}" onclick="toggleLeadsStageChip(this)">${esc(s)}</span>`).join('')
+    : '<span style="font-size:12px;color:var(--muted)">No stages found yet.</span>';
+  $id('leadsTagFilter').value=_leadsFilter.tag||'';
+}
+function toggleLeadsStageChip(el){
+  const stage=el.dataset.stage;
+  const i=_leadsFilter.stages.indexOf(stage);
+  if(i>=0) _leadsFilter.stages.splice(i,1); else _leadsFilter.stages.push(stage);
+  el.classList.toggle('on', _leadsFilter.stages.includes(stage));
+  onLeadsFilterChange();
+}
+function clearLeadsAdvFilters(){
+  _leadsFilter={stages:[], tag:''};
+  renderLeadsStageChips();
+  onLeadsFilterChange();
+}
+
+// View tabs — Needs Action Today (default) / All Leads / saved views / Reconnect. Selecting a
+// saved view restores its captured filters (stage chips + tag); Needs Action/All/Reconnect just
+// reset the advanced filters and let the view's own base rule do the filtering.
+function renderLeadsViewTabs(){
+  const wrap=$id('leadsViewTabs'); if(!wrap) return;
+  const needsActionCount=allLeads.filter(l=>leadNeedsActionScore(l)>0).length;
+  const reconnectCount=allLeads.filter(isReactivationCandidate).length;
+  const saved=getLeadSavedViews();
+  const tab=(id,label,count)=>`<button class="lv-tab${_leadsActiveView===id?' active':''}" onclick="selectLeadsView('${id}')">${label}${count!==undefined?` (${count})`:''}</button>`;
+  wrap.innerHTML=
+    tab('needs_action','🎯 Needs Action',needsActionCount)+
+    tab('all','📋 All Leads')+
+    saved.map(v=>`<span class="lv-tab${_leadsActiveView===v.id?' active':''}" onclick="selectLeadsView('${v.id}')">⭐ ${esc(v.name)}<span class="lv-x" onclick="event.stopPropagation();deleteLeadsSavedView('${v.id}')" title="Delete this view">✕</span></span>`).join('')+
+    tab('reactivate','♻️ Reconnect',reconnectCount)+
+    `<button class="lv-tab" onclick="promptSaveLeadsView()">＋ Save current filters</button>`;
+}
+function selectLeadsView(id){
+  _leadsActiveView=id;
+  const saved=getLeadSavedViews().find(v=>v.id===id);
+  _leadsFilter={ stages:saved?.stages?.slice()||[], tag:saved?.tag||'' };
+  if($id('leadOwnerFilter')) $id('leadOwnerFilter').value=saved?.owner||'';
+  if($id('leadMineOnly')) $id('leadMineOnly').checked=!!saved?.mineOnly;
+  if($id('leadScoreFilter')) $id('leadScoreFilter').value=saved?.score||'';
+  _leadsPage=1;
+  renderLeadsCurrentView();
+}
+async function promptSaveLeadsView(){
+  const name=prompt('Name this view (e.g. "Hot + mine"):'); if(!name) return;
+  const view={
+    id:'lv_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), name,
+    stages:_leadsFilter.stages.slice(), tag:_leadsFilter.tag||'',
+    owner:$id('leadOwnerFilter')?.value||'', mineOnly:!!$id('leadMineOnly')?.checked, score:$id('leadScoreFilter')?.value||'',
+  };
+  const list=[...getLeadSavedViews(), view];
+  try{ await saveLeadSavedViewsList(list); _leadsActiveView=view.id; renderLeadsCurrentView(); showToast('✓ View saved','ok'); }
+  catch(e){ showToast('Failed to save view: '+e.message,'err'); }
+}
+async function deleteLeadsSavedView(id){
+  if(!confirm('Delete this saved view?')) return;
+  const list=getLeadSavedViews().filter(v=>v.id!==id);
+  try{
+    await saveLeadSavedViewsList(list);
+    if(_leadsActiveView===id) selectLeadsView('needs_action'); else renderLeadsViewTabs();
+  }catch(e){ showToast('Failed to delete: '+e.message,'err'); }
+}
+
+// Momentum strip — deliberately upbeat framing over stats already computed elsewhere (Home/Team
+// use the same isWonLead/7-day-window conventions), so opening Leads reads like a scoreboard.
+function renderLeadsMomentumStrip(){
+  const el=$id('leadsMomentumStrip'); if(!el) return;
+  const weekAgo=Date.now()-7*86400000;
+  const wonThisWeek=allLeads.filter(l=>isWonLead(l) && l.ClosedAt && new Date(l.ClosedAt).getTime()>=weekAgo).length;
+  const hotNow=allLeads.filter(l=>l.Score==='Hot'&&!isWonLead(l)&&!isLostLead(l)).length;
+  const needsAction=allLeads.filter(l=>leadNeedsActionScore(l)>0).length;
+  el.innerHTML=`<div class="s-note" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">
+    <span>🎉 <strong>${wonThisWeek}</strong> won this week</span>
+    <span>🔥 <strong>${hotNow}</strong> hot right now</span>
+    <span>${needsAction?`💪 <strong>${needsAction}</strong> ready for you today`:`✨ You're all caught up — nice work!`}</span>
+  </div>`;
+}
+
+// ── Bulk selection & actions ──
+let _bulkSelectedLeadIds=new Set();
+function toggleBulkSelect(id,ev){
+  ev?.stopPropagation();
+  if(_bulkSelectedLeadIds.has(id)) _bulkSelectedLeadIds.delete(id); else _bulkSelectedLeadIds.add(id);
+  renderBulkBar();
+}
+function clearBulkSelection(){ _bulkSelectedLeadIds.clear(); renderLeadsCurrentView(); }
+function stageOptionsForBulk(){
+  const stageIds=Object.keys(getFlow().stages||{});
+  const stages=stageIds.length?stageIds:[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))];
+  return stages.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+}
+function renderBulkBar(){
+  const el=$id('leadsBulkBar'); if(!el) return;
+  const n=_bulkSelectedLeadIds.size;
+  el.style.display=n?'flex':'none';
+  if(!n) return;
+  el.innerHTML=`
+    <strong>${n} selected</strong>
+    <select class="form-input" style="max-width:160px" onchange="if(this.value)bulkMoveStage(this.value);this.value=''"><option value="">Move to stage…</option>${stageOptionsForBulk()}</select>
+    <input class="form-input" id="bulkTagInput" placeholder="Add tag…" style="max-width:140px" onkeydown="if(event.key==='Enter')bulkAddTag()">
+    <button class="btn btn-secondary btn-sm" onclick="bulkAddTag()">Tag</button>
+    <select class="form-input" style="max-width:170px" onchange="if(this.value)bulkAssign(this.value);this.value=''"><option value="">Assign to…</option>${teamMemberOptions('')}</select>
+    <button class="btn btn-primary btn-sm" onclick="openSendTemplateModal([..._bulkSelectedLeadIds])">📣 Send Template</button>
+    <span style="flex:1"></span>
+    <button class="btn btn-secondary btn-sm" onclick="clearBulkSelection()">Clear</button>`;
+}
+async function bulkMoveStage(stage){
+  if(!confirm(`Move ${_bulkSelectedLeadIds.size} lead(s) to "${stage}"?`)) return;
+  for(const id of _bulkSelectedLeadIds){
+    const lead=allLeads.find(l=>l.Id===id); if(!lead) continue;
+    const before={Stage:lead.Stage};
+    try{
+      await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,Stage:stage});
+      lead.Stage=stage;
+      reportLeadQualityChange(id, before, {Stage:stage});
+    }catch(e){}
+  }
+  showToast(`✓ Moved ${_bulkSelectedLeadIds.size} lead(s) to ${stage}`,'ok');
+  clearBulkSelection();
+}
+async function bulkAddTag(){
+  const input=$id('bulkTagInput'); const tag=(input?.value||'').trim(); if(!tag) return;
+  for(const id of _bulkSelectedLeadIds){
+    const lead=allLeads.find(l=>l.Id===id); if(!lead) continue;
+    const tags=parseTags(lead.Tags);
+    if(!tags.some(t=>t.toLowerCase()===tag.toLowerCase())) tags.push(tag);
+    const joined=tags.join(', ');
+    try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,Tags:joined}); lead.Tags=joined; }catch(e){}
+  }
+  showToast(`✓ Tagged ${_bulkSelectedLeadIds.size} lead(s)`,'ok');
+  clearBulkSelection();
+}
+async function bulkAssign(email){
+  for(const id of _bulkSelectedLeadIds){
+    const lead=allLeads.find(l=>l.Id===id); if(!lead) continue;
+    try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,Owner:email}); lead.Owner=email; }catch(e){}
+  }
+  showToast(`✓ Assigned ${_bulkSelectedLeadIds.size} lead(s)`,'ok');
+  clearBulkSelection();
+}
+
+// Reconnect / reactivation — reopens the lead into the active pipeline (same re-entry logic as
+// Human Deals' "Released" outcome: Stage 2 of the flow if configured, else Stage 1, else 'new'),
+// clears the "cold" tag, and routes the Stage change through reportLeadQualityChange so the
+// Advanced Pipeline follow-up cadence resets and queues a fresh Day-1 task automatically — the
+// exact same mechanism a manual Stage change anywhere else in the app already triggers.
+async function reactivateLead(leadId,ev){
+  ev?.stopPropagation();
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  if(!confirm('Reactivate this lead? It moves back into your active pipeline and the bot responds again.')) return;
+  const before={Stage:lead.Stage};
+  const stageIds=Object.keys(getFlow().stages||{}).filter(k=>k!=='new');
+  const nextStage=stageIds[1]||stageIds[0]||'new';
+  const tags=parseTags(lead.Tags).filter(t=>t.toLowerCase()!=='cold');
+  const patch={Id:leadId, Stage:nextStage, OptOut:'No', Tags:tags.join(', ')};
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
+    Object.assign(lead,patch);
+    reportLeadQualityChange(leadId, before, {Stage:nextStage});
+    showToast('✓ Reactivated — back in your active pipeline','ok');
+    renderLeadsCurrentView();
+    if(confirm('Send a quick "we\'d love to reconnect" template now?')) openSendTemplateModal([leadId]);
+  }catch(e){ showToast('Failed: '+e.message,'err'); }
+}
+
+function renderLeadsList(){
+  renderLeadsViewTabs();
+  renderLeadsMomentumStrip();
+  const filtered=sortLeadsForView(applyLeadsViewFilter(allLeads));
   const ownerSet=[...new Set(allLeads.map(l=>l.Owner).filter(Boolean))];
-  $id('leadStageFilter').innerHTML='<option value="">All stages</option>'+stageSet.map(s=>`<option value="${s}"${sf===s?' selected':''}>${s}</option>`).join('');
+  const of=$id('leadOwnerFilter')?.value||'';
   $id('leadOwnerFilter').innerHTML='<option value="">All owners</option>'+ownerSet.map(o=>`<option value="${o}"${of===o?' selected':''}>${o}</option>`).join('');
 
   const el=$id('leadsList');
-  if(!filtered.length){el.innerHTML='<div class="empty-state"><div class="ei">💬</div>No leads match your filter.</div>';return;}
+  if(!filtered.length){
+    el.innerHTML=_leadsActiveView==='needs_action'
+      ? '<div class="empty-state"><div class="ei">✨</div>You\'re all caught up — nothing needs action right now. Nice work!</div>'
+      : _leadsActiveView==='reactivate'
+        ? '<div class="empty-state"><div class="ei">🌱</div>No dormant leads to reconnect with right now.</div>'
+        : '<div class="empty-state"><div class="ei">💬</div>No leads match your filter.</div>';
+    return;
+  }
   const visible=filtered.slice(0,_leadsPage*LEADS_PGS);
   const remaining=filtered.length-visible.length;
   el.innerHTML=visible.map(l=>{
     const initials=(l.Name||l.Phone||'?').charAt(0).toUpperCase();
     const tags=parseTags(l.Tags);
     const showOutcomeBtns=!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes';
+    const reconnect=isReactivationCandidate(l);
     return `<div class="lead-item" onclick="openDetail(${l.Id})">
+      <input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)" style="margin-right:2px;align-self:flex-start;margin-top:14px">
       <div class="li-avatar">${initials}</div>
       <div class="li-body">
         <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub">${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${tags.length?`<div class="tags-row" style="margin-top:4px">${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}</div>`:''}
-        ${showOutcomeBtns?`<div style="display:flex;gap:6px;margin-top:8px" onclick="event.stopPropagation()">
+        ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
           <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
+          <button class="btn btn-secondary btn-sm" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰ Snooze</button>
+          <button class="btn btn-secondary btn-sm" onclick="openFollowupForLead(${l.Id})">📅 Follow-up</button>
+          <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])">📣 Send</button>
         </div>`:''}
+        ${reconnect?`<div class="li-actions" onclick="event.stopPropagation()"><button class="btn btn-sm" style="background:#0D9C93;color:#fff" onclick="reactivateLead(${l.Id},event)">♻️ Reactivate</button></div>`:''}
       </div>
       <div class="li-right">
         ${scoreBadge(l.Score)}
@@ -5050,8 +5386,6 @@ function renderLeadsList(){
     el.innerHTML+=`<div style="text-align:center;padding:14px"><button class="btn btn-secondary btn-sm" onclick="_leadsPage++;renderLeadsList()">Load more (${remaining} remaining)</button></div>`;
   }
 }
-
-function filterLeads(){_leadsPage=1;if(_leadsTableView)renderLeadsTable();else renderLeadsList();}
 
 // Leads page's two top-level views (List/Table vs Pipeline/kanban) — merged from what used to be
 // two separate nav tabs ("Leads" and "Pipeline") into one, since both are just different displays
@@ -5083,29 +5417,32 @@ function toggleLeadsView(){
 }
 
 function renderLeadsTable(){
-  const q=$id('leadSearch')?.value.toLowerCase()||'';
-  const sf=$id('leadStageFilter')?.value||'';
-  const of=$id('leadOwnerFilter')?.value||'';
-  const filtered=allLeads.filter(l=>{
-    if(q){const nm=(l.Name||'').toLowerCase().includes(q);const ph=(l.Phone||'').includes(q);if(!nm&&!ph)return false;}
-    if(sf&&l.Stage!==sf)return false;
-    if(of&&(l.Owner||'')!==of)return false;
-    return true;
-  });
+  renderLeadsViewTabs();
+  renderLeadsMomentumStrip();
+  const filtered=sortLeadsForView(applyLeadsViewFilter(allLeads));
   const el=$id('leadsTable');
-  if(!filtered.length){el.innerHTML='<div class="empty-state" style="padding:24px">No leads match your filter.</div>';return;}
+  if(!filtered.length){
+    el.innerHTML=_leadsActiveView==='needs_action'
+      ? '<div class="empty-state" style="padding:24px"><div class="ei">✨</div>You\'re all caught up — nothing needs action right now. Nice work!</div>'
+      : _leadsActiveView==='reactivate'
+        ? '<div class="empty-state" style="padding:24px"><div class="ei">🌱</div>No dormant leads to reconnect with right now.</div>'
+        : '<div class="empty-state" style="padding:24px">No leads match your filter.</div>';
+    return;
+  }
   const QA_COLS=['age','profession','email','city','country','budget','language','source'];
   const rows=filtered.slice(0,_leadsPage*LEADS_PGS);
   const remaining=filtered.length-rows.length;
   el.innerHTML=`<table class="leads-tbl"><thead><tr>
-    <th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Owner</th>
+    <th></th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Owner</th>
     <th>Age</th><th>Profession</th><th>Email</th><th>City</th><th>Country</th><th>Budget</th><th>Language</th><th>Source</th>
     <th>Date</th><th>Actions</th>
   </tr></thead><tbody>${rows.map(l=>{
     let qa={};try{qa=JSON.parse(l.QualAnswers||'{}');}catch(e){}
     const qGet=k=>{const lk=k.toLowerCase();return Object.entries(qa).find(([key])=>key.toLowerCase()===lk)?.[1]||l[k]||l[k.charAt(0).toUpperCase()+k.slice(1)]||'';}
     const showOutcomeBtns=!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes';
+    const reconnect=isReactivationCandidate(l);
     return `<tr onclick="openDetail(${l.Id})">
+      <td onclick="event.stopPropagation()"><input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)"></td>
       <td>${esc(l.Name||'Unknown')}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}</td>
@@ -5120,15 +5457,158 @@ function renderLeadsTable(){
       <td>${esc(l.Language||qGet('language'))}</td>
       <td>${esc(l.Source||qGet('source'))}</td>
       <td>${esc(fmtDateShort(l.Date))}</td>
-      <td>${showOutcomeBtns?`<div style="display:flex;gap:6px" onclick="event.stopPropagation()">
+      <td>${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
         <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669;white-space:nowrap" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
         <button class="btn btn-secondary btn-sm" style="color:#DC2626;white-space:nowrap" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
-      </div>`:'—'}</td>
+        <button class="btn btn-secondary btn-sm" onclick="snoozeReminderLead(${l.Id})">⏰</button>
+        <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])">📣</button>
+      </div>`:(reconnect?`<button class="btn btn-sm" style="background:#0D9C93;color:#fff;white-space:nowrap" onclick="event.stopPropagation();reactivateLead(${l.Id},event)">♻️ Reactivate</button>`:'—')}</td>
     </tr>`;
   }).join('')}</tbody></table>`;
   if(remaining>0){
     el.innerHTML+=`<div style="text-align:center;padding:14px"><button class="btn btn-secondary btn-sm" onclick="_leadsPage++;renderLeadsTable()">Load more (${remaining} remaining)</button></div>`;
   }
+}
+
+// ID-based wrapper (not JSON.stringify-in-onclick) so this matches every other per-row action
+// button's convention of looking the lead up by Id inside the target function.
+function openFollowupForLead(leadId){
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(lead) openTaskModal(null, lead);
+}
+
+/* ── LEADS: SEND TEMPLATE MODAL ──
+   Mirrors broadcast.html's Template Broadcast tab (getTemplateBody/getTemplateVarCount/
+   buildVarFields/updatePreview/sendTemplateBroadcast) and reuses the Calendar Events feature's
+   already-loaded _ceTemplates/loadCalendarEventTemplates/ceTemplateBody/ceTemplateVarCount
+   (same GET/POST /broadcast/templates(/sync) source), just retargeted at whichever lead IDs the
+   Leads page passes in (a single lead's "📣 Send" button, or the bulk-action bar's selection). */
+let _stLeadIds=[], _stSelectedTemplate=null;
+function openSendTemplateModal(leadIds){
+  _stLeadIds=(leadIds||[]).filter(id=>allLeads.some(l=>l.Id===id));
+  if(!_stLeadIds.length){ showToast('No leads selected','err'); return; }
+  const leads=_stLeadIds.map(id=>allLeads.find(l=>l.Id===id));
+  $id('stModalTitle').textContent=_stLeadIds.length>1?`Send Template — ${_stLeadIds.length} leads`:'Send Template';
+  $id('stRecipientNote').textContent=_stLeadIds.length>1
+    ? leads.slice(0,3).map(l=>l.Name||l.Phone).join(', ')+(leads.length>3?` +${leads.length-3} more`:'')
+    : `To: ${leads[0].Name||'Unknown'} (${maskPhone(leads[0].Phone)})`;
+  $id('stVarFields').innerHTML=''; $id('stPreviewWrap').style.display='none'; $id('stProgressWrap').style.display='none';
+  $id('stModalMsg').textContent=''; $id('stLogBox').innerHTML=''; $id('stProgBar').style.width='0%';
+  $id('stSendBtn').disabled=false;
+  _stSelectedTemplate=null;
+  if(_ceTemplates.length){
+    $id('stTemplateSelect').innerHTML='<option value="">Select a template…</option>'+_ceTemplates.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('');
+    $id('stTemplateMsg').textContent='';
+  }else{
+    loadCalendarEventTemplates().then(()=>{
+      $id('stTemplateSelect').innerHTML='<option value="">Select a template…</option>'+_ceTemplates.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('');
+    });
+  }
+  openModal('modalSendTemplate');
+}
+async function syncSendTemplates(){
+  const msg=$id('stTemplateMsg');
+  msg.textContent='Syncing…';
+  try{ await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates/sync`,{method:'POST',headers:ncAuthHeaders()}); }catch(e){}
+  await new Promise(r=>setTimeout(r,3000));
+  await loadCalendarEventTemplates();
+  $id('stTemplateSelect').innerHTML='<option value="">Select a template…</option>'+_ceTemplates.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('');
+  msg.textContent=_ceTemplates.length?`${_ceTemplates.length} template(s) available.`:'No approved templates found yet — connect WhatsApp in Settings → Channels.';
+}
+function onSendTemplateChange(){
+  const name=$id('stTemplateSelect').value;
+  _stSelectedTemplate=_ceTemplates.find(t=>t.name===name)||null;
+  const count=_stSelectedTemplate?ceTemplateVarCount(_stSelectedTemplate):0;
+  $id('stVarFields').innerHTML=count?Array.from({length:count},(_,i)=>`
+    <div class="form-group"><label class="form-label">Variable {{${i+1}}}</label><input class="form-input" id="stVar${i+1}" placeholder="Value for {{${i+1}}}" oninput="updateSendTemplatePreview()"></div>`).join(''):'';
+  $id('stPersonalizeWrap').style.display=(_stSelectedTemplate&&count>0)?'flex':'none';
+  updateSendTemplatePreview();
+}
+function updateSendTemplatePreview(){
+  const wrap=$id('stPreviewWrap');
+  if(!_stSelectedTemplate){ wrap.style.display='none'; return; }
+  wrap.style.display='';
+  let body=ceTemplateBody(_stSelectedTemplate);
+  const count=ceTemplateVarCount(_stSelectedTemplate);
+  const personalize=$id('stPersonalizeFirst').checked;
+  for(let i=1;i<=count;i++){
+    const raw=$id('stVar'+i)?.value||`{{${i}}}`;
+    const val=(i===1&&personalize)?'(recipient\'s name)':raw;
+    body=body.replace(new RegExp(`\\{\\{${i}\\}\\}`,'g'), val);
+  }
+  $id('stPreview').textContent=body;
+}
+async function sendLeadsTemplate(){
+  if(!_stSelectedTemplate){ $id('stModalMsg').textContent='Select a template first.'; $id('stModalMsg').className='save-msg err'; return; }
+  const leads=_stLeadIds.map(id=>allLeads.find(l=>l.Id===id)).filter(Boolean);
+  const varCount=ceTemplateVarCount(_stSelectedTemplate);
+  const vars=[]; for(let i=1;i<=varCount;i++) vars.push($id('stVar'+i)?.value||'');
+  const personalize=$id('stPersonalizeFirst').checked;
+
+  $id('stSendBtn').disabled=true;
+  $id('stModalMsg').textContent='';
+  $id('stProgressWrap').style.display='';
+  $id('stLogBox').innerHTML='';
+  const setProg=(done,total)=>{ $id('stProgBar').style.width=(done/total*100)+'%'; $id('stProgPct').textContent=Math.round(done/total*100)+'%'; };
+  const log=(msg)=>{ const box=$id('stLogBox'); box.innerHTML+=`<div>${esc(msg)}</div>`; box.scrollTop=box.scrollHeight; };
+  setProg(0,leads.length);
+
+  let sent=0,failed=0;
+  for(let i=0;i<leads.length;i++){
+    const lead=leads[i];
+    const convId=leadConvId(lead);
+    const resolvedVars=vars.map((v,idx)=>idx===0&&personalize?(lead.Name||v):v);
+
+    // No existing Chatwoot conversation (e.g. a cold/reactivated or sheet-imported lead) — fall
+    // back to Meta's own WhatsApp Cloud API directly, same dual-path pattern as Template
+    // Broadcast's cold-lead fallback (see SETUP.md "Template Broadcast: cold-lead fallback").
+    if(!convId){
+      if(clientRecord?.wa_phone_id && lead.Phone){
+        try{
+          const components=resolvedVars.length?[{type:'body',parameters:resolvedVars.map(v=>({type:'text',text:v||''}))}]:[];
+          const r=await fetch(`${CONFIG.WORKER_BASE}/wa/send-template`,{
+            method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+            body:JSON.stringify({phone:lead.Phone, template_name:_stSelectedTemplate.name, language:_stSelectedTemplate.language||_stSelectedTemplate.language_code||'en', components})
+          });
+          const data=await r.json().catch(()=>({}));
+          if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
+          sent++; log(`✅ ${lead.Name||lead.Phone} — sent directly (no prior conversation)`);
+        }catch(e){ failed++; log(`❌ ${lead.Name||lead.Phone} — direct send failed: ${e.message}`); }
+      }else{
+        failed++;
+        log(clientRecord?.wa_phone_id
+          ? `⚠️ ${lead.Name||'lead'} — no conversation and no phone on file`
+          : `⚠️ ${lead.Name||lead.Phone} — no conversation (connect WhatsApp Business API in Settings → Channels to reach cold leads)`);
+      }
+      setProg(i+1,leads.length);
+      continue;
+    }
+
+    const processedParams={};
+    resolvedVars.forEach((v,idx)=>{ processedParams[idx+1]=v; });
+    let content=ceTemplateBody(_stSelectedTemplate);
+    resolvedVars.forEach((v,idx)=>{ content=content.replace(new RegExp(`\\{\\{${idx+1}\\}\\}`,'g'), v); });
+
+    try{
+      const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/send-template`,{
+        method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({
+          conv_id:convId, content, template_name:_stSelectedTemplate.name,
+          category:_stSelectedTemplate.category||'MARKETING',
+          language:_stSelectedTemplate.language||_stSelectedTemplate.language_code||'en',
+          processed_params:processedParams
+        })
+      });
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
+      sent++; log(`✅ ${lead.Name||lead.Phone} — sent`);
+    }catch(e){ failed++; log(`❌ ${lead.Name||lead.Phone} — ${e.message}`); }
+    setProg(i+1,leads.length);
+  }
+  $id('stSendBtn').disabled=false;
+  $id('stModalMsg').textContent=`${sent} sent, ${failed} failed.`;
+  $id('stModalMsg').className='save-msg '+(failed&&!sent?'err':'ok');
+  if(sent && !failed) setTimeout(()=>closeModal('modalSendTemplate'),1600);
 }
 
 /* ── ADD / EDIT LEAD ── */
@@ -5329,7 +5809,25 @@ function openDetail(id){
   renderRecoveryChip(lead);
   renderLeadProfile(lead);
   renderWaReply(lead);
-  openModal('modalDetail');
+  openLeadDetailModal();
+}
+
+// On the Leads page, the detail panel docks to the side of the list instead of taking over the
+// screen as a centered/dimmed modal — so a rep can click down a filtered list of leads without
+// losing their place each time. Everywhere else in the app (Pipeline board, Reports, etc.)
+// modalDetail keeps behaving like every other modal; this only changes what happens while
+// _leadsDocked is true, so openModal/closeModal's shared logic (used by 30+ other modals) is
+// left untouched.
+let _leadsDocked=false;
+function openLeadDetailModal(){
+  const modal=$id('modalDetail');
+  if(_leadsDocked){
+    modal.classList.add('docked');
+    modal.classList.add('open');
+  }else{
+    modal.classList.remove('docked');
+    openModal('modalDetail');
+  }
 }
 
 function editCurrentLead(){ if(currentLead){closeModal('modalDetail');openEditLead(currentLead);} }
