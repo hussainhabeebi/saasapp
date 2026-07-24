@@ -198,8 +198,8 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
 // the rest of this object (clientRecord) sits in a page-lifetime JS variable in
 // dashboard.html/broadcast.html, inspectable via devtools for as long as the tab is open.
 function safeClient(rec){
-  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, ...safe}=rec;
-  return {...safe, meta_capi_connected:!!meta_capi_token, gsc_connected:!!gsc_refresh_token};
+  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, ...safe}=rec;
+  return {...safe, meta_capi_connected:!!meta_capi_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token};
 }
 
 /* ── Session token: HMAC-signed, not a full JWT — just enough to avoid a
@@ -2222,6 +2222,16 @@ async function handleCalendarEventsList(request, env){
   const {list}=await getCalendarEvents(env, payload.cid);
   return json({list});
 }
+// Google Calendar push for a Calendar Event — always all-day (these are dates, never timed
+// appointments) using RRULE:FREQ=YEARLY for a recurring one. Best-effort: a client who hasn't
+// connected Google Calendar just gets gcal_event_id staying null, same "optional integration
+// degrades gracefully" pattern used everywhere else in this file.
+async function gcalSyncCalendarEvent(env, clientId, event){
+  const c=await getClientById(env, clientId);
+  if(!c?.gcal_refresh_token||!c?.gcal_calendar_id) return event.gcal_event_id||null;
+  return gcalUpsertEvent(env, c, {gcalEventId:event.gcal_event_id||null, title:event.title, notes:event.notes, date:event.date, allDay:true, recurrenceYearly:!!event.recurring_yearly});
+}
+
 async function handleCalendarEventCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -2230,6 +2240,7 @@ async function handleCalendarEventCreate(request, env){
   if(err) return json({error:err}, 400);
   const {list}=await getCalendarEvents(env, payload.cid);
   const event={id:'ce_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8), created_at:new Date().toISOString(), ...calendarEventFromBody(body)};
+  event.gcal_event_id=await gcalSyncCalendarEvent(env, payload.cid, event);
   list.push(event);
   await saveCalendarEvents(env, payload.cid, list);
   return json({ok:true, event});
@@ -2246,6 +2257,7 @@ async function handleCalendarEventUpdate(request, env){
   const err=validateCalendarEvent(merged);
   if(err) return json({error:err}, 400);
   list[idx]=calendarEventFromBody(merged, list[idx]);
+  list[idx].gcal_event_id=await gcalSyncCalendarEvent(env, payload.cid, list[idx]);
   await saveCalendarEvents(env, payload.cid, list);
   return json({ok:true, event:list[idx]});
 }
@@ -2254,9 +2266,11 @@ async function handleCalendarEventDelete(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
   if(!body.id) return json({error:'id required'}, 400);
-  const {list}=await getCalendarEvents(env, payload.cid);
+  const {client:c, list}=await getCalendarEvents(env, payload.cid);
+  const removed=list.find(e=>e.id===body.id);
+  if(!removed) return json({error:'Event not found'}, 404);
+  if(removed.gcal_event_id && c?.gcal_refresh_token) await gcalDeleteEvent(env, c, removed.gcal_event_id);
   const next=list.filter(e=>e.id!==body.id);
-  if(next.length===list.length) return json({error:'Event not found'}, 404);
   await saveCalendarEvents(env, payload.cid, next);
   return json({ok:true});
 }
@@ -3021,6 +3035,162 @@ async function handleReportsSeo(request, env){
     top_queries:queryRows.map(row=>shapeRow(row,'query')),
     top_pages:pageRows.map(row=>shapeRow(row,'page')),
   });
+}
+
+/* ── Google Calendar Sync (Task Manager — SETUP.md "Google Calendar sync") ────────────────────
+   One-way push: manual Tasks (due_date/due_time) and Calendar Events (see the "CALENDAR EVENTS"
+   module above) get created/updated/deleted as real events on a dedicated Google Calendar the
+   moment they're created/edited/marked done/deleted in Leadvyne — so a rep sees their Leadvyne
+   work on their phone's own calendar app without opening the dashboard. Same
+   signOauthState/verifyOauthState + browser-redirect-callback shape as the Google Search Console
+   module above, reusing the *same* GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET Cloud OAuth Client (just
+   a different scope) — no second Google Cloud project needed.
+   **Deliberately one-way for now** — an edit made directly in Google Calendar does NOT flow back
+   into Leadvyne. True two-way sync needs either a push-notification channel (Google's Calendar
+   watch/webhook API, which expires and must be renewed on a schedule) or periodic polling with a
+   sync token, both genuinely separate pieces of infra from what shipped here; documented as a
+   known next step in SETUP.md rather than half-built. */
+const GCAL_SCOPE='https://www.googleapis.com/auth/calendar';
+const GCAL_CALENDAR_NAME='Leadvyne Tasks & Events';
+
+async function handleGcalOauthStart(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET) return json({error:'Google credentials are not configured on the server.'}, 500);
+  const state=await signOauthState(env, payload.cid);
+  const redirectUri=`${env.WORKER_BASE_URL}/gcal/oauth/callback`;
+  const url=`https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(env.GOOGLE_CLIENT_ID)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(GCAL_SCOPE)}&access_type=offline&prompt=consent&state=${encodeURIComponent(state)}`;
+  return json({ok:true, url});
+}
+
+async function handleGcalOauthCallback(request, env){
+  const url=new URL(request.url);
+  const appBase=env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html';
+  const fail=(msg)=>Response.redirect(`${appBase}?gcal=error&msg=${encodeURIComponent(msg)}`, 302);
+  if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET) return fail('Google credentials are not configured on the server.');
+  const err=url.searchParams.get('error');
+  if(err) return fail(err==='access_denied'?'Access was denied':err);
+  const code=url.searchParams.get('code');
+  const state=url.searchParams.get('state');
+  if(!code) return fail('Invalid callback from Google');
+  const statePayload=await verifyOauthState(env, state);
+  if(!statePayload) return fail('This connection link expired — try connecting again from Tasks');
+
+  const redirectUri=`${env.WORKER_BASE_URL}/gcal/oauth/callback`;
+  const tokenR=await fetch('https://oauth2.googleapis.com/token', {
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({code, client_id:env.GOOGLE_CLIENT_ID, client_secret:env.GOOGLE_CLIENT_SECRET, redirect_uri:redirectUri, grant_type:'authorization_code'})
+  });
+  const tokenData=await tokenR.json().catch(()=>({}));
+  if(!tokenR.ok||!tokenData.refresh_token) return fail(tokenData?.error_description||'Google did not return a refresh token — remove Leadvyne from your Google Account\'s third-party access first, then reconnect.');
+
+  // Creates the dedicated secondary calendar right away (rather than lazily on first sync) so the
+  // "Connected ✓" state is immediately meaningful — a rep can open Google Calendar and see the new
+  // calendar exists even before any task/event has synced into it yet.
+  const calId=await gcalCreateCalendar(tokenData.access_token);
+  if(!calId) return fail('Connected to Google, but could not create the "Leadvyne Tasks & Events" calendar — try again.');
+
+  await patchClientFields(env, statePayload.cid, {gcal_refresh_token:tokenData.refresh_token, gcal_calendar_id:calId, gcal_connected_at:new Date().toISOString()});
+  return Response.redirect(`${appBase}?client=${statePayload.cid}&gcal=connected`, 302);
+}
+
+async function gcalCreateCalendar(accessToken){
+  const r=await fetch('https://www.googleapis.com/calendar/v3/calendars', {
+    method:'POST', headers:{Authorization:`Bearer ${accessToken}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({summary:GCAL_CALENDAR_NAME})
+  });
+  const data=await r.json().catch(()=>({}));
+  return r.ok?data.id:null;
+}
+
+async function gcalGetAccessToken(env, c){
+  if(!c.gcal_refresh_token) return null;
+  const r=await fetch('https://oauth2.googleapis.com/token', {
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({refresh_token:c.gcal_refresh_token, client_id:env.GOOGLE_CLIENT_ID, client_secret:env.GOOGLE_CLIENT_SECRET, grant_type:'refresh_token'})
+  });
+  const data=await r.json().catch(()=>({}));
+  return r.ok?data.access_token:null;
+}
+
+async function handleGcalStatus(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  return json({connected:!!(c?.gcal_refresh_token&&c?.gcal_calendar_id)});
+}
+
+async function handleGcalDisconnect(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  // Leaves the Google-side calendar itself alone — deleting it from here would also be surprising
+  // if a rep still wants to keep the events already synced there; they can delete the calendar
+  // themselves in Google Calendar if they want it fully gone.
+  await patchClientFields(env, payload.cid, {gcal_refresh_token:'', gcal_calendar_id:'', gcal_connected_at:''});
+  return json({ok:true});
+}
+
+// Shared create/update — one function for both since a Google Calendar event id already existing
+// is the only thing that distinguishes the two (PATCH vs POST). `allDay` picks Google's `date` vs
+// `dateTime` event shape; a timed event gets a fixed 30-minute duration (Google requires an end
+// time, and this app never tracks a task's actual duration). `recurrenceYearly` uses Google's own
+// native RRULE recurrence for display — purely cosmetic on the Google side; Leadvyne's own
+// Calendar Events cadence/dedupe logic (see calendarOccurrenceDate above) is entirely unaffected
+// by however this renders in Google Calendar.
+async function gcalUpsertEvent(env, c, {gcalEventId, title, notes, date, time, allDay, recurrenceYearly}){
+  const token=await gcalGetAccessToken(env, c);
+  if(!token||!c.gcal_calendar_id) return null;
+  const body={
+    summary:title||'(untitled)', description:notes||'',
+    ...(allDay
+      ? {start:{date}, end:{date}}
+      : {start:{dateTime:`${date}T${time||'09:00'}:00`}, end:{dateTime:gcalAddMinutes(date, time||'09:00', 30)}}),
+    ...(recurrenceYearly?{recurrence:['RRULE:FREQ=YEARLY']}:{}),
+  };
+  const method=gcalEventId?'PATCH':'POST';
+  const url=gcalEventId
+    ? `https://www.googleapis.com/calendar/v3/calendars/${c.gcal_calendar_id}/events/${gcalEventId}`
+    : `https://www.googleapis.com/calendar/v3/calendars/${c.gcal_calendar_id}/events`;
+  const r=await fetch(url, {method, headers:{Authorization:`Bearer ${token}`, 'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const data=await r.json().catch(()=>({}));
+  // A previously-synced event the rep since deleted straight from Google Calendar comes back 404/410
+  // on PATCH — recover by creating a fresh one instead of leaving this task/event un-synced forever.
+  if(!r.ok && gcalEventId && (r.status===404||r.status===410)){
+    const r2=await fetch(`https://www.googleapis.com/calendar/v3/calendars/${c.gcal_calendar_id}/events`, {method:'POST', headers:{Authorization:`Bearer ${token}`, 'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const data2=await r2.json().catch(()=>({}));
+    return r2.ok?data2.id:null;
+  }
+  return r.ok?data.id:null;
+}
+function gcalAddMinutes(date, time, minutes){
+  const dt=new Date(`${date}T${time}:00`);
+  dt.setMinutes(dt.getMinutes()+minutes);
+  return dt.toISOString().slice(0,19);
+}
+async function gcalDeleteEvent(env, c, gcalEventId){
+  if(!gcalEventId||!c.gcal_calendar_id) return;
+  const token=await gcalGetAccessToken(env, c);
+  if(!token) return;
+  await fetch(`https://www.googleapis.com/calendar/v3/calendars/${c.gcal_calendar_id}/events/${gcalEventId}`, {method:'DELETE', headers:{Authorization:`Bearer ${token}`}}).catch(()=>{});
+}
+
+// Manual Tasks have no server-side CRUD at all (dashboard.html writes the whole manual_tasks blob
+// directly via the generic /nocodb passthrough) — so unlike Calendar Events below, this is a
+// dedicated route the frontend calls right after its own save succeeds, passing just the one
+// task's current shape rather than the Worker re-parsing the whole tasks blob itself.
+async function handleGcalSyncTask(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {action, task}=await request.json().catch(()=>({}));
+  if(!task?.id) return json({error:'task required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.gcal_refresh_token||!c?.gcal_calendar_id) return json({ok:true, skipped:'not-connected'});
+  if(action==='delete' || task.status==='done' || !task.due_date){
+    if(task.gcal_event_id) await gcalDeleteEvent(env, c, task.gcal_event_id);
+    return json({ok:true, gcal_event_id:null});
+  }
+  const gcalEventId=await gcalUpsertEvent(env, c, {gcalEventId:task.gcal_event_id||null, title:task.title, notes:task.notes, date:task.due_date, time:task.due_time, allDay:!task.due_time});
+  return json({ok:true, gcal_event_id:gcalEventId});
 }
 
 // Fires a WhatsApp template straight through Meta's Graph API (same shape as
@@ -8658,6 +8828,11 @@ export default {
       else if(url.pathname==='/gsc/sites' && request.method==='GET'){ res=await handleGscSitesList(request, env); }
       else if(url.pathname==='/gsc/site' && request.method==='POST'){ res=await handleGscSiteSave(request, env); }
       else if(url.pathname==='/gsc/disconnect' && request.method==='POST'){ res=await handleGscDisconnect(request, env); }
+      else if(url.pathname==='/gcal/oauth/start' && request.method==='POST'){ res=await handleGcalOauthStart(request, env); }
+      else if(url.pathname==='/gcal/oauth/callback' && request.method==='GET'){ res=await handleGcalOauthCallback(request, env); }
+      else if(url.pathname==='/gcal/status' && request.method==='GET'){ res=await handleGcalStatus(request, env); }
+      else if(url.pathname==='/gcal/disconnect' && request.method==='POST'){ res=await handleGcalDisconnect(request, env); }
+      else if(url.pathname==='/gcal/sync-task' && request.method==='POST'){ res=await handleGcalSyncTask(request, env); }
       else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }
