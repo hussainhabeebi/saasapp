@@ -19,7 +19,17 @@
 // exposure as before, just not yet migrated. dashboard.html and ecom.html
 // (via the /ecom/* routes) are fully migrated.
 
-const SESSION_TTL_SECONDS = 24 * 3600;
+// 30 days, not 24h — a rep on WhatsApp-heavy mobile use dips in and out of the dashboard all day;
+// combined with moving the frontend's own storage of this token from sessionStorage to
+// localStorage (see dashboard.html — sessionStorage is wiped the moment a tab/browser closes,
+// which was the real cause of frequent re-logins, more than the TTL itself), a session should
+// survive normal day-to-day use. handleSessionMe re-signs a fresh token on every successful call
+// (a sliding window) so an account opened at least once a month never actually hits this ceiling —
+// only 30 days of total inactivity forces a fresh Authentik login. Tradeoff: these are stateless
+// HMAC tokens with no server-side revocation list, so a compromised token is valid for the full
+// window (or less, if myEmail/team access is later locked down in Authentik) — the same
+// stateless-token approach already used here, just a deliberately longer leash.
+const SESSION_TTL_SECONDS = 30 * 24 * 3600;
 const CLIENTS_TABLE = 'mxl33bg4wi70fqj';
 const DEFAULT_LEADS_TABLE = 'mvg6rcw0ia5qqrx';
 // Create these two tables once in NocoDB (shared across all clients, rows scoped by a
@@ -355,7 +365,11 @@ async function handleSessionMe(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const rec=await getClientById(env, payload.cid);
   if(!rec||!rec.Id) return json({error:'Client not found'}, 404);
-  return json({client_id:String(rec.Id), client:safeClient(rec)});
+  // Sliding-window refresh — this route is called on every app load/resume (dashboard.html's
+  // resumeSession()), so reissuing a fresh full-length token here means an account opened at
+  // least once every SESSION_TTL_SECONDS never actually hits the expiry ceiling.
+  const session_token=await signSession(env, rec.Id);
+  return json({client_id:String(rec.Id), client:safeClient(rec), session_token});
 }
 
 /* ── Team user creation (User Management) — provisions a real Authentik account (username +
