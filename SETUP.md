@@ -4452,3 +4452,93 @@ already-open tab until the user happens to hit refresh on their own.
   anything not matching the current `CACHE` name) actually has a new name to diff against instead
   of silently keeping the same cache alive forever.
 
+## Leads page rebuild (`frontend/dashboard.html`) — needs-action default, saved views, bulk actions, reactivation
+
+The Leads page defaulted to a flat, unfiltered list and every day-to-day action (stage move, tag,
+send template, re-open a cold lead) needed the detail drawer or a trip to another page. Rebuilt
+around "what does a rep need to do right now," reusing every backend route already built earlier
+this session — **no new Worker routes needed**; only one new CLIENTS config-blob field.
+
+### 1. "Needs Action Today" is the default view, not a flat list
+`leadNeedsActionScore(lead)` ranks: won/lost/opted-out leads always score `-1` (never "need
+action" again) → an overdue `ReminderDate` scores highest (+1000) → a `HotMoment` signal (+500) →
+`Score==='Hot'` (+300) → a conversation stale >48h with no Follow-up-1 sent (+200) → a gentle
+staleness tiebreaker underneath all of that. `applyLeadsViewFilter`/`sortLeadsForView` apply this
+as the `needs_action` view's filter+sort; opening the Leads page lands here by default
+(`_leadsActiveView='needs_action'`) instead of "All Leads." Deliberately computed client-side from
+fields already on `allLeads` — no new stored field, no dependency on the separate
+`computeAllTasks()` virtual-task engine.
+
+### 2. Saved views (`lead_saved_views` — new CLIENTS field, config-blob pattern)
+A rep can save the current filter combo (stage chips, tag, owner, "Mine only", score) as a named
+tab via "＋ Save current filters" → `promptSaveLeadsView()`. Stored the same way every other
+lightweight structured feature this session stores (`manual_tasks`, `automation_flows`,
+`calendar_events`): a JSON array in a new CLIENTS Long-Text column, read/written through the
+existing generic `patchClient()` helper (PATCH + verifying re-GET with retry) — **add this column
+manually in NocoDB** (Long Text) the same way the other config-blob fields were added.
+`getLeadSavedViews()`/`saveLeadSavedViewsList()` read/write it; `renderLeadsViewTabs()` renders
+saved views alongside the built-in Needs Action / All Leads / Reconnect tabs, each with an inline
+✕ to delete (`deleteLeadsSavedView()`).
+
+### 3. Bulk actions from the list itself
+A checkbox on each row (`toggleBulkSelect`) populates `_bulkSelectedLeadIds`; `renderBulkBar()`
+shows a bulk-action bar (stage move, tag, assign, Send Template) the moment anything is selected.
+`bulkMoveStage()`/`bulkAddTag()`/`bulkAssign()` just loop the selection through the same
+`ncPatch(.../LEADS_TABLE_ID/records, ...)` calls a single-lead edit already used — a stage move
+also calls `reportLeadQualityChange(id, before, {Stage})` per lead, so the Advanced Pipeline
+follow-up cadence resets exactly as it would for a manual one-at-a-time Stage change. No batch
+Worker endpoint was added; this is N sequential existing-route calls, acceptable since bulk actions
+are an infrequent, human-initiated, small-N operation (not a hot path).
+
+### 4. Fuller one-click action bar per row
+Extends the existing Won/Spam buttons with ⏰ Snooze (existing `snoozeReminderLead`), 📅 Follow-up
+(new `openFollowupForLead(leadId)` — looks the lead up by Id and calls the existing
+`openTaskModal(null, lead)`, matching every other row button's ID-based-lookup convention rather
+than embedding a JSON-stringified lead object in the `onclick` attribute), and 📣 Send (opens the
+new Send Template modal, see below) — so most day-to-day handling never needs the detail drawer.
+
+### 5. Send Template modal (`#modalSendTemplate`) — reuses existing template infra, dual send path
+`openSendTemplateModal(leadIds)` (called with one lead from a row's 📣 button, or the whole bulk
+selection from the bulk bar) reuses the Calendar Events feature's already-loaded
+`_ceTemplates`/`loadCalendarEventTemplates()`/`ceTemplateBody()`/`ceTemplateVarCount()` (same
+`GET/POST /broadcast/templates(/sync)` source, no new fetch path) and mirrors Template Broadcast's
+send loop (`sendTemplateBroadcast()` in `broadcast.html`) exactly, including its cold-lead
+fallback: if a lead has a Chatwoot `ConversationID`, send via `POST /broadcast/send-template`
+(flat `processed_params` map); if not but `clientRecord.wa_phone_id` is set, send directly through
+Meta's own API via `POST /wa/send-template` (`components/parameters` shape) instead of silently
+failing — same dual path documented under "Template Broadcast: cold-lead fallback." Per-recipient
+progress bar + scrolling log box (`.progress-bar-bg`/`.log-box`, new CSS) mirror Template
+Broadcast's own send UI.
+
+### 6. Reconnect / Reactivation
+"♻️ Reconnect" is a filtered view (`isReactivationCandidate(l)`: `Stage==='lost'` OR tagged
+`cold` — the same tag the Advanced Pipeline cadence cron already writes after two unanswered
+follow-ups — and not opted out) with a one-click "♻️ Reactivate" per row. `reactivateLead(leadId)`
+re-enters the lead at Stage 2 of the configured flow (or Stage 1, or `new` — same
+"Released"-outcome stage-picking logic Human Deals already uses), clears the `cold` tag, sets
+`OptOut:'No'`, and — unlike the pre-existing detail-drawer "🔄 Re-open" button
+(`reopenLead()`, which patches `Stage` directly and does **not** reset the follow-up cadence, a
+pre-existing gap left as-is for now) — routes the Stage change through
+`reportLeadQualityChange()`, so the Pipeline follow-up cadence resets and a Day-1 follow-up is
+queued automatically, exactly as any other Stage change already does. Optionally offers to open
+the Send Template modal right after, for a quick win-back message.
+
+### Momentum strip + positive-toned empty states
+`renderLeadsMomentumStrip()` shows "🎉 N won this week / 🔥 N hot right now / 💪 N ready for you
+today" (or "✨ You're all caught up" when the Needs Action queue is empty) above the list —
+reuses the same `isWonLead`/7-day-window convention Home/Team already use. Empty states on every
+view are worded positively ("✨ You're all caught up — nothing needs action right now. Nice work!",
+"🌱 No dormant leads to reconnect with right now.") instead of a bare "no results."
+
+### Persistent detail panel (docked, Leads page only)
+Clicking a lead on the Leads page opens the detail panel docked to the right side
+(`.modal.docked` — `position:fixed;top:0;right:0;bottom:0;width:420px`, new CSS) instead of the
+usual centered/dimmed modal, so a rep can keep working down a filtered list without losing their
+place. `openLeadDetailModal()` (called from `openDetail()` in place of a bare `openModal()`) adds
+`.docked`+`.open` directly and **skips the dimming overlay** when `_leadsDocked` is true, so the
+rest of the list stays visible/clickable; `navigate(page)` sets `_leadsDocked=(page==='leads')`
+and removes `.docked`/`.open` when navigating away from Leads while the panel is open. Scoped
+narrowly on purpose: every other one of the ~30 existing `.modal` call sites in the app (and
+`openModal()`/`closeModal()` themselves) are completely untouched — this only changes what happens
+specifically while the Leads page is active.
+
