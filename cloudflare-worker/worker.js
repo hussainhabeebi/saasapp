@@ -1346,10 +1346,13 @@ async function detectOrderSignal(env, c, clientId, message, contextText){
 
   const productsTable=await ecomResolveTable(env, clientId, 'products');
   let productList='';
+  let categoryList=[];
   if(productsTable){
     const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100&fields=name,sku,color,size,category`);
     const pd=await pr.json().catch(()=>({}));
-    productList=(pd?.list||[]).map(p=>`- ${p.name}${p.sku?' [sku:'+p.sku+']':''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}`).join('\n');
+    const products=pd?.list||[];
+    productList=products.map(p=>`- ${p.name}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}`).join('\n');
+    categoryList=[...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))];
   }
 
   const system=`You are screening one incoming WhatsApp message for a business selling physical products. Classify it into exactly one of:
@@ -1361,8 +1364,10 @@ If "order" or "enquiry", try to match it to exactly one product from the catalog
 - A message with NO distinguishing detail of its own — "order it", "M size" alone, "that one", "yes please" — should be resolved using the recent conversation below, if given: it very likely refers to whichever product was just discussed.
 - A message that names its own distinguishing detail (a color, size, or product name) should be matched against the catalog by that detail. If it's consistent with the product just discussed (e.g. "size M" right after that same shirt was shown), match to that one. If it conflicts with the product just discussed (e.g. "red shirt" right after a green shirt was shown), treat it as asking about a NEW product and match fresh by the new detail — don't keep reusing the old product's sku just because it was recently discussed. Only omit sku (or classify as neither, if it's clearly asking for something not carried at all) when the named detail truly doesn't correspond to anything in the catalog.
 - Always also include product_name (the catalog product's plain name) whenever you include sku, or whenever you're confident which product is meant even if you're not 100% sure you copied the sku exactly right — copying a product's name correctly is much more reliable than copying an alphanumeric code, and product_name lets a name-based lookup succeed even if the sku string doesn't match exactly.
-Respond with ONLY valid JSON: {"signal":true,"mode":"order","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","sku":"...","product_name":"..."} (sku/product_name omitted if no confident match) or {"signal":false}.
+- If you cannot confidently match one specific product, but the message clearly asks about a product category rather than any one item (e.g. "shirts", "do you have pants") AND that category (or something close to it) is in the Known categories list below, include "category" instead — the exact string from Known categories that best matches. Never include both sku and category; category only applies when no single product is a confident match.
+Respond with ONLY valid JSON: {"signal":true,"mode":"order","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","category":"..."} (sku/product_name omitted if no confident single-product match; category omitted unless that's the only match) or {"signal":false}.
 ${contextText?`\nRecent conversation (oldest first — use this to resolve references back to a specific product):\n${contextText}\n`:''}
+Known categories: ${categoryList.join(', ')||'(none)'}
 Product catalog:
 ${productList||'(no products listed)'}`;
 
@@ -1383,7 +1388,8 @@ ${productList||'(no products listed)'}`;
   return {
     signal:!!parsed.signal, mode,
     sku:parsed.signal?(parsed.sku||undefined):undefined,
-    productName:parsed.signal?(parsed.product_name||undefined):undefined
+    productName:parsed.signal?(parsed.product_name||undefined):undefined,
+    category:parsed.signal?(parsed.category||undefined):undefined
   };
 }
 
@@ -4748,6 +4754,23 @@ async function ecomResolveProduct(env, clientId, sku, productName){
   })||null;
 }
 
+// Category-level browsing: the customer named a category ("shirts") rather than one specific
+// product, so detectOrderSignal returned `category` instead of a sku. Used to send a representative
+// photo (the first matching product that actually has one) alongside a clarifying question listing
+// that category's distinct variants — there's no dedicated categories table or subcategory field in
+// this data model, so `color` (the field that reliably varies within a category) stands in for it.
+// `like` (not `eq`) absorbs minor case/wording drift between the LLM's category guess and the
+// catalog string, same tolerance handleEcomList already gives shop-owner category filters.
+async function ecomFindProductsByCategory(env, clientId, category){
+  if(!category) return [];
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return [];
+  const qs=new URLSearchParams({where:`(client_id,eq,${clientId})~and(category,like,${ecomSanitizeFilterValue(category)})~and(status,neq,inactive)`, limit:'50'});
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?${qs.toString()}`);
+  const pd=await pr.json().catch(()=>({}));
+  return pd?.list||[];
+}
+
 async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
   const product=await ecomFindProductBySku(env, clientId, sku);
   const displayName=name||'there';
@@ -6991,10 +7014,27 @@ async function handleEngineWebhook(request, env, secret){
           // an enquiry reply with the toggle off shares no link, so there's nothing to log yet.
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
           orderHandledInline=true;
+        } else if(detection.mode==='enquiry' && !product && detection.category){
+          // Named a category ("shirts"), not one specific product — detectOrderSignal only returns
+          // this when no single product was a confident match. Answer with that category's photo
+          // (first matching product that has one) and ask which variant, instead of the generic
+          // FAQ LLM improvising an "I can't send images" apology with no real data to work from.
+          const categoryProducts=await ecomFindProductsByCategory(env, clientId, detection.category);
+          if(categoryProducts.length){
+            const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
+            const variants=[...new Set(categoryProducts.map(p=>(p.color||'').trim()).filter(Boolean))];
+            const listText=(variants.length?variants:categoryProducts.map(p=>p.name)).map(v=>`- ${v}`).join('\n');
+            const intro=variants.length?`Which type of ${detection.category} are you looking for?`:`Here's what we have in ${detection.category}:`;
+            sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
+            routing.reply=sentText;
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:withImage.image_url});
+            orderHandledInline=true;
+          }
+          // No products at all in that category — falls through to FAQ below ("we don't carry that").
         }
-        // enquiry with no confident product match falls through to the normal FAQ/flow handling
-        // below (no canned reply, no link) — the context-aware FAQ LLM can respond naturally,
-        // e.g. "we don't carry that, but here's what we do have."
+        // enquiry with no confident product or category match falls through to the normal FAQ/flow
+        // handling below (no canned reply, no link) — the context-aware FAQ LLM can respond
+        // naturally, e.g. "we don't carry that, but here's what we do have."
       }
       // If this turn overrode a false-positive 'human' route (humanBlocksOrderCheck was false only
       // because humanReason wasn't 'explicit'), routing.route is still 'human' at this point —
