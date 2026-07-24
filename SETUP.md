@@ -2477,6 +2477,77 @@ Contacts + Conversations API, or Meta's Cloud API directly via `wa_phone_id`/`wa
 real, separate, unverified piece of infra and was deliberately left out of this pass rather than
 shipped untested.
 
+## Google Calendar sync (Task Manager)
+One-way push: manual Tasks (due dates) and Calendar Events (see "Calendar events" above) get
+created/updated/deleted as real events on a dedicated **"Leadvyne Tasks & Events"** Google Calendar
+the moment they're created/edited/marked done/deleted in Leadvyne — so a rep sees their Leadvyne
+work on their phone's own calendar app without opening the dashboard.
+
+**Reuses the exact same Google Cloud OAuth Client as Google Search Console** (see "Reports page"
+above) — `signOauthState`/`verifyOauthState` + browser-redirect-callback shape, `GOOGLE_CLIENT_ID`/
+`GOOGLE_CLIENT_SECRET`, just a different scope (`https://www.googleapis.com/auth/calendar` instead
+of `webmasters.readonly`) and its own callback URL (`/gcal/oauth/callback`, needs adding as a second
+authorized redirect URI on the same Cloud project, alongside enabling the Google Calendar API).
+
+### Schema — CLIENTS table
+- `gcal_refresh_token` (Single line, secret — stripped by `safeClient()`, exposed as
+  `gcal_connected:!!gcal_refresh_token`, same pattern as `gsc_refresh_token`).
+- `gcal_calendar_id` — the id of the dedicated secondary calendar, created once at connect time
+  (`gcalCreateCalendar`, `POST .../calendars` with `summary:"Leadvyne Tasks & Events"`) rather than
+  reusing the rep's primary calendar — keeps a disconnect/reconnect clean and never clutters
+  whatever the rep already has on their main calendar.
+- `gcal_connected_at`.
+- One new field per synced item: `gcal_event_id` — on a manual task (`manual_tasks.items[]`) and on
+  a Calendar Event (`calendar_events[]`), the corresponding Google Calendar event id, so a later
+  edit/delete PATCHes/DELETEs the same remote event instead of creating a duplicate.
+
+### Connect UI
+A small status strip at the top of Tasks → Calendar view (`renderGcalStatus`, `#gcalSyncStrip`) —
+not a dedicated Settings page, since Calendar is the one place a rep is already thinking "my tasks
+vs. my calendar". `connectGcal()`/`disconnectGcal()` mirror `connectGsc()`/`disconnectGsc()`
+exactly. Disconnecting only clears the CLIENTS fields — it deliberately does **not** delete the
+Google-side calendar or its events, so a rep who disconnects (even by accident) doesn't lose
+anything already synced there; they can delete the calendar themselves in Google Calendar if they
+want it fully gone.
+
+### Push mechanics (`worker.js`)
+- **Calendar Events** have full server-side CRUD already (`handleCalendarEventCreate/Update/
+  Delete`) — the Google push is just one more step inside each of those three handlers
+  (`gcalSyncCalendarEvent`/`gcalDeleteEvent`), always as an **all-day** Google event (these are
+  dates, never timed appointments), using Google's own native `recurrence:['RRULE:FREQ=YEARLY']`
+  for a `recurring_yearly` event — purely cosmetic on the Google side; Leadvyne's own cadence/
+  dedupe logic for *sending the WhatsApp template* (`calendarOccurrenceDate`, the D1 dedupe table)
+  is entirely separate and unaffected by however this renders in Google Calendar.
+- **Manual Tasks have no server-side CRUD at all** — `dashboard.html` writes the whole
+  `manual_tasks` blob directly via the generic `/nocodb/*` passthrough (`saveTasksState()`). So
+  unlike Calendar Events, this needed a dedicated route, `POST /gcal/sync-task`
+  (`handleGcalSyncTask`), that the frontend calls right after its own save already succeeded —
+  passing just that one task's current shape (`syncTaskToGoogleCalendar(taskId, action)`, called
+  from `saveTaskFromModal`/`moveTaskStatus`/`snoozeManualTask`/`deleteManualTask`) rather than the
+  Worker re-parsing the whole tasks blob itself. A task syncs as a **timed** Google event
+  (`dateTime`, fixed 30-minute duration — Google requires an end time and this app never tracks a
+  task's actual duration) if it has a `due_time`, or all-day if it only has a `due_date`. Marking a
+  task done, clearing its due date, or deleting it all delete the corresponding Google event rather
+  than leaving a stale/completed entry behind — a synced calendar should only ever show what's
+  still actually outstanding.
+- **A previously-synced event the rep deleted directly in Google Calendar** comes back 404/410 on
+  the next PATCH attempt — `gcalUpsertEvent` recovers by creating a fresh one instead of leaving
+  that task/event permanently un-synced.
+- On success, the frontend patches the returned Google event id back onto the task/event with a
+  second small `saveTasksState()`/the Calendar Event's own save — a bit of extra chatter for manual
+  tasks specifically (two saves instead of one), but simple and safe for what is, in practice, a
+  single-editor-at-a-time app.
+
+### Known limitation — genuinely one-way, by design
+An edit made **directly in Google Calendar does not flow back into Leadvyne**. True two-way sync
+needs either a push-notification channel (Google Calendar's `watch`/webhook API, which expires and
+must be renewed on its own schedule) or periodic polling with a sync token — both real, separate
+pieces of infra distinct from the one-way push built here, and deliberately left as a documented
+next step rather than shipped half-built. In practice this covers the stated need well: seeing
+Leadvyne's tasks/events on a rep's own calendar app, which this delivers in full; editing a task's
+due date *from* the phone's calendar app and having that reflect back into Leadvyne does not yet
+work — edit it in Leadvyne instead, and the next sync push updates Google Calendar to match.
+
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
 - **Wrapper** — open that client's generated workflow; add nodes around `Run engine`

@@ -116,9 +116,12 @@ STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZgh
 #                           supported Indic language, the engine falls back to a normal text reply
 #                           even for clients with voice_addon_active='Yes'.
 #   GOOGLE_CLIENT_ID        Google Cloud OAuth 2.0 Client (Web application type) Client ID — see
-#                           SETUP.md "Reports page" (SEO tab / Google Search Console). One shared
-#                           OAuth app for all clients, same pattern as SHOPIFY_API_KEY — each client
-#                           connects their own Search Console property through it. Needs this
-#                           Worker's /gsc/oauth/callback URL added as an authorized redirect URI on
-#                           the Cloud project, and the Search Console API enabled.
+#                           SETUP.md "Reports page" (SEO tab / Google Search Console) AND SETUP.md
+#                           "Google Calendar sync" (Task Manager) — the SAME Cloud OAuth Client is
+#                           reused for both, just with a different scope requested per flow. One
+#                           shared OAuth app for all clients, same pattern as SHOPIFY_API_KEY — each
+#                           client connects their own Search Console property / Google Calendar
+#                           through it. Needs BOTH this Worker's /gsc/oauth/callback AND
+#                           /gcal/oauth/callback URLs added as authorized redirect URIs on the Cloud
+#                           project, and BOTH the Search Console API and Google Calendar API enabled.
 #   GOOGLE_CLIENT_SECRET    Client Secret for the same OAuth 2.0 Client as GOOGLE_CLIENT_ID.

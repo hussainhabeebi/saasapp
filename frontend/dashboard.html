@@ -4265,11 +4265,13 @@ function showApp(){
   const params=new URLSearchParams(location.search);
   const shopifyParam=params.get('shopify');
   const gscParam=params.get('gsc');
+  const gcalParam=params.get('gcal');
   let landingPage='home';
   if(params.has('billing')) landingPage='billing';
   else if(params.has('channels')) landingPage='channels';
   else if(params.has('integrations')||shopifyParam) landingPage='integrations';
   else if(gscParam) landingPage='reports';
+  else if(gcalParam) landingPage='tasks';
   navigate(landingPage);
   if(shopifyParam){
     if(shopifyParam==='connected'){ showToast('Shopify connected ✓'); refreshClientRecord().then(renderShopifyStatus); }
@@ -4279,6 +4281,11 @@ function showApp(){
   if(gscParam){
     if(gscParam==='connected'){ showToast('Google Search Console connected ✓'); refreshClientRecord().then(()=>{ if(_reportsPage==='seo') renderReportsSeo(); }); }
     else showToast(params.get('msg')||'Google Search Console connection failed', 'error');
+    history.replaceState(null, '', location.pathname+(clientId?`?client=${clientId}`:''));
+  }
+  if(gcalParam){
+    if(gcalParam==='connected'){ showToast('Google Calendar connected ✓'); refreshClientRecord().then(renderGcalStatus); }
+    else showToast(params.get('msg')||'Google Calendar connection failed', 'error');
     history.replaceState(null, '', location.pathname+(clientId?`?client=${clientId}`:''));
   }
 }
@@ -8725,6 +8732,7 @@ function renderTasksCalendar(manualTasks){
     </div>`;
   }
   $id('tasksList').innerHTML=`
+    <div id="gcalSyncStrip" style="margin-bottom:10px"></div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <button class="task-action-btn" onclick="taskCalNav(-1)">← Prev</button>
       <div style="font-family:var(--disp);font-weight:700;font-size:15px;min-width:160px;text-align:center">${esc(monthLabel)}</div>
@@ -8738,6 +8746,60 @@ function renderTasksCalendar(manualTasks){
       ${cells}
     </div>
     ${renderUpcomingCalendarEventsHtml()}`;
+  renderGcalStatus();
+}
+
+// Google Calendar Sync (SETUP.md "Google Calendar sync") — one-way push of manual Tasks +
+// Calendar Events onto a dedicated "Leadvyne Tasks & Events" Google Calendar. Status strip lives
+// at the top of the Calendar view rather than a separate Settings page, since that's the one place
+// a rep is already thinking about "my tasks vs. my calendar".
+function renderGcalStatus(){
+  const el=$id('gcalSyncStrip');
+  if(!el) return;
+  el.innerHTML=clientRecord?.gcal_connected
+    ? `<div class="s-note">🗓️ Synced to Google Calendar ("${esc(GCAL_CALENDAR_NAME)}"). <a href="#" onclick="disconnectGcal();return false" style="color:var(--red)">Disconnect</a></div>`
+    : `<div class="s-note">🗓️ Not synced to Google Calendar yet. <a href="#" onclick="connectGcal();return false" style="color:var(--accent-ink);font-weight:600">Connect Google Calendar</a></div>`;
+}
+const GCAL_CALENDAR_NAME='Leadvyne Tasks & Events';
+async function connectGcal(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/gcal/oauth/start`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
+    const d=await r.json();
+    if(!r.ok||!d.url) throw new Error(d.error||'Failed to start connection');
+    location.href=d.url;
+  }catch(e){ showToast('Failed to connect: '+e.message,'err'); }
+}
+async function disconnectGcal(){
+  if(!confirm('Disconnect Google Calendar? Already-synced events stay in Google Calendar until you delete them there.')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/gcal/disconnect`,{method:'POST',headers:ncAuthHeaders()});
+    clientRecord.gcal_connected=false;
+    renderGcalStatus();
+  }catch(e){ showToast('Failed to disconnect: '+e.message,'err'); }
+}
+// Fire-and-forget push for one manual task, called right after its own save/status/delete
+// already succeeded — mirrors reportPipelineStageChange's "instant, best-effort" shape. Manual
+// Tasks have no server-side CRUD route of their own (dashboard.html writes the whole manual_tasks
+// blob directly), so this passes the one task's current shape rather than the Worker re-parsing
+// the whole blob. On success, patches the returned Google event id back onto the task with a
+// second small save — a bit of extra chatter, but simple and safe for a single-editor app like this.
+async function syncTaskToGoogleCalendar(taskId, action){
+  if(!clientRecord?.gcal_connected) return;
+  const state=getTasksState();
+  const t=state.items.find(x=>x.id===taskId);
+  if(!t) return;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/gcal/sync-task`,{
+      method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({action:action||'upsert', task:{id:t.id, title:t.title, notes:t.notes, due_date:t.due_date, due_time:t.due_time, status:t.status, gcal_event_id:t.gcal_event_id||null}})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(r.ok && data.gcal_event_id!==(t.gcal_event_id||null)){
+      const freshState=getTasksState();
+      const freshT=freshState.items.find(x=>x.id===taskId);
+      if(freshT){ freshT.gcal_event_id=data.gcal_event_id; await saveTasksState(freshState); }
+    }
+  }catch(e){ /* best-effort — never blocks the task's own save/UI */ }
 }
 
 // A dedicated list below the month grid — the grid's own cells are too small to show an event's
@@ -9083,6 +9145,7 @@ async function moveTaskStatus(id,newStatus){
     await notifyProjectOwnerBlocked(state, t);
   }
   try{ await saveTasksState(state); }catch(e){ alert('Could not save: '+e.message); return; }
+  syncTaskToGoogleCalendar(id);
   renderTasks();
 }
 
@@ -9197,11 +9260,13 @@ async function snoozeManualTask(id){
   base.setDate(base.getDate()+1);
   t.due_date=base.toISOString().slice(0,10);
   try{ await saveTasksState(state); }catch(e){ alert('Could not save: '+e.message); return; }
+  syncTaskToGoogleCalendar(id);
   renderTasks();
 }
 
 async function deleteManualTask(id){
   if(!confirm('Delete this task?')) return;
+  syncTaskToGoogleCalendar(id, 'delete');
   const state=getTasksState();
   state.items=state.items.filter(x=>x.id!==id);
   try{ await saveTasksState(state); }catch(e){ alert('Could not delete: '+e.message); return; }
@@ -9389,6 +9454,7 @@ async function saveTaskFromModal(){
         if(!r.ok) msg.textContent='Saved — but email failed: '+(data.error||'unknown error');
       }catch(e){ msg.textContent='Saved — but email failed: '+e.message; }
     }
+    syncTaskToGoogleCalendar(task.id);
     closeModal('modalTask');
     renderTasks();
   }catch(e){ msg.textContent='Error: '+e.message; msg.style.color='var(--red)'; }
