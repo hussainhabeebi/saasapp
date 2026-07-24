@@ -621,6 +621,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .task-action-btn{font-size:11px;font-weight:600;padding:5px 9px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;white-space:nowrap}
 .task-action-btn:hover{background:var(--accent-soft);border-color:var(--accent)}
 .task-action-btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.seg-chip{display:inline-block;border:1.5px solid var(--line);border-radius:20px;padding:6px 13px;font-size:12.5px;cursor:pointer;user-select:none;transition:all .15s;margin:0 4px 4px 0}
+.seg-chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .task-filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
 .task-filter-btn{font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer}
 .task-filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -3679,6 +3681,75 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="btn btn-primary" id="vfSendBtn" onclick="sendPipelineVideoFollowup()">Send</button>
     <span class="save-msg" id="vfMsg"></span>
     <button class="btn btn-secondary" onclick="closeVideoFollowupModal()">Cancel</button>
+  </div>
+</div>
+
+<!-- Calendar Events (Tasks page → Calendar view — SETUP.md "Calendar events"). Body-level
+     sibling of #overlay like every other modal — see SETUP.md's "Frontend modal convention". -->
+<div class="modal" id="modalCalendarEvent" style="width:600px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="ceModalTitle">New Calendar Event</div><button class="icon-btn" onclick="closeCalendarEventModal()">✕</button></div>
+  <div class="modal-body">
+    <div class="form-group"><label class="form-label">Title *</label><input class="form-input" id="ceTitle" placeholder="e.g. Dubai Trade Fair invite"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label class="form-label">Type</label>
+        <select class="form-input" id="ceType"></select>
+      </div>
+      <div class="form-group"><label class="form-label">Date</label><input class="form-input" type="date" id="ceDate"></div>
+    </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="ceRecurring" style="width:16px;height:16px">
+      <label for="ceRecurring" style="font-size:13px;color:var(--muted);margin:0">Repeats every year (e.g. a Birthday or annual Important Date)</label>
+    </div>
+
+    <div class="form-group"><label class="form-label">Who is this for?</label>
+      <div style="display:flex;gap:6px" id="ceAudienceModeRow">
+        <button type="button" class="task-action-btn" data-mode="lead" onclick="setCalendarAudienceMode('lead')">👤 One Lead</button>
+        <button type="button" class="task-action-btn" data-mode="segment" onclick="setCalendarAudienceMode('segment')">👥 Audience / Segment</button>
+        <button type="button" class="task-action-btn" data-mode="contact" onclick="setCalendarAudienceMode('contact')">📇 Just a Name + Phone</button>
+      </div>
+    </div>
+    <div class="form-group" id="ceAudienceLeadWrap">
+      <label class="form-label">Lead</label>
+      <select class="form-input" id="ceLeadSelect"><option value="">Select a lead…</option></select>
+    </div>
+    <div class="form-group" id="ceAudienceSegmentWrap" style="display:none">
+      <label class="form-label">Stage <span style="font-weight:400;color:var(--muted)">(select any that apply)</span></label>
+      <div id="ceSegStageChips" style="margin-bottom:8px"></div>
+      <label class="form-label">Tags <span style="font-weight:400;color:var(--muted)">(comma-separated, optional)</span></label>
+      <input class="form-input" id="ceSegTags" placeholder="e.g. VIP, Dubai">
+      <div id="ceAudiencePreview" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+    </div>
+    <div class="form-group" id="ceAudienceContactWrap" style="display:none">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="ceContactName" placeholder="e.g. Ahmed"></div>
+        <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="ceContactPhone" placeholder="+9715..."></div>
+      </div>
+      <div style="font-size:12px;color:var(--muted)">Not yet a lead — one is created automatically the first time this event actually sends.</div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">WhatsApp Template <span style="font-weight:400;color:var(--muted)">(sent automatically on the date)</span></label>
+      <div style="display:flex;gap:8px">
+        <select class="form-input" id="ceTemplateSelect" onchange="onCalendarTemplateChange()"><option value="">No template — just a calendar reminder</option></select>
+        <button type="button" class="task-action-btn" onclick="syncCalendarEventTemplates()">🔄 Sync</button>
+      </div>
+      <div id="ceTemplateMsg" style="font-size:12px;color:var(--muted);margin-top:4px"></div>
+    </div>
+    <div id="ceVarFields"></div>
+    <div class="form-group" id="cePersonalizeWrap" style="display:none;align-items:center;gap:8px">
+      <input type="checkbox" id="cePersonalizeFirst" style="width:16px;height:16px" onchange="updateCalendarTemplatePreview()">
+      <label for="cePersonalizeFirst" style="font-size:13px;color:var(--muted);margin:0">Fill {{1}} with each recipient's own name</label>
+    </div>
+    <div id="ceTemplatePreviewWrap" style="display:none;background:var(--bg);border-radius:10px;padding:10px;font-size:13px;margin-bottom:10px"><strong>Preview:</strong> <span id="ceTemplatePreview"></span></div>
+
+    <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="ceNotes" rows="2"></textarea></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" onclick="saveCalendarEventFromModal()">Save</button>
+    <span class="save-msg" id="ceModalMsg"></span>
+    <button class="btn btn-secondary" id="ceDeleteBtn" onclick="deleteCalendarEventFromModal()" style="display:none;color:#DC2626">Delete</button>
+    <button class="btn btn-secondary" onclick="closeCalendarEventModal()">Cancel</button>
   </div>
 </div>
 
@@ -7964,6 +8035,252 @@ const TASK_CATEGORIES=[
 ];
 function categoryStyle(name){ return TASK_CATEGORIES.find(c=>c.name===name)||{name:name||'',color:'#374151',bg:'#F3F4F6'}; }
 
+/* ── CALENDAR EVENTS (Tasks page → Calendar view — SETUP.md "Calendar events") ──
+   A separate concept from the Calendar view's existing manual-task pills: an "event" is put on
+   the calendar once (a Lead Follow-up date, an Exhibition, a Startup Mission Program date, a
+   Birthday, any other Important Date) with a WhatsApp template assigned up front, and the Worker's
+   daily cron sends that template on its own the moment the date arrives — see worker.js's
+   "CALENDAR EVENTS" module. Stored server-side on CLIENTS.calendar_events (GET/POST/PATCH/DELETE
+   /calendar/events); dashboard.html only caches the list client-side, lazy-loaded the first time
+   the Calendar sub-view is opened (same "each module lazy-loads its own array on first visit"
+   convention as Hospitality/Recruit/Agency). */
+const CALENDAR_EVENT_TYPES=[
+  {name:'Lead Follow-up',color:'#92400E',bg:'#FEF3C7'},
+  {name:'Exhibition',color:'#3730A3',bg:'#E0E7FF'},
+  {name:'Startup Mission Program',color:'#065F46',bg:'#D1FAE5'},
+  {name:'Birthday',color:'#9D174D',bg:'#FCE7F3'},
+  {name:'Important Date',color:'#374151',bg:'#F3F4F6'},
+];
+function calendarEventTypeStyle(name){ return CALENDAR_EVENT_TYPES.find(t=>t.name===name)||CALENDAR_EVENT_TYPES[4]; }
+let _calendarEvents=[], _calendarEventsLoaded=false;
+async function loadCalendarEvents(force){
+  if(_calendarEventsLoaded && !force) return;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/calendar/events`,{headers:ncAuthHeaders()});
+    const data=await r.json().catch(()=>({}));
+    _calendarEvents=Array.isArray(data.list)?data.list:[];
+    _calendarEventsLoaded=true;
+  }catch(e){ _calendarEvents=[]; }
+}
+// Same "this year's month/day" occurrence math as the Worker's calendarOccurrenceDate — needed
+// here purely to plot a recurring event (a Birthday) on every month it's viewed, not just the
+// year it was first created in.
+function calendarEventOccurrence(ev, forYear){
+  if(!ev.recurring_yearly) return ev.date;
+  const [, m, d]=ev.date.split('-');
+  return `${forYear}-${m}-${d}`;
+}
+function calendarEventAudienceLabel(ev){
+  if(ev.audience_mode==='lead') return '👤 '+(ev.lead_name||'Lead #'+ev.lead_id);
+  if(ev.audience_mode==='segment'){
+    const parts=[];
+    if(ev.segment?.stage?.length) parts.push('Stage: '+ev.segment.stage.join(', '));
+    if(ev.segment?.tags_any?.length) parts.push('Tags: '+ev.segment.tags_any.join(', '));
+    return '👥 '+(parts.join(' · ')||'Segment');
+  }
+  if(ev.audience_mode==='contact') return '📇 '+(ev.contact_name||'Contact');
+  return '';
+}
+
+let _ceEditingId=null, _ceAudienceMode='lead', _ceSegSelectedStages=new Set(), _ceTemplates=[], _ceSelectedTemplate=null;
+
+async function openCalendarEventModal(id){
+  await loadCalendarEvents();
+  _ceEditingId=id||null;
+  const ev=id?_calendarEvents.find(e=>e.id===id):null;
+  $id('ceModalTitle').textContent=ev?'Edit Calendar Event':'New Calendar Event';
+  $id('ceDeleteBtn').style.display=ev?'':'none';
+  $id('ceTitle').value=ev?.title||'';
+  $id('ceType').innerHTML=CALENDAR_EVENT_TYPES.map(t=>`<option value="${esc(t.name)}"${ev?.type===t.name?' selected':''}>${esc(t.name)}</option>`).join('');
+  $id('ceDate').value=ev?.date||new Date().toISOString().slice(0,10);
+  $id('ceRecurring').checked=!!ev?.recurring_yearly;
+  $id('ceNotes').value=ev?.notes||'';
+
+  const leadSel=$id('ceLeadSelect');
+  const activeLeads=allLeads.filter(l=>!TERMINAL.has(l.Stage)).slice(0,500);
+  const linkedLeadId=ev?.audience_mode==='lead'?ev.lead_id:null;
+  leadSel.innerHTML='<option value="">Select a lead…</option>'+activeLeads.map(l=>`<option value="${l.Id}"${linkedLeadId===l.Id?' selected':''}>${esc(l.Name||l.Phone||('Lead #'+l.Id))}</option>`).join('');
+
+  _ceSegSelectedStages=new Set(ev?.audience_mode==='segment'?(ev.segment?.stage||[]):[]);
+  $id('ceSegTags').value=ev?.audience_mode==='segment'?(ev.segment?.tags_any||[]).join(', '):'';
+  renderCeSegStageChips();
+
+  $id('ceContactName').value=ev?.audience_mode==='contact'?(ev.contact_name||''):'';
+  $id('ceContactPhone').value=ev?.audience_mode==='contact'?(ev.contact_phone||''):'';
+
+  setCalendarAudienceMode(ev?.audience_mode||'lead');
+
+  $id('cePersonalizeFirst').checked=!!ev?.personalize_first;
+  $id('ceModalMsg').textContent='';
+  await loadCalendarEventTemplates();
+  $id('ceTemplateSelect').value=ev?.template_name||'';
+  onCalendarTemplateChange(ev?.template_vars||[]);
+  openModal('modalCalendarEvent');
+}
+function closeCalendarEventModal(){ closeModal('modalCalendarEvent'); }
+
+function setCalendarAudienceMode(mode){
+  _ceAudienceMode=mode;
+  document.querySelectorAll('#ceAudienceModeRow .task-action-btn').forEach(b=>b.classList.toggle('primary', b.dataset.mode===mode));
+  $id('ceAudienceLeadWrap').style.display=mode==='lead'?'':'none';
+  $id('ceAudienceSegmentWrap').style.display=mode==='segment'?'':'none';
+  $id('ceAudienceContactWrap').style.display=mode==='contact'?'':'none';
+  if(mode==='segment') refreshCeAudiencePreview();
+}
+
+function renderCeSegStageChips(){
+  const stages=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))];
+  $id('ceSegStageChips').innerHTML=stages.length
+    ? stages.map(s=>`<span class="seg-chip${_ceSegSelectedStages.has(s)?' on':''}" data-stage="${esc(s)}" onclick="toggleCeSegStage(this)">${esc(s)}</span>`).join('')
+    : '<span style="font-size:12px;color:var(--muted)">No stages found yet on your leads.</span>';
+}
+function toggleCeSegStage(el){
+  const stage=el.dataset.stage;
+  if(_ceSegSelectedStages.has(stage)) _ceSegSelectedStages.delete(stage); else _ceSegSelectedStages.add(stage);
+  el.classList.toggle('on', _ceSegSelectedStages.has(stage));
+  refreshCeAudiencePreview();
+}
+function currentCeSegmentFilter(){
+  const f={};
+  if(_ceSegSelectedStages.size) f.stage=[..._ceSegSelectedStages];
+  const tags=($id('ceSegTags').value||'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(tags.length) f.tags_any=tags;
+  return f;
+}
+let _ceAudienceDebounce=null;
+function refreshCeAudiencePreview(){
+  clearTimeout(_ceAudienceDebounce);
+  const el=$id('ceAudiencePreview');
+  el.textContent='Checking audience…';
+  _ceAudienceDebounce=setTimeout(async ()=>{
+    try{
+      const qs=new URLSearchParams({segment_filter:JSON.stringify(currentCeSegmentFilter())});
+      const r=await fetch(`${CONFIG.WORKER_BASE}/automations/audience-preview?${qs}`,{headers:ncAuthHeaders()});
+      const data=await r.json();
+      el.textContent=data.count?`Matches ${data.count} lead${data.count===1?'':'s'} right now.`:'No leads match this audience yet.';
+    }catch(e){ el.textContent='Could not check audience.'; }
+  }, 300);
+}
+
+// Template list/var-substitution below deliberately mirrors broadcast.html's Template Broadcast
+// tab (getTemplateBody/getTemplateVarCount/buildVarFields/updatePreview) — same Chatwoot-cached
+// approved-template source (GET/POST /broadcast/templates(/sync)), just adapted to store the
+// resolved values once on the event instead of sending immediately.
+async function loadCalendarEventTemplates(){
+  const sel=$id('ceTemplateSelect'), msg=$id('ceTemplateMsg');
+  msg.textContent='Loading templates…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates`,{headers:ncAuthHeaders()});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    _ceTemplates=(data.templates||[]).filter(t=>(t.status||'').toLowerCase()==='approved');
+    const cur=sel.value;
+    sel.innerHTML='<option value="">No template — just a calendar reminder</option>'+_ceTemplates.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('');
+    sel.value=cur;
+    msg.textContent=_ceTemplates.length?'':'No approved templates found yet — connect WhatsApp in Settings → Channels, or click Sync.';
+  }catch(e){ msg.textContent='Could not load templates: '+e.message; }
+}
+async function syncCalendarEventTemplates(){
+  const msg=$id('ceTemplateMsg');
+  msg.textContent='Syncing…';
+  try{ await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates/sync`,{method:'POST',headers:ncAuthHeaders()}); }catch(e){}
+  await new Promise(r=>setTimeout(r,3000));
+  await loadCalendarEventTemplates();
+}
+function ceTemplateBody(t){
+  if(t?.components){ const b=t.components.find(c=>(c.type||'').toUpperCase()==='BODY'); if(b) return b.text||''; }
+  return t?.body||t?.content||'';
+}
+function ceTemplateVarCount(t){ return [...new Set((ceTemplateBody(t).match(/\{\{\d+\}\}/g)||[]))].length; }
+function onCalendarTemplateChange(prefillVars){
+  const name=$id('ceTemplateSelect').value;
+  _ceSelectedTemplate=_ceTemplates.find(t=>t.name===name)||null;
+  const count=_ceSelectedTemplate?ceTemplateVarCount(_ceSelectedTemplate):0;
+  $id('ceVarFields').innerHTML=count?Array.from({length:count},(_,i)=>`
+    <div class="form-group"><label class="form-label">Variable {{${i+1}}}</label><input class="form-input" id="ceVar${i+1}" placeholder="Value for {{${i+1}}}" oninput="updateCalendarTemplatePreview()"></div>`).join(''):'';
+  if(Array.isArray(prefillVars)) prefillVars.forEach((v,i)=>{ const el=$id('ceVar'+(i+1)); if(el) el.value=v; });
+  $id('cePersonalizeWrap').style.display=(_ceSelectedTemplate&&count>0)?'flex':'none';
+  updateCalendarTemplatePreview();
+}
+function updateCalendarTemplatePreview(){
+  const wrap=$id('ceTemplatePreviewWrap');
+  if(!_ceSelectedTemplate){ wrap.style.display='none'; return; }
+  wrap.style.display='';
+  let body=ceTemplateBody(_ceSelectedTemplate);
+  const count=ceTemplateVarCount(_ceSelectedTemplate);
+  const personalize=$id('cePersonalizeFirst').checked;
+  for(let i=1;i<=count;i++){
+    const raw=$id('ceVar'+i)?.value||`{{${i}}}`;
+    const val=(i===1&&personalize)?'(recipient\'s name)':raw;
+    body=body.replace(new RegExp(`\\{\\{${i}\\}\\}`,'g'), val);
+  }
+  $id('ceTemplatePreview').textContent=body;
+}
+
+async function saveCalendarEventFromModal(){
+  const msg=$id('ceModalMsg');
+  const title=$id('ceTitle').value.trim();
+  if(!title){ msg.textContent='Enter a title.'; msg.className='save-msg err'; return; }
+  const payload={
+    id:_ceEditingId||undefined,
+    title, type:$id('ceType').value, date:$id('ceDate').value, recurring_yearly:$id('ceRecurring').checked,
+    audience_mode:_ceAudienceMode, notes:$id('ceNotes').value,
+  };
+  if(_ceAudienceMode==='lead'){
+    const leadId=$id('ceLeadSelect').value;
+    if(!leadId){ msg.textContent='Select a lead.'; msg.className='save-msg err'; return; }
+    payload.lead_id=Number(leadId);
+    payload.lead_name=(allLeads.find(l=>l.Id===Number(leadId))||{}).Name||'';
+  }else if(_ceAudienceMode==='segment'){
+    payload.segment=currentCeSegmentFilter();
+    if(!payload.segment.stage?.length && !payload.segment.tags_any?.length){ msg.textContent='Select at least one Stage or Tag.'; msg.className='save-msg err'; return; }
+  }else{
+    payload.contact_name=$id('ceContactName').value.trim();
+    payload.contact_phone=$id('ceContactPhone').value.trim();
+    if(!payload.contact_name||!payload.contact_phone){ msg.textContent='Enter a name and phone.'; msg.className='save-msg err'; return; }
+  }
+  if(_ceSelectedTemplate){
+    payload.template_name=_ceSelectedTemplate.name;
+    payload.template_category=_ceSelectedTemplate.category||'MARKETING';
+    payload.template_language=_ceSelectedTemplate.language||'en';
+    const count=ceTemplateVarCount(_ceSelectedTemplate);
+    payload.template_vars=Array.from({length:count},(_,i)=>$id('ceVar'+(i+1))?.value||'');
+    payload.personalize_first=$id('cePersonalizeFirst').checked;
+  }
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/calendar/events`,{
+      method:_ceEditingId?'PATCH':'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}), body:JSON.stringify(payload)
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    await loadCalendarEvents(true);
+    closeCalendarEventModal();
+    renderTasks();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+async function deleteCalendarEventFromModal(){
+  if(!_ceEditingId) return;
+  if(!confirm('Delete this calendar event? Already-sent messages are not affected.')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/calendar/events`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:_ceEditingId})});
+    await loadCalendarEvents(true);
+    closeCalendarEventModal();
+    renderTasks();
+  }catch(e){ showToast('Failed to delete: '+e.message,'err'); }
+}
+
+async function sendCalendarEventNow(id){
+  if(!confirm('Send this event\'s template right now, to its full audience?')) return;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/calendar/events/send-now`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    showToast(`✓ Sent to ${data.sent_to} recipient${data.sent_to===1?'':'s'}`,'ok');
+  }catch(e){ showToast('Could not send: '+e.message,'err'); }
+}
+
 // Ready-made task sets for the "+ New Project" flow's "start from a template" option — saves
 // re-typing the same checklist every time a similar project (onboarding, a renewal push, a
 // campaign) comes up. Purely a convenience prefill; the resulting tasks are ordinary manual
@@ -8137,7 +8454,11 @@ function taskCounts(all){
 }
 
 function setTaskFilter(f){ TASK_FILTER=f; renderTasks(); }
-function setTaskView(v){ TASK_VIEW=v; renderTasks(); }
+function setTaskView(v){
+  TASK_VIEW=v;
+  if(v==='calendar' && !_calendarEventsLoaded){ loadCalendarEvents().then(renderTasks); }
+  renderTasks();
+}
 function setTaskCategoryFilter(v){ TASK_CATEGORY_FILTER=v; renderTasks(); }
 function setTaskProjectFilter(v){ TASK_PROJECT_FILTER=v; renderTasks(); }
 
@@ -8383,29 +8704,68 @@ function renderTasksCalendar(manualTasks){
   const daysInMonth=new Date(year, month+1, 0).getDate();
   const byDate={};
   manualTasks.forEach(t=>{ if(t.due) (byDate[t.due]=byDate[t.due]||[]).push(t); });
+  const eventsByDate={};
+  _calendarEvents.forEach(ev=>{
+    const occ=calendarEventOccurrence(ev, year);
+    if(occ.slice(0,7)===`${year}-${String(month+1).padStart(2,'0')}`) (eventsByDate[occ]=eventsByDate[occ]||[]).push(ev);
+  });
   const monthLabel=firstDay.toLocaleDateString(undefined,{month:'long',year:'numeric'});
   let cells='';
   for(let i=0;i<startWeekday;i++) cells+='<div class="cal-cell cal-empty"></div>';
   for(let d=1; d<=daysInMonth; d++){
     const dateStr=`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const dayTasks=byDate[dateStr]||[];
+    const dayEvents=eventsByDate[dateStr]||[];
+    const combinedOverflow=Math.max(0,dayTasks.length-3)+Math.max(0,dayEvents.length-2);
     cells+=`<div class="cal-cell${dateStr===TODAY?' cal-today':''}">
       <div class="cal-daynum">${d}</div>
+      ${dayEvents.slice(0,2).map(ev=>{const s=calendarEventTypeStyle(ev.type);return `<div class="cal-task" style="background:${s.bg};color:${s.color}" title="${esc(ev.type)}: ${esc(ev.title)}" onclick="openCalendarEventModal('${ev.id}')">📌 ${esc(ev.title)}</div>`;}).join('')}
       ${dayTasks.slice(0,3).map(t=>`<div class="cal-task" title="${esc(t.title)}${t.locked?' — locked (waiting on a dependency)':''}" onclick="openTaskModal('${t.id}')">${t.locked?'🔒 ':''}${esc(t.title)}</div>`).join('')}
-      ${dayTasks.length>3?`<div class="cal-more">+${dayTasks.length-3} more</div>`:''}
+      ${combinedOverflow>0?`<div class="cal-more">+${combinedOverflow} more</div>`:''}
     </div>`;
   }
   $id('tasksList').innerHTML=`
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <button class="task-action-btn" onclick="taskCalNav(-1)">← Prev</button>
       <div style="font-family:var(--disp);font-weight:700;font-size:15px;min-width:160px;text-align:center">${esc(monthLabel)}</div>
       <button class="task-action-btn" onclick="taskCalNav(1)">Next →</button>
       <button class="task-action-btn" onclick="taskCalToday()">Today</button>
+      <div style="flex:1"></div>
+      <button class="task-action-btn primary" onclick="openCalendarEventModal(null)">+ New Event</button>
     </div>
     <div class="cal-grid">
       ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}
       ${cells}
-    </div>`;
+    </div>
+    ${renderUpcomingCalendarEventsHtml()}`;
+}
+
+// A dedicated list below the month grid — the grid's own cells are too small to show an event's
+// audience/template/type at a glance, so this is where a rep actually manages events (edit/delete/
+// test-send) rather than the tiny calendar pills.
+function renderUpcomingCalendarEventsHtml(){
+  if(!_calendarEvents.length) return '<div style="margin-top:16px;color:var(--muted);font-size:13px">No calendar events yet — click "+ New Event" to add a Lead Follow-up, Exhibition, Birthday, or other important date.</div>';
+  const today=new Date();
+  const withOccurrence=_calendarEvents.map(ev=>({ev, occ:calendarEventOccurrence(ev, today.getFullYear())}));
+  withOccurrence.sort((a,b)=>(a.occ<b.occ?-1:a.occ>b.occ?1:0));
+  return `<div style="margin-top:20px">
+    <div style="font-weight:700;font-size:13px;margin-bottom:8px">Upcoming Events</div>
+    ${withOccurrence.map(({ev,occ})=>{
+      const s=calendarEventTypeStyle(ev.type);
+      return `<div class="task-item">
+        <span class="task-tag" style="background:${s.bg};color:${s.color};flex:none">${esc(ev.type)}</span>
+        <div style="flex:1;min-width:0;cursor:pointer" onclick="openCalendarEventModal('${ev.id}')">
+          <div class="task-lead">${esc(ev.title)}${ev.recurring_yearly?' 🔁':''}</div>
+          <div class="task-meta">${esc(calendarEventAudienceLabel(ev))}${ev.template_name?' · 📤 '+esc(ev.template_name):' · <span style="color:var(--red)">No template assigned</span>'}</div>
+        </div>
+        <div class="task-due">${fmtDateShort(occ)}</div>
+        <div class="task-actions">
+          <button class="task-action-btn" onclick="event.stopPropagation();sendCalendarEventNow('${ev.id}')">📤 Send Now</button>
+          <button class="task-action-btn" onclick="event.stopPropagation();openCalendarEventModal('${ev.id}')">Edit</button>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
 }
 
 function taskTagsHtml(t){

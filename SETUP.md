@@ -2392,6 +2392,91 @@ without opening the task.
   than reconstructing the real one, so a lead that already existed when this feature shipped gets
   its first task up to a day later than a freshly-Stage-changed lead would.
 
+## Calendar events (Tasks page → Calendar view)
+A rep can put an important date on the calendar — a Lead Follow-up, an Exhibition, a Startup
+Mission Program date, a Birthday, or any other Important Date — and assign a Meta-approved
+WhatsApp template to it up front, so the outreach actually fires itself on the day instead of
+depending on someone remembering to send it. Distinct from the Calendar view's pre-existing manual-
+task pills (`renderTasksCalendar`'s original due-date grid, untouched) — events are their own thing,
+plotted on the same month grid with a type-colored pill, plus a dedicated "Upcoming Events" list
+below the grid (the grid cells are too small to show audience/template at a glance).
+
+### Schema
+**CLIENTS** — one new field: `calendar_events` (Long text, JSON array) — same config-blob pattern
+as `automation_flows`/`manual_tasks`, not a dedicated table (a client has a handful of standing
+events, not thousands of rows). Item shape:
+```json
+{
+  "id": "ce_...", "title": "Dubai Trade Fair", "type": "Exhibition",
+  "date": "2026-08-15", "recurring_yearly": false,
+  "audience_mode": "segment", "segment": {"stage": ["qualifying"], "tags_any": ["VIP"]},
+  "lead_id": null, "lead_name": "", "contact_name": "", "contact_phone": "", "contact_lead_id": null,
+  "template_name": "exhibition_invite", "template_category": "MARKETING", "template_language": "en",
+  "template_vars": ["", "Dubai World Trade Centre", "Aug 15"], "personalize_first": true,
+  "notes": "", "created_at": "2026-..."
+}
+```
+**D1** (`migrations/0014_calendar_events.sql`) — `calendar_event_sends` (`client_id, event_id,
+lead_id, occurrence_key, sent_at`, unique on `(event_id, lead_id, occurrence_key)`) — a dedupe log
+only, not the events themselves. `occurrence_key` is the actual date fired for (see below), so a
+recurring event gets a fresh key — and therefore a fresh send — every year.
+
+### Audience — three shapes, chosen per event (`worker.js`'s `CALENDAR_AUDIENCE_MODES`)
+- **`lead`** — a single existing Lead (the natural fit for "Lead Follow-up").
+- **`segment`** — every Lead matching a Stage/Tag filter, exactly the same shape and
+  `leadsAudienceWhereClause` the Automations module's segment audience already uses (its stage-chip
+  picker UI is mirrored here too — `.seg-chip`, ported into `dashboard.html` since this lives on the
+  Tasks page, not `broadcast.html`) — for a broadcast-style event like an Exhibition invite.
+- **`contact`** — a name + phone not yet in the CRM at all (a personal contact's Birthday). The
+  first time this event actually fires, a minimal Lead row is created for them (`Stage:'new'`,
+  tagged `"Calendar Contact"`) and its id is written back onto the event (`contact_lead_id`), so
+  every later occurrence (next year's Birthday) reuses the same Lead instead of creating a new one.
+
+### Recurrence
+`recurring_yearly` (a plain checkbox on every event, not locked to a type — a Birthday defaults
+mentally to yearly but nothing stops an Exhibition from repeating too) — `calendarOccurrenceDate`
+takes the event's stored month/day and pairs it with whichever year is being checked, so a
+recurring event is "due" every year on the same date, and a non-recurring one only ever has its
+one literal `date`.
+
+### Template & variables
+Templates are the client's existing Meta-approved list, listed/synced through the exact same
+routes the Template Broadcast tab already uses (`GET/POST /broadcast/templates(/sync)`) — no new
+template-management surface. Unlike a live broadcast send, **variables are resolved once at
+event-creation time**, not per-recipient — an Exhibition/Important Date's details are the same for
+everyone invited. `personalize_first` is the one per-recipient exception: it substitutes `{{1}}`
+with each individual recipient's own `Name` at send time. The modal's var-input/live-preview UI
+(`ceVarFields`/`updateCalendarTemplatePreview`) deliberately mirrors `broadcast.html`'s Template
+Broadcast tab (`getTemplateVarCount`/`buildVarFields`/`updatePreview`) — same mechanic, just
+resolved-once instead of resolved-live.
+
+### Sending (`worker.js`)
+- **Daily cron** (`runCalendarEventsForAllClients`, piggybacked on the existing `0 2 * * *` tick
+  alongside the health check and Advanced Pipeline cadence — day-granularity, no need for its own
+  finer schedule): for every client, finds events due today (recurring or not), resolves the
+  audience, and sends the assigned template to each recipient not already recorded in
+  `calendar_event_sends` for this occurrence.
+- **Manual "Send Now"** (`POST /calendar/events/send-now`, `handleCalendarEventSendNow`) — lets a
+  rep test a template immediately, or fire an Exhibition invite on demand instead of waiting for
+  its calendar date. Ignores the dedupe table (an explicit click should always go out) but still
+  logs the send so the *next* scheduled occurrence that same day doesn't double-send.
+- Template send itself reuses the exact Chatwoot call shape `handleBroadcastSendTemplate` already
+  uses (`template_params: {name, category, language, processed_params}`), just built server-side
+  from the event's stored `template_vars` instead of a live request body.
+
+### Known limitation — same one this file already has elsewhere for any brand-new contact
+A template can only be delivered into an **existing** Chatwoot conversation — there is no
+proactive "start a new WhatsApp conversation" capability anywhere in this app; conversations are
+only ever created by an inbound message hitting the engine webhook (Automations' own
+`send_whatsapp_template`/`send_whatsapp_dm` flow steps have this exact same gap — see
+`flowLeadConvId`'s no-op-if-missing check). A `contact`-audience event, or a `lead`/`segment`
+recipient who has never messaged in, silently skips that recipient (not retried, no error
+surfaced beyond the event just not showing a send) until they've sent at least one real WhatsApp
+message — every occurrence after that sends fine. Building a genuine cold-outreach path (Chatwoot
+Contacts + Conversations API, or Meta's Cloud API directly via `wa_phone_id`/`wa_token`) would be a
+real, separate, unverified piece of infra and was deliberately left out of this pass rather than
+shipped untested.
+
 ## Per-client customization (Mix 1)
 - **Config** — edit that client's row (flow, prompt, follow-ups). No workflow edit.
 - **Wrapper** — open that client's generated workflow; add nodes around `Run engine`

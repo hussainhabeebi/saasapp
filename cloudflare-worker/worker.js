@@ -2149,6 +2149,260 @@ async function processClientAutomationFlows(env, c, allFlows, activeFlows){
   }
 }
 
+/* ── CALENDAR EVENTS (Task Manager's Calendar module — SETUP.md "Calendar events") ──
+   Lets a rep put an important date on the calendar — a lead follow-up, an Exhibition/expo, a
+   Startup Mission Program date, a Birthday, or any other important date — and assign a Meta-
+   approved WhatsApp template to it up front, so the actual outreach fires on its own on the day
+   instead of relying on someone remembering to send it manually. Storage mirrors
+   automation_flows exactly (a JSON array on CLIENTS, no dedicated table for the events
+   themselves); migrations/0014_calendar_events.sql adds one small D1 table purely to dedupe
+   sends, so a recurring yearly event (a Birthday) sends exactly once per occurrence, and a
+   segment event sends to each matching lead exactly once per occurrence.
+   Audience is one of three shapes, chosen per event:
+   - 'lead'    — a single existing Lead (the "Lead Follow-up" case).
+   - 'segment' — every Lead matching a Stage/Tag filter, same shape/where-clause as Automations'
+     segment audience — for a broadcast-style event like an Exhibition invite.
+   - 'contact' — a name + phone not yet in the CRM at all (a personal contact's Birthday, say).
+     The first time this fires, a minimal Lead row is created for them (Stage 'new', tagged
+     "Calendar Contact") and its id is written back onto the event (`contact_lead_id`), so every
+     later occurrence (next year's Birthday) reuses the same lead instead of creating a new one.
+   Template variables are resolved once at event-creation time, not per-recipient — an Exhibition/
+   Important Date's details are the same for everyone invited; `personalize_first` optionally
+   substitutes {{1}} with each individual recipient's own Name.
+   **Known limitation, same one this file already has elsewhere for any brand-new contact**: a
+   template can only be delivered into an existing Chatwoot conversation — there's no proactive
+   "start a new WhatsApp conversation" capability anywhere in this app (conversations are only
+   ever created by an inbound message hitting the engine webhook). A 'contact' or newly-added
+   'lead' who has never messaged in yet has this fire silently skip them (not retried, no error
+   surfaced beyond the client-side event list) until they've sent at least one real WhatsApp
+   message — every occurrence after that sends fine. */
+const CALENDAR_EVENT_TYPES=['Lead Follow-up','Exhibition','Startup Mission Program','Birthday','Important Date'];
+const CALENDAR_AUDIENCE_MODES=new Set(['lead','segment','contact']);
+
+async function getCalendarEvents(env, clientId){
+  const c=await getClientById(env, clientId);
+  let list=[]; try{ list=JSON.parse(c?.calendar_events||'[]'); }catch(e){}
+  return {client:c, list};
+}
+async function saveCalendarEvents(env, clientId, list){
+  await patchClientFields(env, clientId, {calendar_events:JSON.stringify(list)});
+}
+
+function validateCalendarEvent(body){
+  if(!String(body?.title||'').trim()) return 'title required';
+  if(!CALENDAR_EVENT_TYPES.includes(body?.type)) return 'invalid type';
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(body?.date||'')) return 'a valid date (YYYY-MM-DD) is required';
+  if(!CALENDAR_AUDIENCE_MODES.has(body?.audience_mode)) return 'invalid audience_mode';
+  if(body.audience_mode==='lead' && !body.lead_id) return 'lead_id required for a lead-audience event';
+  if(body.audience_mode==='segment' && !(Array.isArray(body.segment?.stage)&&body.segment.stage.length) && !(Array.isArray(body.segment?.tags_any)&&body.segment.tags_any.length)) return 'a segment-audience event needs at least one Stage or Tag';
+  if(body.audience_mode==='contact' && (!String(body.contact_name||'').trim()||!String(body.contact_phone||'').trim())) return 'contact_name and contact_phone required for a contact-audience event';
+  return null;
+}
+function calendarEventFromBody(body, existing){
+  return {
+    ...(existing||{}),
+    title:String(body.title).trim(), type:body.type, date:body.date,
+    recurring_yearly:!!body.recurring_yearly, audience_mode:body.audience_mode,
+    lead_id:body.audience_mode==='lead'?Number(body.lead_id):null,
+    lead_name:body.audience_mode==='lead'?String(body.lead_name||''):'',
+    segment:body.audience_mode==='segment'?{stage:Array.isArray(body.segment?.stage)?body.segment.stage:[], tags_any:Array.isArray(body.segment?.tags_any)?body.segment.tags_any:[]}:null,
+    contact_name:body.audience_mode==='contact'?String(body.contact_name||'').trim():(existing?.contact_name||''),
+    contact_phone:body.audience_mode==='contact'?String(body.contact_phone||'').trim():(existing?.contact_phone||''),
+    contact_lead_id:body.audience_mode==='contact'?(existing?.contact_lead_id||null):null,
+    template_name:String(body.template_name||''), template_category:String(body.template_category||'MARKETING'), template_language:String(body.template_language||'en'),
+    template_vars:Array.isArray(body.template_vars)?body.template_vars.map(String):[],
+    personalize_first:!!body.personalize_first,
+    notes:String(body.notes||''),
+  };
+}
+
+async function handleCalendarEventsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {list}=await getCalendarEvents(env, payload.cid);
+  return json({list});
+}
+async function handleCalendarEventCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const err=validateCalendarEvent(body);
+  if(err) return json({error:err}, 400);
+  const {list}=await getCalendarEvents(env, payload.cid);
+  const event={id:'ce_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8), created_at:new Date().toISOString(), ...calendarEventFromBody(body)};
+  list.push(event);
+  await saveCalendarEvents(env, payload.cid, list);
+  return json({ok:true, event});
+}
+async function handleCalendarEventUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const {list}=await getCalendarEvents(env, payload.cid);
+  const idx=list.findIndex(e=>e.id===body.id);
+  if(idx===-1) return json({error:'Event not found'}, 404);
+  const merged={...list[idx], ...body};
+  const err=validateCalendarEvent(merged);
+  if(err) return json({error:err}, 400);
+  list[idx]=calendarEventFromBody(merged, list[idx]);
+  await saveCalendarEvents(env, payload.cid, list);
+  return json({ok:true, event:list[idx]});
+}
+async function handleCalendarEventDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const {list}=await getCalendarEvents(env, payload.cid);
+  const next=list.filter(e=>e.id!==body.id);
+  if(next.length===list.length) return json({error:'Event not found'}, 404);
+  await saveCalendarEvents(env, payload.cid, next);
+  return json({ok:true});
+}
+
+// This year's occurrence, for a recurring event, is just this event's own month/day paired with
+// the current year — a non-recurring event only ever has the one literal date. Used both to know
+// whether an event is "due today" and as the dedupe key (calendar_event_sends.occurrence_key), so
+// a recurring event correctly gets a fresh key (and therefore a fresh send) every year.
+function calendarOccurrenceDate(event, today){
+  if(!event.recurring_yearly) return event.date;
+  const [, m, d]=event.date.split('-');
+  return `${today.getFullYear()}-${m}-${d}`;
+}
+function calendarEventDueToday(event, today, todayStr){
+  return calendarOccurrenceDate(event, today)===todayStr;
+}
+function calendarTemplateBody(t){
+  if(t?.components){ const b=t.components.find(c=>(c.type||'').toUpperCase()==='BODY'); if(b) return b.text||''; }
+  return t?.body||t?.content||'';
+}
+function calendarBuildContent(bodyText, vars, personalizeFirst, recipientName){
+  let content=bodyText;
+  (vars||[]).forEach((v,idx)=>{
+    const val=(idx===0&&personalizeFirst)?(recipientName||v||''):(v||'');
+    content=content.replace(new RegExp(`\\{\\{${idx+1}\\}\\}`,'g'), val);
+  });
+  return content;
+}
+async function calendarFetchTemplateBody(env, c, templateName){
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return null;
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}`, {headers:{api_access_token:c.chatwoot_token}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return null;
+  const t=(data?.message_templates||[]).find(x=>x.name===templateName);
+  return t?calendarTemplateBody(t):null;
+}
+// Resolves an event's recipients to an array of Lead rows (fields: Id, Name, Phone, ConversationID
+// etc.) regardless of audience_mode. For 'contact', creates the backing Lead the first time this
+// event ever fires and mutates `event.contact_lead_id` in place — the caller is responsible for
+// persisting the events array afterward (both call sites below already do a single batched save).
+async function calendarResolveLeads(env, clientId, event){
+  if(event.audience_mode==='lead'){
+    if(!event.lead_id) return [];
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${event.lead_id}`);
+    const lead=await r.json().catch(()=>null);
+    return (r.ok&&lead)?[lead]:[];
+  }
+  if(event.audience_mode==='segment'){
+    const where=leadsAudienceWhereClause(clientId, event.segment);
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}~and(OptOut,neq,Yes)&limit=500`);
+    const data=await r.json().catch(()=>({}));
+    return data?.list||[];
+  }
+  if(event.audience_mode==='contact'){
+    if(event.contact_lead_id){
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${event.contact_lead_id}`);
+      const lead=await r.json().catch(()=>null);
+      if(r.ok&&lead) return [lead];
+    }
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:{ClientId:String(clientId), Name:event.contact_name, Phone:event.contact_phone, Stage:'new', Tags:'Calendar Contact'}});
+    const created=await r.json().catch(()=>null);
+    if(!r.ok||!created?.Id) return [];
+    event.contact_lead_id=created.Id;
+    return [created];
+  }
+  return [];
+}
+async function calendarSendEventToLeads(env, c, event, leads, occurrenceKey){
+  if(!event.template_name || !leads.length) return;
+  const bodyText=await calendarFetchTemplateBody(env, c, event.template_name);
+  if(bodyText==null) return; // template no longer exists / Chatwoot not configured — nothing sane to send
+  for(const lead of leads){
+    const convId=flowLeadConvId(lead);
+    if(!convId) continue; // known limitation — see this module's header comment
+    const already=await env.DB.prepare(`SELECT id FROM calendar_event_sends WHERE event_id=? AND lead_id=? AND occurrence_key=?`)
+      .bind(event.id, lead.Id, occurrenceKey).first();
+    if(already) continue;
+    const content=calendarBuildContent(bodyText, event.template_vars, event.personalize_first, lead.Name);
+    const processedParams={}; (event.template_vars||[]).forEach((v,idx)=>{ processedParams[idx+1]=(idx===0&&event.personalize_first)?(lead.Name||v||''):(v||''); });
+    try{
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+        method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+        body:JSON.stringify({content, message_type:'outgoing', private:false, template_params:{name:event.template_name, category:event.template_category||'MARKETING', language:event.template_language||'en', processed_params:processedParams}})
+      });
+      if(r.ok){
+        await env.DB.prepare(`INSERT OR IGNORE INTO calendar_event_sends (client_id, event_id, lead_id, occurrence_key, sent_at) VALUES (?,?,?,?,?)`)
+          .bind(Number(c.Id), event.id, lead.Id, occurrenceKey, new Date().toISOString()).run();
+      }
+    }catch(e){ /* best-effort — one failed send in a segment shouldn't stop the rest */ }
+  }
+}
+// Daily cron path (piggybacked on the same 0 2 * * * tick as the health check/Pipeline
+// followups — day-granularity, same reasoning as those two).
+async function runCalendarEventsForAllClients(env){
+  let page=1;
+  const today=new Date();
+  const todayStr=today.toISOString().slice(0,10);
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      let events=[]; try{ events=JSON.parse(c.calendar_events||'[]'); }catch(e){}
+      const due=events.filter(ev=>calendarEventDueToday(ev, today, todayStr));
+      if(!due.length) continue;
+      try{
+        let changed=false;
+        for(const event of due){
+          const before=event.contact_lead_id;
+          const leads=await calendarResolveLeads(env, c.Id, event);
+          if(event.contact_lead_id!==before) changed=true;
+          await calendarSendEventToLeads(env, c, event, leads, calendarOccurrenceDate(event, today));
+        }
+        if(changed) await saveCalendarEvents(env, c.Id, events);
+      }catch(e){ console.error('[calendar-events] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+// Manual "send now" — lets a rep test an event's template immediately, or fire an Exhibition
+// invite on demand instead of waiting for its calendar date. Ignores the dedupe table entirely
+// (an explicit manual click should always go out), but still records the send so the *next*
+// scheduled occurrence doesn't double-send the same day.
+async function handleCalendarEventSendNow(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {id}=await request.json().catch(()=>({}));
+  if(!id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  let events=[]; try{ events=JSON.parse(c.calendar_events||'[]'); }catch(e){}
+  const event=events.find(e=>e.id===id);
+  if(!event) return json({error:'Event not found'}, 404);
+  if(!event.template_name) return json({error:'This event has no template assigned yet.'}, 400);
+  const before=event.contact_lead_id;
+  const leads=await calendarResolveLeads(env, payload.cid, event);
+  if(!leads.length) return json({error:'No recipients resolved for this event.'}, 400);
+  const occurrenceKey='manual-'+new Date().toISOString();
+  await calendarSendEventToLeads(env, c, event, leads, occurrenceKey);
+  if(event.contact_lead_id!==before) await saveCalendarEvents(env, payload.cid, events);
+  return json({ok:true, sent_to:leads.length});
+}
+
 /* ── Review Request module — automated "ask for a review N days after a deal closes" ─────────
    Deliberately its own module rather than something built on the generic Automations engine above:
    a client would otherwise have to hand-build a flow (trigger=stage_enter, one wait step, one
@@ -8460,6 +8714,11 @@ export default {
       else if(url.pathname==='/automations/flows' && request.method==='DELETE'){ res=await handleAutomationFlowDelete(request, env); }
       else if(url.pathname==='/automations/flows/enroll' && request.method==='POST'){ res=await handleAutomationFlowEnroll(request, env); }
       else if(url.pathname==='/automations/audience-preview' && request.method==='GET'){ res=await handleAutomationAudiencePreview(request, env); }
+      else if(url.pathname==='/calendar/events' && request.method==='GET'){ res=await handleCalendarEventsList(request, env); }
+      else if(url.pathname==='/calendar/events' && request.method==='POST'){ res=await handleCalendarEventCreate(request, env); }
+      else if(url.pathname==='/calendar/events' && request.method==='PATCH'){ res=await handleCalendarEventUpdate(request, env); }
+      else if(url.pathname==='/calendar/events' && request.method==='DELETE'){ res=await handleCalendarEventDelete(request, env); }
+      else if(url.pathname==='/calendar/events/send-now' && request.method==='POST'){ res=await handleCalendarEventSendNow(request, env); }
       else if(url.pathname==='/reviews/config' && request.method==='GET'){ res=await handleReviewsConfigGet(request, env); }
       else if(url.pathname==='/reviews/config' && request.method==='POST'){ res=await handleReviewsConfigSet(request, env); }
       else if(url.pathname==='/reviews/click' && request.method==='GET'){ res=await handleReviewClick(request, env); }
@@ -8543,10 +8802,12 @@ export default {
 
   // Cloudflare Cron Triggers — see wrangler.toml [triggers]. Three schedules share this one
   // entry point: the daily health check (now also advancing the Advanced Pipeline follow-up
-  // cadence, same tick — see runPipelineFollowupsForAllClients above), the Automations module's
-  // flow-advance tick, and the Shopify abandoned-cart sweep.
+  // cadence and the Calendar Events module's due-today sends — see
+  // runPipelineFollowupsForAllClients/runCalendarEventsForAllClients above, same tick since none
+  // of the three need finer-than-daily granularity), the Automations module's flow-advance tick,
+  // and the Shopify abandoned-cart sweep.
   async scheduled(event, env, ctx){
-    if(event.cron==='0 2 * * *'){ ctx.waitUntil(runDailyHealthCheckForAllClients(env)); ctx.waitUntil(runPipelineFollowupsForAllClients(env)); }
+    if(event.cron==='0 2 * * *'){ ctx.waitUntil(runDailyHealthCheckForAllClients(env)); ctx.waitUntil(runPipelineFollowupsForAllClients(env)); ctx.waitUntil(runCalendarEventsForAllClients(env)); }
     else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }
