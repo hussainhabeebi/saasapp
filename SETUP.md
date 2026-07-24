@@ -260,6 +260,16 @@ these are stateless HMAC tokens with no server-side revocation list, so a longer
 compromised token stays valid longer too — a deliberate choice favoring day-to-day convenience for
 an internal sales tool over that risk; add a revocation/deny-list if this ever needs tightening.
 
+**Follow-on fix**: `broadcast.html` and `email-marketing.html` (both opened via `window.open()`
+from `dashboard.html`, relying on reading the same storage rather than being passed a token — see
+each file's own "AUTH" comment) still read `lv_cid`/`lv_session` from `sessionStorage`, which
+`dashboard.html` no longer writes to at all after the above change — broken immediately by this
+migration until caught and fixed to read `localStorage` too (same-origin `window.open` makes
+`localStorage` directly readable with no sharing/copying step needed, unlike `sessionStorage`,
+which relies on the browser cloning it into the new tab). Any *other* page opened the same way
+(`window.open('somepage.html', ...)` from `dashboard.html`, not an iframe with the token passed via
+query string) needs the same check.
+
 **Passwordless / social login (Google, magic link, etc.)** is entirely an **Authentik-side
 configuration change, not app code** — `dashboard.html`'s login button already just opens
 Authentik's own hosted flow in a popup, so whatever authentication methods that flow is configured
@@ -2070,6 +2080,27 @@ never carried over here. Fixed the same way:
     Graph API (`waba_id`/`wa_token`, same credentials the Channels module's Embedded Signup flow
     already collects) and returns a clear "connect Meta / create it in Business Manager, then
     Refresh" message if those aren't set — never a raw 404/502 from a nonexistent Chatwoot call.
+
+**Template Broadcast: cold-lead fallback** — Chatwoot's send path (`POST .../conversations/
+{conv_id}/messages`) needs an *existing* conversation, so a lead with no `conv_id` — most commonly
+a bulk Google Sheet import that's never messaged in — used to just fail with "no conversation ID"
+for every single recipient, even though an **approved template is specifically designed to reach a
+customer cold** (that's the whole reason Meta requires template approval for messages outside the
+24h session window, unlike a plain session message). `sendTemplateBroadcast()` now checks
+`leadConvId(lead)` first: if it's missing but the account has `wa_phone_id` set (Meta's direct
+WhatsApp Cloud API, connected via Settings → Channels Embedded Signup — a non-secret id, safe to
+branch on client-side) and the lead has a `Phone`, it sends straight through Meta's Graph API
+instead (`POST /wa/send-template`, `handleWaSendTemplate` in `worker.js` — this route already
+existed, used elsewhere, but was never wired into Template Broadcast's own send loop until now).
+Meta's send API wants a native `components:[{type:'body', parameters:[{type:'text', text:...}]}]`
+shape, not Chatwoot's flat `processed_params` map, so this path builds that separately from the
+existing Chatwoot-bound `processed_params`/`content` substitution just below it in the same
+function — the two sends are structurally different API calls, not just a different transport for
+the same payload. A cold lead with a connected WhatsApp API sends normally (logged "sent directly
+(no prior conversation)"); a cold lead with **no** WhatsApp API connected still fails, but now says
+so clearly ("connect WhatsApp Business API in Settings → Channels to reach cold leads like this")
+instead of a generic "no conversation ID" that gave no indication anything could be done about it.
+Every lead that already has a conversation is completely unaffected — same Chatwoot path as before.
 
 **New tab: 🔁 Follow-ups** — shows leads currently mid-sequence in either of the two existing
 automated systems: the classic `followup_messages` sequence (`Follow up 1/2/3` flags, up to

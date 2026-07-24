@@ -131,7 +131,8 @@ const CLIENTS_TABLE_ID = 'mxl33bg4wi70fqj';
 const STAGES = ['New', 'Hot Lead', 'Warm Lead', 'Cold', 'Converted', 'Lost'];
 
 let clientId = null, clientRecord = null;
-let sessionToken = sessionStorage.getItem('lv_session') || '';
+// localStorage, not sessionStorage — see broadcast.html/SETUP.md "Session persistence".
+let sessionToken = localStorage.getItem('lv_session') || '';
 let campaigns = [];
 let editingCampaignId = null;
 let selectedStages = new Set();
@@ -141,10 +142,10 @@ function ncAuthHeaders(extra) { return { 'Authorization': 'Bearer ' + sessionTok
 function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
 // ── AUTH — identical pattern to broadcast.html: this page only ever opens from an
-// already-logged-in dashboard.html tab (window.open, same origin), which shares its
-// sessionStorage into the new tab. No separate login form.
+// already-logged-in dashboard.html tab (window.open, same origin) — lv_cid/lv_session live in
+// localStorage, directly readable here (same origin). No separate login form.
 async function tryAutoLogin() {
-  const id = sessionStorage.getItem('lv_cid');
+  const id = localStorage.getItem('lv_cid');
   if (!id || !sessionToken) { goBack(); return; }
   try {
     const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE_ID}/records/${id}`, { headers: ncAuthHeaders() });
