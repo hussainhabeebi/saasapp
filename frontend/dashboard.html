@@ -1763,8 +1763,10 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
-        <!-- USER MANAGEMENT -->
-        <div class="card" style="margin-bottom:14px">
+        <!-- USER MANAGEMENT — id="userMgmtCard" is targeted by the onboarding checklist's
+             pulse-highlight (see renderOnboardingChecklist/highlightCard), same pattern as
+             bizSetupCard above. -->
+        <div class="card" style="margin-bottom:14px" id="userMgmtCard">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">👥 User Management</div>
             <div class="s-note">Everyone below can sign in with their own Authentik account and gets full access to this dashboard — same as you.</div>
@@ -3753,6 +3755,23 @@ const TODAY = new Date().toISOString().slice(0,10);
   </div>
 </div>
 
+<!-- Welcome Setup — shown once, right after a brand-new signup finishes (see
+     autoProvisionAndLogin/completeLoginResult), before the rep ever sees a blank/generic
+     dashboard. No close/skip icon — see openWelcomeSetupModal for why. Body-level sibling of
+     #overlay like every other modal. -->
+<div class="modal" id="modalWelcomeSetup" style="width:460px">
+  <div class="modal-hd"><div class="modal-title">👋 Welcome to Leadvyne</div></div>
+  <div class="modal-body">
+    <div class="s-note" style="margin-bottom:14px">Two quick things — this shapes the labels, stage tags, and theme you'll see throughout the dashboard. You can change either later in Settings.</div>
+    <div class="form-group"><label class="form-label">Business Name</label><input class="form-input" id="wsBusinessName" placeholder="e.g. Acme Travels"></div>
+    <div class="form-group"><label class="form-label">Industry</label><select class="form-input" id="wsIndustry"></select></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" onclick="saveWelcomeSetup()">Get Started</button>
+    <span class="save-msg" id="wsModalMsg"></span>
+  </div>
+</div>
+
 <!-- MODAL: Project Settings (client info + AI summary toggle) -->
 <div class="modal" id="modalProject" style="width:480px">
   <span class="modal-drag"></span>
@@ -3908,11 +3927,16 @@ const TODAY = new Date().toISOString().slice(0,10);
 
 /* ── STATE ── */
 let clientId = null, clientRecord = null, refreshTimer = null;
-let sessionToken = sessionStorage.getItem('lv_session') || '';
+// lv_cid/lv_session/lv_me_email deliberately live in localStorage, not sessionStorage — closing a
+// tab/browser used to wipe sessionStorage entirely, forcing a fresh Authentik login far more often
+// than the session token's own TTL ever would (the real cause of "have to log in again constantly"
+// on mobile, where the browser/PWA gets backgrounded and killed all the time). localStorage
+// persists across that; logging out explicitly (hLogout below) still clears it same as before.
+let sessionToken = localStorage.getItem('lv_session') || '';
 // The specific logged-in person's own verified email — distinct from clientRecord.authentik_email
 // (the account owner) when a teammate from team_emails is the one signed in right now. Used for
 // "assigned to me" task filtering and defaulting new tasks to the person creating them.
-let myEmail = sessionStorage.getItem('lv_me_email') || '';
+let myEmail = localStorage.getItem('lv_me_email') || '';
 let allLeads = [], currentLead = null, chartMode = 'week', leadsChart = null;
 let _stages = [], _convSearchActive = false;
 let _leadsPage=1; const LEADS_PGS=50;
@@ -3966,6 +3990,10 @@ async function autoProvisionAndLogin(email, accessToken){
         ? 'Your account was created — click "Secure Login" to continue.'
         : 'Account setup failed — try again.');
     }
+    // Flags this as a brand-new account (not just a returning login) so completeLoginResult opens
+    // the Welcome Setup modal (industry + business name) right after showApp() — this survives the
+    // popup→opener postMessage relay too, since that spreads every property of `session`.
+    session.isFreshSignup=true;
     completeLoginResult(session);
   }catch(e){
     completeLoginError(e.message||'Account setup failed — try again.');
@@ -4004,10 +4032,11 @@ function completeLoginResult(session){
   }
   clientId=session.client_id; clientRecord=session.client; sessionToken=session.session_token;
   myEmail=(session.email||'').toLowerCase();
-  sessionStorage.setItem('lv_cid',clientId);
-  sessionStorage.setItem('lv_session',sessionToken);
-  sessionStorage.setItem('lv_me_email',myEmail);
+  localStorage.setItem('lv_cid',clientId);
+  localStorage.setItem('lv_session',sessionToken);
+  localStorage.setItem('lv_me_email',myEmail);
   showApp();
+  if(session.isFreshSignup) openWelcomeSetupModal();
   setTimeout(maybeShowInstallBanner,2000);
 }
 function completeLoginError(message){
@@ -4140,19 +4169,23 @@ async function handleAuthentikCallback(){
 }
 
 async function resumeSession(id){
-  if(!sessionToken){ sessionStorage.removeItem('lv_cid'); return; }
+  if(!sessionToken){ localStorage.removeItem('lv_cid'); return; }
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/session/me`,{headers:{'Authorization':'Bearer '+sessionToken}});
     const data=await r.json().catch(()=>({}));
     if(!r.ok||!data.client_id) throw new Error();
     clientId=data.client_id; clientRecord=data.client;
+    // Sliding-window refresh — handleSessionMe reissues a fresh, full-length token on every
+    // successful call, so an account opened at least once a month never hits the TTL ceiling.
+    if(data.session_token){ sessionToken=data.session_token; localStorage.setItem('lv_session',sessionToken); }
     showApp();
-  }catch(e){ sessionStorage.removeItem('lv_cid'); sessionStorage.removeItem('lv_session'); sessionToken=''; }
+  }catch(e){ localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); sessionToken=''; }
 }
 
 $id('hLogout').addEventListener('click',()=>{
-  sessionStorage.removeItem('lv_cid');
-  sessionStorage.removeItem('lv_session');
+  localStorage.removeItem('lv_cid');
+  localStorage.removeItem('lv_session');
+  localStorage.removeItem('lv_me_email');
   if(clientId) sessionStorage.removeItem(_CACHE_KEY());
   clientId=null; clientRecord=null; sessionToken=''; allLeads=[];
   clearInterval(refreshTimer);
@@ -4454,6 +4487,7 @@ function renderOnboardingChecklist(){
     {label:"Set up your bot's prompt", done:!!(c.main_prompt&&c.main_prompt.trim()), go:()=>navigate('settings')},
     {label:'Activate your plan', done:!!c.stripe_subscription_id, go:()=>navigate('billing')},
     {label:'Get your first lead', done:allLeads.length>0, go:()=>navigate('leads')},
+    {label:'Invite your team', done:(c.team_emails||'').split(',').map(s=>s.trim()).filter(Boolean).length>0, go:()=>{ navigate('settings'); setTimeout(()=>highlightCard('userMgmtCard'),80); }},
   ];
   _onbSteps=steps;
   const doneCount=steps.filter(s=>s.done).length;
@@ -6112,30 +6146,60 @@ $id('saveSvc').addEventListener('click',async()=>{
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
 
+// Shared by saveIndustry() below and the Welcome Setup modal (openWelcomeSetupModal/
+// saveWelcomeSetup) — picking an industry always means the same module-auto-enable side effects,
+// wherever the picker is shown.
+async function applyIndustryChange(ind, extraPatch){
+  const patch={industry:ind, ...(extraPatch||{})};
+  if(ind==='travel'){patch.ta_enabled='Yes';clientRecord.ta_enabled='Yes';taSaveLocal('ta_enabled','Yes');}
+  else{patch.ta_enabled='No';clientRecord.ta_enabled='No';taSaveLocal('ta_enabled','No');}
+  if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';rcSaveLocal('recruit_enabled','Yes');}
+  else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
+  if(ind==='hospitality'){patch.hospitality_enabled='Yes';clientRecord.hospitality_enabled='Yes';}
+  else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
+  await ensureHospitalityEnabledColumn();
+  await patchClient(patch);
+  clientRecord.industry=ind;
+  applyTheme(ind);
+  updateRecruitTabVisibility();
+  updateHospitalityTabVisibility();
+  _renderModuleBadge('taModuleStatusBadge',ind==='travel');
+  _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
+}
 async function saveIndustry(){
   const btn=$id('saveIndustryBtn'),msg=$id('saveIndustryMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   try{
-    const ind=$id('cfgIndustry').value;
-    const patch={industry:ind};
-    // Auto-enable matching module based on industry
-    if(ind==='travel'){patch.ta_enabled='Yes';clientRecord.ta_enabled='Yes';taSaveLocal('ta_enabled','Yes');}
-    else{patch.ta_enabled='No';clientRecord.ta_enabled='No';taSaveLocal('ta_enabled','No');}
-    if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';rcSaveLocal('recruit_enabled','Yes');}
-    else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
-    if(ind==='hospitality'){patch.hospitality_enabled='Yes';clientRecord.hospitality_enabled='Yes';}
-    else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
-    await ensureHospitalityEnabledColumn();
-    await patchClient(patch);
-    clientRecord.industry=ind;
-    applyTheme(ind);
-    updateRecruitTabVisibility();
-    updateHospitalityTabVisibility();
-    _renderModuleBadge('taModuleStatusBadge',ind==='travel');
-    _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
+    await applyIndustryChange($id('cfgIndustry').value);
     msg.textContent='✓ Saved — theme applied';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+}
+
+// Welcome Setup modal — shown once, right after a brand-new signup (see completeLoginResult's
+// session.isFreshSignup check). No skip/close button by design: every account needs *some*
+// industry and business name, and defaulting silently to "General" + an email-derived name (the
+// old behavior) meant a client's first look at the dashboard often didn't match their business at
+// all, since stage tags/theme/labels are all industry-driven throughout this app.
+function openWelcomeSetupModal(){
+  $id('wsBusinessName').value=clientRecord?.client_name||'';
+  const sel=$id('wsIndustry');
+  sel.innerHTML=Object.entries(INDUSTRIES).map(([k,v])=>`<option value="${k}"${clientRecord?.industry===k?' selected':''}>${esc(v.label)}</option>`).join('');
+  $id('wsModalMsg').textContent='';
+  openModal('modalWelcomeSetup');
+}
+async function saveWelcomeSetup(){
+  const msg=$id('wsModalMsg');
+  const name=$id('wsBusinessName').value.trim();
+  if(!name){ msg.textContent='Enter your business name.'; msg.className='save-msg err'; return; }
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    await applyIndustryChange($id('wsIndustry').value, {client_name:name});
+    clientRecord.client_name=name;
+    $id('hChip').textContent=name;
+    closeModal('modalWelcomeSetup');
+    renderOnboardingChecklist();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
 // hospitality_enabled is a brand-new CLIENTS column (unlike ta_enabled/recruit_enabled, which
@@ -15707,7 +15771,7 @@ function showUpdateBanner(){
   // back to any existing session, since a fresh login always takes priority.
   const wasCallback=await handleAuthentikCallback();
   if(wasCallback) return;
-  const saved=sessionStorage.getItem('lv_cid');
+  const saved=localStorage.getItem('lv_cid');
   if(saved){ resumeSession(saved); return; }
   // The marketing site's "Sign Up Free" button links straight here with ?signup=1 — skip the
   // gate screen entirely and go straight into Authentik, so leadvyne.com only ever needs one button.

@@ -221,10 +221,51 @@ with a business name guessed from the email's local part (e.g. `jane.doe@x.com` 
 same (still-valid) Authentik access token and logs them straight into a fresh dashboard. No
 form, no admin step, no second Authentik trip.
 
+**Welcome Setup modal** — right after `showApp()` for a brand-new signup specifically (flagged via
+`session.isFreshSignup`, set in `autoProvisionAndLogin` and carried through the popup→opener
+`postMessage` relay since that spreads every property of `session`), `openWelcomeSetupModal()`
+shows a small, no-skip modal asking for the real Business Name and Industry before the rep ever
+sees the dashboard. This replaces what used to be a silent `industry:'general'` default —
+since Stage tags, theme colour, and terminology throughout the whole app are industry-driven
+(`INDUSTRIES` in `dashboard.html`), a client's very first look at their dashboard previously often
+didn't match their business at all. `saveWelcomeSetup()` shares the exact same
+industry-change/module-auto-enable logic as the existing Settings → Business Setup card
+(factored out into `applyIndustryChange(ind, extraPatch)`, used by both `saveIndustry()` and this
+modal) plus writes `client_name`. No skip/close button by design — a returning user never sees
+this again since it only fires on the fresh-signup path, and both fields are quick, low-friction
+asks. (The modal can still be dismissed by clicking the shared `#overlay` backdrop, same as every
+other modal — this is a soft nudge, not a hard gate; a dismissed new account just falls back to the
+pre-existing "General" default and can fill both fields in later from the Getting Started checklist
+or Settings, same as before this existed.)
+
 Chatwoot isn't connected yet at this point (Authentik has no way to collect that). The new
 client fills it in themselves from **Settings → Chatwoot Webhook**, which now has all four
 fields (`chatwoot_base`, `chatwoot_account_id`, `chatwoot_inbox_id`, `chatwoot_token`) —
-previously only the base URL was editable there, everything else was signup-wizard-only.
+previously only the base URL was editable there, everything else was signup-wizard-only. The
+Home page's **Getting Started checklist** (`renderOnboardingChecklist()`) already nudges toward
+this ("Connect a channel") — it also has an "Invite your team" step (checks
+`team_emails` for at least one entry, links to Settings → User Management,
+`id="userMgmtCard"` for the same pulse-highlight `bizSetupCard` already used).
+
+**Session persistence** — `lv_cid`/`lv_session`/`lv_me_email` moved from `sessionStorage` to
+`localStorage` (`dashboard.html`). This was the real cause of "have to log in constantly" reports
+from mobile/WhatsApp-heavy reps — closing a tab or backgrounding a mobile browser/PWA wipes
+`sessionStorage` entirely regardless of the session token's own expiry, forcing a fresh Authentik
+round-trip far more often than the token TTL alone ever would. `SESSION_TTL_SECONDS` (`worker.js`)
+also moved from 24h to 30 days, and `GET /session/me` (called by `resumeSession()` on every app
+load) now reissues a fresh, full-length token on every successful call — a sliding window, so an
+account opened at least once a month never actually reaches the expiry ceiling. Logging out
+(`hLogout`) still clears all three keys immediately, same as before. **Tradeoff, stated plainly**:
+these are stateless HMAC tokens with no server-side revocation list, so a longer TTL means a
+compromised token stays valid longer too — a deliberate choice favoring day-to-day convenience for
+an internal sales tool over that risk; add a revocation/deny-list if this ever needs tightening.
+
+**Passwordless / social login (Google, magic link, etc.)** is entirely an **Authentik-side
+configuration change, not app code** — `dashboard.html`'s login button already just opens
+Authentik's own hosted flow in a popup, so whatever authentication methods that flow is configured
+to offer (a **Source** for Google/social OAuth, or a passwordless **Email** stage) show up there
+automatically with zero changes needed here. Not built in this pass since it requires an admin
+decision + configuration in the Authentik instance itself, outside this repository.
 
 Admin-created clients (the old path — create the CLIENTS row yourself, then create their
 Authentik user manually and set `authentik_email`) still works fine alongside this; both paths
