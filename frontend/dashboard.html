@@ -629,8 +629,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 /* Leads page: persistent detail panel — see openDetail()'s leads-detail-dock check and
    SETUP.md "Leads page: persistent detail panel". Only applied while on the Leads list/table view;
    every other page still gets the normal centered modal, untouched. */
-.modal.docked{top:0!important;right:0!important;left:auto!important;bottom:0!important;transform:none!important;width:420px!important;max-width:92vw;height:100vh;max-height:100vh;border-radius:0;box-shadow:-8px 0 30px rgba(0,0,0,.15)}
-.modal.docked.open{transform:none!important;opacity:1;pointer-events:auto}
+.modal.docked{top:0!important;right:0!important;left:auto!important;bottom:0!important;transform:translateX(100%)!important;width:420px!important;max-width:92vw;height:100vh;max-height:100vh;border-radius:0;box-shadow:-8px 0 30px rgba(0,0,0,.15);transition:transform .3s cubic-bezier(.32,.72,0,1)}
+.modal.docked.open{transform:translateX(0)!important;opacity:1;pointer-events:auto}
 .leads-view-tabs .lv-tab{font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
 .leads-view-tabs .lv-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .leads-view-tabs .lv-tab .lv-x{opacity:.7;margin-left:2px}
@@ -5885,10 +5885,15 @@ function openDetail(id){
 // modalDetail keeps behaving like every other modal; this only changes what happens while
 // _leadsDocked is true, so openModal/closeModal's shared logic (used by 30+ other modals) is
 // left untouched.
+// Docking only makes sense once there's actual room beside the list (matches this file's own
+// 768px desktop breakpoint, used everywhere else for the same mobile/desktop split) — on a phone
+// a "side" panel would cover nearly the whole screen anyway, so on mobile this falls back to the
+// normal full-screen bottom-sheet modal (with its overlay), the same proven behavior every other
+// modal in the app already uses.
 let _leadsDocked=false;
 function openLeadDetailModal(){
   const modal=$id('modalDetail');
-  if(_leadsDocked){
+  if(_leadsDocked && window.innerWidth>=768){
     modal.classList.add('docked');
     modal.classList.add('open');
   }else{

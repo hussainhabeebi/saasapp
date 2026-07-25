@@ -4569,7 +4569,7 @@ When true, a 📞 Call button (`tel:` link via `callHrefFor(l)`) appears directl
 bar (list view) / actions cell (table view, icon-only), alongside Won/Spam — one tap dials without
 opening the detail drawer first.
 
-### Persistent detail panel (docked, Leads page only)
+### Persistent detail panel (docked, Leads page only, desktop/tablet only)
 Clicking a lead on the Leads page opens the detail panel docked to the right side
 (`.modal.docked` — `position:fixed;top:0;right:0;bottom:0;width:420px`, new CSS) instead of the
 usual centered/dimmed modal, so a rep can keep working down a filtered list without losing their
@@ -4580,4 +4580,24 @@ and removes `.docked`/`.open` when navigating away from Leads while the panel is
 narrowly on purpose: every other one of the ~30 existing `.modal` call sites in the app (and
 `openModal()`/`closeModal()` themselves) are completely untouched — this only changes what happens
 specifically while the Leads page is active.
+- **Gated to `window.innerWidth>=768` (this file's existing desktop breakpoint) in
+  `openLeadDetailModal()` itself**, checked fresh on every open. A phone screen has no room to show
+  a 420px side panel *alongside* a list anyway, so below that width the detail view falls back to
+  the normal full-screen bottom-sheet modal (with its overlay) — the same proven behavior every
+  other modal in the app already uses, avoiding mobile-only edge cases entirely rather than trying
+  to make "docked" work on a screen too narrow for it to mean anything.
+- **Fixed bug: closing (and, by extension, adding notes/follow-ups) didn't work on mobile before
+  this gate existed.** The original `.modal.docked` rule set `transform:none!important`
+  unconditionally (i.e. even without `.open`) to cancel the base mobile bottom-sheet's
+  `transform:translateY(100%)` hide mechanism while docked-and-open. But on mobile that's the
+  *only* way `.modal` ever hides — desktop instead hides via `opacity:0;pointer-events:none` (see
+  the `@media(min-width:768px)` rule), which `.docked` never touched. So once a lead was opened in
+  docked mode on a narrow screen, `closeModal()` removing just `.open` (the `.docked` class itself
+  is only cleared by `navigate()` on leaving the Leads page) had no visual effect at all — the panel
+  stayed fully rendered and interactive on top of everything, silently swallowing every subsequent
+  tap (including the ✕ button, and any note/follow-up UI the rep tried to reach next). Fixed by
+  making `.modal.docked`'s own hidden state a real off-screen `transform:translateX(100%)!important`
+  (mirroring the base mobile bottom-sheet's approach) and `.modal.docked.open` the visible
+  `translateX(0)!important` — belt-and-suspenders alongside the `>=768px` gate above, so the docked
+  CSS is correct on its own even if that gate is ever bypassed.
 
