@@ -4734,4 +4734,3 @@ headline KPIs (lead count, win rate) over a fixed last-30-vs-prior-30-days windo
 Forecast and Churn headlines — four cards, each clickable straight through to its own full tab.
 Not a separate "auto-dashboard" engine; deliberately reuses the same math as everything else in
 this module so there's only one contribution-analysis implementation to reason about.
-
