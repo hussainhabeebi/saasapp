@@ -1458,8 +1458,12 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div id="aiSubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
           <button class="hosp-tab active" data-ai="overview">🧭 Overview</button>
           <button class="hosp-tab" data-ai="rootcause">🔍 Root Cause</button>
+          <button class="hosp-tab" data-ai="objections">⚠️ Objections</button>
           <button class="hosp-tab" data-ai="forecast">📈 Forecast</button>
+          <button class="hosp-tab" data-ai="marketing">📢 Marketing Efficiency</button>
           <button class="hosp-tab" data-ai="churn">💔 Churn &amp; LTV</button>
+          <button class="hosp-tab" data-ai="reps">👥 Rep Performance</button>
+          <button class="hosp-tab" data-ai="bottlenecks">🚧 Bottlenecks</button>
           <button class="hosp-tab" data-ai="custom">🛠️ Custom Analysis</button>
         </div>
         <div id="aiContent" class="page-pad"></div>
@@ -4908,6 +4912,14 @@ async function applyHumanDealOutcome(leadId, outcome){
     nextStage=stageIds[1]||stageIds[0]||'new';
   }
   const patch={Id:leadId, Stage:nextStage, Handover:'No', HandoverAt:'', SlaAlerted:'No', HandoverOutcome:outcome};
+  // Speed to Lead (SETUP.md "Leads page: AI Analyst — Speed to Lead") — HandoverAt is about to be
+  // wiped by the patch above the moment this resolves, so the elapsed wait has to be captured HERE,
+  // the one place that still has it, or it's lost forever. A lead that was never actually waiting
+  // on a human (HandoverAt blank) just leaves this field untouched rather than writing a bogus 0.
+  if(lead.HandoverAt){
+    const mins=Math.round((Date.now()-new Date(lead.HandoverAt).getTime())/60000);
+    if(isFinite(mins) && mins>=0) patch.HandoverResponseMinutes=mins;
+  }
   // Reuses the same WhatsApp opt-out flag a genuine customer-initiated STOP sets
   // (handleEngineWebhook checks OptOut before generating any reply) — marking a lead Spam means
   // the bot goes silent for them going forward exactly the same way a real opt-out does, with no
@@ -5713,7 +5725,7 @@ function renderAiAnalyst(){ renderAiSubPage(_aiPage); }
 function renderAiSubPage(page){
   _aiPage=page;
   document.querySelectorAll('#aiSubNav .hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.ai===page));
-  const fns={overview:renderAiOverview, rootcause:renderAiRootCause, forecast:renderAiForecast, churn:renderAiChurn, custom:renderAiCustom};
+  const fns={overview:renderAiOverview, rootcause:renderAiRootCause, objections:renderAiObjections, forecast:renderAiForecast, marketing:renderAiMarketing, churn:renderAiChurn, reps:renderAiReps, bottlenecks:renderAiBottlenecks, custom:renderAiCustom};
   (fns[page]||renderAiOverview)();
 }
 document.addEventListener('click', e=>{
@@ -5752,6 +5764,7 @@ const AI_DIMENSIONS=[
   {key:'owner', label:'Owner', get:l=>l.Owner||'Unassigned'},
   {key:'tag', label:'Tag', get:l=>parseTags(l.Tags)[0]||'Untagged'},
   {key:'language', label:'Language', get:l=>l.Language||'Unknown'},
+  {key:'objection', label:'Last Objection', get:l=>l.LastObjectionCategory||'None'},
   {key:'month', label:'Month created', get:l=>aiCreationMonthKey(l)||'Unknown'},
 ];
 // Root Cause/Overview compare two date-bounded windows against each other — "Month created"
@@ -5912,10 +5925,31 @@ function aiChurnCompute(){
   rows.sort((a,b)=>b.riskScore-a.riskScore);
   return rows;
 }
-function renderAiChurn(){
+async function renderAiChurn(){
   const el=$id('aiContent');
   const rows=aiChurnCompute();
   const atRiskValue=rows.reduce((s,r)=>s+r.ltv,0);
+
+  // Repeat-business LTV addendum (ecommerce only) — the Leads-only LTV above explicitly doesn't
+  // fold in Ecommerce Orders (a customer can place several Orders without a second Lead record);
+  // this fills that specific gap via a dedicated backend route reading the Orders table directly.
+  let repeatHtml='';
+  if(clientRecord?.industry==='ecommerce'){
+    try{
+      const r=await fetch(`${CONFIG.WORKER_BASE}/ai/repeat-customers`,{headers:ncAuthHeaders()});
+      const data=await r.json();
+      if(data.has_orders_table && data.customers.length){
+        repeatHtml=`<div class="card" style="margin-top:14px">
+          <div class="s-head" style="margin-bottom:8px">Repeat Customers (from Orders, not Leads) — ${data.repeat_customer_count} of ${data.total_customers}</div>
+          <div class="tbl-wrap"><table class="leads-tbl"><thead><tr><th>Customer</th><th>Orders</th><th>Total Spend</th></tr></thead><tbody>
+            ${data.customers.slice(0,20).map(c=>`<tr><td>${esc(c.name)}</td><td>${c.orders}</td><td>${(data.currency?data.currency+' ':'')+Math.round(c.revenue).toLocaleString()}</td></tr>`).join('')}
+          </tbody></table></div>
+          <div class="s-note" style="margin-top:8px">Real repeat-purchase LTV from your Orders table — separate from the phone-grouped Leads LTV above, which only sees repeat *lead records*, not repeat orders under one lead.</div>
+        </div>`;
+      }
+    }catch(e){}
+  }
+
   el.innerHTML=`
     <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:14px">
       <div class="stat"><div class="stat-lbl">At-Risk Contacts</div><div class="stat-val">${rows.length}</div></div>
@@ -5936,6 +5970,198 @@ function renderAiChurn(){
         <td><button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${r.leadId}])">📣 Win back</button></td>
       </tr>`).join('')}</tbody>
     </table></div>`:'<div class="empty-state"><div class="ei">✨</div>No churn risk detected — every contact either has an active deal or has been in touch recently.</div>'}
+    ${repeatHtml}
+  `;
+}
+
+// Why deals are lost, aggregated (SETUP.md "Leads page: AI Analyst — Objections") — the Team
+// page already surfaces a raw sentiment/objection snapshot; this adds the trend/comparison lens
+// specifically ("Price objections are up from 3rd to 1st this month"), reusing aiPivot on the new
+// 'objection' dimension rather than a separate computation.
+function renderAiObjections(){
+  const el=$id('aiContent');
+  const lost=allLeads.filter(isLostLead);
+  const snapshot=aiPivot(lost, 'objection', 'count').filter(r=>r.label!=='None');
+  const now=Date.now();
+  const cutRecent=now-30*86400000, cutPrior=now-60*86400000;
+  const inRange=(l,from,to)=>{ const t=new Date(l.Date||0).getTime(); return t>=from&&t<to; };
+  const lostBefore=lost.filter(l=>inRange(l,cutPrior,cutRecent));
+  const lostAfter=lost.filter(l=>inRange(l,cutRecent,now));
+  const beforePivot=aiPivot(lostBefore,'objection','count');
+  const afterPivot=aiPivot(lostAfter,'objection','count');
+  const cats=[...new Set([...beforePivot,...afterPivot].map(r=>r.label))].filter(c=>c!=='None');
+  const trend=cats.map(c=>{
+    const before=beforePivot.find(r=>r.label===c)?.value||0;
+    const after=afterPivot.find(r=>r.label===c)?.value||0;
+    return {category:c, before, after, delta:after-before};
+  }).sort((a,b)=>Math.abs(b.delta)-Math.abs(a.delta));
+
+  const maxSnap=Math.max(1,...snapshot.map(r=>r.value));
+  el.innerHTML=`
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:8px">Why deals are lost — current objection breakdown</div>
+      ${snapshot.length?snapshot.map(r=>`<div class="bar-row">
+        <div style="min-width:100px;font-size:11px;text-transform:capitalize">${esc(r.label)}</div>
+        <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(r.value/maxSnap*100)}%"></div></div>
+        <div class="bar-val">${r.value}</div>
+      </div>`).join(''):'<div class="s-note">No lost leads with a logged objection yet.</div>'}
+    </div>
+    <div class="card">
+      <div class="s-head" style="margin-bottom:8px">Trend — last 30 days vs. the 30 days before that</div>
+      ${trend.length?trend.map(t=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:7px 0;border-bottom:1px solid var(--line)">
+        <span style="text-transform:capitalize">${esc(t.category)}</span>
+        <span>${t.before} → ${t.after} <span style="color:${t.delta>=0?'#DC2626':'#059669'};font-weight:600">(${t.delta>=0?'+':''}${t.delta})</span></span>
+      </div>`).join(''):'<div class="s-note">Not enough lost-deal history yet to show a trend.</div>'}
+    </div>
+    <div class="s-note" style="margin-top:10px">Only the most recent objection per lead is tracked, not a full history — this reads as "which objection lost deals are currently sitting on," not a lifetime count.</div>
+  `;
+}
+
+// Rep × Source performance matrix + Best Time to Contact (SETUP.md "Leads page: AI Analyst — Rep
+// Performance") — both answer "how/when should reps work leads," grouped into one tab rather than
+// two thin ones.
+function renderAiReps(){
+  const el=$id('aiContent');
+  const owners=[...new Set(allLeads.map(l=>l.Owner).filter(Boolean))];
+  const sources=[...new Set(allLeads.map(l=>l.Source).filter(Boolean))].slice(0,8); // cap columns so the table doesn't sprawl
+  const winrate=aiMetric('winrate');
+  const cellStats=(owner,source)=>{
+    const subset=allLeads.filter(l=>l.Owner===owner && l.Source===source);
+    return {n:subset.length, rate:subset.length?winrate.compute(subset):null};
+  };
+  let matrixHtml;
+  if(owners.length && sources.length){
+    matrixHtml=`<div class="tbl-wrap"><table class="leads-tbl"><thead><tr><th>Rep</th>${sources.map(s=>`<th>${esc(s)}</th>`).join('')}</tr></thead><tbody>
+      ${owners.map(o=>`<tr><td>${esc(o)}</td>${sources.map(s=>{
+        const {n,rate}=cellStats(o,s);
+        return `<td style="text-align:center">${n?`${rate}%<div style="font-size:10px;color:var(--muted)">(${n})</div>`:'—'}</td>`;
+      }).join('')}</tr>`).join('')}
+    </tbody></table></div>`;
+  }else{
+    matrixHtml='<div class="empty-state"><div class="ei">👥</div>Not enough Owner/Source data yet to build a matrix.</div>';
+  }
+
+  // Best time to contact — buckets by hour-of-day and day-of-week from LastMsgAt (falls back to
+  // Date). Reflects overall message activity, not a confirmed "reply" moment specifically — still a
+  // reasonable proxy for when leads are actually engaging.
+  const hourCounts=new Array(24).fill(0);
+  const dowCounts=new Array(7).fill(0);
+  const dowLabels=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  allLeads.forEach(l=>{
+    const d=new Date(l.LastMsgAt||l.Date||0); if(isNaN(d.getTime())) return;
+    hourCounts[d.getHours()]++; dowCounts[d.getDay()]++;
+  });
+  const maxHour=Math.max(1,...hourCounts), maxDow=Math.max(1,...dowCounts);
+  const topHours=hourCounts.map((c,h)=>({h,c})).sort((a,b)=>b.c-a.c).slice(0,3).filter(x=>x.c>0).map(x=>`${x.h}:00`).join(', ');
+
+  el.innerHTML=`
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:8px">Rep × Source Win Rate</div>
+      ${matrixHtml}
+      <div class="s-note" style="margin-top:8px">Cell = win rate (count) for that rep's leads from that source. Use this to route new leads to whichever rep already converts that source best.</div>
+    </div>
+    <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+      <div class="card">
+        <div class="s-head" style="margin-bottom:8px">Activity by Hour of Day</div>
+        ${hourCounts.map((c,h)=>`<div class="bar-row"><div style="min-width:40px;font-size:11px">${h}:00</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(c/maxHour*100)}%"></div></div><div class="bar-val">${c}</div></div>`).join('')}
+      </div>
+      <div class="card">
+        <div class="s-head" style="margin-bottom:8px">Activity by Day of Week</div>
+        ${dowLabels.map((lbl,i)=>`<div class="bar-row"><div style="min-width:40px;font-size:11px">${lbl}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(dowCounts[i]/maxDow*100)}%"></div></div><div class="bar-val">${dowCounts[i]}</div></div>`).join('')}
+      </div>
+    </div>
+    <div class="s-note" style="margin-top:10px">Busiest hours: ${topHours||'—'}. Based on last-message timestamps across all leads — a proxy for when leads are actually engaging, not a confirmed reply-speed measurement.</div>
+  `;
+}
+
+// Stage Bottlenecks + Speed to Lead (SETUP.md "Leads page: AI Analyst — Bottlenecks") — both are
+// "where does the process itself lose time" lenses, grouped into one tab.
+async function renderAiBottlenecks(){
+  const el=$id('aiContent');
+  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
+
+  let stageData={enabled:false, stages:[]};
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/ai/stage-durations`,{headers:ncAuthHeaders()});
+    stageData=await r.json();
+  }catch(e){}
+
+  // Speed to Lead — HandoverResponseMinutes (see applyHumanDealOutcome) bucketed against whether
+  // the handover actually converted (HandoverOutcome==='Resolved-Won'), same "Spam excluded from
+  // the denominator" convention as the Team page's own handover-conversion stat.
+  const resolved=allLeads.filter(l=>l.HandoverResponseMinutes!=null && l.HandoverOutcome && l.HandoverOutcome!=='Spam');
+  const buckets=[
+    {label:'Under 15 min', test:m=>m<15},
+    {label:'15–60 min', test:m=>m>=15&&m<60},
+    {label:'1–4 hours', test:m=>m>=60&&m<240},
+    {label:'4–24 hours', test:m=>m>=240&&m<1440},
+    {label:'Over 24 hours', test:m=>m>=1440},
+  ];
+  const speedRows=buckets.map(b=>{
+    const subset=resolved.filter(l=>b.test(Number(l.HandoverResponseMinutes)));
+    const won=subset.filter(l=>l.HandoverOutcome==='Resolved-Won').length;
+    return {label:b.label, n:subset.length, rate:subset.length?Math.round(won/subset.length*100):null};
+  });
+
+  const maxDwell=Math.max(1,...stageData.stages.map(s=>s.avgDays),1);
+  el.innerHTML=`
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:8px">Stage Bottlenecks — leads currently stuck, by stage</div>
+      ${stageData.enabled && stageData.stages.length?stageData.stages.map(s=>`<div class="bar-row">
+        <div style="min-width:110px;font-size:11px">${esc(s.stage)}</div>
+        <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(s.avgDays/maxDwell*100)}%"></div></div>
+        <div class="bar-val">${s.avgDays}d <span style="color:var(--muted);font-weight:400">(${s.count})</span></div>
+      </div>`).join(''):'<div class="s-note">No data yet — this needs the Advanced Pipeline follow-up cadence enabled (Settings) to track stage-entry timestamps.</div>'}
+      <div class="s-note" style="margin-top:8px">Average days leads currently sitting in each stage have been there — a snapshot, not a historical average time-to-pass-through.</div>
+    </div>
+    <div class="card">
+      <div class="s-head" style="margin-bottom:8px">Speed to Lead — human handover response time vs. win rate</div>
+      ${resolved.length?speedRows.map(r=>`<div class="bar-row">
+        <div style="min-width:110px;font-size:11px">${r.label}</div>
+        <div class="bar-bg"><div class="bar-fill" style="width:${r.rate||0}%"></div></div>
+        <div class="bar-val">${r.rate===null?'—':r.rate+'%'} <span style="color:var(--muted);font-weight:400">(${r.n})</span></div>
+      </div>`).join(''):'<div class="s-note">No resolved handovers with a recorded response time yet — this fills in as your team resolves Human Deals going forward.</div>'}
+      <div class="s-note" style="margin-top:8px">Win rate among resolved human handovers, bucketed by how long the lead waited for a human reply. Spam excluded from both the counts and win rate.</div>
+    </div>
+  `;
+}
+
+// Ad spend vs. realized Won revenue (SETUP.md "Leads page: AI Analyst — Marketing Efficiency") —
+// reuses the existing Meta Ads spend-trend route (account-level only; Meta's Ads Insights call
+// here isn't at campaign granularity) compared against actual Won deal value per month, rather
+// than the existing Meta ROI report's spend-vs-lead-*count* — catches "this brings cheap leads
+// that rarely close," a different and often more painful finding than cost-per-lead alone.
+async function renderAiMarketing(){
+  const el=$id('aiContent');
+  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
+  let spendData={connected:false, months:[]};
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/ads/spend-trend?months=6`,{headers:ncAuthHeaders()});
+    spendData=await r.json();
+  }catch(e){}
+
+  if(!spendData.connected){
+    el.innerHTML=`<div class="empty-state"><div class="ei">📢</div>Connect Meta Ads (Settings → Integrations) with an ads_read-capable token to see spend vs. revenue here.</div>`;
+    return;
+  }
+
+  const won=allLeads.filter(isWonLead);
+  const rows=spendData.months.map(m=>{
+    const revenue=won.filter(l=>closedMonthKey(l)===m.key).reduce((s,l)=>s+(Number(l.DealValue)||0),0);
+    const roas=m.spend>0?Math.round(revenue/m.spend*100)/100:null;
+    return {key:m.key, spend:m.spend, revenue, roas};
+  });
+  const maxVal=Math.max(1,...rows.map(r=>Math.max(r.spend,r.revenue)));
+  el.innerHTML=`
+    <div class="card">
+      <div class="s-head" style="margin-bottom:8px">Ad Spend vs. Won Revenue — Last ${rows.length} Months</div>
+      ${rows.map(r=>`<div style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:2px"><span>${r.key}</span><span>ROAS ${r.roas===null?'—':r.roas+'x'}</span></div>
+        <div class="bar-row"><div style="min-width:50px;font-size:10px">Spend</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(r.spend/maxVal*100)}%;background:#DC2626"></div></div><div class="bar-val">${spendData.currency||''} ${Math.round(r.spend).toLocaleString()}</div></div>
+        <div class="bar-row"><div style="min-width:50px;font-size:10px">Revenue</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(r.revenue/maxVal*100)}%"></div></div><div class="bar-val">${aiFmtMoney(r.revenue)}</div></div>
+      </div>`).join('')}
+    </div>
+    <div class="s-note" style="margin-top:10px">Spend is account-wide (Meta's Ads Insights call here isn't at per-campaign granularity), compared against total Won deal value closed that month — a marketing-efficiency trend (ROAS), not per-campaign attribution. Assumes deal values and ad spend are recorded in the same currency; no conversion is applied.</div>
   `;
 }
 
@@ -5981,7 +6207,16 @@ function renderAiOverview(){
     },
   ];
 
+  // Lead-scoring calibration — is "Hot" actually converting like a Hot lead should? Reuses aiPivot
+  // directly (score dimension × win-rate metric) rather than a separate computation; a tier whose
+  // real win rate doesn't match what the label implies means the Hot/Warm/Cold heuristic itself
+  // may need recalibrating, not just that one lead being mis-scored.
+  const scoreCal=aiPivot(allLeads.filter(l=>isWonLead(l)||isLostLead(l)), 'score', 'winrate');
+
   el.innerHTML=`
+    <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
+      <button class="btn btn-secondary btn-sm" onclick="emailAiOverviewSnapshot()">📧 Email me this snapshot</button>
+    </div>
     <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
       ${cards.map(c=>`<div class="card" style="cursor:pointer" onclick="renderAiSubPage('${c.tab}')">
         <div class="s-head" style="margin-bottom:6px">${esc(c.title)}</div>
@@ -5989,8 +6224,48 @@ function renderAiOverview(){
         <div style="font-size:12.5px;color:var(--muted);line-height:1.5">${c.detail}</div>
       </div>`).join('')}
     </div>
+    <div class="card" style="margin-top:14px">
+      <div class="s-head" style="margin-bottom:8px">Lead-Scoring Calibration — actual win rate by Score tier</div>
+      ${scoreCal.length?scoreCal.map(r=>`<div class="bar-row">
+        <div style="min-width:60px;font-size:11px">${esc(r.label)}</div>
+        <div class="bar-bg"><div class="bar-fill" style="width:${r.value}%"></div></div>
+        <div class="bar-val">${r.value}% <span style="color:var(--muted);font-weight:400">(${r.n})</span></div>
+      </div>`).join(''):'<div class="s-note">Not enough resolved deals yet to check calibration.</div>'}
+      <div class="s-note" style="margin-top:8px">If "Hot" isn't converting meaningfully better than "Warm," the scoring heuristic itself may need adjusting, not just individual leads.</div>
+    </div>
     <div class="s-note" style="margin-top:14px">Auto-generated from the last 30 days vs. the 30 days before that. Click any card to dig into the full breakdown on its own tab.</div>
   `;
+}
+// Manual "send now" digest (SETUP.md "Leads page: AI Analyst — Overview") — reuses the existing
+// /tasks/notify email route (already wired for task-assignment emails) rather than a new send path
+// or new cron/scheduling infrastructure; a genuinely automatic weekly digest would need both of
+// those plus a configured recipient, left as a natural next step rather than built here.
+async function emailAiOverviewSnapshot(){
+  if(!myEmail){ showToast('No email on file for your account','err'); return; }
+  const now=Date.now();
+  const cutRecent=now-30*86400000, cutPrior=now-60*86400000;
+  const inRange=(l,from,to)=>{ const t=new Date(l.Date||0).getTime(); return t>=from&&t<to; };
+  const prior=allLeads.filter(l=>inRange(l,cutPrior,cutRecent));
+  const recent=allLeads.filter(l=>inRange(l,cutRecent,now));
+  const countRCA=aiContribution(prior, recent, 'count');
+  const winRCA=aiContribution(prior, recent, 'winrate');
+  const forecast=aiForecastCompute();
+  const churn=aiChurnCompute();
+  const notes=[
+    `Lead Volume (30d vs prior): ${countRCA.totalAfter} (${countRCA.delta>=0?'+':''}${countRCA.delta} vs ${countRCA.totalBefore})`,
+    `Win Rate (30d vs prior): ${winRCA.totalAfter}% (${winRCA.delta>=0?'+':''}${winRCA.delta}pt vs ${winRCA.totalBefore}%)`,
+    `Weighted Pipeline Forecast: ${aiFmtMoney(forecast.weightedPipeline)} across ${forecast.activeCount} active deals`,
+    `Churn Risk: ${churn.length} contact(s), ${aiFmtMoney(churn.reduce((s,r)=>s+r.ltv,0))} at risk`,
+  ].join('\n');
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/tasks/notify`,{
+      method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({to:myEmail, subject:'Sales Intelligence Snapshot', title:'AI Analyst — Overview', notes})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    showToast('✓ Sent to '+myEmail,'ok');
+  }catch(e){ showToast('Failed to send: '+e.message,'err'); }
 }
 
 // Automated Root Cause Analysis — interactive: pick a KPI and two comparison windows (defaults

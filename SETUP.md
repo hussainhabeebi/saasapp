@@ -4734,3 +4734,91 @@ headline KPIs (lead count, win rate) over a fixed last-30-vs-prior-30-days windo
 Forecast and Churn headlines — four cards, each clickable straight through to its own full tab.
 Not a separate "auto-dashboard" engine; deliberately reuses the same math as everything else in
 this module so there's only one contribution-analysis implementation to reason about.
+- **Lead-Scoring Calibration card** — `aiPivot(resolvedLeads, 'score', 'winrate')`, i.e. the actual
+  win rate for each Score tier among resolved (won/lost) deals. If "Hot" isn't converting
+  meaningfully better than "Warm," that's a sign the Hot/Warm/Cold heuristic itself needs
+  recalibrating, not that individual leads are mis-scored — a self-check most CRMs never surface.
+- **"📧 Email me this snapshot" button** (`emailAiOverviewSnapshot()`) — sends the current Overview
+  numbers to the logged-in user's own email (`myEmail`), reusing the existing `/tasks/notify` email
+  route (already wired for task-assignment emails) rather than a new send path. Deliberately a
+  manual "send now" action, not a scheduled digest — a genuinely automatic weekly email would need
+  new cron/scheduling infrastructure plus a configured recipient, left as a natural next step.
+
+### 🔍 Root Cause — `objection` dimension
+`AI_DIMENSIONS` now also includes `objection` (`LastObjectionCategory`), so Root Cause and Custom
+Analysis can both explain a change through "which objection" too, not just stage/score/source/etc —
+no extra work, it's just another entry in the same registry.
+
+### ⚠️ Objections (`renderAiObjections`) — why deals are lost, aggregated + trended
+The Team page already shows a raw objection snapshot (leads *currently* sitting on each category)
+and a 4-week sentiment trend; this tab adds the comparison lens neither of those covers: among
+**lost** leads specifically, which objection category is up or down this month vs. last
+(`aiPivot(lostLeads, 'objection', 'count')` run over two 30-day windows, categories ranked by
+`|delta|`) — "Price objections are up from 3rd to 1st this month" is a different, more actionable
+finding than a snapshot count, since it points at *what to fix in the pitch*, not just which segment
+underperformed. Same caveat as the Team page's own objection breakdown: only the most recent
+objection per lead is tracked, not a full history.
+
+### 👥 Rep Performance (`renderAiReps`) — rep × source matrix + best time to contact
+Two "how/when should reps work leads" views grouped into one tab rather than two thin ones:
+- **Rep × Source win-rate matrix** — a real cross-tab (rows = `Owner`, columns = top 8 `Source`
+  values by presence, capped so the table doesn't sprawl), each cell = win rate (count) for that
+  rep's leads from that source. Turns into a concrete routing rule: send a given source's leads to
+  whichever rep already converts it best.
+- **Best time to contact** — buckets `LastMsgAt` (falls back to `Date`) by hour-of-day and
+  day-of-week, shown as two bar lists with the busiest hours called out. Reflects overall message
+  activity, not a confirmed "reply" moment specifically — a reasonable proxy for when leads are
+  actually engaging, not a precise instrumented measurement.
+
+### 🚧 Bottlenecks (`renderAiBottlenecks`) — stage dwell time + Speed to Lead
+Two "where does the process itself lose time" lenses:
+- **Stage Bottlenecks** — `GET /ai/stage-durations` (new Worker route, session-gated) reads the
+  Advanced Pipeline follow-up cadence's own D1 table (`pipeline_followups`,
+  `migrations/0013_pipeline_followups.sql`, `stage_entered_at` reset on every real Stage change) —
+  reused rather than adding new instrumentation, since it already tracks exactly what's needed.
+  Groups by `stage`, averages `now - stage_entered_at` for leads currently sitting in each stage.
+  **This is a snapshot** ("12 leads have been stuck in Qualified for an average of 9 days right
+  now"), not a historical "average time to pass through stage X" — the table overwrites
+  stage/stage_entered_at on every transition, so no stage-transition history exists to compute that
+  from. Returns `{enabled:false}` when the client has no rows yet (Advanced Pipeline cadence never
+  enabled, or no leads have changed stage since).
+- **Speed to Lead** — bucket `HandoverResponseMinutes` (new field, see below) against whether the
+  handover actually converted (`HandoverOutcome==='Resolved-Won'`, Spam excluded from both counts
+  and rate — same convention as the Team page's own handover-conversion stat). Answers "does a
+  faster human response actually correlate with winning more handovers" with real data, not a
+  guess.
+  - **New field: `HandoverResponseMinutes`** (numeric, **add manually in NocoDB**) — captured in
+    `applyHumanDealOutcome()` (`frontend/dashboard.html`) at the exact moment a handover resolves,
+    computed as `now - HandoverAt` in minutes, *before* the same patch clears `HandoverAt` back to
+    blank. This is the only place that elapsed wait is ever recoverable — once `HandoverAt` is
+    wiped on resolution, it's gone, so capturing it anywhere later isn't possible. A lead that was
+    never actually waiting on a human (blank `HandoverAt`) leaves this field untouched rather than
+    writing a bogus 0.
+  - **Why not measure bot-reply speed instead**: the bot replies in near-real-time to virtually
+    every message, so "time from lead creation to first bot reply" would be a nearly-constant,
+    uninformative number. The variable, business-relevant "speed to lead" in this app is
+    specifically how fast a *human* picks up an escalated handover — which is exactly what
+    `HandoverResponseMinutes` measures.
+
+### 📢 Marketing Efficiency (`renderAiMarketing`) — ad spend vs. realized Won revenue
+Reuses the existing Meta Ads spend-trend route (`GET /meta/ads/spend-trend`, already built for the
+Meta Ads ROI report) compared against actual Won deal value closed that month (`closedMonthKey`,
+reused from Forecast) — a monthly ROAS-style trend. Deliberately **not** "spend by campaign" as
+originally floated: Meta's Ads Insights call here is `level=account` (see `handleMetaAdsSpendTrend`'s
+own comment on why — Conversions API and Marketing/Insights API are two separate Meta APIs, and
+this integration never fetches at campaign granularity), so per-campaign attribution isn't
+available without a materially bigger rework of that integration. What this *does* catch that the
+existing Meta ROI report (spend vs. lead *count*) doesn't: "this account brings cheap leads that
+rarely close" — a different and often more painful finding than cost-per-lead alone. Degrades to an
+empty-state prompt if Meta Ads isn't connected with `ads_read`. Assumes deal values and ad spend
+share one currency — no conversion is applied.
+
+### 💔 Churn & LTV — repeat-customer addendum (ecommerce only)
+`GET /ai/repeat-customers` (new Worker route, session-gated, ecommerce industry only) reads the
+client's own Orders table directly (same `ecomResolveTable`/`ncFetch` pattern
+`handleShopifyAnalytics` already uses), grouped by `customer_phone`, returning customers with **2+
+orders** sorted by total spend. This fills the specific gap the Leads-only LTV above explicitly
+doesn't cover: a customer can place several Orders without ever creating a second Lead record, so
+grouping Leads by phone (what the base Churn & LTV view does) misses real repeat-purchase history
+entirely for ecommerce clients. Rendered as a supplementary card beneath the main Churn & LTV table
+— genuine order-based LTV, not a proxy.
