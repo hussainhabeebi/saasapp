@@ -3470,6 +3470,68 @@ async function handleReportsProducts(request, env){
   return json({services, top_products:topProducts, has_orders_table:hasOrdersTable});
 }
 
+// ── Leads page: AI Analyst — "Bottlenecks" tab (SETUP.md "Leads page: AI Analyst") ──
+// Reuses the Advanced Pipeline follow-up cadence's own D1 table (migrations/0013_pipeline_followups.sql,
+// stage_entered_at reset on every real Stage change) rather than adding new instrumentation — it
+// already tracks exactly what's needed. This is a *snapshot* of how long leads currently sitting
+// in each stage have been there, not a historical "average time to pass through stage X" (that
+// would need a stage-transition history log this table doesn't keep, since it overwrites
+// stage/stage_entered_at on every transition) — still a genuinely useful bottleneck signal ("12
+// leads have been stuck in Qualified for an average of 9 days") even with that honest caveat.
+async function handleAiStageDurations(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT stage, stage_entered_at FROM pipeline_followups WHERE client_id=?`).bind(Number(payload.cid)).all();
+  if(!results||!results.length) return json({enabled:false, stages:[]});
+  const now=Date.now();
+  const byStage={};
+  results.forEach(r=>{
+    const entered=new Date(r.stage_entered_at).getTime();
+    if(!isFinite(entered)) return;
+    const days=(now-entered)/86400000;
+    if(!byStage[r.stage]) byStage[r.stage]={stage:r.stage, count:0, totalDays:0};
+    byStage[r.stage].count++; byStage[r.stage].totalDays+=days;
+  });
+  const stages=Object.values(byStage).map(s=>({stage:s.stage, count:s.count, avgDays:Math.round(s.totalDays/s.count*10)/10}))
+    .sort((a,b)=>b.avgDays-a.avgDays);
+  return json({enabled:true, stages});
+}
+
+// ── Leads page: AI Analyst — "Churn & LTV" tab repeat-customer addendum, ecommerce only ──
+// Reads the client's own Orders table (same ecomResolveTable/ncFetch pattern handleShopifyAnalytics
+// already uses) and groups by customer_phone — the real repeat-purchase signal Churn & LTV's own
+// phone-grouped Leads-only LTV explicitly doesn't capture (a customer can place several Orders
+// without ever creating a second Lead record). Returns the top repeat customers by total spend, not
+// every customer — this is a supplementary "who actually buys again" view, not a full customer list.
+async function handleAiRepeatCustomers(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(c.industry!=='ecommerce') return json({has_orders_table:false, customers:[]});
+  const tableId=await ecomResolveTable(env, payload.cid, 'orders');
+  if(!tableId) return json({has_orders_table:false, customers:[]});
+
+  let orders=[];
+  for(let page=1; page<=10; page++){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,customer_name,total,status`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const list=data?.list||[];
+    orders=orders.concat(list);
+    if(list.length<200) break;
+  }
+  const byPhone={};
+  orders.forEach(o=>{
+    if(String(o.status||'').toLowerCase()==='cancelled') return;
+    const phone=String(o.customer_phone||'').replace(/[^0-9]/g,''); if(!phone) return;
+    if(!byPhone[phone]) byPhone[phone]={phone, name:o.customer_name||phone, orders:0, revenue:0};
+    byPhone[phone].orders++; byPhone[phone].revenue+=Number(o.total)||0;
+  });
+  const customers=Object.values(byPhone).filter(cust=>cust.orders>1).sort((a,b)=>b.revenue-a.revenue).slice(0,50);
+  return json({has_orders_table:true, currency:orders[0]?.currency||'', customers, repeat_customer_count:customers.length, total_customers:Object.keys(byPhone).length});
+}
+
 // Webhook receiver — server-to-server from Shopify, so auth is the HMAC header, not a session.
 // Reads the raw body first and verifies before touching it as JSON (order matters: the HMAC is
 // computed over the exact bytes Shopify sent).
@@ -8932,6 +8994,8 @@ export default {
       else if(url.pathname==='/reports/whatsapp' && request.method==='GET'){ res=await handleReportsWhatsapp(request, env); }
       else if(url.pathname==='/reports/products' && request.method==='GET'){ res=await handleReportsProducts(request, env); }
       else if(url.pathname==='/reports/seo' && request.method==='GET'){ res=await handleReportsSeo(request, env); }
+      else if(url.pathname==='/ai/stage-durations' && request.method==='GET'){ res=await handleAiStageDurations(request, env); }
+      else if(url.pathname==='/ai/repeat-customers' && request.method==='GET'){ res=await handleAiRepeatCustomers(request, env); }
       else if(url.pathname==='/shopify/analytics' && request.method==='GET'){ res=await handleShopifyAnalytics(request, env); }
       else if(url.pathname==='/gsc/oauth/start' && request.method==='POST'){ res=await handleGscOauthStart(request, env); }
       else if(url.pathname==='/gsc/oauth/callback' && request.method==='GET'){ res=await handleGscOauthCallback(request, env); }
