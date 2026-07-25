@@ -4822,3 +4822,181 @@ doesn't cover: a customer can place several Orders without ever creating a secon
 grouping Leads by phone (what the base Churn & LTV view does) misses real repeat-purchase history
 entirely for ecommerce clients. Rendered as a supplementary card beneath the main Churn & LTV table
 — genuine order-based LTV, not a proxy.
+
+## Marketing Studio module (`frontend/marketing-studio.html`, `feat_marketing_studio_enabled`)
+A standalone short-form video repurposing tool — upload a long video, auto-transcribe it, edit
+captions, pick a caption style, render a vertical/square/landscape clip, send it out. Deliberately
+a **different kind of "marketing" module** from Campaigns/Email Marketing (`broadcast.html`/
+`email-marketing.html`), which send messages — this produces a video asset — so it gets its own
+standalone page and its own Cloudflare D1 tables, not a NocoDB table or a dashboard.html tab.
+
+### Gating — defaults OFF, unlike most other feature toggles
+Controlled by a Clients field, `feat_marketing_studio_enabled` (`Yes`/`No`), toggled from
+Settings → 🧩 Modules → **Industry Modules** card (not the Dashboard Tabs card — see the comment
+above that markup in `dashboard.html`). Every other `feat_*_enabled` flag in this app
+(`feat_campaigns_enabled` etc., via `setupFeatureTabToggle`) defaults to **enabled** — "anything
+other than `'No'` counts as on" — so a brand-new toggle doesn't accidentally hide something a
+client already relies on. This one is the opposite: only the literal value `'Yes'` counts as
+enabled, so it stays off for every existing client until someone deliberately turns it on. Two
+reasons: it's metered (see Usage below — a client shouldn't suddenly start burning transcription
+minutes it never asked for) and it does nothing useful until an operator has actually configured
+the external render pipeline (see "The render pipeline contract" below). Like every other `feat_*`
+flag here, the gate is frontend-only — `/marketing/*` Worker routes don't re-check it themselves,
+same as `/email/*`, `/accounting/*`, etc.
+
+### What runs in the Worker vs. what's delegated out
+- **Real, self-contained Worker code (D1 + R2, no external service):** project/job bookkeeping,
+  video upload, caption editing, style presets/brand styles, usage metering, WhatsApp delivery.
+- **Real, but one external HTTP call:** transcription — a single request to an
+  OpenAI-Whisper-compatible endpoint (`MARKETING_TRANSCRIBE_API_URL`/`MARKETING_TRANSCRIBE_API_KEY`
+  in `wrangler.toml`). No orchestration needed, so this runs inline inside the request.
+- **Genuinely delegated to an external pipeline the operator configures:** rendering — cropping to
+  the target aspect, burning in captions, silence-cut, auto-zoom, background music + ducking,
+  watermarking. **A Cloudflare Worker cannot do this** — there's no ffmpeg, no GPU, and a captioned
+  9:16 export is minutes of CPU work, far past what a Worker request allows. Until
+  `MARKETING_RENDER_WEBHOOK_URL`/`MARKETING_RENDER_WEBHOOK_SECRET` are set, render requests fail
+  immediately with a clear "not configured" error instead of hanging.
+
+### Schema — Cloudflare D1 (`env.DB`, `migrations/0015_marketing_studio.sql`)
+Same "genuinely new data shape, no existing NocoDB reader" reasoning as `ecom_categories`/
+`review_config` — nothing else in the app reads a video project or a render job.
+- **`marketing_projects`** — one row per video project: `source_key`/`source_duration_sec` (R2 key
+  + browser-reported duration — the Worker never decodes video itself), `target_aspect`
+  (`9:16`/`1:1`/`16:9`), `trim_start_sec`/`trim_end_sec`, `language`, `transcript_json` (raw,
+  never edited) + `captions_json` (editable copy the caption editor writes to), `style_id`
+  (a preset id, or `custom:<marketing_brand_styles.id>`) + `style_overrides_json`, `status`
+  (`uploading → uploaded → transcribing → ready → rendering → done`, or `failed` at any step —
+  failures revert to the nearest retryable status, not stuck), `output_key`/`output_url`/
+  `output_duration_sec`/`watermarked` (set by the render-complete webhook).
+- **`marketing_brand_styles`** — saved custom font/color presets ("custom brand style saving",
+  feature #8) on top of the static built-in presets (`MARKETING_STYLE_PRESETS` in `worker.js` —
+  8 presets, no table needed since they never change per-client).
+- **`marketing_jobs`** — one row per transcribe/render attempt (`type`, `status`, `spec_json`,
+  `error`). Transcription rows are created and completed within the same request; render rows are
+  created `queued`→`processing` here and finished later by the render-complete webhook.
+
+### Schema — Clients table (`mxl33bg4wi70fqj`), add manually in NocoDB
+- `feat_marketing_studio_enabled` (Single line text, `Yes`/`No`) — auto-created on first Save from
+  the Modules page (`ensureMarketingStudioEnabledColumn`, same pattern as
+  `ensureHospitalityEnabledColumn`), same as every other `feat_*`/`*_enabled` flag in this file.
+- `marketing_minutes_used` (**Number**) / `marketing_minutes_limit` (**Number**) — usage metering
+  (feature #18), same shape as `wa_credits_balance`: **not** auto-created (NocoDB Number fields
+  need their type set correctly, which the SingleLineText auto-create helpers don't do), add these
+  by hand. `marketing_minutes_used` increments by `ceil(rendered_duration_sec / 60)` each time a
+  render completes (`handleMarketingRenderWebhook`); reset it to 0 manually (or via a scheduled
+  admin task, not built here) at the start of each billing period. `marketing_minutes_limit` is set
+  per client to match their plan tier (Basic/Growth/Advance); if left blank,
+  `MARKETING_DEFAULT_MINUTES_LIMIT` (a `wrangler.toml` var, default `30`) is used instead.
+
+### Backend (`cloudflare-worker/worker.js` — "MARKETING STUDIO MODULE" block)
+All routes session-gated via `requireSession`/`payload.cid`, deriving the client from the session
+like `/email/*`, never a client-supplied id — except the two routes below marked public.
+- `GET /marketing/usage` — `{used, limit, remaining}` for the usage meter in the header.
+- `GET /marketing/styles/presets` — the static 8-preset list.
+- `GET/POST/DELETE /marketing/brand-styles` — custom style CRUD (no PATCH — delete and recreate;
+  nothing here is expensive enough to need in-place editing).
+- `GET/POST/PATCH/DELETE /marketing/projects` — project CRUD. `DELETE` also removes the project's
+  R2 objects (source + output, if any) and its `marketing_jobs` rows.
+- `POST /marketing/projects/upload` — multipart video upload (mirrors
+  `handleEcomCategoryMediaUpload`'s shape): `project_id`, `file`, `duration_sec` (from the
+  browser's `<video>.duration` — no ffprobe available). Max 100 MB — **Cloudflare Workers' own
+  request-body ceiling on most plans, not a limit chosen here**; a client needing bigger uploads
+  needs a Workers plan with a higher body-size limit, or a client-side pre-compression step (not
+  built). Accepts mp4/mov/webm/m4v.
+- `POST /marketing/projects/transcribe` — the one inline external call described above. Requests
+  `verbose_json` + word-level timestamps; **not every OpenAI-Whisper-compatible provider actually
+  returns word timestamps** even when asked (some self-hosted front-ends only return segment-level
+  timing) — `marketingWordsFromTranscription()` falls back to splitting each segment's text evenly
+  across its duration, flagged `approximate:true` so the caption editor can show a dotted border on
+  estimated words instead of silently presenting a guess as exact. OpenAI's own Whisper endpoint
+  also caps request size at 25 MB — a source video near the 100 MB upload ceiling will exceed that;
+  point `MARKETING_TRANSCRIBE_API_URL` at a provider without that ceiling (self-hosted Whisper,
+  etc.) if that matters for your clients. Language: pass a hint to bias detection, or omit it to
+  auto-detect (feature #4) — auto-detect and Malayalam/Manglish transcription quality (feature #6)
+  are both properties of whichever provider `MARKETING_TRANSCRIBE_API_URL` points at, not something
+  this Worker code can improve on its own.
+- `PATCH /marketing/projects/captions` — saves the caption editor's edits (`captions_json`).
+- `POST /marketing/projects/render` — see "The render pipeline contract" below.
+- `GET /marketing/projects/jobs?project_id=` — recent job history/polling target for a project.
+- `POST /marketing/projects/send-whatsapp` — direct send-to-WhatsApp (feature #17): a Graph API
+  `type:video` message with the rendered clip's public R2 URL as the `link`, reusing the same
+  `wa_phone_id`/`wa_token` credentials `handleWaSend` already uses — fits the existing WhatsApp
+  infra rather than inventing a new delivery channel.
+- `POST /marketing/webhook/render-complete` — **public** (no session token — the external render
+  pipeline calls this, not the dashboard). Authenticated via `MARKETING_RENDER_WEBHOOK_SECRET`
+  instead: an HMAC-SHA256-over-the-raw-body signature in an `X-Signature` header, same scheme as
+  `verifyShopifyWebhookHmac` just with a generic secret instead of a vendor-specific one.
+- `GET /marketing/media/:key` — **public** R2 serve (same trust model as
+  `handleEcomCategoryMediaServe`/`handleHospitalityMediaServe`: a `<video>` tag or WhatsApp's own
+  media fetch can't send an `Authorization` header, and the key — `marketing/<client>/<project>/
+  source.<ext>` or an operator-chosen output key — isn't guessable). Supports byte-range requests
+  (`Range`/`206 Partial Content`) since the editor's preview player needs them to scrub — a plain
+  full-body response stalls Safari's seek bar on anything but a tiny clip.
+
+### The render pipeline contract (what an operator needs to build once)
+`POST /marketing/projects/render` builds a full render spec and POSTs it, HMAC-signed, to
+`MARKETING_RENDER_WEBHOOK_URL`:
+```json
+{
+  "job_id": 123, "client_id": 45, "project_id": 67,
+  "callback_url": "https://leadvyne-api-proxy.leadvyne.workers.dev/marketing/webhook/render-complete",
+  "spec": {
+    "source_url": "https://.../marketing/media/marketing/45/67/source.mp4",
+    "trim_start_sec": 4.2, "trim_end_sec": 38.9,
+    "target_aspect": "9:16", "resolution": "1080x1920",
+    "captions": {"language": "ml", "text": "...", "words": [{"word": "hi", "start": 4.3, "end": 4.5}, "..."]},
+    "style": {"font": "...", "text_color": "#fff", "highlight_color": "#FFE600", "bg_style": "none", "position": "bottom", "animation": "pop"},
+    "silence_cut": true, "auto_zoom": false, "background_music": "upbeat", "watermark": true
+  }
+}
+```
+Signature: `X-Signature` header = base64(HMAC-SHA256(raw JSON body, `MARKETING_RENDER_WEBHOOK_SECRET`)).
+The pipeline is expected to render asynchronously and call back:
+```json
+POST <callback_url>
+X-Signature: <same HMAC scheme, over this raw body, same shared secret>
+{"job_id": 123, "status": "done", "output_url": "https://cdn.example.com/45/67/out.mp4", "duration_sec": 34.7}
+```
+(or `{"job_id":123,"status":"failed","error":"..."}`). `output_key` (an R2 key inside
+`MARKETING_MEDIA`, served back via `GET /marketing/media/:key`) works instead of `output_url` if
+the pipeline prefers to hand the finished file back to this Worker's own R2 bucket rather than
+hosting it itself — either is accepted. On `done`, `marketing_minutes_used` increments by
+`ceil(duration_sec / 60)`. No pipeline is built or hosted in this repo — a small ffmpeg/Remotion
+service, or Shotstack/Creatomate behind an n8n workflow, are all reasonable options; whichever one
+is chosen just needs to speak this one request/callback contract.
+
+### Frontend (`frontend/marketing-studio.html`)
+Structured like `email-marketing.html` (own self-contained dark/purple CSS palette — deliberately
+visually distinct, not shared with `dashboard.html`, to read as a genuinely different tool from the
+messaging-focused Campaigns/Email Marketing pages): same `localStorage` (`lv_session`/`lv_cid`)
+auto-login as those pages, only ever opened via `window.open()` from an already-logged-in
+`dashboard.html` tab. Two tabs (Projects, Brand Styles) plus a per-project Editor view (opened from
+a project row, not a tab) covering upload → trim (with a crop-guide overlay showing what the
+target aspect keeps) → transcribe → tap-a-word-to-fix caption editing → style picker (with a live
+caption preview drawn over the paused/playing source video — cosmetic only, the actual burn-in
+happens on the render pipeline) → auto-edit toggles → render/export/download/WhatsApp-send, with
+5-second polling while a project is `transcribing`/`rendering`.
+`dashboard.html` — a `🎬 Marketing Studio` quick-action button (Home hero + Quick Actions card),
+shown only when `feat_marketing_studio_enabled==='Yes'`
+(`updateMarketingStudioVisibility`, called from `showApp()` and after saving the toggle), plus the
+toggle itself in Settings → 🧩 Modules → Industry Modules.
+
+### Known limitations / deferred (scoped, not built yet)
+- **No real background job queue for rendering beyond the `marketing_jobs` table + webhook** — no
+  retry-on-timeout, no dead-letter handling if the external pipeline never calls back. A render
+  stuck in `processing` with no callback just stays there; there's no sweep to time it out (unlike,
+  say, `sweepAbandonedShopifyCheckouts`'s cron). Worth adding if silent stuck renders turn out to be
+  a real support burden.
+- **2-3 clip variants from one video (feature #13)** — the data model supports creating multiple
+  `marketing_projects` rows from the same uploaded source (re-upload isn't required — a second
+  project could reuse another project's `source_key`, though nothing in the UI does this
+  automatically yet) and rendering each with different trim points/styles, but nothing auto-suggests
+  hook/cut points. Genuinely deferred, not stubbed.
+- **Emoji auto-insertion on keywords (feature #9)** — not built. Would slot into the caption editor
+  as a client-side keyword→emoji pass over `captions_json` before saving; cheap to add later.
+- **Team/multi-user access (feature #20)** — not separately built because it doesn't need to be:
+  this module reuses the same session/`team_emails` access every other page in this app already
+  has (see `getClientByAuthentikEmail`'s team-email lookup) — any teammate who can log into the CRM
+  can open Marketing Studio once it's enabled.
+- **Project history/library (feature #19)** — the Projects tab already is this (list of past
+  uploads, reopenable/re-editable via the Editor), so nothing further was needed here.
