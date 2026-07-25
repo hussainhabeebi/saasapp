@@ -83,6 +83,12 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .progress-fill{height:100%;background:var(--accent);transition:width .3s}
 .note{font-size:12px;color:var(--muted);line-height:1.6}
 .usage-warn{color:var(--warn)}
+.code-editor{width:100%;min-height:160px;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:12.5px;background:#0B0814;color:#D6D0F0;border:1.5px solid var(--line);border-radius:9px;padding:10px 12px;resize:vertical}
+.code-editor:focus{outline:none;border-color:var(--accent)}
+.tpl-card{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;background:var(--card2)}
+.tpl-card-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.result-row{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12.5px}
+.result-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 </style>
 </head>
 <body>
@@ -99,6 +105,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
   </div>
   <div class="tabs" id="mainTabs">
     <button class="tab active" id="tab-projects" onclick="showTab('projects')">🎞️ Projects</button>
+    <button class="tab" id="tab-templates" onclick="showTab('templates')">🧩 Video Templates</button>
     <button class="tab" id="tab-styles" onclick="showTab('styles')">🎨 Brand Styles</button>
   </div>
 
@@ -135,6 +142,59 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
         </div>
         <table class="table" id="projectsTable"><thead><tr><th>Title</th><th>Status</th><th>Aspect</th><th>Duration</th><th>Updated</th><th></th></tr></thead><tbody id="projectsBody"></tbody></table>
         <div class="empty hidden" id="projectsEmpty">No projects yet — create one to get started.</div>
+      </div>
+    </div>
+
+    <!-- VIDEO TEMPLATES -->
+    <div id="page-templates" class="hidden">
+      <div class="card">
+        <div class="card-head">
+          <div><h2>Video Templates</h2><div class="sub">Create videos using code instead of editing — define a template once with {{variables}}, then generate a batch: one rendered video per data row (landing-page teasers, product demos, ads, social clips).</div></div>
+          <button class="btn btn-primary" onclick="openNewTemplateForm()">+ New Template</button>
+        </div>
+        <div class="hidden" id="newTemplateForm" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
+          <label class="form-label">Name</label>
+          <input class="form-input" id="ntName" placeholder="e.g. Product ad">
+          <div class="row">
+            <div>
+              <label class="form-label">Target aspect</label>
+              <select class="form-select" id="ntAspect">
+                <option value="9:16">9:16 — Shorts / Reels / Status</option>
+                <option value="1:1">1:1 — Square</option>
+                <option value="16:9">16:9 — Landscape</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Estimated duration (sec — used for the usage estimate)</label>
+              <input type="number" class="form-input" id="ntDuration" value="15" min="1">
+            </div>
+          </div>
+          <label class="form-label">Style</label>
+          <select class="form-select" id="ntStyle"></select>
+          <label class="form-label">Scenes (JSON — text/content fields may use {{variable}} placeholders)</label>
+          <textarea class="code-editor" id="ntScenes">[
+  { "type": "text", "content": "{{headline}}", "duration_sec": 3 },
+  { "type": "image", "content": "{{image_url}}", "duration_sec": 4 },
+  { "type": "text", "content": "{{cta}}", "duration_sec": 3 }
+]</textarea>
+          <div style="margin-top:12px;display:flex;gap:10px">
+            <button class="btn btn-primary" onclick="createTemplate()">Save Template</button>
+            <button class="btn btn-ghost" onclick="closeNewTemplateForm()">Cancel</button>
+          </div>
+        </div>
+        <div id="templatesList"></div>
+        <div class="empty hidden" id="templatesEmpty">No templates yet — create one to batch-generate videos from data.</div>
+      </div>
+
+      <div class="card hidden" id="generatePanel">
+        <div class="card-head">
+          <div><h2 id="generateTplName">Generate batch</h2><div class="sub">One data row → one rendered video. Paste a JSON array of variable objects.</div></div>
+          <button class="btn btn-ghost btn-sm" onclick="closeGeneratePanel()">Close</button>
+        </div>
+        <textarea class="code-editor" id="generateRows" placeholder='[{"headline":"50% off today","image_url":"https://...","cta":"Shop now"}, {"headline":"New arrivals","image_url":"https://...","cta":"Browse"}]'></textarea>
+        <div class="note" style="margin-top:6px">Max 100 rows per batch. Each row costs roughly the template's estimated duration in usage minutes — checked against your remaining minutes before generating. Generated videos land in the Projects tab.</div>
+        <button class="btn btn-primary" id="generateBtn" onclick="generateBatch()" style="margin-top:10px">🚀 Generate videos</button>
+        <div id="generateResults" style="margin-top:14px"></div>
       </div>
     </div>
 
@@ -257,8 +317,10 @@ let sessionToken = localStorage.getItem('lv_session') || ''; // localStorage, no
 let projects = [];
 let stylePresets = [];
 let brandStyles = [];
+let templates = [];
 let currentProject = null;
 let selectedStyleId = 'bold-pop';
+let generatingForTemplate = null;
 let jobPollTimer = null;
 
 const $id = id => document.getElementById(id);
@@ -287,11 +349,12 @@ function goBack() { window.location.href = 'dashboard.html'; }
 async function initApp() {
   $id('gate').classList.add('hidden');
   $id('app').classList.remove('hidden');
-  await Promise.all([loadUsage(), loadStylePresets(), loadBrandStyles(), loadProjects()]);
+  await Promise.all([loadUsage(), loadStylePresets(), loadBrandStyles(), loadProjects(), loadTemplates()]);
+  populateStyleSelect();
 }
 
 function showTab(tab) {
-  ['projects', 'styles'].forEach(t => {
+  ['projects', 'templates', 'styles'].forEach(t => {
     $id('tab-' + t).classList.toggle('active', t === tab);
     $id('page-' + t).classList.toggle('hidden', t !== tab);
   });
@@ -607,6 +670,86 @@ async function sendToWhatsapp() {
   const r = await fetch(`${WORKER_BASE}/marketing/projects/send-whatsapp`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, phone }) });
   const data = await r.json();
   alert(r.ok ? 'Sent!' : (data.error || 'Failed to send.'));
+}
+
+// ── VIDEO TEMPLATES — "create videos using code instead of editing, generate hundreds
+// automatically": a template is a JSON scene spec with {{variable}} placeholders; generating a
+// batch posts one row of variables per video and gets back one project per row (each shows up
+// in the ordinary Projects tab once its render finishes, same as any other project).
+async function loadTemplates() {
+  const r = await fetch(`${WORKER_BASE}/marketing/templates`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ list: [] }));
+  templates = d.list || [];
+  renderTemplatesList();
+}
+function populateStyleSelect() {
+  const sel = $id('ntStyle');
+  if (!sel) return;
+  const opts = stylePresets.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`)
+    .concat(brandStyles.map(s => `<option value="custom:${s.id}">${esc(s.name)} (custom)</option>`));
+  sel.innerHTML = opts.join('');
+}
+function renderTemplatesList() {
+  $id('templatesEmpty').classList.toggle('hidden', templates.length > 0);
+  $id('templatesList').innerHTML = templates.map(t => `
+    <div class="tpl-card">
+      <div class="tpl-card-head">
+        <div><b>${esc(t.name)}</b><div class="note">${esc(t.target_aspect)} · ${t.scenes.length} scene${t.scenes.length === 1 ? '' : 's'} · ~${t.estimated_duration_sec}s each</div></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sec btn-sm" onclick="openGeneratePanel(${t.id})">🚀 Generate batch</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteTemplate(${t.id})">Delete</button>
+        </div>
+      </div>
+    </div>`).join('');
+}
+function openNewTemplateForm() { populateStyleSelect(); $id('newTemplateForm').classList.remove('hidden'); }
+function closeNewTemplateForm() { $id('newTemplateForm').classList.add('hidden'); }
+async function createTemplate() {
+  const name = $id('ntName').value.trim();
+  if (!name) { alert('Give the template a name.'); return; }
+  let scenes;
+  try { scenes = JSON.parse($id('ntScenes').value); if (!Array.isArray(scenes) || !scenes.length) throw new Error(); }
+  catch (e) { alert('Scenes must be a valid, non-empty JSON array.'); return; }
+  const body = { name, scenes, target_aspect: $id('ntAspect').value, style_id: $id('ntStyle').value || undefined, estimated_duration_sec: Number($id('ntDuration').value) || 15 };
+  const r = await fetch(`${WORKER_BASE}/marketing/templates`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) { alert(data.error || 'Failed to save template.'); return; }
+  closeNewTemplateForm();
+  $id('ntName').value = '';
+  await loadTemplates();
+}
+async function deleteTemplate(id) {
+  if (!confirm('Delete this template? Videos already generated from it are unaffected.')) return;
+  await fetch(`${WORKER_BASE}/marketing/templates`, { method: 'DELETE', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id }) });
+  await loadTemplates();
+}
+function openGeneratePanel(id) {
+  generatingForTemplate = templates.find(t => t.id === id);
+  if (!generatingForTemplate) return;
+  $id('generateTplName').textContent = 'Generate batch — ' + generatingForTemplate.name;
+  $id('generateRows').value = '';
+  $id('generateResults').innerHTML = '';
+  $id('generatePanel').classList.remove('hidden');
+  $id('generatePanel').scrollIntoView({ behavior: 'smooth' });
+}
+function closeGeneratePanel() { $id('generatePanel').classList.add('hidden'); generatingForTemplate = null; }
+async function generateBatch() {
+  if (!generatingForTemplate) return;
+  let rows;
+  try { rows = JSON.parse($id('generateRows').value); if (!Array.isArray(rows) || !rows.length) throw new Error(); }
+  catch (e) { alert('Rows must be a valid, non-empty JSON array of variable objects.'); return; }
+  $id('generateBtn').disabled = true;
+  $id('generateResults').innerHTML = 'Generating…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/templates/generate`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ template_id: generatingForTemplate.id, rows }) });
+    const data = await r.json();
+    if (!r.ok) { $id('generateResults').innerHTML = `<div class="note usage-warn">${esc(data.error || 'Failed to generate.')}</div>`; return; }
+    const okCount = data.results.filter(x => x.ok).length;
+    $id('generateResults').innerHTML = `<div class="note">${okCount} / ${data.results.length} started rendering.</div>` +
+      data.results.map(x => `<div class="result-row"><span class="result-dot" style="background:${x.ok ? 'var(--good)' : 'var(--bad)'}"></span>Project #${x.project_id}${x.error ? ' — ' + esc(x.error) : ''}</div>`).join('');
+    await loadProjects();
+    await loadUsage();
+  } finally { $id('generateBtn').disabled = false; }
 }
 
 tryAutoLogin();

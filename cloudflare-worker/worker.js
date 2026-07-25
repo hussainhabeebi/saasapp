@@ -9018,6 +9018,7 @@ function marketingSerializeProject(row){
     style_id:row.style_id, style_overrides:parseJson(row.style_overrides_json)||{},
     status:row.status, output_key:row.output_key, output_url:row.output_url,
     output_duration_sec:row.output_duration_sec, watermarked:!!row.watermarked,
+    template_id:row.template_id||null, template_vars:parseJson(row.template_vars_json),
     created_at:row.created_at, updated_at:row.updated_at,
   };
 }
@@ -9247,6 +9248,48 @@ async function handleMarketingCaptionsSave(request, env){
   return json({ok:true});
 }
 
+// Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — resolves a
+// style_id ('custom:<marketing_brand_styles.id>' or a MARKETING_STYLE_PRESETS id) to its config.
+async function marketingResolveStyle(env, clientId, styleId){
+  if((styleId||'').startsWith('custom:')){
+    const brandStyleId=Number(styleId.slice(7));
+    const row=await env.DB.prepare(`SELECT config_json FROM marketing_brand_styles WHERE id=? AND client_id=?`).bind(brandStyleId, Number(clientId)).first();
+    if(row){ try{ return JSON.parse(row.config_json); }catch(e){} }
+    return MARKETING_STYLE_PRESETS[0];
+  }
+  return MARKETING_STYLE_PRESETS.find(p=>p.id===styleId)||MARKETING_STYLE_PRESETS[0];
+}
+
+// No active/trialing subscription → watermarked export (#14 "watermark-free export on paid tier").
+function marketingIsWatermarked(client){ return !['active','trialing'].includes(client?.plan_status); }
+
+// Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — creates the
+// marketing_jobs row, signs + posts the spec to the external render pipeline, and marks the
+// project 'rendering' (or reverts both to a failed/retryable state if the pipeline can't be
+// reached). Returns {ok, job_id} or {ok:false, error}.
+async function marketingSubmitRenderJob(env, clientId, projectId, spec, revertStatusOnFail){
+  const now=new Date().toISOString();
+  const jobResult=await env.DB.prepare(`INSERT INTO marketing_jobs (project_id, client_id, type, status, spec_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(projectId, Number(clientId), 'render', 'queued', JSON.stringify(spec), now, now).run();
+  const jobId=jobResult.meta.last_row_id;
+
+  const outboundBody=JSON.stringify({job_id:jobId, client_id:Number(clientId), project_id:projectId, callback_url:`${env.WORKER_BASE_URL}/marketing/webhook/render-complete`, spec});
+  const signature=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, outboundBody);
+  let sendErr=null;
+  try{
+    const r=await fetch(env.MARKETING_RENDER_WEBHOOK_URL, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':signature}, body:outboundBody});
+    if(!r.ok) sendErr='Render pipeline returned HTTP '+r.status;
+  }catch(e){ sendErr=e.message; }
+  if(sendErr){
+    await marketingFailJob(env, jobId, projectId, sendErr, revertStatusOnFail);
+    return {ok:false, error:sendErr};
+  }
+
+  await env.DB.prepare(`UPDATE marketing_jobs SET status='processing', updated_at=? WHERE id=?`).bind(now, jobId).run();
+  await env.DB.prepare(`UPDATE marketing_projects SET status='rendering', watermarked=?, updated_at=? WHERE id=?`).bind(spec.watermark?1:0, now, projectId).run();
+  return {ok:true, job_id:jobId};
+}
+
 // Kicks off an async render on the external pipeline — see the module header comment for why
 // this can't run inside the Worker itself. Also where usage metering (#18) and the free-tier
 // watermark (#14) are decided, both against the client's own Clients row (plan_status/
@@ -9272,21 +9315,14 @@ async function handleMarketingRenderStart(request, env){
   const used=Number(c?.marketing_minutes_used)||0;
   if(used+minutesNeeded>limit) return json({error:`This render needs ~${minutesNeeded} min but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
 
-  let style=MARKETING_STYLE_PRESETS[0];
-  if((project.style_id||'').startsWith('custom:')){
-    const brandStyleId=Number(project.style_id.slice(7));
-    const row=await env.DB.prepare(`SELECT config_json FROM marketing_brand_styles WHERE id=? AND client_id=?`).bind(brandStyleId, Number(payload.cid)).first();
-    if(row){ try{ style=JSON.parse(row.config_json); }catch(e){} }
-  } else {
-    style=MARKETING_STYLE_PRESETS.find(p=>p.id===project.style_id)||style;
-  }
+  const style=await marketingResolveStyle(env, payload.cid, project.style_id);
   let overrides={}; try{ overrides=JSON.parse(project.style_overrides_json||'{}'); }catch(e){}
   let captions; try{ captions=JSON.parse(project.captions_json); }catch(e){ return json({error:'Captions are corrupted — re-transcribe.'}, 400); }
 
-  // No active/trialing subscription → watermarked export (#14 "watermark-free export on paid tier").
-  const watermarked=!['active','trialing'].includes(c?.plan_status);
+  const watermarked=marketingIsWatermarked(c);
   const opts=body.options||{};
   const spec={
+    mode:'caption-clip',
     source_url:`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`,
     trim_start_sec:trimStart, trim_end_sec:trimEnd,
     target_aspect:project.target_aspect||'9:16',
@@ -9295,26 +9331,9 @@ async function handleMarketingRenderStart(request, env){
     silence_cut:!!opts.silence_cut, auto_zoom:!!opts.auto_zoom, background_music:opts.background_music||null,
     watermark:watermarked,
   };
-  const now=new Date().toISOString();
-  const jobResult=await env.DB.prepare(`INSERT INTO marketing_jobs (project_id, client_id, type, status, spec_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-    .bind(projectId, Number(payload.cid), 'render', 'queued', JSON.stringify(spec), now, now).run();
-  const jobId=jobResult.meta.last_row_id;
-
-  const outboundBody=JSON.stringify({job_id:jobId, client_id:Number(payload.cid), project_id:projectId, callback_url:`${env.WORKER_BASE_URL}/marketing/webhook/render-complete`, spec});
-  const signature=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, outboundBody);
-  let sendErr=null;
-  try{
-    const r=await fetch(env.MARKETING_RENDER_WEBHOOK_URL, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':signature}, body:outboundBody});
-    if(!r.ok) sendErr='Render pipeline returned HTTP '+r.status;
-  }catch(e){ sendErr=e.message; }
-  if(sendErr){
-    await marketingFailJob(env, jobId, projectId, sendErr, 'ready');
-    return json({error:'Could not reach the render pipeline: '+sendErr}, 502);
-  }
-
-  await env.DB.prepare(`UPDATE marketing_jobs SET status='processing', updated_at=? WHERE id=?`).bind(now, jobId).run();
-  await env.DB.prepare(`UPDATE marketing_projects SET status='rendering', watermarked=?, updated_at=? WHERE id=?`).bind(watermarked?1:0, now, projectId).run();
-  return json({ok:true, job_id:jobId});
+  const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
+  if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
+  return json({ok:true, job_id:result.job_id});
 }
 
 async function handleMarketingJobsList(request, env, url){
@@ -9412,6 +9431,134 @@ async function handleMarketingSendWhatsapp(request, env){
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
   return json({ok:true});
+}
+
+/* ── VIDEO TEMPLATES (SETUP.md "Marketing Studio module — Video Templates") — "create videos
+   using code instead of editing, generate hundreds automatically": a template is a scene spec
+   (JSON, not a WYSIWYG editor) with {{variable}} placeholders; generating a batch substitutes
+   each row of data into that spec and submits one render job per row through the exact same
+   marketingSubmitRenderJob()/external pipeline as a regular project — a template-generated
+   project is a normal marketing_projects row (template_id/template_vars_json just record where
+   it came from), so it shows up in the ordinary Projects list/download/WhatsApp-send flow. ── */
+
+const MARKETING_TEMPLATE_BATCH_MAX=100; // "hundreds automatically" is the pitch; a hard cap keeps one request from fanning out an unbounded number of render jobs (and unbounded minutes spend) at once — regenerate in further batches for more than this.
+
+function marketingSerializeTemplate(row){
+  if(!row) return null;
+  let scenes=[]; try{ scenes=JSON.parse(row.scenes_json||'[]'); }catch(e){}
+  return {id:row.id, name:row.name, scenes, target_aspect:row.target_aspect, style_id:row.style_id, estimated_duration_sec:row.estimated_duration_sec, created_at:row.created_at, updated_at:row.updated_at};
+}
+
+// Substitutes {{key}} in every string field of a scene with vars[key] (blank if missing) —
+// deliberately dumb string substitution, not a template language, matching the "code, not a
+// visual editor" pitch without pulling in a templating dependency for eight scene fields.
+function marketingResolveScenes(scenes, vars){
+  const sub=(s)=>typeof s==='string'?s.replace(/\{\{\s*([\w.-]+)\s*\}\}/g,(m,k)=>(vars[k]!=null?String(vars[k]):'')):s;
+  return (scenes||[]).map(scene=>{
+    const resolved={};
+    Object.entries(scene).forEach(([k,v])=>{ resolved[k]=sub(v); });
+    return resolved;
+  });
+}
+
+async function handleMarketingTemplatesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE client_id=? ORDER BY updated_at DESC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(marketingSerializeTemplate)});
+}
+
+async function handleMarketingTemplateCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const name=(body.name||'').trim().slice(0,120);
+  if(!name) return json({error:'name required'}, 400);
+  if(!Array.isArray(body.scenes)||!body.scenes.length) return json({error:'scenes (a non-empty array) required'}, 400);
+  const targetAspect=['9:16','1:1','16:9'].includes(body.target_aspect)?body.target_aspect:'9:16';
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), name, JSON.stringify(body.scenes), targetAspect, body.style_id||null, Number(body.estimated_duration_sec)||15, now, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
+  return json({ok:true, template:marketingSerializeTemplate(row)});
+}
+
+async function handleMarketingTemplateUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.id);
+  if(!id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT id FROM marketing_templates WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!existing) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).slice(0,120)); }
+  if(body.scenes!==undefined){ sets.push('scenes_json=?'); vals.push(JSON.stringify(body.scenes)); }
+  if(body.target_aspect!==undefined && ['9:16','1:1','16:9'].includes(body.target_aspect)){ sets.push('target_aspect=?'); vals.push(body.target_aspect); }
+  if(body.style_id!==undefined){ sets.push('style_id=?'); vals.push(body.style_id); }
+  if(body.estimated_duration_sec!==undefined){ sets.push('estimated_duration_sec=?'); vals.push(Number(body.estimated_duration_sec)||15); }
+  if(!sets.length) return json({error:'Nothing to update'}, 400);
+  sets.push('updated_at=?'); vals.push(new Date().toISOString());
+  vals.push(id);
+  await env.DB.prepare(`UPDATE marketing_templates SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(id).first();
+  return json({ok:true, template:marketingSerializeTemplate(row)});
+}
+
+async function handleMarketingTemplateDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.id);
+  if(!id) return json({error:'id required'}, 400);
+  await env.DB.prepare(`DELETE FROM marketing_templates WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+  return json({ok:true});
+}
+
+// Batch-generate: one marketing_projects row + one render job per data row. Partial failure is
+// expected at this scale (a bad row, a flaky pipeline call) — every row is attempted and the
+// per-row outcome is returned rather than aborting the whole batch on the first error.
+async function handleMarketingTemplateGenerate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const templateId=Number(body.template_id);
+  const rows=Array.isArray(body.rows)?body.rows:[];
+  if(!templateId) return json({error:'template_id required'}, 400);
+  if(!rows.length) return json({error:'rows (a non-empty array of variable objects) required'}, 400);
+  if(rows.length>MARKETING_TEMPLATE_BATCH_MAX) return json({error:`Max ${MARKETING_TEMPLATE_BATCH_MAX} rows per batch — split into more than one generate call.`}, 400);
+  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
+
+  const template=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=? AND client_id=?`).bind(templateId, Number(payload.cid)).first();
+  if(!template) return json({error:'Not found'}, 404);
+  let scenes=[]; try{ scenes=JSON.parse(template.scenes_json||'[]'); }catch(e){ return json({error:'Template scenes are corrupted.'}, 400); }
+
+  const c=await getClientById(env, payload.cid);
+  const perVideoMinutes=Math.max(1, Math.ceil((Number(template.estimated_duration_sec)||15)/60));
+  const minutesNeeded=perVideoMinutes*rows.length;
+  const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
+  const used=Number(c?.marketing_minutes_used)||0;
+  if(used+minutesNeeded>limit) return json({error:`This batch needs ~${minutesNeeded} min (${rows.length} × ~${perVideoMinutes} min) but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
+
+  const style=await marketingResolveStyle(env, payload.cid, template.style_id);
+  const watermarked=marketingIsWatermarked(c);
+  const resolution=MARKETING_RESOLUTIONS[template.target_aspect]||MARKETING_RESOLUTIONS['9:16'];
+
+  const results=[];
+  for(const vars of rows){
+    const now=new Date().toISOString();
+    const title=(vars.title||vars.name||template.name).toString().slice(0,120);
+    const projectResult=await env.DB.prepare(`INSERT INTO marketing_projects (client_id, title, target_aspect, status, style_id, template_id, template_vars_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(payload.cid), title, template.target_aspect, 'ready', template.style_id, templateId, JSON.stringify(vars), now, now).run();
+    const projectId=projectResult.meta.last_row_id;
+    const spec={
+      mode:'template', target_aspect:template.target_aspect, resolution, style,
+      scenes:marketingResolveScenes(scenes, vars), watermark:watermarked,
+    };
+    const submitResult=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
+    results.push({project_id:projectId, ok:submitResult.ok, error:submitResult.error||null});
+  }
+  return json({ok:true, results});
 }
 
 export default {
@@ -9616,6 +9763,11 @@ export default {
       else if(url.pathname==='/marketing/projects/send-whatsapp' && request.method==='POST'){ res=await handleMarketingSendWhatsapp(request, env); }
       else if(url.pathname==='/marketing/webhook/render-complete' && request.method==='POST'){ res=await handleMarketingRenderWebhook(request, env); }
       else if(url.pathname.startsWith('/marketing/media/') && request.method==='GET'){ res=await handleMarketingMediaServe(request, env, url.pathname.slice('/marketing/media/'.length)); }
+      else if(url.pathname==='/marketing/templates' && request.method==='GET'){ res=await handleMarketingTemplatesList(request, env); }
+      else if(url.pathname==='/marketing/templates' && request.method==='POST'){ res=await handleMarketingTemplateCreate(request, env); }
+      else if(url.pathname==='/marketing/templates' && request.method==='PATCH'){ res=await handleMarketingTemplateUpdate(request, env); }
+      else if(url.pathname==='/marketing/templates' && request.method==='DELETE'){ res=await handleMarketingTemplateDelete(request, env); }
+      else if(url.pathname==='/marketing/templates/generate' && request.method==='POST'){ res=await handleMarketingTemplateGenerate(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

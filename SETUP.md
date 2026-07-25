@@ -5000,3 +5000,69 @@ toggle itself in Settings → 🧩 Modules → Industry Modules.
   can open Marketing Studio once it's enabled.
 - **Project history/library (feature #19)** — the Projects tab already is this (list of past
   uploads, reopenable/re-editable via the Editor), so nothing further was needed here.
+
+## Marketing Studio module — Video Templates ("create videos using code instead of editing")
+A second way to produce videos in this module, alongside the upload-and-caption flow above:
+instead of starting from one uploaded video, define a reusable **template** — a JSON scene spec
+with `{{variable}}` placeholders — once, then batch-generate a whole set of videos from a list of
+data rows in one request (one video per row: a headline/image/CTA per product, a name/offer per
+lead, etc). Inspired by the "code instead of editing, generate hundreds of videos automatically"
+pitch of tools like HeyGen HyperFrames — landing-page teasers, product demos, ads, and social
+clips at data-driven scale rather than one video at a time in the Editor.
+
+### Schema — Cloudflare D1 (`migrations/0016_marketing_templates.sql`)
+- **`marketing_templates`** — `scenes_json` (the scene array — each scene's string fields, e.g.
+  `content`, may contain `{{key}}` placeholders), `target_aspect`, `style_id` (a preset or
+  `custom:<marketing_brand_styles.id>`, same resolution as a regular project), and
+  `estimated_duration_sec` — an author-set estimate (not measured) used only for the pre-generate
+  usage/minutes check, since the real duration of a template-rendered video isn't known until the
+  external pipeline actually renders it.
+- **`marketing_projects`** gained two columns: `template_id` and `template_vars_json` (the
+  specific row of variables that produced this project). A template-generated project is
+  otherwise an ordinary `marketing_projects` row — it appears in the normal Projects list,
+  downloads/WhatsApp-sends the same way — these two columns just record provenance.
+
+### Backend (`cloudflare-worker/worker.js` — "VIDEO TEMPLATES" block)
+- `GET/POST/PATCH/DELETE /marketing/templates` — template CRUD, session-gated like every other
+  route in this module.
+- `POST /marketing/templates/generate` — `{template_id, rows:[{...vars}, ...]}`. For each row: (1)
+  `marketingResolveScenes()` does dumb `{{key}}` string substitution across every scene field —
+  deliberately not a templating engine/dependency, matching the "it's code, not a visual editor"
+  framing without pulling one in for eight scene fields, (2) inserts one `marketing_projects` row
+  (`status:'ready'`, `template_id`/`template_vars_json` set, no `source_key` — there's no uploaded
+  video for a template-generated project), (3) submits a render job via the same
+  `marketingSubmitRenderJob()` used by the regular Editor's render step, just with a
+  `spec.mode:'template'` payload (`scenes` instead of `source_url`/`captions`) instead of
+  `mode:'caption-clip'` — **the external render pipeline needs to handle both `spec.mode` values**;
+  see the render spec examples in the section above and add scene-composition support alongside
+  whatever renders the caption-clip mode.
+  Capped at `MARKETING_TEMPLATE_BATCH_MAX` (100) rows per call — "hundreds automatically" is the
+  pitch, but an unbounded fan-out from one request would mean unbounded render jobs and unbounded
+  minutes spend in one shot; generate further batches for more than 100 videos. Usage-checked
+  up front (`rows.length × ceil(estimated_duration_sec/60)` against remaining minutes) before any
+  jobs are created. Partial failure is expected at this scale — every row is attempted regardless
+  of earlier rows' outcome, and the response is a per-row `{project_id, ok, error}` list rather
+  than an all-or-nothing result.
+- `marketingResolveStyle()`/`marketingIsWatermarked()`/`marketingSubmitRenderJob()` were factored
+  out of `handleMarketingRenderStart` (previously inline there) specifically so this generate path
+  could reuse the exact same style-resolution, watermark, and job-submission logic rather than
+  duplicating it — the one refactor this feature needed in the existing code.
+
+### Frontend (`frontend/marketing-studio.html`)
+New **🧩 Video Templates** tab: a template list, a "New Template" form with a raw JSON `<textarea>`
+scene editor (styled as a monospace code box, not a WYSIWYG timeline — the point of this feature),
+and a per-template "Generate batch" panel — another JSON `<textarea>` for the data rows, a
+Generate button, and a per-row ✓/✗ result list. Generated videos don't get their own view here;
+they show up in the ordinary Projects tab once each render completes, same polling/download/
+WhatsApp-send flow as any other project.
+
+### Known limitations / deferred
+- **No CSV import for batch rows** — rows are pasted as a JSON array, not uploaded as a
+  spreadsheet. A client with product/lead data in a CSV needs to convert it to JSON first (or this
+  could read `ecom_categories`/Leads directly in a later phase — not built).
+- **No scene preview** — unlike the caption-clip Editor's live overlay preview, a template's
+  scenes aren't previewed in the browser before generating; the first real look at the result is
+  the rendered output from the pipeline.
+- **The external render pipeline must support `spec.mode:'template'`** — a pipeline built only for
+  the original `mode:'caption-clip'` contract will reject or mishandle template-generated jobs
+  until scene-composition support is added on that side.
