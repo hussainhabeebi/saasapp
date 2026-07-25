@@ -4529,6 +4529,45 @@ today" (or "✨ You're all caught up" when the Needs Action queue is empty) abov
 reuses the same `isWonLead`/7-day-window convention Home/Team already use. Empty states on every
 view are worded positively ("✨ You're all caught up — nothing needs action right now. Nice work!",
 "🌱 No dormant leads to reconnect with right now.") instead of a bare "no results."
+- **"N hot right now" is clickable**, not just a stat — `jumpToHotLead()` opens the single hottest
+  Hot-scored lead's detail directly (the one lead itself when there's exactly one, otherwise
+  whichever Hot lead ranks highest by `leadNeedsActionScore`), instead of making a rep filter for
+  it manually. `.momentum-link` (new CSS) is the shared underline-on-hover treatment.
+
+### Contact-attempt counter ("2nd no-answer" / "3rd no-answer")
+Reuses the three existing `Follow up 1`/`Follow up 2`/`Follow up 3` Yes/No fields already on the
+Leads table (previously read-only guards, never written to — see the Advanced Pipeline cadence
+section) as three attempt slots instead of adding a new column: `leadAttemptCount(l)` counts how
+many are `'Yes'`; `leadAttemptBadge(l)` renders a "📵 2nd no-answer"/"📵 3rd no-answer" chip on the
+row once count is ≥2 (nothing shown for 0-1 — a first attempt isn't "going cold" yet).
+- **`bumpLeadAttempt(leadId)`** flips the next unflipped slot to `'Yes'` (`ncPatch` + local
+  `allLeads` update), capping silently at 3 — there's no 4th slot, matching this field's existing
+  3-slot schema. **Auto-called on every actual outreach action** (per the request "if template or
+  follow up send, change attempt count automatically"), not on a timer:
+  - `sendLeadsTemplate()` — after each successful send, both the Chatwoot and Meta-direct paths.
+  - `saveTaskFromModal()` — when a **new** task with `category==='Follow-up'` is linked to a lead
+    (covers the row's 📅 Follow-up button, "Push to Task" from the detail drawer, and creating a
+    Follow-up-categorized task directly in Task Manager — all count as a real contact attempt).
+    `openTaskModal()` now defaults a lead-linked new task's category to `'Follow-up'` so this fires
+    from the Leads-page entry point without the rep having to pick a category manually.
+  - `reactivateLead()` resets all three back to `'No'` (a reactivation is a genuine fresh start,
+    same reasoning as `reopenLead()`'s existing reset).
+- **Feeds into "Needs Action" priority, not a separate idle timer**: `leadNeedsActionScore` adds
+  `leadAttemptCount(l)*150` on top of its existing overdue-reminder/Hot/staleness weights, so a
+  lead with more unanswered attempts keeps outranking a fresher one — combined with the score's
+  pre-existing staleness tiebreaker (`hrsSince`), a lead that's simply been sitting idle a long
+  time still drifts to the top over time even before any attempt is logged against it, satisfying
+  "auto-bump to the top after a set idle time" without needing the counter itself to move on a
+  timer (it only moves on a real send, so it stays an honest count of actual attempts).
+
+### One-tap Call button (Callback / No Answer leads)
+`leadNeedsCallback(l)` flags a lead as waiting on a callback if either: its Tags include something
+matching `/callback|no answer/i` (several industry tag presets already have literal `Callback`/`No
+Answer` tags), or its most recent logged call (`CallLog`, `saveCall()`'s own `unshift` — index 0 is
+newest) has outcome `No Answer` or `Callback Requested` (`modalCall`'s existing outcome options).
+When true, a 📞 Call button (`tel:` link via `callHrefFor(l)`) appears directly in the row's action
+bar (list view) / actions cell (table view, icon-only), alongside Won/Spam — one tap dials without
+opening the detail drawer first.
 
 ### Persistent detail panel (docked, Leads page only)
 Clicking a lead on the Leads page opens the detail panel docked to the right side
