@@ -191,7 +191,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <button class="save-btn" onclick="addCategoryRow()">+ Add Category</button>
       </div>
     </div>
-    <div class="s-hint" style="margin-bottom:12px">Give a category its own photos — the bot sends them once a customer's message names that category (e.g. "show me your bags"), separate from the photo already sent when a specific product is identified. Click a name to edit it; click a photo slot to upload (max 9 MB each).</div>
+    <div class="s-hint" style="margin-bottom:12px">Give a category its own photos — the bot sends them once a customer's message names that category (e.g. "show me your bags"), separate from the photo already sent when a specific product is identified. Click a name to edit it; click a photo slot to paste a Google Drive link (shared as "Anyone with the link can view").</div>
     <div class="tbl-wrap">
       <table>
         <thead><tr><th>Name</th><th>Photos</th><th>Actions</th></tr></thead>
@@ -200,7 +200,6 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         </tbody>
       </table>
     </div>
-    <input type="file" id="categoryMediaFileInput" accept="image/*" style="display:none" onchange="onCategoryMediaFileChosen(this)">
   </div>
 </div>
 
@@ -1077,7 +1076,23 @@ async function confirmImport() {
 // above) — D1-backed (env.DB on the Worker), not NocoDB, since this is genuinely new structured
 // data with no existing NocoDB reader. Same directly-editable pattern as dashboard.html's
 // Hospitality Units page: no Add/Edit popup, every field autosaves on blur/change.
+// Photos are a pasted Google Drive share link (same switch as Hospitality's unit photos/video,
+// SETUP.md "Ecommerce categories — photos") rather than an uploaded file — the category must be
+// shared "Anyone with the link can view" so the bot can fetch and attach the real image in chat
+// once a customer's message names that category (see engineMaybeSendEcomCategoryMedia, worker.js).
 const CATEGORY_MEDIA_SLOTS = ['image1', 'image2', 'image3'];
+// Mirrors dashboard.html's own driveFileId()/driveThumbnailUrl() — duplicated rather than shared
+// since this app has no build step and every page is already a self-contained file.
+function driveFileId(url) {
+  if (!url) return null;
+  let m = String(url).match(/\/file\/d\/([a-zA-Z0-9_-]+)/); if (m) return m[1];
+  m = String(url).match(/[?&]id=([a-zA-Z0-9_-]+)/); if (m) return m[1];
+  return null;
+}
+function driveThumbnailUrl(url) {
+  const id = driveFileId(url);
+  return id ? `https://drive.google.com/thumbnail?id=${id}&sz=w200` : '';
+}
 async function loadCategories() {
   const tbody = document.getElementById('categoriesTbody');
   try {
@@ -1093,8 +1108,14 @@ async function loadCategories() {
 function categoryMediaCellHtml(cat) {
   const slots = CATEGORY_MEDIA_SLOTS.map((slot, i) => {
     const url = cat['image_url_' + (i+1)];
-    if (url) return `<div class="cat-media-slot" title="Photo ${i+1}"><img src="${escAttr(url)}"><button class="cat-media-remove" onclick="event.stopPropagation();removeCategoryMedia(${cat.Id},'${slot}')">✕</button></div>`;
-    return `<div class="cat-media-slot" onclick="triggerCategoryMediaUpload(${cat.Id},'${slot}')" title="Photo ${i+1} — max 9MB">+</div>`;
+    if (url) {
+      const thumb = driveThumbnailUrl(url);
+      const preview = thumb
+        ? `<img src="${escAttr(thumb)}" onerror="this.style.display='none';this.nextElementSibling.style.display=''"><span style="font-size:14px;display:none">🔗</span>`
+        : `<span style="font-size:14px">🔗</span>`;
+      return `<div class="cat-media-slot" title="Photo ${i+1} — click to open in Drive, or the ✕ to remove" onclick="window.open('${escAttr(url)}','_blank')">${preview}<button class="cat-media-remove" onclick="event.stopPropagation();removeCategoryMedia(${cat.Id},'${slot}')">✕</button></div>`;
+    }
+    return `<div class="cat-media-slot" onclick="setCategoryMediaLink(${cat.Id},'${slot}')" title="Paste a Google Drive link for Photo ${i+1}">🔗+</div>`;
   }).join('');
   return `<div class="cat-media-inline" data-cat-media="${cat.Id}">${slots}</div>`;
 }
@@ -1159,37 +1180,31 @@ async function deleteCategory(id) {
     populateCategorySelect();
   } catch(e) { alert('Failed to delete: ' + e.message); }
 }
-function triggerCategoryMediaUpload(categoryId, slot) {
-  const input = document.getElementById('categoryMediaFileInput');
-  input.dataset.categoryId = categoryId;
-  input.dataset.slot = slot;
-  input.click();
-}
-async function onCategoryMediaFileChosen(input) {
-  const categoryId = Number(input.dataset.categoryId);
-  const slot = input.dataset.slot;
-  const file = input.files[0];
-  input.value = '';
-  if (!file) return;
-  if (file.size > 9*1024*1024) { alert('That file is larger than 9 MB — please choose a smaller one.'); return; }
+async function setCategoryMediaLink(categoryId, slot) {
+  const cat = allCategories.find(c => c.Id === categoryId);
+  if (!cat) return;
+  const slotIdx = CATEGORY_MEDIA_SLOTS.indexOf(slot) + 1;
+  const column = 'image_url_' + slotIdx;
+  const current = cat[column] || '';
+  const url = prompt(`Paste the Google Drive share link for Photo ${slotIdx}.\n\nMake sure it's shared as "Anyone with the link can view" so the bot can send it in chat.`, current);
+  if (url === null) return; // cancelled
+  const trimmed = url.trim();
+  if (trimmed && !/drive\.google\.com|docs\.google\.com/i.test(trimmed) && !confirm('That doesn\'t look like a Google Drive link — save it anyway?')) return;
+  const prev = cat[column];
+  cat[column] = trimmed || null;
   const cell = document.querySelector(`[data-cat-media="${categoryId}"]`);
-  if (cell) cell.style.opacity = '.5';
+  if (cell) cell.outerHTML = categoryMediaCellHtml(cat);
   try {
-    const fd = new FormData();
-    fd.append('client_id', clientId);
-    fd.append('category_id', categoryId);
-    fd.append('slot', slot);
-    fd.append('file', file);
-    const r = await fetch(`${WORKER_BASE}/ecom/categories/media`, { method: 'POST', body: fd });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
-    const cat = allCategories.find(c => c.Id === categoryId);
-    const slotIdx = CATEGORY_MEDIA_SLOTS.indexOf(slot) + 1;
-    if (cat) cat['image_url_' + slotIdx] = data.url;
-    if (cell) cell.outerHTML = categoryMediaCellHtml(cat);
+    const r = await fetch(`${WORKER_BASE}/ecom/categories`, {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ client_id: clientId, Id: categoryId, [column]: trimmed })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
   } catch(e) {
-    if (cell) cell.style.opacity = '';
-    alert('Upload failed: ' + e.message);
+    cat[column] = prev;
+    const cell2 = document.querySelector(`[data-cat-media="${categoryId}"]`);
+    if (cell2) cell2.outerHTML = categoryMediaCellHtml(cat);
+    alert('Failed to save: ' + e.message);
   }
 }
 async function removeCategoryMedia(categoryId, slot) {

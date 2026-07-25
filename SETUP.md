@@ -2789,16 +2789,29 @@ as the Hospitality module's units/bookings.
   `(lead_id, category_id)` — same "once per (lead, category) ever" dedup as
   `hospitality_media_sent`.
 
-### Media storage — Cloudflare R2 (`ECOM_CATEGORY_MEDIA` binding, `wrangler.toml`)
-Same "store a reference, fetch bytes at send time" pattern as the Hospitality module's unit
-photos: `hospitalityMediaKey`'s exact shape, mirrored as `ecomCategoryMediaKey(clientId,
-categoryId, slot, ext) → ecomcat/<clientId>/<categoryId>/<slot>.<ext>`. One-time setup:
-`wrangler r2 bucket create leadvyne-ecom-category-media` (no id/paste-in needed — R2 buckets are
-addressed by name). 9 MB max per file, images only (`image/*`).
+### Photos — pasted Google Drive links (same switch as Hospitality's unit photos/video)
+`image_url_1/2/3` hold a pasted Google Drive share link, not an uploaded file — clicking an empty
+slot (`setCategoryMediaLink()`) prompts for a Drive share link and saves it via a plain string
+`PATCH /ecom/categories` field (`handleEcomCategoryUpdate`), the same autosave-on-blur pattern
+`name` already uses. The category must be shared **"Anyone with the link can view"** — this Worker
+fetches it anonymously, no Drive account behind it. A filled slot shows a thumbnail
+(`driveThumbnailUrl()` — Drive's public `/thumbnail?id=` endpoint serves real image bytes, unlike
+the "view" share link itself, which is an HTML page and won't render in a plain `<img>`); clicking
+it opens the Drive link, and the ✕ removes it.
+- **Legacy R2 uploads still work, not migrated.** Categories that already had a file uploaded
+  before this switch keep their `https://<worker>/ecom/category-media/<key>` URL and keep serving/
+  sending fine — `handleEcomCategoryMediaUpload`/`Delete`/`handleEcomCategoryMediaServe` and the R2
+  binding (`ECOM_CATEGORY_MEDIA`, one-time setup `wrangler r2 bucket create
+  leadvyne-ecom-category-media`) are all still in place, just no longer reachable from the frontend.
+  `engineMaybeSendEcomCategoryMedia()` below checks for that URL shape first and only treats
+  anything else as a Drive link, so both kinds of categories send correctly side by side.
+- `driveFileId()`/`driveThumbnailUrl()` are duplicated in `ecom.html` (matching `dashboard.html`'s
+  own copies — no shared build step across pages) to extract the file id from whichever share-link
+  shape was pasted and build the thumbnail preview URL.
 
 ### Worker routes (`cloudflare-worker/worker.js`)
-`GET/POST/PATCH/DELETE /ecom/categories`, `POST/DELETE /ecom/categories/media`, `GET
-/ecom/category-media/*` (public serve, no auth — same trust model as
+`GET/POST/PATCH/DELETE /ecom/categories`, `POST/DELETE /ecom/categories/media` (legacy upload/
+delete, see above), `GET /ecom/category-media/*` (public serve, no auth — same trust model as
 `handleHospitalityMediaServe`: Chatwoot/WhatsApp's own media fetch and a plain `<img>` tag can't
 send an Authorization header, and the key itself isn't guessable). **Not `requireSession`-gated**
 — same client_id-based auth as every other `/ecom/*` route (`ecom.html` has no session token to
@@ -2814,12 +2827,21 @@ tradeoff" as the Hospitality module's unit-name matching (see its own SETUP.md e
 specific product and sent its photo (the existing per-product flow), the category auto-send is
 skipped entirely, so a customer asking about one exact item never gets a redundant category photo
 dump appended to the same reply. Only fires for `industry==='ecommerce'`.
+- **Real bug fix**: this function only ever knew how to fetch bytes from this Worker's own
+  R2-hosted `/ecom/category-media/<key>` URLs — any other URL (including a Google Drive link,
+  which there was previously no way to even store) silently matched nothing and sent zero photos
+  for that slot. It now fetches Google Drive files directly, via the same `driveFileId`/
+  `driveFetchFile` helpers `hospitalitySendUnitMedia` uses (confirm-token retry for Drive's
+  virus-scan interstitial included), while still supporting legacy R2-uploaded media for any
+  category that already had a file uploaded before this change. Every non-empty slot on a category
+  is sent independently — an unreachable link on one slot doesn't block the category's other
+  photos.
 
 ### Frontend (`frontend/ecom.html`)
 - **🏷️ Categories tab** — directly-editable table, same convention as `dashboard.html`'s
   Hospitality Units page (no Add/Edit popup): click a name to edit it (autosaves on blur), click
-  an empty photo slot to upload directly, click ✕ on a filled slot to remove it. "+ Add Category"
-  creates one immediately (prompts for a name).
+  an empty photo slot to paste a Google Drive link, click ✕ on a filled slot to remove it. "+ Add
+  Category" creates one immediately (prompts for a name).
 - **Product modal's Category field** changed from a free-text `<input>` to a `<select>`
   (`pmCategory`) populated from the managed categories list, plus a "+ Add new category…" option
   that creates one inline without leaving the modal. **Existing products keep whatever string

@@ -4466,10 +4466,20 @@ async function handleEcomCategoryUpdate(request, env){
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const existing=await findEcomCategory(env, id);
   if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
-  if(body.name===undefined) return json({ok:true});
-  const name=String(body.name).trim().slice(0,80);
-  if(!name) return json({error:'name cannot be blank'},400);
-  await env.DB.prepare(`UPDATE ecom_categories SET name=? WHERE id=?`).bind(name, id).run();
+  const sets=[], vals=[];
+  if(body.name!==undefined){
+    const name=String(body.name).trim().slice(0,80);
+    if(!name) return json({error:'name cannot be blank'},400);
+    sets.push('name=?'); vals.push(name);
+  }
+  // Photos — a pasted Google Drive link (SETUP.md "Ecommerce categories — photos"), same
+  // autosave-on-blur PATCH pattern as name, now that they're a link instead of an uploaded file.
+  if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
+  if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
+  if(body.image_url_3!==undefined){ sets.push('image_url_3=?'); vals.push(body.image_url_3?String(body.image_url_3).trim().slice(0,500):null); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE ecom_categories SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
   return json({ok:true});
 }
 async function ecomCategoryDeleteAllMedia(env, clientId, categoryId){
@@ -4491,10 +4501,16 @@ async function handleEcomCategoryDelete(request, env){
 }
 
 // Up to 3 photos per category (no video slot — unlike Hospitality's units, a category is a
-// grouping concept, not a bookable thing worth a walkthrough video). R2 key extension isn't
+// grouping concept, not a bookable thing worth a walkthrough video). image_url_1/2/3 now hold a
+// pasted Google Drive share link (same "Ecommerce categories — photos" switch as Hospitality's
+// unit photos/video, SETUP.md) rather than an uploaded file — handleEcomCategoryUpdate above
+// accepts them as plain string PATCH fields, and engineMaybeSendEcomCategoryMedia below fetches
+// each one's bytes with the same driveFileId/driveFetchFile helpers hospitalitySendUnitMedia uses.
+// The upload/delete/serve routes and R2 binding (ECOM_CATEGORY_MEDIA) below are kept only for
+// backward compatibility with any category that already had a file uploaded before this switch —
+// nothing in the current frontend calls the upload endpoint anymore. R2 key extension isn't
 // tracked separately in D1, so delete/replace try every extension validation could ever have
-// accepted — an R2 delete on a nonexistent key is a harmless no-op. Mirrors
-// HOSPITALITY_MEDIA_SLOTS/hospitalityMediaKey exactly.
+// accepted — an R2 delete on a nonexistent key is a harmless no-op.
 const ECOM_CATEGORY_MEDIA_SLOTS={image1:'image_url_1', image2:'image_url_2', image3:'image_url_3'};
 const ECOM_CATEGORY_MEDIA_MAX_BYTES=9*1024*1024;
 const ECOM_CATEGORY_IMAGE_EXTS=['jpg','jpeg','png','webp','gif'];
@@ -4574,16 +4590,30 @@ async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolv
     if(!items.length) return;
     let sentAny=false;
     for(let i=0;i<items.length;i++){
+      // Each item's URL is either a legacy R2-hosted one from before the Google Drive switch
+      // (fetched straight from the R2 binding, unchanged), or a Google Drive share link (fetched
+      // via driveFetchFile — same helpers hospitalitySendUnitMedia uses for the Hospitality
+      // module's units, SETUP.md "Hospitality module — unit photos/video"). Every non-empty slot
+      // gets its own attempt — one unreachable link doesn't block the category's other photos.
+      let blob=null;
       const marker='/ecom/category-media/';
       const idx=items[i].url.indexOf(marker);
-      if(idx===-1) continue;
-      const key=items[i].url.slice(idx+marker.length);
-      const obj=await env.ECOM_CATEGORY_MEDIA.get(key);
-      if(!obj) continue;
+      if(idx!==-1){
+        const key=items[i].url.slice(idx+marker.length);
+        const obj=await env.ECOM_CATEGORY_MEDIA.get(key);
+        if(obj) blob=await obj.blob();
+      }else{
+        const fileId=driveFileId(items[i].url);
+        if(fileId){
+          const fetched=await driveFetchFile(fileId);
+          if(fetched) blob=fetched.blob;
+        }
+      }
+      if(!blob) continue;
       const fd=new FormData();
       fd.append('content', i===0?`Here's our ${category.name} range 📸`:'');
       fd.append('message_type','outgoing'); fd.append('private','false');
-      fd.append('attachments[]', await obj.blob(), items[i].name);
+      fd.append('attachments[]', blob, items[i].name);
       const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
       if(r.ok) sentAny=true;
     }
