@@ -15671,9 +15671,8 @@ function renderHospUnits(){
       </tr></thead>
       <tbody>${hospUnits.map(hospUnitRow).join('')}</tbody>
     </table></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:8px">Click into any field to edit — it saves automatically when you tab or click away. Click a media slot to upload — max 9 MB per file.</div>`
-    :'<div class="empty-state"><div class="ei">🏠</div>No units yet. Click "+ Add Unit" to create your first room/unit type.</div>'}
-    <input type="file" id="hospUnitMediaFileInput" style="display:none" onchange="hospOnMediaFileChosen(this)">`;
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">Click into any field to edit — it saves automatically when you tab or click away. Click a media slot to paste a Google Drive link (shared as "Anyone with the link can view").</div>`
+    :'<div class="empty-state"><div class="ei">🏠</div>No units yet. Click "+ Add Unit" to create your first room/unit type.</div>'}`;
 }
 async function hospAddUnitRow(){
   const body={name:'New unit', unit_type:'', currency:'INR', capacity_adults:2, capacity_children:0, base_rate:0, weekend_rate:null, amenities:'', description:'', active:true};
@@ -15712,21 +15711,43 @@ async function hospUnitCellChange(id, el){
     renderHospUnits();
   }
 }
-/* ── Unit media (photos/video) — inline slots in each row, no modal ── */
+/* ── Unit media (photos/video) — inline slots in each row, no modal. Each slot is a pasted
+   Google Drive share link (SETUP.md "Hospitality module — unit photos/video") rather than an
+   uploaded file — simpler for a rep managing dozens of units from their own Drive, and no 9MB
+   upload cap to hit. The unit must be shared "Anyone with the link can view" for the bot to be
+   able to fetch and attach it in chat (see driveFetchFile() in worker.js). ── */
 const HOSP_MEDIA_SLOTS=[
-  {slot:'image1', column:'image_url_1', label:'Photo 1', accept:'image/*'},
-  {slot:'image2', column:'image_url_2', label:'Photo 2', accept:'image/*'},
-  {slot:'image3', column:'image_url_3', label:'Photo 3', accept:'image/*'},
-  {slot:'video', column:'video_url', label:'Video', accept:'video/*'},
+  {slot:'image1', column:'image_url_1', label:'Photo 1'},
+  {slot:'image2', column:'image_url_2', label:'Photo 2'},
+  {slot:'image3', column:'image_url_3', label:'Photo 3'},
+  {slot:'video', column:'video_url', label:'Video'},
 ];
+// Pulls the file id out of whichever Drive share-link shape was pasted — mirrors worker.js's own
+// driveFileId(), duplicated rather than shared since this app has no build step and every page is
+// already a self-contained file (same reasoning as this file's other small duplicated helpers).
+function driveFileId(url){
+  if(!url) return null;
+  let m=String(url).match(/\/file\/d\/([a-zA-Z0-9_-]+)/); if(m) return m[1];
+  m=String(url).match(/[?&]id=([a-zA-Z0-9_-]+)/); if(m) return m[1];
+  return null;
+}
+// Google Drive's public thumbnail endpoint serves real image bytes directly (unlike the "view"
+// share link, which is an HTML page and won't render in a plain <img> tag) — good enough for a
+// small dashboard preview without needing the video slot's own bytes at all.
+function driveThumbnailUrl(url){
+  const id=driveFileId(url);
+  return id?`https://drive.google.com/thumbnail?id=${id}&sz=w200`:'';
+}
 function hospMediaCellHtml(u){
   const inner=HOSP_MEDIA_SLOTS.map(s=>{
     const url=u[s.column];
     if(url){
-      const media=s.slot==='video'?`<video src="${esc(url)}" muted></video>`:`<img src="${esc(url)}">`;
-      return `<div class="hosp-media-slot-sm" title="${esc(s.label)}">${media}<button class="hosp-media-remove-sm" onclick="event.stopPropagation();hospRemoveUnitMedia(${u.Id},'${s.slot}')">✕</button></div>`;
+      const preview=s.slot==='video'
+        ? `<span style="font-size:18px">🎬</span>`
+        : `<img src="${esc(driveThumbnailUrl(url))}" onerror="this.style.display='none';this.nextElementSibling.style.display=''"><span style="font-size:16px;display:none">🔗</span>`;
+      return `<div class="hosp-media-slot-sm" title="${esc(s.label)} — click to open in Drive, or the ✕ to remove" onclick="window.open('${esc(url)}','_blank')">${preview}<button class="hosp-media-remove-sm" onclick="event.stopPropagation();hospRemoveUnitMedia(${u.Id},'${s.slot}')">✕</button></div>`;
     }
-    return `<div class="hosp-media-slot-sm" onclick="hospTriggerMediaUpload(${u.Id},'${s.slot}')" title="${esc(s.label)} — max 9MB">+</div>`;
+    return `<div class="hosp-media-slot-sm" onclick="hospSetUnitMediaLink(${u.Id},'${s.slot}')" title="Paste a Google Drive link for ${esc(s.label)}">🔗+</div>`;
   }).join('');
   return `<div class="hosp-media-inline" data-media-cell="${u.Id}">${inner}</div>`;
 }
@@ -15735,37 +15756,23 @@ function hospRerenderMediaCell(unitId){
   const cell=document.querySelector(`[data-media-cell="${unitId}"]`);
   if(cell) cell.outerHTML=hospMediaCellHtml(u);
 }
-function hospTriggerMediaUpload(unitId, slot){
-  const input=$id('hospUnitMediaFileInput');
-  input.dataset.unitId=unitId;
-  input.dataset.slot=slot;
-  input.accept=HOSP_MEDIA_SLOTS.find(s=>s.slot===slot).accept;
-  input.click();
-}
-async function hospOnMediaFileChosen(input){
-  const unitId=Number(input.dataset.unitId);
-  const slot=input.dataset.slot;
-  const file=input.files[0];
-  input.value='';
-  if(!file) return;
-  if(file.size>9*1024*1024){ alert('That file is larger than 9 MB — please choose a smaller one.'); return; }
-  const cell=document.querySelector(`[data-media-cell="${unitId}"]`);
-  if(cell) cell.style.opacity='.5';
+async function hospSetUnitMediaLink(unitId, slot){
+  const s=HOSP_MEDIA_SLOTS.find(x=>x.slot===slot);
+  const unit=hospUnits.find(u=>u.Id===unitId); if(!unit) return;
+  const current=unit[s.column]||'';
+  const url=prompt(`Paste the Google Drive share link for ${s.label}.\n\nMake sure it's shared as "Anyone with the link can view" so the bot can send it in chat.`, current);
+  if(url===null) return; // cancelled
+  const trimmed=url.trim();
+  if(trimmed && !/drive\.google\.com|docs\.google\.com/i.test(trimmed) && !confirm('That doesn\'t look like a Google Drive link — save it anyway?')) return;
+  const prev=unit[s.column];
+  unit[s.column]=trimmed||null;
+  hospRerenderMediaCell(unitId);
   try{
-    const fd=new FormData();
-    fd.append('unit_id', unitId);
-    fd.append('slot', slot);
-    fd.append('file', file);
-    const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/units/media`,{method:'POST',headers:ncAuthHeaders(),body:fd});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    const unit=hospUnits.find(u=>u.Id===unitId);
-    const col=HOSP_MEDIA_SLOTS.find(s=>s.slot===slot).column;
-    if(unit) unit[col]=data.url;
-    hospRerenderMediaCell(unitId);
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:unitId,[s.column]:trimmed})});
   }catch(e){
-    if(cell) cell.style.opacity='';
-    alert('Upload failed: '+e.message);
+    unit[s.column]=prev;
+    hospRerenderMediaCell(unitId);
+    alert('Failed to save: '+e.message);
   }
 }
 async function hospRemoveUnitMedia(unitId, slot){
