@@ -636,6 +636,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .leads-view-tabs .lv-tab .lv-x{opacity:.7;margin-left:2px}
 .leads-view-tabs .lv-tab .lv-x:hover{opacity:1}
 .li-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.momentum-link{cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.momentum-link:hover{opacity:.8}
 .task-filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
 .task-filter-btn{font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer}
 .task-filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -5100,15 +5102,59 @@ async function saveLeadSavedViewsList(list){
   await patchClient({lead_saved_views:JSON.stringify(list)});
 }
 
+// Contact-attempt counter — reuses the existing Follow up 1/2/3 Yes/No fields (already present on
+// the Leads table, already reset to 'No' on Stage change by the Conversation Engine) as three
+// attempt slots instead of adding a new column. Count = how many of those are flipped to 'Yes' so
+// far; bumpLeadAttempt() flips the next unflipped one whenever a rep actually reaches out (a
+// template send or a scheduled follow-up — see sendLeadsTemplate()/saveTaskFromModal()), so the
+// counter tracks real outreach attempts, not just time passing.
+function leadAttemptCount(l){
+  return ['Follow up 1','Follow up 2','Follow up 3'].filter(k=>l[k]==='Yes').length;
+}
+function leadAttemptBadge(l){
+  const n=leadAttemptCount(l);
+  if(n<2) return '';
+  const label=n>=3?'3rd no-answer':'2nd no-answer';
+  return `<span class="tag" style="background:#FEE2E2;color:#991B1B;font-weight:600" title="${n} contact attempt(s) with no reply yet">📵 ${label}</span>`;
+}
+async function bumpLeadAttempt(leadId){
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  const keys=['Follow up 1','Follow up 2','Follow up 3'];
+  const next=keys.find(k=>lead[k]!=='Yes');
+  if(!next) return; // already at the 3rd-attempt cap — nothing further to flip
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,[next]:'Yes'});
+    lead[next]='Yes';
+    renderLeadsCurrentView();
+  }catch(e){}
+}
+// Calls logged "No Answer"/"Callback Requested" (modalCall's outcome dropdown), or the lead
+// literally tagged Callback/No Answer (several industry tag presets include these), both mean
+// "this lead is waiting on a call back" — surfaced as a one-tap Call button on the row.
+function leadNeedsCallback(l){
+  if(parseTags(l.Tags).some(t=>/callback|no answer/i.test(t))) return true;
+  try{
+    const calls=JSON.parse(l.CallLog||'[]');
+    const last=calls[0]; // saveCall() unshifts, so index 0 is the most recent
+    if(last && /no answer|callback/i.test(last.outcome||'')) return true;
+  }catch(e){}
+  return false;
+}
+function callHrefFor(l){ return `tel:+${(l.Phone||'').replace(/[^0-9]/g,'')}`; }
+
 // "Needs Action Today" priority — never negative-ranks a closed-out lead (won/lost/opted-out
 // never "need action" again), then ranks an overdue reminder highest, a hot buying signal next,
-// then a genuinely stale conversation, with a gentle staleness tiebreaker underneath all of that.
+// then unanswered contact attempts (a lead going cold surfaces sooner the more attempts pile up),
+// then a genuinely stale conversation, with a gentle staleness tiebreaker underneath all of that —
+// so a lead that's simply been sitting idle a long time still drifts to the top over time even
+// before any attempt is logged against it.
 function leadNeedsActionScore(l){
   if(isWonLead(l)||isLostLead(l)||l.OptOut==='Yes') return -1;
   let score=0;
   if(l.ReminderDate && l.ReminderDate<=TODAY) score+=1000;
   if(l.HotMoment==='Yes') score+=500;
   if(l.Score==='Hot') score+=300;
+  score+=leadAttemptCount(l)*150;
   const lastMs=l.LastMsgAt?new Date(l.LastMsgAt).getTime():(l.Date?new Date(l.Date).getTime():0);
   const hrsSince=lastMs?(Date.now()-lastMs)/3600000:0;
   if(hrsSince>48 && (l['Follow up 1']||'No')==='No') score+=200;
@@ -5237,13 +5283,25 @@ function renderLeadsMomentumStrip(){
   const el=$id('leadsMomentumStrip'); if(!el) return;
   const weekAgo=Date.now()-7*86400000;
   const wonThisWeek=allLeads.filter(l=>isWonLead(l) && l.ClosedAt && new Date(l.ClosedAt).getTime()>=weekAgo).length;
-  const hotNow=allLeads.filter(l=>l.Score==='Hot'&&!isWonLead(l)&&!isLostLead(l)).length;
+  const hotLeads=allLeads.filter(l=>l.Score==='Hot'&&!isWonLead(l)&&!isLostLead(l));
   const needsAction=allLeads.filter(l=>leadNeedsActionScore(l)>0).length;
+  const hotStat=hotLeads.length
+    ? `<span class="momentum-link" onclick="jumpToHotLead()" title="Jump ${hotLeads.length===1?'straight to this lead':'to your hottest lead'}">🔥 <strong>${hotLeads.length}</strong> hot right now</span>`
+    : `<span>🔥 <strong>0</strong> hot right now</span>`;
   el.innerHTML=`<div class="s-note" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">
     <span>🎉 <strong>${wonThisWeek}</strong> won this week</span>
-    <span>🔥 <strong>${hotNow}</strong> hot right now</span>
+    ${hotStat}
     <span>${needsAction?`💪 <strong>${needsAction}</strong> ready for you today`:`✨ You're all caught up — nice work!`}</span>
   </div>`;
+}
+// "N hot right now" is clickable, not just a stat — jumps straight to the single hottest lead
+// (the one lead itself when there's exactly one, otherwise whichever hot lead needs action most)
+// instead of making a rep go filter for it manually.
+function jumpToHotLead(){
+  const hotLeads=allLeads.filter(l=>l.Score==='Hot'&&!isWonLead(l)&&!isLostLead(l));
+  if(!hotLeads.length) return;
+  const top=hotLeads.length===1?hotLeads[0]:[...hotLeads].sort((a,b)=>leadNeedsActionScore(b)-leadNeedsActionScore(a))[0];
+  openDetail(top.Id);
 }
 
 // ── Bulk selection & actions ──
@@ -5322,7 +5380,8 @@ async function reactivateLead(leadId,ev){
   const stageIds=Object.keys(getFlow().stages||{}).filter(k=>k!=='new');
   const nextStage=stageIds[1]||stageIds[0]||'new';
   const tags=parseTags(lead.Tags).filter(t=>t.toLowerCase()!=='cold');
-  const patch={Id:leadId, Stage:nextStage, OptOut:'No', Tags:tags.join(', ')};
+  const patch={Id:leadId, Stage:nextStage, OptOut:'No', Tags:tags.join(', '),
+    'Follow up 1':'No', 'Follow up 2':'No', 'Follow up 3':'No'};
   try{
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
     Object.assign(lead,patch);
@@ -5357,16 +5416,19 @@ function renderLeadsList(){
     const tags=parseTags(l.Tags);
     const showOutcomeBtns=!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes';
     const reconnect=isReactivationCandidate(l);
+    const needsCallback=leadNeedsCallback(l);
+    const attemptBadge=leadAttemptBadge(l);
     return `<div class="lead-item" onclick="openDetail(${l.Id})">
       <input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)" style="margin-right:2px;align-self:flex-start;margin-top:14px">
       <div class="li-avatar">${initials}</div>
       <div class="li-body">
         <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub">${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
-        ${tags.length?`<div class="tags-row" style="margin-top:4px">${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}</div>`:''}
+        ${(tags.length||attemptBadge)?`<div class="tags-row" style="margin-top:4px">${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
           <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
+          ${needsCallback?`<a class="btn btn-sm" style="background:#0F2C4C;color:#fff" href="${callHrefFor(l)}" onclick="event.stopPropagation()">📞 Call</a>`:''}
           <button class="btn btn-secondary btn-sm" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰ Snooze</button>
           <button class="btn btn-secondary btn-sm" onclick="openFollowupForLead(${l.Id})">📅 Follow-up</button>
           <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])">📣 Send</button>
@@ -5441,11 +5503,13 @@ function renderLeadsTable(){
     const qGet=k=>{const lk=k.toLowerCase();return Object.entries(qa).find(([key])=>key.toLowerCase()===lk)?.[1]||l[k]||l[k.charAt(0).toUpperCase()+k.slice(1)]||'';}
     const showOutcomeBtns=!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes';
     const reconnect=isReactivationCandidate(l);
+    const needsCallback=leadNeedsCallback(l);
+    const attemptBadge=leadAttemptBadge(l);
     return `<tr onclick="openDetail(${l.Id})">
       <td onclick="event.stopPropagation()"><input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)"></td>
       <td>${esc(l.Name||'Unknown')}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
-      <td>${esc(l.Stage||'new')}</td>
+      <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}</td>
       <td>${scoreBadge(l.Score)}</td>
       <td>${esc(l.Owner||'—')}</td>
       <td>${esc(qGet('age'))}</td>
@@ -5460,6 +5524,7 @@ function renderLeadsTable(){
       <td>${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
         <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669;white-space:nowrap" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
         <button class="btn btn-secondary btn-sm" style="color:#DC2626;white-space:nowrap" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
+        ${needsCallback?`<a class="btn btn-sm" style="background:#0F2C4C;color:#fff" href="${callHrefFor(l)}" onclick="event.stopPropagation()">📞</a>`:''}
         <button class="btn btn-secondary btn-sm" onclick="snoozeReminderLead(${l.Id})">⏰</button>
         <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])">📣</button>
       </div>`:(reconnect?`<button class="btn btn-sm" style="background:#0D9C93;color:#fff;white-space:nowrap" onclick="event.stopPropagation();reactivateLead(${l.Id},event)">♻️ Reactivate</button>`:'—')}</td>
@@ -5573,6 +5638,7 @@ async function sendLeadsTemplate(){
           const data=await r.json().catch(()=>({}));
           if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
           sent++; log(`✅ ${lead.Name||lead.Phone} — sent directly (no prior conversation)`);
+          bumpLeadAttempt(lead.Id);
         }catch(e){ failed++; log(`❌ ${lead.Name||lead.Phone} — direct send failed: ${e.message}`); }
       }else{
         failed++;
@@ -5602,6 +5668,7 @@ async function sendLeadsTemplate(){
       const data=await r.json().catch(()=>({}));
       if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
       sent++; log(`✅ ${lead.Name||lead.Phone} — sent`);
+      bumpLeadAttempt(lead.Id);
     }catch(e){ failed++; log(`❌ ${lead.Name||lead.Phone} — ${e.message}`); }
     setProg(i+1,leads.length);
   }
@@ -9946,7 +10013,8 @@ function openTaskModal(id, prefillLead, prefillProjectId){
   assigneeSel.innerHTML='<option value="">Unassigned</option>'+emails.map(e=>`<option value="${esc(e)}"${assigneeDefault===e?' selected':''}>${esc(e)}${e===myEmail?' (you)':''}</option>`).join('');
 
   const catSel=$id('taskCategory');
-  catSel.innerHTML='<option value="">No category</option>'+TASK_CATEGORIES.map(c=>`<option value="${esc(c.name)}"${t?.category===c.name?' selected':''}>${esc(c.name)}</option>`).join('');
+  const categoryDefault=t?t.category:(prefillLead?'Follow-up':'');
+  catSel.innerHTML='<option value="">No category</option>'+TASK_CATEGORIES.map(c=>`<option value="${esc(c.name)}"${categoryDefault===c.name?' selected':''}>${esc(c.name)}</option>`).join('');
 
   const projSel=$id('taskProject');
   const projects=state.projects;
@@ -10017,6 +10085,10 @@ async function saveTaskFromModal(){
       }catch(e){ msg.textContent='Saved — but email failed: '+e.message; }
     }
     syncTaskToGoogleCalendar(task.id);
+    // A newly scheduled Follow-up task linked to a lead counts as a contact attempt — same
+    // counter sendLeadsTemplate() bumps, so "N follow-ups with no reply" stays accurate whether
+    // the rep reached out by template or by logging a manual follow-up.
+    if(isNew && leadId && category==='Follow-up') bumpLeadAttempt(leadId);
     closeModal('modalTask');
     renderTasks();
   }catch(e){ msg.textContent='Error: '+e.message; msg.style.color='var(--red)'; }
