@@ -4639,3 +4639,99 @@ specifically while the Leads page is active.
   `translateX(0)!important` — belt-and-suspenders alongside the `>=768px` gate above, so the docked
   CSS is correct on its own even if that gate is ever bypassed.
 
+## Leads page: AI Data Analyst & Business Intelligence (`frontend/dashboard.html`)
+
+A third Leads-page view mode (`🧠 AI Analyst`, alongside the existing List and Pipeline switch —
+`setLeadsViewMode('analyst')`, `#leadsAnalystView`) for cross-lead pattern-finding, distinct from
+both the per-lead AI signals already on the Leads page (Deal Health, Next-Best-Action, Win %) and
+the stats-focused Reports page (Sales/Marketing/WhatsApp/Ecommerce/Product/SEO). Same sub-nav/
+lazy-load convention as Recruit/Appointments/Hospitality/Reports: `renderAiAnalyst()` →
+`renderAiSubPage(page)`, a `.hosp-tab`/`data-ai` sub-nav, one shared `#aiContent` container.
+
+**Everything is computed instantly, client-side, from `allLeads` already loaded — zero new Worker
+routes, and deliberately no LLM calls.** Every "insight" is real arithmetic (contribution
+decomposition, linear trend regression, revenue-at-risk ranking) with a templated plain-language
+sentence filling in the actual numbers, not a black-box generated narrative — free, instant, and
+fully explainable. The one new piece of storage is `bi_saved_analyses`, a JSON array on a new
+CLIENTS field (Long Text — **add this column manually in NocoDB**, same convention as every other
+config-blob field this app uses) for the Custom Analysis builder's saved views.
+
+### Shared engine — dimensions, metrics, pivot, contribution decomposition
+- **`AI_DIMENSIONS`** (Stage, Score, Source, Country, Owner, Tag, Language, Month created) and
+  **`AI_METRICS`** (Lead Count, Win Rate %, Avg Deal Value, Total Won Value, Avg Win Probability) —
+  one registry each, read by all three interactive tabs below so "what can we slice/measure" stays
+  consistent everywhere.
+- **`aiEstimateWinProb(l)`** — falls back to a Score-based estimate (Hot 70% / Warm 40% / Cold 15%)
+  when a lead has no manually-set `WinProbability`, so a weighted pipeline total doesn't silently
+  treat most of the pipeline as 0%. Only used inside this module — the existing Team/Reports pages'
+  own weighted-forecast calculations are untouched.
+- **`aiPivot(leads, dimKey, metricKey)`** — groups leads by a dimension, computes a metric per
+  group, sorted descending. The one function both Custom Analysis and Overview's auto-picked
+  breakdowns run on top of.
+- **`aiContribution(leadsBefore, leadsAfter, metricKey)`** — real contribution decomposition, not a
+  guess. For an *additive* metric (count, total value) a segment's contribution to the overall
+  change is exactly its own before/after difference — these sum back to the total delta exactly.
+  For a rate/average metric, exact decomposition needs calculus a plain sum can't give, so this
+  uses the standard approximation instead: weight the segment's own change by its share of volume
+  in the "after" period — good enough to rank "which segment moved the needle most."
+  - **Uses `AI_RCA_DIMENSIONS` (all of `AI_DIMENSIONS` except Month created)**, not the full list —
+    comparing two date-bounded windows against each other means "Month created" would trivially
+    "explain" most of any count-based delta (the windows are themselves defined by date range, so
+    of course the more recent month has more of the recent leads) — circular reasoning dressed up
+    as an insight. Caught by an early test expecting a specific segment to top the ranking and
+    getting "Month created" instead; Month is still a fully valid dimension for the Custom Analysis
+    builder, where "count by month over all history" is a genuine trend view rather than a
+    before/after comparison.
+
+### 🔍 Root Cause (`renderAiRootCause`/`runAiRootCause`) — Automated Root Cause Analysis
+Pick a metric and two comparison windows (defaults: last 30 days vs. the 30 days before that), hit
+Analyze — every dimension's segments are ranked by `aiContribution`'s impact, each rendered as a
+templated sentence (`aiContributionSentence`): "**Instagram** (Source) increased from 1 to 2 — the
+largest single driver of the overall change (1→2 leads)."
+
+### 📈 Forecast (`renderAiForecast`/`aiForecastCompute`) — Predictive Forecasting (pipeline revenue)
+Two numbers shown side by side rather than blended, so a rep can sanity-check one against the
+other:
+- **Weighted Forecast** — bottom-up: every open, non-opted-out deal's `DealValue × aiEstimateWinProb`,
+  summed. Extends the existing Revenue Forecast pattern (Team/Reports pages) rather than replacing
+  it — same `DealValue × WinProbability/100` shape, just with the Score-based fallback added.
+- **6-month trend + 3-month projection** — actual Won revenue per month (`closedMonthKey`, reused
+  from the existing Revenue Forecast code), plus a simple linear regression over those 6 points
+  projected 3 months forward (dashed/striped bars, needs at least 2 non-zero months to render at
+  all). Explicitly labeled a "straight-line estimate, not a guarantee" — this is a transparent trend
+  line, not a real predictive model.
+
+### 💔 Churn & LTV (`renderAiChurn`/`aiChurnCompute`) — Customer Churn & LTV Scoring
+Groups leads by phone number (the one identifier consistent across separate lead records for the
+same person/business — there's no dedicated "customer" entity) rather than inventing a new one.
+- **Broad churn definition**: any relationship gone quiet with no currently-active deal anywhere,
+  whether it ever converted or not (a never-converted lead going cold is already covered
+  operationally by the Reconnect view — SETUP.md "Leads page rebuild"; this is the revenue-risk
+  lens on the same underlying signal, not a duplicate feature). "Idle" means no active/non-opted-out
+  deal for that phone number and no message/activity in 30+ days.
+- **LTV** = sum of `DealValue` across all Won leads for that phone number. Deliberately scoped to
+  Leads' own recorded deal value across all engagements from that phone — does **not** fold in
+  Ecommerce order history (a separate table this module doesn't reach into); a known V1 scope limit,
+  not an oversight.
+- **Ranked by revenue-at-risk** (`ltv * min(daysIdle/90, 3)` when LTV>0, else just `daysIdle`) so a
+  contact who actually paid before outranks a much larger pile of never-converted cold leads, while
+  still surfacing everyone per the broad definition above — a real customer gone quiet for 100 days
+  ranks far above a lead that never converted and has been idle 200 days.
+- Each row has a one-click **📣 Win back** button (`openSendTemplateModal`), reusing the Send
+  Template modal built for the Leads page rebuild rather than a new send path.
+
+### 🛠️ Custom Analysis (`renderAiCustom`/`runAiCustom`) — Custom Buildable Analysis
+A pivot-style builder: pick a metric, group by any dimension, optionally filter by stage/tag, Run
+— renders as a bar-row list (`aiPivot`, same engine as the auto-generated breakdowns). **Save**
+(`saveAiCustom`) prompts for a name and appends `{id, name, metric, dim, stage, tag}` to
+`bi_saved_analyses` (`patchClient`, exact same config-blob pattern as the Leads page's own saved
+views, `lead_saved_views`); saved analyses render as `⭐`-prefixed chips with an inline ✕ to delete,
+click to reload the exact same configuration and re-run it.
+
+### 🧭 Overview (`renderAiOverview`) — Auto-Generating Dashboards
+Reuses the exact same `aiContribution` engine as Root Cause, just run automatically for the two
+headline KPIs (lead count, win rate) over a fixed last-30-vs-prior-30-days window, plus the
+Forecast and Churn headlines — four cards, each clickable straight through to its own full tab.
+Not a separate "auto-dashboard" engine; deliberately reuses the same math as everything else in
+this module so there's only one contribution-analysis implementation to reason about.
+

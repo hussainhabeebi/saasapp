@@ -1387,6 +1387,7 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div class="leads-view-switch" style="display:flex;gap:8px;margin-bottom:14px">
           <button class="btn btn-secondary btn-sm leads-view-btn active" id="leadsViewModeList" onclick="setLeadsViewMode('list')">📇 List</button>
           <button class="btn btn-secondary btn-sm leads-view-btn" id="leadsViewModePipeline" onclick="setLeadsViewMode('pipeline')">🗂 Pipeline</button>
+          <button class="btn btn-secondary btn-sm leads-view-btn" id="leadsViewModeAnalyst" onclick="setLeadsViewMode('analyst')" title="AI Data Analyst &amp; Business Intelligence">🧠 AI Analyst</button>
         </div>
       </div>
 
@@ -1445,6 +1446,23 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div style="padding:0 16px 16px;overflow-x:auto">
           <div id="kanbanWrap"></div>
         </div>
+      </div>
+
+      <!-- AI Data Analyst & Business Intelligence — SETUP.md "Leads page: AI Analyst". Same
+           sub-nav/lazy-load convention as Recruit/Appointments/Hospitality/Reports: a
+           `.hosp-tab`/data-ai sub-nav, one shared #aiContent container, renderAiAnalyst() →
+           renderAiSubPage(page). Everything here is computed instantly client-side from allLeads
+           already loaded — no new Worker routes, no LLM calls (deterministic stats + templated
+           plain-language summaries only). -->
+      <div id="leadsAnalystView" style="display:none">
+        <div id="aiSubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
+          <button class="hosp-tab active" data-ai="overview">🧭 Overview</button>
+          <button class="hosp-tab" data-ai="rootcause">🔍 Root Cause</button>
+          <button class="hosp-tab" data-ai="forecast">📈 Forecast</button>
+          <button class="hosp-tab" data-ai="churn">💔 Churn &amp; LTV</button>
+          <button class="hosp-tab" data-ai="custom">🛠️ Custom Analysis</button>
+        </div>
+        <div id="aiContent" class="page-pad"></div>
       </div>
     </div>
 
@@ -5458,9 +5476,12 @@ function setLeadsViewMode(mode){
   _leadsViewMode=mode;
   $id('leadsViewModeList')?.classList.toggle('active', mode==='list');
   $id('leadsViewModePipeline')?.classList.toggle('active', mode==='pipeline');
+  $id('leadsViewModeAnalyst')?.classList.toggle('active', mode==='analyst');
   $id('leadsListView').style.display=mode==='list'?'':'none';
   $id('leadsPipelineView').style.display=mode==='pipeline'?'':'none';
+  $id('leadsAnalystView').style.display=mode==='analyst'?'':'none';
   if(mode==='pipeline') renderKanban();
+  else if(mode==='analyst') renderAiAnalyst();
   else if(_leadsTableView) renderLeadsTable();
   else renderLeadsList();
 }
@@ -5676,6 +5697,432 @@ async function sendLeadsTemplate(){
   $id('stModalMsg').textContent=`${sent} sent, ${failed} failed.`;
   $id('stModalMsg').className='save-msg '+(failed&&!sent?'err':'ok');
   if(sent && !failed) setTimeout(()=>closeModal('modalSendTemplate'),1600);
+}
+
+/* ── AI DATA ANALYST & BUSINESS INTELLIGENCE (Leads page — SETUP.md "Leads page: AI Analyst") ──
+   Everything below is computed instantly, client-side, from allLeads already loaded — no new
+   Worker routes, and deliberately no LLM calls: every "insight" is real arithmetic (contribution
+   decomposition, linear trend projection, revenue-at-risk ranking) with a templated plain-language
+   sentence filling in the actual numbers, not a black-box generated narrative. Reuses this file's
+   own isWonLead/isLostLead/closedMonthKey/getFlow/parseTags/patchClient rather than re-deriving
+   any of that. Same sub-nav/lazy-load convention as Recruit/Appointments/Hospitality/Reports:
+   renderAiAnalyst() → renderAiSubPage(page), a `.hosp-tab`/data-ai sub-nav, one shared
+   #aiContent container. */
+let _aiPage='overview';
+function renderAiAnalyst(){ renderAiSubPage(_aiPage); }
+function renderAiSubPage(page){
+  _aiPage=page;
+  document.querySelectorAll('#aiSubNav .hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.ai===page));
+  const fns={overview:renderAiOverview, rootcause:renderAiRootCause, forecast:renderAiForecast, churn:renderAiChurn, custom:renderAiCustom};
+  (fns[page]||renderAiOverview)();
+}
+document.addEventListener('click', e=>{
+  const t=e.target.closest('#aiSubNav .hosp-tab');
+  if(t&&t.dataset.ai) renderAiSubPage(t.dataset.ai);
+});
+
+// A lead without a manually-set WinProbability still needs *some* number to weight a forecast by
+// — falls back to a Score-based estimate (same Hot/Warm/Cold tiers used throughout this app)
+// rather than treating it as 0% (which would silently exclude most of the pipeline from any
+// weighted total).
+function aiEstimateWinProb(l){
+  const n=Number(l.WinProbability);
+  if(l.WinProbability!=null && l.WinProbability!=='' && !isNaN(n)) return n;
+  if(l.Score==='Hot') return 70;
+  if(l.Score==='Warm') return 40;
+  return 15;
+}
+function aiCreationMonthKey(l){
+  const d=l.Date; if(!d) return null;
+  const dt=new Date(d); if(isNaN(dt.getTime())) return null;
+  return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0');
+}
+function aiFmtMoney(n){
+  const ccy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
+  return (ccy?ccy+' ':'')+Math.round(n||0).toLocaleString();
+}
+
+// Dimensions/metrics shared by Root Cause, Custom Analysis, and Overview's auto-generated
+// breakdowns — one registry so all three read the same "what can we slice by" list.
+const AI_DIMENSIONS=[
+  {key:'stage', label:'Stage', get:l=>l.Stage||'new'},
+  {key:'score', label:'Score', get:l=>l.Score||'Cold'},
+  {key:'source', label:'Source', get:l=>l.Source||'Unknown'},
+  {key:'country', label:'Country', get:l=>l.Country||'Unknown'},
+  {key:'owner', label:'Owner', get:l=>l.Owner||'Unassigned'},
+  {key:'tag', label:'Tag', get:l=>parseTags(l.Tags)[0]||'Untagged'},
+  {key:'language', label:'Language', get:l=>l.Language||'Unknown'},
+  {key:'month', label:'Month created', get:l=>aiCreationMonthKey(l)||'Unknown'},
+];
+// Root Cause/Overview compare two date-bounded windows against each other — "Month created"
+// would then trivially "explain" most or all of the delta (the windows are themselves defined by
+// date range, so of course the more recent month has more of the recent leads), which is circular
+// reasoning dressed up as an insight rather than a real finding. Excluded from contribution
+// analysis only; still a fully valid dimension for the Custom Analysis builder, where "count by
+// month over all history" is a genuine trend view, not a before/after comparison.
+const AI_RCA_DIMENSIONS=AI_DIMENSIONS.filter(d=>d.key!=='month');
+const AI_METRICS=[
+  {key:'count', label:'Lead Count', additive:true, compute:leads=>leads.length},
+  {key:'winrate', label:'Win Rate %', additive:false, compute:leads=>{
+    const resolved=leads.filter(l=>isWonLead(l)||isLostLead(l));
+    return resolved.length?Math.round(leads.filter(isWonLead).length/resolved.length*1000)/10:0;
+  }},
+  {key:'avgvalue', label:'Avg Deal Value', additive:false, compute:leads=>{
+    const vals=leads.map(l=>Number(l.DealValue)||0).filter(v=>v>0);
+    return vals.length?Math.round(vals.reduce((a,b)=>a+b,0)/vals.length):0;
+  }},
+  {key:'totalvalue', label:'Total Won Value', additive:true, compute:leads=>leads.filter(isWonLead).reduce((s,l)=>s+(Number(l.DealValue)||0),0)},
+  {key:'avgwinprob', label:'Avg Win Probability', additive:false, compute:leads=>{
+    if(!leads.length) return 0;
+    return Math.round(leads.reduce((s,l)=>s+aiEstimateWinProb(l),0)/leads.length);
+  }},
+];
+function aiDimension(key){ return AI_DIMENSIONS.find(d=>d.key===key)||AI_DIMENSIONS[0]; }
+function aiMetric(key){ return AI_METRICS.find(m=>m.key===key)||AI_METRICS[0]; }
+function aiFmtMetricVal(metric, v){
+  if(metric.key==='avgvalue'||metric.key==='totalvalue') return aiFmtMoney(v);
+  if(metric.key==='winrate'||metric.key==='avgwinprob') return v+'%';
+  return String(v);
+}
+
+// Groups leads by a dimension and computes a metric per group — the core "pivot" both the Custom
+// Analysis builder and Overview's auto-picked breakdowns run on top of.
+function aiPivot(leads, dimKey, metricKey){
+  const dim=aiDimension(dimKey), metric=aiMetric(metricKey);
+  const groups={};
+  leads.forEach(l=>{ const g=dim.get(l); (groups[g]=groups[g]||[]).push(l); });
+  return Object.entries(groups).map(([label,group])=>({label, value:metric.compute(group), n:group.length}))
+    .sort((a,b)=>b.value-a.value);
+}
+
+// Automated Root Cause Analysis — real contribution decomposition, not a guess. For an additive
+// metric (count, total value) a segment's contribution to the overall change is exactly its own
+// before/after difference (these sum back to the total delta). For a rate/average metric, exact
+// decomposition needs calculus a plain sum can't give, so this uses the standard approximation:
+// weight the segment's own change by its share of volume in the "after" period — good enough to
+// rank "which segment moved the needle most," which is what root-cause hunting actually needs.
+function aiContribution(leadsBefore, leadsAfter, metricKey){
+  const metric=aiMetric(metricKey);
+  const totalBefore=metric.compute(leadsBefore), totalAfter=metric.compute(leadsAfter);
+  const rows=[];
+  AI_RCA_DIMENSIONS.forEach(dim=>{
+    const groupsBefore={}, groupsAfter={};
+    leadsBefore.forEach(l=>{ const g=dim.get(l); (groupsBefore[g]=groupsBefore[g]||[]).push(l); });
+    leadsAfter.forEach(l=>{ const g=dim.get(l); (groupsAfter[g]=groupsAfter[g]||[]).push(l); });
+    const segments=new Set([...Object.keys(groupsBefore),...Object.keys(groupsAfter)]);
+    segments.forEach(seg=>{
+      const before=groupsBefore[seg]||[], after=groupsAfter[seg]||[];
+      if(!before.length && !after.length) return;
+      const valBefore=metric.compute(before), valAfter=metric.compute(after);
+      const shareAfter=leadsAfter.length?after.length/leadsAfter.length:0;
+      const contribution=metric.additive ? (valAfter-valBefore) : (valAfter-valBefore)*shareAfter;
+      rows.push({dimension:dim.label, segment:seg, before:valBefore, after:valAfter, contribution, beforeN:before.length, afterN:after.length});
+    });
+  });
+  rows.sort((a,b)=>Math.abs(b.contribution)-Math.abs(a.contribution));
+  return {totalBefore, totalAfter, delta:totalAfter-totalBefore, rows};
+}
+function aiContributionSentence(metric, row){
+  const dir=row.after>=row.before?'increased':'decreased';
+  return `<strong>${esc(row.segment)}</strong> (${esc(row.dimension)}) ${dir} from ${aiFmtMetricVal(metric,row.before)} to ${aiFmtMetricVal(metric,row.after)} — the largest single driver of the overall change (${row.beforeN}→${row.afterN} leads).`;
+}
+
+// Predictive Forecasting — bottom-up (current open pipeline × estimated win %) plus a top-down
+// linear trend projection of the last 6 months' actual Won revenue. Shown side by side rather
+// than blended into one number, since a rep should be able to sanity-check one against the other.
+function aiForecastCompute(){
+  const active=allLeads.filter(l=>!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes');
+  const weightedPipeline=active.reduce((s,l)=>s+(Number(l.DealValue)||0)*aiEstimateWinProb(l)/100,0);
+  const pipelineValue=active.reduce((s,l)=>s+(Number(l.DealValue)||0),0);
+
+  const months=[]; const now=new Date();
+  for(let i=5;i>=0;i--){ const d=new Date(now.getFullYear(), now.getMonth()-i, 1); months.push({key:d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'), label:d.toLocaleString('default',{month:'short',year:'2-digit'})}); }
+  const won=allLeads.filter(isWonLead);
+  const series=months.map(m=>won.filter(l=>closedMonthKey(l)===m.key).reduce((s,l)=>s+(Number(l.DealValue)||0),0));
+
+  // Simple linear regression over the 6 monthly totals — a transparent trend line, not a claim of
+  // real predictive modeling. Needs at least 2 non-zero months to mean anything.
+  const nonZeroMonths=series.filter(v=>v>0).length;
+  let projection=null;
+  if(nonZeroMonths>=2){
+    const n=series.length;
+    const xs=series.map((_,i)=>i);
+    const xMean=xs.reduce((a,b)=>a+b,0)/n, yMean=series.reduce((a,b)=>a+b,0)/n;
+    let num=0, den=0;
+    xs.forEach((x,i)=>{ num+=(x-xMean)*(series[i]-yMean); den+=(x-xMean)**2; });
+    const slope=den?num/den:0, intercept=yMean-slope*xMean;
+    projection=[1,2,3].map(k=>Math.max(0,Math.round(intercept+slope*(n-1+k))));
+  }
+  return {activeCount:active.length, pipelineValue, weightedPipeline, months, series, projection};
+}
+function renderAiForecast(){
+  const el=$id('aiContent');
+  const f=aiForecastCompute();
+  const maxVal=Math.max(1, ...f.series, ...(f.projection||[]));
+  const projMonths=f.projection?[1,2,3].map(k=>{ const d=new Date(); d.setMonth(d.getMonth()+k); return d.toLocaleString('default',{month:'short',year:'2-digit'}); }):[];
+  el.innerHTML=`
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:14px">
+      <div class="stat"><div class="stat-lbl">Active Pipeline Value</div><div class="stat-val">${aiFmtMoney(f.pipelineValue)}</div></div>
+      <div class="stat accent"><div class="stat-lbl">Weighted Forecast</div><div class="stat-val">${aiFmtMoney(f.weightedPipeline)}</div></div>
+      <div class="stat"><div class="stat-lbl">Active Deals</div><div class="stat-val">${f.activeCount}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:8px">Won Revenue — Last 6 Months${f.projection?' + Next 3 Months (Projected)':''}</div>
+      ${f.months.map((m,i)=>`<div class="bar-row">
+        <div style="min-width:60px;font-size:11px">${m.label}</div>
+        <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(f.series[i]/maxVal*100)}%"></div></div>
+        <div class="bar-val">${aiFmtMoney(f.series[i])}</div>
+      </div>`).join('')}
+      ${f.projection?f.projection.map((v,i)=>`<div class="bar-row">
+        <div style="min-width:60px;font-size:11px;color:var(--muted)">${projMonths[i]}</div>
+        <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(v/maxVal*100)}%;opacity:.45;background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,.4) 4px,rgba(255,255,255,.4) 8px)"></div></div>
+        <div class="bar-val" style="color:var(--muted)">${aiFmtMoney(v)} <span style="font-weight:400">(proj.)</span></div>
+      </div>`).join(''):'<div class="s-note" style="margin-top:6px">Not enough closed history yet to project a trend — needs at least 2 months with Won revenue.</div>'}
+    </div>
+    <div class="s-note">"Weighted Forecast" is bottom-up (each open deal's value × its win probability, or a Hot/Warm/Cold estimate when no probability is set manually). The dashed bars are a simple trend projection from the last 6 months' actual Won revenue — a straight-line estimate, not a guarantee.</div>
+  `;
+}
+
+// Customer Churn & LTV Scoring — groups leads by phone number (the one identifier consistent
+// across separate lead records for the same person/business) rather than inventing a new
+// "customer" entity. Broad churn definition: any relationship that's gone quiet with no currently
+// active deal, whether it ever converted or not — but ranked by revenue-at-risk (LTV-weighted) so
+// accounts that actually paid float to the top instead of being buried under a much larger pile of
+// never-converted cold leads.
+function aiChurnCompute(){
+  const byPhone={};
+  allLeads.forEach(l=>{
+    const phone=(l.Phone||'').replace(/[^0-9]/g,''); if(!phone) return;
+    (byPhone[phone]=byPhone[phone]||[]).push(l);
+  });
+  const rows=[];
+  Object.entries(byPhone).forEach(([phone,leads])=>{
+    const stillActive=leads.some(l=>!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes');
+    if(stillActive) return; // has an open deal somewhere — not at risk
+    const ltv=leads.filter(isWonLead).reduce((s,l)=>s+(Number(l.DealValue)||0),0);
+    const lastMs=Math.max(...leads.map(l=>{ const t=new Date(l.LastMsgAt||l.Date||0).getTime(); return isNaN(t)?0:t; }));
+    if(!lastMs) return;
+    const daysIdle=Math.floor((Date.now()-lastMs)/86400000);
+    if(daysIdle<30) return; // not idle long enough to call it churn risk yet
+    const everWon=leads.some(isWonLead);
+    const riskScore=ltv>0 ? Math.round(ltv*Math.min(daysIdle/90,3)) : daysIdle;
+    const latest=[...leads].sort((a,b)=>new Date(b.Date||0)-new Date(a.Date||0))[0];
+    rows.push({phone, leadId:latest.Id, name:latest.Name||phone, ltv, daysIdle, everWon, leadCount:leads.length, riskScore});
+  });
+  rows.sort((a,b)=>b.riskScore-a.riskScore);
+  return rows;
+}
+function renderAiChurn(){
+  const el=$id('aiContent');
+  const rows=aiChurnCompute();
+  const atRiskValue=rows.reduce((s,r)=>s+r.ltv,0);
+  el.innerHTML=`
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:14px">
+      <div class="stat"><div class="stat-lbl">At-Risk Contacts</div><div class="stat-val">${rows.length}</div></div>
+      <div class="stat accent"><div class="stat-lbl">Revenue at Risk (LTV)</div><div class="stat-val">${aiFmtMoney(atRiskValue)}</div></div>
+      <div class="stat"><div class="stat-lbl">Ever Converted</div><div class="stat-val">${rows.filter(r=>r.everWon).length}</div></div>
+    </div>
+    <div class="s-note" style="margin-bottom:10px">Ranked by revenue-at-risk (lifetime value × how long they've gone quiet) — a $0-LTV contact who's simply been idle a long time still shows up, just below anyone who's actually paid you before. "Idle" means no active deal anywhere and no message/activity in 30+ days.</div>
+    ${rows.length?`<div class="tbl-wrap"><table class="leads-tbl">
+      <thead><tr><th>Name</th><th>Phone</th><th>LTV</th><th>Days Idle</th><th>Ever Won</th><th>Records</th><th>Risk Score</th><th></th></tr></thead>
+      <tbody>${rows.slice(0,100).map(r=>`<tr>
+        <td>${esc(r.name)}</td>
+        <td>${esc(maskPhone(r.phone))}</td>
+        <td>${aiFmtMoney(r.ltv)}</td>
+        <td>${r.daysIdle}d</td>
+        <td>${r.everWon?'✅':'—'}</td>
+        <td>${r.leadCount}</td>
+        <td>${r.riskScore.toLocaleString()}</td>
+        <td><button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${r.leadId}])">📣 Win back</button></td>
+      </tr>`).join('')}</tbody>
+    </table></div>`:'<div class="empty-state"><div class="ei">✨</div>No churn risk detected — every contact either has an active deal or has been in touch recently.</div>'}
+  `;
+}
+
+// Auto-Generating Dashboards — reuses the exact same contribution engine as Root Cause, just run
+// automatically for the two headline KPIs (lead volume, win rate) over a fixed last-30-vs-prior-30
+// window, plus the forecast/churn headlines, instead of asking the rep to pick a metric first.
+function renderAiOverview(){
+  const el=$id('aiContent');
+  const now=Date.now();
+  const cutRecent=now-30*86400000, cutPrior=now-60*86400000;
+  const inRange=(l,from,to)=>{ const t=new Date(l.Date||0).getTime(); return t>=from&&t<to; };
+  const prior=allLeads.filter(l=>inRange(l,cutPrior,cutRecent));
+  const recent=allLeads.filter(l=>inRange(l,cutRecent,now));
+  const countRCA=aiContribution(prior, recent, 'count');
+  const winRCA=aiContribution(prior, recent, 'winrate');
+  const forecast=aiForecastCompute();
+  const churn=aiChurnCompute();
+
+  const cards=[
+    {
+      title:'Lead Volume (30d vs prior 30d)',
+      headline:`${countRCA.totalAfter} leads <span style="color:${countRCA.delta>=0?'#059669':'#DC2626'}">(${countRCA.delta>=0?'+':''}${countRCA.delta} vs ${countRCA.totalBefore})</span>`,
+      detail: countRCA.rows[0]?aiContributionSentence(aiMetric('count'), countRCA.rows[0]):'Not enough data yet to break this down.',
+      tab:'rootcause',
+    },
+    {
+      title:'Win Rate (30d vs prior 30d)',
+      headline:`${winRCA.totalAfter}% <span style="color:${winRCA.delta>=0?'#059669':'#DC2626'}">(${winRCA.delta>=0?'+':''}${winRCA.delta}pt vs ${winRCA.totalBefore}%)</span>`,
+      detail: winRCA.rows[0]?aiContributionSentence(aiMetric('winrate'), winRCA.rows[0]):'Not enough resolved deals yet to break this down.',
+      tab:'rootcause',
+    },
+    {
+      title:'Weighted Pipeline Forecast',
+      headline:aiFmtMoney(forecast.weightedPipeline),
+      detail:`${forecast.activeCount} active deals worth ${aiFmtMoney(forecast.pipelineValue)} total, weighted by win probability.`,
+      tab:'forecast',
+    },
+    {
+      title:'Churn Risk',
+      headline:`${churn.length} contact${churn.length===1?'':'s'} <span style="color:#DC2626">(${aiFmtMoney(churn.reduce((s,r)=>s+r.ltv,0))} at risk)</span>`,
+      detail: churn[0]?`Highest risk: ${esc(churn[0].name)} — ${aiFmtMoney(churn[0].ltv)} LTV, quiet for ${churn[0].daysIdle} days.`:'No churn risk detected right now.',
+      tab:'churn',
+    },
+  ];
+
+  el.innerHTML=`
+    <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+      ${cards.map(c=>`<div class="card" style="cursor:pointer" onclick="renderAiSubPage('${c.tab}')">
+        <div class="s-head" style="margin-bottom:6px">${esc(c.title)}</div>
+        <div style="font-family:var(--disp);font-size:22px;font-weight:700;margin-bottom:6px">${c.headline}</div>
+        <div style="font-size:12.5px;color:var(--muted);line-height:1.5">${c.detail}</div>
+      </div>`).join('')}
+    </div>
+    <div class="s-note" style="margin-top:14px">Auto-generated from the last 30 days vs. the 30 days before that. Click any card to dig into the full breakdown on its own tab.</div>
+  `;
+}
+
+// Automated Root Cause Analysis — interactive: pick a KPI and two comparison windows (defaults
+// to "last 30 days" vs "the 30 days before that"), see every dimension's segments ranked by how
+// much each one drove the change.
+let _aiRcaMetric='count', _aiRcaDaysA=30, _aiRcaDaysB=30;
+function renderAiRootCause(){
+  const el=$id('aiContent');
+  el.innerHTML=`
+    <div class="card" style="margin-bottom:14px;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+      <div class="form-group" style="margin:0"><label class="form-label">Metric</label>
+        <select class="form-input" id="aiRcaMetric" style="width:180px">${AI_METRICS.map(m=>`<option value="${m.key}"${m.key===_aiRcaMetric?' selected':''}>${esc(m.label)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group" style="margin:0"><label class="form-label">Comparison window (days)</label>
+        <input class="form-input" type="number" min="1" id="aiRcaDaysA" value="${_aiRcaDaysA}" style="width:100px">
+      </div>
+      <div class="form-group" style="margin:0"><label class="form-label">vs. prior window (days)</label>
+        <input class="form-input" type="number" min="1" id="aiRcaDaysB" value="${_aiRcaDaysB}" style="width:100px">
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="runAiRootCause()">🔍 Analyze</button>
+    </div>
+    <div id="aiRcaResults"></div>
+  `;
+  runAiRootCause();
+}
+function runAiRootCause(){
+  _aiRcaMetric=$id('aiRcaMetric')?.value||_aiRcaMetric;
+  _aiRcaDaysA=Number($id('aiRcaDaysA')?.value)||30;
+  _aiRcaDaysB=Number($id('aiRcaDaysB')?.value)||30;
+  const now=Date.now();
+  const cutRecent=now-_aiRcaDaysA*86400000, cutPrior=cutRecent-_aiRcaDaysB*86400000;
+  const inRange=(l,from,to)=>{ const t=new Date(l.Date||0).getTime(); return t>=from&&t<to; };
+  const before=allLeads.filter(l=>inRange(l,cutPrior,cutRecent));
+  const after=allLeads.filter(l=>inRange(l,cutRecent,now));
+  const metric=aiMetric(_aiRcaMetric);
+  const rca=aiContribution(before, after, _aiRcaMetric);
+  const el=$id('aiRcaResults');
+  if(!rca.rows.length){ el.innerHTML='<div class="empty-state"><div class="ei">🔍</div>Not enough leads in these windows to analyze yet.</div>'; return; }
+  el.innerHTML=`
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head">Overall: ${aiFmtMetricVal(metric,rca.totalBefore)} → ${aiFmtMetricVal(metric,rca.totalAfter)} <span style="color:${rca.delta>=0?'#059669':'#DC2626'}">(${rca.delta>=0?'+':''}${aiFmtMetricVal(metric,rca.delta)})</span></div>
+    </div>
+    <div class="s-note" style="margin-bottom:8px">Top contributors to this change, ranked by impact:</div>
+    ${rca.rows.slice(0,8).map((r,i)=>`<div class="card" style="margin-bottom:8px;padding:12px 14px">
+      <div style="font-size:13px;line-height:1.5">${i+1}. ${aiContributionSentence(metric, r)}</div>
+    </div>`).join('')}
+  `;
+}
+
+// Custom Buildable Analysis — a pivot-style builder: pick a metric, group by any dimension,
+// optionally filter by stage/tag, then run. Reuses aiPivot() (same engine Overview's auto-picked
+// breakdowns and Root Cause's per-segment grouping both use under the hood). Saved analyses are a
+// JSON array on a new `bi_saved_analyses` CLIENTS field — same config-blob + patchClient() pattern
+// as the Leads page's own saved views (lead_saved_views).
+function getAiSavedAnalyses(){
+  try{ return JSON.parse(clientRecord?.bi_saved_analyses||'[]'); }catch(e){ return []; }
+}
+async function saveAiSavedAnalysesList(list){
+  await patchClient({bi_saved_analyses:JSON.stringify(list)});
+}
+function renderAiCustom(){
+  const el=$id('aiContent');
+  const flow=getFlow();
+  const stages=['new',...Object.keys(flow.stages||{}).filter(k=>k!=='new')];
+  const saved=getAiSavedAnalyses();
+  el.innerHTML=`
+    <div class="card" style="margin-bottom:14px;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+      <div class="form-group" style="margin:0"><label class="form-label">Metric</label>
+        <select class="form-input" id="aiCustomMetric" style="width:180px">${AI_METRICS.map(m=>`<option value="${m.key}">${esc(m.label)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group" style="margin:0"><label class="form-label">Group by</label>
+        <select class="form-input" id="aiCustomDim" style="width:160px">${AI_DIMENSIONS.map(d=>`<option value="${d.key}">${esc(d.label)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group" style="margin:0"><label class="form-label">Stage filter</label>
+        <select class="form-input" id="aiCustomStage" style="width:140px"><option value="">All stages</option>${stages.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('')}</select>
+      </div>
+      <div class="form-group" style="margin:0"><label class="form-label">Tag filter</label>
+        <input class="form-input" id="aiCustomTag" placeholder="e.g. cold" style="width:120px">
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="runAiCustom()">▶ Run</button>
+      <button class="btn btn-secondary btn-sm" onclick="saveAiCustom()">＋ Save</button>
+    </div>
+    ${saved.length?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${saved.map(s=>`<span class="lv-tab" onclick="loadAiCustom('${s.id}')">⭐ ${esc(s.name)}<span class="lv-x" onclick="event.stopPropagation();deleteAiCustom('${s.id}')" title="Delete">✕</span></span>`).join('')}</div>`:''}
+    <div id="aiCustomResults"></div>
+  `;
+  runAiCustom();
+}
+function runAiCustom(){
+  const metricKey=$id('aiCustomMetric')?.value||'count';
+  const dimKey=$id('aiCustomDim')?.value||'stage';
+  const stageFilter=$id('aiCustomStage')?.value||'';
+  const tagFilter=($id('aiCustomTag')?.value||'').trim().toLowerCase();
+  let leads=allLeads;
+  if(stageFilter) leads=leads.filter(l=>(l.Stage||'new')===stageFilter);
+  if(tagFilter) leads=leads.filter(l=>parseTags(l.Tags).some(t=>t.toLowerCase()===tagFilter));
+  const metric=aiMetric(metricKey);
+  const rows=aiPivot(leads, dimKey, metricKey);
+  const el=$id('aiCustomResults');
+  if(!rows.length){ el.innerHTML='<div class="empty-state"><div class="ei">🛠️</div>No leads match this filter.</div>'; return; }
+  const maxVal=Math.max(1,...rows.map(r=>Math.abs(r.value)));
+  el.innerHTML=`<div class="card">${rows.map(r=>`<div class="bar-row">
+    <div style="min-width:110px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.label)}">${esc(r.label)}</div>
+    <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(Math.abs(r.value)/maxVal*100)}%"></div></div>
+    <div class="bar-val">${aiFmtMetricVal(metric,r.value)} <span style="color:var(--muted);font-weight:400">(${r.n})</span></div>
+  </div>`).join('')}</div>`;
+}
+async function saveAiCustom(){
+  const name=prompt('Name this analysis (e.g. "Win rate by country"):');
+  if(!name) return;
+  const config={
+    id:'bi_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), name,
+    metric:$id('aiCustomMetric')?.value||'count', dim:$id('aiCustomDim')?.value||'stage',
+    stage:$id('aiCustomStage')?.value||'', tag:$id('aiCustomTag')?.value||'',
+  };
+  const list=[...getAiSavedAnalyses(), config];
+  try{ await saveAiSavedAnalysesList(list); renderAiCustom(); showToast('✓ Analysis saved','ok'); }
+  catch(e){ showToast('Failed to save: '+e.message,'err'); }
+}
+function loadAiCustom(id){
+  const config=getAiSavedAnalyses().find(s=>s.id===id); if(!config) return;
+  renderAiCustom();
+  $id('aiCustomMetric').value=config.metric;
+  $id('aiCustomDim').value=config.dim;
+  $id('aiCustomStage').value=config.stage||'';
+  $id('aiCustomTag').value=config.tag||'';
+  runAiCustom();
+}
+async function deleteAiCustom(id){
+  if(!confirm('Delete this saved analysis?')) return;
+  const list=getAiSavedAnalyses().filter(s=>s.id!==id);
+  try{ await saveAiSavedAnalysesList(list); renderAiCustom(); }
+  catch(e){ showToast('Failed to delete: '+e.message,'err'); }
 }
 
 /* ── ADD / EDIT LEAD ── */
