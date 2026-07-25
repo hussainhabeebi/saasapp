@@ -1151,23 +1151,32 @@ in the next 7 days).
   calculation from the unit's rate as check-in/check-out change.
 
 **Unit photos/video + auto-send to chat** (`migrations/0010_hospitality_media.sql`) — each unit can
-carry up to 3 photos and 1 video, uploaded straight from its row's 4 inline media slots (no modal —
-`hospTriggerMediaUpload()` opens the file picker for that unit/slot directly, `hospOnMediaFileChosen()`
-uploads and re-renders just that row's media cell). Since units are created immediately with a real
-id (see Units above), there's no "save first" step before media can be attached. This is the first
-real binary media this Worker has ever stored, so it's the one piece of the Hospitality module that
-isn't D1/NocoDB:
-- **Storage**: Cloudflare R2 (`HOSPITALITY_MEDIA` binding, `wrangler.toml`) — one-time setup is
-  `wrangler r2 bucket create leadvyne-hospitality-media`, no id/paste-in step needed (R2 buckets
-  are addressed by name, unlike D1's UUID). `hospitality_units.image_url_1/2/3`/`video_url` just
-  hold this Worker's own serving URL (`GET /hospitality/media/<key>`, public/no session — the same
-  "store a reference, fetch bytes at send time" pattern `engineSendChatwootImageReply` already uses
-  for ecommerce product images) rather than the bytes themselves.
-- **Upload**: `POST /hospitality/units/media` (multipart: `unit_id`, `slot`, `file`) — validates
-  the slot's mime type (image slots require `image/*`, the video slot requires `video/*`) and a
-  hard **9 MB per file** cap, checked both client-side (before the upload even starts) and
-  server-side (the real enforcement — the client-side check is just to fail fast). Re-uploading a
-  slot overwrites the same R2 key, so there's no orphaned-object cleanup needed on replace.
+carry up to 3 photos and 1 video, one per its row's 4 inline media slots (no modal). Since units
+are created immediately with a real id (see Units above), there's no "save first" step before media
+can be attached.
+- **Slots hold a pasted Google Drive share link, not an uploaded file.** Clicking an empty slot
+  (`hospSetUnitMediaLink()`) prompts for a Drive share link and saves it via the same generic
+  `PATCH /hospitality/units` every other unit field already autosaves through (`image_url_1/2/3`,
+  `video_url` — plain string columns, `handleHospitalityUnitUpdate`). The file must be shared
+  **"Anyone with the link can view"** — this Worker fetches it anonymously, with no Drive account
+  behind it. A filled slot shows a small thumbnail (`driveThumbnailUrl()` — Drive's public
+  `/thumbnail?id=` endpoint serves real image bytes, unlike the "view" share link itself which is
+  an HTML page and won't render in a plain `<img>`) for photos, or a 🎬 icon for the video slot;
+  clicking it opens the Drive link directly, and the ✕ removes it (still `POST/DELETE
+  /hospitality/units/media`'s DELETE side, which nulls the column and best-effort cleans up any
+  legacy R2 object — a harmless no-op when there's no R2 object behind a Drive link).
+- **Why the switch**: simpler for a rep already organizing photos in their own Drive, no file-size
+  cap to hit, and no per-client R2 storage to manage for this. `driveFileId()` (duplicated in both
+  `worker.js` and `dashboard.html`, same as this file's other small helpers — no shared build step)
+  extracts the file id from whichever share-link shape was pasted (the normal
+  `/file/d/<id>/view?usp=sharing` share link, or an `?id=<id>` open/uc link).
+- **Legacy R2 uploads still work, not migrated.** Units that already had a file uploaded before
+  this switch keep their `https://<worker>/hospitality/media/<key>` URL and keep serving/sending
+  fine — `handleHospitalityUnitMediaUpload`/`Delete`/`handleHospitalityMediaServe` and the R2
+  binding (`HOSPITALITY_MEDIA`) are all still in place, just no longer reachable from the frontend
+  (nothing calls the upload endpoint anymore). `hospitalitySendUnitMedia()` below checks for that
+  URL shape first and only treats anything else as a Drive link, so both kinds of units send
+  correctly side by side without anyone needing to re-paste an already-working unit's media.
 - **Auto-send to chat, once per (lead, unit)** — `engineMaybeSendHospitalityMedia()`, called from
   `handleEngineWebhook` right after the lead upsert on every real inbound message, in two modes:
   - **Specific enquiry** — the message names one active unit (simple case-insensitive substring
@@ -1180,14 +1189,20 @@ isn't D1/NocoDB:
     options, rates, packages, etc., same "cheap heuristic, not an LLM call" tradeoff). Every active
     unit's media is sent, one at a time, so a first-time enquirer sees the whole catalog instead of
     getting nothing until they happen to name a unit by chance.
-  Both modes share `hospitalitySendUnitMedia()` for the actual send. "Once per session" means once
-  per (lead, unit) **ever**, tracked in `hospitality_media_sent` (unique on `lead_id, unit_id`) —
-  a unit already sent (from either mode) is never resent to that lead, and the general-enquiry mode
-  additionally only fires at all if this lead has never received *any* unit's media yet (so asking
-  "any rooms available?" twice doesn't re-flood the chat with the whole catalog every time). Each
-  unit's media sends as separate Chatwoot attachment messages (one per photo/video, same
-  multipart-attachment mechanism the rest of this file already uses for Chatwoot sends — a real
-  image, not a link) with a short caption on the first one only.
+  Both modes share `hospitalitySendUnitMedia()` for the actual send, which now fetches each item's
+  bytes from wherever they actually live — R2 for a legacy URL (unchanged), or Google Drive for
+  everything else via `driveFetchFile(driveFileId(url))`. Every non-empty slot on the unit is sent,
+  not just the first one that resolves — a slot whose bytes can't be fetched (unshared file, wrong
+  link, or one Drive's "can't scan for viruses" interstitial won't release even with the `confirm=t`
+  bypass `driveDirectUrl()` tries first) is silently skipped rather than sending garbage/an HTML
+  page as "the photo," while the other slots on the same unit still go through normally. "Once per
+  session" means once per (lead, unit) **ever**, tracked in `hospitality_media_sent` (unique on
+  `lead_id, unit_id`) — a unit already sent (from either mode) is never resent to that lead, and the
+  general-enquiry mode additionally only fires at all if this lead has never received *any* unit's
+  media yet (so asking "any rooms available?" twice doesn't re-flood the chat with the whole catalog
+  every time). Each unit's media sends as separate Chatwoot attachment messages (one per photo/
+  video, same multipart-attachment mechanism the rest of this file already uses for Chatwoot sends
+  — a real image, not a link) with a short caption on the first one only.
 
 **Timezone note**: the calendar's month-boundary date math is done with plain string/number
 arithmetic, not a `Date` → `toISOString()` round-trip — the latter converts a local midnight
@@ -1931,9 +1946,10 @@ NocoDB's "add this field/table by hand in the UI" process:
   hotel/tourism-stay module — a whole new module's data, not sidecar fields on an existing NocoDB
   record, though a booking can still optionally link back to a NocoDB lead via `lead_id`) —
   `migrations/0009_hospitality.sql`. Its unit photos/video (`migrations/0010_hospitality_media.sql`)
-  are the one piece of this module that's neither D1 nor NocoDB — the actual bytes live in
-  Cloudflare R2 (`HOSPITALITY_MEDIA` binding), the first real binary-object storage this Worker
-  uses; D1 only holds the serving URL, same as everywhere else in this list holds text/JSON.
+  columns just hold a pasted Google Drive share link now (see "Unit photos/video" above) — D1 only
+  holds that URL string, same as everywhere else in this list holds text/JSON. Cloudflare R2
+  (`HOSPITALITY_MEDIA` binding) is still there and still readable, kept only for units that already
+  had a file uploaded before the switch to Drive links.
 
 All eight still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
 need it — D1 only holds what's genuinely new, and every route that moved keeps its exact pre-D1

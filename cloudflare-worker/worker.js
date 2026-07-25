@@ -8389,6 +8389,16 @@ async function handleHospitalityUnitUpdate(request, env){
   if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10).toUpperCase()); }
   if(body.description!==undefined){ sets.push('description=?'); vals.push(String(body.description).trim().slice(0,1000)); }
   if(body.active!==undefined){ sets.push('active=?'); vals.push(body.active?1:0); }
+  // Photos/video (SETUP.md "Hospitality module — unit photos/video") — a plain URL string, same
+  // autosave-on-blur PATCH every other unit field already uses, now that they're a pasted Google
+  // Drive link instead of an uploaded file. Deliberately not domain-restricted here (the frontend
+  // labels the field as a Drive link and nudges for one, but any public URL still works — the
+  // send-time fetch in hospitalitySendUnitMedia() only *specially handles* Drive's own link shapes
+  // for reliable byte-fetching; a non-Drive URL just won't attach automatically in chat).
+  if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
+  if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
+  if(body.image_url_3!==undefined){ sets.push('image_url_3=?'); vals.push(body.image_url_3?String(body.image_url_3).trim().slice(0,500):null); }
+  if(body.video_url!==undefined){ sets.push('video_url=?'); vals.push(body.video_url?String(body.video_url).trim().slice(0,500):null); }
   if(!sets.length) return json({ok:true});
   vals.push(Number(body.id));
   await env.DB.prepare(`UPDATE hospitality_units SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
@@ -8410,12 +8420,16 @@ async function handleHospitalityUnitDelete(request, env){
   return json({ok:true});
 }
 
-// ── Unit media (2-3 photos + 1 video, SETUP.md "Hospitality module") — actual bytes live in R2
-// (HOSPITALITY_MEDIA binding); hospitality_units' image_url_*/video_url columns just hold this
-// Worker's own serving URL, same "store a reference, fetch bytes at send time" pattern
-// engineSendChatwootImageReply already uses for ecommerce product images. R2 key extension isn't
-// tracked separately in D1, so delete/replace try every extension that upload validation could
-// ever have accepted — an R2 delete on a nonexistent key is a harmless no-op.
+// ── Unit media (2-3 photos + 1 video, SETUP.md "Hospitality module") — image_url_*/video_url
+// columns hold a pasted Google Drive share link (the current, "paste a link" flow — see
+// hospitalitySendUnitMedia() below for how those get fetched/attached at send time). The upload
+// endpoints below (R2-backed, HOSPITALITY_MEDIA binding) are kept only for backward compatibility
+// with units that already had a file uploaded before this switch — nothing in the current frontend
+// calls handleHospitalityUnitMediaUpload anymore, but hospitalitySendUnitMedia still knows how to
+// serve an already-stored R2 URL, and handleHospitalityUnitMediaDelete still lets a rep clear an old
+// one via the same remove button. R2 key extension isn't tracked separately in D1, so delete/replace
+// try every extension that upload validation could ever have accepted — an R2 delete on a
+// nonexistent key is a harmless no-op.
 const HOSPITALITY_MEDIA_SLOTS={image1:'image_url_1', image2:'image_url_2', image3:'image_url_3', video:'video_url'};
 const HOSPITALITY_MEDIA_MAX_BYTES=9*1024*1024;
 const HOSPITALITY_IMAGE_EXTS=['jpg','jpeg','png','webp','gif'];
@@ -8489,11 +8503,54 @@ async function handleHospitalityMediaServe(env, key){
 // substring match), just a keyword list for "asking what's available at all" phrasing.
 const HOSPITALITY_GENERAL_ENQUIRY_RE=/\b(rooms?|units?|houseboats?|stays?|accommodations?|available|availability|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
 
-// Sends one unit's photos/video into the chat as real attachments (fetched straight from the R2
-// binding rather than looping the stored URL back through this Worker's own HTTP route, since
-// it's the same process serving that route anyway) and marks it sent so it's never repeated for
-// this lead. Shared by both engineMaybeSendHospitalityMedia branches below (a specific unit named,
-// or the whole active catalog on a general enquiry).
+// Extracts a Google Drive file id from whichever share-link shape a rep pasted — the normal
+// "share" link (drive.google.com/file/d/<id>/view?usp=sharing) or an "open"/"uc" link
+// (?id=<id>) — so the rest of this file can build its own direct-content URL regardless of which
+// one was pasted. Returns null for anything that doesn't look like a Drive link at all (a legacy
+// R2-hosted URL, or some other public URL a rep pasted instead — see hospitalitySendUnitMedia()).
+function driveFileId(url){
+  if(!url) return null;
+  let m=String(url).match(/\/file\/d\/([a-zA-Z0-9_-]+)/); if(m) return m[1];
+  m=String(url).match(/[?&]id=([a-zA-Z0-9_-]+)/); if(m) return m[1];
+  return null;
+}
+// Google Drive serves an HTML "Google Drive can't scan this file for viruses" interstitial
+// instead of the raw bytes for some files (mostly larger ones) unless a `confirm=` token is also
+// present. Appending `confirm=t` upfront skips that for most files without needing to scrape a
+// token first; driveFetchFile below falls back to extracting and replaying the real token from
+// the interstitial's own HTML if the file still needs it.
+function driveDirectUrl(fileId, confirmToken){
+  return `https://drive.google.com/uc?export=download&id=${fileId}&confirm=${confirmToken||'t'}`;
+}
+// Fetches a Google Drive file's actual bytes for forwarding as a WhatsApp/Chatwoot attachment —
+// the file must be shared "Anyone with the link" for this Worker (an anonymous fetch, no Drive
+// account behind it) to read it at all. Returns null (never throws) on anything that didn't work
+// out — an unshared/deleted file, or a file too large for the confirm=t bypass above to satisfy —
+// so callers can just skip that one item rather than attaching garbage/an HTML page as "the photo".
+async function driveFetchFile(fileId){
+  try{
+    let r=await fetch(driveDirectUrl(fileId));
+    let ct=(r.headers.get('content-type')||'');
+    if(ct.includes('text/html')){
+      const html=await r.text();
+      const m=html.match(/confirm=([0-9A-Za-z_-]+)/);
+      if(!m) return null;
+      r=await fetch(driveDirectUrl(fileId, m[1]));
+      ct=(r.headers.get('content-type')||'');
+      if(ct.includes('text/html')) return null; // still the interstitial — give up rather than send it as-is
+    }
+    if(!r.ok) return null;
+    return {blob:await r.blob(), contentType:ct};
+  }catch(e){ return null; }
+}
+
+// Sends one unit's photos/video into the chat as real attachments and marks it sent so it's never
+// repeated for this lead. Each item's stored URL is either a legacy R2-hosted one from before the
+// Google Drive switch (fetched straight from the R2 binding, same as before) or a Google Drive
+// share link (fetched via driveFetchFile above) — whichever it is, every non-empty slot on the
+// unit gets sent, not just the first one that resolves. Shared by both
+// engineMaybeSendHospitalityMedia branches below (a specific unit named, or the whole active
+// catalog on a general enquiry).
 async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   const items=[
     {url:unit.image_url_1, name:'photo1.jpg'},
@@ -8504,16 +8561,25 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   if(!items.length) return false;
   let sentAny=false;
   for(let i=0;i<items.length;i++){
+    let blob=null;
     const marker='/hospitality/media/';
     const idx=items[i].url.indexOf(marker);
-    if(idx===-1) continue;
-    const key=items[i].url.slice(idx+marker.length);
-    const obj=await env.HOSPITALITY_MEDIA.get(key);
-    if(!obj) continue;
+    if(idx!==-1){
+      const key=items[i].url.slice(idx+marker.length);
+      const obj=await env.HOSPITALITY_MEDIA.get(key);
+      if(obj) blob=await obj.blob();
+    }else{
+      const fileId=driveFileId(items[i].url);
+      if(fileId){
+        const fetched=await driveFetchFile(fileId);
+        if(fetched) blob=fetched.blob;
+      }
+    }
+    if(!blob) continue;
     const fd=new FormData();
     fd.append('content', i===0?`Here's a look at ${unit.name} 📸`:'');
     fd.append('message_type','outgoing'); fd.append('private','false');
-    fd.append('attachments[]', await obj.blob(), items[i].name);
+    fd.append('attachments[]', blob, items[i].name);
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
     if(r.ok) sentAny=true;
   }
