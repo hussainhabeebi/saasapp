@@ -5191,6 +5191,40 @@ playing that SFX, or applying that VFX still happens on the external render pipe
   tag was confirmed to hit the cache instead of calling Pexels again. **Manual step**: set
   `PEXELS_API_KEY` on the render pipeline (Coolify env var) — free at pexels.com/api.
 
+## Marketing Studio module — Scene detection & per-scene editing (`migrations/0020_marketing_scenes.sql`)
+Phase 1 of a larger "make the editor more like CapCut" effort (per-scene editing, apply/preview
+steps, a full timeline UI are later phases, not built yet) — this phase is real scene/shot-cut
+detection and grouping the caption editor by scene, both genuinely working and tested, not a stub
+for the rest.
+- **`marketing_projects.scenes_json`** — the detected scene boundaries, `[{start,end}, ...]`
+  (seconds, in the source video's own timebase). Detection itself runs on the render pipeline
+  (`render-pipeline/lib/sceneDetect.js` — real ffmpeg frame-difference analysis via the `scene`
+  filter, not a heuristic); this column just stores the result.
+- `POST /marketing/projects/detect-scenes` — session-gated, calls the render pipeline's
+  `POST /detect-scenes` (HMAC-signed, same secret as every other render-pipeline call) and saves
+  the result. Requires the render pipeline configured, same as transcription/rendering.
+- **Auto-runs once after a successful transcribe** (`transcribeProject()` in
+  `marketing-studio.html`, same pattern as the existing auto-suggest-cues call) if the project has
+  no scenes yet — a re-transcribe doesn't silently discard scene boundaries you may have already
+  reviewed or split.
+- **Frontend**: the Editor's step 1 word list is now grouped into labeled scene blocks
+  (`renderWordGroups()`) instead of one flat list, each with a **"✂ Split evenly"** button
+  (`splitSceneEvenly()`) — this is the direct fix for a real production issue: a transcription
+  provider that only returns one coarse chunk covering an entire scene (seen in practice with the
+  Sarvam integration above) previously had no good way to fix the timing short of manually
+  re-typing every word; "split evenly" re-distributes that scene's words evenly across *that
+  scene's own* start/end, which is meaningfully more accurate than the existing clip-wide
+  approximate-timing fallback when the coarse chunk happens to align with a scene boundary (a
+  transcription provider's own sentence/segment breaks often do, in practice).
+- **What's verified vs. not**: the detection algorithm itself was tested against real synthetic
+  video (multi-scene, no-cut, and merge-close-cuts cases — see `render-pipeline/README.md`'s
+  "What it actually does") and the scene-grouping/split-evenly logic was tested with the exact
+  Malayalam text from a real production transcription that came back as one coarse chunk,
+  confirming it correctly splits into individually-timed words across the scene's real duration.
+  **Not verified**: detection accuracy/threshold tuning against a real, non-synthetic marketing
+  video (talking-head footage, natural cuts) — the 0.3 threshold is ffmpeg's own commonly-cited
+  starting point, not tuned against this app's actual use case yet.
+
 ## Marketing Studio module — Text Behind Subject (beta)
 A render option (`spec.text_behind_subject`, a "🫥 Text behind subject (beta)" chip in the
 Editor's Auto-edit step) where captions sit behind the person on screen instead of on top —

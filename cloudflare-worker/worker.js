@@ -9098,6 +9098,7 @@ function marketingSerializeProject(row){
     output_duration_sec:row.output_duration_sec, watermarked:!!row.watermarked,
     template_id:row.template_id||null, template_vars:parseJson(row.template_vars_json),
     cues:parseJson(row.cues_json)||[],
+    scenes:parseJson(row.scenes_json)||[],
     created_at:row.created_at, updated_at:row.updated_at,
   };
 }
@@ -9652,6 +9653,36 @@ async function handleMarketingCuesSave(request, env){
   if(!project) return json({error:'Not found'}, 404);
   await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.cues), new Date().toISOString(), id).run();
   return json({ok:true});
+}
+
+// Real shot/cut detection (render-pipeline/lib/sceneDetect.js) — not a heuristic, actual ffmpeg
+// frame-difference analysis, same "delegate what a Worker structurally can't do" boundary as
+// transcription/rendering. Scenes group the caption editor's word list for per-scene editing
+// (SETUP.md "Marketing Studio module — Scene detection & per-scene editing").
+async function handleMarketingDetectScenes(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'Scene detection requires the render pipeline — see SETUP.md "Marketing Studio module".'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.project_id);
+  if(!id) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT source_key FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
+  const sourceUrl=`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`;
+  const reqBody=JSON.stringify({source_url:sourceUrl});
+  const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
+  const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/detect-scenes`;
+  let resp;
+  try{
+    resp=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+  }catch(e){
+    return json({error:'Could not reach the render pipeline to detect scenes: '+e.message}, 502);
+  }
+  const data=await resp.json().catch(()=>({}));
+  if(!resp.ok) return json({error:data.error||('HTTP '+resp.status)}, 502);
+  await env.DB.prepare(`UPDATE marketing_projects SET scenes_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(data.scenes||[]), new Date().toISOString(), id).run();
+  return json({ok:true, scenes:data.scenes||[]});
 }
 
 // Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — resolves a
@@ -10323,6 +10354,7 @@ export default {
       else if(url.pathname==='/marketing/autoedit-presets' && request.method==='GET'){ res=await handleMarketingAutoeditPresets(request, env); }
       else if(url.pathname==='/marketing/projects/suggest-cues' && request.method==='POST'){ res=await handleMarketingSuggestCues(request, env); }
       else if(url.pathname==='/marketing/projects/cues' && request.method==='PATCH'){ res=await handleMarketingCuesSave(request, env); }
+      else if(url.pathname==='/marketing/projects/detect-scenes' && request.method==='POST'){ res=await handleMarketingDetectScenes(request, env); }
       else if(url.pathname==='/marketing/projects/render' && request.method==='POST'){ res=await handleMarketingRenderStart(request, env); }
       else if(url.pathname==='/marketing/projects/jobs' && request.method==='GET'){ res=await handleMarketingJobsList(request, env, url); }
       else if(url.pathname==='/marketing/projects/send-whatsapp' && request.method==='POST'){ res=await handleMarketingSendWhatsapp(request, env); }
