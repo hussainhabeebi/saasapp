@@ -33,11 +33,15 @@ COPY . .
 
 # Downloads Chrome Headless Shell once at build time (instead of on the first Remotion render in
 # production, which would otherwise add a slow, network-dependent cold start and re-download on
-# every container restart since nothing outside /app/assets and /app/public is persisted). Not
-# runnable in this sandbox (no Docker daemon here — see render-pipeline/README.md's dev notes for
-# what actually was verified locally: a real bundle→render using the sandbox's pre-installed
-# Playwright Chromium instead).
-RUN npx remotion browser ensure
+# every container restart since nothing outside /app/assets and /app/public is persisted).
+# `npx remotion browser ensure` (the CLI form) doesn't work here — the CLI binary lives in the
+# separate `@remotion/cli` package, which isn't a dependency of this service (only the
+# programmatic `remotion`/`@remotion/bundler`/`@remotion/renderer` packages are) — so it's called
+# directly via the same `ensureBrowser()` function the CLI itself calls. Not runnable in this
+# sandbox (no Docker daemon here — see render-pipeline/README.md's dev notes for what actually was
+# verified locally: a real bundle→render using the sandbox's pre-installed Playwright Chromium
+# instead).
+RUN node -e "require('@remotion/renderer').ensureBrowser().then(() => console.log('Chrome Headless Shell ready')).catch((err) => { console.error(err); process.exit(1); })"
 
 # RobustVideoMatting ONNX model (MIT-licensed, ~15 MB) for the "text behind subject" caption
 # style — lib/segmentation.js. Downloaded at build time rather than committed to git (keeps the
