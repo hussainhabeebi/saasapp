@@ -58,7 +58,12 @@ for the full request/callback contract this implements.
   scene instead of one flat block, and to power "split evenly" — re-distributing a scene's words
   evenly across *that scene's* duration specifically, not the whole clip, when a transcription
   provider only returned one coarse chunk covering a whole scene (a real accuracy improvement over
-  the existing clip-wide approximate-timing fallback).
+  the existing clip-wide approximate-timing fallback). Also generates one small (240px) JPEG
+  thumbnail per scene (`generateSceneThumbnails`, captured slightly into the scene rather than at
+  the exact cut frame, to avoid transition/motion blur) and uploads them via the same
+  `uploadOutput` helper renders use — verified end-to-end against a live server: real scene
+  detection + real thumbnail generation + real HTTP serving of the resulting JPEGs, both with R2
+  and with the local-fallback mode. Powers the Editor's scene thumbnail strip and timeline.
 - **`POST /concat-clips`** (synchronous): stitches several uploaded clips into one combined video
   for Marketing Studio's multi-clip projects — normalizes each clip to the target resolution first
   (clips can come from different cameras/resolutions/codecs), then concatenates via the `concat`
