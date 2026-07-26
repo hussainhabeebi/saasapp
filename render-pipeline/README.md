@@ -21,8 +21,13 @@ for the full request/callback contract this implements.
   `{{variable}}`-resolved scenes (text cards / images) into one clip.
 - **`spec.text_behind_subject` (beta)**: captions sit BEHIND the person in the video instead of on
   top — see "Text behind subject" below.
-- Uploads the result to the same R2 bucket the Worker already serves from (or a local fallback for
-  testing without Cloudflare), then POSTs a signed callback to
+- **`POST /extract-audio`** (synchronous, not part of the render job queue): strips a video down
+  to just its audio track (16kHz mono mp3) so the Worker's transcription step can send a much
+  smaller file to OpenAI than the whole video — OpenAI's Whisper endpoint hard-caps requests at
+  25 MB, which a video can exceed easily even when its actual speech content is short, since
+  picture data dominates file size. See `lib/extractAudio.js`.
+- Uploads the render result to the same R2 bucket the Worker already serves from (or a local
+  fallback for testing without Cloudflare), then POSTs a signed callback to
   `.../marketing/webhook/render-complete`.
 
 ## Text behind subject (beta)

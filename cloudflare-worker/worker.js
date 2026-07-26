@@ -9262,8 +9262,6 @@ async function handleMarketingTranscribe(request, env){
   if(!project) return json({error:'Not found'}, 404);
   if(!project.source_key) return json({error:'Upload a video first.'}, 400);
   if(!env.MARKETING_TRANSCRIBE_API_KEY) return json({error:'Transcription is not configured — see SETUP.md "Marketing Studio module".'}, 400);
-  const obj=await env.MARKETING_MEDIA.get(project.source_key);
-  if(!obj) return json({error:'Source video not found in storage.'}, 404);
 
   const now0=new Date().toISOString();
   await env.DB.prepare(`UPDATE marketing_projects SET status='transcribing', updated_at=? WHERE id=?`).bind(now0, projectId).run();
@@ -9271,10 +9269,42 @@ async function handleMarketingTranscribe(request, env){
     .bind(projectId, Number(payload.cid), 'transcribe', 'processing', JSON.stringify({language:body.language||project.language||null}), now0, now0).run();
   const jobId=jobResult.meta.last_row_id;
 
-  const bytes=await obj.arrayBuffer();
-  const ext=(project.source_key.split('.').pop()||'mp4');
+  // OpenAI's Whisper endpoint hard-caps requests at 25 MB — a video comfortably under this app's
+  // own 100 MB upload ceiling can still exceed that purely because it's a *video* file (picture
+  // data dwarfs audio data), not because the actual speech content is large. If the render
+  // pipeline is configured, ask it to extract just the audio track first (a much smaller file —
+  // see render-pipeline/lib/extractAudio.js) rather than sending the raw video. Falls back to the
+  // raw video otherwise, same as before, so transcription still works without the render pipeline
+  // set up — just capped at whatever fits in OpenAI's 25 MB limit as a video file.
+  let fileBytes, fileName, fileMime;
+  if(env.MARKETING_RENDER_WEBHOOK_URL && env.MARKETING_RENDER_WEBHOOK_SECRET){
+    const sourceUrl=`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`;
+    const extractBody=JSON.stringify({source_url:sourceUrl});
+    const extractSig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, extractBody);
+    const audioEndpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/extract-audio`;
+    let audioResp;
+    try{
+      audioResp=await fetch(audioEndpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':extractSig}, body:extractBody});
+    }catch(e){
+      await marketingFailJob(env, jobId, projectId, 'Could not reach the render pipeline to extract audio: '+e.message, 'uploaded');
+      return json({error:'Could not reach the render pipeline to extract audio.'}, 502);
+    }
+    if(!audioResp.ok){
+      const errText=await audioResp.text().catch(()=>'');
+      await marketingFailJob(env, jobId, projectId, 'Audio extraction failed: '+(errText||('HTTP '+audioResp.status)), 'uploaded');
+      return json({error:'Audio extraction failed: '+(errText||('HTTP '+audioResp.status))}, 502);
+    }
+    fileBytes=await audioResp.arrayBuffer(); fileName='audio.mp3'; fileMime='audio/mpeg';
+  } else {
+    const obj=await env.MARKETING_MEDIA.get(project.source_key);
+    if(!obj) return json({error:'Source video not found in storage.'}, 404);
+    fileBytes=await obj.arrayBuffer();
+    const ext=(project.source_key.split('.').pop()||'mp4');
+    fileName=`source.${ext}`; fileMime=obj.httpMetadata?.contentType||'video/mp4';
+  }
+
   const form=new FormData();
-  form.append('file', new Blob([bytes], {type:obj.httpMetadata?.contentType||'video/mp4'}), `source.${ext}`);
+  form.append('file', new Blob([fileBytes], {type:fileMime}), fileName);
   form.append('model', 'whisper-1');
   form.append('response_format', 'verbose_json');
   form.append('timestamp_granularities[]', 'word');

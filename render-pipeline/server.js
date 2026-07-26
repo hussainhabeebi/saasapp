@@ -11,6 +11,7 @@ const express = require('express');
 const hmac = require('./lib/hmac');
 const { renderCaptionClip } = require('./lib/render');
 const { renderTemplate } = require('./lib/templateRender');
+const { extractAudio } = require('./lib/extractAudio');
 
 const env = process.env;
 const PORT = env.PORT || 8787;
@@ -55,6 +56,30 @@ app.post('/render', (req, res) => {
   queue.push(job);
   res.status(202).json({ ok: true, queued_position: queue.length });
   drainQueue();
+});
+
+// Synchronous, not queued like /render — this is a quick ffmpeg pass (strip video, re-encode
+// audio), not a full render, and the Worker is waiting on the response inline (see worker.js's
+// handleMarketingTranscribe) to forward the result straight to the transcription API. Real fix
+// for a real bug: OpenAI's Whisper endpoint hard-caps requests at 25 MB, and sending the whole
+// video (not just its audio) was hitting that on perfectly reasonable video files. Same
+// HMAC-over-raw-body auth as /render, reusing RENDER_WEBHOOK_SECRET — one shared secret for both
+// routes rather than a second one to configure.
+app.post('/extract-audio', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { source_url } = req.body || {};
+  if (!source_url) return res.status(400).json({ error: 'source_url required' });
+  try {
+    const audioBuffer = await extractAudio(source_url);
+    res.set('Content-Type', 'audio/mpeg');
+    res.send(audioBuffer);
+  } catch (err) {
+    console.error('extract-audio failed:', err.stderr || err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  }
 });
 
 async function drainQueue() {

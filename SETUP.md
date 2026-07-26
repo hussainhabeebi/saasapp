@@ -4909,9 +4909,17 @@ like `/email/*`, never a client-supplied id — except the two routes below mark
   timing) — `marketingWordsFromTranscription()` falls back to splitting each segment's text evenly
   across its duration, flagged `approximate:true` so the caption editor can show a dotted border on
   estimated words instead of silently presenting a guess as exact. OpenAI's own Whisper endpoint
-  also caps request size at 25 MB — a source video near the 100 MB upload ceiling will exceed that;
-  point `MARKETING_TRANSCRIBE_API_URL` at a provider without that ceiling (self-hosted Whisper,
-  etc.) if that matters for your clients. Language: pass a hint to bias detection, or omit it to
+  also caps request size at 25 MB — a video comfortably under the 100 MB upload ceiling can still
+  exceed that purely because it's a *video* file (picture data dwarfs audio data), not because the
+  actual speech is long. **Fixed properly, not just documented**: if the render pipeline is
+  configured (`MARKETING_RENDER_WEBHOOK_URL`/`SECRET`), this route calls its
+  `POST /extract-audio` endpoint first (HMAC-signed, same secret as `/render` — see
+  `render-pipeline/lib/extractAudio.js`) to get just the audio track (16kHz mono, ~64kbps —
+  Whisper resamples to 16kHz internally regardless of input, so nothing is lost for transcription
+  purposes) and sends that instead of the raw video — dramatically smaller, comfortably under 25 MB
+  for the vast majority of real videos. Without the render pipeline configured, falls back to
+  sending the raw video (unchanged old behavior), still capped at whatever fits in 25 MB as a video
+  file. Language: pass a hint to bias detection, or omit it to
   auto-detect (feature #4) — auto-detect and Malayalam/Manglish transcription quality (feature #6)
   are both properties of whichever provider `MARKETING_TRANSCRIBE_API_URL` points at, not something
   this Worker code can improve on its own.
