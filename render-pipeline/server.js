@@ -16,7 +16,7 @@ const { renderRemotionTemplate } = require('./lib/remotionRender');
 const { extractAudio } = require('./lib/extractAudio');
 const { concatClips } = require('./lib/concatClips');
 const { transcribe } = require('./lib/transcribe');
-const { detectScenes } = require('./lib/sceneDetect');
+const { detectScenes, generateSceneThumbnails } = require('./lib/sceneDetect');
 const { downloadToFile } = require('./lib/download');
 
 const env = process.env;
@@ -136,13 +136,20 @@ app.post('/detect-scenes', async (req, res) => {
   if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
     return res.status(401).json({ error: 'Invalid signature' });
   }
-  const { source_url } = req.body || {};
+  const { source_url, client_id, project_id } = req.body || {};
   if (!source_url) return res.status(400).json({ error: 'source_url required' });
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mkt-scenes-'));
   try {
     const srcPath = path.join(workDir, 'source' + (path.extname(new URL(source_url).pathname) || '.mp4'));
     await downloadToFile(source_url, srcPath);
     const scenes = await detectScenes(srcPath);
+    // Thumbnails are best-effort — only attempted when there's somewhere to put them and a
+    // client/project to namespace the R2 keys under. A thumbnail failure never fails scene
+    // detection itself (generateSceneThumbnails already degrades per-scene to null on its own).
+    if (client_id && project_id) {
+      const thumbs = await generateSceneThumbnails(srcPath, scenes, env, client_id, project_id);
+      scenes.forEach((s, i) => { if (thumbs[i]) Object.assign(s, thumbs[i]); });
+    }
     res.json({ ok: true, scenes });
   } catch (err) {
     console.error('detect-scenes failed:', err.stderr || err.message || err);

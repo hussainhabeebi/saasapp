@@ -9124,10 +9124,13 @@ function marketingWordsFromTranscription(data){
   return words;
 }
 
+// revertStatus:null means "don't touch the project row at all" (a preview job failing shouldn't
+// revert the project's real status) — distinct from omitting it, which still falls back to
+// 'uploaded' for every existing caller.
 async function marketingFailJob(env, jobId, projectId, error, revertStatus){
   const now=new Date().toISOString();
   await env.DB.prepare(`UPDATE marketing_jobs SET status='failed', error=?, updated_at=? WHERE id=?`).bind(String(error||'Failed').slice(0,500), now, jobId).run();
-  await env.DB.prepare(`UPDATE marketing_projects SET status=?, updated_at=? WHERE id=?`).bind(revertStatus||'uploaded', now, projectId).run();
+  if(revertStatus!==null) await env.DB.prepare(`UPDATE marketing_projects SET status=?, updated_at=? WHERE id=?`).bind(revertStatus||'uploaded', now, projectId).run();
 }
 
 async function hmacSha256Base64(secret, body){
@@ -9670,7 +9673,7 @@ async function handleMarketingDetectScenes(request, env){
   if(!project) return json({error:'Not found'}, 404);
   if(!project.source_key) return json({error:'Upload a video first.'}, 400);
   const sourceUrl=`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`;
-  const reqBody=JSON.stringify({source_url:sourceUrl});
+  const reqBody=JSON.stringify({source_url:sourceUrl, client_id:payload.cid, project_id:id});
   const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
   const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/detect-scenes`;
   let resp;
@@ -9681,8 +9684,12 @@ async function handleMarketingDetectScenes(request, env){
   }
   const data=await resp.json().catch(()=>({}));
   if(!resp.ok) return json({error:data.error||('HTTP '+resp.status)}, 502);
-  await env.DB.prepare(`UPDATE marketing_projects SET scenes_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(data.scenes||[]), new Date().toISOString(), id).run();
-  return json({ok:true, scenes:data.scenes||[]});
+  // Same output_key/output_url duality the render-complete webhook already resolves (R2-backed vs.
+  // local-fallback render pipeline) — thumbnails go through the identical GET /marketing/media/:key
+  // route either way once resolved to a full URL.
+  const scenes=(data.scenes||[]).map(s=>({...s, thumbnail_url:s.output_url||(s.output_key?`${env.WORKER_BASE_URL}/marketing/media/${s.output_key}`:null), output_key:undefined, output_url:undefined}));
+  await env.DB.prepare(`UPDATE marketing_projects SET scenes_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(scenes), new Date().toISOString(), id).run();
+  return json({ok:true, scenes});
 }
 
 // Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — resolves a
@@ -9704,10 +9711,14 @@ function marketingIsWatermarked(client){ return !['active','trialing'].includes(
 // marketing_jobs row, signs + posts the spec to the external render pipeline, and marks the
 // project 'rendering' (or reverts both to a failed/retryable state if the pipeline can't be
 // reached). Returns {ok, job_id} or {ok:false, error}.
-async function marketingSubmitRenderJob(env, clientId, projectId, spec, revertStatusOnFail){
+// jobType/updateProjectStatus let a preview render (handleMarketingPreview below) reuse the exact
+// same submit path as a real render without disturbing the project row — a preview must never
+// overwrite the project's real output/status, since it's a throwaway short/draft-quality clip,
+// not the deliverable.
+async function marketingSubmitRenderJob(env, clientId, projectId, spec, revertStatusOnFail, jobType='render', updateProjectStatus=true){
   const now=new Date().toISOString();
   const jobResult=await env.DB.prepare(`INSERT INTO marketing_jobs (project_id, client_id, type, status, spec_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-    .bind(projectId, Number(clientId), 'render', 'queued', JSON.stringify(spec), now, now).run();
+    .bind(projectId, Number(clientId), jobType, 'queued', JSON.stringify(spec), now, now).run();
   const jobId=jobResult.meta.last_row_id;
 
   const outboundBody=JSON.stringify({job_id:jobId, client_id:Number(clientId), project_id:projectId, callback_url:`${env.WORKER_BASE_URL}/marketing/webhook/render-complete`, spec});
@@ -9718,13 +9729,56 @@ async function marketingSubmitRenderJob(env, clientId, projectId, spec, revertSt
     if(!r.ok) sendErr='Render pipeline returned HTTP '+r.status;
   }catch(e){ sendErr=e.message; }
   if(sendErr){
-    await marketingFailJob(env, jobId, projectId, sendErr, revertStatusOnFail);
+    await marketingFailJob(env, jobId, projectId, sendErr, updateProjectStatus?revertStatusOnFail:null);
     return {ok:false, error:sendErr};
   }
 
   await env.DB.prepare(`UPDATE marketing_jobs SET status='processing', updated_at=? WHERE id=?`).bind(now, jobId).run();
-  await env.DB.prepare(`UPDATE marketing_projects SET status='rendering', watermarked=?, updated_at=? WHERE id=?`).bind(spec.watermark?1:0, now, projectId).run();
+  if(updateProjectStatus) await env.DB.prepare(`UPDATE marketing_projects SET status='rendering', watermarked=?, updated_at=? WHERE id=?`).bind(spec.watermark?1:0, now, projectId).run();
   return {ok:true, job_id:jobId};
+}
+
+// Shared by handleMarketingRenderStart and handleMarketingPreview — everything about turning a
+// project + its current auto-edit/cue options into a render spec, independent of trim
+// range/quality/billing (each caller decides those). Throws (caller catches) rather than
+// returning a Response, since a preview needs the same validation without duplicating it.
+async function marketingBuildRenderSpec(env, clientId, project, opts, trimStart, trimEnd, watermarked, qualityOverride){
+  const style=await marketingResolveStyle(env, clientId, project.style_id);
+  let overrides={}; try{ overrides=JSON.parse(project.style_overrides_json||'{}'); }catch(e){}
+  let captions; try{ captions=JSON.parse(project.captions_json); }catch(e){ throw new Error('Captions are corrupted — re-transcribe.'); }
+
+  // Auto-Edit Templates just pre-fill these three fields — an explicit opts.silence_cut/
+  // auto_zoom/background_music (the frontend always sends all three) still wins, so picking a
+  // preset and then hand-tweaking one toggle behaves as expected.
+  const preset=MARKETING_AUTOEDIT_PRESETS.find(p=>p.id===opts.autoedit_preset);
+  const silenceCut=opts.silence_cut!==undefined?!!opts.silence_cut:!!preset?.silence_cut;
+  const autoZoom=opts.auto_zoom!==undefined?!!opts.auto_zoom:!!preset?.auto_zoom;
+  const backgroundMusic=opts.background_music!==undefined?(opts.background_music||null):(preset?.background_music||null);
+
+  let cues=[]; try{ cues=(JSON.parse(project.cues_json||'[]')||[]).filter(cue=>cue.accepted!==false); }catch(e){}
+
+  return {
+    mode:'caption-clip',
+    source_url:`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`,
+    trim_start_sec:trimStart, trim_end_sec:trimEnd,
+    target_aspect:project.target_aspect||'9:16',
+    resolution:MARKETING_RESOLUTIONS[project.target_aspect]||MARKETING_RESOLUTIONS['9:16'],
+    captions, style:{...style, ...overrides},
+    silence_cut:silenceCut, auto_zoom:autoZoom, background_music:backgroundMusic,
+    broll_density:preset?.broll_density||'none', cues,
+    // Export quality (#"export as MP4 and control quality" — output is always MP4, already the
+    // only format this pipeline produces; this controls encode quality/speed tradeoff). Validated
+    // against MARKETING_QUALITY_LEVELS rather than passed through raw, so a typo/garbage value
+    // can't silently reach ffmpeg — falls back to 'standard'. qualityOverride forces 'draft' for
+    // previews regardless of what the project's real export quality is set to.
+    quality:qualityOverride||(MARKETING_QUALITY_LEVELS.includes(opts.quality)?opts.quality:'standard'),
+    // "Text behind subject" (beta) — local ONNX person-matting on the render pipeline, no
+    // per-video API cost. Doesn't combine with silence-cut/auto-zoom/B-roll/SFX/VFX in v1 (see
+    // render-pipeline/lib/textBehindSubject.js) — the pipeline itself enforces that (silence-cut
+    // becomes a no-op when this is set), not just documentation.
+    text_behind_subject:!!opts.text_behind_subject,
+    watermark:watermarked,
+  };
 }
 
 // Kicks off an async render on the external pipeline — see the module header comment for why
@@ -9752,44 +9806,51 @@ async function handleMarketingRenderStart(request, env){
   const used=Number(c?.marketing_minutes_used)||0;
   if(used+minutesNeeded>limit) return json({error:`This render needs ~${minutesNeeded} min but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
 
-  const style=await marketingResolveStyle(env, payload.cid, project.style_id);
-  let overrides={}; try{ overrides=JSON.parse(project.style_overrides_json||'{}'); }catch(e){}
-  let captions; try{ captions=JSON.parse(project.captions_json); }catch(e){ return json({error:'Captions are corrupted — re-transcribe.'}, 400); }
-
   const watermarked=marketingIsWatermarked(c);
-  // Auto-Edit Templates just pre-fill these three fields — an explicit opts.silence_cut/
-  // auto_zoom/background_music (the frontend always sends all three) still wins, so picking a
-  // preset and then hand-tweaking one toggle behaves as expected.
-  const opts=body.options||{};
-  const preset=MARKETING_AUTOEDIT_PRESETS.find(p=>p.id===opts.autoedit_preset);
-  const silenceCut=opts.silence_cut!==undefined?!!opts.silence_cut:!!preset?.silence_cut;
-  const autoZoom=opts.auto_zoom!==undefined?!!opts.auto_zoom:!!preset?.auto_zoom;
-  const backgroundMusic=opts.background_music!==undefined?(opts.background_music||null):(preset?.background_music||null);
-
-  let cues=[]; try{ cues=(JSON.parse(project.cues_json||'[]')||[]).filter(cue=>cue.accepted!==false); }catch(e){}
-
-  const spec={
-    mode:'caption-clip',
-    source_url:`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`,
-    trim_start_sec:trimStart, trim_end_sec:trimEnd,
-    target_aspect:project.target_aspect||'9:16',
-    resolution:MARKETING_RESOLUTIONS[project.target_aspect]||MARKETING_RESOLUTIONS['9:16'],
-    captions, style:{...style, ...overrides},
-    silence_cut:silenceCut, auto_zoom:autoZoom, background_music:backgroundMusic,
-    broll_density:preset?.broll_density||'none', cues,
-    // Export quality (#"export as MP4 and control quality" — output is always MP4, already the
-    // only format this pipeline produces; this controls encode quality/speed tradeoff). Validated
-    // against MARKETING_QUALITY_LEVELS rather than passed through raw, so a typo/garbage value
-    // can't silently reach ffmpeg — falls back to 'standard'.
-    quality:MARKETING_QUALITY_LEVELS.includes(opts.quality)?opts.quality:'standard',
-    // "Text behind subject" (beta) — local ONNX person-matting on the render pipeline, no
-    // per-video API cost. Doesn't combine with silence-cut/auto-zoom/B-roll/SFX/VFX in v1 (see
-    // render-pipeline/lib/textBehindSubject.js) — the pipeline itself enforces that (silence-cut
-    // becomes a no-op when this is set), not just documentation.
-    text_behind_subject:!!opts.text_behind_subject,
-    watermark:watermarked,
-  };
+  let spec;
+  try{ spec=await marketingBuildRenderSpec(env, payload.cid, project, body.options||{}, trimStart, trimEnd, watermarked); }
+  catch(e){ return json({error:e.message}, 400); }
   const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
+  if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
+  return json({ok:true, job_id:result.job_id});
+}
+
+// Apply/preview (SETUP.md "Marketing Studio module — Apply/preview renders") — a short (max 12s),
+// draft-quality render of the CURRENT auto-edit/cue settings, so they can be checked before
+// committing to a full render. Real render job on the real pipeline, not a mock — just capped
+// short and marked jobType:'preview' so marketingSubmitRenderJob/handleMarketingRenderWebhook
+// skip billing and never touch the project's actual output/status (see those functions' comments).
+async function handleMarketingPreview(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  if(!projectId) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
+  if(!project.captions_json) return json({error:'Transcribe (or add captions) first.'}, 400);
+  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
+
+  const fullTrimStart=Number(project.trim_start_sec)||0;
+  const fullTrimEnd=project.trim_end_sec!=null?Number(project.trim_end_sec):(Number(project.source_duration_sec)||fullTrimStart);
+  const PREVIEW_MAX_SEC=12;
+  let previewStart=fullTrimStart, previewEnd=Math.min(fullTrimEnd, fullTrimStart+PREVIEW_MAX_SEC);
+  // A specific scene's own range if given (the per-scene "🔍 Preview" button), still capped —
+  // a scene can itself be longer than the preview window is worth spending render time on.
+  if(Number.isInteger(body.scene_index)){
+    let scenes=[]; try{ scenes=JSON.parse(project.scenes_json||'[]'); }catch(e){}
+    const scene=scenes[body.scene_index];
+    if(scene){ previewStart=Math.max(fullTrimStart, scene.start); previewEnd=Math.min(fullTrimEnd, Math.min(scene.end, scene.start+PREVIEW_MAX_SEC)); }
+  }
+  if(previewEnd<=previewStart) return json({error:'Nothing to preview in this range.'}, 400);
+
+  const c=await getClientById(env, payload.cid);
+  const watermarked=marketingIsWatermarked(c);
+  let spec;
+  try{ spec=await marketingBuildRenderSpec(env, payload.cid, project, body.options||{}, previewStart, previewEnd, watermarked, 'draft'); }
+  catch(e){ return json({error:e.message}, 400); }
+  const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, null, 'preview', false);
   if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
   return json({ok:true, job_id:result.job_id});
 }
@@ -9801,7 +9862,7 @@ async function handleMarketingJobsList(request, env, url){
   if(!projectId) return json({error:'project_id required'}, 400);
   const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
   if(!project) return json({error:'Not found'}, 404);
-  const {results}=await env.DB.prepare(`SELECT id, type, status, progress_pct, error, created_at, updated_at, completed_at FROM marketing_jobs WHERE project_id=? ORDER BY id DESC LIMIT 20`).bind(projectId).all();
+  const {results}=await env.DB.prepare(`SELECT id, type, status, progress_pct, error, output_url, created_at, updated_at, completed_at FROM marketing_jobs WHERE project_id=? ORDER BY id DESC LIMIT 20`).bind(projectId).all();
   return json({list:results||[]});
 }
 
@@ -9819,18 +9880,22 @@ async function handleMarketingRenderWebhook(request, env){
   const job=await env.DB.prepare(`SELECT * FROM marketing_jobs WHERE id=?`).bind(jobId).first();
   if(!job) return json({error:'Unknown job'}, 404);
   const now=new Date().toISOString();
+  const outputUrl=body.output_url||(body.output_key?`${env.WORKER_BASE_URL}/marketing/media/${body.output_key}`:null);
   if(body.status==='done'){
-    await env.DB.prepare(`UPDATE marketing_jobs SET status='done', progress_pct=100, completed_at=?, updated_at=? WHERE id=?`).bind(now, now, job.id).run();
-    const outputUrl=body.output_url||(body.output_key?`${env.WORKER_BASE_URL}/marketing/media/${body.output_key}`:null);
-    await env.DB.prepare(`UPDATE marketing_projects SET status='done', output_key=?, output_url=?, output_duration_sec=?, updated_at=? WHERE id=?`)
-      .bind(body.output_key||null, outputUrl, Number(body.duration_sec)||null, now, job.project_id).run();
-    const minutes=Math.ceil((Number(body.duration_sec)||0)/60);
-    if(minutes>0){
-      const c=await getClientById(env, job.client_id);
-      await patchClientFields(env, job.client_id, {marketing_minutes_used:(Number(c?.marketing_minutes_used)||0)+minutes});
+    await env.DB.prepare(`UPDATE marketing_jobs SET status='done', progress_pct=100, output_url=?, completed_at=?, updated_at=? WHERE id=?`).bind(outputUrl, now, now, job.id).run();
+    // Previews are short/draft-quality throwaway clips, not the deliverable — they must never
+    // overwrite the project's real output or count against metered minutes, unlike a real render.
+    if(job.type!=='preview'){
+      await env.DB.prepare(`UPDATE marketing_projects SET status='done', output_key=?, output_url=?, output_duration_sec=?, updated_at=? WHERE id=?`)
+        .bind(body.output_key||null, outputUrl, Number(body.duration_sec)||null, now, job.project_id).run();
+      const minutes=Math.ceil((Number(body.duration_sec)||0)/60);
+      if(minutes>0){
+        const c=await getClientById(env, job.client_id);
+        await patchClientFields(env, job.client_id, {marketing_minutes_used:(Number(c?.marketing_minutes_used)||0)+minutes});
+      }
     }
   } else {
-    await marketingFailJob(env, job.id, job.project_id, body.error||'Render failed', 'ready');
+    await marketingFailJob(env, job.id, job.project_id, body.error||'Render failed', job.type==='preview'?null:'ready');
   }
   return json({ok:true});
 }
@@ -10356,6 +10421,7 @@ export default {
       else if(url.pathname==='/marketing/projects/cues' && request.method==='PATCH'){ res=await handleMarketingCuesSave(request, env); }
       else if(url.pathname==='/marketing/projects/detect-scenes' && request.method==='POST'){ res=await handleMarketingDetectScenes(request, env); }
       else if(url.pathname==='/marketing/projects/render' && request.method==='POST'){ res=await handleMarketingRenderStart(request, env); }
+      else if(url.pathname==='/marketing/projects/preview' && request.method==='POST'){ res=await handleMarketingPreview(request, env); }
       else if(url.pathname==='/marketing/projects/jobs' && request.method==='GET'){ res=await handleMarketingJobsList(request, env, url); }
       else if(url.pathname==='/marketing/projects/send-whatsapp' && request.method==='POST'){ res=await handleMarketingSendWhatsapp(request, env); }
       else if(url.pathname==='/marketing/webhook/render-complete' && request.method==='POST'){ res=await handleMarketingRenderWebhook(request, env); }

@@ -4,8 +4,12 @@
 // stderr-parsing pattern as lib/timeline.js's detectSilence (also ffmpeg-log-scraping, not a
 // separate detection library). Verified against a real 3-scene synthetic test video (three solid
 // colors concatenated, cuts at exactly 3s/6s) — the filter reported pts_time 3 and 6 exactly.
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const { run } = require('./exec');
 const { getDurationSec } = require('./probe');
+const { uploadOutput } = require('./storage');
 
 const PTS_TIME_RE = /pts_time:\s*([\d.]+)/;
 
@@ -61,4 +65,30 @@ async function detectScenes(filePath, { threshold = 0.3, minSceneSec = 0.75 } = 
   return scenes;
 }
 
-module.exports = { detectScenes };
+// Grabs one small JPEG per scene (240px wide) and uploads it next to the source video's own R2
+// namespace, so it's served through the exact same GET /marketing/media/:key route the video and
+// render output already use — no second static-hosting story for thumbnails. Captured slightly
+// into each scene (up to 0.3s in, or the scene's midpoint if it's shorter than that) rather than
+// at the exact cut frame, since a hard cut's very first frame can still be mid-transition/motion
+// blur on real footage.
+async function generateSceneThumbnails(filePath, scenes, env, clientId, projectId) {
+  const results = [];
+  for (let i = 0; i < scenes.length; i++) {
+    const scene = scenes[i];
+    const captureAt = scene.start + Math.min(0.3, (scene.end - scene.start) / 2);
+    const thumbPath = path.join(path.dirname(filePath), `scene-thumb-${i}.jpg`);
+    try {
+      await run('ffmpeg', ['-y', '-ss', String(captureAt), '-i', filePath, '-frames:v', '1', '-vf', 'scale=240:-1', thumbPath]);
+      const key = `marketing/${clientId}/${projectId}/scenes/scene-${i}-${crypto.randomBytes(4).toString('hex')}.jpg`;
+      results.push(await uploadOutput(env, thumbPath, key, 'image/jpeg'));
+    } catch (err) {
+      console.error(`Scene ${i} thumbnail failed, skipping:`, err.message);
+      results.push(null); // a missing thumbnail shouldn't fail scene detection as a whole
+    } finally {
+      if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+    }
+  }
+  return results;
+}
+
+module.exports = { detectScenes, generateSceneThumbnails };

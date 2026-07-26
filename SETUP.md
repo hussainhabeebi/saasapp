@@ -5191,11 +5191,11 @@ playing that SFX, or applying that VFX still happens on the external render pipe
   tag was confirmed to hit the cache instead of calling Pexels again. **Manual step**: set
   `PEXELS_API_KEY` on the render pipeline (Coolify env var) — free at pexels.com/api.
 
-## Marketing Studio module — Scene detection & per-scene editing (`migrations/0020_marketing_scenes.sql`)
-Phase 1 of a larger "make the editor more like CapCut" effort (per-scene editing, apply/preview
-steps, a full timeline UI are later phases, not built yet) — this phase is real scene/shot-cut
-detection and grouping the caption editor by scene, both genuinely working and tested, not a stub
-for the rest.
+## Marketing Studio module — Scene detection & per-scene editing (`migrations/0020_marketing_scenes.sql`, `0021_marketing_preview.sql`)
+A larger "make the editor more like CapCut" effort, built in phases (real scene/shot-cut
+detection + per-scene caption grouping, then thumbnails + a visual timeline, then apply/preview
+renders — all four described below are built; a full drag/resize-editable timeline is not, see
+"What's not built" at the end).
 - **`marketing_projects.scenes_json`** — the detected scene boundaries, `[{start,end}, ...]`
   (seconds, in the source video's own timebase). Detection itself runs on the render pipeline
   (`render-pipeline/lib/sceneDetect.js` — real ffmpeg frame-difference analysis via the `scene`
@@ -5224,6 +5224,61 @@ for the rest.
   **Not verified**: detection accuracy/threshold tuning against a real, non-synthetic marketing
   video (talking-head footage, natural cuts) — the 0.3 threshold is ffmpeg's own commonly-cited
   starting point, not tuned against this app's actual use case yet.
+
+### Scene thumbnails & the visual Timeline
+- **`generateSceneThumbnails()`** (`render-pipeline/lib/sceneDetect.js`) — one small (240px) JPEG
+  per scene, captured slightly into the scene (not the exact cut frame, which can still be
+  mid-transition on real footage), uploaded through the same `uploadOutput` helper renders already
+  use (extended with an optional `contentType` param — `image/jpeg` here, `video/mp4` elsewhere).
+  Best-effort: a single thumbnail failing doesn't fail scene detection as a whole. Attached to each
+  scene as `thumbnail_url` by the Worker (`handleMarketingDetectScenes`, same `output_key`/
+  `output_url` resolution the render-complete webhook already does for R2 vs. local-fallback
+  mode).
+- **Timeline** (`renderTimeline()`, a full-width card above the editor's two columns) — real scene
+  tiles (showing the thumbnail, sized proportionally to that scene's own duration via CSS flex,
+  not a fixed grid) and a cue-marks row below them (B-Roll/SFX/VFX cues color-coded, positioned by
+  percentage of total duration). Click a scene tile to jump to its caption block below
+  (`jumpToScene`); click a cue mark to jump to the Cues step. **Not** drag/resize-editable — this
+  is a real, correctly-positioned visualization + click-to-jump, not the full manipulation a
+  timeline UI usually implies; that's further work, not built.
+
+### Apply/preview renders (`migrations/0021_marketing_preview.sql`)
+"Need apply button before render" / "apply button for overlay, sfx, vfx, change for each scene" —
+a real short (capped at 12s), draft-quality render of the CURRENT auto-edit toggles and accepted
+cues, so they can be checked before committing to the full render, instead of only finding out
+what silence-cut/auto-zoom/B-roll/SFX/VFX actually look like after a full-length render finishes.
+- `POST /marketing/projects/preview` (`handleMarketingPreview`) — same spec-building as a real
+  render (factored out into `marketingBuildRenderSpec`, shared by both `handleMarketingRenderStart`
+  and this, so a preview can never silently drift from what the real render would do), but trimmed
+  to at most 12 seconds (from the clip's trim-start, or from a specific scene's own start if
+  `scene_index` is given — still capped at 12s even then) and quality forced to `draft`.
+- **Never touches the project's real state.** `marketingSubmitRenderJob` gained `jobType`/
+  `updateProjectStatus` params — a preview submits with `jobType:'preview'`,
+  `updateProjectStatus:false`, so it doesn't flip the project to `status:'rendering'` and, on
+  completion, `handleMarketingRenderWebhook`'s `job.type==='preview'` branch skips overwriting
+  `output_key`/`output_url`/`status` and skips `marketing_minutes_used` billing entirely — a
+  preview costs render-pipeline compute but never counts against the client's metered minutes.
+  Its result lives on the **job row itself** (`marketing_jobs.output_url`, new column) instead,
+  read via the existing `GET /marketing/projects/jobs` list.
+- **Frontend**: "🔍 Preview (first 12s)" buttons on the Auto-edit and Cues steps, plus a small
+  "🔍 Preview" button on every scene block (previews just that scene, still ≤12s) — each posts to
+  `/preview`, then polls `GET /marketing/projects/jobs` on its own 3s timer (`pollPreviewJob`,
+  deliberately separate from the existing `pollJobsIfNeeded`, since that one keys off
+  `currentProject.status`, which previews never change) until the job's own `status`/`output_url`
+  show up, then plays the result inline right where the button was clicked.
+- **What's verified vs. not**: the shared spec-building refactor and the webhook's type-branching
+  logic were reviewed for correctness against the existing (unchanged-behavior) real-render path;
+  `node --check` passed on all changed files. **Not verified**: an actual live preview render
+  end-to-end (needs a deployed render pipeline + a real project — not runnable in the dev sandbox
+  this was built in). Test one after deploying.
+
+### What's not built (honest scope note)
+A full CapCut-style timeline — dragging scenes to reorder/trim, resizing cue markers by dragging
+their edges, multi-track drag-and-drop — is a materially bigger UI engineering effort than what's
+here (real mouse-drag interaction state, collision handling, live re-computation of every
+downstream time value) and was deliberately scoped out rather than attempted half-built. What
+exists today is real and useful (detection, grouping, thumbnails, a correctly-positioned timeline
+visualization, working preview renders) but is click-based, not drag-based.
 
 ## Marketing Studio module — Text Behind Subject (beta)
 A render option (`spec.text_behind_subject`, a "🫥 Text behind subject (beta)" chip in the

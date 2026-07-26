@@ -21,8 +21,10 @@ function makeR2Client(env) {
 }
 
 // Returns {output_key} (R2-backed) or {output_url} (local fallback) — the two shapes
-// handleMarketingRenderWebhook already accepts, see worker.js.
-async function uploadOutput(env, localFilePath, key) {
+// handleMarketingRenderWebhook already accepts, see worker.js. Also reused for scene thumbnails
+// (lib/sceneDetect.js) with contentType:'image/jpeg' — same bucket, same GET /marketing/media/:key
+// serving route on the Worker side works for any content type, not just rendered video.
+async function uploadOutput(env, localFilePath, key, contentType = 'video/mp4') {
   if (r2Configured(env)) {
     const client = makeR2Client(env);
     const body = fs.createReadStream(localFilePath);
@@ -30,7 +32,7 @@ async function uploadOutput(env, localFilePath, key) {
       Bucket: env.R2_BUCKET_NAME,
       Key: key,
       Body: body,
-      ContentType: 'video/mp4',
+      ContentType: contentType,
     }));
     return { output_key: key };
   }
