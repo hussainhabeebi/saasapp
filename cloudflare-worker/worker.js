@@ -8990,6 +8990,9 @@ async function handleHospitalityStats(request, env){
 const MARKETING_SOURCE_MAX_BYTES = 100*1024*1024; // Cloudflare Workers' own request-body ceiling on most plans — not a choice made here
 const MARKETING_VIDEO_MIME_EXT = {'video/mp4':'mp4', 'video/quicktime':'mov', 'video/webm':'webm', 'video/x-m4v':'m4v'};
 const MARKETING_RESOLUTIONS = {'9:16':'1080x1920', '1:1':'1080x1080', '16:9':'1920x1080'};
+// Export quality — always MP4 (the only format the render pipeline produces); this is the encode
+// speed/quality tradeoff, matching render-pipeline/lib/filtergraph.js's QUALITY_PRESETS exactly.
+const MARKETING_QUALITY_LEVELS = ['draft', 'standard', 'high'];
 
 // Built-in caption style presets (#7 "6-10 caption style presets") — static, no table needed.
 // Custom per-client presets ("brand style saving", #8) live in marketing_brand_styles instead,
@@ -9021,6 +9024,12 @@ const MARKETING_AUTOEDIT_PRESETS = [
   {id:'vlog', name:'Vlog / Storytime', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'medium'},
   {id:'announcement', name:'News / Announcement', silence_cut:true, auto_zoom:false, background_music:'cinematic', broll_density:'low'},
   {id:'raw', name:'Raw — No Auto-Edit', silence_cut:false, auto_zoom:false, background_music:null, broll_density:'none'},
+  {id:'sales-pitch', name:'Sales Pitch / Offer', silence_cut:true, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
+  {id:'faq-explainer', name:'FAQ / Explainer', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'low'},
+  {id:'before-after', name:'Before & After / Transformation', silence_cut:true, auto_zoom:true, background_music:'cinematic', broll_density:'medium'},
+  {id:'event-recap', name:'Event Recap', silence_cut:false, auto_zoom:true, background_music:'upbeat', broll_density:'medium'},
+  {id:'interview', name:'Interview / Podcast Clip', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
+  {id:'unboxing', name:'Unboxing / Demo', silence_cut:true, auto_zoom:true, background_music:'chill', broll_density:'high'},
 ];
 
 // Cue suggestion dictionary — deliberately a static keyword→cue-type table, not a model call:
@@ -9240,6 +9249,136 @@ async function handleMarketingProjectUpload(request, env){
   const now=new Date().toISOString();
   await env.DB.prepare(`UPDATE marketing_projects SET source_key=?, source_duration_sec=?, trim_end_sec=?, status='uploaded', updated_at=? WHERE id=?`)
     .bind(key, durationSec, durationSec, now, projectId).run();
+  // Also registered as clip #0 (marketing_project_clips) — see the "MULTI-CLIP PROJECTS" block
+  // below — so a project that only ever gets this one direct upload behaves identically to
+  // before (no extra step), while one that later adds more clips via /marketing/projects/clips
+  // has a consistent, complete clip list to combine (this upload included) rather than a gap.
+  await env.DB.prepare(`DELETE FROM marketing_project_clips WHERE project_id=? AND order_index=0`).bind(projectId).run();
+  await env.DB.prepare(`INSERT INTO marketing_project_clips (project_id, client_id, source_key, source_duration_sec, order_index, created_at) VALUES (?,?,?,?,0,?)`)
+    .bind(projectId, Number(payload.cid), key, durationSec, now).run();
+  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(projectId).first();
+  return json({ok:true, project:marketingSerializeProject(updated)});
+}
+
+/* ── MULTI-CLIP PROJECTS (SETUP.md "Marketing Studio module — Multi-clip projects & template
+   library") — a project can hold several uploaded clips (marketing_project_clips), stitched by
+   render-pipeline's POST /concat-clips into one combined source video before the existing
+   transcribe/caption/render pipeline runs on it unchanged. Clips are addressed by their own R2
+   keys (marketingClipKey), separate from the project's own source_key (the COMBINED output). ── */
+function marketingClipKey(clientId, projectId, ext){ return `marketing/${clientId}/${projectId}/clips/${crypto.randomUUID()}.${ext}`; }
+function marketingSerializeClip(row){
+  return {id:row.id, source_key:row.source_key, source_duration_sec:row.source_duration_sec, order_index:row.order_index, created_at:row.created_at};
+}
+
+async function handleMarketingClipsList(request, env, url){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const projectId=Number(url.searchParams.get('project_id'));
+  if(!projectId) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  const {results}=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE project_id=? ORDER BY order_index ASC`).bind(projectId).all();
+  return json({list:(results||[]).map(marketingSerializeClip)});
+}
+
+async function handleMarketingClipUpload(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const form=await request.formData().catch(()=>null);
+  if(!form) return json({error:'multipart form data required'}, 400);
+  const projectId=Number(form.get('project_id'));
+  const file=form.get('file');
+  const durationSec=Number(form.get('duration_sec'))||null;
+  if(!projectId||!file) return json({error:'project_id and file required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(file.size>MARKETING_SOURCE_MAX_BYTES) return json({error:'Video is too large — max 100 MB.'}, 400);
+  const mime=(file.type||'').split(';')[0];
+  const ext=MARKETING_VIDEO_MIME_EXT[mime];
+  if(!ext) return json({error:'Upload an mp4, mov, webm or m4v file.'}, 400);
+  const key=marketingClipKey(payload.cid, projectId, ext);
+  await env.MARKETING_MEDIA.put(key, await file.arrayBuffer(), {httpMetadata:{contentType:mime}});
+  const maxOrder=await env.DB.prepare(`SELECT COALESCE(MAX(order_index),-1) AS m FROM marketing_project_clips WHERE project_id=?`).bind(projectId).first();
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_project_clips (project_id, client_id, source_key, source_duration_sec, order_index, created_at) VALUES (?,?,?,?,?,?)`)
+    .bind(projectId, Number(payload.cid), key, durationSec, (maxOrder?.m ?? -1)+1, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE id=?`).bind(result.meta.last_row_id).first();
+  return json({ok:true, clip:marketingSerializeClip(row)});
+}
+
+async function handleMarketingClipDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.id);
+  if(!id) return json({error:'id required'}, 400);
+  const clip=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!clip) return json({error:'Not found'}, 404);
+  await env.MARKETING_MEDIA.delete(clip.source_key).catch(()=>{});
+  await env.DB.prepare(`DELETE FROM marketing_project_clips WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+async function handleMarketingClipsReorder(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  const order=Array.isArray(body.order)?body.order.map(Number):[];
+  if(!projectId||!order.length) return json({error:'project_id and order (an array of clip ids) required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  for(let i=0;i<order.length;i++){
+    await env.DB.prepare(`UPDATE marketing_project_clips SET order_index=? WHERE id=? AND project_id=?`).bind(i, order[i], projectId).run();
+  }
+  return json({ok:true});
+}
+
+// Stitches every clip (in order_index order) into one combined video via render-pipeline's
+// POST /concat-clips, then treats that combined video exactly like a normal single-video upload
+// (sets source_key/source_duration_sec, status='uploaded') — everything downstream (transcribe,
+// captions, render) never needs to know this project started out as several clips. Clips
+// themselves aren't deleted after combining, so re-adding/reordering/re-combining stays possible.
+async function handleMarketingCombineClips(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  if(!projectId) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'Combining clips needs the render pipeline configured — see SETUP.md "Marketing Studio module".'}, 400);
+  const {results:clips}=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE project_id=? ORDER BY order_index ASC`).bind(projectId).all();
+  if(!clips||clips.length<1) return json({error:'Upload at least one clip first.'}, 400);
+
+  const sourceUrls=clips.map(c=>`${env.WORKER_BASE_URL}/marketing/media/${c.source_key}`);
+  const resolution=MARKETING_RESOLUTIONS[project.target_aspect]||MARKETING_RESOLUTIONS['9:16'];
+  const reqBody=JSON.stringify({source_urls:sourceUrls, resolution, client_id:Number(payload.cid), project_id:projectId});
+  const signature=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
+  const concatEndpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/concat-clips`;
+  let resp;
+  try{
+    resp=await fetch(concatEndpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':signature}, body:reqBody});
+  }catch(e){
+    return json({error:'Could not reach the render pipeline to combine clips: '+e.message}, 502);
+  }
+  const data=await resp.json().catch(()=>({}));
+  if(!resp.ok||!data.ok) return json({error:data.error||('HTTP '+resp.status)}, 502);
+
+  const key=data.output_key||null;
+  const now=new Date().toISOString();
+  if(key){
+    await env.DB.prepare(`UPDATE marketing_projects SET source_key=?, source_duration_sec=?, trim_end_sec=?, status='uploaded', updated_at=? WHERE id=?`)
+      .bind(key, data.duration_sec||null, data.duration_sec||null, now, projectId).run();
+  } else if(data.output_url){
+    // Local-fallback storage mode (no R2) — the combined file lives outside this app's own
+    // media serving, so store the URL directly rather than a key (marketingSerializeProject/
+    // the frontend's video player both already accept a full absolute source_key... no — the
+    // frontend builds mediaUrl() from source_key assuming it's an R2 key. In local-fallback mode
+    // there's no R2 key to store, so this path isn't supported — surface that clearly instead of
+    // silently storing a URL the rest of the app can't use.
+    return json({error:'Combining clips requires the render pipeline to be configured with R2 storage (LOCAL_PUBLIC_BASE_URL fallback mode is not supported for this feature).'}, 400);
+  }
   const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(projectId).first();
   return json({ok:true, project:marketingSerializeProject(updated)});
 }
@@ -9256,8 +9395,6 @@ async function handleMarketingTranscribe(request, env){
   if(!project) return json({error:'Not found'}, 404);
   if(!project.source_key) return json({error:'Upload a video first.'}, 400);
   if(!env.MARKETING_TRANSCRIBE_API_KEY) return json({error:'Transcription is not configured — see SETUP.md "Marketing Studio module".'}, 400);
-  const obj=await env.MARKETING_MEDIA.get(project.source_key);
-  if(!obj) return json({error:'Source video not found in storage.'}, 404);
 
   const now0=new Date().toISOString();
   await env.DB.prepare(`UPDATE marketing_projects SET status='transcribing', updated_at=? WHERE id=?`).bind(now0, projectId).run();
@@ -9265,10 +9402,42 @@ async function handleMarketingTranscribe(request, env){
     .bind(projectId, Number(payload.cid), 'transcribe', 'processing', JSON.stringify({language:body.language||project.language||null}), now0, now0).run();
   const jobId=jobResult.meta.last_row_id;
 
-  const bytes=await obj.arrayBuffer();
-  const ext=(project.source_key.split('.').pop()||'mp4');
+  // OpenAI's Whisper endpoint hard-caps requests at 25 MB — a video comfortably under this app's
+  // own 100 MB upload ceiling can still exceed that purely because it's a *video* file (picture
+  // data dwarfs audio data), not because the actual speech content is large. If the render
+  // pipeline is configured, ask it to extract just the audio track first (a much smaller file —
+  // see render-pipeline/lib/extractAudio.js) rather than sending the raw video. Falls back to the
+  // raw video otherwise, same as before, so transcription still works without the render pipeline
+  // set up — just capped at whatever fits in OpenAI's 25 MB limit as a video file.
+  let fileBytes, fileName, fileMime;
+  if(env.MARKETING_RENDER_WEBHOOK_URL && env.MARKETING_RENDER_WEBHOOK_SECRET){
+    const sourceUrl=`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`;
+    const extractBody=JSON.stringify({source_url:sourceUrl});
+    const extractSig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, extractBody);
+    const audioEndpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/extract-audio`;
+    let audioResp;
+    try{
+      audioResp=await fetch(audioEndpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':extractSig}, body:extractBody});
+    }catch(e){
+      await marketingFailJob(env, jobId, projectId, 'Could not reach the render pipeline to extract audio: '+e.message, 'uploaded');
+      return json({error:'Could not reach the render pipeline to extract audio.'}, 502);
+    }
+    if(!audioResp.ok){
+      const errText=await audioResp.text().catch(()=>'');
+      await marketingFailJob(env, jobId, projectId, 'Audio extraction failed: '+(errText||('HTTP '+audioResp.status)), 'uploaded');
+      return json({error:'Audio extraction failed: '+(errText||('HTTP '+audioResp.status))}, 502);
+    }
+    fileBytes=await audioResp.arrayBuffer(); fileName='audio.mp3'; fileMime='audio/mpeg';
+  } else {
+    const obj=await env.MARKETING_MEDIA.get(project.source_key);
+    if(!obj) return json({error:'Source video not found in storage.'}, 404);
+    fileBytes=await obj.arrayBuffer();
+    const ext=(project.source_key.split('.').pop()||'mp4');
+    fileName=`source.${ext}`; fileMime=obj.httpMetadata?.contentType||'video/mp4';
+  }
+
   const form=new FormData();
-  form.append('file', new Blob([bytes], {type:obj.httpMetadata?.contentType||'video/mp4'}), `source.${ext}`);
+  form.append('file', new Blob([fileBytes], {type:fileMime}), fileName);
   form.append('model', 'whisper-1');
   form.append('response_format', 'verbose_json');
   form.append('timestamp_granularities[]', 'word');
@@ -9442,6 +9611,16 @@ async function handleMarketingRenderStart(request, env){
     captions, style:{...style, ...overrides},
     silence_cut:silenceCut, auto_zoom:autoZoom, background_music:backgroundMusic,
     broll_density:preset?.broll_density||'none', cues,
+    // Export quality (#"export as MP4 and control quality" — output is always MP4, already the
+    // only format this pipeline produces; this controls encode quality/speed tradeoff). Validated
+    // against MARKETING_QUALITY_LEVELS rather than passed through raw, so a typo/garbage value
+    // can't silently reach ffmpeg — falls back to 'standard'.
+    quality:MARKETING_QUALITY_LEVELS.includes(opts.quality)?opts.quality:'standard',
+    // "Text behind subject" (beta) — local ONNX person-matting on the render pipeline, no
+    // per-video API cost. Doesn't combine with silence-cut/auto-zoom/B-roll/SFX/VFX in v1 (see
+    // render-pipeline/lib/textBehindSubject.js) — the pipeline itself enforces that (silence-cut
+    // becomes a no-op when this is set), not just documentation.
+    text_behind_subject:!!opts.text_behind_subject,
     watermark:watermarked,
   };
   const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
@@ -9556,10 +9735,138 @@ async function handleMarketingSendWhatsapp(request, env){
 
 const MARKETING_TEMPLATE_BATCH_MAX=100; // "hundreds automatically" is the pitch; a hard cap keeps one request from fanning out an unbounded number of render jobs (and unbounded minutes spend) at once — regenerate in further batches for more than this.
 
+// Template Library ("create a template library like Captions.ai") — curated starter templates
+// any client can browse and clone into their own editable marketing_templates row
+// (handleMarketingTemplateLibraryClone below). Static list, same zero-cost shape as
+// MARKETING_STYLE_PRESETS/MARKETING_AUTOEDIT_PRESETS — no seed data in D1, nothing to migrate.
+const MARKETING_TEMPLATE_LIBRARY=[
+  {id:'flash-sale', name:'Flash Sale', category:'Ecommerce', description:'Bold discount announcement with an urgency close.', target_aspect:'9:16', style_id:'bold-pop', estimated_duration_sec:9,
+    scenes:[
+      {type:'text', content:'⚡ {{discount}}% OFF', duration_sec:3, text_color:'#FFFFFF', bg_color:'#DC2626'},
+      {type:'text', content:'{{product_name}}', duration_sec:3, text_color:'#FFFFFF', bg_color:'#111111'},
+      {type:'text', content:'Ends {{end_date}} — Shop Now!', duration_sec:3, text_color:'#FFE600', bg_color:'#DC2626'},
+    ]},
+  {id:'product-launch', name:'Product Launch', category:'Ecommerce', description:'Three-beat reveal: intro, name, tagline.', target_aspect:'9:16', style_id:'gradient-glow', estimated_duration_sec:9,
+    scenes:[
+      {type:'text', content:'Introducing', duration_sec:2.5, text_color:'#FFFFFF', bg_color:'#111111'},
+      {type:'text', content:'{{product_name}}', duration_sec:3.5, text_color:'#FFFFFF', bg_color:'#7C3AED'},
+      {type:'text', content:'{{tagline}}', duration_sec:3, text_color:'#FFFFFF', bg_color:'#111111'},
+    ]},
+  {id:'testimonial-quote', name:'Testimonial Quote', category:'Trust & Social Proof', description:'Customer quote card with attribution.', target_aspect:'9:16', style_id:'classic-white', estimated_duration_sec:8,
+    scenes:[
+      {type:'text', content:'"{{quote}}"', duration_sec:5, text_color:'#FFFFFF', bg_color:'#0F766E'},
+      {type:'text', content:'— {{customer_name}}', duration_sec:3, text_color:'#A7F3D0', bg_color:'#0F766E'},
+    ]},
+  {id:'countdown-urgency', name:'Countdown / Urgency', category:'Ecommerce', description:'Time-boxed offer, built for a fast scroll-stop.', target_aspect:'9:16', style_id:'karaoke-yellow', estimated_duration_sec:8,
+    scenes:[
+      {type:'text', content:'⏰ Only {{hours_left}} hours left!', duration_sec:4, text_color:'#FFFFFF', bg_color:'#B45309'},
+      {type:'text', content:'{{offer_description}}', duration_sec:4, text_color:'#FFFFFF', bg_color:'#111111'},
+    ]},
+  {id:'before-after', name:'Before & After', category:'Trust & Social Proof', description:'Transformation reveal in three beats.', target_aspect:'9:16', style_id:'boxed-caption', estimated_duration_sec:9,
+    scenes:[
+      {type:'text', content:'BEFORE', duration_sec:3, text_color:'#FFFFFF', bg_color:'#374151'},
+      {type:'text', content:'AFTER', duration_sec:3, text_color:'#FFFFFF', bg_color:'#059669'},
+      {type:'text', content:'{{result_description}}', duration_sec:3, text_color:'#FFFFFF', bg_color:'#111111'},
+    ]},
+  {id:'welcome-intro', name:'Welcome / Business Intro', category:'Brand', description:'Founder/business introduction ending in a WhatsApp CTA.', target_aspect:'9:16', style_id:'clean-minimal', estimated_duration_sec:10,
+    scenes:[
+      {type:'text', content:"Hi, I'm {{name}}", duration_sec:3, text_color:'#FFFFFF', bg_color:'#1E3A8A'},
+      {type:'text', content:'{{business_description}}', duration_sec:4, text_color:'#FFFFFF', bg_color:'#111111'},
+      {type:'text', content:"Let's connect on WhatsApp", duration_sec:3, text_color:'#FFFFFF', bg_color:'#25D366'},
+    ]},
+  {id:'cta-contact', name:'Call-to-Action / Contact', category:'Brand', description:'Punchy CTA card with a phone number close.', target_aspect:'9:16', style_id:'bold-pop', estimated_duration_sec:6,
+    scenes:[
+      {type:'text', content:'{{cta_headline}}', duration_sec:3.5, text_color:'#FFFFFF', bg_color:'#DC2626'},
+      {type:'text', content:'📱 {{phone_number}}', duration_sec:2.5, text_color:'#FFFFFF', bg_color:'#111111'},
+    ]},
+  {id:'weekly-tip', name:'Weekly Tip / Educational', category:'Content', description:'Recurring tip-of-the-week format.', target_aspect:'9:16', style_id:'neon-highlight', estimated_duration_sec:8,
+    scenes:[
+      {type:'text', content:'💡 Tip of the Week', duration_sec:3, text_color:'#FFFFFF', bg_color:'#7C3AED'},
+      {type:'text', content:'{{tip_text}}', duration_sec:5, text_color:'#FFFFFF', bg_color:'#111111'},
+    ]},
+  {id:'square-promo', name:'Square Feed Promo', category:'Ecommerce', description:'1:1 format for Instagram/Facebook feed posts.', target_aspect:'1:1', style_id:'gradient-glow', estimated_duration_sec:8,
+    scenes:[
+      {type:'text', content:'{{headline}}', duration_sec:4, text_color:'#FFFFFF', bg_color:'#7C3AED'},
+      {type:'text', content:'{{cta_text}}', duration_sec:4, text_color:'#FFE600', bg_color:'#111111'},
+    ]},
+];
+
+async function handleMarketingTemplateLibrary(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json({list:MARKETING_TEMPLATE_LIBRARY.map(({scenes, ...meta})=>({...meta, scene_count:scenes.length}))});
+}
+
+async function handleMarketingTemplateLibraryClone(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const libraryTemplate=MARKETING_TEMPLATE_LIBRARY.find(t=>t.id===body.library_id);
+  if(!libraryTemplate) return json({error:'Unknown library template'}, 404);
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), libraryTemplate.name, JSON.stringify(libraryTemplate.scenes), libraryTemplate.target_aspect, libraryTemplate.style_id, libraryTemplate.estimated_duration_sec, now, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
+  return json({ok:true, template:marketingSerializeTemplate(row)});
+}
+
+// Remotion Library ("Remotion for the template/style layer") — real animated React/Remotion
+// compositions (spring/interpolate-driven motion), as opposed to the static text/image "scenes"
+// MARKETING_TEMPLATE_LIBRARY clones. Registry ids/props here must match
+// render-pipeline/remotion/Root.jsx's REGISTRY exactly — this is metadata only (labels, hints,
+// duration) for the picker UI and batch-generate form; the actual composition code lives in the
+// render pipeline. Cloning creates a normal marketing_templates row with engine='remotion', so it
+// flows through the exact same list/edit/generate/render machinery as an ffmpeg template.
+const MARKETING_REMOTION_LIBRARY=[
+  {id:'FlashSale', name:'Flash Sale (Animated)', category:'Ecommerce', description:'Pulsing discount badge with an animated reveal.', target_aspect:'9:16', estimated_duration_sec:3,
+    props_schema:[
+      {key:'discount', label:'Discount %', default:'50'},
+      {key:'product_name', label:'Product name', default:'Your Product'},
+      {key:'end_date', label:'Offer ends', default:'Sunday'},
+    ]},
+  {id:'ProductLaunch', name:'Product Launch (Animated)', category:'Ecommerce', description:'Animated name + tagline reveal for a new product.', target_aspect:'9:16', estimated_duration_sec:3.5,
+    props_schema:[
+      {key:'product_name', label:'Product name', default:'Your Product'},
+      {key:'tagline', label:'Tagline', default:'The next big thing.'},
+    ]},
+  {id:'Countdown', name:'Countdown / Urgency (Animated)', category:'Ecommerce', description:'Live-ticking hours-left counter with a pulsing animation.', target_aspect:'9:16', estimated_duration_sec:3,
+    props_schema:[
+      {key:'hours_left', label:'Hours left', default:'24'},
+      {key:'offer_description', label:'Offer description', default:'Limited time offer'},
+    ]},
+  {id:'Testimonial', name:'Testimonial Quote (Animated)', category:'Trust & Social Proof', description:'Animated quote card with attribution.', target_aspect:'9:16', estimated_duration_sec:3.5,
+    props_schema:[
+      {key:'quote', label:'Quote', default:'This changed everything for us.'},
+      {key:'customer_name', label:'Customer name', default:'A happy customer'},
+    ]},
+];
+
+async function handleMarketingRemotionLibrary(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json({list:MARKETING_REMOTION_LIBRARY});
+}
+
+async function handleMarketingRemotionLibraryClone(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const libraryTemplate=MARKETING_REMOTION_LIBRARY.find(t=>t.id===body.library_id);
+  if(!libraryTemplate) return json({error:'Unknown library template'}, 404);
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, engine, remotion_composition_id, props_schema_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), libraryTemplate.name, '[]', libraryTemplate.target_aspect, null, libraryTemplate.estimated_duration_sec, 'remotion', libraryTemplate.id, JSON.stringify(libraryTemplate.props_schema), now, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
+  return json({ok:true, template:marketingSerializeTemplate(row)});
+}
+
 function marketingSerializeTemplate(row){
   if(!row) return null;
   let scenes=[]; try{ scenes=JSON.parse(row.scenes_json||'[]'); }catch(e){}
-  return {id:row.id, name:row.name, scenes, target_aspect:row.target_aspect, style_id:row.style_id, estimated_duration_sec:row.estimated_duration_sec, created_at:row.created_at, updated_at:row.updated_at};
+  let propsSchema=null; try{ propsSchema=row.props_schema_json?JSON.parse(row.props_schema_json):null; }catch(e){}
+  return {id:row.id, name:row.name, scenes, target_aspect:row.target_aspect, style_id:row.style_id, estimated_duration_sec:row.estimated_duration_sec,
+    engine:row.engine||'ffmpeg', remotion_composition_id:row.remotion_composition_id||null, props_schema:propsSchema,
+    created_at:row.created_at, updated_at:row.updated_at};
 }
 
 // Substitutes {{key}} in every string field of a scene with vars[key] (blank if missing) —
@@ -9653,7 +9960,8 @@ async function handleMarketingTemplateGenerate(request, env){
   const used=Number(c?.marketing_minutes_used)||0;
   if(used+minutesNeeded>limit) return json({error:`This batch needs ~${minutesNeeded} min (${rows.length} × ~${perVideoMinutes} min) but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
 
-  const style=await marketingResolveStyle(env, payload.cid, template.style_id);
+  const engine=template.engine||'ffmpeg';
+  const style=engine==='remotion'?null:await marketingResolveStyle(env, payload.cid, template.style_id);
   const watermarked=marketingIsWatermarked(c);
   const resolution=MARKETING_RESOLUTIONS[template.target_aspect]||MARKETING_RESOLUTIONS['9:16'];
 
@@ -9664,10 +9972,9 @@ async function handleMarketingTemplateGenerate(request, env){
     const projectResult=await env.DB.prepare(`INSERT INTO marketing_projects (client_id, title, target_aspect, status, style_id, template_id, template_vars_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`)
       .bind(Number(payload.cid), title, template.target_aspect, 'ready', template.style_id, templateId, JSON.stringify(vars), now, now).run();
     const projectId=projectResult.meta.last_row_id;
-    const spec={
-      mode:'template', target_aspect:template.target_aspect, resolution, style,
-      scenes:marketingResolveScenes(scenes, vars), watermark:watermarked,
-    };
+    const spec=engine==='remotion'
+      ? {mode:'template', engine:'remotion', remotion_composition_id:template.remotion_composition_id, target_aspect:template.target_aspect, resolution, props:vars, watermark:watermarked}
+      : {mode:'template', target_aspect:template.target_aspect, resolution, style, scenes:marketingResolveScenes(scenes, vars), watermark:watermarked};
     const submitResult=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
     results.push({project_id:projectId, ok:submitResult.ok, error:submitResult.error||null});
   }
@@ -9869,6 +10176,11 @@ export default {
       else if(url.pathname==='/marketing/projects' && request.method==='PATCH'){ res=await handleMarketingProjectUpdate(request, env); }
       else if(url.pathname==='/marketing/projects' && request.method==='DELETE'){ res=await handleMarketingProjectDelete(request, env); }
       else if(url.pathname==='/marketing/projects/upload' && request.method==='POST'){ res=await handleMarketingProjectUpload(request, env); }
+      else if(url.pathname==='/marketing/projects/clips' && request.method==='GET'){ res=await handleMarketingClipsList(request, env, url); }
+      else if(url.pathname==='/marketing/projects/clips' && request.method==='POST'){ res=await handleMarketingClipUpload(request, env); }
+      else if(url.pathname==='/marketing/projects/clips' && request.method==='DELETE'){ res=await handleMarketingClipDelete(request, env); }
+      else if(url.pathname==='/marketing/projects/clips/reorder' && request.method==='PATCH'){ res=await handleMarketingClipsReorder(request, env); }
+      else if(url.pathname==='/marketing/projects/combine-clips' && request.method==='POST'){ res=await handleMarketingCombineClips(request, env); }
       else if(url.pathname==='/marketing/projects/transcribe' && request.method==='POST'){ res=await handleMarketingTranscribe(request, env); }
       else if(url.pathname==='/marketing/projects/captions' && request.method==='PATCH'){ res=await handleMarketingCaptionsSave(request, env); }
       else if(url.pathname==='/marketing/autoedit-presets' && request.method==='GET'){ res=await handleMarketingAutoeditPresets(request, env); }
@@ -9884,6 +10196,10 @@ export default {
       else if(url.pathname==='/marketing/templates' && request.method==='PATCH'){ res=await handleMarketingTemplateUpdate(request, env); }
       else if(url.pathname==='/marketing/templates' && request.method==='DELETE'){ res=await handleMarketingTemplateDelete(request, env); }
       else if(url.pathname==='/marketing/templates/generate' && request.method==='POST'){ res=await handleMarketingTemplateGenerate(request, env); }
+      else if(url.pathname==='/marketing/template-library' && request.method==='GET'){ res=await handleMarketingTemplateLibrary(request, env); }
+      else if(url.pathname==='/marketing/template-library/clone' && request.method==='POST'){ res=await handleMarketingTemplateLibraryClone(request, env); }
+      else if(url.pathname==='/marketing/remotion-library' && request.method==='GET'){ res=await handleMarketingRemotionLibrary(request, env); }
+      else if(url.pathname==='/marketing/remotion-library/clone' && request.method==='POST'){ res=await handleMarketingRemotionLibraryClone(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

@@ -4909,9 +4909,17 @@ like `/email/*`, never a client-supplied id — except the two routes below mark
   timing) — `marketingWordsFromTranscription()` falls back to splitting each segment's text evenly
   across its duration, flagged `approximate:true` so the caption editor can show a dotted border on
   estimated words instead of silently presenting a guess as exact. OpenAI's own Whisper endpoint
-  also caps request size at 25 MB — a source video near the 100 MB upload ceiling will exceed that;
-  point `MARKETING_TRANSCRIBE_API_URL` at a provider without that ceiling (self-hosted Whisper,
-  etc.) if that matters for your clients. Language: pass a hint to bias detection, or omit it to
+  also caps request size at 25 MB — a video comfortably under the 100 MB upload ceiling can still
+  exceed that purely because it's a *video* file (picture data dwarfs audio data), not because the
+  actual speech is long. **Fixed properly, not just documented**: if the render pipeline is
+  configured (`MARKETING_RENDER_WEBHOOK_URL`/`SECRET`), this route calls its
+  `POST /extract-audio` endpoint first (HMAC-signed, same secret as `/render` — see
+  `render-pipeline/lib/extractAudio.js`) to get just the audio track (16kHz mono, ~64kbps —
+  Whisper resamples to 16kHz internally regardless of input, so nothing is lost for transcription
+  purposes) and sends that instead of the raw video — dramatically smaller, comfortably under 25 MB
+  for the vast majority of real videos. Without the render pipeline configured, falls back to
+  sending the raw video (unchanged old behavior), still capped at whatever fits in 25 MB as a video
+  file. Language: pass a hint to bias detection, or omit it to
   auto-detect (feature #4) — auto-detect and Malayalam/Manglish transcription quality (feature #6)
   are both properties of whichever provider `MARKETING_TRANSCRIBE_API_URL` points at, not something
   this Worker code can improve on its own.
@@ -5113,3 +5121,136 @@ playing that SFX, or applying that VFX still happens on the external render pipe
   pipeline, same as it already owns caption burn-in, cropping, silence-cut, etc.
 - Frontend: Editor step 4 ("B-Roll / SFX / VFX cues") — a "✨ Suggest cues from script" button
   (disabled until captions exist), a checkbox+remove list per suggestion, and a Save button.
+
+## Marketing Studio module — Text Behind Subject (beta)
+A render option (`spec.text_behind_subject`, a "🫥 Text behind subject (beta)" chip in the
+Editor's Auto-edit step) where captions sit behind the person on screen instead of on top —
+implemented in `render-pipeline/` (`lib/segmentation.js` + `lib/textBehindSubject.js`), **not**
+anything the Worker does itself. Runs local, free ONNX person-video-matting
+([RobustVideoMatting](https://github.com/PeterL1n/RobustVideoMatting)) — no per-video API cost,
+approximate edge quality (reduced processing resolution/frame-rate for CPU speed) — as opposed to
+a paid cloud matting API, which would give cleaner results at a per-render cost. See
+`render-pipeline/README.md`'s "Text behind subject (beta)" section for the full detail, including
+exactly what was and wasn't verified (no real human test footage was available while building
+this — only the ONNX inference plumbing and the compositing mechanics were confirmed working, not
+real-world segmentation accuracy). **Doesn't combine with silence-cut/auto-zoom/B-roll/SFX/VFX
+cues in the same render** — enforced in `render-pipeline/lib/render.js`, not just documented.
+
+## Marketing Studio module — Multi-clip projects & template library
+
+### Multi-clip projects (`migrations/0018_marketing_multiclip.sql`)
+A project can now hold several uploaded clips, stitched into one combined video before the
+existing transcribe/caption/render pipeline runs unchanged.
+- **`marketing_project_clips`** — one row per clip (`project_id`, `source_key`,
+  `source_duration_sec`, `order_index`). The very first upload
+  (`POST /marketing/projects/upload`) is now *also* registered here as `order_index=0` (in
+  addition to setting the project's own `source_key` directly, unchanged) — so a project that
+  only ever gets one video behaves exactly as before, while one that later adds more clips has a
+  complete, correctly-ordered list to combine.
+- `GET/POST/DELETE /marketing/projects/clips`, `PATCH /marketing/projects/clips/reorder` — clip
+  CRUD, all session-gated and ownership-checked like every other route in this module.
+- `POST /marketing/projects/combine-clips` — fetches all clips in `order_index` order, calls
+  render-pipeline's `POST /concat-clips` (HMAC-signed like `/render`/`/extract-audio`, same
+  `MARKETING_RENDER_WEBHOOK_SECRET`) with their public media URLs, and on success replaces the
+  project's `source_key`/`source_duration_sec` with the combined result — from then on it's an
+  ordinary single-video project. Requires the render pipeline configured (clip stitching needs
+  ffmpeg); requires R2 storage specifically (the `LOCAL_PUBLIC_BASE_URL` local-fallback mode isn't
+  supported for this one route, since the combined video needs a real `source_key` the rest of the
+  app can address, not just a URL).
+- **render-pipeline**: `POST /concat-clips` (`lib/concatClips.js`) — downloads each clip,
+  normalizes every one to the target resolution (clips can come from different
+  cameras/apps/resolutions/codecs — normalizing first, then using the `concat` *filter*
+  rather than the stream-copy `concat` *demuxer*, is what makes mismatched inputs work at all),
+  concatenates, uploads to R2. Verified with two clips of genuinely different resolutions
+  (640×480 and 1080×1920) producing one correctly-normalized combined output.
+- Frontend: a "Clips" card in the Editor (visible once a project has a video) — add more clips,
+  reorder with ↑/↓, remove, and "🔗 Combine into one video" once there's more than one. Re-run
+  Transcribe after combining — captions/cues from before a combine describe the old (shorter)
+  video, not the new combined one, and aren't auto-migrated.
+
+### Template library (`MARKETING_TEMPLATE_LIBRARY`, worker.js)
+"Create a template library like Captions.ai" — 9 curated starter templates (Flash Sale, Product
+Launch, Testimonial Quote, Countdown/Urgency, Before & After, Welcome/Business Intro,
+Call-to-Action/Contact, Weekly Tip, Square Feed Promo), static config (same zero-cost shape as
+`MARKETING_STYLE_PRESETS`/`MARKETING_AUTOEDIT_PRESETS` — no seed data in D1). `GET
+/marketing/template-library` lists them; `POST /marketing/template-library/clone` copies one into
+a real, client-owned, fully-editable `marketing_templates` row (`handleMarketingTemplateCreate`'s
+same underlying table) — cloning, not referencing, so editing your copy never touches the shared
+library list. Frontend: "📚 Browse Library" button on the Video Templates tab opens a card grid;
+clicking a card clones it and opens the normal template editing flow.
+
+### Animated template library — Remotion engine (`migrations/0019_marketing_remotion.sql`)
+"Remotion for the template/style layer (React components map naturally to your existing
+Cloudflare Workers setup) + FFmpeg/libass for the raw caption burn-in and Whisper for
+transcription" — a second, real animation engine for Video Templates, alongside (not replacing)
+the static-scene ffmpeg engine described above. The caption-burn-in pipeline for uploaded videos
+and transcription are unchanged by this — Remotion is scoped specifically to the template/style
+layer.
+
+- **`marketing_templates.engine`** (`'ffmpeg'` default | `'remotion'`), **`.remotion_composition_id`**,
+  **`.props_schema_json`** — new columns, migration `0019_marketing_remotion.sql`. A Remotion
+  template has `scenes_json` empty/unused; a Remotion template's "scenes" are its React component
+  (see render-pipeline's `remotion/` tree) and it renders via `spec.engine:'remotion'` instead of
+  the default ffmpeg scene compositor.
+- **`MARKETING_REMOTION_LIBRARY`** (worker.js) — 4 curated animated starter templates (Flash Sale,
+  Product Launch, Countdown/Urgency, Testimonial Quote), each with a `props_schema` (key/label/
+  default hints for the generate form) instead of `{{variable}}` scenes. Ids/props must stay in
+  sync with render-pipeline's `remotion/Root.jsx` registry — this constant is metadata for the
+  picker UI and prop hints only; the actual composition code lives in the render pipeline.
+  `GET /marketing/remotion-library` lists them; `POST /marketing/remotion-library/clone` clones one
+  into a client-owned `marketing_templates` row with `engine:'remotion'` set (same clone-not-
+  reference pattern as the ffmpeg template library).
+- **`handleMarketingTemplateGenerate`** branches on `template.engine`: for `'remotion'` it skips
+  `marketingResolveScenes`/style resolution entirely and instead passes the batch row's variables
+  straight through as `spec.props` (Remotion components consume props natively, no `{{variable}}`
+  string substitution needed); for `'ffmpeg'` it behaves exactly as before. Either way the result
+  is a normal `marketing_projects` row going through the same render-job/download/WhatsApp-send
+  flow.
+- **render-pipeline**: `spec.mode:'template', spec.engine:'remotion'` jobs are dispatched to
+  `lib/remotionRender.js` (`server.js`'s `processJob`) instead of `lib/templateRender.js` — bundles
+  the `remotion/` component tree once per process (webpack, cached, not redone per render),
+  `selectComposition()`s the requested id with the job's props, `renderMedia()`s it via real
+  headless Chrome at the project's target resolution, optionally burns in the watermark with a
+  plain ffmpeg `drawtext` pass, uploads to R2. Requires a Chrome-capable container — see the
+  `Dockerfile`'s new headless-Chrome runtime dependencies and its build-time
+  `npx remotion browser ensure` step (downloads Chrome Headless Shell once at image build instead
+  of on the first production render). See `render-pipeline/README.md`'s "Animated templates
+  (Remotion engine)" section for the full technical writeup, including what was and wasn't
+  verified (real bundle→render tests with visual frame confirmation; the actual Docker build step
+  was not runnable in the dev sandbox — no Docker daemon there).
+- Frontend: a "🎬 Browse Animated Templates" button next to "📚 Browse Library" on the Video
+  Templates tab, opening the same clone-a-card flow; cloned/animated templates show an "🎬
+  Animated" badge and a prop count instead of a scene count in the templates list, and the
+  generate-batch panel prefills a sample row from the template's `props_schema` so it's clear
+  which keys to use.
+- **Manual step after deploying this**: run `wrangler d1 migrations apply leadvyne-d1 --remote`
+  again (adds migration `0019`) and redeploy the render pipeline with the updated `Dockerfile` —
+  the Chrome dependencies and `remotion browser ensure` step meaningfully increase build time/image
+  size, so expect a slower build than previous render-pipeline deploys.
+
+### Export quality control ("export as MP4 and control quality")
+Output was always MP4 already (the only format this pipeline produces) — what was missing was
+control over the encode speed/quality tradeoff, previously hardcoded (`crf 21`, `preset veryfast`)
+everywhere. `MARKETING_QUALITY_LEVELS = ['draft','standard','high']` (worker.js) validates
+`options.quality` into `spec.quality`; `QUALITY_PRESETS` (`render-pipeline/lib/filtergraph.js`,
+exported and reused by `templateRender.js`/`textBehindSubject.js` so all three render modes stay
+consistent) maps it to actual ffmpeg `-crf`/`-preset` values: `draft` (28/ultrafast, fastest,
+for quick previews), `standard` (21/veryfast, the previous default, unchanged for anyone not
+picking a quality), `high` (17/medium, visibly cleaner, noticeably slower encode). Frontend: a
+quality `<select>` in the Editor's Render & export step.
+
+### Auto-suggested B-Roll/SFX/VFX cues
+Previously required a manual "✨ Suggest cues" click after transcribing. `transcribeProject()`
+(`marketing-studio.html`) now calls `suggestCues()` automatically right after a successful
+transcription — still free (the same zero-cost keyword heuristic, no LLM call), and the button
+stays available to re-run it. Suggested cues already defaulted to `accepted:true`
+(`marketingSuggestCuesHeuristic`), so this closes the remaining manual step without changing what
+actually ends up in a render — cues were never excluded by default, only *surfaced* on request.
+
+### Modern UX pass (`marketing-studio.html`)
+- **Toast notifications** replace `alert()` for every non-destructive message (errors,
+  confirmations) — `confirm()` is kept for actual deletions, which should still interrupt.
+- **Drag-and-drop upload** with a real progress bar — the upload now goes through `XMLHttpRequest`
+  instead of `fetch()` specifically because `fetch` has no upload-progress event to hook.
+- **Inline, click-to-edit captions** replace a blocking `prompt()` dialog — click a word, type the
+  fix in place (a real `contenteditable` span, not a modal), Enter or click-away commits it.

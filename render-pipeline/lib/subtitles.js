@@ -129,4 +129,39 @@ function writeAssFile(filePath, words, style, resolution) {
   return filePath;
 }
 
-module.exports = { buildAssSubtitles, writeAssFile, toAssColor, toAssTime, assEscape };
+// Video Templates' text scenes (lib/templateRender.js) need this too — a single centered block
+// of text for a whole scene's duration, not word-level captions. Originally rendered via
+// ffmpeg's `drawtext` filter directly, which turned out to NOT do the same complex-script
+// shaping/font-fallback `subtitles` (libass) does — verified against real Malayalam text:
+// drawtext renders it as broken tofu boxes even with a Malayalam-capable font installed, while
+// the exact same text through this ASS path renders correctly. So every burned-in text in this
+// service — captions AND template title cards — goes through libass now, for one consistent,
+// actually-verified-correct rendering path rather than two different ones with different
+// script support.
+function buildTitleCardAss(text, style, durationSec, { resolutionW, resolutionH }) {
+  const fontName = (style.font || 'Arial').split(',')[0].replace(/['"]/g, '').trim() || 'Arial';
+  const fontSize = Math.round(resolutionH * 0.06);
+  const primary = toAssColor(style.text_color, '#FFFFFF');
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: ${resolutionW}
+PlayResY: ${resolutionH}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,${fontName},${fontSize},${primary},${primary},&H00000000&,&H00000000&,-1,0,0,0,100,100,0,0,1,3,1,5,80,80,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,${toAssTime(0)},${toAssTime(durationSec)},Default,,0,0,0,,${assEscape(text)}
+`;
+  return header;
+}
+function writeTitleCardAss(filePath, text, style, durationSec, resolution) {
+  fs.writeFileSync(filePath, buildTitleCardAss(text, style, durationSec, resolution), 'utf8');
+  return filePath;
+}
+
+module.exports = { buildAssSubtitles, writeAssFile, buildTitleCardAss, writeTitleCardAss, toAssColor, toAssTime, assEscape };

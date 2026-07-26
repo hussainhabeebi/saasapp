@@ -11,6 +11,9 @@ const express = require('express');
 const hmac = require('./lib/hmac');
 const { renderCaptionClip } = require('./lib/render');
 const { renderTemplate } = require('./lib/templateRender');
+const { renderRemotionTemplate } = require('./lib/remotionRender');
+const { extractAudio } = require('./lib/extractAudio');
+const { concatClips } = require('./lib/concatClips');
 
 const env = process.env;
 const PORT = env.PORT || 8787;
@@ -57,6 +60,49 @@ app.post('/render', (req, res) => {
   drainQueue();
 });
 
+// Synchronous, not queued like /render — this is a quick ffmpeg pass (strip video, re-encode
+// audio), not a full render, and the Worker is waiting on the response inline (see worker.js's
+// handleMarketingTranscribe) to forward the result straight to the transcription API. Real fix
+// for a real bug: OpenAI's Whisper endpoint hard-caps requests at 25 MB, and sending the whole
+// video (not just its audio) was hitting that on perfectly reasonable video files. Same
+// HMAC-over-raw-body auth as /render, reusing RENDER_WEBHOOK_SECRET — one shared secret for both
+// routes rather than a second one to configure.
+app.post('/extract-audio', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { source_url } = req.body || {};
+  if (!source_url) return res.status(400).json({ error: 'source_url required' });
+  try {
+    const audioBuffer = await extractAudio(source_url);
+    res.set('Content-Type', 'audio/mpeg');
+    res.send(audioBuffer);
+  } catch (err) {
+    console.error('extract-audio failed:', err.stderr || err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  }
+});
+
+// Also synchronous (not queued) — same reasoning as /extract-audio: one bounded ffmpeg pass
+// (normalize + concat a handful of clips), not the multi-step render pipeline, and the Worker's
+// "combine my clips" action is waiting on the result inline.
+app.post('/concat-clips', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { source_urls, resolution, client_id, project_id } = req.body || {};
+  if (!Array.isArray(source_urls) || !source_urls.length) return res.status(400).json({ error: 'source_urls (a non-empty array) required' });
+  try {
+    const result = await concatClips(env, source_urls, resolution, client_id, project_id);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('concat-clips failed:', err.stderr || err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  }
+});
+
 async function drainQueue() {
   if (draining) return;
   draining = true;
@@ -71,7 +117,7 @@ async function processJob(job) {
   console.log(`[job ${job.job_id}] starting, mode=${job.spec?.mode}`);
   try {
     const result = job.spec?.mode === 'template'
-      ? await renderTemplate(job, env)
+      ? (job.spec?.engine === 'remotion' ? await renderRemotionTemplate(job, env) : await renderTemplate(job, env))
       : await renderCaptionClip(job, env, ASSETS_ROOT);
     console.log(`[job ${job.job_id}] done`, result);
     await callback(job, { job_id: job.job_id, status: 'done', ...result });

@@ -96,10 +96,39 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .cue-type.vfx{background:var(--good-soft);color:var(--good)}
 .cue-time{color:var(--muted);font-family:ui-monospace,monospace;flex-shrink:0;width:70px}
 .cue-label{flex:1}
+
+/* Toast notifications — replaces alert()/confirm() for anything non-blocking */
+#toastStack{position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:360px}
+.toast{background:var(--card2);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;padding:12px 14px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.4);animation:toast-in .2s ease-out}
+.toast.success{border-left-color:var(--good)}
+.toast.error{border-left-color:var(--bad)}
+@keyframes toast-in{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+
+/* Drag-and-drop upload */
+.dropzone.dragover{border-color:var(--accent);background:var(--accent-soft)}
+.upload-progress-wrap{margin-top:10px}
+
+/* Clips manager (multi-clip projects) */
+.clip-row{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;background:var(--card2)}
+.clip-order{width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.clip-name{flex:1;font-size:12.5px}
+
+/* Template library */
+.lib-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.lib-card{border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--card2);cursor:pointer;transition:border-color .15s}
+.lib-card:hover{border-color:var(--accent)}
+.lib-card-cat{font-size:10px;font-weight:700;text-transform:uppercase;color:var(--accent-ink);letter-spacing:.03em}
+.lib-card-name{font-size:14px;font-weight:700;margin:4px 0}
+.lib-card-desc{font-size:12px;color:var(--muted);line-height:1.4}
+
+/* Inline word editing */
+.word[contenteditable]{outline:none;cursor:text}
+.word[contenteditable]:focus{border-color:var(--accent);background:var(--card)}
 </style>
 </head>
 <body>
 
+<div id="toastStack"></div>
 <div id="gate">Loading…</div>
 
 <div id="app" class="hidden">
@@ -157,7 +186,19 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
       <div class="card">
         <div class="card-head">
           <div><h2>Video Templates</h2><div class="sub">Create videos using code instead of editing — define a template once with {{variables}}, then generate a batch: one rendered video per data row (landing-page teasers, product demos, ads, social clips).</div></div>
-          <button class="btn btn-primary" onclick="openNewTemplateForm()">+ New Template</button>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-sec" onclick="toggleLibrary()">📚 Browse Library</button>
+            <button class="btn btn-sec" onclick="toggleRemotionLibrary()">🎬 Browse Animated Templates</button>
+            <button class="btn btn-primary" onclick="openNewTemplateForm()">+ New Template</button>
+          </div>
+        </div>
+        <div class="hidden" id="libraryCard" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
+          <div class="note" style="margin-bottom:10px">Starter templates — clone one into your own editable template, then customize it.</div>
+          <div class="lib-grid" id="libraryGrid"></div>
+        </div>
+        <div class="hidden" id="remotionLibraryCard" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
+          <div class="note" style="margin-bottom:10px">Animated templates — real motion (spring/fade/scale), rendered from React components instead of static text cards. Clone one, then generate a batch the same way as any other template.</div>
+          <div class="lib-grid" id="remotionLibraryGrid"></div>
         </div>
         <div class="hidden" id="newTemplateForm" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
           <label class="form-label">Name</label>
@@ -230,8 +271,12 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
           <div class="card">
             <div class="card-head"><h2>Preview</h2></div>
             <div id="uploadZone" class="dropzone" onclick="document.getElementById('fileInput').click()">
-              📹 Click to choose an mp4 / mov / webm / m4v file (max 100 MB)
+              📹 Click or drag a video here — mp4 / mov / webm / m4v (max 100 MB)
               <input type="file" id="fileInput" accept="video/mp4,video/quicktime,video/webm,video/x-m4v" class="hidden" onchange="onFilePicked(event)">
+            </div>
+            <div class="hidden upload-progress-wrap" id="uploadProgressWrap">
+              <div class="progress"><div class="progress-fill" id="uploadProgressFill" style="width:0%"></div></div>
+              <div class="note" id="uploadProgressNote">Uploading…</div>
             </div>
             <div class="hidden" id="playerWrap" style="margin-top:10px">
               <div class="preview-frame" id="previewFrame" style="width:100%;max-width:300px;aspect-ratio:9/16">
@@ -255,6 +300,16 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
                 <button class="btn btn-ghost btn-sm" onclick="setTrimFromPlayer('end')">Set end ← playhead</button>
               </div>
               <button class="btn btn-sec btn-sm" style="margin-top:10px;width:100%" onclick="saveTrim()">Save trim & aspect</button>
+            </div>
+          </div>
+
+          <div class="card hidden" id="clipsCard">
+            <div class="card-head"><h2>Clips</h2><div class="sub">Multiple clips get stitched into one video, in this order.</div></div>
+            <div id="clipsList"></div>
+            <div style="display:flex;gap:8px;margin-top:10px">
+              <button class="btn btn-ghost btn-sm" onclick="document.getElementById('clipFileInput').click()">+ Add clip</button>
+              <input type="file" id="clipFileInput" accept="video/mp4,video/quicktime,video/webm,video/x-m4v" class="hidden" onchange="onClipFilePicked(event)">
+              <button class="btn btn-sec btn-sm hidden" id="combineClipsBtn" onclick="combineClips()">🔗 Combine into one video</button>
             </div>
           </div>
         </div>
@@ -286,7 +341,9 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div class="chip-row" style="margin-top:12px">
               <span class="chip" id="optSilence" onclick="toggleOpt('optSilence')">✂️ Cut silences / filler words</span>
               <span class="chip" id="optZoom" onclick="toggleOpt('optZoom')">🔎 Auto-zoom on emphasis</span>
+              <span class="chip" id="optTextBehindSubject" onclick="toggleOpt('optTextBehindSubject')">🫥 Text behind subject (beta)</span>
             </div>
+            <div class="note" id="textBehindSubjectNote" style="margin-top:6px">Beta — free local person-detection, approximate edges. Turns off silence-cut/auto-zoom/B-roll/SFX for this render (not combinable yet).</div>
             <label class="form-label">Background music</label>
             <select class="form-select" id="optMusic">
               <option value="">None</option>
@@ -307,6 +364,13 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
           <div class="card">
             <div class="card-head"><h2>5 · Render & export</h2></div>
             <div class="note" id="renderResNote"></div>
+            <label class="form-label">Export quality</label>
+            <select class="form-select" id="optQuality">
+              <option value="standard">Standard — balanced speed/quality (default)</option>
+              <option value="draft">Draft — fastest, lower quality (for quick previews)</option>
+              <option value="high">High — slower encode, best quality</option>
+            </select>
+            <div class="note" style="margin-top:4px">Always exports as MP4.</div>
             <button class="btn btn-primary" id="renderBtn" onclick="startRender()" style="margin-top:10px">🚀 Render</button>
             <div class="progress hidden" id="renderProgressWrap"><div class="progress-fill" id="renderProgressFill" style="width:0%"></div></div>
             <div class="note" id="renderStatus" style="margin-top:8px"></div>
@@ -350,6 +414,19 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s || 
 function fmtDuration(sec) { if (!sec && sec !== 0) return '—'; const m = Math.floor(sec / 60), s = Math.round(sec % 60); return `${m}:${String(s).padStart(2, '0')}`; }
 function fmtDate(s) { if (!s) return ''; try { return new Date(s).toLocaleString(); } catch (e) { return s; } }
 function mediaUrl(key) { return key ? `${WORKER_BASE}/marketing/media/${key}` : ''; }
+
+// ── TOASTS — replaces alert() for anything that isn't a destructive-action confirmation
+// (confirm() stays for deletes — those should still interrupt).
+function showToast(message, type) {
+  const stack = $id('toastStack');
+  const el = document.createElement('div');
+  el.className = 'toast' + (type ? ' ' + type : '');
+  el.textContent = message;
+  stack.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+function toastError(message) { showToast(message, 'error'); }
+function toastSuccess(message) { showToast(message, 'success'); }
 
 // ── AUTH — identical pattern to email-marketing.html/broadcast.html: this page only ever opens
 // from an already-logged-in dashboard.html tab (window.open, same origin) — lv_cid/lv_session
@@ -433,11 +510,11 @@ function openNewProjectForm() { $id('newProjectForm').classList.remove('hidden')
 function closeNewProjectForm() { $id('newProjectForm').classList.add('hidden'); }
 async function createProject() {
   const title = $id('npTitle').value.trim();
-  if (!title) { alert('Give the project a title.'); return; }
+  if (!title) { toastError('Give the project a title.'); return; }
   const body = { title, target_aspect: $id('npAspect').value, language: $id('npLanguage').value.trim() || undefined };
   const r = await fetch(`${WORKER_BASE}/marketing/projects`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
   const data = await r.json();
-  if (!r.ok) { alert(data.error || 'Failed to create project.'); return; }
+  if (!r.ok) { toastError(data.error || 'Failed to create project.'); return; }
   closeNewProjectForm();
   $id('npTitle').value = ''; $id('npLanguage').value = '';
   await loadProjects();
@@ -458,6 +535,7 @@ function openEditor(id) {
   $id('page-styles').classList.add('hidden');
   $id('page-editor').classList.remove('hidden');
   renderEditor();
+  loadClips();
   pollJobsIfNeeded();
 }
 function closeEditor() {
@@ -476,7 +554,9 @@ function renderEditor() {
 
   const hasVideo = !!p.source_key;
   $id('uploadZone').classList.toggle('hidden', hasVideo);
+  if (!hasVideo) resetUploadZone();
   $id('playerWrap').classList.toggle('hidden', !hasVideo);
+  $id('clipsCard').classList.toggle('hidden', !hasVideo);
   if (hasVideo) {
     const video = $id('previewVideo');
     video.src = mediaUrl(p.source_key);
@@ -490,7 +570,7 @@ function renderEditor() {
   $id('transcribeNote').textContent = p.language ? `Detected/set language: ${p.language}` : '';
   const words = p.captions?.words || [];
   $id('wordListWrap').classList.toggle('hidden', words.length === 0);
-  $id('wordList').innerHTML = words.map((w, i) => `<span class="word${w.approximate ? ' approx' : ''}" onclick="editWord(${i})">${esc(w.word)}</span>`).join('');
+  $id('wordList').innerHTML = words.map((w, i) => `<span class="word${w.approximate ? ' approx' : ''}" data-idx="${i}" onclick="editWord(${i})" onblur="onWordBlur(${i}, this)" onkeydown="onWordKeydown(event)">${esc(w.word)}</span>`).join('');
 
   selectedStyleId = p.style_id || 'bold-pop';
   renderStyleGrid();
@@ -498,6 +578,7 @@ function renderEditor() {
 
   $id('optSilence').classList.toggle('on', !!p._optSilence);
   $id('optZoom').classList.toggle('on', !!p._optZoom);
+  $id('optTextBehindSubject').classList.toggle('on', !!p._optTextBehindSubject);
   $id('optAutoeditPreset').value = '';
 
   currentCues = p.cues || [];
@@ -525,33 +606,148 @@ async function saveProjectMeta() {
   if (idx >= 0) projects[idx].title = title;
 }
 
-// ── UPLOAD ──
+// ── UPLOAD (drag-drop + real progress via XHR, since fetch() has no upload-progress event) ──
+function resetUploadZone() {
+  $id('uploadZone').textContent = '📹 Click or drag a video here — mp4 / mov / webm / m4v (max 100 MB)';
+  $id('uploadProgressWrap').classList.add('hidden');
+}
+function probeDuration(file) {
+  return new Promise((resolve) => {
+    const tmpUrl = URL.createObjectURL(file);
+    const probe = document.createElement('video');
+    probe.preload = 'metadata';
+    probe.onloadedmetadata = () => { const d = probe.duration || 0; URL.revokeObjectURL(tmpUrl); resolve(d); };
+    probe.onerror = () => { URL.revokeObjectURL(tmpUrl); resolve(0); };
+    probe.src = tmpUrl;
+  });
+}
+function xhrUpload(url, form, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.setRequestHeader('Authorization', 'Bearer ' + sessionToken);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100)); };
+    xhr.onload = () => {
+      let data = {}; try { data = JSON.parse(xhr.responseText); } catch (e) {}
+      xhr.status >= 200 && xhr.status < 300 ? resolve(data) : reject(new Error(data.error || ('HTTP ' + xhr.status)));
+    };
+    xhr.onerror = () => reject(new Error('Network error during upload.'));
+    xhr.send(form);
+  });
+}
+
 function onFilePicked(evt) {
   const file = evt.target.files[0];
-  if (!file || !currentProject) return;
-  const tmpUrl = URL.createObjectURL(file);
-  const probe = document.createElement('video');
-  probe.preload = 'metadata';
-  probe.onloadedmetadata = async () => {
-    const duration = probe.duration || 0;
-    URL.revokeObjectURL(tmpUrl);
-    await uploadVideo(file, duration);
-  };
-  probe.src = tmpUrl;
+  if (file && currentProject) uploadPrimaryVideo(file);
 }
-async function uploadVideo(file, durationSec) {
-  $id('uploadZone').textContent = 'Uploading…';
+document.addEventListener('DOMContentLoaded', () => {
+  const zone = $id('uploadZone');
+  if (!zone) return;
+  ['dragenter', 'dragover'].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.add('dragover'); }));
+  ['dragleave', 'drop'].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.remove('dragover'); }));
+  zone.addEventListener('drop', e => {
+    const file = e.dataTransfer?.files?.[0];
+    if (file && currentProject) uploadPrimaryVideo(file);
+  });
+});
+
+async function uploadPrimaryVideo(file) {
+  const durationSec = await probeDuration(file);
+  $id('uploadZone').textContent = '⏳ Uploading…';
+  $id('uploadProgressWrap').classList.remove('hidden');
+  $id('uploadProgressFill').style.width = '0%';
   const form = new FormData();
   form.append('project_id', currentProject.id);
   form.append('file', file);
   form.append('duration_sec', String(durationSec));
-  const r = await fetch(`${WORKER_BASE}/marketing/projects/upload`, { method: 'POST', headers: ncAuthHeaders(), body: form });
-  const data = await r.json();
-  if (!r.ok) { alert(data.error || 'Upload failed.'); $id('uploadZone').textContent = '📹 Click to choose an mp4 / mov / webm / m4v file (max 100 MB)'; return; }
-  currentProject = data.project;
-  const idx = projects.findIndex(p => p.id === currentProject.id);
-  if (idx >= 0) projects[idx] = currentProject; else projects.unshift(currentProject);
-  renderEditor();
+  try {
+    const data = await xhrUpload(`${WORKER_BASE}/marketing/projects/upload`, form, pct => {
+      $id('uploadProgressFill').style.width = pct + '%';
+      $id('uploadProgressNote').textContent = `Uploading… ${pct}%`;
+    });
+    currentProject = data.project;
+    const idx = projects.findIndex(p => p.id === currentProject.id);
+    if (idx >= 0) projects[idx] = currentProject; else projects.unshift(currentProject);
+    toastSuccess('Video uploaded.');
+    await loadClips();
+    renderEditor();
+  } catch (e) {
+    toastError(e.message || 'Upload failed.');
+    resetUploadZone();
+  }
+}
+
+// ── CLIPS (multi-clip projects) — additional clips stitched, in order, into one combined video
+// via /marketing/projects/combine-clips before transcribe/caption/render run on it, unchanged.
+let currentClips = [];
+async function loadClips() {
+  if (!currentProject) return;
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/clips?project_id=${currentProject.id}`, { headers: ncAuthHeaders() });
+  const data = await r.json().catch(() => ({ list: [] }));
+  currentClips = data.list || [];
+  renderClips();
+}
+function renderClips() {
+  const card = $id('clipsCard');
+  if (!currentProject?.source_key) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  $id('clipsList').innerHTML = currentClips.map((c, i) => `
+    <div class="clip-row">
+      <span class="clip-order">${i + 1}</span>
+      <span class="clip-name">${fmtDuration(c.source_duration_sec)}${i === 0 ? ' (primary upload)' : ''}</span>
+      <button class="btn btn-ghost btn-sm" ${i === 0 ? 'disabled' : ''} onclick="moveClip(${i},-1)">↑</button>
+      <button class="btn btn-ghost btn-sm" ${i === currentClips.length - 1 ? 'disabled' : ''} onclick="moveClip(${i},1)">↓</button>
+      <button class="btn btn-danger btn-sm" ${currentClips.length <= 1 ? 'disabled' : ''} onclick="removeClip(${c.id})">✕</button>
+    </div>`).join('');
+  $id('combineClipsBtn').classList.toggle('hidden', currentClips.length < 2);
+}
+function onClipFilePicked(evt) {
+  const file = evt.target.files[0];
+  if (file && currentProject) uploadAdditionalClip(file);
+  evt.target.value = '';
+}
+async function uploadAdditionalClip(file) {
+  const durationSec = await probeDuration(file);
+  const form = new FormData();
+  form.append('project_id', currentProject.id);
+  form.append('file', file);
+  form.append('duration_sec', String(durationSec));
+  try {
+    await xhrUpload(`${WORKER_BASE}/marketing/projects/clips`, form);
+    toastSuccess('Clip added.');
+    await loadClips();
+  } catch (e) { toastError(e.message || 'Could not add clip.'); }
+}
+async function moveClip(index, direction) {
+  const newIndex = index + direction;
+  if (newIndex < 0 || newIndex >= currentClips.length) return;
+  const reordered = [...currentClips];
+  [reordered[index], reordered[newIndex]] = [reordered[newIndex], reordered[index]];
+  currentClips = reordered;
+  renderClips();
+  await fetch(`${WORKER_BASE}/marketing/projects/clips/reorder`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, order: reordered.map(c => c.id) }) });
+}
+async function removeClip(id) {
+  if (currentClips.length <= 1) return;
+  await fetch(`${WORKER_BASE}/marketing/projects/clips`, { method: 'DELETE', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id }) });
+  await loadClips();
+}
+async function combineClips() {
+  $id('combineClipsBtn').disabled = true;
+  $id('combineClipsBtn').textContent = 'Combining…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/projects/combine-clips`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id }) });
+    const data = await r.json();
+    if (!r.ok) { toastError(data.error || 'Could not combine clips.'); return; }
+    currentProject = data.project;
+    const idx = projects.findIndex(p => p.id === currentProject.id);
+    if (idx >= 0) projects[idx] = currentProject;
+    toastSuccess('Clips combined — re-transcribe to caption the full video.');
+    renderEditor();
+  } finally {
+    $id('combineClipsBtn').disabled = false;
+    $id('combineClipsBtn').textContent = '🔗 Combine into one video';
+  }
 }
 
 // ── TRIM ──
@@ -567,7 +763,7 @@ async function saveTrim() {
   };
   const r = await fetch(`${WORKER_BASE}/marketing/projects`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
   const data = await r.json();
-  if (r.ok) { currentProject = data.project; alert('Trim saved.'); }
+  if (r.ok) { currentProject = data.project; toastSuccess('Trim saved.'); }
 }
 
 // ── TRANSCRIBE / CAPTIONS ──
@@ -577,20 +773,40 @@ async function transcribeProject() {
   try {
     const r = await fetch(`${WORKER_BASE}/marketing/projects/transcribe`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id }) });
     const data = await r.json();
-    if (!r.ok) { alert(data.error || 'Transcription failed.'); $id('transcribeNote').textContent = ''; $id('transcribeBtn').disabled = false; return; }
+    if (!r.ok) { toastError(data.error || 'Transcription failed.'); $id('transcribeNote').textContent = ''; $id('transcribeBtn').disabled = false; return; }
     currentProject = data.project;
     const idx = projects.findIndex(p => p.id === currentProject.id);
     if (idx >= 0) projects[idx] = currentProject;
     renderEditor();
+    toastSuccess('Transcribed.');
+    // Auto-suggest B-Roll/SFX/VFX cues right away — free (no AI call), so there's no reason to
+    // make this a separate manual click for the common case; the button stays for re-running it.
+    await suggestCues();
   } finally { $id('transcribeBtn').disabled = false; }
 }
+// Inline, click-to-edit word correction (replaces a blocking prompt() dialog) — click a word,
+// type the fix directly in place, Enter or click-away commits it.
 function editWord(i) {
-  const words = currentProject.captions.words;
-  const next = prompt('Fix this word:', words[i].word);
-  if (next == null) return;
-  words[i] = { ...words[i], word: next };
+  const el = document.querySelector(`#wordList .word[data-idx="${i}"]`);
+  if (!el) return;
+  el.setAttribute('contenteditable', 'true');
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+function onWordBlur(i, el) {
+  el.removeAttribute('contenteditable');
+  const next = el.textContent.trim();
+  if (!next) { el.textContent = currentProject.captions.words[i].word; return; }
+  currentProject.captions.words[i] = { ...currentProject.captions.words[i], word: next };
+  el.classList.remove('approx');
   saveCaptions();
-  renderEditor();
+}
+function onWordKeydown(e) {
+  if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
 }
 async function saveCaptions() {
   await fetch(`${WORKER_BASE}/marketing/projects/captions`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, captions: currentProject.captions }) });
@@ -672,6 +888,15 @@ function updateCaptionOverlay() {
 function toggleOpt(id) {
   $id(id).classList.toggle('on');
   currentProject['_opt' + id.replace('opt', '')] = $id(id).classList.contains('on');
+  // Text-behind-subject doesn't combine with silence-cut/auto-zoom (the render pipeline enforces
+  // this server-side too — see render-pipeline/lib/render.js — this just keeps the UI honest
+  // about what will actually happen instead of showing options that'll be silently overridden.
+  if (id === 'optTextBehindSubject' && $id('optTextBehindSubject').classList.contains('on')) {
+    $id('optSilence').classList.remove('on');
+    $id('optZoom').classList.remove('on');
+  } else if ((id === 'optSilence' || id === 'optZoom') && $id(id).classList.contains('on')) {
+    $id('optTextBehindSubject').classList.remove('on');
+  }
 }
 
 // ── B-ROLL / SFX / VFX CUES — free (no AI call), keyword-based suggestions derived from the
@@ -696,7 +921,7 @@ async function suggestCues() {
   try {
     const r = await fetch(`${WORKER_BASE}/marketing/projects/suggest-cues`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id }) });
     const data = await r.json();
-    if (!r.ok) { alert(data.error || 'Could not suggest cues.'); return; }
+    if (!r.ok) { toastError(data.error || 'Could not suggest cues.'); return; }
     currentCues = data.cues || [];
     currentProject.cues = currentCues;
     renderCues();
@@ -705,7 +930,7 @@ async function suggestCues() {
 async function saveCues() {
   if (!currentProject) return;
   const r = await fetch(`${WORKER_BASE}/marketing/projects/cues`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, cues: currentCues }) });
-  if (r.ok) { currentProject.cues = currentCues; } else { alert('Failed to save cues.'); }
+  if (r.ok) { currentProject.cues = currentCues; toastSuccess('Cues saved.'); } else { toastError('Failed to save cues.'); }
 }
 
 // ── RENDER ──
@@ -717,11 +942,13 @@ async function startRender() {
     auto_zoom: $id('optZoom').classList.contains('on'),
     background_music: $id('optMusic').value || null,
     autoedit_preset: $id('optAutoeditPreset').value || null,
+    text_behind_subject: $id('optTextBehindSubject').classList.contains('on'),
+    quality: $id('optQuality').value || 'standard',
   };
   const r = await fetch(`${WORKER_BASE}/marketing/projects/render`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, options }) });
   const data = await r.json();
   $id('renderBtn').disabled = false;
-  if (!r.ok) { alert(data.error || 'Could not start render.'); return; }
+  if (!r.ok) { toastError(data.error || 'Could not start render.'); return; }
   currentProject.status = 'rendering';
   renderEditor();
   await loadUsage();
@@ -742,10 +969,78 @@ function pollJobsIfNeeded() {
 
 async function sendToWhatsapp() {
   const phone = $id('waPhone').value.trim();
-  if (!phone) { alert('Enter a WhatsApp number.'); return; }
+  if (!phone) { toastError('Enter a WhatsApp number.'); return; }
   const r = await fetch(`${WORKER_BASE}/marketing/projects/send-whatsapp`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, phone }) });
   const data = await r.json();
-  alert(r.ok ? 'Sent!' : (data.error || 'Failed to send.'));
+  r.ok ? toastSuccess('Sent!') : toastError(data.error || 'Failed to send.');
+}
+
+// ── TEMPLATE LIBRARY — curated starter templates (worker.js's MARKETING_TEMPLATE_LIBRARY),
+// "like Captions.ai": browse, then clone one into your own editable template.
+let templateLibrary = [];
+let libraryLoaded = false;
+async function toggleLibrary() {
+  const card = $id('libraryCard');
+  card.classList.toggle('hidden');
+  if (!card.classList.contains('hidden') && !libraryLoaded) {
+    const r = await fetch(`${WORKER_BASE}/marketing/template-library`, { headers: ncAuthHeaders() });
+    const d = await r.json().catch(() => ({ list: [] }));
+    templateLibrary = d.list || [];
+    libraryLoaded = true;
+    renderLibraryGrid();
+  }
+}
+function renderLibraryGrid() {
+  $id('libraryGrid').innerHTML = templateLibrary.map(t => `
+    <div class="lib-card" onclick="cloneLibraryTemplate('${esc(t.id)}')">
+      <div class="lib-card-cat">${esc(t.category)}</div>
+      <div class="lib-card-name">${esc(t.name)}</div>
+      <div class="lib-card-desc">${esc(t.description)}</div>
+      <div class="note" style="margin-top:8px">${t.scene_count} scenes · ${t.target_aspect} · ~${t.estimated_duration_sec}s</div>
+    </div>`).join('');
+}
+async function cloneLibraryTemplate(libraryId) {
+  const r = await fetch(`${WORKER_BASE}/marketing/template-library/clone`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ library_id: libraryId }) });
+  const data = await r.json();
+  if (!r.ok) { toastError(data.error || 'Could not clone template.'); return; }
+  toastSuccess('Template added — customize it below.');
+  $id('libraryCard').classList.add('hidden');
+  await loadTemplates();
+}
+
+// ── REMOTION LIBRARY — animated React/Remotion compositions (worker.js's
+// MARKETING_REMOTION_LIBRARY), same browse-then-clone flow as the ffmpeg library above, but
+// producing a template with engine:'remotion' (real motion, rendered by headless Chrome on the
+// render pipeline instead of static ffmpeg text/image scenes).
+let remotionLibrary = [];
+let remotionLibraryLoaded = false;
+async function toggleRemotionLibrary() {
+  const card = $id('remotionLibraryCard');
+  card.classList.toggle('hidden');
+  if (!card.classList.contains('hidden') && !remotionLibraryLoaded) {
+    const r = await fetch(`${WORKER_BASE}/marketing/remotion-library`, { headers: ncAuthHeaders() });
+    const d = await r.json().catch(() => ({ list: [] }));
+    remotionLibrary = d.list || [];
+    remotionLibraryLoaded = true;
+    renderRemotionLibraryGrid();
+  }
+}
+function renderRemotionLibraryGrid() {
+  $id('remotionLibraryGrid').innerHTML = remotionLibrary.map(t => `
+    <div class="lib-card" onclick="cloneRemotionLibraryTemplate('${esc(t.id)}')">
+      <div class="lib-card-cat">${esc(t.category)}</div>
+      <div class="lib-card-name">${esc(t.name)}</div>
+      <div class="lib-card-desc">${esc(t.description)}</div>
+      <div class="note" style="margin-top:8px">${t.props_schema.length} props · ${t.target_aspect} · ~${t.estimated_duration_sec}s</div>
+    </div>`).join('');
+}
+async function cloneRemotionLibraryTemplate(libraryId) {
+  const r = await fetch(`${WORKER_BASE}/marketing/remotion-library/clone`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ library_id: libraryId }) });
+  const data = await r.json();
+  if (!r.ok) { toastError(data.error || 'Could not clone template.'); return; }
+  toastSuccess('Animated template added — generate a batch below.');
+  $id('remotionLibraryCard').classList.add('hidden');
+  await loadTemplates();
 }
 
 // ── VIDEO TEMPLATES — "create videos using code instead of editing, generate hundreds
@@ -767,29 +1062,33 @@ function populateStyleSelect() {
 }
 function renderTemplatesList() {
   $id('templatesEmpty').classList.toggle('hidden', templates.length > 0);
-  $id('templatesList').innerHTML = templates.map(t => `
+  $id('templatesList').innerHTML = templates.map(t => {
+    const isRemotion = t.engine === 'remotion';
+    const countLabel = isRemotion ? `${(t.props_schema || []).length} prop${(t.props_schema || []).length === 1 ? '' : 's'}` : `${t.scenes.length} scene${t.scenes.length === 1 ? '' : 's'}`;
+    return `
     <div class="tpl-card">
       <div class="tpl-card-head">
-        <div><b>${esc(t.name)}</b><div class="note">${esc(t.target_aspect)} · ${t.scenes.length} scene${t.scenes.length === 1 ? '' : 's'} · ~${t.estimated_duration_sec}s each</div></div>
+        <div><b>${esc(t.name)}</b>${isRemotion ? ' <span class="lib-card-cat">🎬 Animated</span>' : ''}<div class="note">${esc(t.target_aspect)} · ${countLabel} · ~${t.estimated_duration_sec}s each</div></div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-sec btn-sm" onclick="openGeneratePanel(${t.id})">🚀 Generate batch</button>
           <button class="btn btn-danger btn-sm" onclick="deleteTemplate(${t.id})">Delete</button>
         </div>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 function openNewTemplateForm() { populateStyleSelect(); $id('newTemplateForm').classList.remove('hidden'); }
 function closeNewTemplateForm() { $id('newTemplateForm').classList.add('hidden'); }
 async function createTemplate() {
   const name = $id('ntName').value.trim();
-  if (!name) { alert('Give the template a name.'); return; }
+  if (!name) { toastError('Give the template a name.'); return; }
   let scenes;
   try { scenes = JSON.parse($id('ntScenes').value); if (!Array.isArray(scenes) || !scenes.length) throw new Error(); }
-  catch (e) { alert('Scenes must be a valid, non-empty JSON array.'); return; }
+  catch (e) { toastError('Scenes must be a valid, non-empty JSON array.'); return; }
   const body = { name, scenes, target_aspect: $id('ntAspect').value, style_id: $id('ntStyle').value || undefined, estimated_duration_sec: Number($id('ntDuration').value) || 15 };
   const r = await fetch(`${WORKER_BASE}/marketing/templates`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
   const data = await r.json();
-  if (!r.ok) { alert(data.error || 'Failed to save template.'); return; }
+  if (!r.ok) { toastError(data.error || 'Failed to save template.'); return; }
   closeNewTemplateForm();
   $id('ntName').value = '';
   await loadTemplates();
@@ -803,7 +1102,14 @@ function openGeneratePanel(id) {
   generatingForTemplate = templates.find(t => t.id === id);
   if (!generatingForTemplate) return;
   $id('generateTplName').textContent = 'Generate batch — ' + generatingForTemplate.name;
-  $id('generateRows').value = '';
+  const schema = generatingForTemplate.props_schema;
+  if (generatingForTemplate.engine === 'remotion' && Array.isArray(schema) && schema.length) {
+    const sampleRow = {}; schema.forEach(p => { sampleRow[p.key] = p.default || ''; });
+    $id('generateRows').value = JSON.stringify([sampleRow], null, 2);
+    $id('generateRows').placeholder = `Each row's keys: ${schema.map(p => p.key).join(', ')}`;
+  } else {
+    $id('generateRows').value = '';
+  }
   $id('generateResults').innerHTML = '';
   $id('generatePanel').classList.remove('hidden');
   $id('generatePanel').scrollIntoView({ behavior: 'smooth' });
@@ -813,7 +1119,7 @@ async function generateBatch() {
   if (!generatingForTemplate) return;
   let rows;
   try { rows = JSON.parse($id('generateRows').value); if (!Array.isArray(rows) || !rows.length) throw new Error(); }
-  catch (e) { alert('Rows must be a valid, non-empty JSON array of variable objects.'); return; }
+  catch (e) { toastError('Rows must be a valid, non-empty JSON array of variable objects.'); return; }
   $id('generateBtn').disabled = true;
   $id('generateResults').innerHTML = 'Generating…';
   try {
