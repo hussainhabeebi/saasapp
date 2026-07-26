@@ -9383,6 +9383,26 @@ async function handleMarketingCombineClips(request, env){
   return json({ok:true, project:marketingSerializeProject(updated)});
 }
 
+// Direct-from-Worker Whisper call — the fallback path in handleMarketingTranscribe when the
+// render pipeline isn't configured (render-pipeline/lib/transcribe.js has its own copy of this
+// for the primary path, since it runs in a different runtime). Throws on any non-2xx response
+// with the API's own error message, so callers can pattern-match specific errors (e.g. retrying
+// without an unsupported `language` hint) without re-parsing the response themselves.
+async function marketingCallWhisper(env, fileBytes, fileMime, fileName, language){
+  const form=new FormData();
+  form.append('file', new Blob([fileBytes], {type:fileMime}), fileName);
+  form.append('model', 'whisper-1');
+  form.append('response_format', 'verbose_json');
+  form.append('timestamp_granularities[]', 'word');
+  if(language) form.append('language', language); // omit to let the API auto-detect
+  const r=await fetch(env.MARKETING_TRANSCRIBE_API_URL||'https://api.openai.com/v1/audio/transcriptions', {
+    method:'POST', headers:{Authorization:`Bearer ${env.MARKETING_TRANSCRIBE_API_KEY}`}, body:form,
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data?.error?.message||('HTTP '+r.status));
+  return data;
+}
+
 // Transcription runs inline (one HTTP call, no async job needed on this end) — see the module
 // header comment above for why this is real, in-Worker work while rendering is not.
 async function handleMarketingTranscribe(request, env){
@@ -9439,27 +9459,23 @@ async function handleMarketingTranscribe(request, env){
     if(!obj) return json({error:'Source video not found in storage.'}, 404);
     const fileBytes=await obj.arrayBuffer();
     const ext=(project.source_key.split('.').pop()||'mp4');
-    const form=new FormData();
-    form.append('file', new Blob([fileBytes], {type:obj.httpMetadata?.contentType||'video/mp4'}), `source.${ext}`);
-    form.append('model', 'whisper-1');
-    form.append('response_format', 'verbose_json');
-    form.append('timestamp_granularities[]', 'word');
-    if(languageHint) form.append('language', languageHint); // omit to let the API auto-detect
-
-    let r;
+    const fileMime=obj.httpMetadata?.contentType||'video/mp4';
+    const fileName=`source.${ext}`;
     try{
-      r=await fetch(env.MARKETING_TRANSCRIBE_API_URL||'https://api.openai.com/v1/audio/transcriptions', {
-        method:'POST', headers:{Authorization:`Bearer ${env.MARKETING_TRANSCRIBE_API_KEY}`}, body:form,
-      });
+      data=await marketingCallWhisper(env, fileBytes, fileMime, fileName, languageHint);
     }catch(e){
-      await marketingFailJob(env, jobId, projectId, 'Could not reach transcription API: '+e.message, 'uploaded');
-      return json({error:'Could not reach the transcription API.'}, 502);
-    }
-    data=await r.json().catch(()=>({}));
-    if(!r.ok){
-      const errMsg=data?.error?.message||('HTTP '+r.status);
-      await marketingFailJob(env, jobId, projectId, errMsg, 'uploaded');
-      return json({error:errMsg}, 502);
+      // A language hint a project can be tagged with (e.g. Malayalam, "ml") isn't necessarily in
+      // OpenAI's Whisper API's accepted `language` parameter list — confirmed via a real
+      // "Language 'ml' is not supported." response — even though the model can often still
+      // transcribe that audio correctly through auto-detection; the parameter is only a decoding
+      // hint. Retry once without it instead of failing the whole transcription.
+      if(languageHint && /language .* is not supported/i.test(e.message||'')){
+        try{ data=await marketingCallWhisper(env, fileBytes, fileMime, fileName, null); }
+        catch(e2){ await marketingFailJob(env, jobId, projectId, e2.message, 'uploaded'); return json({error:e2.message}, 502); }
+      } else {
+        await marketingFailJob(env, jobId, projectId, e.message, 'uploaded');
+        return json({error:e.message}, 502);
+      }
     }
   }
 
