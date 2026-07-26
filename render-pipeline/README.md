@@ -13,10 +13,15 @@ for the full request/callback contract this implements.
   source, optionally detects and cuts silence (real `silencedetect` analysis, not a no-op flag),
   crops/scales to the target aspect, optionally applies a slow auto-zoom, burns in captions from
   an ffmpeg ASS subtitle file (word-highlight/pop/plain animations, matching the style presets in
-  `worker.js`), composites any accepted B-roll/SFX/VFX cues it has a matching local asset for
-  (B-roll as a corner picture-in-picture insert, SFX as a one-shot audio overlay, VFX as a
-  filter-only flash/pulse effect — no asset needed for VFX), mixes in background music if a track
-  is available, and watermarks free-tier exports.
+  `worker.js`), composites any accepted B-roll/SFX/VFX cues (B-roll as a corner picture-in-picture
+  insert, SFX as a one-shot audio overlay, VFX as a filter-only flash/pulse effect — no asset
+  needed for VFX), mixes in background music if a track is available, and watermarks free-tier
+  exports. B-roll resolves to a local file in `assets/broll/` if one's been dropped in for that
+  cue's tag, **or automatically fetches a real royalty-free clip from Pexels** the first time that
+  tag is used (`PEXELS_API_KEY`, `lib/assets.js`) — cached to `assets/broll/<tag>.mp4` afterward,
+  so it's one API call per tag ever, not per render. SFX/music stay local-file-only (no free,
+  redistributable stock audio API used here); a cue with neither a local file nor (for B-roll) a
+  Pexels result is silently skipped, same as before.
 - **`spec.mode:'template'`** (Video Templates batch generation): composites the already
   `{{variable}}`-resolved scenes (text cards / images) into one clip. Two engines share this mode:
   the default ffmpeg engine (static text/image scenes, described above) and the Remotion engine
@@ -54,6 +59,42 @@ for the full request/callback contract this implements.
 - Uploads the render result to the same R2 bucket the Worker already serves from (or a local
   fallback for testing without Cloudflare), then POSTs a signed callback to
   `.../marketing/webhook/render-complete`.
+
+## Sarvam AI transcription for Indic languages (`SARVAM_API_KEY`, `lib/sarvamTranscribe.js`)
+
+Whisper's real-world Malayalam accuracy turned out to be weak — a real project's Malayalam audio
+came back mislabeled/garbled through OpenAI's API. When `SARVAM_API_KEY` is set and a project is
+explicitly tagged with a language Sarvam supports (`hi`/`bn`/`kn`/`ml`/`mr`/`or`/`pa`/`ta`/`te`/
+`gu`/`en`), `lib/transcribe.js` routes to Sarvam instead of Whisper for that request. No language
+tag at all still goes to Whisper — there's nothing to route on ahead of time.
+
+**Why this needed real engineering, not a drop-in swap:** Sarvam's word-timestamp REST endpoint
+caps a single request at 30 seconds of audio — a real video needs chunking first. This reuses the
+app's own silence detection (`lib/timeline.js`, already built for silence-cut) to prefer cutting
+chunks at quiet moments instead of mid-word, calls Sarvam once per chunk, and stitches the results
+back into one timeline by offsetting each chunk's word times by its start offset in the full
+audio — normalized to the exact same `{language, text, words:[{word,start,end}]}` shape Whisper's
+path already returns, so nothing downstream (the Worker, the caption editor) needed to change.
+
+**What's verified vs. not.** The chunking/stitching mechanics were verified for real: a real
+33-second synthetic audio clip with a silence gap was run through the actual chunk-planning and
+ffmpeg-splitting code, confirming it correctly split at the silence gap, called the (mocked)
+Sarvam endpoint once per chunk, and stitched word offsets back into one correct timeline —
+including a mixed-shape test where one mocked chunk returned parsed word timestamps and the other
+didn't, confirming the approximate-timing fallback (see below) fires correctly per chunk. What's
+**not** verified: the actual Sarvam response JSON's field names for word-level timestamps.
+Sarvam's own docs site (docs.sarvam.ai) blocks automated fetches (bot protection, HTTP 403 to
+every attempt), and no live `SARVAM_API_KEY` was available in the dev sandbox this was built in to
+test against the real API. The request side (endpoint, `api-subscription-key` auth header,
+multipart fields, `with_timestamps`) is high-confidence — the auth header matches this app's
+existing, working Sarvam TTS integration (`engineSarvamTts` in `worker.js`), and the rest was
+corroborated across several independent sources. `parseSarvamWords()` defensively tries a couple
+of plausible response shapes and falls back to evenly-split timing (flagged `approximate:true`,
+same convention as Whisper's segments-only fallback) rather than crashing if none match — so a
+wrong guess degrades to less-precise caption timing, it doesn't break transcription outright.
+**Test against a real Malayalam project once deployed**; if every word comes back
+`approximate:true`, the real response shape differs from every candidate tried here — paste a raw
+Sarvam response and the parser can be corrected in one place (`parseSarvamWords`).
 
 ## Text behind subject (beta)
 

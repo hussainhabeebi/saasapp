@@ -6,7 +6,14 @@
 // fixed host (whatever Coolify/VPS location it's deployed to), so its outbound IP is stable and
 // (assuming that location is one OpenAI serves) doesn't hit that block. Reuses extractAudio() for
 // the same reason /extract-audio does — sending audio-only keeps well under Whisper's 25 MB cap.
+//
+// When a project is explicitly tagged with an Indic language Sarvam supports (see
+// sarvamTranscribe.js) and SARVAM_API_KEY is configured, that takes priority over Whisper —
+// Whisper's real-world Malayalam accuracy turned out to be weak (a production project came back
+// mislabeled/garbled), while Sarvam is purpose-built for Indian languages. No language hint at
+// all still goes to Whisper, since there's nothing to route on ahead of time.
 const { extractAudio } = require('./extractAudio');
+const { transcribeWithSarvam, supportsLanguage: sarvamSupportsLanguage } = require('./sarvamTranscribe');
 
 async function callWhisper(apiKey, apiUrl, audioBuffer, language) {
   const form = new FormData();
@@ -27,6 +34,10 @@ async function callWhisper(apiKey, apiUrl, audioBuffer, language) {
 }
 
 async function transcribe(sourceUrl, language, env) {
+  if (env.SARVAM_API_KEY && sarvamSupportsLanguage(language)) {
+    return await transcribeWithSarvam(sourceUrl, language, env);
+  }
+
   const apiKey = env.MARKETING_TRANSCRIBE_API_KEY;
   if (!apiKey) throw new Error('MARKETING_TRANSCRIBE_API_KEY is not set on the render pipeline.');
   const apiUrl = env.MARKETING_TRANSCRIBE_API_URL || 'https://api.openai.com/v1/audio/transcriptions';
