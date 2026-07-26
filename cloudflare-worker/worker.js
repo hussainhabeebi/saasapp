@@ -9005,6 +9005,70 @@ const MARKETING_STYLE_PRESETS = [
   {id:'manglish-casual', name:'Manglish Casual', font:'"Baloo Chettan 2", sans-serif', text_color:'#FFFFFF', highlight_color:'#25D366', bg_style:'pill', bg_color:'rgba(0,0,0,0.6)', position:'bottom', animation:'word-highlight'},
 ];
 
+// Auto-Edit Templates (SETUP.md "Marketing Studio module — Auto-Edit Templates & Cue
+// Suggestions") — bundled, sensible defaults for the render options an operator's pipeline
+// already understands (silence_cut/auto_zoom/background_music, all pre-existing spec fields) plus
+// broll_density, a new hint the pipeline can use if it auto-generates its own B-roll beyond the
+// suggested cues below. Purely static config, same zero-cost "no table needed" shape as
+// MARKETING_STYLE_PRESETS — picking one just pre-fills the existing per-project toggles, still
+// overridable afterwards.
+const MARKETING_AUTOEDIT_PRESETS = [
+  {id:'talking-head', name:'Talking Head — Clean', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
+  {id:'highlight-reel', name:'Hype / Highlight Reel', silence_cut:true, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
+  {id:'tutorial', name:'Tutorial / How-To', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'medium'},
+  {id:'testimonial', name:'Testimonial', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
+  {id:'product-ad', name:'Product Ad', silence_cut:false, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
+  {id:'vlog', name:'Vlog / Storytime', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'medium'},
+  {id:'announcement', name:'News / Announcement', silence_cut:true, auto_zoom:false, background_music:'cinematic', broll_density:'low'},
+  {id:'raw', name:'Raw — No Auto-Edit', silence_cut:false, auto_zoom:false, background_music:null, broll_density:'none'},
+];
+
+// Cue suggestion dictionary — deliberately a static keyword→cue-type table, not a model call:
+// scanning the transcript this already has (free — no external request) against ~30 common
+// short-form-video trigger words costs nothing per suggestion, unlike an LLM pass per project.
+// (An AI-enhanced version of this is a reasonable future upgrade — reuse the GEMINI_API_KEY this
+// app already shares with the Conversation Engine for a single cheap call over the transcript
+// text — but wasn't added here so this feature stays exactly $0 marginal cost by default.)
+const MARKETING_CUE_KEYWORDS = [
+  {re:/\b(money|price|cost|discount|offer|sale|cash|₹|\$|rupees|dollars)\b/i, type:'broll', tag:'money', label:'Money / pricing shot'},
+  {re:/\b(fast|quick|quickly|speed|hurry|instant|instantly)\b/i, type:'broll', tag:'speed', label:'Fast-motion / speed shot'},
+  {re:/\b(team|office|work|staff|company|employees)\b/i, type:'broll', tag:'office', label:'Team / office shot'},
+  {re:/\b(phone|call|whatsapp|message|chat|text)\b/i, type:'broll', tag:'phone', label:'Phone / messaging shot'},
+  {re:/\b(location|city|travel|drive|road|journey)\b/i, type:'broll', tag:'location', label:'Location / travel shot'},
+  {re:/\b(product|unbox|unboxing|package|delivery|order)\b/i, type:'broll', tag:'product', label:'Product close-up shot'},
+  {re:/\b(customer|client|people|crowd|everyone)\b/i, type:'broll', tag:'people', label:'Customers / people shot'},
+  {re:/\b(wow|amazing|incredible|awesome|unbelievable)\b/i, type:'sfx', tag:'sparkle', label:'Sparkle / positive sting'},
+  {re:/\b(warning|careful|problem|mistake|don't|stop)\b/i, type:'sfx', tag:'alert', label:'Alert / negative sting'},
+  {re:/\b(boom|bang|hit|impact|crash)\b/i, type:'sfx', tag:'impact', label:'Impact hit'},
+  {re:/\b(new|launch|launching|introducing|announcing|announcement)\b/i, type:'sfx', tag:'whoosh', label:'Whoosh transition'},
+  {re:/\b(click|tap|swipe|select|choose)\b/i, type:'sfx', tag:'click', label:'UI click sound'},
+  {re:/\b(free|win|winner|prize|gift|giveaway)\b/i, type:'vfx', tag:'flash', label:'Flash / highlight burst'},
+  {re:/\b(compare|versus|vs\.?|before|after)\b/i, type:'vfx', tag:'split', label:'Split-screen compare'},
+  {re:/\b(number one|best|top|#1|guaranteed)\b/i, type:'vfx', tag:'badge', label:'Badge / callout overlay'},
+];
+
+// Pure function — words from an already-fetched transcript in, cue suggestions out, no I/O and
+// no cost. Caps at 20 cues and enforces a minimum gap between them so a keyword-dense transcript
+// doesn't produce an unusable wall of suggestions; every suggestion is accepted by default and
+// meant to be reviewed/pruned in the editor before it's ever sent to the render pipeline.
+function marketingSuggestCuesHeuristic(transcript){
+  const words=transcript?.words||[];
+  const MIN_GAP_SEC=2.5, MAX_CUES=20;
+  const cues=[];
+  let lastCueEnd=-Infinity;
+  for(const w of words){
+    if(cues.length>=MAX_CUES) break;
+    const match=MARKETING_CUE_KEYWORDS.find(k=>k.re.test(w.word||''));
+    if(!match) continue;
+    const start=Number(w.start)||0;
+    if(start-lastCueEnd<MIN_GAP_SEC) continue;
+    const end=(Number(w.end)||start)+1.2;
+    cues.push({start:Math.max(0, start-0.3), end, type:match.type, tag:match.tag, label:match.label, keyword:w.word, accepted:true});
+    lastCueEnd=end;
+  }
+  return cues;
+}
+
 function marketingSourceKey(clientId, projectId, ext){ return `marketing/${clientId}/${projectId}/source.${ext}`; }
 
 function marketingSerializeProject(row){
@@ -9019,6 +9083,7 @@ function marketingSerializeProject(row){
     status:row.status, output_key:row.output_key, output_url:row.output_url,
     output_duration_sec:row.output_duration_sec, watermarked:!!row.watermarked,
     template_id:row.template_id||null, template_vars:parseJson(row.template_vars_json),
+    cues:parseJson(row.cues_json)||[],
     created_at:row.created_at, updated_at:row.updated_at,
   };
 }
@@ -9248,6 +9313,43 @@ async function handleMarketingCaptionsSave(request, env){
   return json({ok:true});
 }
 
+async function handleMarketingAutoeditPresets(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json({list:MARKETING_AUTOEDIT_PRESETS});
+}
+
+// Free (no external call) cue suggestion pass — see marketingSuggestCuesHeuristic. Overwrites
+// any previously suggested-but-unreviewed cues; a project's already-reviewed cues can still be
+// edited afterwards via handleMarketingCuesSave, same "suggest, then edit" shape as transcribe→
+// caption-edit above.
+async function handleMarketingSuggestCues(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.project_id);
+  if(!id) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT transcript_json FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!project.transcript_json) return json({error:'Transcribe first — cue suggestions are derived from the transcript.'}, 400);
+  let transcript; try{ transcript=JSON.parse(project.transcript_json); }catch(e){ return json({error:'Transcript is corrupted — re-transcribe.'}, 400); }
+  const cues=marketingSuggestCuesHeuristic(transcript);
+  await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(cues), new Date().toISOString(), id).run();
+  return json({ok:true, cues});
+}
+
+async function handleMarketingCuesSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.project_id);
+  if(!id||!Array.isArray(body.cues)) return json({error:'project_id and cues (an array) required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.cues), new Date().toISOString(), id).run();
+  return json({ok:true});
+}
+
 // Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — resolves a
 // style_id ('custom:<marketing_brand_styles.id>' or a MARKETING_STYLE_PRESETS id) to its config.
 async function marketingResolveStyle(env, clientId, styleId){
@@ -9320,7 +9422,17 @@ async function handleMarketingRenderStart(request, env){
   let captions; try{ captions=JSON.parse(project.captions_json); }catch(e){ return json({error:'Captions are corrupted — re-transcribe.'}, 400); }
 
   const watermarked=marketingIsWatermarked(c);
+  // Auto-Edit Templates just pre-fill these three fields — an explicit opts.silence_cut/
+  // auto_zoom/background_music (the frontend always sends all three) still wins, so picking a
+  // preset and then hand-tweaking one toggle behaves as expected.
   const opts=body.options||{};
+  const preset=MARKETING_AUTOEDIT_PRESETS.find(p=>p.id===opts.autoedit_preset);
+  const silenceCut=opts.silence_cut!==undefined?!!opts.silence_cut:!!preset?.silence_cut;
+  const autoZoom=opts.auto_zoom!==undefined?!!opts.auto_zoom:!!preset?.auto_zoom;
+  const backgroundMusic=opts.background_music!==undefined?(opts.background_music||null):(preset?.background_music||null);
+
+  let cues=[]; try{ cues=(JSON.parse(project.cues_json||'[]')||[]).filter(cue=>cue.accepted!==false); }catch(e){}
+
   const spec={
     mode:'caption-clip',
     source_url:`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`,
@@ -9328,7 +9440,8 @@ async function handleMarketingRenderStart(request, env){
     target_aspect:project.target_aspect||'9:16',
     resolution:MARKETING_RESOLUTIONS[project.target_aspect]||MARKETING_RESOLUTIONS['9:16'],
     captions, style:{...style, ...overrides},
-    silence_cut:!!opts.silence_cut, auto_zoom:!!opts.auto_zoom, background_music:opts.background_music||null,
+    silence_cut:silenceCut, auto_zoom:autoZoom, background_music:backgroundMusic,
+    broll_density:preset?.broll_density||'none', cues,
     watermark:watermarked,
   };
   const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
@@ -9758,6 +9871,9 @@ export default {
       else if(url.pathname==='/marketing/projects/upload' && request.method==='POST'){ res=await handleMarketingProjectUpload(request, env); }
       else if(url.pathname==='/marketing/projects/transcribe' && request.method==='POST'){ res=await handleMarketingTranscribe(request, env); }
       else if(url.pathname==='/marketing/projects/captions' && request.method==='PATCH'){ res=await handleMarketingCaptionsSave(request, env); }
+      else if(url.pathname==='/marketing/autoedit-presets' && request.method==='GET'){ res=await handleMarketingAutoeditPresets(request, env); }
+      else if(url.pathname==='/marketing/projects/suggest-cues' && request.method==='POST'){ res=await handleMarketingSuggestCues(request, env); }
+      else if(url.pathname==='/marketing/projects/cues' && request.method==='PATCH'){ res=await handleMarketingCuesSave(request, env); }
       else if(url.pathname==='/marketing/projects/render' && request.method==='POST'){ res=await handleMarketingRenderStart(request, env); }
       else if(url.pathname==='/marketing/projects/jobs' && request.method==='GET'){ res=await handleMarketingJobsList(request, env, url); }
       else if(url.pathname==='/marketing/projects/send-whatsapp' && request.method==='POST'){ res=await handleMarketingSendWhatsapp(request, env); }

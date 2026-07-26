@@ -5066,3 +5066,45 @@ WhatsApp-send flow as any other project.
 - **The external render pipeline must support `spec.mode:'template'`** — a pipeline built only for
   the original `mode:'caption-clip'` contract will reject or mishandle template-generated jobs
   until scene-composition support is added on that side.
+
+## Marketing Studio module — Auto-Edit Templates & Cue Suggestions
+Two small additions to the upload-and-caption flow, both **zero marginal cost** by design — no
+new external API, no new billing surface:
+
+### Auto-Edit Templates (`MARKETING_AUTOEDIT_PRESETS`, `migrations/` — no new table needed)
+8 static presets (Talking Head, Highlight Reel, Tutorial, Testimonial, Product Ad, Vlog,
+Announcement, Raw) bundling defaults for the render options that already existed
+(`silence_cut`/`auto_zoom`/`background_music`) plus a new `broll_density` hint
+(`low`/`medium`/`high`/`none`) the external pipeline can use if it generates its own B-roll beyond
+the suggested cues below. `GET /marketing/autoedit-presets` returns the list; picking one in the
+Editor's step 3 just pre-fills the existing toggles (`applyAutoeditPreset()` in
+`marketing-studio.html`) — still hand-editable afterwards, and an explicit toggle always wins over
+the preset's value (`handleMarketingRenderStart`'s `opts.x!==undefined ? opts.x : preset?.x`
+precedence). No cost: this is static config, same shape as `MARKETING_STYLE_PRESETS`.
+
+### Cue suggestions (B-Roll / SFX / VFX, `migrations/0017_marketing_cues.sql`)
+Answers "can it add B-roll/SFX/VFX based on the script": it can **suggest where** to add them,
+for free, from the transcript this module already has — actually compositing that B-roll clip,
+playing that SFX, or applying that VFX still happens on the external render pipeline, same
+"suggest and pass through" boundary as everything else this module delegates.
+- `marketing_projects.cues_json` — one row's suggested/accepted cues:
+  `[{start, end, type:'broll'|'sfx'|'vfx', tag, label, keyword, accepted}]`.
+- `marketingSuggestCuesHeuristic()` (`worker.js`) — **pure function, no external call**: scans the
+  transcript's words against `MARKETING_CUE_KEYWORDS`, a static ~15-entry keyword→cue-type
+  dictionary (e.g. "discount"/"price" → a money B-roll shot, "wow"/"amazing" → a sparkle SFX
+  sting, "compare"/"versus" → a split-screen VFX). Caps at 20 cues and enforces a 2.5s minimum gap
+  between suggestions so a keyword-dense script doesn't produce an unusable wall of them. This is
+  a deliberately blunt heuristic, not a model call — the tradeoff for staying at $0/project. A
+  natural (not built) upgrade: reuse the `GEMINI_API_KEY` this app already shares with the
+  Conversation Engine for one cheap `gemini-1.5-flash`-class call over the transcript text,
+  gated behind an explicit opt-in action so the free path stays the default.
+- `POST /marketing/projects/suggest-cues` — runs the heuristic, saves the result (all
+  `accepted:true` by default), returns it. `PATCH /marketing/projects/cues` — saves the editor's
+  accept/reject/remove edits. Both session-gated like every other route in this module.
+- Only cues with `accepted!==false` are included in the render spec's new `cues` array
+  (`handleMarketingRenderStart`) — the external pipeline reads `spec.cues` (each with a
+  `start`/`end`/`type`/`tag`/`label`) to decide what to actually drop in at each timestamp; what
+  asset library it pulls a "money shot" or a "whoosh transition" from is entirely up to that
+  pipeline, same as it already owns caption burn-in, cropping, silence-cut, etc.
+- Frontend: Editor step 4 ("B-Roll / SFX / VFX cues") — a "✨ Suggest cues from script" button
+  (disabled until captions exist), a checkbox+remove list per suggestion, and a Save button.

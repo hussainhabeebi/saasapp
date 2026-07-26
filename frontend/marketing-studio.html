@@ -89,6 +89,13 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .tpl-card-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .result-row{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12.5px}
 .result-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.cue-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:12.5px}
+.cue-type{font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 7px;border-radius:5px;flex-shrink:0}
+.cue-type.broll{background:var(--accent-soft);color:var(--accent-ink)}
+.cue-type.sfx{background:var(--warn-soft);color:var(--warn)}
+.cue-type.vfx{background:var(--good-soft);color:var(--good)}
+.cue-time{color:var(--muted);font-family:ui-monospace,monospace;flex-shrink:0;width:70px}
+.cue-label{flex:1}
 </style>
 </head>
 <body>
@@ -271,8 +278,12 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
           </div>
 
           <div class="card">
-            <div class="card-head"><h2>3 · Auto-edit</h2></div>
-            <div class="chip-row">
+            <div class="card-head"><h2>3 · Auto-edit</h2><div class="sub">Pick a template to pre-fill these — still overridable per-project below.</div></div>
+            <label class="form-label">Auto-edit template</label>
+            <select class="form-select" id="optAutoeditPreset" onchange="applyAutoeditPreset()">
+              <option value="">— Manual (no preset) —</option>
+            </select>
+            <div class="chip-row" style="margin-top:12px">
               <span class="chip" id="optSilence" onclick="toggleOpt('optSilence')">✂️ Cut silences / filler words</span>
               <span class="chip" id="optZoom" onclick="toggleOpt('optZoom')">🔎 Auto-zoom on emphasis</span>
             </div>
@@ -286,7 +297,15 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
           </div>
 
           <div class="card">
-            <div class="card-head"><h2>4 · Render & export</h2></div>
+            <div class="card-head"><h2>4 · B-Roll / SFX / VFX cues</h2><div class="sub">Suggested from the script's keywords, free (no AI call) — review, uncheck what you don't want, then save.</div></div>
+            <button class="btn btn-sec btn-sm" id="suggestCuesBtn" onclick="suggestCues()">✨ Suggest cues from script</button>
+            <button class="btn btn-ghost btn-sm" onclick="saveCues()" style="margin-left:8px">💾 Save cues</button>
+            <div id="cuesList" style="margin-top:12px"></div>
+            <div class="note hidden" id="cuesEmpty">No cues yet — transcribe the video, then suggest cues.</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>5 · Render & export</h2></div>
             <div class="note" id="renderResNote"></div>
             <button class="btn btn-primary" id="renderBtn" onclick="startRender()" style="margin-top:10px">🚀 Render</button>
             <div class="progress hidden" id="renderProgressWrap"><div class="progress-fill" id="renderProgressFill" style="width:0%"></div></div>
@@ -318,6 +337,8 @@ let projects = [];
 let stylePresets = [];
 let brandStyles = [];
 let templates = [];
+let autoeditPresets = [];
+let currentCues = [];
 let currentProject = null;
 let selectedStyleId = 'bold-pop';
 let generatingForTemplate = null;
@@ -349,8 +370,23 @@ function goBack() { window.location.href = 'dashboard.html'; }
 async function initApp() {
   $id('gate').classList.add('hidden');
   $id('app').classList.remove('hidden');
-  await Promise.all([loadUsage(), loadStylePresets(), loadBrandStyles(), loadProjects(), loadTemplates()]);
+  await Promise.all([loadUsage(), loadStylePresets(), loadBrandStyles(), loadProjects(), loadTemplates(), loadAutoeditPresets()]);
   populateStyleSelect();
+}
+
+async function loadAutoeditPresets() {
+  const r = await fetch(`${WORKER_BASE}/marketing/autoedit-presets`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ list: [] }));
+  autoeditPresets = d.list || [];
+  const sel = $id('optAutoeditPreset');
+  if (sel) sel.innerHTML = '<option value="">— Manual (no preset) —</option>' + autoeditPresets.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+}
+function applyAutoeditPreset() {
+  const preset = autoeditPresets.find(p => p.id === $id('optAutoeditPreset').value);
+  if (!preset) return;
+  $id('optSilence').classList.toggle('on', !!preset.silence_cut);
+  $id('optZoom').classList.toggle('on', !!preset.auto_zoom);
+  $id('optMusic').value = preset.background_music || '';
 }
 
 function showTab(tab) {
@@ -462,6 +498,11 @@ function renderEditor() {
 
   $id('optSilence').classList.toggle('on', !!p._optSilence);
   $id('optZoom').classList.toggle('on', !!p._optZoom);
+  $id('optAutoeditPreset').value = '';
+
+  currentCues = p.cues || [];
+  $id('suggestCuesBtn').disabled = !(p.captions && (p.captions.words || []).length);
+  renderCues();
 
   $id('renderBtn').disabled = !(p.captions && (p.captions.words || []).length); // enabled once captions exist
   $id('renderStatus').textContent = p.status === 'rendering' ? 'Rendering — this can take a few minutes…' : (p.status === 'failed' ? 'Last job failed — check Projects for details and retry.' : '');
@@ -633,6 +674,40 @@ function toggleOpt(id) {
   currentProject['_opt' + id.replace('opt', '')] = $id(id).classList.contains('on');
 }
 
+// ── B-ROLL / SFX / VFX CUES — free (no AI call), keyword-based suggestions derived from the
+// already-fetched transcript. Suggest, review/uncheck, save; accepted cues ride along in the
+// render spec for the external pipeline to act on (drop in B-roll, play an SFX, apply a VFX).
+function renderCues() {
+  $id('cuesEmpty').classList.toggle('hidden', currentCues.length > 0);
+  $id('cuesList').innerHTML = currentCues.map((c, i) => `
+    <div class="cue-row">
+      <input type="checkbox" ${c.accepted !== false ? 'checked' : ''} onchange="toggleCue(${i})">
+      <span class="cue-type ${esc(c.type)}">${esc(c.type)}</span>
+      <span class="cue-time">${fmtDuration(c.start)}</span>
+      <span class="cue-label">${esc(c.label)} <span class="note">— "${esc(c.keyword || '')}"</span></span>
+      <button class="btn btn-ghost btn-sm" onclick="removeCue(${i})">✕</button>
+    </div>`).join('');
+}
+function toggleCue(i) { currentCues[i].accepted = currentCues[i].accepted === false; renderCues(); }
+function removeCue(i) { currentCues.splice(i, 1); renderCues(); }
+async function suggestCues() {
+  if (!currentProject) return;
+  $id('suggestCuesBtn').disabled = true;
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/projects/suggest-cues`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id }) });
+    const data = await r.json();
+    if (!r.ok) { alert(data.error || 'Could not suggest cues.'); return; }
+    currentCues = data.cues || [];
+    currentProject.cues = currentCues;
+    renderCues();
+  } finally { $id('suggestCuesBtn').disabled = false; }
+}
+async function saveCues() {
+  if (!currentProject) return;
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/cues`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, cues: currentCues }) });
+  if (r.ok) { currentProject.cues = currentCues; } else { alert('Failed to save cues.'); }
+}
+
 // ── RENDER ──
 async function startRender() {
   if (!currentProject) return;
@@ -641,6 +716,7 @@ async function startRender() {
     silence_cut: $id('optSilence').classList.contains('on'),
     auto_zoom: $id('optZoom').classList.contains('on'),
     background_music: $id('optMusic').value || null,
+    autoedit_preset: $id('optAutoeditPreset').value || null,
   };
   const r = await fetch(`${WORKER_BASE}/marketing/projects/render`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, options }) });
   const data = await r.json();
