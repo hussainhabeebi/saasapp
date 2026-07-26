@@ -96,7 +96,7 @@ async function renderCaptionClip(job, env, assetsRoot) {
       const outputPath = path.join(workDir, 'output.mp4');
       await renderTextBehindSubject({
         sourcePath: trimmedPath, resolutionW, resolutionH, fps: 30,
-        assPath, bgColor: spec.style?.bg_color, watermark: !!spec.watermark, outputPath,
+        assPath, bgColor: spec.style?.bg_color, watermark: !!spec.watermark, quality: spec.quality, outputPath,
       }, mattePath);
       const durationSec = await getDurationSec(outputPath);
       const key = `marketing/${job.client_id}/${job.project_id}/render-${crypto.randomBytes(6).toString('hex')}.mp4`;
@@ -116,6 +116,7 @@ async function renderCaptionClip(job, env, assetsRoot) {
       sfx,
       broll,
       vfx,
+      quality: spec.quality,
       outputPath,
     });
     await run('ffmpeg', args, { timeoutMs: 20 * 60 * 1000 });

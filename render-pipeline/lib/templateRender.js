@@ -13,13 +13,14 @@ const { run } = require('./exec');
 const { getDurationSec } = require('./probe');
 const { uploadOutput } = require('./storage');
 const { writeTitleCardAss } = require('./subtitles');
+const { QUALITY_PRESETS } = require('./filtergraph');
 
 function parseResolution(res) {
   const m = /^(\d+)x(\d+)$/.exec(res || '');
   return m ? { w: parseInt(m[1], 10), h: parseInt(m[2], 10) } : { w: 1080, h: 1920 };
 }
 
-async function renderScene(scene, index, workDir, resolutionW, resolutionH) {
+async function renderScene(scene, index, workDir, resolutionW, resolutionH, q) {
   const duration = Math.max(0.5, Number(scene.duration_sec) || 3);
   const outPath = path.join(workDir, `scene-${index}.mp4`);
 
@@ -30,7 +31,7 @@ async function renderScene(scene, index, workDir, resolutionW, resolutionH) {
       '-y', '-loop', '1', '-i', imgPath, '-t', String(duration),
       '-vf', `scale=${resolutionW}:${resolutionH}:force_original_aspect_ratio=increase,crop=${resolutionW}:${resolutionH},fps=30`,
       '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-shortest',
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-c:a', 'aac',
+      '-c:v', 'libx264', '-preset', q.preset, '-crf', String(q.crf), '-c:a', 'aac',
       '-pix_fmt', 'yuv420p', outPath,
     ]);
   } else {
@@ -44,7 +45,7 @@ async function renderScene(scene, index, workDir, resolutionW, resolutionH) {
       '-y', '-f', 'lavfi', '-i', `color=c=${(scene.bg_color || '#111111').replace('#', '0x')}:s=${resolutionW}x${resolutionH}:d=${duration}`,
       '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-shortest',
       '-vf', `subtitles=${assPath.replace(/\\/g, '/').replace(/:/g, '\\:')}`,
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-c:a', 'aac',
+      '-c:v', 'libx264', '-preset', q.preset, '-crf', String(q.crf), '-c:a', 'aac',
       '-pix_fmt', 'yuv420p', outPath,
     ]);
   }
@@ -53,12 +54,13 @@ async function renderScene(scene, index, workDir, resolutionW, resolutionH) {
 
 async function renderTemplate(job, env) {
   const { spec } = job;
+  const q = QUALITY_PRESETS[spec.quality] || QUALITY_PRESETS.standard;
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mkt-template-'));
   try {
     const { w: resolutionW, h: resolutionH } = parseResolution(spec.resolution);
     const scenePaths = [];
     for (let i = 0; i < (spec.scenes || []).length; i++) {
-      scenePaths.push(await renderScene(spec.scenes[i], i, workDir, resolutionW, resolutionH));
+      scenePaths.push(await renderScene(spec.scenes[i], i, workDir, resolutionW, resolutionH, q));
     }
     if (!scenePaths.length) throw new Error('Template has no scenes to render.');
 
@@ -76,7 +78,7 @@ async function renderTemplate(job, env) {
       await run('ffmpeg', [
         '-y', '-i', concatenatedPath,
         '-vf', `drawtext=text='Made with Leadvyne':fontcolor=white@0.75:fontsize=${Math.round(resolutionH * 0.022)}:x=w-tw-24:y=h-th-24:shadowcolor=black@0.6:shadowx=2:shadowy=2`,
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-c:a', 'aac',
+        '-c:v', 'libx264', '-preset', q.preset, '-crf', String(q.crf), '-c:a', 'aac',
         finalPath,
       ]);
     }

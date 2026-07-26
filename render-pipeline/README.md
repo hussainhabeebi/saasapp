@@ -26,6 +26,17 @@ for the full request/callback contract this implements.
   smaller file to OpenAI than the whole video — OpenAI's Whisper endpoint hard-caps requests at
   25 MB, which a video can exceed easily even when its actual speech content is short, since
   picture data dominates file size. See `lib/extractAudio.js`.
+- **`POST /concat-clips`** (synchronous): stitches several uploaded clips into one combined video
+  for Marketing Studio's multi-clip projects — normalizes each clip to the target resolution first
+  (clips can come from different cameras/resolutions/codecs), then concatenates via the `concat`
+  *filter* (re-encodes) rather than the stream-copy `concat` demuxer, which is what makes
+  mismatched inputs work at all. Verified with two clips of genuinely different resolutions
+  (640×480 and 1080×1920) producing one correctly-normalized combined output. See
+  `lib/concatClips.js`.
+- **Export quality** (`spec.quality`: `draft`/`standard`/`high`) — `QUALITY_PRESETS`
+  (`lib/filtergraph.js`) maps to real `-crf`/`-preset` values, shared by all three render modes
+  (caption-clip, template, text-behind-subject) so quality is consistent regardless of which
+  pipeline a project ends up using.
 - Uploads the render result to the same R2 bucket the Worker already serves from (or a local
   fallback for testing without Cloudflare), then POSTs a signed callback to
   `.../marketing/webhook/render-complete`.

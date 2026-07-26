@@ -5135,3 +5135,73 @@ exactly what was and wasn't verified (no real human test footage was available w
 this — only the ONNX inference plumbing and the compositing mechanics were confirmed working, not
 real-world segmentation accuracy). **Doesn't combine with silence-cut/auto-zoom/B-roll/SFX/VFX
 cues in the same render** — enforced in `render-pipeline/lib/render.js`, not just documented.
+
+## Marketing Studio module — Multi-clip projects & template library
+
+### Multi-clip projects (`migrations/0018_marketing_multiclip.sql`)
+A project can now hold several uploaded clips, stitched into one combined video before the
+existing transcribe/caption/render pipeline runs unchanged.
+- **`marketing_project_clips`** — one row per clip (`project_id`, `source_key`,
+  `source_duration_sec`, `order_index`). The very first upload
+  (`POST /marketing/projects/upload`) is now *also* registered here as `order_index=0` (in
+  addition to setting the project's own `source_key` directly, unchanged) — so a project that
+  only ever gets one video behaves exactly as before, while one that later adds more clips has a
+  complete, correctly-ordered list to combine.
+- `GET/POST/DELETE /marketing/projects/clips`, `PATCH /marketing/projects/clips/reorder` — clip
+  CRUD, all session-gated and ownership-checked like every other route in this module.
+- `POST /marketing/projects/combine-clips` — fetches all clips in `order_index` order, calls
+  render-pipeline's `POST /concat-clips` (HMAC-signed like `/render`/`/extract-audio`, same
+  `MARKETING_RENDER_WEBHOOK_SECRET`) with their public media URLs, and on success replaces the
+  project's `source_key`/`source_duration_sec` with the combined result — from then on it's an
+  ordinary single-video project. Requires the render pipeline configured (clip stitching needs
+  ffmpeg); requires R2 storage specifically (the `LOCAL_PUBLIC_BASE_URL` local-fallback mode isn't
+  supported for this one route, since the combined video needs a real `source_key` the rest of the
+  app can address, not just a URL).
+- **render-pipeline**: `POST /concat-clips` (`lib/concatClips.js`) — downloads each clip,
+  normalizes every one to the target resolution (clips can come from different
+  cameras/apps/resolutions/codecs — normalizing first, then using the `concat` *filter*
+  rather than the stream-copy `concat` *demuxer*, is what makes mismatched inputs work at all),
+  concatenates, uploads to R2. Verified with two clips of genuinely different resolutions
+  (640×480 and 1080×1920) producing one correctly-normalized combined output.
+- Frontend: a "Clips" card in the Editor (visible once a project has a video) — add more clips,
+  reorder with ↑/↓, remove, and "🔗 Combine into one video" once there's more than one. Re-run
+  Transcribe after combining — captions/cues from before a combine describe the old (shorter)
+  video, not the new combined one, and aren't auto-migrated.
+
+### Template library (`MARKETING_TEMPLATE_LIBRARY`, worker.js)
+"Create a template library like Captions.ai" — 9 curated starter templates (Flash Sale, Product
+Launch, Testimonial Quote, Countdown/Urgency, Before & After, Welcome/Business Intro,
+Call-to-Action/Contact, Weekly Tip, Square Feed Promo), static config (same zero-cost shape as
+`MARKETING_STYLE_PRESETS`/`MARKETING_AUTOEDIT_PRESETS` — no seed data in D1). `GET
+/marketing/template-library` lists them; `POST /marketing/template-library/clone` copies one into
+a real, client-owned, fully-editable `marketing_templates` row (`handleMarketingTemplateCreate`'s
+same underlying table) — cloning, not referencing, so editing your copy never touches the shared
+library list. Frontend: "📚 Browse Library" button on the Video Templates tab opens a card grid;
+clicking a card clones it and opens the normal template editing flow.
+
+### Export quality control ("export as MP4 and control quality")
+Output was always MP4 already (the only format this pipeline produces) — what was missing was
+control over the encode speed/quality tradeoff, previously hardcoded (`crf 21`, `preset veryfast`)
+everywhere. `MARKETING_QUALITY_LEVELS = ['draft','standard','high']` (worker.js) validates
+`options.quality` into `spec.quality`; `QUALITY_PRESETS` (`render-pipeline/lib/filtergraph.js`,
+exported and reused by `templateRender.js`/`textBehindSubject.js` so all three render modes stay
+consistent) maps it to actual ffmpeg `-crf`/`-preset` values: `draft` (28/ultrafast, fastest,
+for quick previews), `standard` (21/veryfast, the previous default, unchanged for anyone not
+picking a quality), `high` (17/medium, visibly cleaner, noticeably slower encode). Frontend: a
+quality `<select>` in the Editor's Render & export step.
+
+### Auto-suggested B-Roll/SFX/VFX cues
+Previously required a manual "✨ Suggest cues" click after transcribing. `transcribeProject()`
+(`marketing-studio.html`) now calls `suggestCues()` automatically right after a successful
+transcription — still free (the same zero-cost keyword heuristic, no LLM call), and the button
+stays available to re-run it. Suggested cues already defaulted to `accepted:true`
+(`marketingSuggestCuesHeuristic`), so this closes the remaining manual step without changing what
+actually ends up in a render — cues were never excluded by default, only *surfaced* on request.
+
+### Modern UX pass (`marketing-studio.html`)
+- **Toast notifications** replace `alert()` for every non-destructive message (errors,
+  confirmations) — `confirm()` is kept for actual deletions, which should still interrupt.
+- **Drag-and-drop upload** with a real progress bar — the upload now goes through `XMLHttpRequest`
+  instead of `fetch()` specifically because `fetch` has no upload-progress event to hook.
+- **Inline, click-to-edit captions** replace a blocking `prompt()` dialog — click a word, type the
+  fix in place (a real `contenteditable` span, not a modal), Enter or click-away commits it.

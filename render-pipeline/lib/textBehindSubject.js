@@ -8,10 +8,12 @@
 // people actually ask for first).
 const { run } = require('./exec');
 const { generateMatte } = require('./segmentation');
+const { QUALITY_PRESETS } = require('./filtergraph');
 
 // bgColor: solid color behind the text/person (a later version could support a blurred/frozen
 // video background instead — not built, see README).
-function buildArgs({ sourcePath, mattePath, matteMeta, resolutionW, resolutionH, fps, assPath, bgColor, watermark, outputPath }) {
+function buildArgs({ sourcePath, mattePath, matteMeta, resolutionW, resolutionH, fps, assPath, bgColor, watermark, quality, outputPath }) {
+  const q = QUALITY_PRESETS[quality] || QUALITY_PRESETS.standard;
   const filters = [
     `[0:v]scale=${resolutionW}:${resolutionH}:force_original_aspect_ratio=increase,crop=${resolutionW}:${resolutionH}[src]`,
     `[1:v]scale=${resolutionW}:${resolutionH}:flags=lanczos,fps=${fps}[matte]`,
@@ -37,7 +39,7 @@ function buildArgs({ sourcePath, mattePath, matteMeta, resolutionW, resolutionH,
     '-y', '-i', sourcePath, '-i', mattePath,
     '-filter_complex', filters.join('; '),
     '-map', `[${vChain}]`, '-map', '0:a',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21',
+    '-c:v', 'libx264', '-preset', q.preset, '-crf', String(q.crf),
     '-c:a', 'aac', '-b:a', '160k',
     '-movflags', '+faststart',
     '-shortest',
@@ -48,9 +50,9 @@ function buildArgs({ sourcePath, mattePath, matteMeta, resolutionW, resolutionH,
 // sourcePath must already be trimmed to the exact clip being rendered (matting runs on exactly
 // what will be shown — no separate trim step here, unlike the caption-clip pipeline's silence-cut
 // segments).
-async function renderTextBehindSubject({ sourcePath, resolutionW, resolutionH, fps = 30, assPath, bgColor, watermark, outputPath }, mattePath) {
+async function renderTextBehindSubject({ sourcePath, resolutionW, resolutionH, fps = 30, assPath, bgColor, watermark, quality, outputPath }, mattePath) {
   const matteMeta = await generateMatte(sourcePath, mattePath, resolutionW / resolutionH);
-  const args = buildArgs({ sourcePath, mattePath, matteMeta, resolutionW, resolutionH, fps, assPath, bgColor, watermark, outputPath });
+  const args = buildArgs({ sourcePath, mattePath, matteMeta, resolutionW, resolutionH, fps, assPath, bgColor, watermark, quality, outputPath });
   await run('ffmpeg', args, { timeoutMs: 20 * 60 * 1000 });
   return outputPath;
 }

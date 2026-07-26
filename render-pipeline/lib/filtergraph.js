@@ -6,6 +6,15 @@
 //
 // Kept as a pure "spec in, argv out" function (no I/O) so it's unit-testable without invoking
 // ffmpeg at all.
+
+// Export quality control — trades encode time for output quality/bitrate. 'standard' is the
+// previous hardcoded default, unchanged for anyone not explicitly picking a quality.
+const QUALITY_PRESETS = {
+  draft: { crf: 28, preset: 'ultrafast' },     // fastest — quick previews/iterating on cuts
+  standard: { crf: 21, preset: 'veryfast' },   // default — good balance for short-form delivery
+  high: { crf: 17, preset: 'medium' },         // noticeably slower encode, visibly cleaner output
+};
+
 function buildFfmpegArgs({
   inputPath,
   keepSegments,          // [{start, end}] in the SOURCE video's absolute time — see lib/timeline.js
@@ -18,8 +27,10 @@ function buildFfmpegArgs({
   sfx = [],               // [{path, atSec}] — atSec already remapped to the OUTPUT timeline
   broll = [],             // [{path, startSec, endSec, scale}] — remapped to the OUTPUT timeline
   vfx = [],               // [{type, startSec, endSec}] — remapped to the OUTPUT timeline
+  quality = 'standard',   // 'draft' | 'standard' | 'high' — see QUALITY_PRESETS
   outputPath,
 }) {
+  const q = QUALITY_PRESETS[quality] || QUALITY_PRESETS.standard;
   const inputs = ['-i', inputPath];
   const extraInputIndexByPath = new Map();
   let nextInputIndex = 1;
@@ -125,7 +136,7 @@ function buildFfmpegArgs({
     '-y', ...inputs,
     '-filter_complex', filters.join('; '),
     '-map', `[${vChain}]`, '-map', '[aout]',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21',
+    '-c:v', 'libx264', '-preset', q.preset, '-crf', String(q.crf),
     '-c:a', 'aac', '-b:a', '160k',
     '-movflags', '+faststart',
     outputPath,
@@ -141,4 +152,4 @@ function escapeFilterPath(p) {
   return `'${p.replace(/\\/g, '/').replace(/:/g, '\\:')}'`;
 }
 
-module.exports = { buildFfmpegArgs };
+module.exports = { buildFfmpegArgs, QUALITY_PRESETS };

@@ -12,6 +12,7 @@ const hmac = require('./lib/hmac');
 const { renderCaptionClip } = require('./lib/render');
 const { renderTemplate } = require('./lib/templateRender');
 const { extractAudio } = require('./lib/extractAudio');
+const { concatClips } = require('./lib/concatClips');
 
 const env = process.env;
 const PORT = env.PORT || 8787;
@@ -78,6 +79,25 @@ app.post('/extract-audio', async (req, res) => {
     res.send(audioBuffer);
   } catch (err) {
     console.error('extract-audio failed:', err.stderr || err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  }
+});
+
+// Also synchronous (not queued) — same reasoning as /extract-audio: one bounded ffmpeg pass
+// (normalize + concat a handful of clips), not the multi-step render pipeline, and the Worker's
+// "combine my clips" action is waiting on the result inline.
+app.post('/concat-clips', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { source_urls, resolution, client_id, project_id } = req.body || {};
+  if (!Array.isArray(source_urls) || !source_urls.length) return res.status(400).json({ error: 'source_urls (a non-empty array) required' });
+  try {
+    const result = await concatClips(env, source_urls, resolution, client_id, project_id);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('concat-clips failed:', err.stderr || err.message || err);
     res.status(502).json({ error: String(err.message || err).slice(0, 500) });
   }
 });
