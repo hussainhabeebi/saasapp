@@ -25,10 +25,21 @@ for the full request/callback contract this implements.
 - **`spec.text_behind_subject` (beta)**: captions sit BEHIND the person in the video instead of on
   top — see "Text behind subject" below.
 - **`POST /extract-audio`** (synchronous, not part of the render job queue): strips a video down
-  to just its audio track (16kHz mono mp3) so the Worker's transcription step can send a much
-  smaller file to OpenAI than the whole video — OpenAI's Whisper endpoint hard-caps requests at
-  25 MB, which a video can exceed easily even when its actual speech content is short, since
-  picture data dominates file size. See `lib/extractAudio.js`.
+  to just its audio track (16kHz mono mp3) so the transcription step can send a much smaller file
+  to OpenAI than the whole video — OpenAI's Whisper endpoint hard-caps requests at 25 MB, which a
+  video can exceed easily even when its actual speech content is short, since picture data
+  dominates file size. See `lib/extractAudio.js`.
+- **`POST /transcribe`** (synchronous): extracts audio (reuses `extractAudio()`) and calls
+  OpenAI's Whisper API **from this server**, not from the Worker. This matters, not just tidiness:
+  OpenAI blocks requests whose source IP resolves to certain countries/regions, and Cloudflare
+  Workers' globally-distributed edge network has an unpredictable egress IP per request — calling
+  OpenAI directly from `worker.js` hit exactly that block ("Country, region, or territory not
+  supported") for a real project, even though the account's actual location is fine. This server
+  runs on one fixed host, so its egress IP is stable. `MARKETING_TRANSCRIBE_API_KEY` now lives
+  here (`.env`/Coolify env var), not as a Worker secret — see `lib/transcribe.js`. `worker.js`
+  falls back to calling OpenAI directly (old behavior) when this service isn't configured, so
+  transcription still works without it, just subject to both the 25 MB cap and the country-block
+  risk.
 - **`POST /concat-clips`** (synchronous): stitches several uploaded clips into one combined video
   for Marketing Studio's multi-clip projects — normalizes each clip to the target resolution first
   (clips can come from different cameras/resolutions/codecs), then concatenates via the `concat`

@@ -9394,70 +9394,73 @@ async function handleMarketingTranscribe(request, env){
   const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
   if(!project) return json({error:'Not found'}, 404);
   if(!project.source_key) return json({error:'Upload a video first.'}, 400);
-  if(!env.MARKETING_TRANSCRIBE_API_KEY) return json({error:'Transcription is not configured — see SETUP.md "Marketing Studio module".'}, 400);
+  const renderPipelineConfigured=!!(env.MARKETING_RENDER_WEBHOOK_URL && env.MARKETING_RENDER_WEBHOOK_SECRET);
+  if(!renderPipelineConfigured && !env.MARKETING_TRANSCRIBE_API_KEY) return json({error:'Transcription is not configured — see SETUP.md "Marketing Studio module".'}, 400);
 
   const now0=new Date().toISOString();
   await env.DB.prepare(`UPDATE marketing_projects SET status='transcribing', updated_at=? WHERE id=?`).bind(now0, projectId).run();
   const jobResult=await env.DB.prepare(`INSERT INTO marketing_jobs (project_id, client_id, type, status, spec_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
     .bind(projectId, Number(payload.cid), 'transcribe', 'processing', JSON.stringify({language:body.language||project.language||null}), now0, now0).run();
   const jobId=jobResult.meta.last_row_id;
+  const languageHint=body.language||project.language;
 
-  // OpenAI's Whisper endpoint hard-caps requests at 25 MB — a video comfortably under this app's
-  // own 100 MB upload ceiling can still exceed that purely because it's a *video* file (picture
-  // data dwarfs audio data), not because the actual speech content is large. If the render
-  // pipeline is configured, ask it to extract just the audio track first (a much smaller file —
-  // see render-pipeline/lib/extractAudio.js) rather than sending the raw video. Falls back to the
-  // raw video otherwise, same as before, so transcription still works without the render pipeline
-  // set up — just capped at whatever fits in OpenAI's 25 MB limit as a video file.
-  let fileBytes, fileName, fileMime;
-  if(env.MARKETING_RENDER_WEBHOOK_URL && env.MARKETING_RENDER_WEBHOOK_SECRET){
+  // OpenAI's Whisper endpoint blocks requests whose source IP resolves to certain
+  // countries/regions AND hard-caps requests at 25 MB. Cloudflare Workers run on a globally
+  // distributed edge network with an unpredictable egress IP per request, so calling OpenAI
+  // directly from HERE can hit the country block even when the account/user's actual location is
+  // fine — this really happened ("Country, region, or territory not supported"), not a
+  // hypothetical. When the render pipeline is configured, route the actual OpenAI call through it
+  // instead (render-pipeline/lib/transcribe.js) — it runs on one fixed host, so its egress IP is
+  // stable, and it extracts audio-only first (same fix /extract-audio already applied elsewhere),
+  // solving the 25 MB cap too. Falls back to calling OpenAI directly from here (raw video,
+  // Worker-held key) when the render pipeline isn't configured, so transcription still works
+  // without it set up — just subject to both the 25 MB cap and the country-block risk.
+  let data;
+  if(renderPipelineConfigured){
     const sourceUrl=`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`;
-    const extractBody=JSON.stringify({source_url:sourceUrl});
-    const extractSig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, extractBody);
-    const audioEndpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/extract-audio`;
-    let audioResp;
+    const reqBody=JSON.stringify({source_url:sourceUrl, language:languageHint||null});
+    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
+    const transcribeEndpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/transcribe`;
+    let resp;
     try{
-      audioResp=await fetch(audioEndpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':extractSig}, body:extractBody});
+      resp=await fetch(transcribeEndpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
     }catch(e){
-      await marketingFailJob(env, jobId, projectId, 'Could not reach the render pipeline to extract audio: '+e.message, 'uploaded');
-      return json({error:'Could not reach the render pipeline to extract audio.'}, 502);
+      await marketingFailJob(env, jobId, projectId, 'Could not reach the render pipeline to transcribe: '+e.message, 'uploaded');
+      return json({error:'Could not reach the render pipeline to transcribe.'}, 502);
     }
-    if(!audioResp.ok){
-      const errText=await audioResp.text().catch(()=>'');
-      await marketingFailJob(env, jobId, projectId, 'Audio extraction failed: '+(errText||('HTTP '+audioResp.status)), 'uploaded');
-      return json({error:'Audio extraction failed: '+(errText||('HTTP '+audioResp.status))}, 502);
+    data=await resp.json().catch(()=>({}));
+    if(!resp.ok){
+      const errMsg=data?.error||('HTTP '+resp.status);
+      await marketingFailJob(env, jobId, projectId, errMsg, 'uploaded');
+      return json({error:errMsg}, 502);
     }
-    fileBytes=await audioResp.arrayBuffer(); fileName='audio.mp3'; fileMime='audio/mpeg';
   } else {
     const obj=await env.MARKETING_MEDIA.get(project.source_key);
     if(!obj) return json({error:'Source video not found in storage.'}, 404);
-    fileBytes=await obj.arrayBuffer();
+    const fileBytes=await obj.arrayBuffer();
     const ext=(project.source_key.split('.').pop()||'mp4');
-    fileName=`source.${ext}`; fileMime=obj.httpMetadata?.contentType||'video/mp4';
-  }
+    const form=new FormData();
+    form.append('file', new Blob([fileBytes], {type:obj.httpMetadata?.contentType||'video/mp4'}), `source.${ext}`);
+    form.append('model', 'whisper-1');
+    form.append('response_format', 'verbose_json');
+    form.append('timestamp_granularities[]', 'word');
+    if(languageHint) form.append('language', languageHint); // omit to let the API auto-detect
 
-  const form=new FormData();
-  form.append('file', new Blob([fileBytes], {type:fileMime}), fileName);
-  form.append('model', 'whisper-1');
-  form.append('response_format', 'verbose_json');
-  form.append('timestamp_granularities[]', 'word');
-  const languageHint=body.language||project.language;
-  if(languageHint) form.append('language', languageHint); // omit to let the API auto-detect (#4)
-
-  let r;
-  try{
-    r=await fetch(env.MARKETING_TRANSCRIBE_API_URL||'https://api.openai.com/v1/audio/transcriptions', {
-      method:'POST', headers:{Authorization:`Bearer ${env.MARKETING_TRANSCRIBE_API_KEY}`}, body:form,
-    });
-  }catch(e){
-    await marketingFailJob(env, jobId, projectId, 'Could not reach transcription API: '+e.message, 'uploaded');
-    return json({error:'Could not reach the transcription API.'}, 502);
-  }
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok){
-    const errMsg=data?.error?.message||('HTTP '+r.status);
-    await marketingFailJob(env, jobId, projectId, errMsg, 'uploaded');
-    return json({error:errMsg}, 502);
+    let r;
+    try{
+      r=await fetch(env.MARKETING_TRANSCRIBE_API_URL||'https://api.openai.com/v1/audio/transcriptions', {
+        method:'POST', headers:{Authorization:`Bearer ${env.MARKETING_TRANSCRIBE_API_KEY}`}, body:form,
+      });
+    }catch(e){
+      await marketingFailJob(env, jobId, projectId, 'Could not reach transcription API: '+e.message, 'uploaded');
+      return json({error:'Could not reach the transcription API.'}, 502);
+    }
+    data=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const errMsg=data?.error?.message||('HTTP '+r.status);
+      await marketingFailJob(env, jobId, projectId, errMsg, 'uploaded');
+      return json({error:errMsg}, 502);
+    }
   }
 
   const words=marketingWordsFromTranscription(data);
