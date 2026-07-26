@@ -248,6 +248,63 @@ downloaded copy) — test a real render against the deployed container once rede
   includes the actual response so the field name can be corrected in one place. Test with a real
   fal.ai key after deploying before relying on this.
 
+## CapCut-style extras (speed ramp, denoise, chroma key, auto-reframe, beat sync, TTS)
+
+All free — no paid API involved, unlike the fal.ai section above.
+
+- **`lib/filtergraph.js`** gained `denoise`, `chromaKey`, `speedFactor`, and `cropXExpr` params.
+  Order matters: chroma key runs right after the crop step, denoise runs on the speech track
+  before music/SFX mixing, and the speed ramp (`setpts`/`atempo`) runs LAST — after captions are
+  already burned in and audio already mixed, so both just play back faster/slower together with no
+  caption-timing recomputation needed. Hex colors are re-validated here (`sanitizeHexColor`) even
+  though the Worker already validates them — defense in depth, since they're interpolated straight
+  into an ffmpeg filter expression string.
+- **`lib/autoReframe.js`** (smart auto-reframe) — reuses `lib/segmentation.js`'s RVM matting
+  (now also exporting `decodeRawFrames`/`runMatting`/`PROC_WIDTH`/`PROC_FPS` for this to reuse
+  directly, not re-run) to compute a per-frame subject centroid, smooths it, and builds a `crop`
+  filter `x` expression in terms of ffmpeg's own `in_w`/`out_w` runtime variables — resolution-
+  independent, no baked-in pixel math needed at expression-build time. `render.js` calls this
+  BEFORE `buildFfmpegArgs` (which stays a pure "spec in, argv out" function, unchanged in spirit)
+  and passes the resulting expression string in as `cropXExpr`. Best-effort: any failure (missing
+  RVM model file, decode error, no confident subject) falls back to the plain center-crop rather
+  than failing the render.
+- **`lib/beatDetect.js`** (beat-synced cuts) — a from-scratch energy-onset detector: decodes PCM
+  via the ffmpeg binary (no new npm dependency), computes short-time RMS energy, a spectral-flux-
+  style novelty function (half-wave-rectified frame-to-frame energy increase), and adaptive-
+  threshold local-maxima peak-picking. Explicitly NOT a tempo/BPM beat-tracker (no grid-fitting or
+  phase estimation) — this finds energy onsets, which is what "cut on the beat" actually needs.
+  `render.js` detects beats in the resolved background-music file, tiles the pattern across the
+  full output duration (matching how the music loops via `-stream_loop -1`), and snaps each
+  B-roll/SFX cue's start time to its nearest beat within 0.35s (leaving cues with no nearby beat
+  untouched, so a keyword-timed cue that's correctly synced to speech isn't forced onto an
+  unrelated beat).
+- **`lib/tts.js`** (AI voiceover/dubbing, beta) — espeak-ng, apt-installable (added to the
+  `Dockerfile`), no API key, fully offline. Maps this app's existing language codes to espeak-ng
+  voices where one exists; falls back to `en-us` otherwise (e.g. Malayalam — espeak-ng has no
+  Malayalam voice at all, so this produces English-accented speech, not silence or an error).
+  Served synchronously from `server.js`'s new `POST /synthesize-voiceover` (same HMAC-signed
+  pattern as `/transcribe`/`/detect-scenes` — synthesis is fast enough not to need the async job
+  queue a full render uses), uploaded via the existing `uploadOutput` helper (`audio/mpeg`
+  content-type, alongside its existing `video/mp4`/`image/jpeg` uses).
+- **Social caption + hashtags** and **auto-translate captions** live entirely in `worker.js` (no
+  render-pipeline changes) — the former reuses the existing shared `GEMINI_API_KEY`/
+  `engineGeminiGenerate`, the latter calls MyMemory Translation API directly from the Worker (no
+  key needed at all). See SETUP.md's "CapCut-style extras" section for the full detail on both,
+  including exactly what was and wasn't verified for each (translation in particular: the
+  MyMemory request/response contract is confirmed from its own docs, not a live call, since this
+  dev sandbox proxies/blocks arbitrary outbound hosts).
+- **What's verified vs. not**: the full combined filter graph (chroma key + denoise + 1.5× speed
+  together) was run through real ffmpeg against synthetic video and confirmed correct (exact
+  expected output duration). The auto-reframe crop expression was verified both standalone and
+  inside the full filter graph against real ffmpeg with a synthetic moving-subject centroid track.
+  Beat detection was verified against a real synthetic 16-click audio track (ffmpeg-generated),
+  correctly finding 15/16 clicks (missing only the very first onset at t=0, an expected onset-
+  detector characteristic, not a bug). The TTS pipeline (espeak-ng → ffmpeg mp3 encode) was run
+  end-to-end for real, producing a correctly-sized, correct-duration audio file. **Not verified**:
+  any of this against a real deployed container (no Docker daemon in this dev sandbox — same
+  standing limitation noted elsewhere in this file), and MyMemory's live response shape (network
+  access to arbitrary external hosts is proxied/blocked in this sandbox).
+
 ## Setup
 
 1. `npm install`

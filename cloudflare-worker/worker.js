@@ -9670,6 +9670,106 @@ async function handleMarketingCaptionsSave(request, env){
   return json({ok:true});
 }
 
+// Auto-translate captions — MyMemory Translation API (api.mymemory.translated.net), genuinely
+// free with NO API key/signup at all: 5,000 chars/day anonymously by IP, or 50,000/day if a
+// contact email is set via the `de=` param (env.MYMEMORY_EMAIL, a shared server-level setting, not
+// per-client — it's just a quota-multiplier, not a real credential like the Pexels/Pixabay/
+// Freesound/fal.ai keys). Splits into ~450-char chunks (MyMemory's own per-query limit is small)
+// joined on word boundaries, translated sequentially (not parallel — the daily budget is shared
+// across every chunk/project/client on this Worker, so bursts don't help and risk 429s).
+function marketingChunkText(text, maxLen){
+  const words=text.split(/\s+/);
+  const chunks=[]; let cur='';
+  for(const w of words){
+    if(cur && (cur+' '+w).length>maxLen){ chunks.push(cur); cur=w; }
+    else cur=cur?cur+' '+w:w;
+  }
+  if(cur) chunks.push(cur);
+  return chunks;
+}
+async function marketingTranslateChunk(text, sourceLang, targetLang, env){
+  const emailParam=env.MYMEMORY_EMAIL?`&de=${encodeURIComponent(env.MYMEMORY_EMAIL)}`:'';
+  const url=`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(sourceLang)}|${encodeURIComponent(targetLang)}${emailParam}`;
+  const r=await fetch(url);
+  if(!r.ok) throw new Error(`MyMemory translation failed: HTTP ${r.status}`);
+  const data=await r.json().catch(()=>({}));
+  if(data.responseStatus && Number(data.responseStatus)!==200) throw new Error(data.responseDetails||'MyMemory translation error');
+  return data.responseData?.translatedText||'';
+}
+async function handleMarketingTranslateCaptions(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.project_id);
+  const targetLang=(body.target_language||'').trim();
+  if(!id||!targetLang) return json({error:'project_id and target_language required'}, 400);
+  const project=await env.DB.prepare(`SELECT transcript_json, language FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!project.transcript_json) return json({error:'Transcribe first — translation is derived from the transcript.'}, 400);
+  let transcript; try{ transcript=JSON.parse(project.transcript_json); }catch(e){ return json({error:'Transcript is corrupted — re-transcribe.'}, 400); }
+  const words=transcript.words||[];
+  if(!words.length) return json({error:'Transcript has no words to translate.'}, 400);
+  // Capped well under MyMemory's smallest free daily budget (5,000 chars/day with no email set)
+  // so one long project can't exhaust the WHOLE Worker's shared quota by itself.
+  const text=(transcript.text||words.map(w=>w.word).join(' ')).slice(0, 4500);
+  const sourceLang=project.language||'en';
+  const chunks=marketingChunkText(text, 450);
+  let translatedText='';
+  try{
+    for(const chunk of chunks){
+      const piece=await marketingTranslateChunk(chunk, sourceLang, targetLang, env);
+      translatedText+=(translatedText?' ':'')+piece;
+    }
+  }catch(e){ return json({error:'Translation failed: '+e.message}, 502); }
+
+  // Word-level timing can't survive translation (word order/count changes across languages) — the
+  // translated words are evenly spread across the SAME total time span the original transcript
+  // covered, the same honest "equal split" approximation this module already uses elsewhere
+  // (splitSceneEvenly/redistributeCaptionsAcrossScenes) rather than a false claim of exact sync.
+  const translatedWords=translatedText.split(/\s+/).filter(Boolean);
+  if(!translatedWords.length) return json({error:'Translation returned no text.'}, 502);
+  const firstStart=Number(words[0]?.start)||0;
+  const lastEnd=Number(words[words.length-1]?.end)||firstStart+1;
+  const totalDur=Math.max(0.1, lastEnd-firstStart);
+  const perWord=totalDur/translatedWords.length;
+  const newWords=translatedWords.map((w,i)=>({word:w, start:firstStart+i*perWord, end:firstStart+(i+1)*perWord}));
+  return json({ok:true, captions:{words:newWords}, language:targetLang});
+}
+
+// AI voiceover/dubbing — free, fully local text-to-speech (render-pipeline/lib/tts.js, espeak-ng)
+// generating a standalone narration track from the transcript (or custom text). v1 scope: produces
+// a real, downloadable audio file — it does NOT automatically dub/time-align itself into the
+// video render (the original speech and a synthesized voiceover generally run different lengths
+// for the same text, and reconciling that against the existing silence-cut/caption-timing
+// machinery is real additional work, not attempted here). A natural future addition, not built.
+async function handleMarketingGenerateVoiceover(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'Voiceover generation requires the render pipeline — see SETUP.md "Marketing Studio module".'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  if(!projectId) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT transcript_json, language FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  let text=(body.text||'').trim();
+  if(!text && project.transcript_json){
+    try{ const t=JSON.parse(project.transcript_json); text=(t.text||(t.words||[]).map(w=>w.word).join(' ')||'').trim(); }catch(e){}
+  }
+  if(!text) return json({error:'No text to synthesize — transcribe first, or type custom voiceover text.'}, 400);
+  text=text.slice(0, 5000);
+
+  const reqBody=JSON.stringify({text, language:body.language||project.language||'en', client_id:Number(payload.cid), project_id:projectId});
+  const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
+  const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-voiceover`;
+  let resp;
+  try{ resp=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody}); }
+  catch(e){ return json({error:'Could not reach the render pipeline: '+e.message}, 502); }
+  const data=await resp.json().catch(()=>({}));
+  if(!resp.ok) return json({error:data?.error||('HTTP '+resp.status)}, 502);
+  const outputUrl=data.output_url||(data.output_key?`${env.WORKER_BASE_URL}/marketing/media/${data.output_key}`:null);
+  return json({ok:true, output_url:outputUrl});
+}
+
 async function handleMarketingAutoeditPresets(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -9705,6 +9805,41 @@ async function handleMarketingCuesSave(request, env){
   if(!project) return json({error:'Not found'}, 404);
   await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.cues), new Date().toISOString(), id).run();
   return json({ok:true});
+}
+
+// Social caption + hashtags for the post itself ("what do I write when I share this clip") —
+// reuses the same shared GEMINI_API_KEY/engineGeminiGenerate the Conversation Engine already
+// calls, not a new integration. Best-effort: if no key is configured or the call fails, a plain
+// heuristic fallback (first sentence + a couple of generic hashtags) still returns something
+// usable rather than erroring the whole request — this is a nice-to-have suggestion, not something
+// that should block "Send to WhatsApp."
+async function handleMarketingSuggestCaption(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.project_id);
+  if(!id) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT transcript_json FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!project.transcript_json) return json({error:'Transcribe first — the caption is drafted from the transcript.'}, 400);
+  let transcript; try{ transcript=JSON.parse(project.transcript_json); }catch(e){ return json({error:'Transcript is corrupted — re-transcribe.'}, 400); }
+  const text=(transcript.text||(transcript.words||[]).map(w=>w.word).join(' ')||'').slice(0, 4000);
+  if(!text.trim()) return json({error:'Transcript is empty.'}, 400);
+
+  const raw=await engineGeminiGenerate(env,
+    'You write short, punchy social captions for a video clip, based on its transcript. Reply with ONLY compact JSON: {"caption":"...", "hashtags":["...", "..."]}. caption: 1-2 sentences, no hashtags inside it, matching the transcript\'s own language/tone. hashtags: 4-6 relevant lowercase hashtags WITHOUT the # symbol.',
+    text, {json:true, maxOutputTokens:250});
+  if(raw){
+    try{
+      const parsed=JSON.parse(raw);
+      if(parsed && typeof parsed.caption==='string' && Array.isArray(parsed.hashtags)){
+        return json({ok:true, caption:parsed.caption.trim(), hashtags:parsed.hashtags.map(h=>String(h).replace(/^#/,'').trim()).filter(Boolean).slice(0,8), source:'ai'});
+      }
+    }catch(e){ /* fall through to heuristic */ }
+  }
+  // Heuristic fallback — no key configured, or the model didn't return valid JSON.
+  const firstSentence=(text.match(/^[^.!?]*[.!?]/)||[text.slice(0,140)])[0].trim();
+  return json({ok:true, caption:firstSentence, hashtags:['reels','video','smallbusiness'], source:'heuristic'});
 }
 
 // Real shot/cut detection (render-pipeline/lib/sceneDetect.js) — not a heuristic, actual ffmpeg
@@ -9791,7 +9926,10 @@ async function marketingSubmitRenderJob(env, clientId, projectId, spec, revertSt
 // project + its current auto-edit/cue options into a render spec, independent of trim
 // range/quality/billing (each caller decides those). Throws (caller catches) rather than
 // returning a Response, since a preview needs the same validation without duplicating it.
-async function marketingBuildRenderSpec(env, clientId, project, opts, trimStart, trimEnd, watermarked, qualityOverride){
+const MARKETING_HEX_COLOR_RE=/^#?[0-9a-fA-F]{6}$/;
+function marketingSanitizeHexColor(c, fallback){ return MARKETING_HEX_COLOR_RE.test(c||'')?c:fallback; }
+
+async function marketingBuildRenderSpec(env, clientId, project, opts, trimStart, trimEnd, watermarked, qualityOverride, aspectOverride){
   const style=await marketingResolveStyle(env, clientId, project.style_id);
   let overrides={}; try{ overrides=JSON.parse(project.style_overrides_json||'{}'); }catch(e){}
   let captions; try{ captions=JSON.parse(project.captions_json); }catch(e){ throw new Error('Captions are corrupted — re-transcribe.'); }
@@ -9806,6 +9944,21 @@ async function marketingBuildRenderSpec(env, clientId, project, opts, trimStart,
 
   let cues=[]; try{ cues=(JSON.parse(project.cues_json||'[]')||[]).filter(cue=>cue.accepted!==false); }catch(e){}
   const clientKeys=await marketingGetClientKeys(env, clientId);
+  const aspect=['9:16','1:1','16:9'].includes(aspectOverride)?aspectOverride:(project.target_aspect||'9:16');
+
+  // Chroma key (green screen) — off unless explicitly enabled with a color; hex colors
+  // re-sanitized here (not just trusted from the request body) since they're interpolated
+  // straight into an ffmpeg filter string on the render pipeline (see filtergraph.js's own
+  // defense-in-depth re-check of the same fields — belt and suspenders, not redundant, since a
+  // spec could in principle reach the render pipeline from a future caller other than this one).
+  const chromaKeyOpts=opts.chroma_key;
+  const chromaKey=(chromaKeyOpts && chromaKeyOpts.enabled) ? {
+    enabled:true,
+    color:marketingSanitizeHexColor(chromaKeyOpts.color, '#00FF00'),
+    similarity:Math.min(0.6, Math.max(0.05, Number(chromaKeyOpts.similarity)||0.3)),
+    blend:Math.min(0.5, Math.max(0, Number(chromaKeyOpts.blend)||0.1)),
+    background_color:marketingSanitizeHexColor(chromaKeyOpts.background_color, '#000000'),
+  } : null;
 
   return {
     mode:'caption-clip',
@@ -9815,8 +9968,11 @@ async function marketingBuildRenderSpec(env, clientId, project, opts, trimStart,
     client_keys:clientKeys,
     source_url:`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`,
     trim_start_sec:trimStart, trim_end_sec:trimEnd,
-    target_aspect:project.target_aspect||'9:16',
-    resolution:MARKETING_RESOLUTIONS[project.target_aspect]||MARKETING_RESOLUTIONS['9:16'],
+    // aspectOverride lets a batch multi-aspect export (see handleMarketingRenderStart) render the
+    // SAME project at a different aspect than its own saved target_aspect, without touching the
+    // project row itself.
+    target_aspect:aspect,
+    resolution:MARKETING_RESOLUTIONS[aspect]||MARKETING_RESOLUTIONS['9:16'],
     captions, style:{...style, ...overrides},
     silence_cut:silenceCut, auto_zoom:autoZoom, background_music:backgroundMusic,
     // Zero-cost extension of silence-cut using the transcript's own word-level timestamps — no
@@ -9834,6 +9990,21 @@ async function marketingBuildRenderSpec(env, clientId, project, opts, trimStart,
     // render-pipeline/lib/textBehindSubject.js) — the pipeline itself enforces that (silence-cut
     // becomes a no-op when this is set), not just documentation.
     text_behind_subject:!!opts.text_behind_subject,
+    // A single clip-wide speed change (slow-mo <1 / time-lapse >1), not CapCut's full per-segment
+    // ramping — see render-pipeline/lib/filtergraph.js's comment on this v1 scope decision.
+    // Clamped here too (not just in the filtergraph), matching ffmpeg's own atempo range.
+    speed_factor:Math.min(2, Math.max(0.5, Number(opts.speed_factor)||1)),
+    // ffmpeg's built-in FFT denoiser — no new API, no model file to ship.
+    denoise:!!opts.denoise,
+    chroma_key:chromaKey,
+    // Smart auto-reframe — reuses the same local RVM person-matting model text_behind_subject
+    // uses (render-pipeline/lib/autoReframe.js), tracking the subject horizontally instead of
+    // always center-cropping. Best-effort on the render pipeline (falls back to center-crop).
+    auto_reframe:!!opts.auto_reframe,
+    // Beat-synced cuts — snaps B-roll/SFX cue start times to the nearest detected beat in the
+    // background music (render-pipeline/lib/beatDetect.js). A no-op unless background_music is
+    // also set — there's no music track to detect beats in otherwise.
+    beat_sync:!!opts.beat_sync,
     watermark:watermarked,
   };
 }
@@ -9858,10 +10029,23 @@ async function handleMarketingRenderStart(request, env){
   const trimStart=Number(project.trim_start_sec)||0;
   const trimEnd=project.trim_end_sec!=null?Number(project.trim_end_sec):(Number(project.source_duration_sec)||trimStart);
   const durationSec=Math.max(0, trimEnd-trimStart);
-  const minutesNeeded=Math.max(1, Math.ceil(durationSec/60));
+  const minutesPerRender=Math.max(1, Math.ceil(durationSec/60));
+
+  // Batch multi-aspect export ("give me 9:16 AND 1:1 AND 16:9 from one click") — the project's own
+  // target_aspect always renders as the normal, primary render (jobType:'render', the one whose
+  // result becomes the project's output_key/output_url); any OTHER aspects requested in
+  // body.aspects render as jobType:'render_extra' — real, billable renders (same minutes cost as
+  // any other render), but their result only ever lives on their own job row
+  // (marketing_jobs.output_url), same as a preview/AI-broll job, so they never fight the primary
+  // render for the one output_key column a project has.
+  const extraAspects=Array.isArray(body.aspects)
+    ? [...new Set(body.aspects.filter(a=>['9:16','1:1','16:9'].includes(a) && a!==(project.target_aspect||'9:16')))]
+    : [];
+  const totalRenders=1+extraAspects.length;
+  const minutesNeeded=minutesPerRender*totalRenders;
   const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
   const used=Number(c?.marketing_minutes_used)||0;
-  if(used+minutesNeeded>limit) return json({error:`This render needs ~${minutesNeeded} min but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
+  if(used+minutesNeeded>limit) return json({error:`This render needs ~${minutesNeeded} min (${totalRenders} aspect${totalRenders>1?'s':''}) but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
 
   const watermarked=marketingIsWatermarked(c);
   let spec;
@@ -9869,7 +10053,16 @@ async function handleMarketingRenderStart(request, env){
   catch(e){ return json({error:e.message}, 400); }
   const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
   if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
-  return json({ok:true, job_id:result.job_id});
+
+  const extraJobIds=[];
+  for(const aspect of extraAspects){
+    let extraSpec;
+    try{ extraSpec=await marketingBuildRenderSpec(env, payload.cid, project, body.options||{}, trimStart, trimEnd, watermarked, null, aspect); }
+    catch(e){ continue; } // same captions/style as the primary render — shouldn't fail independently, but a batch export partially succeeding is better than the whole thing failing
+    const extraResult=await marketingSubmitRenderJob(env, payload.cid, projectId, extraSpec, null, 'render_extra', false);
+    if(extraResult.ok) extraJobIds.push({aspect, job_id:extraResult.job_id});
+  }
+  return json({ok:true, job_id:result.job_id, extra_jobs:extraJobIds});
 }
 
 // Apply/preview (SETUP.md "Marketing Studio module — Apply/preview renders") — a short (max 12s),
@@ -9965,11 +10158,17 @@ async function handleMarketingRenderWebhook(request, env){
   const outputUrl=body.output_url||(body.output_key?`${env.WORKER_BASE_URL}/marketing/media/${body.output_key}`:null);
   if(body.status==='done'){
     await env.DB.prepare(`UPDATE marketing_jobs SET status='done', progress_pct=100, output_url=?, completed_at=?, updated_at=? WHERE id=?`).bind(outputUrl, now, now, job.id).run();
-    // Previews are short/draft-quality throwaway clips, not the deliverable — they must never
-    // overwrite the project's real output or count against metered minutes, unlike a real render.
-    if(job.type!=='preview' && job.type!=='ai_broll'){
+    // Previews/AI-broll-generation are never the project's deliverable, so they never touch the
+    // project row. 'render_extra' (a batch multi-aspect export's non-primary aspects — see
+    // handleMarketingRenderStart) IS a real deliverable render, just not the project's *canonical*
+    // one (the project only has one output_key column) — its result lives on the job row only
+    // (already written above), same place a preview's does, but unlike a preview it's still a real
+    // billable render, so minutes billing runs for it while the project-row update doesn't.
+    if(job.type==='render'){
       await env.DB.prepare(`UPDATE marketing_projects SET status='done', output_key=?, output_url=?, output_duration_sec=?, updated_at=? WHERE id=?`)
         .bind(body.output_key||null, outputUrl, Number(body.duration_sec)||null, now, job.project_id).run();
+    }
+    if(job.type==='render' || job.type==='render_extra'){
       const minutes=Math.ceil((Number(body.duration_sec)||0)/60);
       if(minutes>0){
         const c=await getClientById(env, job.client_id);
@@ -9977,7 +10176,7 @@ async function handleMarketingRenderWebhook(request, env){
       }
     }
   } else {
-    await marketingFailJob(env, job.id, job.project_id, body.error||'Render failed', (job.type==='preview'||job.type==='ai_broll')?null:'ready');
+    await marketingFailJob(env, job.id, job.project_id, body.error||'Render failed', ['preview','ai_broll','render_extra'].includes(job.type)?null:'ready');
   }
   return json({ok:true});
 }
@@ -10500,8 +10699,11 @@ export default {
       else if(url.pathname==='/marketing/projects/combine-clips' && request.method==='POST'){ res=await handleMarketingCombineClips(request, env); }
       else if(url.pathname==='/marketing/projects/transcribe' && request.method==='POST'){ res=await handleMarketingTranscribe(request, env); }
       else if(url.pathname==='/marketing/projects/captions' && request.method==='PATCH'){ res=await handleMarketingCaptionsSave(request, env); }
+      else if(url.pathname==='/marketing/projects/translate-captions' && request.method==='POST'){ res=await handleMarketingTranslateCaptions(request, env); }
+      else if(url.pathname==='/marketing/projects/generate-voiceover' && request.method==='POST'){ res=await handleMarketingGenerateVoiceover(request, env); }
       else if(url.pathname==='/marketing/autoedit-presets' && request.method==='GET'){ res=await handleMarketingAutoeditPresets(request, env); }
       else if(url.pathname==='/marketing/projects/suggest-cues' && request.method==='POST'){ res=await handleMarketingSuggestCues(request, env); }
+      else if(url.pathname==='/marketing/projects/suggest-caption' && request.method==='POST'){ res=await handleMarketingSuggestCaption(request, env); }
       else if(url.pathname==='/marketing/projects/cues' && request.method==='PATCH'){ res=await handleMarketingCuesSave(request, env); }
       else if(url.pathname==='/marketing/projects/detect-scenes' && request.method==='POST'){ res=await handleMarketingDetectScenes(request, env); }
       else if(url.pathname==='/marketing/projects/render' && request.method==='POST'){ res=await handleMarketingRenderStart(request, env); }

@@ -13,10 +13,12 @@ const { findFillerWordRanges, isFillerWord } = require('./fillerWords');
 const { writeAssFile } = require('./subtitles');
 const { buildFfmpegArgs } = require('./filtergraph');
 const { run } = require('./exec');
-const { getDurationSec } = require('./probe');
+const { getDurationSec, getVideoDimensions } = require('./probe');
 const { resolveBroll, resolveSfx, resolveMusic } = require('./assets');
 const { uploadOutput } = require('./storage');
 const { renderTextBehindSubject } = require('./textBehindSubject');
+const { computeAutoReframeExpr } = require('./autoReframe');
+const { detectBeats, snapToBeats } = require('./beatDetect');
 
 function parseResolution(res) {
   const m = /^(\d+)x(\d+)$/.exec(res || '');
@@ -65,13 +67,50 @@ async function renderCaptionClip(job, env, assetsRoot) {
 
     const { w: resolutionW, h: resolutionH } = parseResolution(spec.resolution);
 
+    let music = null;
+    if (spec.background_music) {
+      const musicPath = resolveMusic(assetsRoot, spec.background_music);
+      if (musicPath) music = { path: musicPath, volume: 0.15 };
+    }
+
+    // Beat-synced cuts (spec.beat_sync) — "cut on the beat" for B-roll/SFX cues, snapping each
+    // cue's start time to the nearest detected beat in the background music (lib/beatDetect.js:
+    // real energy-onset detection, not a tempo-grid beat tracker — see that file's header for the
+    // distinction). The music track plays on a loop in the final render (`-stream_loop -1` in
+    // filtergraph.js), so its own beat pattern is tiled across the full output duration here to
+    // match — snapping against only the music's first loop would silently stop working past its
+    // own length. Best-effort: if detection fails (e.g. corrupt music file), cues simply keep
+    // their original (script-derived) timing instead of failing the render.
+    let musicBeats = [];
+    if (spec.beat_sync && music) {
+      try {
+        const [rawBeats, musicDurSec] = await Promise.all([detectBeats(music.path), getDurationSec(music.path)]);
+        const totalOutputSec = keepSegments.reduce((sum, s) => sum + (s.end - s.start), 0);
+        if (rawBeats.length && musicDurSec > 0) {
+          for (let loop = 0; loop * musicDurSec <= totalOutputSec; loop++) {
+            for (const b of rawBeats) {
+              const t = b + loop * musicDurSec;
+              if (t <= totalOutputSec) musicBeats.push(t);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('beat detection failed, cues keep their original timing:', err.message || err);
+      }
+    }
+
     const acceptedCues = (spec.cues || []).filter(c => c.accepted !== false);
     const broll = [];
     const sfx = [];
     const vfx = [];
     for (const cue of acceptedCues) {
-      const start = remap(Number(cue.start) || 0);
-      const end = Math.max(start + 0.3, remap(Number(cue.end) || 0));
+      let start = remap(Number(cue.start) || 0);
+      let end = Math.max(start + 0.3, remap(Number(cue.end) || 0));
+      if (musicBeats.length && (cue.type === 'broll' || cue.type === 'sfx')) {
+        const duration = end - start;
+        const [snappedStart] = snapToBeats([start], musicBeats, 0.35);
+        if (snappedStart !== start) { start = snappedStart; end = start + duration; }
+      }
       if (cue.type === 'broll') {
         const assetPath = await resolveBroll(assetsRoot, cue.tag, env, spec.client_keys);
         if (assetPath) broll.push({ path: assetPath, startSec: start, endSec: end });
@@ -81,12 +120,6 @@ async function renderCaptionClip(job, env, assetsRoot) {
       } else if (cue.type === 'vfx') {
         vfx.push({ type: cue.tag, startSec: start, endSec: end }); // vfx needs no asset — pure filter effect
       }
-    }
-
-    let music = null;
-    if (spec.background_music) {
-      const musicPath = resolveMusic(assetsRoot, spec.background_music);
-      if (musicPath) music = { path: musicPath, volume: 0.15 };
     }
 
     let assPath = null;
@@ -115,6 +148,22 @@ async function renderCaptionClip(job, env, assetsRoot) {
       return { ...result, duration_sec: durationSec };
     }
 
+    // Smart auto-reframe (spec.auto_reframe) — reuses the same local RVM matting model
+    // text-behind-subject uses (lib/segmentation.js), just to track a subject's horizontal
+    // position instead of cutting them out. Best-effort: matting can fail (missing model file,
+    // decode error, no confident subject anywhere) — that degrades to the existing plain
+    // center-crop rather than failing the whole render, same "best-effort, never blocks the core
+    // render" pattern as scene thumbnails.
+    let cropXExpr = null;
+    if (spec.auto_reframe) {
+      try {
+        const dims = await getVideoDimensions(sourcePath);
+        if (dims) cropXExpr = await computeAutoReframeExpr(sourcePath, dims.width / dims.height);
+      } catch (err) {
+        console.error('auto-reframe failed, falling back to center-crop:', err.message || err);
+      }
+    }
+
     const outputPath = path.join(workDir, 'output.mp4');
     const args = buildFfmpegArgs({
       inputPath: sourcePath,
@@ -128,6 +177,10 @@ async function renderCaptionClip(job, env, assetsRoot) {
       broll,
       vfx,
       quality: spec.quality,
+      denoise: !!spec.denoise,
+      chromaKey: spec.chroma_key || null,
+      speedFactor: Number(spec.speed_factor) || 1,
+      cropXExpr,
       outputPath,
     });
     await run('ffmpeg', args, { timeoutMs: 20 * 60 * 1000 });
