@@ -12,6 +12,7 @@ const { downloadToFile } = require('./download');
 const { run } = require('./exec');
 const { getDurationSec } = require('./probe');
 const { uploadOutput } = require('./storage');
+const { writeTitleCardAss } = require('./subtitles');
 
 function parseResolution(res) {
   const m = /^(\d+)x(\d+)$/.exec(res || '');
@@ -34,12 +35,15 @@ async function renderScene(scene, index, workDir, resolutionW, resolutionH) {
     ]);
   } else {
     // Text scene (or an unrecognized scene type — falls back to a plain title card rather than
-    // failing the whole batch over one malformed scene).
-    const text = String(scene.content || '').replace(/'/g, "\u2019").replace(/:/g, '\\:');
+    // failing the whole batch over one malformed scene). Rendered via the same ASS/libass path
+    // captions use, NOT ffmpeg's `drawtext` — see buildTitleCardAss's comment for why: drawtext
+    // doesn't shape complex scripts (Malayalam etc.) correctly even with the right font installed.
+    const assPath = path.join(workDir, `scene-${index}.ass`);
+    writeTitleCardAss(assPath, scene.content || '', { font: scene.font, text_color: scene.text_color }, duration, { resolutionW, resolutionH });
     await run('ffmpeg', [
       '-y', '-f', 'lavfi', '-i', `color=c=${(scene.bg_color || '#111111').replace('#', '0x')}:s=${resolutionW}x${resolutionH}:d=${duration}`,
       '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-shortest',
-      '-vf', `drawtext=text='${text}':fontcolor=${(scene.text_color || '#FFFFFF').replace('#', '0x')}:fontsize=${Math.round(resolutionH * 0.06)}:x=(w-tw)/2:y=(h-th)/2:line_spacing=10`,
+      '-vf', `subtitles=${assPath.replace(/\\/g, '/').replace(/:/g, '\\:')}`,
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-c:a', 'aac',
       '-pix_fmt', 'yuv420p', outPath,
     ]);
@@ -66,6 +70,8 @@ async function renderTemplate(job, env) {
 
     let finalPath = concatenatedPath;
     if (spec.watermark) {
+      // "Made with Leadvyne" is always plain Latin text, so plain drawtext is fine here — no
+      // complex-script shaping needed for this one fixed string.
       finalPath = path.join(workDir, 'output.mp4');
       await run('ffmpeg', [
         '-y', '-i', concatenatedPath,
