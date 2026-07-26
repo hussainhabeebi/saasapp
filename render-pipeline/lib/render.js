@@ -9,6 +9,7 @@ const crypto = require('crypto');
 
 const { downloadToFile } = require('./download');
 const { detectSilence, computeKeepSegments, makeTimeMapper } = require('./timeline');
+const { findFillerWordRanges, isFillerWord } = require('./fillerWords');
 const { writeAssFile } = require('./subtitles');
 const { buildFfmpegArgs } = require('./filtergraph');
 const { run } = require('./exec');
@@ -34,19 +35,29 @@ async function renderCaptionClip(job, env, assetsRoot) {
 
     let keepSegments;
     // text_behind_subject renders the actual video as a single plain trim (see below) — if
-    // silence-cut also ran here, caption timestamps would get remapped as though the video had
-    // gaps removed while the video itself doesn't, desyncing every caption. v1 doesn't support
-    // combining the two (see textBehindSubject.js's header comment), so silence-cut is a no-op
-    // whenever text_behind_subject is set, not a silently-broken combination.
-    if (spec.silence_cut && !spec.text_behind_subject) {
-      const silences = await detectSilence(sourcePath, trimStart, trimEnd);
-      keepSegments = computeKeepSegments(trimStart, trimEnd, silences);
+    // silence-cut/filler-word-cut also ran here, caption timestamps would get remapped as though
+    // the video had gaps removed while the video itself doesn't, desyncing every caption. v1
+    // doesn't support combining the two (see textBehindSubject.js's header comment), so both are
+    // a no-op whenever text_behind_subject is set, not a silently-broken combination.
+    if ((spec.silence_cut || spec.filler_word_cut) && !spec.text_behind_subject) {
+      // Filler-word ranges reuse the exact same keep-segment machinery silence-cut already uses
+      // (lib/timeline.js's computeKeepSegments doesn't care WHY a range should be cut) — real
+      // reuse, not a parallel implementation. See lib/fillerWords.js.
+      let cutRanges = spec.silence_cut ? await detectSilence(sourcePath, trimStart, trimEnd) : [];
+      if (spec.filler_word_cut) cutRanges = cutRanges.concat(findFillerWordRanges(spec.captions?.words));
+      keepSegments = computeKeepSegments(trimStart, trimEnd, cutRanges);
     } else {
       keepSegments = [{ start: trimStart, end: trimEnd }];
     }
     const remap = makeTimeMapper(keepSegments);
 
-    const words = (spec.captions?.words || []).map(w => ({
+    // Filler words are dropped from the caption track entirely when filler_word_cut is on — the
+    // audio/video underneath them is being cut, so captioning them would show text with nothing
+    // corresponding to it in the final video.
+    const captionWords = spec.filler_word_cut
+      ? (spec.captions?.words || []).filter(w => !isFillerWord(w.word))
+      : (spec.captions?.words || []);
+    const words = captionWords.map(w => ({
       word: w.word,
       start: remap(Number(w.start) || 0),
       end: remap(Number(w.end) || 0),
@@ -62,10 +73,10 @@ async function renderCaptionClip(job, env, assetsRoot) {
       const start = remap(Number(cue.start) || 0);
       const end = Math.max(start + 0.3, remap(Number(cue.end) || 0));
       if (cue.type === 'broll') {
-        const assetPath = await resolveBroll(assetsRoot, cue.tag, env);
+        const assetPath = await resolveBroll(assetsRoot, cue.tag, env, spec.client_keys);
         if (assetPath) broll.push({ path: assetPath, startSec: start, endSec: end });
       } else if (cue.type === 'sfx') {
-        const assetPath = resolveSfx(assetsRoot, cue.tag);
+        const assetPath = await resolveSfx(assetsRoot, cue.tag, env, spec.client_keys);
         if (assetPath) sfx.push({ path: assetPath, atSec: start });
       } else if (cue.type === 'vfx') {
         vfx.push({ type: cue.tag, startSec: start, endSec: end }); // vfx needs no asset — pure filter effect
