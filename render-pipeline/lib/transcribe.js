@@ -8,11 +8,7 @@
 // the same reason /extract-audio does — sending audio-only keeps well under Whisper's 25 MB cap.
 const { extractAudio } = require('./extractAudio');
 
-async function transcribe(sourceUrl, language, env) {
-  const apiKey = env.MARKETING_TRANSCRIBE_API_KEY;
-  if (!apiKey) throw new Error('MARKETING_TRANSCRIBE_API_KEY is not set on the render pipeline.');
-
-  const audioBuffer = await extractAudio(sourceUrl);
+async function callWhisper(apiKey, apiUrl, audioBuffer, language) {
   const form = new FormData();
   form.append('file', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'audio.mp3');
   form.append('model', 'whisper-1');
@@ -20,9 +16,7 @@ async function transcribe(sourceUrl, language, env) {
   form.append('timestamp_granularities[]', 'word');
   if (language) form.append('language', language); // omit to let the API auto-detect
 
-  const r = await fetch(env.MARKETING_TRANSCRIBE_API_URL || 'https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form,
-  });
+  const r = await fetch(apiUrl, { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     const err = new Error(data?.error?.message || `HTTP ${r.status}`);
@@ -30,6 +24,28 @@ async function transcribe(sourceUrl, language, env) {
     throw err;
   }
   return data;
+}
+
+async function transcribe(sourceUrl, language, env) {
+  const apiKey = env.MARKETING_TRANSCRIBE_API_KEY;
+  if (!apiKey) throw new Error('MARKETING_TRANSCRIBE_API_KEY is not set on the render pipeline.');
+  const apiUrl = env.MARKETING_TRANSCRIBE_API_URL || 'https://api.openai.com/v1/audio/transcriptions';
+
+  const audioBuffer = await extractAudio(sourceUrl);
+  try {
+    return await callWhisper(apiKey, apiUrl, audioBuffer, language);
+  } catch (err) {
+    // A language hint a project can be tagged with (e.g. Malayalam, "ml") isn't necessarily in
+    // OpenAI's Whisper API's accepted `language` parameter list — confirmed via a real
+    // "Language 'ml' is not supported." response — even though the underlying model can often
+    // still transcribe that audio correctly through auto-detection; the parameter is only a
+    // decoding hint, not a hard requirement. Retry once without it instead of failing the whole
+    // transcription over a hint OpenAI won't accept.
+    if (language && /language .* is not supported/i.test(err.message || '')) {
+      return await callWhisper(apiKey, apiUrl, audioBuffer, null);
+    }
+    throw err;
+  }
 }
 
 module.exports = { transcribe };
