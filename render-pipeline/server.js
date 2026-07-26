@@ -11,6 +11,7 @@ const express = require('express');
 const hmac = require('./lib/hmac');
 const { renderCaptionClip } = require('./lib/render');
 const { renderTemplate } = require('./lib/templateRender');
+const { renderRemotionTemplate } = require('./lib/remotionRender');
 const { extractAudio } = require('./lib/extractAudio');
 const { concatClips } = require('./lib/concatClips');
 
@@ -116,7 +117,7 @@ async function processJob(job) {
   console.log(`[job ${job.job_id}] starting, mode=${job.spec?.mode}`);
   try {
     const result = job.spec?.mode === 'template'
-      ? await renderTemplate(job, env)
+      ? (job.spec?.engine === 'remotion' ? await renderRemotionTemplate(job, env) : await renderTemplate(job, env))
       : await renderCaptionClip(job, env, ASSETS_ROOT);
     console.log(`[job ${job.job_id}] done`, result);
     await callback(job, { job_id: job.job_id, status: 'done', ...result });

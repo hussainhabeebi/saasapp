@@ -5179,6 +5179,55 @@ same underlying table) — cloning, not referencing, so editing your copy never 
 library list. Frontend: "📚 Browse Library" button on the Video Templates tab opens a card grid;
 clicking a card clones it and opens the normal template editing flow.
 
+### Animated template library — Remotion engine (`migrations/0019_marketing_remotion.sql`)
+"Remotion for the template/style layer (React components map naturally to your existing
+Cloudflare Workers setup) + FFmpeg/libass for the raw caption burn-in and Whisper for
+transcription" — a second, real animation engine for Video Templates, alongside (not replacing)
+the static-scene ffmpeg engine described above. The caption-burn-in pipeline for uploaded videos
+and transcription are unchanged by this — Remotion is scoped specifically to the template/style
+layer.
+
+- **`marketing_templates.engine`** (`'ffmpeg'` default | `'remotion'`), **`.remotion_composition_id`**,
+  **`.props_schema_json`** — new columns, migration `0019_marketing_remotion.sql`. A Remotion
+  template has `scenes_json` empty/unused; a Remotion template's "scenes" are its React component
+  (see render-pipeline's `remotion/` tree) and it renders via `spec.engine:'remotion'` instead of
+  the default ffmpeg scene compositor.
+- **`MARKETING_REMOTION_LIBRARY`** (worker.js) — 4 curated animated starter templates (Flash Sale,
+  Product Launch, Countdown/Urgency, Testimonial Quote), each with a `props_schema` (key/label/
+  default hints for the generate form) instead of `{{variable}}` scenes. Ids/props must stay in
+  sync with render-pipeline's `remotion/Root.jsx` registry — this constant is metadata for the
+  picker UI and prop hints only; the actual composition code lives in the render pipeline.
+  `GET /marketing/remotion-library` lists them; `POST /marketing/remotion-library/clone` clones one
+  into a client-owned `marketing_templates` row with `engine:'remotion'` set (same clone-not-
+  reference pattern as the ffmpeg template library).
+- **`handleMarketingTemplateGenerate`** branches on `template.engine`: for `'remotion'` it skips
+  `marketingResolveScenes`/style resolution entirely and instead passes the batch row's variables
+  straight through as `spec.props` (Remotion components consume props natively, no `{{variable}}`
+  string substitution needed); for `'ffmpeg'` it behaves exactly as before. Either way the result
+  is a normal `marketing_projects` row going through the same render-job/download/WhatsApp-send
+  flow.
+- **render-pipeline**: `spec.mode:'template', spec.engine:'remotion'` jobs are dispatched to
+  `lib/remotionRender.js` (`server.js`'s `processJob`) instead of `lib/templateRender.js` — bundles
+  the `remotion/` component tree once per process (webpack, cached, not redone per render),
+  `selectComposition()`s the requested id with the job's props, `renderMedia()`s it via real
+  headless Chrome at the project's target resolution, optionally burns in the watermark with a
+  plain ffmpeg `drawtext` pass, uploads to R2. Requires a Chrome-capable container — see the
+  `Dockerfile`'s new headless-Chrome runtime dependencies and its build-time
+  `npx remotion browser ensure` step (downloads Chrome Headless Shell once at image build instead
+  of on the first production render). See `render-pipeline/README.md`'s "Animated templates
+  (Remotion engine)" section for the full technical writeup, including what was and wasn't
+  verified (real bundle→render tests with visual frame confirmation; the actual Docker build step
+  was not runnable in the dev sandbox — no Docker daemon there).
+- Frontend: a "🎬 Browse Animated Templates" button next to "📚 Browse Library" on the Video
+  Templates tab, opening the same clone-a-card flow; cloned/animated templates show an "🎬
+  Animated" badge and a prop count instead of a scene count in the templates list, and the
+  generate-batch panel prefills a sample row from the template's `props_schema` so it's clear
+  which keys to use.
+- **Manual step after deploying this**: run `wrangler d1 migrations apply leadvyne-d1 --remote`
+  again (adds migration `0019`) and redeploy the render pipeline with the updated `Dockerfile` —
+  the Chrome dependencies and `remotion browser ensure` step meaningfully increase build time/image
+  size, so expect a slower build than previous render-pipeline deploys.
+
 ### Export quality control ("export as MP4 and control quality")
 Output was always MP4 already (the only format this pipeline produces) — what was missing was
 control over the encode speed/quality tradeoff, previously hardcoded (`crf 21`, `preset veryfast`)

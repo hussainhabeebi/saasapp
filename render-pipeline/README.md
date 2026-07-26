@@ -18,7 +18,10 @@ for the full request/callback contract this implements.
   filter-only flash/pulse effect — no asset needed for VFX), mixes in background music if a track
   is available, and watermarks free-tier exports.
 - **`spec.mode:'template'`** (Video Templates batch generation): composites the already
-  `{{variable}}`-resolved scenes (text cards / images) into one clip.
+  `{{variable}}`-resolved scenes (text cards / images) into one clip. Two engines share this mode:
+  the default ffmpeg engine (static text/image scenes, described above) and the Remotion engine
+  (`spec.engine:'remotion'` — real animated React compositions) — see "Animated templates
+  (Remotion engine)" below.
 - **`spec.text_behind_subject` (beta)**: captions sit BEHIND the person in the video instead of on
   top — see "Text behind subject" below.
 - **`POST /extract-audio`** (synchronous, not part of the render job queue): strips a video down
@@ -85,6 +88,51 @@ was built in, only synthetic test video (solid colors, test patterns), which cor
 empty matte from RVM (there's no person in a color bar pattern) but says nothing about real-world
 edge quality on an actual talking-head video. Test this against a real project before trusting it
 for a client-facing render.
+
+## Animated templates (Remotion engine)
+
+`worker.js`'s Video Templates library has two kinds of templates now: the default ffmpeg engine
+(static text/image "scenes", composited in order — described above) and a **Remotion** engine for
+real animated compositions — spring/interpolate-driven motion (a pulsing discount badge, a
+ticking countdown, an animated name+tagline reveal) rendered by driving actual headless Chrome
+through [Remotion](https://www.remotion.dev/), not ffmpeg text overlays. This is the
+"template/style layer" split: Remotion owns animated template compositions specifically; the
+caption burn-in for uploaded videos (`spec.mode:'caption-clip'`) and transcription remain
+ffmpeg/libass and Whisper, unchanged.
+
+- **`remotion/`** — the composition source. `remotion/compositions/*.jsx` are the actual React
+  components (`FlashSale`, `ProductLaunch`, `Countdown`, `Testimonial`); `remotion/Root.jsx`
+  registers each as a `<Composition>` with its id, fixed `durationInFrames`/fps, and
+  `defaultProps` — this registry is the single source of truth for composition ids, and must stay
+  in sync with `worker.js`'s `MARKETING_REMOTION_LIBRARY` (id, target aspect, prop schema for the
+  picker UI). `remotion/index.jsx` is the bundler entry point (`registerRoot`).
+- **`lib/remotionRender.js`** — the orchestrator `server.js` dispatches to whenever
+  `spec.engine==='remotion'`: bundles the `remotion/` tree once per process (webpack, ~10s, cached
+  in `bundlePromise` — not redone per render), `selectComposition()`s the requested id with the
+  job's `spec.props` as `inputProps`, `renderMedia()`s it to an MP4 at the project's target
+  resolution (overriding the composition's registered default width/height), optionally burns in
+  the "Made with Leadvyne" watermark with a plain ffmpeg `drawtext` pass (same as the ffmpeg
+  engine's watermark), then uploads to R2 same as any other render.
+- A template using this engine has `engine:'remotion'` + `remotion_composition_id` set instead of
+  `scenes` (`marketing_templates.engine`/`.remotion_composition_id`/`.props_schema_json`, added in
+  migration `0019_marketing_remotion.sql`); `spec.props` (the batch-generate row's variables) are
+  passed straight through as the composition's React props — no `{{variable}}` string substitution
+  like the ffmpeg engine, since Remotion components consume props natively.
+- **Requires real headless Chrome in the container** (`@remotion/renderer` drives it directly, not
+  a lighter headless-browser shim) — see the `Dockerfile`'s Chrome runtime dependencies
+  (`libnss3`, `libgbm1`, etc.) and its `npx remotion browser ensure` build step, which downloads
+  Chrome Headless Shell once at image build time rather than on the first production render.
+
+**What's verified vs. not:** the full bundle→selectComposition→renderMedia pipeline was run for
+real (not just written) — two compositions (`FlashSale` with watermark+resolution-override,
+`Countdown` without) rendered to real playable MP4s and individually confirmed correct via
+extracted frames (e.g. `Countdown`'s ticking-hours math checked against the expected value at a
+specific frame). What was **not** verified: the `Dockerfile`'s `npx remotion browser ensure` step
+and the container's Chrome runtime deps (no Docker daemon in the dev sandbox this was built in —
+same limitation noted below for the rest of the `Dockerfile`); local verification instead pointed
+`REMOTION_BROWSER_EXECUTABLE` at a pre-installed Chromium in that sandbox, which is not how the
+deployed container resolves its browser (it relies on the build-time `ensure` step finding its own
+downloaded copy) — test a real render against the deployed container once redeployed.
 
 ## Setup
 
@@ -192,3 +240,10 @@ person in a real video — that needs real footage, which wasn't available here 
   the "Text behind subject" section above for why and how it's enforced.
 - **Text-behind-subject's background is a flat color only** — no blurred/frozen-video background
   option yet.
+- **The Remotion engine meaningfully increases image size and build time** — a real Chrome
+  Headless Shell download plus its runtime dependencies, on top of everything else already in the
+  image. Only pay this cost if animated templates are actually used; the ffmpeg-engine templates
+  and caption-clip pipeline don't touch Chrome at all.
+- **Remotion renders are CPU-bound like everything else here** — same single-instance, no-GPU
+  reasoning as the rest of this service; a batch of animated-template videos queues and renders
+  one at a time same as any other job.

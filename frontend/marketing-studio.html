@@ -188,12 +188,17 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
           <div><h2>Video Templates</h2><div class="sub">Create videos using code instead of editing — define a template once with {{variables}}, then generate a batch: one rendered video per data row (landing-page teasers, product demos, ads, social clips).</div></div>
           <div style="display:flex;gap:8px">
             <button class="btn btn-sec" onclick="toggleLibrary()">📚 Browse Library</button>
+            <button class="btn btn-sec" onclick="toggleRemotionLibrary()">🎬 Browse Animated Templates</button>
             <button class="btn btn-primary" onclick="openNewTemplateForm()">+ New Template</button>
           </div>
         </div>
         <div class="hidden" id="libraryCard" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
           <div class="note" style="margin-bottom:10px">Starter templates — clone one into your own editable template, then customize it.</div>
           <div class="lib-grid" id="libraryGrid"></div>
+        </div>
+        <div class="hidden" id="remotionLibraryCard" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
+          <div class="note" style="margin-bottom:10px">Animated templates — real motion (spring/fade/scale), rendered from React components instead of static text cards. Clone one, then generate a batch the same way as any other template.</div>
+          <div class="lib-grid" id="remotionLibraryGrid"></div>
         </div>
         <div class="hidden" id="newTemplateForm" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
           <label class="form-label">Name</label>
@@ -1003,6 +1008,41 @@ async function cloneLibraryTemplate(libraryId) {
   await loadTemplates();
 }
 
+// ── REMOTION LIBRARY — animated React/Remotion compositions (worker.js's
+// MARKETING_REMOTION_LIBRARY), same browse-then-clone flow as the ffmpeg library above, but
+// producing a template with engine:'remotion' (real motion, rendered by headless Chrome on the
+// render pipeline instead of static ffmpeg text/image scenes).
+let remotionLibrary = [];
+let remotionLibraryLoaded = false;
+async function toggleRemotionLibrary() {
+  const card = $id('remotionLibraryCard');
+  card.classList.toggle('hidden');
+  if (!card.classList.contains('hidden') && !remotionLibraryLoaded) {
+    const r = await fetch(`${WORKER_BASE}/marketing/remotion-library`, { headers: ncAuthHeaders() });
+    const d = await r.json().catch(() => ({ list: [] }));
+    remotionLibrary = d.list || [];
+    remotionLibraryLoaded = true;
+    renderRemotionLibraryGrid();
+  }
+}
+function renderRemotionLibraryGrid() {
+  $id('remotionLibraryGrid').innerHTML = remotionLibrary.map(t => `
+    <div class="lib-card" onclick="cloneRemotionLibraryTemplate('${esc(t.id)}')">
+      <div class="lib-card-cat">${esc(t.category)}</div>
+      <div class="lib-card-name">${esc(t.name)}</div>
+      <div class="lib-card-desc">${esc(t.description)}</div>
+      <div class="note" style="margin-top:8px">${t.props_schema.length} props · ${t.target_aspect} · ~${t.estimated_duration_sec}s</div>
+    </div>`).join('');
+}
+async function cloneRemotionLibraryTemplate(libraryId) {
+  const r = await fetch(`${WORKER_BASE}/marketing/remotion-library/clone`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ library_id: libraryId }) });
+  const data = await r.json();
+  if (!r.ok) { toastError(data.error || 'Could not clone template.'); return; }
+  toastSuccess('Animated template added — generate a batch below.');
+  $id('remotionLibraryCard').classList.add('hidden');
+  await loadTemplates();
+}
+
 // ── VIDEO TEMPLATES — "create videos using code instead of editing, generate hundreds
 // automatically": a template is a JSON scene spec with {{variable}} placeholders; generating a
 // batch posts one row of variables per video and gets back one project per row (each shows up
@@ -1022,16 +1062,20 @@ function populateStyleSelect() {
 }
 function renderTemplatesList() {
   $id('templatesEmpty').classList.toggle('hidden', templates.length > 0);
-  $id('templatesList').innerHTML = templates.map(t => `
+  $id('templatesList').innerHTML = templates.map(t => {
+    const isRemotion = t.engine === 'remotion';
+    const countLabel = isRemotion ? `${(t.props_schema || []).length} prop${(t.props_schema || []).length === 1 ? '' : 's'}` : `${t.scenes.length} scene${t.scenes.length === 1 ? '' : 's'}`;
+    return `
     <div class="tpl-card">
       <div class="tpl-card-head">
-        <div><b>${esc(t.name)}</b><div class="note">${esc(t.target_aspect)} · ${t.scenes.length} scene${t.scenes.length === 1 ? '' : 's'} · ~${t.estimated_duration_sec}s each</div></div>
+        <div><b>${esc(t.name)}</b>${isRemotion ? ' <span class="lib-card-cat">🎬 Animated</span>' : ''}<div class="note">${esc(t.target_aspect)} · ${countLabel} · ~${t.estimated_duration_sec}s each</div></div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-sec btn-sm" onclick="openGeneratePanel(${t.id})">🚀 Generate batch</button>
           <button class="btn btn-danger btn-sm" onclick="deleteTemplate(${t.id})">Delete</button>
         </div>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 function openNewTemplateForm() { populateStyleSelect(); $id('newTemplateForm').classList.remove('hidden'); }
 function closeNewTemplateForm() { $id('newTemplateForm').classList.add('hidden'); }
@@ -1058,7 +1102,14 @@ function openGeneratePanel(id) {
   generatingForTemplate = templates.find(t => t.id === id);
   if (!generatingForTemplate) return;
   $id('generateTplName').textContent = 'Generate batch — ' + generatingForTemplate.name;
-  $id('generateRows').value = '';
+  const schema = generatingForTemplate.props_schema;
+  if (generatingForTemplate.engine === 'remotion' && Array.isArray(schema) && schema.length) {
+    const sampleRow = {}; schema.forEach(p => { sampleRow[p.key] = p.default || ''; });
+    $id('generateRows').value = JSON.stringify([sampleRow], null, 2);
+    $id('generateRows').placeholder = `Each row's keys: ${schema.map(p => p.key).join(', ')}`;
+  } else {
+    $id('generateRows').value = '';
+  }
   $id('generateResults').innerHTML = '';
   $id('generatePanel').classList.remove('hidden');
   $id('generatePanel').scrollIntoView({ behavior: 'smooth' });

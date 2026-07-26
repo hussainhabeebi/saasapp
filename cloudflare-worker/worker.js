@@ -9810,10 +9810,63 @@ async function handleMarketingTemplateLibraryClone(request, env){
   return json({ok:true, template:marketingSerializeTemplate(row)});
 }
 
+// Remotion Library ("Remotion for the template/style layer") — real animated React/Remotion
+// compositions (spring/interpolate-driven motion), as opposed to the static text/image "scenes"
+// MARKETING_TEMPLATE_LIBRARY clones. Registry ids/props here must match
+// render-pipeline/remotion/Root.jsx's REGISTRY exactly — this is metadata only (labels, hints,
+// duration) for the picker UI and batch-generate form; the actual composition code lives in the
+// render pipeline. Cloning creates a normal marketing_templates row with engine='remotion', so it
+// flows through the exact same list/edit/generate/render machinery as an ffmpeg template.
+const MARKETING_REMOTION_LIBRARY=[
+  {id:'FlashSale', name:'Flash Sale (Animated)', category:'Ecommerce', description:'Pulsing discount badge with an animated reveal.', target_aspect:'9:16', estimated_duration_sec:3,
+    props_schema:[
+      {key:'discount', label:'Discount %', default:'50'},
+      {key:'product_name', label:'Product name', default:'Your Product'},
+      {key:'end_date', label:'Offer ends', default:'Sunday'},
+    ]},
+  {id:'ProductLaunch', name:'Product Launch (Animated)', category:'Ecommerce', description:'Animated name + tagline reveal for a new product.', target_aspect:'9:16', estimated_duration_sec:3.5,
+    props_schema:[
+      {key:'product_name', label:'Product name', default:'Your Product'},
+      {key:'tagline', label:'Tagline', default:'The next big thing.'},
+    ]},
+  {id:'Countdown', name:'Countdown / Urgency (Animated)', category:'Ecommerce', description:'Live-ticking hours-left counter with a pulsing animation.', target_aspect:'9:16', estimated_duration_sec:3,
+    props_schema:[
+      {key:'hours_left', label:'Hours left', default:'24'},
+      {key:'offer_description', label:'Offer description', default:'Limited time offer'},
+    ]},
+  {id:'Testimonial', name:'Testimonial Quote (Animated)', category:'Trust & Social Proof', description:'Animated quote card with attribution.', target_aspect:'9:16', estimated_duration_sec:3.5,
+    props_schema:[
+      {key:'quote', label:'Quote', default:'This changed everything for us.'},
+      {key:'customer_name', label:'Customer name', default:'A happy customer'},
+    ]},
+];
+
+async function handleMarketingRemotionLibrary(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json({list:MARKETING_REMOTION_LIBRARY});
+}
+
+async function handleMarketingRemotionLibraryClone(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const libraryTemplate=MARKETING_REMOTION_LIBRARY.find(t=>t.id===body.library_id);
+  if(!libraryTemplate) return json({error:'Unknown library template'}, 404);
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, engine, remotion_composition_id, props_schema_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), libraryTemplate.name, '[]', libraryTemplate.target_aspect, null, libraryTemplate.estimated_duration_sec, 'remotion', libraryTemplate.id, JSON.stringify(libraryTemplate.props_schema), now, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
+  return json({ok:true, template:marketingSerializeTemplate(row)});
+}
+
 function marketingSerializeTemplate(row){
   if(!row) return null;
   let scenes=[]; try{ scenes=JSON.parse(row.scenes_json||'[]'); }catch(e){}
-  return {id:row.id, name:row.name, scenes, target_aspect:row.target_aspect, style_id:row.style_id, estimated_duration_sec:row.estimated_duration_sec, created_at:row.created_at, updated_at:row.updated_at};
+  let propsSchema=null; try{ propsSchema=row.props_schema_json?JSON.parse(row.props_schema_json):null; }catch(e){}
+  return {id:row.id, name:row.name, scenes, target_aspect:row.target_aspect, style_id:row.style_id, estimated_duration_sec:row.estimated_duration_sec,
+    engine:row.engine||'ffmpeg', remotion_composition_id:row.remotion_composition_id||null, props_schema:propsSchema,
+    created_at:row.created_at, updated_at:row.updated_at};
 }
 
 // Substitutes {{key}} in every string field of a scene with vars[key] (blank if missing) —
@@ -9907,7 +9960,8 @@ async function handleMarketingTemplateGenerate(request, env){
   const used=Number(c?.marketing_minutes_used)||0;
   if(used+minutesNeeded>limit) return json({error:`This batch needs ~${minutesNeeded} min (${rows.length} × ~${perVideoMinutes} min) but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
 
-  const style=await marketingResolveStyle(env, payload.cid, template.style_id);
+  const engine=template.engine||'ffmpeg';
+  const style=engine==='remotion'?null:await marketingResolveStyle(env, payload.cid, template.style_id);
   const watermarked=marketingIsWatermarked(c);
   const resolution=MARKETING_RESOLUTIONS[template.target_aspect]||MARKETING_RESOLUTIONS['9:16'];
 
@@ -9918,10 +9972,9 @@ async function handleMarketingTemplateGenerate(request, env){
     const projectResult=await env.DB.prepare(`INSERT INTO marketing_projects (client_id, title, target_aspect, status, style_id, template_id, template_vars_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`)
       .bind(Number(payload.cid), title, template.target_aspect, 'ready', template.style_id, templateId, JSON.stringify(vars), now, now).run();
     const projectId=projectResult.meta.last_row_id;
-    const spec={
-      mode:'template', target_aspect:template.target_aspect, resolution, style,
-      scenes:marketingResolveScenes(scenes, vars), watermark:watermarked,
-    };
+    const spec=engine==='remotion'
+      ? {mode:'template', engine:'remotion', remotion_composition_id:template.remotion_composition_id, target_aspect:template.target_aspect, resolution, props:vars, watermark:watermarked}
+      : {mode:'template', target_aspect:template.target_aspect, resolution, style, scenes:marketingResolveScenes(scenes, vars), watermark:watermarked};
     const submitResult=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
     results.push({project_id:projectId, ok:submitResult.ok, error:submitResult.error||null});
   }
@@ -10145,6 +10198,8 @@ export default {
       else if(url.pathname==='/marketing/templates/generate' && request.method==='POST'){ res=await handleMarketingTemplateGenerate(request, env); }
       else if(url.pathname==='/marketing/template-library' && request.method==='GET'){ res=await handleMarketingTemplateLibrary(request, env); }
       else if(url.pathname==='/marketing/template-library/clone' && request.method==='POST'){ res=await handleMarketingTemplateLibraryClone(request, env); }
+      else if(url.pathname==='/marketing/remotion-library' && request.method==='GET'){ res=await handleMarketingRemotionLibrary(request, env); }
+      else if(url.pathname==='/marketing/remotion-library/clone' && request.method==='POST'){ res=await handleMarketingRemotionLibraryClone(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

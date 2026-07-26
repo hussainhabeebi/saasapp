@@ -11,8 +11,17 @@ FROM node:20-bookworm-slim
 # when the requested style font (e.g. "Montserrat" in the Bold Pop preset) has no Malayalam
 # coverage itself. Without this package, Malayalam/Tamil/etc. captions would render as tofu boxes
 # no matter what font a style names.
+#
+# The second apt-get block below (libnss3 etc.) is the headless-Chromium runtime dependency set
+# Remotion's own docs list for Debian-based images — needed because the Video Templates library's
+# animated (Remotion) compositions are rendered by driving real headless Chrome, unlike everything
+# else in this service which is pure ffmpeg. Not needed if the Remotion engine is never removed
+# from templateRender's engine options, but it is, so it stays.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation fonts-noto-core ca-certificates curl \
+    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+    libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 libnspr4 \
+    libx11-6 libxcb1 libxext6 libxi6 \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -21,6 +30,14 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
 COPY . .
+
+# Downloads Chrome Headless Shell once at build time (instead of on the first Remotion render in
+# production, which would otherwise add a slow, network-dependent cold start and re-download on
+# every container restart since nothing outside /app/assets and /app/public is persisted). Not
+# runnable in this sandbox (no Docker daemon here — see render-pipeline/README.md's dev notes for
+# what actually was verified locally: a real bundle→render using the sandbox's pre-installed
+# Playwright Chromium instead).
+RUN npx remotion browser ensure
 
 # RobustVideoMatting ONNX model (MIT-licensed, ~15 MB) for the "text behind subject" caption
 # style — lib/segmentation.js. Downloaded at build time rather than committed to git (keeps the
