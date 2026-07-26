@@ -8953,6 +8953,727 @@ async function handleHospitalityStats(request, env){
   });
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════════════════
+   MARKETING STUDIO MODULE (SETUP.md "Marketing Studio module") — standalone short-form video
+   repurposing tool: upload a long video, auto-transcribe it, edit captions, pick a caption
+   style, render a vertical/square/landscape clip, send it out. A genuinely different module from
+   the existing WhatsApp/Email "Campaigns" marketing tools (broadcast.html/email-marketing.html)
+   — those send messages, this produces video assets — so it gets its own standalone page
+   (frontend/marketing-studio.html) and its own D1 tables (migrations/0015_marketing_studio.sql),
+   same "new data shape, no existing NocoDB reader" reasoning as ecom_categories/review_config.
+
+   Gating: like the other optional tabs (feat_campaigns_enabled etc., see
+   setupFeatureTabToggle in dashboard.html), visibility is controlled by a Clients field —
+   `feat_marketing_studio_enabled`. Unlike those, this one defaults OFF (only 'Yes' counts as
+   enabled, not "anything other than 'No'") — it's metered (see marketing_minutes_used/limit
+   below) and depends on an operator-configured external render pipeline, so it shouldn't
+   silently light up for every existing client the moment this ships. As with every feat_*
+   flag in this codebase, the gate is frontend-only (the tab/nav button is hidden) — routes below
+   don't re-check it, same as /email/*, /accounting/*, etc.
+
+   What actually runs inside this Worker vs. what's delegated out, and why:
+   - Upload, project/job bookkeeping, caption editing, style presets, usage metering, and
+     WhatsApp delivery are all real, self-contained Worker code (D1 + R2, no external service).
+   - Transcription is a single HTTP call to an OpenAI-Whisper-compatible endpoint
+     (MARKETING_TRANSCRIBE_API_URL/KEY) — also genuinely runs here, no external orchestration.
+   - Rendering (crop to aspect, burn in captions, silence-cut, auto-zoom, background music +
+     ducking, watermark) is NOT something a Cloudflare Worker can do — there's no ffmpeg, no GPU,
+     and a 9:16 export with caption burn-in is minutes of CPU work, far past what Workers allow
+     per request. handleMarketingRenderStart instead posts a full render spec to an
+     operator-configured external pipeline (MARKETING_RENDER_WEBHOOK_URL — e.g. a small
+     ffmpeg/Remotion service, or Shotstack/Creatomate behind an n8n workflow, same "engine
+     outside this repo" shape the WhatsApp bot's n8n engine already uses) and that pipeline calls
+     back into POST /marketing/webhook/render-complete when done. Until that env var is set,
+     renders fail immediately with a clear error instead of hanging — see SETUP.md for the exact
+     request/callback contract an operator needs to implement on the other end. ── */
+
+const MARKETING_SOURCE_MAX_BYTES = 100*1024*1024; // Cloudflare Workers' own request-body ceiling on most plans — not a choice made here
+const MARKETING_VIDEO_MIME_EXT = {'video/mp4':'mp4', 'video/quicktime':'mov', 'video/webm':'webm', 'video/x-m4v':'m4v'};
+const MARKETING_RESOLUTIONS = {'9:16':'1080x1920', '1:1':'1080x1080', '16:9':'1920x1080'};
+
+// Built-in caption style presets (#7 "6-10 caption style presets") — static, no table needed.
+// Custom per-client presets ("brand style saving", #8) live in marketing_brand_styles instead,
+// referenced from a project as style_id:'custom:<id>'.
+const MARKETING_STYLE_PRESETS = [
+  {id:'bold-pop', name:'Bold Pop', font:'Montserrat, sans-serif', text_color:'#FFFFFF', highlight_color:'#FFE600', bg_style:'none', position:'bottom', animation:'pop'},
+  {id:'clean-minimal', name:'Clean Minimal', font:'Inter, sans-serif', text_color:'#FFFFFF', highlight_color:'#FFFFFF', bg_style:'none', position:'bottom', animation:'none'},
+  {id:'neon-highlight', name:'Neon Highlight', font:'Poppins, sans-serif', text_color:'#FFFFFF', highlight_color:'#39FF14', bg_style:'none', position:'middle', animation:'word-highlight'},
+  {id:'karaoke-yellow', name:'Karaoke Yellow', font:'"Archivo Black", sans-serif', text_color:'#FFFFFF', highlight_color:'#FFD400', bg_style:'none', position:'bottom', animation:'word-highlight'},
+  {id:'boxed-caption', name:'Boxed Caption', font:'Inter, sans-serif', text_color:'#111111', highlight_color:'#111111', bg_style:'pill', bg_color:'#FFFFFF', position:'bottom', animation:'none'},
+  {id:'classic-white', name:'Classic White', font:'Helvetica, Arial, sans-serif', text_color:'#FFFFFF', highlight_color:'#FFFFFF', bg_style:'box', bg_color:'rgba(0,0,0,0.55)', position:'bottom', animation:'none'},
+  {id:'gradient-glow', name:'Gradient Glow', font:'Poppins, sans-serif', text_color:'#FFFFFF', highlight_color:'#FF3CAC', bg_style:'none', position:'top', animation:'pop'},
+  {id:'manglish-casual', name:'Manglish Casual', font:'"Baloo Chettan 2", sans-serif', text_color:'#FFFFFF', highlight_color:'#25D366', bg_style:'pill', bg_color:'rgba(0,0,0,0.6)', position:'bottom', animation:'word-highlight'},
+];
+
+// Auto-Edit Templates (SETUP.md "Marketing Studio module — Auto-Edit Templates & Cue
+// Suggestions") — bundled, sensible defaults for the render options an operator's pipeline
+// already understands (silence_cut/auto_zoom/background_music, all pre-existing spec fields) plus
+// broll_density, a new hint the pipeline can use if it auto-generates its own B-roll beyond the
+// suggested cues below. Purely static config, same zero-cost "no table needed" shape as
+// MARKETING_STYLE_PRESETS — picking one just pre-fills the existing per-project toggles, still
+// overridable afterwards.
+const MARKETING_AUTOEDIT_PRESETS = [
+  {id:'talking-head', name:'Talking Head — Clean', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
+  {id:'highlight-reel', name:'Hype / Highlight Reel', silence_cut:true, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
+  {id:'tutorial', name:'Tutorial / How-To', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'medium'},
+  {id:'testimonial', name:'Testimonial', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
+  {id:'product-ad', name:'Product Ad', silence_cut:false, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
+  {id:'vlog', name:'Vlog / Storytime', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'medium'},
+  {id:'announcement', name:'News / Announcement', silence_cut:true, auto_zoom:false, background_music:'cinematic', broll_density:'low'},
+  {id:'raw', name:'Raw — No Auto-Edit', silence_cut:false, auto_zoom:false, background_music:null, broll_density:'none'},
+];
+
+// Cue suggestion dictionary — deliberately a static keyword→cue-type table, not a model call:
+// scanning the transcript this already has (free — no external request) against ~30 common
+// short-form-video trigger words costs nothing per suggestion, unlike an LLM pass per project.
+// (An AI-enhanced version of this is a reasonable future upgrade — reuse the GEMINI_API_KEY this
+// app already shares with the Conversation Engine for a single cheap call over the transcript
+// text — but wasn't added here so this feature stays exactly $0 marginal cost by default.)
+const MARKETING_CUE_KEYWORDS = [
+  {re:/\b(money|price|cost|discount|offer|sale|cash|₹|\$|rupees|dollars)\b/i, type:'broll', tag:'money', label:'Money / pricing shot'},
+  {re:/\b(fast|quick|quickly|speed|hurry|instant|instantly)\b/i, type:'broll', tag:'speed', label:'Fast-motion / speed shot'},
+  {re:/\b(team|office|work|staff|company|employees)\b/i, type:'broll', tag:'office', label:'Team / office shot'},
+  {re:/\b(phone|call|whatsapp|message|chat|text)\b/i, type:'broll', tag:'phone', label:'Phone / messaging shot'},
+  {re:/\b(location|city|travel|drive|road|journey)\b/i, type:'broll', tag:'location', label:'Location / travel shot'},
+  {re:/\b(product|unbox|unboxing|package|delivery|order)\b/i, type:'broll', tag:'product', label:'Product close-up shot'},
+  {re:/\b(customer|client|people|crowd|everyone)\b/i, type:'broll', tag:'people', label:'Customers / people shot'},
+  {re:/\b(wow|amazing|incredible|awesome|unbelievable)\b/i, type:'sfx', tag:'sparkle', label:'Sparkle / positive sting'},
+  {re:/\b(warning|careful|problem|mistake|don't|stop)\b/i, type:'sfx', tag:'alert', label:'Alert / negative sting'},
+  {re:/\b(boom|bang|hit|impact|crash)\b/i, type:'sfx', tag:'impact', label:'Impact hit'},
+  {re:/\b(new|launch|launching|introducing|announcing|announcement)\b/i, type:'sfx', tag:'whoosh', label:'Whoosh transition'},
+  {re:/\b(click|tap|swipe|select|choose)\b/i, type:'sfx', tag:'click', label:'UI click sound'},
+  {re:/\b(free|win|winner|prize|gift|giveaway)\b/i, type:'vfx', tag:'flash', label:'Flash / highlight burst'},
+  {re:/\b(compare|versus|vs\.?|before|after)\b/i, type:'vfx', tag:'split', label:'Split-screen compare'},
+  {re:/\b(number one|best|top|#1|guaranteed)\b/i, type:'vfx', tag:'badge', label:'Badge / callout overlay'},
+];
+
+// Pure function — words from an already-fetched transcript in, cue suggestions out, no I/O and
+// no cost. Caps at 20 cues and enforces a minimum gap between them so a keyword-dense transcript
+// doesn't produce an unusable wall of suggestions; every suggestion is accepted by default and
+// meant to be reviewed/pruned in the editor before it's ever sent to the render pipeline.
+function marketingSuggestCuesHeuristic(transcript){
+  const words=transcript?.words||[];
+  const MIN_GAP_SEC=2.5, MAX_CUES=20;
+  const cues=[];
+  let lastCueEnd=-Infinity;
+  for(const w of words){
+    if(cues.length>=MAX_CUES) break;
+    const match=MARKETING_CUE_KEYWORDS.find(k=>k.re.test(w.word||''));
+    if(!match) continue;
+    const start=Number(w.start)||0;
+    if(start-lastCueEnd<MIN_GAP_SEC) continue;
+    const end=(Number(w.end)||start)+1.2;
+    cues.push({start:Math.max(0, start-0.3), end, type:match.type, tag:match.tag, label:match.label, keyword:w.word, accepted:true});
+    lastCueEnd=end;
+  }
+  return cues;
+}
+
+function marketingSourceKey(clientId, projectId, ext){ return `marketing/${clientId}/${projectId}/source.${ext}`; }
+
+function marketingSerializeProject(row){
+  if(!row) return null;
+  const parseJson=(s)=>{ if(!s) return null; try{ return JSON.parse(s); }catch(e){ return null; } };
+  return {
+    id:row.id, title:row.title, source_key:row.source_key,
+    source_duration_sec:row.source_duration_sec, target_aspect:row.target_aspect,
+    trim_start_sec:row.trim_start_sec, trim_end_sec:row.trim_end_sec, language:row.language,
+    transcript:parseJson(row.transcript_json), captions:parseJson(row.captions_json),
+    style_id:row.style_id, style_overrides:parseJson(row.style_overrides_json)||{},
+    status:row.status, output_key:row.output_key, output_url:row.output_url,
+    output_duration_sec:row.output_duration_sec, watermarked:!!row.watermarked,
+    template_id:row.template_id||null, template_vars:parseJson(row.template_vars_json),
+    cues:parseJson(row.cues_json)||[],
+    created_at:row.created_at, updated_at:row.updated_at,
+  };
+}
+
+// Word-level timestamps aren't guaranteed by every OpenAI-Whisper-compatible provider even with
+// timestamp_granularities=word requested (some self-hosted Whisper front-ends only return
+// segment-level timing) — falls back to splitting each segment's text evenly across its
+// duration so the caption editor always has *something* word-grained to show, flagged
+// `approximate:true` so the frontend can visually distinguish an estimate from a real timestamp.
+function marketingWordsFromTranscription(data){
+  if(Array.isArray(data.words) && data.words.length) return data.words.map(w=>({word:w.word, start:w.start, end:w.end}));
+  const words=[];
+  (data.segments||[]).forEach(seg=>{
+    const tokens=(seg.text||'').trim().split(/\s+/).filter(Boolean);
+    if(!tokens.length) return;
+    const span=(Number(seg.end)-Number(seg.start))/tokens.length;
+    tokens.forEach((t,i)=>words.push({word:t, start:seg.start+i*span, end:seg.start+(i+1)*span, approximate:true}));
+  });
+  return words;
+}
+
+async function marketingFailJob(env, jobId, projectId, error, revertStatus){
+  const now=new Date().toISOString();
+  await env.DB.prepare(`UPDATE marketing_jobs SET status='failed', error=?, updated_at=? WHERE id=?`).bind(String(error||'Failed').slice(0,500), now, jobId).run();
+  await env.DB.prepare(`UPDATE marketing_projects SET status=?, updated_at=? WHERE id=?`).bind(revertStatus||'uploaded', now, projectId).run();
+}
+
+async function hmacSha256Base64(secret, body){
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
+  return btoa(String.fromCharCode(...new Uint8Array(sig)));
+}
+async function verifyHmacSignature(secret, body, sigHeader){
+  if(!sigHeader) return false;
+  const expected=await hmacSha256Base64(secret, body);
+  if(expected.length!==sigHeader.length) return false;
+  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
+  return diff===0;
+}
+
+async function handleMarketingUsage(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
+  const used=Number(c?.marketing_minutes_used)||0;
+  return json({used, limit, remaining:Math.max(0, limit-used)});
+}
+
+async function handleMarketingStylePresets(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json({list:MARKETING_STYLE_PRESETS});
+}
+
+async function handleMarketingBrandStylesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM marketing_brand_styles WHERE client_id=? ORDER BY id DESC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(r=>({id:r.id, name:r.name, config:JSON.parse(r.config_json||'{}'), created_at:r.created_at}))});
+}
+async function handleMarketingBrandStyleCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name||!body.config) return json({error:'name and config required'}, 400);
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_brand_styles (client_id, name, config_json, created_at) VALUES (?,?,?,?)`)
+    .bind(Number(payload.cid), String(body.name).slice(0,60), JSON.stringify(body.config), now).run();
+  return json({ok:true, id:result.meta.last_row_id});
+}
+async function handleMarketingBrandStyleDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.id);
+  if(!id) return json({error:'id required'}, 400);
+  await env.DB.prepare(`DELETE FROM marketing_brand_styles WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+  return json({ok:true});
+}
+
+async function handleMarketingProjectsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE client_id=? ORDER BY updated_at DESC LIMIT 200`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(marketingSerializeProject)});
+}
+
+async function handleMarketingProjectCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const title=(body.title||'').trim().slice(0,120)||'Untitled project';
+  const targetAspect=['9:16','1:1','16:9'].includes(body.target_aspect)?body.target_aspect:'9:16';
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_projects (client_id, title, target_aspect, language, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), title, targetAspect, body.language||null, 'uploading', now, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(result.meta.last_row_id).first();
+  return json({ok:true, project:marketingSerializeProject(row)});
+}
+
+async function handleMarketingProjectUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.id);
+  if(!id) return json({error:'id required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  const assignable={title:'title', target_aspect:'target_aspect', trim_start_sec:'trim_start_sec', trim_end_sec:'trim_end_sec', language:'language', style_id:'style_id'};
+  const sets=[], vals=[];
+  Object.entries(assignable).forEach(([field,col])=>{ if(body[field]!==undefined){ sets.push(`${col}=?`); vals.push(body[field]); } });
+  if(body.style_overrides!==undefined){ sets.push('style_overrides_json=?'); vals.push(JSON.stringify(body.style_overrides||{})); }
+  if(!sets.length) return json({error:'Nothing to update'}, 400);
+  sets.push('updated_at=?'); vals.push(new Date().toISOString());
+  vals.push(id);
+  await env.DB.prepare(`UPDATE marketing_projects SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(id).first();
+  return json({ok:true, project:marketingSerializeProject(updated)});
+}
+
+async function handleMarketingProjectDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.id);
+  if(!id) return json({error:'id required'}, 400);
+  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(project.source_key) await env.MARKETING_MEDIA.delete(project.source_key).catch(()=>{});
+  if(project.output_key) await env.MARKETING_MEDIA.delete(project.output_key).catch(()=>{});
+  await env.DB.prepare(`DELETE FROM marketing_jobs WHERE project_id=?`).bind(id).run();
+  await env.DB.prepare(`DELETE FROM marketing_projects WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+async function handleMarketingProjectUpload(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const form=await request.formData().catch(()=>null);
+  if(!form) return json({error:'multipart form data required'}, 400);
+  const projectId=Number(form.get('project_id'));
+  const file=form.get('file');
+  const durationSec=Number(form.get('duration_sec'))||null; // reported by the browser's <video>.duration — the Worker never decodes video
+  if(!projectId||!file) return json({error:'project_id and file required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(file.size>MARKETING_SOURCE_MAX_BYTES) return json({error:'Video is too large — max 100 MB.'}, 400);
+  const mime=(file.type||'').split(';')[0];
+  const ext=MARKETING_VIDEO_MIME_EXT[mime];
+  if(!ext) return json({error:'Upload an mp4, mov, webm or m4v file.'}, 400);
+  const key=marketingSourceKey(payload.cid, projectId, ext);
+  await env.MARKETING_MEDIA.put(key, await file.arrayBuffer(), {httpMetadata:{contentType:mime}});
+  const now=new Date().toISOString();
+  await env.DB.prepare(`UPDATE marketing_projects SET source_key=?, source_duration_sec=?, trim_end_sec=?, status='uploaded', updated_at=? WHERE id=?`)
+    .bind(key, durationSec, durationSec, now, projectId).run();
+  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(projectId).first();
+  return json({ok:true, project:marketingSerializeProject(updated)});
+}
+
+// Transcription runs inline (one HTTP call, no async job needed on this end) — see the module
+// header comment above for why this is real, in-Worker work while rendering is not.
+async function handleMarketingTranscribe(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  if(!projectId) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
+  if(!env.MARKETING_TRANSCRIBE_API_KEY) return json({error:'Transcription is not configured — see SETUP.md "Marketing Studio module".'}, 400);
+  const obj=await env.MARKETING_MEDIA.get(project.source_key);
+  if(!obj) return json({error:'Source video not found in storage.'}, 404);
+
+  const now0=new Date().toISOString();
+  await env.DB.prepare(`UPDATE marketing_projects SET status='transcribing', updated_at=? WHERE id=?`).bind(now0, projectId).run();
+  const jobResult=await env.DB.prepare(`INSERT INTO marketing_jobs (project_id, client_id, type, status, spec_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(projectId, Number(payload.cid), 'transcribe', 'processing', JSON.stringify({language:body.language||project.language||null}), now0, now0).run();
+  const jobId=jobResult.meta.last_row_id;
+
+  const bytes=await obj.arrayBuffer();
+  const ext=(project.source_key.split('.').pop()||'mp4');
+  const form=new FormData();
+  form.append('file', new Blob([bytes], {type:obj.httpMetadata?.contentType||'video/mp4'}), `source.${ext}`);
+  form.append('model', 'whisper-1');
+  form.append('response_format', 'verbose_json');
+  form.append('timestamp_granularities[]', 'word');
+  const languageHint=body.language||project.language;
+  if(languageHint) form.append('language', languageHint); // omit to let the API auto-detect (#4)
+
+  let r;
+  try{
+    r=await fetch(env.MARKETING_TRANSCRIBE_API_URL||'https://api.openai.com/v1/audio/transcriptions', {
+      method:'POST', headers:{Authorization:`Bearer ${env.MARKETING_TRANSCRIBE_API_KEY}`}, body:form,
+    });
+  }catch(e){
+    await marketingFailJob(env, jobId, projectId, 'Could not reach transcription API: '+e.message, 'uploaded');
+    return json({error:'Could not reach the transcription API.'}, 502);
+  }
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){
+    const errMsg=data?.error?.message||('HTTP '+r.status);
+    await marketingFailJob(env, jobId, projectId, errMsg, 'uploaded');
+    return json({error:errMsg}, 502);
+  }
+
+  const words=marketingWordsFromTranscription(data);
+  const transcript={language:data.language||languageHint||null, text:data.text||'', words};
+  const now=new Date().toISOString();
+  await env.DB.prepare(`UPDATE marketing_projects SET transcript_json=?, captions_json=?, language=?, status='ready', updated_at=? WHERE id=?`)
+    .bind(JSON.stringify(transcript), JSON.stringify(transcript), transcript.language, now, projectId).run();
+  await env.DB.prepare(`UPDATE marketing_jobs SET status='done', progress_pct=100, completed_at=?, updated_at=? WHERE id=?`).bind(now, now, jobId).run();
+  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(projectId).first();
+  return json({ok:true, project:marketingSerializeProject(updated)});
+}
+
+async function handleMarketingCaptionsSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.project_id);
+  if(!id||!body.captions) return json({error:'project_id and captions required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`UPDATE marketing_projects SET captions_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.captions), new Date().toISOString(), id).run();
+  return json({ok:true});
+}
+
+async function handleMarketingAutoeditPresets(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json({list:MARKETING_AUTOEDIT_PRESETS});
+}
+
+// Free (no external call) cue suggestion pass — see marketingSuggestCuesHeuristic. Overwrites
+// any previously suggested-but-unreviewed cues; a project's already-reviewed cues can still be
+// edited afterwards via handleMarketingCuesSave, same "suggest, then edit" shape as transcribe→
+// caption-edit above.
+async function handleMarketingSuggestCues(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.project_id);
+  if(!id) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT transcript_json FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!project.transcript_json) return json({error:'Transcribe first — cue suggestions are derived from the transcript.'}, 400);
+  let transcript; try{ transcript=JSON.parse(project.transcript_json); }catch(e){ return json({error:'Transcript is corrupted — re-transcribe.'}, 400); }
+  const cues=marketingSuggestCuesHeuristic(transcript);
+  await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(cues), new Date().toISOString(), id).run();
+  return json({ok:true, cues});
+}
+
+async function handleMarketingCuesSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.project_id);
+  if(!id||!Array.isArray(body.cues)) return json({error:'project_id and cues (an array) required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.cues), new Date().toISOString(), id).run();
+  return json({ok:true});
+}
+
+// Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — resolves a
+// style_id ('custom:<marketing_brand_styles.id>' or a MARKETING_STYLE_PRESETS id) to its config.
+async function marketingResolveStyle(env, clientId, styleId){
+  if((styleId||'').startsWith('custom:')){
+    const brandStyleId=Number(styleId.slice(7));
+    const row=await env.DB.prepare(`SELECT config_json FROM marketing_brand_styles WHERE id=? AND client_id=?`).bind(brandStyleId, Number(clientId)).first();
+    if(row){ try{ return JSON.parse(row.config_json); }catch(e){} }
+    return MARKETING_STYLE_PRESETS[0];
+  }
+  return MARKETING_STYLE_PRESETS.find(p=>p.id===styleId)||MARKETING_STYLE_PRESETS[0];
+}
+
+// No active/trialing subscription → watermarked export (#14 "watermark-free export on paid tier").
+function marketingIsWatermarked(client){ return !['active','trialing'].includes(client?.plan_status); }
+
+// Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — creates the
+// marketing_jobs row, signs + posts the spec to the external render pipeline, and marks the
+// project 'rendering' (or reverts both to a failed/retryable state if the pipeline can't be
+// reached). Returns {ok, job_id} or {ok:false, error}.
+async function marketingSubmitRenderJob(env, clientId, projectId, spec, revertStatusOnFail){
+  const now=new Date().toISOString();
+  const jobResult=await env.DB.prepare(`INSERT INTO marketing_jobs (project_id, client_id, type, status, spec_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(projectId, Number(clientId), 'render', 'queued', JSON.stringify(spec), now, now).run();
+  const jobId=jobResult.meta.last_row_id;
+
+  const outboundBody=JSON.stringify({job_id:jobId, client_id:Number(clientId), project_id:projectId, callback_url:`${env.WORKER_BASE_URL}/marketing/webhook/render-complete`, spec});
+  const signature=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, outboundBody);
+  let sendErr=null;
+  try{
+    const r=await fetch(env.MARKETING_RENDER_WEBHOOK_URL, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':signature}, body:outboundBody});
+    if(!r.ok) sendErr='Render pipeline returned HTTP '+r.status;
+  }catch(e){ sendErr=e.message; }
+  if(sendErr){
+    await marketingFailJob(env, jobId, projectId, sendErr, revertStatusOnFail);
+    return {ok:false, error:sendErr};
+  }
+
+  await env.DB.prepare(`UPDATE marketing_jobs SET status='processing', updated_at=? WHERE id=?`).bind(now, jobId).run();
+  await env.DB.prepare(`UPDATE marketing_projects SET status='rendering', watermarked=?, updated_at=? WHERE id=?`).bind(spec.watermark?1:0, now, projectId).run();
+  return {ok:true, job_id:jobId};
+}
+
+// Kicks off an async render on the external pipeline — see the module header comment for why
+// this can't run inside the Worker itself. Also where usage metering (#18) and the free-tier
+// watermark (#14) are decided, both against the client's own Clients row (plan_status/
+// marketing_minutes_used/marketing_minutes_limit), never anything client-supplied.
+async function handleMarketingRenderStart(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  if(!projectId) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
+  if(!project.captions_json) return json({error:'Transcribe (or add captions) first.'}, 400);
+  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
+
+  const c=await getClientById(env, payload.cid);
+  const trimStart=Number(project.trim_start_sec)||0;
+  const trimEnd=project.trim_end_sec!=null?Number(project.trim_end_sec):(Number(project.source_duration_sec)||trimStart);
+  const durationSec=Math.max(0, trimEnd-trimStart);
+  const minutesNeeded=Math.max(1, Math.ceil(durationSec/60));
+  const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
+  const used=Number(c?.marketing_minutes_used)||0;
+  if(used+minutesNeeded>limit) return json({error:`This render needs ~${minutesNeeded} min but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
+
+  const style=await marketingResolveStyle(env, payload.cid, project.style_id);
+  let overrides={}; try{ overrides=JSON.parse(project.style_overrides_json||'{}'); }catch(e){}
+  let captions; try{ captions=JSON.parse(project.captions_json); }catch(e){ return json({error:'Captions are corrupted — re-transcribe.'}, 400); }
+
+  const watermarked=marketingIsWatermarked(c);
+  // Auto-Edit Templates just pre-fill these three fields — an explicit opts.silence_cut/
+  // auto_zoom/background_music (the frontend always sends all three) still wins, so picking a
+  // preset and then hand-tweaking one toggle behaves as expected.
+  const opts=body.options||{};
+  const preset=MARKETING_AUTOEDIT_PRESETS.find(p=>p.id===opts.autoedit_preset);
+  const silenceCut=opts.silence_cut!==undefined?!!opts.silence_cut:!!preset?.silence_cut;
+  const autoZoom=opts.auto_zoom!==undefined?!!opts.auto_zoom:!!preset?.auto_zoom;
+  const backgroundMusic=opts.background_music!==undefined?(opts.background_music||null):(preset?.background_music||null);
+
+  let cues=[]; try{ cues=(JSON.parse(project.cues_json||'[]')||[]).filter(cue=>cue.accepted!==false); }catch(e){}
+
+  const spec={
+    mode:'caption-clip',
+    source_url:`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`,
+    trim_start_sec:trimStart, trim_end_sec:trimEnd,
+    target_aspect:project.target_aspect||'9:16',
+    resolution:MARKETING_RESOLUTIONS[project.target_aspect]||MARKETING_RESOLUTIONS['9:16'],
+    captions, style:{...style, ...overrides},
+    silence_cut:silenceCut, auto_zoom:autoZoom, background_music:backgroundMusic,
+    broll_density:preset?.broll_density||'none', cues,
+    watermark:watermarked,
+  };
+  const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
+  if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
+  return json({ok:true, job_id:result.job_id});
+}
+
+async function handleMarketingJobsList(request, env, url){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const projectId=Number(url.searchParams.get('project_id'));
+  if(!projectId) return json({error:'project_id required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  const {results}=await env.DB.prepare(`SELECT id, type, status, progress_pct, error, created_at, updated_at, completed_at FROM marketing_jobs WHERE project_id=? ORDER BY id DESC LIMIT 20`).bind(projectId).all();
+  return json({list:results||[]});
+}
+
+// PUBLIC route — the external render pipeline calls this back, not the dashboard, so there's no
+// session token to check. Authenticated instead via MARKETING_RENDER_WEBHOOK_SECRET, same
+// HMAC-over-raw-body scheme as verifyShopifyWebhookHmac (just a generic secret instead of a
+// Shopify one, since the pipeline is whatever the operator wired up rather than a fixed vendor).
+async function handleMarketingRenderWebhook(request, env){
+  const rawBody=await request.text();
+  if(!env.MARKETING_RENDER_WEBHOOK_SECRET||!await verifyHmacSignature(env.MARKETING_RENDER_WEBHOOK_SECRET, rawBody, request.headers.get('X-Signature'))){
+    return json({error:'Invalid signature'}, 401);
+  }
+  const body=JSON.parse(rawBody);
+  const jobId=Number(body.job_id);
+  const job=await env.DB.prepare(`SELECT * FROM marketing_jobs WHERE id=?`).bind(jobId).first();
+  if(!job) return json({error:'Unknown job'}, 404);
+  const now=new Date().toISOString();
+  if(body.status==='done'){
+    await env.DB.prepare(`UPDATE marketing_jobs SET status='done', progress_pct=100, completed_at=?, updated_at=? WHERE id=?`).bind(now, now, job.id).run();
+    const outputUrl=body.output_url||(body.output_key?`${env.WORKER_BASE_URL}/marketing/media/${body.output_key}`:null);
+    await env.DB.prepare(`UPDATE marketing_projects SET status='done', output_key=?, output_url=?, output_duration_sec=?, updated_at=? WHERE id=?`)
+      .bind(body.output_key||null, outputUrl, Number(body.duration_sec)||null, now, job.project_id).run();
+    const minutes=Math.ceil((Number(body.duration_sec)||0)/60);
+    if(minutes>0){
+      const c=await getClientById(env, job.client_id);
+      await patchClientFields(env, job.client_id, {marketing_minutes_used:(Number(c?.marketing_minutes_used)||0)+minutes});
+    }
+  } else {
+    await marketingFailJob(env, job.id, job.project_id, body.error||'Render failed', 'ready');
+  }
+  return json({ok:true});
+}
+
+// Public, no session — same trust model as handleEcomCategoryMediaServe/handleHospitalityMediaServe
+// (the <video> tag / WhatsApp's own media fetch can't send an Authorization header; the key,
+// keyed by client+project, isn't guessable). Supports Range requests since video scrubbing in the
+// project editor's preview player needs them (plain full-body GETs stall Safari's seek bar).
+async function handleMarketingMediaServe(request, env, key){
+  if(!key) return json({error:'Not found'}, 404);
+  const head=await env.MARKETING_MEDIA.head(key);
+  if(!head) return json({error:'Not found'}, 404);
+  let range=null;
+  const rangeHeader=request.headers.get('Range');
+  if(rangeHeader){
+    const m=/bytes=(\d*)-(\d*)/.exec(rangeHeader);
+    if(m){
+      const start=m[1]?parseInt(m[1],10):0;
+      const end=m[2]?parseInt(m[2],10):head.size-1;
+      range={offset:start, length:Math.min(end,head.size-1)-start+1};
+    }
+  }
+  const obj=await env.MARKETING_MEDIA.get(key, range?{range}:undefined);
+  if(!obj) return json({error:'Not found'}, 404);
+  const headers=new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set('etag', obj.httpEtag);
+  headers.set('Cache-Control', 'public, max-age=86400');
+  headers.set('Accept-Ranges', 'bytes');
+  if(range){
+    headers.set('Content-Range', `bytes ${range.offset}-${range.offset+range.length-1}/${head.size}`);
+    return new Response(obj.body, {status:206, headers});
+  }
+  return new Response(obj.body, {headers});
+}
+
+// Direct send-to-WhatsApp (#17) — reuses the same wa_phone_id/wa_token Graph API credentials as
+// handleWaSend, just a `video` message (link, not upload) instead of `text`, fitting the
+// existing Chatwoot/WhatsApp infra rather than inventing a new delivery channel.
+async function handleMarketingSendWhatsapp(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.project_id);
+  const phone=(body.phone||'').replace(/[^0-9]/g,'');
+  if(!id||!phone) return json({error:'project_id and phone required'}, 400);
+  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!project.output_url) return json({error:'This project has not finished rendering yet.'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'video', video:{link:project.output_url, caption:project.title||''}}),
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  return json({ok:true});
+}
+
+/* ── VIDEO TEMPLATES (SETUP.md "Marketing Studio module — Video Templates") — "create videos
+   using code instead of editing, generate hundreds automatically": a template is a scene spec
+   (JSON, not a WYSIWYG editor) with {{variable}} placeholders; generating a batch substitutes
+   each row of data into that spec and submits one render job per row through the exact same
+   marketingSubmitRenderJob()/external pipeline as a regular project — a template-generated
+   project is a normal marketing_projects row (template_id/template_vars_json just record where
+   it came from), so it shows up in the ordinary Projects list/download/WhatsApp-send flow. ── */
+
+const MARKETING_TEMPLATE_BATCH_MAX=100; // "hundreds automatically" is the pitch; a hard cap keeps one request from fanning out an unbounded number of render jobs (and unbounded minutes spend) at once — regenerate in further batches for more than this.
+
+function marketingSerializeTemplate(row){
+  if(!row) return null;
+  let scenes=[]; try{ scenes=JSON.parse(row.scenes_json||'[]'); }catch(e){}
+  return {id:row.id, name:row.name, scenes, target_aspect:row.target_aspect, style_id:row.style_id, estimated_duration_sec:row.estimated_duration_sec, created_at:row.created_at, updated_at:row.updated_at};
+}
+
+// Substitutes {{key}} in every string field of a scene with vars[key] (blank if missing) —
+// deliberately dumb string substitution, not a template language, matching the "code, not a
+// visual editor" pitch without pulling in a templating dependency for eight scene fields.
+function marketingResolveScenes(scenes, vars){
+  const sub=(s)=>typeof s==='string'?s.replace(/\{\{\s*([\w.-]+)\s*\}\}/g,(m,k)=>(vars[k]!=null?String(vars[k]):'')):s;
+  return (scenes||[]).map(scene=>{
+    const resolved={};
+    Object.entries(scene).forEach(([k,v])=>{ resolved[k]=sub(v); });
+    return resolved;
+  });
+}
+
+async function handleMarketingTemplatesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE client_id=? ORDER BY updated_at DESC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(marketingSerializeTemplate)});
+}
+
+async function handleMarketingTemplateCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const name=(body.name||'').trim().slice(0,120);
+  if(!name) return json({error:'name required'}, 400);
+  if(!Array.isArray(body.scenes)||!body.scenes.length) return json({error:'scenes (a non-empty array) required'}, 400);
+  const targetAspect=['9:16','1:1','16:9'].includes(body.target_aspect)?body.target_aspect:'9:16';
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), name, JSON.stringify(body.scenes), targetAspect, body.style_id||null, Number(body.estimated_duration_sec)||15, now, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
+  return json({ok:true, template:marketingSerializeTemplate(row)});
+}
+
+async function handleMarketingTemplateUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.id);
+  if(!id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT id FROM marketing_templates WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!existing) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).slice(0,120)); }
+  if(body.scenes!==undefined){ sets.push('scenes_json=?'); vals.push(JSON.stringify(body.scenes)); }
+  if(body.target_aspect!==undefined && ['9:16','1:1','16:9'].includes(body.target_aspect)){ sets.push('target_aspect=?'); vals.push(body.target_aspect); }
+  if(body.style_id!==undefined){ sets.push('style_id=?'); vals.push(body.style_id); }
+  if(body.estimated_duration_sec!==undefined){ sets.push('estimated_duration_sec=?'); vals.push(Number(body.estimated_duration_sec)||15); }
+  if(!sets.length) return json({error:'Nothing to update'}, 400);
+  sets.push('updated_at=?'); vals.push(new Date().toISOString());
+  vals.push(id);
+  await env.DB.prepare(`UPDATE marketing_templates SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(id).first();
+  return json({ok:true, template:marketingSerializeTemplate(row)});
+}
+
+async function handleMarketingTemplateDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.id);
+  if(!id) return json({error:'id required'}, 400);
+  await env.DB.prepare(`DELETE FROM marketing_templates WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+  return json({ok:true});
+}
+
+// Batch-generate: one marketing_projects row + one render job per data row. Partial failure is
+// expected at this scale (a bad row, a flaky pipeline call) — every row is attempted and the
+// per-row outcome is returned rather than aborting the whole batch on the first error.
+async function handleMarketingTemplateGenerate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const templateId=Number(body.template_id);
+  const rows=Array.isArray(body.rows)?body.rows:[];
+  if(!templateId) return json({error:'template_id required'}, 400);
+  if(!rows.length) return json({error:'rows (a non-empty array of variable objects) required'}, 400);
+  if(rows.length>MARKETING_TEMPLATE_BATCH_MAX) return json({error:`Max ${MARKETING_TEMPLATE_BATCH_MAX} rows per batch — split into more than one generate call.`}, 400);
+  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
+
+  const template=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=? AND client_id=?`).bind(templateId, Number(payload.cid)).first();
+  if(!template) return json({error:'Not found'}, 404);
+  let scenes=[]; try{ scenes=JSON.parse(template.scenes_json||'[]'); }catch(e){ return json({error:'Template scenes are corrupted.'}, 400); }
+
+  const c=await getClientById(env, payload.cid);
+  const perVideoMinutes=Math.max(1, Math.ceil((Number(template.estimated_duration_sec)||15)/60));
+  const minutesNeeded=perVideoMinutes*rows.length;
+  const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
+  const used=Number(c?.marketing_minutes_used)||0;
+  if(used+minutesNeeded>limit) return json({error:`This batch needs ~${minutesNeeded} min (${rows.length} × ~${perVideoMinutes} min) but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
+
+  const style=await marketingResolveStyle(env, payload.cid, template.style_id);
+  const watermarked=marketingIsWatermarked(c);
+  const resolution=MARKETING_RESOLUTIONS[template.target_aspect]||MARKETING_RESOLUTIONS['9:16'];
+
+  const results=[];
+  for(const vars of rows){
+    const now=new Date().toISOString();
+    const title=(vars.title||vars.name||template.name).toString().slice(0,120);
+    const projectResult=await env.DB.prepare(`INSERT INTO marketing_projects (client_id, title, target_aspect, status, style_id, template_id, template_vars_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(payload.cid), title, template.target_aspect, 'ready', template.style_id, templateId, JSON.stringify(vars), now, now).run();
+    const projectId=projectResult.meta.last_row_id;
+    const spec={
+      mode:'template', target_aspect:template.target_aspect, resolution, style,
+      scenes:marketingResolveScenes(scenes, vars), watermark:watermarked,
+    };
+    const submitResult=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
+    results.push({project_id:projectId, ok:submitResult.ok, error:submitResult.error||null});
+  }
+  return json({ok:true, results});
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -9138,6 +9859,31 @@ export default {
       else if(url.pathname==='/hospitality/units/media' && request.method==='DELETE'){ res=await handleHospitalityUnitMediaDelete(request, env); }
       else if(url.pathname.startsWith('/hospitality/media/') && request.method==='GET'){ res=await handleHospitalityMediaServe(env, url.pathname.slice('/hospitality/media/'.length)); }
       else if(url.pathname.startsWith('/ecom/category-media/') && request.method==='GET'){ res=await handleEcomCategoryMediaServe(env, url.pathname.slice('/ecom/category-media/'.length)); }
+      else if(url.pathname==='/marketing/usage' && request.method==='GET'){ res=await handleMarketingUsage(request, env); }
+      else if(url.pathname==='/marketing/styles/presets' && request.method==='GET'){ res=await handleMarketingStylePresets(request, env); }
+      else if(url.pathname==='/marketing/brand-styles' && request.method==='GET'){ res=await handleMarketingBrandStylesList(request, env); }
+      else if(url.pathname==='/marketing/brand-styles' && request.method==='POST'){ res=await handleMarketingBrandStyleCreate(request, env); }
+      else if(url.pathname==='/marketing/brand-styles' && request.method==='DELETE'){ res=await handleMarketingBrandStyleDelete(request, env); }
+      else if(url.pathname==='/marketing/projects' && request.method==='GET'){ res=await handleMarketingProjectsList(request, env); }
+      else if(url.pathname==='/marketing/projects' && request.method==='POST'){ res=await handleMarketingProjectCreate(request, env); }
+      else if(url.pathname==='/marketing/projects' && request.method==='PATCH'){ res=await handleMarketingProjectUpdate(request, env); }
+      else if(url.pathname==='/marketing/projects' && request.method==='DELETE'){ res=await handleMarketingProjectDelete(request, env); }
+      else if(url.pathname==='/marketing/projects/upload' && request.method==='POST'){ res=await handleMarketingProjectUpload(request, env); }
+      else if(url.pathname==='/marketing/projects/transcribe' && request.method==='POST'){ res=await handleMarketingTranscribe(request, env); }
+      else if(url.pathname==='/marketing/projects/captions' && request.method==='PATCH'){ res=await handleMarketingCaptionsSave(request, env); }
+      else if(url.pathname==='/marketing/autoedit-presets' && request.method==='GET'){ res=await handleMarketingAutoeditPresets(request, env); }
+      else if(url.pathname==='/marketing/projects/suggest-cues' && request.method==='POST'){ res=await handleMarketingSuggestCues(request, env); }
+      else if(url.pathname==='/marketing/projects/cues' && request.method==='PATCH'){ res=await handleMarketingCuesSave(request, env); }
+      else if(url.pathname==='/marketing/projects/render' && request.method==='POST'){ res=await handleMarketingRenderStart(request, env); }
+      else if(url.pathname==='/marketing/projects/jobs' && request.method==='GET'){ res=await handleMarketingJobsList(request, env, url); }
+      else if(url.pathname==='/marketing/projects/send-whatsapp' && request.method==='POST'){ res=await handleMarketingSendWhatsapp(request, env); }
+      else if(url.pathname==='/marketing/webhook/render-complete' && request.method==='POST'){ res=await handleMarketingRenderWebhook(request, env); }
+      else if(url.pathname.startsWith('/marketing/media/') && request.method==='GET'){ res=await handleMarketingMediaServe(request, env, url.pathname.slice('/marketing/media/'.length)); }
+      else if(url.pathname==='/marketing/templates' && request.method==='GET'){ res=await handleMarketingTemplatesList(request, env); }
+      else if(url.pathname==='/marketing/templates' && request.method==='POST'){ res=await handleMarketingTemplateCreate(request, env); }
+      else if(url.pathname==='/marketing/templates' && request.method==='PATCH'){ res=await handleMarketingTemplateUpdate(request, env); }
+      else if(url.pathname==='/marketing/templates' && request.method==='DELETE'){ res=await handleMarketingTemplateDelete(request, env); }
+      else if(url.pathname==='/marketing/templates/generate' && request.method==='POST'){ res=await handleMarketingTemplateGenerate(request, env); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

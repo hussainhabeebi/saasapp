@@ -1,0 +1,103 @@
+// Render pipeline server for the Marketing Studio module (see SETUP.md "Marketing Studio module"
+// for the full contract). Receives a signed render spec from the Worker's
+// POST /marketing/projects/render (or /marketing/templates/generate), renders it with ffmpeg,
+// and calls back to POST /marketing/webhook/render-complete with the result — the async job
+// pattern documented there, not a synchronous request/response.
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const express = require('express');
+
+const hmac = require('./lib/hmac');
+const { renderCaptionClip } = require('./lib/render');
+const { renderTemplate } = require('./lib/templateRender');
+
+const env = process.env;
+const PORT = env.PORT || 8787;
+const ASSETS_ROOT = env.ASSETS_ROOT || path.join(__dirname, 'assets');
+
+if (!env.RENDER_WEBHOOK_SECRET) {
+  console.error('RENDER_WEBHOOK_SECRET is not set — see .env.example. Refusing to start.');
+  process.exit(1);
+}
+
+const app = express();
+
+// Raw body is needed for HMAC verification (must be the exact bytes the Worker signed) — capture
+// it alongside the parsed JSON rather than re-serializing, which could byte-for-byte differ.
+app.use(express.json({
+  limit: '2mb',
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
+
+app.get('/health', (_req, res) => res.json({ ok: true }));
+
+// Local-fallback static serving for LOCAL_PUBLIC_BASE_URL mode (see lib/storage.js) — only
+// relevant when R2 credentials aren't configured, e.g. running this locally without Cloudflare.
+app.use('/public', express.static(env.LOCAL_PUBLIC_DIR || path.join(__dirname, 'public')));
+
+// A tiny in-process queue, not a distributed one — this is meant to run as ONE instance, since
+// ffmpeg renders are CPU-heavy and running several at once on typical hardware just makes every
+// render slower, not faster. Scale by running a bigger box, not more replicas, unless you also
+// change this to a real job queue (Redis/SQS/etc — not built here).
+const queue = [];
+let draining = false;
+
+app.post('/render', (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const job = req.body;
+  if (!job || !job.job_id || !job.spec || !job.callback_url) {
+    return res.status(400).json({ error: 'job_id, spec and callback_url are required' });
+  }
+  queue.push(job);
+  res.status(202).json({ ok: true, queued_position: queue.length });
+  drainQueue();
+});
+
+async function drainQueue() {
+  if (draining) return;
+  draining = true;
+  while (queue.length) {
+    const job = queue.shift();
+    await processJob(job).catch(err => console.error(`Job ${job.job_id} crashed outside its own error handling:`, err));
+  }
+  draining = false;
+}
+
+async function processJob(job) {
+  console.log(`[job ${job.job_id}] starting, mode=${job.spec?.mode}`);
+  try {
+    const result = job.spec?.mode === 'template'
+      ? await renderTemplate(job, env)
+      : await renderCaptionClip(job, env, ASSETS_ROOT);
+    console.log(`[job ${job.job_id}] done`, result);
+    await callback(job, { job_id: job.job_id, status: 'done', ...result });
+  } catch (err) {
+    console.error(`[job ${job.job_id}] failed:`, err.stderr || err.message || err);
+    await callback(job, { job_id: job.job_id, status: 'failed', error: String(err.message || err).slice(0, 500) });
+  }
+}
+
+async function callback(job, payload) {
+  const body = JSON.stringify(payload);
+  const signature = hmac.sign(env.RENDER_WEBHOOK_SECRET, body);
+  try {
+    const r = await fetch(job.callback_url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Signature': signature },
+      body,
+    });
+    if (!r.ok) console.error(`[job ${job.job_id}] callback returned HTTP ${r.status}`);
+  } catch (err) {
+    console.error(`[job ${job.job_id}] callback request failed:`, err.message);
+  }
+}
+
+fs.mkdirSync(path.join(ASSETS_ROOT, 'broll'), { recursive: true });
+fs.mkdirSync(path.join(ASSETS_ROOT, 'sfx'), { recursive: true });
+fs.mkdirSync(path.join(ASSETS_ROOT, 'music'), { recursive: true });
+
+app.listen(PORT, () => console.log(`Marketing Studio render pipeline listening on :${PORT}`));

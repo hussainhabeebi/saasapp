@@ -1102,6 +1102,7 @@ const TODAY = new Date().toISOString().slice(0,10);
             <button class="hact-btn" onclick="navigate('chats')">💬 Chats</button>
             <button class="hact-btn" onclick="window.open('broadcast.html','_blank')">📢 Campaigns</button>
             <button class="hact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
+            <button class="hact-btn" id="homeMarketingStudioBtn" style="display:none" onclick="window.open('marketing-studio.html','_blank')">🎬 Marketing Studio</button>
           </div>
         </div>
       </div>
@@ -1225,6 +1226,7 @@ const TODAY = new Date().toISOString().slice(0,10);
                 <button class="qact-btn" onclick="navigate('chats')">💬 Open Chats</button>
                 <button class="qact-btn" onclick="window.open('broadcast.html','_blank')">📢 Send Campaign</button>
                 <button class="qact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
+                <button class="qact-btn" id="qaMarketingStudioBtn" style="display:none" onclick="window.open('marketing-studio.html','_blank')">🎬 Marketing Studio</button>
                 <button class="qact-btn" onclick="navigate('settings')">⚙️ Settings</button>
               </div>
             </div>
@@ -2624,12 +2626,25 @@ const TODAY = new Date().toISOString().slice(0,10);
               <span id="b2bModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
               <div style="flex:1;min-width:180px"><b>🏨 Hospitality</b><div class="s-note" style="margin:2px 0 0">Unit/room types, an availability calendar, and bookings — for houseboats, hotels, and other stay-based tourism businesses.</div></div>
               <select class="form-input" id="cfgHospitalityEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
               <button class="save-btn" id="saveHospitalityEnabled">Save</button>
               <span class="save-msg" id="saveHospitalityEnabledMsg"></span>
               <span id="hospitalityModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <!-- Marketing Studio (SETUP.md "Marketing Studio module") — a standalone page
+                 (marketing-studio.html), not a dashboard tab, so this toggle shows/hides the
+                 quick-action buttons that open it (updateMarketingStudioVisibility below) rather
+                 than a dnXTab/moreXTab pair. Metered and dependent on an operator-configured
+                 external render pipeline, so — unlike Dashboard Tabs above — it defaults OFF. -->
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
+              <div style="flex:1;min-width:180px"><b>🎬 Marketing Studio</b><div class="s-note" style="margin:2px 0 0">Turn a long video into a captioned, auto-cropped short — transcribe, edit captions, pick a style, export for Reels/Shorts/Status.</div></div>
+              <select class="form-input" id="cfgMarketingStudioEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveMarketingStudioEnabled">Save</button>
+              <span class="save-msg" id="saveMarketingStudioEnabledMsg"></span>
+              <span id="marketingStudioModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
           </div>
         </div>
@@ -4393,6 +4408,7 @@ function showApp(){
   updateHospitalityTabVisibility();
   updateB2bTabVisibility();
   updateFeatureTabVisibility();
+  updateMarketingStudioVisibility();
   loadAll();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
@@ -7504,6 +7520,16 @@ async function ensureHospitalityEnabledColumn(){
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     if(!cols.includes('hospitality_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_enabled',title:'hospitality_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+// Same "create the column on first save" pattern as ensureHospitalityEnabledColumn above — see
+// SETUP.md "Marketing Studio module".
+async function ensureMarketingStudioEnabledColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('feat_marketing_studio_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'feat_marketing_studio_enabled',title:'feat_marketing_studio_enabled',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -14930,6 +14956,7 @@ function populateModulesPage(){
   initApptSettings();
   initB2bSettings();
   initHospitalitySettings();
+  initMarketingStudioSettings();
   updateFeatureTabVisibility();
 }
 
@@ -15851,6 +15878,34 @@ function updateHospitalityTabVisibility(){
   const enabled=(clientRecord.hospitality_enabled==='Yes');
   [$id('dnHospitalityTab'),$id('moreHospitalityTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
 }
+
+// Marketing Studio has no dashboard tab of its own (it's a standalone page, marketing-studio.html
+// — see SETUP.md "Marketing Studio module") — this shows/hides the quick-action buttons that
+// open it instead of a dnXTab/moreXTab pair.
+function updateMarketingStudioVisibility(){
+  const enabled=(clientRecord.feat_marketing_studio_enabled==='Yes');
+  [$id('homeMarketingStudioBtn'),$id('qaMarketingStudioBtn')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+}
+
+function initMarketingStudioSettings(){
+  const sel=$id('cfgMarketingStudioEnabled'); if(sel) sel.value=(clientRecord.feat_marketing_studio_enabled==='Yes')?'Yes':'No';
+  _renderModuleBadge('marketingStudioModuleStatusBadge',clientRecord.feat_marketing_studio_enabled==='Yes');
+  updateMarketingStudioVisibility();
+}
+$id('saveMarketingStudioEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveMarketingStudioEnabled'),msg=$id('saveMarketingStudioEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgMarketingStudioEnabled').value;
+  try{
+    await ensureMarketingStudioEnabledColumn();
+    await patchClient({feat_marketing_studio_enabled:val});
+    clientRecord.feat_marketing_studio_enabled=val;
+    updateMarketingStudioVisibility();
+    _renderModuleBadge('marketingStudioModuleStatusBadge',val==='Yes');
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
 
 function initHospitalitySettings(){
   const sel=$id('cfgHospitalityEnabled'); if(sel) sel.value=(clientRecord.hospitality_enabled==='Yes')?'Yes':'No';

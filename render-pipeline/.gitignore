@@ -1,0 +1,14 @@
+node_modules
+.env
+public/
+tmp/
+*.log
+
+# Bring-your-own B-roll/SFX/music (see assets/*/README.md) — never commit real media files here,
+# only the placeholder READMEs.
+assets/broll/*
+assets/sfx/*
+assets/music/*
+!assets/broll/README.md
+!assets/sfx/README.md
+!assets/music/README.md

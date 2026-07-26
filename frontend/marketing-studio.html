@@ -1,0 +1,834 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marketing Studio · Leadvyne</title>
+<style>
+:root{
+  --bg:#120E1B;--card:#1B1530;--card2:#221A3B;--ink:#F3F1FA;--muted:#9C93B8;
+  --accent:#A855F7;--accent-ink:#D8B4FE;--accent-soft:#2E2050;
+  --line:#33285A;--good:#22C55E;--good-soft:#123321;--bad:#F87171;--bad-soft:#3A1B1B;--warn:#FBBF24;--warn-soft:#3A2E12;
+  --body:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14.5px;-webkit-font-smoothing:antialiased}
+button,input,textarea,select{font-family:inherit;font-size:inherit}
+.hdr{background:var(--card);border-bottom:1px solid var(--line);padding:14px 22px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.brand{font-size:16px;font-weight:700;letter-spacing:-.01em}
+.brand span{color:var(--accent-ink)}
+.hright{display:flex;align-items:center;gap:14px}
+.usage-pill{font-size:12px;color:var(--muted);background:var(--card2);border:1px solid var(--line);border-radius:20px;padding:6px 12px}
+.usage-pill b{color:var(--ink)}
+.hback{background:none;border:1px solid var(--line);border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;color:var(--muted)}
+.hback:hover{background:var(--card2)}
+.tabs{display:flex;gap:4px;padding:0 22px;background:var(--card);border-bottom:1px solid var(--line)}
+.tab{background:none;border:none;padding:12px 16px;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent}
+.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.wrap{max-width:1080px;margin:0 auto;padding:22px}
+.hidden{display:none !important}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:10px;flex-wrap:wrap}
+.card-head h2{font-size:15px;margin:0}
+.card-head .sub{font-size:12px;color:var(--muted);margin-top:2px}
+.btn{display:inline-flex;align-items:center;gap:6px;border:none;border-radius:9px;padding:9px 16px;font-size:13.5px;font-weight:600;cursor:pointer}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:#9333EA}
+.btn-sec{background:var(--accent-soft);color:var(--accent-ink)}
+.btn-ghost{background:none;color:var(--muted);border:1px solid var(--line)}
+.btn-danger{background:var(--bad-soft);color:var(--bad)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-sm{padding:6px 11px;font-size:12.5px;border-radius:7px}
+.form-label{font-size:12.5px;font-weight:600;color:var(--muted);margin:12px 0 6px;display:block}
+.form-input,.form-textarea,.form-select{width:100%;border:1.5px solid var(--line);border-radius:9px;padding:9px 12px;color:var(--ink);background:var(--card2)}
+.form-input:focus,.form-textarea:focus,.form-select:focus{outline:none;border-color:var(--accent)}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+.row > *{flex:1;min-width:140px}
+.table{width:100%;border-collapse:collapse;font-size:13px}
+.table th{text-align:left;color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;padding:8px 10px;border-bottom:1px solid var(--line)}
+.table td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle}
+.table tr:last-child td{border-bottom:none}
+.badge{display:inline-block;padding:3px 9px;border-radius:6px;font-size:11px;font-weight:700;text-transform:capitalize}
+.badge.uploading,.badge.uploaded{background:var(--warn-soft);color:var(--warn)}
+.badge.transcribing,.badge.rendering{background:var(--accent-soft);color:var(--accent-ink)}
+.badge.ready{background:var(--accent-soft);color:var(--accent-ink)}
+.badge.done{background:var(--good-soft);color:var(--good)}
+.badge.failed{background:var(--bad-soft);color:var(--bad)}
+.empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:13.5px}
+#gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px}
+
+/* Editor */
+.editor-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px;flex-wrap:wrap}
+.editor-cols{display:grid;grid-template-columns:340px 1fr;gap:18px}
+@media (max-width:820px){.editor-cols{grid-template-columns:1fr}}
+.preview-frame{position:relative;background:#000;border-radius:12px;overflow:hidden;margin:0 auto}
+.preview-frame video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
+.crop-guide{position:absolute;top:0;bottom:0;border-left:2px dashed rgba(255,255,255,.55);border-right:2px dashed rgba(255,255,255,.55);pointer-events:none}
+.caption-overlay{position:absolute;left:8%;right:8%;text-align:center;font-weight:800;text-shadow:0 2px 6px rgba(0,0,0,.7);line-height:1.3;pointer-events:none}
+.dropzone{border:2px dashed var(--line);border-radius:12px;padding:34px 16px;text-align:center;color:var(--muted);cursor:pointer}
+.dropzone:hover{border-color:var(--accent)}
+.word-list{display:flex;flex-wrap:wrap;gap:4px;line-height:2.1}
+.word{background:var(--card2);border:1px solid var(--line);border-radius:5px;padding:2px 6px;cursor:pointer;font-size:13px}
+.word:hover{border-color:var(--accent)}
+.word.approx{border-style:dotted}
+.style-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+.style-swatch{border:1.5px solid var(--line);border-radius:10px;padding:10px;cursor:pointer;background:#000;height:80px;display:flex;align-items:flex-end;justify-content:center;position:relative;overflow:hidden}
+.style-swatch.selected{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.style-swatch .swatch-cap{font-weight:800;font-size:12px;padding:0 4px 6px;text-align:center;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+.style-swatch .swatch-name{position:absolute;top:4px;left:6px;font-size:9.5px;color:#fff;opacity:.7}
+.chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.chip{border:1.5px solid var(--line);border-radius:20px;padding:6px 12px;font-size:12.5px;cursor:pointer;user-select:none}
+.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.progress{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:10px 0}
+.progress-fill{height:100%;background:var(--accent);transition:width .3s}
+.note{font-size:12px;color:var(--muted);line-height:1.6}
+.usage-warn{color:var(--warn)}
+.code-editor{width:100%;min-height:160px;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:12.5px;background:#0B0814;color:#D6D0F0;border:1.5px solid var(--line);border-radius:9px;padding:10px 12px;resize:vertical}
+.code-editor:focus{outline:none;border-color:var(--accent)}
+.tpl-card{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;background:var(--card2)}
+.tpl-card-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.result-row{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12.5px}
+.result-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.cue-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:12.5px}
+.cue-type{font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 7px;border-radius:5px;flex-shrink:0}
+.cue-type.broll{background:var(--accent-soft);color:var(--accent-ink)}
+.cue-type.sfx{background:var(--warn-soft);color:var(--warn)}
+.cue-type.vfx{background:var(--good-soft);color:var(--good)}
+.cue-time{color:var(--muted);font-family:ui-monospace,monospace;flex-shrink:0;width:70px}
+.cue-label{flex:1}
+</style>
+</head>
+<body>
+
+<div id="gate">Loading…</div>
+
+<div id="app" class="hidden">
+  <div class="hdr">
+    <div class="brand">🎬 <span>Marketing</span> Studio</div>
+    <div class="hright">
+      <div class="usage-pill" id="usagePill">Loading usage…</div>
+      <button class="hback" onclick="goBack()">← Back to CRM</button>
+    </div>
+  </div>
+  <div class="tabs" id="mainTabs">
+    <button class="tab active" id="tab-projects" onclick="showTab('projects')">🎞️ Projects</button>
+    <button class="tab" id="tab-templates" onclick="showTab('templates')">🧩 Video Templates</button>
+    <button class="tab" id="tab-styles" onclick="showTab('styles')">🎨 Brand Styles</button>
+  </div>
+
+  <div class="wrap">
+
+    <!-- PROJECTS LIST -->
+    <div id="page-projects">
+      <div class="card">
+        <div class="card-head">
+          <div><h2>Projects</h2><div class="sub">Upload a long video, get a captioned, cropped short back.</div></div>
+          <button class="btn btn-primary" onclick="openNewProjectForm()">+ New Project</button>
+        </div>
+        <div class="hidden" id="newProjectForm" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
+          <label class="form-label">Title</label>
+          <input class="form-input" id="npTitle" placeholder="e.g. Webinar highlight">
+          <div class="row">
+            <div>
+              <label class="form-label">Target aspect</label>
+              <select class="form-select" id="npAspect">
+                <option value="9:16">9:16 — Shorts / Reels / Status</option>
+                <option value="1:1">1:1 — Square</option>
+                <option value="16:9">16:9 — Landscape</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Language (optional — leave blank to auto-detect)</label>
+              <input class="form-input" id="npLanguage" placeholder="e.g. ml, en, hi">
+            </div>
+          </div>
+          <div style="margin-top:12px;display:flex;gap:10px">
+            <button class="btn btn-primary" onclick="createProject()">Create & Upload</button>
+            <button class="btn btn-ghost" onclick="closeNewProjectForm()">Cancel</button>
+          </div>
+        </div>
+        <table class="table" id="projectsTable"><thead><tr><th>Title</th><th>Status</th><th>Aspect</th><th>Duration</th><th>Updated</th><th></th></tr></thead><tbody id="projectsBody"></tbody></table>
+        <div class="empty hidden" id="projectsEmpty">No projects yet — create one to get started.</div>
+      </div>
+    </div>
+
+    <!-- VIDEO TEMPLATES -->
+    <div id="page-templates" class="hidden">
+      <div class="card">
+        <div class="card-head">
+          <div><h2>Video Templates</h2><div class="sub">Create videos using code instead of editing — define a template once with {{variables}}, then generate a batch: one rendered video per data row (landing-page teasers, product demos, ads, social clips).</div></div>
+          <button class="btn btn-primary" onclick="openNewTemplateForm()">+ New Template</button>
+        </div>
+        <div class="hidden" id="newTemplateForm" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
+          <label class="form-label">Name</label>
+          <input class="form-input" id="ntName" placeholder="e.g. Product ad">
+          <div class="row">
+            <div>
+              <label class="form-label">Target aspect</label>
+              <select class="form-select" id="ntAspect">
+                <option value="9:16">9:16 — Shorts / Reels / Status</option>
+                <option value="1:1">1:1 — Square</option>
+                <option value="16:9">16:9 — Landscape</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Estimated duration (sec — used for the usage estimate)</label>
+              <input type="number" class="form-input" id="ntDuration" value="15" min="1">
+            </div>
+          </div>
+          <label class="form-label">Style</label>
+          <select class="form-select" id="ntStyle"></select>
+          <label class="form-label">Scenes (JSON — text/content fields may use {{variable}} placeholders)</label>
+          <textarea class="code-editor" id="ntScenes">[
+  { "type": "text", "content": "{{headline}}", "duration_sec": 3 },
+  { "type": "image", "content": "{{image_url}}", "duration_sec": 4 },
+  { "type": "text", "content": "{{cta}}", "duration_sec": 3 }
+]</textarea>
+          <div style="margin-top:12px;display:flex;gap:10px">
+            <button class="btn btn-primary" onclick="createTemplate()">Save Template</button>
+            <button class="btn btn-ghost" onclick="closeNewTemplateForm()">Cancel</button>
+          </div>
+        </div>
+        <div id="templatesList"></div>
+        <div class="empty hidden" id="templatesEmpty">No templates yet — create one to batch-generate videos from data.</div>
+      </div>
+
+      <div class="card hidden" id="generatePanel">
+        <div class="card-head">
+          <div><h2 id="generateTplName">Generate batch</h2><div class="sub">One data row → one rendered video. Paste a JSON array of variable objects.</div></div>
+          <button class="btn btn-ghost btn-sm" onclick="closeGeneratePanel()">Close</button>
+        </div>
+        <textarea class="code-editor" id="generateRows" placeholder='[{"headline":"50% off today","image_url":"https://...","cta":"Shop now"}, {"headline":"New arrivals","image_url":"https://...","cta":"Browse"}]'></textarea>
+        <div class="note" style="margin-top:6px">Max 100 rows per batch. Each row costs roughly the template's estimated duration in usage minutes — checked against your remaining minutes before generating. Generated videos land in the Projects tab.</div>
+        <button class="btn btn-primary" id="generateBtn" onclick="generateBatch()" style="margin-top:10px">🚀 Generate videos</button>
+        <div id="generateResults" style="margin-top:14px"></div>
+      </div>
+    </div>
+
+    <!-- BRAND STYLES -->
+    <div id="page-styles" class="hidden">
+      <div class="card">
+        <div class="card-head"><div><h2>Custom brand styles</h2><div class="sub">Saved font/color combos, on top of the built-in presets — pick either when styling a project.</div></div></div>
+        <div class="style-grid" id="brandStylesGrid"></div>
+        <div class="empty hidden" id="brandStylesEmpty">No custom styles saved yet — save one from a project's Style step.</div>
+      </div>
+    </div>
+
+    <!-- EDITOR (opened per project) -->
+    <div id="page-editor" class="hidden">
+      <div class="editor-hdr">
+        <button class="btn btn-ghost btn-sm" onclick="closeEditor()">← All projects</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="badge" id="edStatusBadge"></span>
+          <input class="form-input" id="edTitle" style="width:220px" onchange="saveProjectMeta()">
+        </div>
+      </div>
+
+      <div class="editor-cols">
+        <!-- LEFT: preview -->
+        <div>
+          <div class="card">
+            <div class="card-head"><h2>Preview</h2></div>
+            <div id="uploadZone" class="dropzone" onclick="document.getElementById('fileInput').click()">
+              📹 Click to choose an mp4 / mov / webm / m4v file (max 100 MB)
+              <input type="file" id="fileInput" accept="video/mp4,video/quicktime,video/webm,video/x-m4v" class="hidden" onchange="onFilePicked(event)">
+            </div>
+            <div class="hidden" id="playerWrap" style="margin-top:10px">
+              <div class="preview-frame" id="previewFrame" style="width:100%;max-width:300px;aspect-ratio:9/16">
+                <video id="previewVideo" controls playsinline></video>
+                <div class="crop-guide" id="cropGuide"></div>
+                <div class="caption-overlay" id="captionOverlay" style="bottom:8%"></div>
+              </div>
+              <div class="note" style="margin-top:8px">Dashed lines show the <span id="aspectLabel">9:16</span> crop the final export will keep — everything outside them gets cut.</div>
+              <div class="row" style="margin-top:10px">
+                <div>
+                  <label class="form-label">Trim start (sec)</label>
+                  <input type="number" min="0" step="0.1" class="form-input" id="trimStart">
+                </div>
+                <div>
+                  <label class="form-label">Trim end (sec)</label>
+                  <input type="number" min="0" step="0.1" class="form-input" id="trimEnd">
+                </div>
+              </div>
+              <div class="row" style="margin-top:6px">
+                <button class="btn btn-ghost btn-sm" onclick="setTrimFromPlayer('start')">Set start ← playhead</button>
+                <button class="btn btn-ghost btn-sm" onclick="setTrimFromPlayer('end')">Set end ← playhead</button>
+              </div>
+              <button class="btn btn-sec btn-sm" style="margin-top:10px;width:100%" onclick="saveTrim()">Save trim & aspect</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: steps -->
+        <div>
+          <div class="card">
+            <div class="card-head"><h2>1 · Transcript & captions</h2><div class="sub">Word-level, auto-detected language unless you set one — tap a word to fix it.</div></div>
+            <button class="btn btn-primary btn-sm" id="transcribeBtn" onclick="transcribeProject()">🌀 Transcribe</button>
+            <span class="note" id="transcribeNote" style="margin-left:8px"></span>
+            <div style="margin-top:14px" id="wordListWrap" class="hidden">
+              <div class="word-list" id="wordList"></div>
+              <div class="note" style="margin-top:8px">Dotted-border words are approximate timing (the transcription provider only returned sentence-level timestamps) — text is still accurate.</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>2 · Caption style</h2><div class="sub">Applied to the burned-in captions in the final export, previewed live on the left.</div></div>
+            <div class="style-grid" id="styleGrid"></div>
+            <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="saveCurrentAsBrandStyle()">💾 Save current look as a brand style</button>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>3 · Auto-edit</h2><div class="sub">Pick a template to pre-fill these — still overridable per-project below.</div></div>
+            <label class="form-label">Auto-edit template</label>
+            <select class="form-select" id="optAutoeditPreset" onchange="applyAutoeditPreset()">
+              <option value="">— Manual (no preset) —</option>
+            </select>
+            <div class="chip-row" style="margin-top:12px">
+              <span class="chip" id="optSilence" onclick="toggleOpt('optSilence')">✂️ Cut silences / filler words</span>
+              <span class="chip" id="optZoom" onclick="toggleOpt('optZoom')">🔎 Auto-zoom on emphasis</span>
+            </div>
+            <label class="form-label">Background music</label>
+            <select class="form-select" id="optMusic">
+              <option value="">None</option>
+              <option value="upbeat">Upbeat</option>
+              <option value="chill">Chill / Lo-fi</option>
+              <option value="cinematic">Cinematic</option>
+            </select>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>4 · B-Roll / SFX / VFX cues</h2><div class="sub">Suggested from the script's keywords, free (no AI call) — review, uncheck what you don't want, then save.</div></div>
+            <button class="btn btn-sec btn-sm" id="suggestCuesBtn" onclick="suggestCues()">✨ Suggest cues from script</button>
+            <button class="btn btn-ghost btn-sm" onclick="saveCues()" style="margin-left:8px">💾 Save cues</button>
+            <div id="cuesList" style="margin-top:12px"></div>
+            <div class="note hidden" id="cuesEmpty">No cues yet — transcribe the video, then suggest cues.</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>5 · Render & export</h2></div>
+            <div class="note" id="renderResNote"></div>
+            <button class="btn btn-primary" id="renderBtn" onclick="startRender()" style="margin-top:10px">🚀 Render</button>
+            <div class="progress hidden" id="renderProgressWrap"><div class="progress-fill" id="renderProgressFill" style="width:0%"></div></div>
+            <div class="note" id="renderStatus" style="margin-top:8px"></div>
+            <div class="hidden" id="outputWrap" style="margin-top:12px">
+              <video id="outputVideo" controls style="width:100%;max-width:260px;border-radius:10px;background:#000"></video>
+              <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+                <a class="btn btn-sec btn-sm" id="downloadLink" download target="_blank">⬇ Download</a>
+                <input class="form-input" id="waPhone" placeholder="WhatsApp number" style="max-width:170px">
+                <button class="btn btn-sec btn-sm" onclick="sendToWhatsapp()">📤 Send via WhatsApp</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const NOCODB_BASE = WORKER_BASE + '/nocodb';
+const CLIENTS_TABLE_ID = 'mxl33bg4wi70fqj';
+
+let clientId = null, clientRecord = null;
+let sessionToken = localStorage.getItem('lv_session') || ''; // localStorage, not sessionStorage — see broadcast.html/email-marketing.html
+let projects = [];
+let stylePresets = [];
+let brandStyles = [];
+let templates = [];
+let autoeditPresets = [];
+let currentCues = [];
+let currentProject = null;
+let selectedStyleId = 'bold-pop';
+let generatingForTemplate = null;
+let jobPollTimer = null;
+
+const $id = id => document.getElementById(id);
+function ncAuthHeaders(extra) { return { 'Authorization': 'Bearer ' + sessionToken, ...(extra || {}) }; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function fmtDuration(sec) { if (!sec && sec !== 0) return '—'; const m = Math.floor(sec / 60), s = Math.round(sec % 60); return `${m}:${String(s).padStart(2, '0')}`; }
+function fmtDate(s) { if (!s) return ''; try { return new Date(s).toLocaleString(); } catch (e) { return s; } }
+function mediaUrl(key) { return key ? `${WORKER_BASE}/marketing/media/${key}` : ''; }
+
+// ── AUTH — identical pattern to email-marketing.html/broadcast.html: this page only ever opens
+// from an already-logged-in dashboard.html tab (window.open, same origin) — lv_cid/lv_session
+// live in localStorage, directly readable here. No separate login form.
+async function tryAutoLogin() {
+  const id = localStorage.getItem('lv_cid');
+  if (!id || !sessionToken) { goBack(); return; }
+  try {
+    const r = await fetch(`${NOCODB_BASE}/api/v2/tables/${CLIENTS_TABLE_ID}/records/${id}`, { headers: ncAuthHeaders() });
+    if (!r.ok) throw new Error('auth failed');
+    clientRecord = await r.json();
+    clientId = String(clientRecord.Id);
+    initApp();
+  } catch (e) { goBack(); }
+}
+function goBack() { window.location.href = 'dashboard.html'; }
+
+async function initApp() {
+  $id('gate').classList.add('hidden');
+  $id('app').classList.remove('hidden');
+  await Promise.all([loadUsage(), loadStylePresets(), loadBrandStyles(), loadProjects(), loadTemplates(), loadAutoeditPresets()]);
+  populateStyleSelect();
+}
+
+async function loadAutoeditPresets() {
+  const r = await fetch(`${WORKER_BASE}/marketing/autoedit-presets`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ list: [] }));
+  autoeditPresets = d.list || [];
+  const sel = $id('optAutoeditPreset');
+  if (sel) sel.innerHTML = '<option value="">— Manual (no preset) —</option>' + autoeditPresets.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+}
+function applyAutoeditPreset() {
+  const preset = autoeditPresets.find(p => p.id === $id('optAutoeditPreset').value);
+  if (!preset) return;
+  $id('optSilence').classList.toggle('on', !!preset.silence_cut);
+  $id('optZoom').classList.toggle('on', !!preset.auto_zoom);
+  $id('optMusic').value = preset.background_music || '';
+}
+
+function showTab(tab) {
+  ['projects', 'templates', 'styles'].forEach(t => {
+    $id('tab-' + t).classList.toggle('active', t === tab);
+    $id('page-' + t).classList.toggle('hidden', t !== tab);
+  });
+  $id('page-editor').classList.add('hidden');
+}
+
+async function loadUsage() {
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/usage`, { headers: ncAuthHeaders() });
+    const d = await r.json();
+    const pill = $id('usagePill');
+    pill.innerHTML = `<b>${d.used ?? 0}</b> / ${d.limit ?? '—'} min used this period`;
+    pill.classList.toggle('usage-warn', (d.remaining ?? 1) <= 0);
+  } catch (e) { $id('usagePill').textContent = 'Usage unavailable'; }
+}
+
+// ── PROJECTS ──
+async function loadProjects() {
+  const r = await fetch(`${WORKER_BASE}/marketing/projects`, { headers: ncAuthHeaders() });
+  const data = await r.json().catch(() => ({ list: [] }));
+  projects = data.list || [];
+  renderProjectsTable();
+}
+function renderProjectsTable() {
+  $id('projectsEmpty').classList.toggle('hidden', projects.length > 0);
+  $id('projectsBody').innerHTML = projects.map(p => `
+    <tr>
+      <td>${esc(p.title)}</td>
+      <td><span class="badge ${esc(p.status)}">${esc(p.status)}</span></td>
+      <td>${esc(p.target_aspect)}</td>
+      <td>${fmtDuration(p.source_duration_sec)}</td>
+      <td>${fmtDate(p.updated_at)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-ghost btn-sm" onclick="openEditor(${p.id})">Open</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteProject(${p.id})">Delete</button>
+      </td>
+    </tr>`).join('');
+}
+function openNewProjectForm() { $id('newProjectForm').classList.remove('hidden'); }
+function closeNewProjectForm() { $id('newProjectForm').classList.add('hidden'); }
+async function createProject() {
+  const title = $id('npTitle').value.trim();
+  if (!title) { alert('Give the project a title.'); return; }
+  const body = { title, target_aspect: $id('npAspect').value, language: $id('npLanguage').value.trim() || undefined };
+  const r = await fetch(`${WORKER_BASE}/marketing/projects`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) { alert(data.error || 'Failed to create project.'); return; }
+  closeNewProjectForm();
+  $id('npTitle').value = ''; $id('npLanguage').value = '';
+  await loadProjects();
+  openEditor(data.project.id);
+}
+async function deleteProject(id) {
+  if (!confirm('Delete this project and its video? This cannot be undone.')) return;
+  await fetch(`${WORKER_BASE}/marketing/projects`, { method: 'DELETE', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id }) });
+  await loadProjects();
+}
+
+// ── EDITOR ──
+function openEditor(id) {
+  currentProject = projects.find(p => p.id === id);
+  if (!currentProject) return;
+  ['projects', 'styles'].forEach(t => $id('tab-' + t).classList.remove('active'));
+  $id('page-projects').classList.add('hidden');
+  $id('page-styles').classList.add('hidden');
+  $id('page-editor').classList.remove('hidden');
+  renderEditor();
+  pollJobsIfNeeded();
+}
+function closeEditor() {
+  clearTimeout(jobPollTimer);
+  $id('page-editor').classList.add('hidden');
+  showTab('projects');
+}
+
+function renderEditor() {
+  const p = currentProject;
+  $id('edTitle').value = p.title;
+  $id('edStatusBadge').className = 'badge ' + p.status;
+  $id('edStatusBadge').textContent = p.status;
+  $id('aspectLabel').textContent = p.target_aspect;
+  $id('renderResNote').textContent = `Exports at ${({ '9:16': '1080×1920', '1:1': '1080×1080', '16:9': '1920×1080' })[p.target_aspect] || '1080×1920'} (${p.target_aspect}).`;
+
+  const hasVideo = !!p.source_key;
+  $id('uploadZone').classList.toggle('hidden', hasVideo);
+  $id('playerWrap').classList.toggle('hidden', !hasVideo);
+  if (hasVideo) {
+    const video = $id('previewVideo');
+    video.src = mediaUrl(p.source_key);
+    $id('previewFrame').style.aspectRatio = p.target_aspect.replace(':', '/');
+    $id('trimStart').value = p.trim_start_sec ?? 0;
+    $id('trimEnd').value = p.trim_end_sec ?? (p.source_duration_sec || '');
+    video.ontimeupdate = updateCaptionOverlay;
+  }
+
+  $id('transcribeBtn').disabled = !hasVideo || p.status === 'transcribing';
+  $id('transcribeNote').textContent = p.language ? `Detected/set language: ${p.language}` : '';
+  const words = p.captions?.words || [];
+  $id('wordListWrap').classList.toggle('hidden', words.length === 0);
+  $id('wordList').innerHTML = words.map((w, i) => `<span class="word${w.approximate ? ' approx' : ''}" onclick="editWord(${i})">${esc(w.word)}</span>`).join('');
+
+  selectedStyleId = p.style_id || 'bold-pop';
+  renderStyleGrid();
+  updateCaptionOverlay();
+
+  $id('optSilence').classList.toggle('on', !!p._optSilence);
+  $id('optZoom').classList.toggle('on', !!p._optZoom);
+  $id('optAutoeditPreset').value = '';
+
+  currentCues = p.cues || [];
+  $id('suggestCuesBtn').disabled = !(p.captions && (p.captions.words || []).length);
+  renderCues();
+
+  $id('renderBtn').disabled = !(p.captions && (p.captions.words || []).length); // enabled once captions exist
+  $id('renderStatus').textContent = p.status === 'rendering' ? 'Rendering — this can take a few minutes…' : (p.status === 'failed' ? 'Last job failed — check Projects for details and retry.' : '');
+  $id('renderProgressWrap').classList.toggle('hidden', p.status !== 'rendering');
+
+  const done = p.status === 'done' && p.output_url;
+  $id('outputWrap').classList.toggle('hidden', !done);
+  if (done) {
+    $id('outputVideo').src = p.output_url;
+    $id('downloadLink').href = p.output_url;
+  }
+}
+
+async function saveProjectMeta() {
+  const title = $id('edTitle').value.trim();
+  if (!title || !currentProject) return;
+  await fetch(`${WORKER_BASE}/marketing/projects`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id: currentProject.id, title }) });
+  currentProject.title = title;
+  const idx = projects.findIndex(p => p.id === currentProject.id);
+  if (idx >= 0) projects[idx].title = title;
+}
+
+// ── UPLOAD ──
+function onFilePicked(evt) {
+  const file = evt.target.files[0];
+  if (!file || !currentProject) return;
+  const tmpUrl = URL.createObjectURL(file);
+  const probe = document.createElement('video');
+  probe.preload = 'metadata';
+  probe.onloadedmetadata = async () => {
+    const duration = probe.duration || 0;
+    URL.revokeObjectURL(tmpUrl);
+    await uploadVideo(file, duration);
+  };
+  probe.src = tmpUrl;
+}
+async function uploadVideo(file, durationSec) {
+  $id('uploadZone').textContent = 'Uploading…';
+  const form = new FormData();
+  form.append('project_id', currentProject.id);
+  form.append('file', file);
+  form.append('duration_sec', String(durationSec));
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/upload`, { method: 'POST', headers: ncAuthHeaders(), body: form });
+  const data = await r.json();
+  if (!r.ok) { alert(data.error || 'Upload failed.'); $id('uploadZone').textContent = '📹 Click to choose an mp4 / mov / webm / m4v file (max 100 MB)'; return; }
+  currentProject = data.project;
+  const idx = projects.findIndex(p => p.id === currentProject.id);
+  if (idx >= 0) projects[idx] = currentProject; else projects.unshift(currentProject);
+  renderEditor();
+}
+
+// ── TRIM ──
+function setTrimFromPlayer(which) {
+  const t = $id('previewVideo').currentTime;
+  $id(which === 'start' ? 'trimStart' : 'trimEnd').value = t.toFixed(1);
+}
+async function saveTrim() {
+  const body = {
+    id: currentProject.id,
+    trim_start_sec: Number($id('trimStart').value) || 0,
+    trim_end_sec: Number($id('trimEnd').value) || currentProject.source_duration_sec,
+  };
+  const r = await fetch(`${WORKER_BASE}/marketing/projects`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+  const data = await r.json();
+  if (r.ok) { currentProject = data.project; alert('Trim saved.'); }
+}
+
+// ── TRANSCRIBE / CAPTIONS ──
+async function transcribeProject() {
+  $id('transcribeBtn').disabled = true;
+  $id('transcribeNote').textContent = 'Transcribing…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/projects/transcribe`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id }) });
+    const data = await r.json();
+    if (!r.ok) { alert(data.error || 'Transcription failed.'); $id('transcribeNote').textContent = ''; $id('transcribeBtn').disabled = false; return; }
+    currentProject = data.project;
+    const idx = projects.findIndex(p => p.id === currentProject.id);
+    if (idx >= 0) projects[idx] = currentProject;
+    renderEditor();
+  } finally { $id('transcribeBtn').disabled = false; }
+}
+function editWord(i) {
+  const words = currentProject.captions.words;
+  const next = prompt('Fix this word:', words[i].word);
+  if (next == null) return;
+  words[i] = { ...words[i], word: next };
+  saveCaptions();
+  renderEditor();
+}
+async function saveCaptions() {
+  await fetch(`${WORKER_BASE}/marketing/projects/captions`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, captions: currentProject.captions }) });
+}
+
+// ── STYLE ──
+async function loadStylePresets() {
+  const r = await fetch(`${WORKER_BASE}/marketing/styles/presets`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ list: [] }));
+  stylePresets = d.list || [];
+}
+async function loadBrandStyles() {
+  const r = await fetch(`${WORKER_BASE}/marketing/brand-styles`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ list: [] }));
+  brandStyles = d.list || [];
+  renderBrandStylesTab();
+}
+function renderBrandStylesTab() {
+  $id('brandStylesEmpty').classList.toggle('hidden', brandStyles.length > 0);
+  $id('brandStylesGrid').innerHTML = brandStyles.map(s => styleSwatchHtml('custom:' + s.id, s.name, s.config, true)).join('');
+}
+function styleSwatchHtml(id, name, cfg, deletable) {
+  const bg = cfg.bg_style === 'pill' ? `background:${cfg.bg_color || '#fff'};border-radius:20px;padding:2px 8px` : (cfg.bg_style === 'box' ? `background:${cfg.bg_color || 'rgba(0,0,0,.55)'};padding:2px 8px` : '');
+  return `<div class="style-swatch${selectedStyleId === id ? ' selected' : ''}" onclick="pickStyle('${id}')">
+    <span class="swatch-name">${esc(name)}</span>
+    <span class="swatch-cap" style="font-family:${esc(cfg.font || 'inherit')};color:${esc(cfg.text_color || '#fff')};${bg}">SAMPLE</span>
+    ${deletable ? `<button class="btn btn-ghost btn-sm" style="position:absolute;bottom:4px;right:4px;padding:2px 6px" onclick="event.stopPropagation();deleteBrandStyle(${id.split(':')[1]})">✕</button>` : ''}
+  </div>`;
+}
+function renderStyleGrid() {
+  $id('styleGrid').innerHTML = stylePresets.map(s => styleSwatchHtml(s.id, s.name, s, false)).join('')
+    + brandStyles.map(s => styleSwatchHtml('custom:' + s.id, s.name, s.config, false)).join('');
+}
+async function pickStyle(id) {
+  selectedStyleId = id;
+  if (currentProject) {
+    const r = await fetch(`${WORKER_BASE}/marketing/projects`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id: currentProject.id, style_id: id }) });
+    const data = await r.json();
+    if (r.ok) currentProject = data.project;
+  }
+  renderStyleGrid();
+  updateCaptionOverlay();
+}
+function resolveStyle(id) {
+  if ((id || '').startsWith('custom:')) { const bs = brandStyles.find(s => 'custom:' + s.id === id); return bs ? bs.config : stylePresets[0]; }
+  return stylePresets.find(s => s.id === id) || stylePresets[0] || {};
+}
+async function saveCurrentAsBrandStyle() {
+  const name = prompt('Name this brand style (font/colors):');
+  if (!name) return;
+  const cfg = resolveStyle(selectedStyleId);
+  const r = await fetch(`${WORKER_BASE}/marketing/brand-styles`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ name, config: cfg }) });
+  if (r.ok) { await loadBrandStyles(); renderStyleGrid(); }
+}
+async function deleteBrandStyle(id) {
+  if (!confirm('Delete this brand style?')) return;
+  await fetch(`${WORKER_BASE}/marketing/brand-styles`, { method: 'DELETE', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id }) });
+  await loadBrandStyles();
+  renderStyleGrid();
+}
+
+// Live caption preview — draws the currently-spoken word(s) over the paused/playing preview
+// player using the same style config the final render will burn in. Cosmetic only (actual
+// burn-in happens on the external render pipeline) but gives a real WYSIWYG sense of the look.
+function updateCaptionOverlay() {
+  const overlay = $id('captionOverlay');
+  if (!currentProject?.captions?.words?.length) { overlay.textContent = ''; return; }
+  const style = resolveStyle(selectedStyleId);
+  const t = $id('previewVideo')?.currentTime || 0;
+  const words = currentProject.captions.words;
+  const windowWords = words.filter(w => Math.abs(w.start - t) < 1.2).slice(0, 6);
+  overlay.style.fontFamily = style.font || 'inherit';
+  overlay.style.color = style.text_color || '#fff';
+  overlay.style.top = style.position === 'top' ? '6%' : (style.position === 'middle' ? '46%' : '');
+  overlay.style.bottom = style.position === 'bottom' || !style.position ? '8%' : '';
+  overlay.innerHTML = windowWords.map(w => `<span style="${Math.abs(w.start - t) < 0.4 ? `color:${style.highlight_color || style.text_color}` : ''}">${esc(w.word)}</span>`).join(' ');
+}
+
+function toggleOpt(id) {
+  $id(id).classList.toggle('on');
+  currentProject['_opt' + id.replace('opt', '')] = $id(id).classList.contains('on');
+}
+
+// ── B-ROLL / SFX / VFX CUES — free (no AI call), keyword-based suggestions derived from the
+// already-fetched transcript. Suggest, review/uncheck, save; accepted cues ride along in the
+// render spec for the external pipeline to act on (drop in B-roll, play an SFX, apply a VFX).
+function renderCues() {
+  $id('cuesEmpty').classList.toggle('hidden', currentCues.length > 0);
+  $id('cuesList').innerHTML = currentCues.map((c, i) => `
+    <div class="cue-row">
+      <input type="checkbox" ${c.accepted !== false ? 'checked' : ''} onchange="toggleCue(${i})">
+      <span class="cue-type ${esc(c.type)}">${esc(c.type)}</span>
+      <span class="cue-time">${fmtDuration(c.start)}</span>
+      <span class="cue-label">${esc(c.label)} <span class="note">— "${esc(c.keyword || '')}"</span></span>
+      <button class="btn btn-ghost btn-sm" onclick="removeCue(${i})">✕</button>
+    </div>`).join('');
+}
+function toggleCue(i) { currentCues[i].accepted = currentCues[i].accepted === false; renderCues(); }
+function removeCue(i) { currentCues.splice(i, 1); renderCues(); }
+async function suggestCues() {
+  if (!currentProject) return;
+  $id('suggestCuesBtn').disabled = true;
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/projects/suggest-cues`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id }) });
+    const data = await r.json();
+    if (!r.ok) { alert(data.error || 'Could not suggest cues.'); return; }
+    currentCues = data.cues || [];
+    currentProject.cues = currentCues;
+    renderCues();
+  } finally { $id('suggestCuesBtn').disabled = false; }
+}
+async function saveCues() {
+  if (!currentProject) return;
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/cues`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, cues: currentCues }) });
+  if (r.ok) { currentProject.cues = currentCues; } else { alert('Failed to save cues.'); }
+}
+
+// ── RENDER ──
+async function startRender() {
+  if (!currentProject) return;
+  $id('renderBtn').disabled = true;
+  const options = {
+    silence_cut: $id('optSilence').classList.contains('on'),
+    auto_zoom: $id('optZoom').classList.contains('on'),
+    background_music: $id('optMusic').value || null,
+    autoedit_preset: $id('optAutoeditPreset').value || null,
+  };
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/render`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, options }) });
+  const data = await r.json();
+  $id('renderBtn').disabled = false;
+  if (!r.ok) { alert(data.error || 'Could not start render.'); return; }
+  currentProject.status = 'rendering';
+  renderEditor();
+  await loadUsage();
+  pollJobsIfNeeded();
+}
+function pollJobsIfNeeded() {
+  clearTimeout(jobPollTimer);
+  if (!currentProject || !['rendering', 'transcribing'].includes(currentProject.status)) return;
+  jobPollTimer = setTimeout(async () => {
+    await loadProjects();
+    const fresh = projects.find(p => p.id === currentProject.id);
+    if (fresh) currentProject = fresh;
+    renderEditor();
+    if (currentProject.status === 'done') await loadUsage();
+    pollJobsIfNeeded();
+  }, 5000);
+}
+
+async function sendToWhatsapp() {
+  const phone = $id('waPhone').value.trim();
+  if (!phone) { alert('Enter a WhatsApp number.'); return; }
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/send-whatsapp`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, phone }) });
+  const data = await r.json();
+  alert(r.ok ? 'Sent!' : (data.error || 'Failed to send.'));
+}
+
+// ── VIDEO TEMPLATES — "create videos using code instead of editing, generate hundreds
+// automatically": a template is a JSON scene spec with {{variable}} placeholders; generating a
+// batch posts one row of variables per video and gets back one project per row (each shows up
+// in the ordinary Projects tab once its render finishes, same as any other project).
+async function loadTemplates() {
+  const r = await fetch(`${WORKER_BASE}/marketing/templates`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ list: [] }));
+  templates = d.list || [];
+  renderTemplatesList();
+}
+function populateStyleSelect() {
+  const sel = $id('ntStyle');
+  if (!sel) return;
+  const opts = stylePresets.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`)
+    .concat(brandStyles.map(s => `<option value="custom:${s.id}">${esc(s.name)} (custom)</option>`));
+  sel.innerHTML = opts.join('');
+}
+function renderTemplatesList() {
+  $id('templatesEmpty').classList.toggle('hidden', templates.length > 0);
+  $id('templatesList').innerHTML = templates.map(t => `
+    <div class="tpl-card">
+      <div class="tpl-card-head">
+        <div><b>${esc(t.name)}</b><div class="note">${esc(t.target_aspect)} · ${t.scenes.length} scene${t.scenes.length === 1 ? '' : 's'} · ~${t.estimated_duration_sec}s each</div></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sec btn-sm" onclick="openGeneratePanel(${t.id})">🚀 Generate batch</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteTemplate(${t.id})">Delete</button>
+        </div>
+      </div>
+    </div>`).join('');
+}
+function openNewTemplateForm() { populateStyleSelect(); $id('newTemplateForm').classList.remove('hidden'); }
+function closeNewTemplateForm() { $id('newTemplateForm').classList.add('hidden'); }
+async function createTemplate() {
+  const name = $id('ntName').value.trim();
+  if (!name) { alert('Give the template a name.'); return; }
+  let scenes;
+  try { scenes = JSON.parse($id('ntScenes').value); if (!Array.isArray(scenes) || !scenes.length) throw new Error(); }
+  catch (e) { alert('Scenes must be a valid, non-empty JSON array.'); return; }
+  const body = { name, scenes, target_aspect: $id('ntAspect').value, style_id: $id('ntStyle').value || undefined, estimated_duration_sec: Number($id('ntDuration').value) || 15 };
+  const r = await fetch(`${WORKER_BASE}/marketing/templates`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) { alert(data.error || 'Failed to save template.'); return; }
+  closeNewTemplateForm();
+  $id('ntName').value = '';
+  await loadTemplates();
+}
+async function deleteTemplate(id) {
+  if (!confirm('Delete this template? Videos already generated from it are unaffected.')) return;
+  await fetch(`${WORKER_BASE}/marketing/templates`, { method: 'DELETE', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id }) });
+  await loadTemplates();
+}
+function openGeneratePanel(id) {
+  generatingForTemplate = templates.find(t => t.id === id);
+  if (!generatingForTemplate) return;
+  $id('generateTplName').textContent = 'Generate batch — ' + generatingForTemplate.name;
+  $id('generateRows').value = '';
+  $id('generateResults').innerHTML = '';
+  $id('generatePanel').classList.remove('hidden');
+  $id('generatePanel').scrollIntoView({ behavior: 'smooth' });
+}
+function closeGeneratePanel() { $id('generatePanel').classList.add('hidden'); generatingForTemplate = null; }
+async function generateBatch() {
+  if (!generatingForTemplate) return;
+  let rows;
+  try { rows = JSON.parse($id('generateRows').value); if (!Array.isArray(rows) || !rows.length) throw new Error(); }
+  catch (e) { alert('Rows must be a valid, non-empty JSON array of variable objects.'); return; }
+  $id('generateBtn').disabled = true;
+  $id('generateResults').innerHTML = 'Generating…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/templates/generate`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ template_id: generatingForTemplate.id, rows }) });
+    const data = await r.json();
+    if (!r.ok) { $id('generateResults').innerHTML = `<div class="note usage-warn">${esc(data.error || 'Failed to generate.')}</div>`; return; }
+    const okCount = data.results.filter(x => x.ok).length;
+    $id('generateResults').innerHTML = `<div class="note">${okCount} / ${data.results.length} started rendering.</div>` +
+      data.results.map(x => `<div class="result-row"><span class="result-dot" style="background:${x.ok ? 'var(--good)' : 'var(--bad)'}"></span>Project #${x.project_id}${x.error ? ' — ' + esc(x.error) : ''}</div>`).join('');
+    await loadProjects();
+    await loadUsage();
+  } finally { $id('generateBtn').disabled = false; }
+}
+
+tryAutoLogin();
+</script>
+</body>
+</html>
