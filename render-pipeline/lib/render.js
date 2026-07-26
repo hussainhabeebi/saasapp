@@ -15,6 +15,7 @@ const { run } = require('./exec');
 const { getDurationSec } = require('./probe');
 const { resolveBroll, resolveSfx, resolveMusic } = require('./assets');
 const { uploadOutput } = require('./storage');
+const { renderTextBehindSubject } = require('./textBehindSubject');
 
 function parseResolution(res) {
   const m = /^(\d+)x(\d+)$/.exec(res || '');
@@ -32,7 +33,12 @@ async function renderCaptionClip(job, env, assetsRoot) {
     const trimEnd = Number(spec.trim_end_sec) || trimStart + 1;
 
     let keepSegments;
-    if (spec.silence_cut) {
+    // text_behind_subject renders the actual video as a single plain trim (see below) — if
+    // silence-cut also ran here, caption timestamps would get remapped as though the video had
+    // gaps removed while the video itself doesn't, desyncing every caption. v1 doesn't support
+    // combining the two (see textBehindSubject.js's header comment), so silence-cut is a no-op
+    // whenever text_behind_subject is set, not a silently-broken combination.
+    if (spec.silence_cut && !spec.text_behind_subject) {
       const silences = await detectSilence(sourcePath, trimStart, trimEnd);
       keepSegments = computeKeepSegments(trimStart, trimEnd, silences);
     } else {
@@ -76,6 +82,26 @@ async function renderCaptionClip(job, env, assetsRoot) {
     if (words.length) {
       assPath = path.join(workDir, 'captions.ass');
       writeAssFile(assPath, words, spec.style || {}, { resolutionW, resolutionH });
+    }
+
+    // "Text behind subject" (spec.text_behind_subject) — a structurally different compositing
+    // pipeline (background+text, THEN the person cut out on top), not a variant of the normal
+    // burn-on-top filter graph below. v1 scope: doesn't combine with silence-cut/auto-zoom/
+    // B-roll/SFX/VFX cues in the same render — see README.md's known limitations. Runs local
+    // ONNX person-matting (lib/segmentation.js), no per-video API cost.
+    if (spec.text_behind_subject) {
+      const trimmedPath = path.join(workDir, 'trimmed.mp4');
+      await run('ffmpeg', ['-y', '-i', sourcePath, '-ss', String(trimStart), '-to', String(trimEnd), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-c:a', 'aac', trimmedPath]);
+      const mattePath = path.join(workDir, 'matte.mp4');
+      const outputPath = path.join(workDir, 'output.mp4');
+      await renderTextBehindSubject({
+        sourcePath: trimmedPath, resolutionW, resolutionH, fps: 30,
+        assPath, bgColor: spec.style?.bg_color, watermark: !!spec.watermark, outputPath,
+      }, mattePath);
+      const durationSec = await getDurationSec(outputPath);
+      const key = `marketing/${job.client_id}/${job.project_id}/render-${crypto.randomBytes(6).toString('hex')}.mp4`;
+      const result = await uploadOutput(env, outputPath, key);
+      return { ...result, duration_sec: durationSec };
     }
 
     const outputPath = path.join(workDir, 'output.mp4');

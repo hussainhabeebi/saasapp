@@ -286,7 +286,9 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div class="chip-row" style="margin-top:12px">
               <span class="chip" id="optSilence" onclick="toggleOpt('optSilence')">✂️ Cut silences / filler words</span>
               <span class="chip" id="optZoom" onclick="toggleOpt('optZoom')">🔎 Auto-zoom on emphasis</span>
+              <span class="chip" id="optTextBehindSubject" onclick="toggleOpt('optTextBehindSubject')">🫥 Text behind subject (beta)</span>
             </div>
+            <div class="note" id="textBehindSubjectNote" style="margin-top:6px">Beta — free local person-detection, approximate edges. Turns off silence-cut/auto-zoom/B-roll/SFX for this render (not combinable yet).</div>
             <label class="form-label">Background music</label>
             <select class="form-select" id="optMusic">
               <option value="">None</option>
@@ -498,6 +500,7 @@ function renderEditor() {
 
   $id('optSilence').classList.toggle('on', !!p._optSilence);
   $id('optZoom').classList.toggle('on', !!p._optZoom);
+  $id('optTextBehindSubject').classList.toggle('on', !!p._optTextBehindSubject);
   $id('optAutoeditPreset').value = '';
 
   currentCues = p.cues || [];
@@ -672,6 +675,15 @@ function updateCaptionOverlay() {
 function toggleOpt(id) {
   $id(id).classList.toggle('on');
   currentProject['_opt' + id.replace('opt', '')] = $id(id).classList.contains('on');
+  // Text-behind-subject doesn't combine with silence-cut/auto-zoom (the render pipeline enforces
+  // this server-side too — see render-pipeline/lib/render.js — this just keeps the UI honest
+  // about what will actually happen instead of showing options that'll be silently overridden.
+  if (id === 'optTextBehindSubject' && $id('optTextBehindSubject').classList.contains('on')) {
+    $id('optSilence').classList.remove('on');
+    $id('optZoom').classList.remove('on');
+  } else if ((id === 'optSilence' || id === 'optZoom') && $id(id).classList.contains('on')) {
+    $id('optTextBehindSubject').classList.remove('on');
+  }
 }
 
 // ── B-ROLL / SFX / VFX CUES — free (no AI call), keyword-based suggestions derived from the
@@ -717,6 +729,7 @@ async function startRender() {
     auto_zoom: $id('optZoom').classList.contains('on'),
     background_music: $id('optMusic').value || null,
     autoedit_preset: $id('optAutoeditPreset').value || null,
+    text_behind_subject: $id('optTextBehindSubject').classList.contains('on'),
   };
   const r = await fetch(`${WORKER_BASE}/marketing/projects/render`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, options }) });
   const data = await r.json();

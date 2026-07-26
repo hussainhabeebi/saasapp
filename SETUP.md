@@ -5113,3 +5113,17 @@ playing that SFX, or applying that VFX still happens on the external render pipe
   pipeline, same as it already owns caption burn-in, cropping, silence-cut, etc.
 - Frontend: Editor step 4 ("B-Roll / SFX / VFX cues") — a "✨ Suggest cues from script" button
   (disabled until captions exist), a checkbox+remove list per suggestion, and a Save button.
+
+## Marketing Studio module — Text Behind Subject (beta)
+A render option (`spec.text_behind_subject`, a "🫥 Text behind subject (beta)" chip in the
+Editor's Auto-edit step) where captions sit behind the person on screen instead of on top —
+implemented in `render-pipeline/` (`lib/segmentation.js` + `lib/textBehindSubject.js`), **not**
+anything the Worker does itself. Runs local, free ONNX person-video-matting
+([RobustVideoMatting](https://github.com/PeterL1n/RobustVideoMatting)) — no per-video API cost,
+approximate edge quality (reduced processing resolution/frame-rate for CPU speed) — as opposed to
+a paid cloud matting API, which would give cleaner results at a per-render cost. See
+`render-pipeline/README.md`'s "Text behind subject (beta)" section for the full detail, including
+exactly what was and wasn't verified (no real human test footage was available while building
+this — only the ONNX inference plumbing and the compositing mechanics were confirmed working, not
+real-world segmentation accuracy). **Doesn't combine with silence-cut/auto-zoom/B-roll/SFX/VFX
+cues in the same render** — enforced in `render-pipeline/lib/render.js`, not just documented.

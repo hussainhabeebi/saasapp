@@ -19,9 +19,56 @@ for the full request/callback contract this implements.
   is available, and watermarks free-tier exports.
 - **`spec.mode:'template'`** (Video Templates batch generation): composites the already
   `{{variable}}`-resolved scenes (text cards / images) into one clip.
+- **`spec.text_behind_subject` (beta)**: captions sit BEHIND the person in the video instead of on
+  top — see "Text behind subject" below.
 - Uploads the result to the same R2 bucket the Worker already serves from (or a local fallback for
   testing without Cloudflare), then POSTs a signed callback to
   `.../marketing/webhook/render-complete`.
+
+## Text behind subject (beta)
+
+The popular short-form effect where a caption appears to sit behind the person on screen, as if
+they're standing in front of the text. Requires actually detecting and cutting the person out of
+each frame (video subject segmentation) — a materially different, heavier piece of engineering
+than anything else in this service, so it's its own pipeline (`lib/textBehindSubject.js` +
+`lib/segmentation.js`), not a caption style variant.
+
+**Approach: free, local, no per-video cost.** Runs
+[RobustVideoMatting](https://github.com/PeterL1n/RobustVideoMatting) (MIT-licensed model) locally
+via `onnxruntime-node` — a real, purpose-built human video-matting model (not a generic heuristic
+or chroma-key trick), with its recurrent hidden state carried frame-to-frame for temporal
+stability (this is specifically what keeps a video matte from flickering compared to segmenting
+each frame in isolation). The `.onnx` model (~15 MB) is downloaded at Docker build time, not
+committed to the repo — see the `Dockerfile`. The alternative would be a paid cloud
+video-matting API for cleaner edges with less engineering risk; not used here, per the "minimal
+cost" brief this feature was built under.
+
+**Processing detail, and why it's approximate:** frames are decoded and matted at a reduced size
+(384px wide, 15fps) for CPU speed/memory rather than the render's full resolution/frame-rate —
+RVM's own guidance for real-time use. The resulting matte is then upscaled to the target
+resolution when compositing. This keeps a render fast enough to be usable, at the cost of softer
+edges than a full-resolution pass (or a paid API) would give you, especially on fast motion or
+a background with low contrast against the person.
+
+**v1 scope — does not combine with silence-cut/auto-zoom/B-roll/SFX/VFX cues in the same render.**
+Enforced in code (`lib/render.js`: `silence_cut` becomes a no-op whenever `text_behind_subject` is
+set, not just documented as unsupported) rather than left as a silent desync bug — combining the
+segment-splice/time-remap machinery those features use with this effect's background/foreground
+layer reordering would be a substantially bigger rework, and this ships the core effect first.
+`text_behind_subject`'s only other option today is a background color (`style.bg_color`) — a later
+version could composite against a blurred/frozen frame of the original video instead of a flat
+color; not built.
+
+**What's verified vs. not** (see "Dev notes" below for the full breakdown): the ONNX inference
+pipeline (model loads, correct tensor shapes, recurrent state carried across frames without
+crashing, real matte video produced) and the compositing mechanics (alpha-merge + layer-reordering
+correctly occludes background text where the matte says "person") were both verified end-to-end
+with real ffmpeg/onnxruntime runs. **Segmentation *accuracy* on real human footage was not
+verified** — no camera or licensed video of an actual person was available in the dev sandbox this
+was built in, only synthetic test video (solid colors, test patterns), which correctly produces an
+empty matte from RVM (there's no person in a color bar pattern) but says nothing about real-world
+edge quality on an actual talking-head video. Test this against a real project before trusting it
+for a client-facing render.
 
 ## Setup
 
@@ -89,6 +136,19 @@ of wrapping — this affected every language, not just Malayalam, and is now `0`
 "Manglish" (Malayalam written in Latin letters) needed no special handling — it's just Latin
 script and already rendered fine with `fonts-liberation` alone.
 
+**Text-behind-subject's ONNX/matting pipeline was verified in stages**, same "test what's
+testable, flag what isn't" approach: (1) the model loads and reports the expected
+`src`/`r1i..r4i`/`downsample_ratio` inputs and `fgr`/`pha`/`r1o..r4o` outputs; (2) a full
+frame-by-frame inference run over a real decoded video (ffmpeg pipe → raw RGB → tensor →
+inference, recurrent state threaded frame-to-frame) completes without shape errors and produces a
+correctly-sized matte video; (3) the compositing filter graph (`alphamerge` + layer-reordered
+`overlay`) was verified with a **hand-crafted fake matte** (a synthetic white ellipse standing in
+for "a person-shaped cutout") — confirmed captions on the background layer are correctly occluded
+where the matte says foreground, which is exactly the mechanic real segmentation output would
+drive too. What this does NOT verify: whether RVM's actual segmentation is accurate on a real
+person in a real video — that needs real footage, which wasn't available here (see the
+"Text behind subject" section above).
+
 ## Known limitations
 
 - **Background music ducking is constant-level, not sidechain-triggered** — see
@@ -107,3 +167,12 @@ script and already rendered fine with `fonts-liberation` alone.
 - **Fonts** are whatever fontconfig resolves on the container (Liberation family via
   `fonts-liberation`, substituting for Arial/Helvetica-named styles) — a style requesting a font
   that isn't installed silently falls back to fontconfig's default match rather than erroring.
+- **Text-behind-subject is CPU-bound and adds real render time** — a full matting pass (frame
+  decode + per-frame ONNX inference) runs in addition to the normal encode; expect this mode to
+  take noticeably longer per video than a regular caption-clip render, roughly in proportion to
+  clip length. No GPU acceleration is configured (`onnxruntime-node`'s default CPU execution
+  provider) — adding one is a reasonable upgrade if this becomes a bottleneck at volume.
+- **Text-behind-subject doesn't combine with silence-cut/auto-zoom/B-roll/SFX/VFX** in v1 — see
+  the "Text behind subject" section above for why and how it's enforced.
+- **Text-behind-subject's background is a flat color only** — no blurred/frozen-video background
+  option yet.

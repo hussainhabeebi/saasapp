@@ -12,3 +12,6 @@ assets/music/*
 !assets/broll/README.md
 !assets/sfx/README.md
 !assets/music/README.md
+
+# RVM ONNX model (~15 MB) — downloaded by the Dockerfile at build time, not committed.
+models/*.onnx

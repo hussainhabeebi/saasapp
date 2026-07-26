@@ -9448,6 +9448,11 @@ async function handleMarketingRenderStart(request, env){
     captions, style:{...style, ...overrides},
     silence_cut:silenceCut, auto_zoom:autoZoom, background_music:backgroundMusic,
     broll_density:preset?.broll_density||'none', cues,
+    // "Text behind subject" (beta) — local ONNX person-matting on the render pipeline, no
+    // per-video API cost. Doesn't combine with silence-cut/auto-zoom/B-roll/SFX/VFX in v1 (see
+    // render-pipeline/lib/textBehindSubject.js) — the pipeline itself enforces that (silence-cut
+    // becomes a no-op when this is set), not just documentation.
+    text_behind_subject:!!opts.text_behind_subject,
     watermark:watermarked,
   };
   const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
