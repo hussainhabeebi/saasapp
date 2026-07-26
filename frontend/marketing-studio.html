@@ -674,13 +674,21 @@ function resetUploadZone() {
   $id('uploadZone').textContent = '📹 Click or drag a video here — mp4 / mov / webm / m4v (max 100 MB)';
   $id('uploadProgressWrap').classList.add('hidden');
 }
+const MARKETING_SOURCE_MAX_BYTES = 100 * 1024 * 1024; // must match worker.js's MARKETING_SOURCE_MAX_BYTES
 function probeDuration(file) {
   return new Promise((resolve) => {
     const tmpUrl = URL.createObjectURL(file);
     const probe = document.createElement('video');
     probe.preload = 'metadata';
-    probe.onloadedmetadata = () => { const d = probe.duration || 0; URL.revokeObjectURL(tmpUrl); resolve(d); };
-    probe.onerror = () => { URL.revokeObjectURL(tmpUrl); resolve(0); };
+    // No timeout here previously meant a file the browser struggles to read metadata from (large
+    // file, unusual container/codec) could leave onFilePicked awaiting this forever with zero
+    // visible feedback — the dropzone still just said "Click or drag a video here", looking dead.
+    // Falling back to duration 0 after a few seconds keeps the upload moving either way (the
+    // render pipeline gets the real duration later from the actual file, this is only used for
+    // trim-range defaults).
+    const timeout = setTimeout(() => { URL.revokeObjectURL(tmpUrl); resolve(0); }, 6000);
+    probe.onloadedmetadata = () => { clearTimeout(timeout); const d = probe.duration || 0; URL.revokeObjectURL(tmpUrl); resolve(d); };
+    probe.onerror = () => { clearTimeout(timeout); URL.revokeObjectURL(tmpUrl); resolve(0); };
     probe.src = tmpUrl;
   });
 }
@@ -715,6 +723,16 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function uploadPrimaryVideo(file) {
+  // Immediate feedback the instant a file is picked/dropped — previously the dropzone kept
+  // showing its idle "Click or drag a video here" text all the way through probeDuration()
+  // (awaited below), which for a large or slow-to-read file could take several seconds with zero
+  // visible change, reading as an unresponsive button rather than a working one that's just busy.
+  $id('uploadZone').textContent = '⏳ Preparing…';
+  if (file.size > MARKETING_SOURCE_MAX_BYTES) {
+    toastError(`Video is too large — max ${Math.round(MARKETING_SOURCE_MAX_BYTES / 1024 / 1024)} MB (this file is ${(file.size / 1024 / 1024).toFixed(0)} MB).`);
+    resetUploadZone();
+    return;
+  }
   const durationSec = await probeDuration(file);
   $id('uploadZone').textContent = '⏳ Uploading…';
   $id('uploadProgressWrap').classList.remove('hidden');
