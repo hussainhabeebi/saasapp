@@ -5272,6 +5272,23 @@ what silence-cut/auto-zoom/B-roll/SFX/VFX actually look like after a full-length
   end-to-end (needs a deployed render pipeline + a real project — not runnable in the dev sandbox
   this was built in). Test one after deploying.
 
+### Recovering from bad transcription timing, and add/delete captions
+Two real gaps found in production use of the scene grouping above:
+- **"Fix timing across scenes"** (`redistributeCaptionsAcrossScenes()`) — `splitSceneEvenly` only
+  helps when a coarse transcription chunk's *text* is at least in the right scene; in production,
+  a transcription provider returned one chunk with time bounds confined to a small fraction of the
+  real clip (e.g. the whole transcript timestamped 0–6s of a 25s, 6-scene video), dumping every
+  word into scene 1 regardless of what was actually said when. This button takes the FULL
+  transcript's text and redistributes it across every detected scene, proportional to that scene's
+  own duration — real, tested recovery (see the frontend's inline test), not a full fix for
+  whatever is wrong with the underlying transcription timestamps (still the same unresolved Sarvam
+  response-shape uncertainty noted above).
+- **Add/delete caption words** — previously only editing existing words was possible. Clearing a
+  word's text and clicking away now deletes it (was: silently reverted); Escape still cancels an
+  edit without deleting. Each scene got a **"+ Add word"** button that inserts a new word at the
+  end of that scene's current words (or at the scene's start if it has none) and immediately opens
+  it for editing.
+
 ### What's not built (honest scope note)
 A full CapCut-style timeline — dragging scenes to reorder/trim, resizing cue markers by dragging
 their edges, multi-track drag-and-drop — is a materially bigger UI engineering effort than what's

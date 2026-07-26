@@ -375,10 +375,11 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div class="card-head"><h2><span class="step-num">1</span> Transcript & captions</h2><div class="sub">Word-level, auto-detected language unless you set one — tap a word to fix it.</div></div>
             <button class="btn btn-primary btn-sm" id="transcribeBtn" onclick="transcribeProject()">🌀 Transcribe</button>
             <button class="btn btn-sec btn-sm" id="detectScenesBtn" onclick="detectScenes()" style="margin-left:8px">🎬 Detect scenes</button>
+            <button class="btn btn-ghost btn-sm" id="redistributeBtn" onclick="redistributeCaptionsAcrossScenes()" style="margin-left:8px">🪄 Fix timing across scenes</button>
             <span class="note" id="transcribeNote" style="margin-left:8px"></span>
             <div style="margin-top:14px" id="wordListWrap" class="hidden">
               <div id="sceneWordGroups"></div>
-              <div class="note" style="margin-top:8px">Dotted-border words are approximate timing (the transcription provider only returned sentence-level timestamps) — text is still accurate.</div>
+              <div class="note" style="margin-top:8px">Dotted-border words are approximate timing (the transcription provider only returned sentence-level timestamps) — text is still accurate. Clear a word and click away to delete it; use "+ Add word" in a scene to insert one.</div>
             </div>
           </div>
 
@@ -991,6 +992,7 @@ function renderWordGroups(words, scenes) {
       <div class="scene-head">
         <span class="scene-label">Scene ${si + 1} · ${fmtDuration(scene.start)}–${fmtDuration(scene.end)}</span>
         <span>
+          <button class="btn btn-ghost btn-sm" onclick="addWordToScene(${si})">+ Add word</button>
           <button class="btn btn-ghost btn-sm" onclick="splitSceneEvenly(${si})">✂ Split evenly</button>
           <button class="btn btn-ghost btn-sm" onclick="previewRender(${si}, 'previewScene${si}Result')">🔍 Preview</button>
         </span>
@@ -999,6 +1001,53 @@ function renderWordGroups(words, scenes) {
       <div id="previewScene${si}Result" style="margin-top:8px"></div>
     </div>`;
   }).join('');
+}
+// "Fix timing across scenes" — recovers from a real production failure mode: a transcription
+// provider (seen in practice with Sarvam, see render-pipeline/README.md's "What's verified vs.
+// not") returning one coarse chunk with WRONG time bounds (not just imprecise, actually confined
+// to a fraction of the real clip), which dumps every word into whichever single scene that narrow
+// range happens to fall in. Unlike splitSceneEvenly (one scene's own words, one scene's own
+// range), this takes the FULL transcript's text and re-distributes it across every detected
+// scene proportional to that scene's own duration — a real, if approximate, improvement over
+// "everything in scene 1" regardless of why the original timestamps were wrong.
+function redistributeCaptionsAcrossScenes() {
+  const p = currentProject;
+  const scenes = p?.scenes || [];
+  const words = p?.captions?.words || [];
+  if (!scenes.length || !words.length) { toastError('Detect scenes and transcribe first.'); return; }
+  if (!confirm('This re-times every caption across all detected scenes (proportional to each scene\'s duration), replacing current word timing. Continue?')) return;
+  const allText = words.map(w => w.word).join(' ');
+  const tokens = allText.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return;
+  const totalDuration = scenes.reduce((sum, s) => sum + Math.max(0.1, s.end - s.start), 0);
+  const newWords = [];
+  let tokenCursor = 0;
+  scenes.forEach((scene, si) => {
+    const sceneDur = Math.max(0.1, scene.end - scene.start);
+    let count = si === scenes.length - 1 ? (tokens.length - tokenCursor) : Math.round(tokens.length * (sceneDur / totalDuration));
+    const sceneTokens = tokens.slice(tokenCursor, tokenCursor + count);
+    tokenCursor += count;
+    const span = sceneDur / Math.max(1, sceneTokens.length);
+    sceneTokens.forEach((t, i) => newWords.push({ word: t, start: scene.start + i * span, end: scene.start + (i + 1) * span, approximate: true }));
+  });
+  currentProject.captions.words = newWords;
+  saveCaptions();
+  renderEditor();
+  toastSuccess('Captions redistributed across all scenes.');
+}
+function addWordToScene(si) {
+  const p = currentProject;
+  const scene = (p?.scenes || [])[si];
+  const words = p?.captions?.words;
+  if (!scene || !words) return;
+  const idxs = wordsInScene(words, scene);
+  const insertAt = idxs.length ? idxs[idxs.length - 1] + 1 : words.length;
+  const prevEnd = idxs.length ? Number(words[idxs[idxs.length - 1]].end) || scene.start : scene.start;
+  const start = Math.min(prevEnd, Math.max(scene.start, scene.end - 0.5));
+  words.splice(insertAt, 0, { word: 'new', start, end: Math.min(start + 0.5, scene.end) });
+  saveCaptions();
+  renderEditor();
+  setTimeout(() => editWord(insertAt), 50); // focus the new word so it's immediately typeable
 }
 function jumpToScene(si) {
   $id('sceneBlock' + si)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1026,6 +1075,7 @@ function splitSceneEvenly(sceneIndex) {
 function editWord(i) {
   const el = document.querySelector(`#sceneWordGroups .word[data-idx="${i}"]`);
   if (!el) return;
+  el.dataset.original = el.textContent; // for Escape-to-cancel
   el.setAttribute('contenteditable', 'true');
   el.focus();
   const range = document.createRange();
@@ -1034,16 +1084,24 @@ function editWord(i) {
   sel.removeAllRanges();
   sel.addRange(range);
 }
+// Clearing a word and clicking away DELETES it (was: silently reverted to the old text) — "can be
+// edited and added [and deleted]" captions. Escape still cancels without deleting.
 function onWordBlur(i, el) {
   el.removeAttribute('contenteditable');
   const next = el.textContent.trim();
-  if (!next) { el.textContent = currentProject.captions.words[i].word; return; }
+  if (!next) {
+    currentProject.captions.words.splice(i, 1);
+    saveCaptions();
+    renderEditor();
+    return;
+  }
   currentProject.captions.words[i] = { ...currentProject.captions.words[i], word: next };
   el.classList.remove('approx');
   saveCaptions();
 }
 function onWordKeydown(e) {
   if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+  else if (e.key === 'Escape') { e.preventDefault(); e.target.textContent = e.target.dataset.original || e.target.textContent; e.target.blur(); }
 }
 async function saveCaptions() {
   await fetch(`${WORKER_BASE}/marketing/projects/captions`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, captions: currentProject.captions }) });
