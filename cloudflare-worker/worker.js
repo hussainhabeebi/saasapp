@@ -9103,7 +9103,11 @@ function marketingSerializeProject(row){
 // duration so the caption editor always has *something* word-grained to show, flagged
 // `approximate:true` so the frontend can visually distinguish an estimate from a real timestamp.
 function marketingWordsFromTranscription(data){
-  if(Array.isArray(data.words) && data.words.length) return data.words.map(w=>({word:w.word, start:w.start, end:w.end}));
+  // approximate propagated (not just start/end/word) — render-pipeline's Sarvam path
+  // (lib/sarvamTranscribe.js) can itself fall back to evenly-split timing per chunk and flags
+  // those words approximate:true, same convention as the segments-fallback branch below; Whisper
+  // responses never set it, so this is a no-op for the existing path.
+  if(Array.isArray(data.words) && data.words.length) return data.words.map(w=>({word:w.word, start:w.start, end:w.end, ...(w.approximate?{approximate:true}:{})}));
   const words=[];
   (data.segments||[]).forEach(seg=>{
     const tokens=(seg.text||'').trim().split(/\s+/).filter(Boolean);

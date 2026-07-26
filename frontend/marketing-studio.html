@@ -93,6 +93,17 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .chip{border:1.5px solid var(--line);border-radius:20px;padding:6px 12px;font-size:12.5px;cursor:pointer;user-select:none;transition:background .15s ease,border-color .15s ease,color .15s ease}
 .chip:hover{border-color:var(--accent)}
 .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.step-rail{display:flex;flex-direction:column}
+.step-rail-item{display:flex;align-items:center;gap:10px;padding:7px 4px;cursor:pointer;border-radius:8px;transition:background .15s ease}
+.step-rail-item:hover{background:var(--card2)}
+.step-rail-dots{display:flex;flex-direction:column;align-items:center;flex-shrink:0}
+.step-rail-dot{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800;background:var(--card2);border:1.5px solid var(--line);color:var(--muted);flex-shrink:0}
+.step-rail-dot.done{background:var(--good-soft);border-color:var(--good);color:var(--good)}
+.step-rail-dot.active{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 0 0 3px var(--accent-soft)}
+.step-rail-line{width:2px;height:14px;background:var(--line)}
+.step-rail-line.done{background:var(--good)}
+.step-rail-label{font-size:12.5px;color:var(--muted)}
+.step-rail-item.current .step-rail-label{color:var(--ink);font-weight:600}
 .progress{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:10px 0}
 .progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),#D8B4FE);transition:width .3s ease;background-size:200% 100%;animation:progress-shimmer 1.6s linear infinite}
 @keyframes progress-shimmer{0%{background-position:0% 0}100%{background-position:200% 0}}
@@ -318,6 +329,11 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             </div>
           </div>
 
+          <div class="card">
+            <div class="card-head"><h2>Steps</h2></div>
+            <div class="step-rail" id="stepRail"></div>
+          </div>
+
           <div class="card hidden" id="clipsCard">
             <div class="card-head"><h2>Clips</h2><div class="sub">Multiple clips get stitched into one video, in this order.</div></div>
             <div id="clipsList"></div>
@@ -331,7 +347,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 
         <!-- RIGHT: steps -->
         <div>
-          <div class="card">
+          <div class="card" id="stepCard1">
             <div class="card-head"><h2><span class="step-num">1</span> Transcript & captions</h2><div class="sub">Word-level, auto-detected language unless you set one — tap a word to fix it.</div></div>
             <button class="btn btn-primary btn-sm" id="transcribeBtn" onclick="transcribeProject()">🌀 Transcribe</button>
             <span class="note" id="transcribeNote" style="margin-left:8px"></span>
@@ -341,13 +357,13 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             </div>
           </div>
 
-          <div class="card">
+          <div class="card" id="stepCard2">
             <div class="card-head"><h2><span class="step-num">2</span> Caption style</h2><div class="sub">Applied to the burned-in captions in the final export, previewed live on the left.</div></div>
             <div class="style-grid" id="styleGrid"></div>
             <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="saveCurrentAsBrandStyle()">💾 Save current look as a brand style</button>
           </div>
 
-          <div class="card">
+          <div class="card" id="stepCard3">
             <div class="card-head"><h2><span class="step-num">3</span> Auto-edit</h2><div class="sub">Pick a template to pre-fill these — still overridable per-project below.</div></div>
             <label class="form-label">Auto-edit template</label>
             <select class="form-select" id="optAutoeditPreset" onchange="applyAutoeditPreset()">
@@ -368,7 +384,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             </select>
           </div>
 
-          <div class="card">
+          <div class="card" id="stepCard4">
             <div class="card-head"><h2><span class="step-num">4</span> B-Roll / SFX / VFX cues</h2><div class="sub">Suggested from the script's keywords, free (no AI call) — review, uncheck what you don't want, then save.</div></div>
             <button class="btn btn-sec btn-sm" id="suggestCuesBtn" onclick="suggestCues()">✨ Suggest cues from script</button>
             <button class="btn btn-ghost btn-sm" onclick="saveCues()" style="margin-left:8px">💾 Save cues</button>
@@ -376,7 +392,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div class="note hidden" id="cuesEmpty">No cues yet — transcribe the video, then suggest cues.</div>
           </div>
 
-          <div class="card">
+          <div class="card" id="stepCard5">
             <div class="card-head"><h2><span class="step-num">5</span> Render & export</h2></div>
             <div class="note" id="renderResNote"></div>
             <label class="form-label">Export quality</label>
@@ -610,6 +626,38 @@ function renderEditor() {
     $id('outputVideo').src = p.output_url;
     $id('downloadLink').href = p.output_url;
   }
+
+  renderStepRail();
+}
+
+// ── STEP PROGRESS RAIL — at-a-glance done/active/pending state for the 5 numbered Editor steps,
+// click to jump straight to one instead of scrolling. Steps 2-4 have no hard pass/fail of their
+// own (a style is always picked by default, auto-edit/cues are optional) so they read "active"
+// only once the step before them is actually usable, and "done" once there's a concrete sign of
+// use (a saved cue, a completed render) — approximate on purpose rather than tracking every
+// field, since this is a progress hint, not a validator.
+function renderStepRail() {
+  const p = currentProject;
+  if (!p) return;
+  const words = p.captions?.words || [];
+  const steps = [
+    { n: 1, label: 'Transcript & captions', status: p.status === 'transcribing' ? 'active' : words.length ? 'done' : 'pending' },
+    { n: 2, label: 'Caption style', status: words.length ? 'done' : 'pending' },
+    { n: 3, label: 'Auto-edit', status: words.length ? 'active' : 'pending' },
+    { n: 4, label: 'B-Roll / SFX / VFX cues', status: currentCues.length ? 'done' : (words.length ? 'active' : 'pending') },
+    { n: 5, label: 'Render & export', status: p.status === 'rendering' ? 'active' : (p.status === 'done' ? 'done' : (words.length ? 'active' : 'pending')) },
+  ];
+  $id('stepRail').innerHTML = steps.map((s, i) => `
+    <div class="step-rail-item${s.status === 'active' ? ' current' : ''}" onclick="scrollToStep(${s.n})">
+      <div class="step-rail-dots">
+        <div class="step-rail-dot ${s.status}">${s.status === 'done' ? '✓' : s.n}</div>
+        ${i < steps.length - 1 ? `<div class="step-rail-line ${s.status === 'done' ? 'done' : ''}"></div>` : ''}
+      </div>
+      <div class="step-rail-label">${esc(s.label)}</div>
+    </div>`).join('');
+}
+function scrollToStep(n) {
+  $id('stepCard' + n)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function saveProjectMeta() {

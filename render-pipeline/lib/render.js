@@ -62,7 +62,7 @@ async function renderCaptionClip(job, env, assetsRoot) {
       const start = remap(Number(cue.start) || 0);
       const end = Math.max(start + 0.3, remap(Number(cue.end) || 0));
       if (cue.type === 'broll') {
-        const assetPath = resolveBroll(assetsRoot, cue.tag);
+        const assetPath = await resolveBroll(assetsRoot, cue.tag, env);
         if (assetPath) broll.push({ path: assetPath, startSec: start, endSec: end });
       } else if (cue.type === 'sfx') {
         const assetPath = resolveSfx(assetsRoot, cue.tag);

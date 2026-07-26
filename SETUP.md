@@ -4946,6 +4946,20 @@ either fix.
 render pipeline (Coolify env var — see `render-pipeline/.env.example`); the Worker's own
 `MARKETING_TRANSCRIBE_API_KEY` secret can stay as a fallback or be removed once the render pipeline
 is confirmed working.
+
+**A third provider, Sarvam AI, handles Indic languages specifically.** Whisper's real-world
+Malayalam accuracy turned out weak in production (mislabeled/garbled output on a real project).
+When the render pipeline has `SARVAM_API_KEY` set and a project is tagged with a language Sarvam
+supports (`hi`/`bn`/`kn`/`ml`/`mr`/`or`/`pa`/`ta`/`te`/`gu`/`en`), transcription routes there
+instead of Whisper — chunked to fit Sarvam's 30-second-per-request cap (splitting at silence gaps,
+not mid-word) and normalized back to the same word-timestamp shape everything downstream already
+expects. See `render-pipeline/README.md`'s "Sarvam AI transcription for Indic languages" section
+for the full writeup, including what's verified vs. not — the exact response field names for
+word-level timestamps couldn't be confirmed against Sarvam's own (bot-protected) docs or a live
+key in the dev sandbox this was built in, so it defensively falls back to approximate timing
+rather than breaking if the real shape differs. **Manual step**: set `SARVAM_API_KEY` on the
+render pipeline (Coolify env var) — reuse this app's existing Sarvam key if you already have one
+for the WhatsApp voice-reply TTS feature.
 - `PATCH /marketing/projects/captions` — saves the caption editor's edits (`captions_json`).
 - `POST /marketing/projects/render` — see "The render pipeline contract" below.
 - `GET /marketing/projects/jobs?project_id=` — recent job history/polling target for a project.
@@ -5144,6 +5158,17 @@ playing that SFX, or applying that VFX still happens on the external render pipe
   pipeline, same as it already owns caption burn-in, cropping, silence-cut, etc.
 - Frontend: Editor step 4 ("B-Roll / SFX / VFX cues") — a "✨ Suggest cues from script" button
   (disabled until captions exist), a checkbox+remove list per suggestion, and a Save button.
+- **B-roll compositing now self-sources footage, not just suggests it.** Previously an accepted
+  B-roll cue silently did nothing at render time unless the operator had manually dropped a
+  matching file in `assets/broll/`. `render-pipeline/lib/assets.js`'s `resolveBroll` now falls
+  back to fetching a real royalty-free clip from Pexels' free stock video API (`PEXELS_API_KEY`)
+  the first time a given cue tag is used, caching it to `assets/broll/<tag>.mp4` afterward — one
+  API call per tag, ever, not per render. SFX/music still require a manually-dropped file (no
+  free, redistributable stock audio API used here). Verified for real: a mocked Pexels response
+  (matching the real API's documented field names — `videos[].video_files[].link`/`quality`/
+  `width`/`height`) was resolved, downloaded, and cached correctly, and a second call for the same
+  tag was confirmed to hit the cache instead of calling Pexels again. **Manual step**: set
+  `PEXELS_API_KEY` on the render pipeline (Coolify env var) — free at pexels.com/api.
 
 ## Marketing Studio module — Text Behind Subject (beta)
 A render option (`spec.text_behind_subject`, a "🫥 Text behind subject (beta)" chip in the
