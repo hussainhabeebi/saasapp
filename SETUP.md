@@ -4961,9 +4961,14 @@ X-Signature: <same HMAC scheme, over this raw body, same shared secret>
 `MARKETING_MEDIA`, served back via `GET /marketing/media/:key`) works instead of `output_url` if
 the pipeline prefers to hand the finished file back to this Worker's own R2 bucket rather than
 hosting it itself — either is accepted. On `done`, `marketing_minutes_used` increments by
-`ceil(duration_sec / 60)`. No pipeline is built or hosted in this repo — a small ffmpeg/Remotion
-service, or Shotstack/Creatomate behind an n8n workflow, are all reasonable options; whichever one
-is chosen just needs to speak this one request/callback contract.
+`ceil(duration_sec / 60)`.
+
+**A real implementation of this pipeline now lives in `render-pipeline/`** — a self-hosted Node +
+ffmpeg service speaking exactly this contract (see `render-pipeline/README.md` for setup/
+deployment via this repo's existing Coolify pattern). It's the default option; a paid video-API
+route (Shotstack/Creatomate behind an n8n workflow, since this app already runs n8n) is still a
+reasonable alternative if you'd rather not run/maintain ffmpeg yourself — either just needs to
+speak this one request/callback contract.
 
 ### Frontend (`frontend/marketing-studio.html`)
 Structured like `email-marketing.html` (own self-contained dark/purple CSS palette — deliberately

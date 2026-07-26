@@ -1,0 +1,144 @@
+// Assembles one ffmpeg invocation (input list + filter_complex + output map) from a render job's
+// resolved pieces. Every technique here (segment trim+concat for silence-cut, zoompan for
+// auto-zoom, subtitles for caption burn-in, overlay+enable for B-roll PiP, eq+enable for the VFX
+// flash, adelay+amix for one-shot SFX, volume+amix for background music) was hand-verified
+// against a real ffmpeg run before being wired in here — see the dev notes in README.md.
+//
+// Kept as a pure "spec in, argv out" function (no I/O) so it's unit-testable without invoking
+// ffmpeg at all.
+function buildFfmpegArgs({
+  inputPath,
+  keepSegments,          // [{start, end}] in the SOURCE video's absolute time — see lib/timeline.js
+  resolutionW, resolutionH,
+  fps = 30,
+  assPath,                // pre-written .ass subtitle file, or null for no captions
+  watermark = false,
+  autoZoom = false,
+  music,                  // {path, volume} or null
+  sfx = [],               // [{path, atSec}] — atSec already remapped to the OUTPUT timeline
+  broll = [],             // [{path, startSec, endSec, scale}] — remapped to the OUTPUT timeline
+  vfx = [],               // [{type, startSec, endSec}] — remapped to the OUTPUT timeline
+  outputPath,
+}) {
+  const inputs = ['-i', inputPath];
+  const extraInputIndexByPath = new Map();
+  let nextInputIndex = 1;
+  function addInput(path, extraArgs = []) {
+    if (extraInputIndexByPath.has(path)) return extraInputIndexByPath.get(path);
+    inputs.push(...extraArgs, '-i', path);
+    const idx = nextInputIndex++;
+    extraInputIndexByPath.set(path, idx);
+    return idx;
+  }
+
+  const filters = [];
+
+  // 1) Segment trim + concat — a single segment collapses to a plain trim (concat n=1 is a
+  // harmless no-op in ffmpeg, so there's no special-cased branch for "no silence-cut").
+  const segs = keepSegments && keepSegments.length ? keepSegments : [{ start: 0, end: 1e9 }];
+  segs.forEach((seg, i) => {
+    filters.push(`[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[cv${i}]`);
+    filters.push(`[0:a]atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[ca${i}]`);
+  });
+  const concatIn = segs.map((_, i) => `[cv${i}][ca${i}]`).join('');
+  filters.push(`${concatIn}concat=n=${segs.length}:v=1:a=1[vcat][acat]`);
+
+  // 2) Crop/scale to the target aspect (center-crop after an upscale-to-cover).
+  filters.push(`[vcat]scale=${resolutionW}:${resolutionH}:force_original_aspect_ratio=increase,crop=${resolutionW}:${resolutionH}[vcrop]`);
+  let vChain = 'vcrop';
+
+  // 3) Auto-zoom — a slow, continuous punch-in for the whole clip (d=1 so it maps input frames
+  // 1:1 instead of duplicating them, which is what makes zoompan usable on real video rather than
+  // just still images).
+  if (autoZoom) {
+    filters.push(`[${vChain}]zoompan=z='min(zoom+0.0006,1.18)':d=1:s=${resolutionW}x${resolutionH}:fps=${fps}[vzoom]`);
+    vChain = 'vzoom';
+  }
+
+  // 4) B-roll — a corner picture-in-picture insert while the cue is active, not a full-frame
+  // cutaway (see SETUP.md for why: a cutaway needs the same segment-splice machinery silence-cut
+  // uses, which would also have to re-run the caption/cue time-remap through it; PiP overlay
+  // reaches the same "there's B-roll visible for this cue" outcome without touching the main
+  // timeline at all).
+  broll.forEach((b, i) => {
+    const idx = addInput(b.path);
+    const pipSize = Math.round(resolutionW * (b.scale || 0.42));
+    filters.push(`[${idx}:v]scale=${pipSize}:-1[broll${i}]`);
+    filters.push(`[${vChain}][broll${i}]overlay=x=main_w-overlay_w-24:y=main_h-overlay_h-${Math.round(resolutionH * 0.16)}:enable='between(t,${b.startSec},${b.endSec})'[vbroll${i}]`);
+    vChain = `vbroll${i}`;
+  });
+
+  // 5) VFX — filter-only effects (no asset needed), gated to the cue's time window via `enable`.
+  vfx.forEach((v, i) => {
+    const label = `vvfx${i}`;
+    if (v.type === 'flash') {
+      filters.push(`[${vChain}]eq=brightness='if(between(t,${v.startSec},${v.endSec}),0.35,0)':enable='between(t,${v.startSec},${v.endSec})'[${label}]`);
+    } else if (v.type === 'badge' || v.type === 'split') {
+      // Approximated the same way for both — a quick punch-in scale pulse via zoompan isn't
+      // per-window-able cheaply here, so this uses a saturation/contrast pop as the "something
+      // changed here" visual cue instead of a literal split-screen or badge overlay (which would
+      // need actual badge artwork this repo doesn't have).
+      filters.push(`[${vChain}]eq=saturation='if(between(t,${v.startSec},${v.endSec}),1.6,1.0)':contrast='if(between(t,${v.startSec},${v.endSec}),1.15,1.0)':enable='between(t,${v.startSec},${v.endSec})'[${label}]`);
+    } else {
+      filters.push(`[${vChain}]null[${label}]`);
+    }
+    vChain = label;
+  });
+
+  // 6) Captions burn-in.
+  if (assPath) {
+    filters.push(`[${vChain}]subtitles=${escapeFilterPath(assPath)}[vsub]`);
+    vChain = 'vsub';
+  }
+
+  // 7) Watermark (free-tier export — spec.watermark, mirrors the paid-tier gate in worker.js).
+  if (watermark) {
+    filters.push(`[${vChain}]drawtext=text='Made with Leadvyne':fontcolor=white@0.75:fontsize=${Math.round(resolutionH * 0.022)}:x=w-tw-24:y=h-th-24:shadowcolor=black@0.6:shadowx=2:shadowy=2[vout]`);
+    vChain = 'vout';
+  } else {
+    filters.push(`[${vChain}]null[vout]`);
+    vChain = 'vout';
+  }
+
+  // 8) Audio — speech (already through the same segment concat as the video) plus optional
+  // background music (volume-reduced, trimmed to the output length — a constant-level duck, not
+  // true sidechain compression; see README's "known limitations") plus optional one-shot SFX.
+  const audioMixInputs = ['[acat]'];
+  if (music) {
+    const idx = addInput(music.path, ['-stream_loop', '-1']);
+    filters.push(`[${idx}:a]volume=${music.volume ?? 0.15}[bgm]`);
+    audioMixInputs.push('[bgm]');
+  }
+  sfx.forEach((s, i) => {
+    const idx = addInput(s.path);
+    const delayMs = Math.max(0, Math.round(s.atSec * 1000));
+    filters.push(`[${idx}:a]adelay=${delayMs}|${delayMs}[sfx${i}]`);
+    audioMixInputs.push(`[sfx${i}]`);
+  });
+  if (audioMixInputs.length > 1) {
+    filters.push(`${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0[aout]`);
+  } else {
+    filters.push(`[acat]anull[aout]`);
+  }
+
+  const args = [
+    '-y', ...inputs,
+    '-filter_complex', filters.join('; '),
+    '-map', `[${vChain}]`, '-map', '[aout]',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21',
+    '-c:a', 'aac', '-b:a', '160k',
+    '-movflags', '+faststart',
+    outputPath,
+  ];
+  return args;
+}
+
+// The `subtitles` filter's path argument has its own mini-escaping rules on top of the shell
+// (colons and backslashes are filtergraph syntax) — since this always renders into a controlled
+// tmp directory with a generated filename (never user input), this only needs to handle the
+// characters that path can realistically contain, not a fully general escaper.
+function escapeFilterPath(p) {
+  return `'${p.replace(/\\/g, '/').replace(/:/g, '\\:')}'`;
+}
+
+module.exports = { buildFfmpegArgs };
