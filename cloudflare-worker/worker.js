@@ -9215,6 +9215,55 @@ async function handleMarketingUsage(request, env){
   return json({used, limit, remaining:Math.max(0, limit-used)});
 }
 
+// Client-level API keys (SETUP.md "Marketing Studio module — Client API keys") — Pexels/Pixabay/
+// Freesound/fal.ai default to the render pipeline's own shared Coolify env vars; a client can
+// optionally bring their own instead (e.g. so their own fal.ai spend bills to them). Masked on
+// read (only the last 4 characters, like every "is this set" UI that doesn't need to show a real
+// secret back) — handleMarketingRenderStart/Preview/DetectScenes read the real values straight
+// from D1 server-side, this route is display-only.
+const MARKETING_CLIENT_KEY_FIELDS=['pexels_api_key','pixabay_api_key','freesound_api_key','fal_api_key'];
+function marketingMaskKey(k){ return k ? '••••'+k.slice(-4) : null; }
+async function handleMarketingSettingsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const row=await env.DB.prepare(`SELECT * FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
+  const keys={};
+  MARKETING_CLIENT_KEY_FIELDS.forEach(f=>{ keys[f]=marketingMaskKey(row?.[f]); });
+  return json({keys});
+}
+async function handleMarketingSettingsSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const now=new Date().toISOString();
+  const existing=await env.DB.prepare(`SELECT client_id FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
+  const values=MARKETING_CLIENT_KEY_FIELDS.map(f=>{
+    const v=body[f];
+    return v===undefined?undefined:(String(v).trim()||null); // empty string clears the key back to "use shared default"
+  });
+  if(existing){
+    const sets=[], vals=[];
+    MARKETING_CLIENT_KEY_FIELDS.forEach((f,i)=>{ if(values[i]!==undefined){ sets.push(`${f}=?`); vals.push(values[i]); } });
+    if(sets.length){
+      sets.push('updated_at=?'); vals.push(now); vals.push(Number(payload.cid));
+      await env.DB.prepare(`UPDATE marketing_client_settings SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
+    }
+  } else {
+    await env.DB.prepare(`INSERT INTO marketing_client_settings (client_id, pexels_api_key, pixabay_api_key, freesound_api_key, fal_api_key, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(Number(payload.cid), values[0]??null, values[1]??null, values[2]??null, values[3]??null, now, now).run();
+  }
+  return json({ok:true});
+}
+// Real values (not masked) — used server-side when building a render/preview/scene-detect
+// request to the render pipeline, never returned to the frontend.
+async function marketingGetClientKeys(env, clientId){
+  const row=await env.DB.prepare(`SELECT pexels_api_key, pixabay_api_key, freesound_api_key, fal_api_key FROM marketing_client_settings WHERE client_id=?`).bind(Number(clientId)).first();
+  if(!row) return {};
+  const out={};
+  MARKETING_CLIENT_KEY_FIELDS.forEach(f=>{ if(row[f]) out[f]=row[f]; });
+  return out;
+}
+
 async function handleMarketingStylePresets(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -9756,15 +9805,23 @@ async function marketingBuildRenderSpec(env, clientId, project, opts, trimStart,
   const backgroundMusic=opts.background_music!==undefined?(opts.background_music||null):(preset?.background_music||null);
 
   let cues=[]; try{ cues=(JSON.parse(project.cues_json||'[]')||[]).filter(cue=>cue.accepted!==false); }catch(e){}
+  const clientKeys=await marketingGetClientKeys(env, clientId);
 
   return {
     mode:'caption-clip',
+    // Only present when the client configured their own (see marketingGetClientKeys) — the
+    // render pipeline falls back to its own shared env vars for whichever of these is absent
+    // (lib/assets.js's resolveBroll/resolveSfx), so this is additive, never a hard requirement.
+    client_keys:clientKeys,
     source_url:`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`,
     trim_start_sec:trimStart, trim_end_sec:trimEnd,
     target_aspect:project.target_aspect||'9:16',
     resolution:MARKETING_RESOLUTIONS[project.target_aspect]||MARKETING_RESOLUTIONS['9:16'],
     captions, style:{...style, ...overrides},
     silence_cut:silenceCut, auto_zoom:autoZoom, background_music:backgroundMusic,
+    // Zero-cost extension of silence-cut using the transcript's own word-level timestamps — no
+    // new API, see render-pipeline/lib/fillerWords.js.
+    filler_word_cut:!!opts.filler_word_cut,
     broll_density:preset?.broll_density||'none', cues,
     // Export quality (#"export as MP4 and control quality" — output is always MP4, already the
     // only format this pipeline produces; this controls encode quality/speed tradeoff). Validated
@@ -9855,6 +9912,31 @@ async function handleMarketingPreview(request, env){
   return json({ok:true, job_id:result.job_id});
 }
 
+// AI-generated B-roll (see render-pipeline/lib/falBroll.js) — fal.ai is PAID, so this only runs
+// when the client has set their own fal_api_key in Marketing Studio > 🔑 API Keys; there is no
+// shared server default to fall back to (unlike Pexels/Pixabay/Freesound), so a client's spend is
+// always billed to their own key. Runs on the SAME job queue/webhook as a real render
+// (jobType:'ai_broll', updateProjectStatus:false) — see handleMarketingRenderWebhook's job.type
+// branch for why it never touches the project's output/status/minutes.
+async function handleMarketingGenerateAiBroll(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  const tag=(body.tag||'').trim();
+  const prompt=(body.prompt||'').trim();
+  if(!projectId||!tag||!prompt) return json({error:'project_id, tag and prompt are required.'}, 400);
+  const project=await env.DB.prepare(`SELECT target_aspect FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  const clientKeys=await marketingGetClientKeys(env, payload.cid);
+  if(!clientKeys.fal_api_key) return json({error:'Set your fal.ai API key first — Marketing Studio > 🔑 API Keys (fal.ai is paid; this feature bills to your own key, not a shared default).'}, 400);
+  const spec={mode:'ai-broll', tag, prompt, target_aspect:project.target_aspect||'9:16', client_keys:clientKeys};
+  const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, null, 'ai_broll', false);
+  if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
+  return json({ok:true, job_id:result.job_id});
+}
+
 async function handleMarketingJobsList(request, env, url){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -9885,7 +9967,7 @@ async function handleMarketingRenderWebhook(request, env){
     await env.DB.prepare(`UPDATE marketing_jobs SET status='done', progress_pct=100, output_url=?, completed_at=?, updated_at=? WHERE id=?`).bind(outputUrl, now, now, job.id).run();
     // Previews are short/draft-quality throwaway clips, not the deliverable — they must never
     // overwrite the project's real output or count against metered minutes, unlike a real render.
-    if(job.type!=='preview'){
+    if(job.type!=='preview' && job.type!=='ai_broll'){
       await env.DB.prepare(`UPDATE marketing_projects SET status='done', output_key=?, output_url=?, output_duration_sec=?, updated_at=? WHERE id=?`)
         .bind(body.output_key||null, outputUrl, Number(body.duration_sec)||null, now, job.project_id).run();
       const minutes=Math.ceil((Number(body.duration_sec)||0)/60);
@@ -9895,7 +9977,7 @@ async function handleMarketingRenderWebhook(request, env){
       }
     }
   } else {
-    await marketingFailJob(env, job.id, job.project_id, body.error||'Render failed', job.type==='preview'?null:'ready');
+    await marketingFailJob(env, job.id, job.project_id, body.error||'Render failed', (job.type==='preview'||job.type==='ai_broll')?null:'ready');
   }
   return json({ok:true});
 }
@@ -10398,6 +10480,8 @@ export default {
       else if(url.pathname.startsWith('/hospitality/media/') && request.method==='GET'){ res=await handleHospitalityMediaServe(env, url.pathname.slice('/hospitality/media/'.length)); }
       else if(url.pathname.startsWith('/ecom/category-media/') && request.method==='GET'){ res=await handleEcomCategoryMediaServe(env, url.pathname.slice('/ecom/category-media/'.length)); }
       else if(url.pathname==='/marketing/usage' && request.method==='GET'){ res=await handleMarketingUsage(request, env); }
+      else if(url.pathname==='/marketing/settings/api-keys' && request.method==='GET'){ res=await handleMarketingSettingsGet(request, env); }
+      else if(url.pathname==='/marketing/settings/api-keys' && request.method==='POST'){ res=await handleMarketingSettingsSave(request, env); }
       else if(url.pathname==='/marketing/styles/presets' && request.method==='GET'){ res=await handleMarketingStylePresets(request, env); }
       else if(url.pathname==='/marketing/brand-styles' && request.method==='GET'){ res=await handleMarketingBrandStylesList(request, env); }
       else if(url.pathname==='/marketing/brand-styles' && request.method==='POST'){ res=await handleMarketingBrandStyleCreate(request, env); }
@@ -10422,6 +10506,7 @@ export default {
       else if(url.pathname==='/marketing/projects/detect-scenes' && request.method==='POST'){ res=await handleMarketingDetectScenes(request, env); }
       else if(url.pathname==='/marketing/projects/render' && request.method==='POST'){ res=await handleMarketingRenderStart(request, env); }
       else if(url.pathname==='/marketing/projects/preview' && request.method==='POST'){ res=await handleMarketingPreview(request, env); }
+      else if(url.pathname==='/marketing/projects/generate-ai-broll' && request.method==='POST'){ res=await handleMarketingGenerateAiBroll(request, env); }
       else if(url.pathname==='/marketing/projects/jobs' && request.method==='GET'){ res=await handleMarketingJobsList(request, env, url); }
       else if(url.pathname==='/marketing/projects/send-whatsapp' && request.method==='POST'){ res=await handleMarketingSendWhatsapp(request, env); }
       else if(url.pathname==='/marketing/webhook/render-complete' && request.method==='POST'){ res=await handleMarketingRenderWebhook(request, env); }

@@ -205,15 +205,62 @@ same limitation noted below for the rest of the `Dockerfile`); local verificatio
 deployed container resolves its browser (it relies on the build-time `ensure` step finding its own
 downloaded copy) — test a real render against the deployed container once redeployed.
 
+## Client-level API keys, more free sources & AI B-roll
+
+- **Client-level keys**: every external source below can be configured per-client (Marketing
+  Studio's 🔑 API Keys tab, backed by `marketing_client_settings`) instead of only a shared
+  server env var. `lib/assets.js`'s `apiKeyFor(field, env, clientKeys, envVarName)` is the single
+  precedence point — `clientKeys?.[field] || env?.[envVarName]` — used by every fetch function
+  below, so a client's own key always wins over the shared default when set.
+- **Pixabay** (`fetchFromPixabay`, `PIXABAY_API_KEY`) — second free B-roll source, tried when
+  Pexels has no key or no result for a tag. Auth via `key=` query param; picks the largest
+  available quality tier from `hits[0].videos`.
+- **Freesound.org** (`fetchFromFreesound`, `FREESOUND_API_KEY`) — free SFX auto-fetch, mirroring
+  the existing B-roll auto-fetch. Auth via `token=` query param; uses **preview** files only
+  (`previews['preview-hq-mp3']`), which — confirmed against Freesound's own docs — need no OAuth2,
+  unlike the full-quality Download endpoint. Free key, instant issue, at
+  freesound.org/apiv2/apply.
+- **Filler-word removal** (`lib/fillerWords.js`) — `spec.filler_word_cut` reuses
+  `lib/timeline.js`'s existing `computeKeepSegments`/`makeTimeMapper` (a cut range is a cut range,
+  regardless of whether it came from silence-detection or a filler word), merging filler-word
+  ranges in alongside silence ranges before the single remap pass in `render.js`, and also filters
+  filler words out of the caption word list itself. `FILLER_WORDS` is a small English-only set —
+  does **not** cover Malayalam or other non-English filler words, a real gap, not attempted here.
+- **AI B-roll generation via fal.ai** (`lib/falBroll.js`, `spec.mode:'ai-broll'`) — **paid**,
+  unlike everything else on this page (roughly $0.05–$0.40/sec depending on model). Requires a
+  **client-supplied** `spec.client_keys.fal_api_key` — no shared server default for this one, so a
+  client's generation spend always bills to their own fal.ai account. Runs as its own job on the
+  exact same queue/HMAC-callback machinery as a real render (`server.js`'s
+  `job.spec?.mode === 'ai-broll'` branch), not new infrastructure. Submits to fal.ai's queue API
+  (`POST https://queue.fal.run/fal-ai/wan/v2.7/text-to-video`, `Authorization: Key <key>`), then
+  **polls** the status endpoint every 5s for up to 5 minutes (polling chosen over fal.ai's webhook
+  option specifically to avoid standing up a new public inbound endpoint + signature verification
+  for this one feature). Result is downloaded and cached to `assets/broll/<tag>.mp4` — the exact
+  same path convention Pexels/Pixabay already use, so a render started right after generation
+  completes finds it through the normal local-file lookup in `resolveBroll`, with no separate "AI
+  broll" code path at render time.
+  **What's verified vs. not**: the queue submit/status endpoints, the `Authorization: Key <key>`
+  header, and the poll-vs-webhook tradeoff are confirmed against fal.ai's own documentation. The
+  exact result payload field (`result.video.url`, read by `extractVideoUrl()`) is corroborated
+  only by third-party docs/code-examples quoting this model's API, not fal's own docs directly, and
+  was **not** tested against a real fal.ai key (none was available in the dev sandbox this was
+  built in) — if a real generation completes but the expected field isn't found, the thrown error
+  includes the actual response so the field name can be corrected in one place. Test with a real
+  fal.ai key after deploying before relying on this.
+
 ## Setup
 
 1. `npm install`
 2. Copy `.env.example` to `.env` and fill in `RENDER_WEBHOOK_SECRET` (must exactly match the
    Worker's `MARKETING_RENDER_WEBHOOK_SECRET`) and either the R2 credentials or the
-   `LOCAL_PUBLIC_BASE_URL` fallback — see the comments in `.env.example`.
+   `LOCAL_PUBLIC_BASE_URL` fallback — see the comments in `.env.example`. Optionally also set
+   `PEXELS_API_KEY`/`PIXABAY_API_KEY`/`FREESOUND_API_KEY` as shared defaults (clients can still
+   override with their own key per-client — see "Client-level API keys" above); `fal.ai` has no
+   shared-default env var by design, it's client-key-only.
 3. (Optional but recommended) Drop your own royalty-free B-roll/SFX/music into `assets/broll/`,
    `assets/sfx/`, `assets/music/` — see each folder's `README.md` for the exact filenames. Nothing
-   breaks if you skip this; those cues/toggles are just silently no-ops without a matching file.
+   breaks if you skip this; those cues/toggles are just silently no-ops without a matching file
+   (or fall back to Pexels/Pixabay/Freesound above, if a key is configured).
 4. `npm start` (or deploy the `Dockerfile` — built and tested against `node:20-bookworm-slim` +
    `apt-get install ffmpeg fontconfig fonts-liberation`; on this repo's existing Coolify setup,
    point a new Coolify resource at this directory the same way `frontend/Dockerfile` and

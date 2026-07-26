@@ -18,6 +18,7 @@ const { concatClips } = require('./lib/concatClips');
 const { transcribe } = require('./lib/transcribe');
 const { detectScenes, generateSceneThumbnails } = require('./lib/sceneDetect');
 const { downloadToFile } = require('./lib/download');
+const { generateAiBroll } = require('./lib/falBroll');
 
 const env = process.env;
 const PORT = env.PORT || 8787;
@@ -174,6 +175,8 @@ async function processJob(job) {
   try {
     const result = job.spec?.mode === 'template'
       ? (job.spec?.engine === 'remotion' ? await renderRemotionTemplate(job, env) : await renderTemplate(job, env))
+      : job.spec?.mode === 'ai-broll'
+      ? await generateAiBroll(job, env)
       : await renderCaptionClip(job, env, ASSETS_ROOT);
     console.log(`[job ${job.job_id}] done`, result);
     await callback(job, { job_id: job.job_id, status: 'done', ...result });

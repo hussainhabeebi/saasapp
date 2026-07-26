@@ -183,6 +183,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
     <button class="tab active" id="tab-projects" onclick="showTab('projects')">🎞️ Projects</button>
     <button class="tab" id="tab-templates" onclick="showTab('templates')">🧩 Video Templates</button>
     <button class="tab" id="tab-styles" onclick="showTab('styles')">🎨 Brand Styles</button>
+    <button class="tab" id="tab-apikeys" onclick="showTab('apikeys')">🔑 API Keys</button>
   </div>
 
   <div class="wrap">
@@ -292,6 +293,22 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
         <div class="card-head"><div><h2>Custom brand styles</h2><div class="sub">Saved font/color combos, on top of the built-in presets — pick either when styling a project.</div></div></div>
         <div class="style-grid" id="brandStylesGrid"></div>
         <div class="empty hidden" id="brandStylesEmpty">No custom styles saved yet — save one from a project's Style step.</div>
+      </div>
+    </div>
+
+    <div id="page-apikeys" class="hidden">
+      <div class="card">
+        <div class="card-head"><div><h2>API Keys</h2><div class="sub">Bring your own keys for B-Roll/SFX/AI-video sources — optional, falls back to the shared default when left blank. fal.ai is paid (per-second of generated video); the others are free.</div></div></div>
+        <label class="form-label">Pexels (free B-Roll)</label>
+        <div class="row"><input class="form-input" id="keyPexels" type="password" placeholder="Using shared default"><button class="btn btn-ghost btn-sm" onclick="clearApiKey('pexels_api_key')" style="flex:0">✕ Clear</button></div>
+        <label class="form-label">Pixabay (free B-Roll, second source)</label>
+        <div class="row"><input class="form-input" id="keyPixabay" type="password" placeholder="Using shared default"><button class="btn btn-ghost btn-sm" onclick="clearApiKey('pixabay_api_key')" style="flex:0">✕ Clear</button></div>
+        <label class="form-label">Freesound.org (free SFX)</label>
+        <div class="row"><input class="form-input" id="keyFreesound" type="password" placeholder="Using shared default"><button class="btn btn-ghost btn-sm" onclick="clearApiKey('freesound_api_key')" style="flex:0">✕ Clear</button></div>
+        <label class="form-label">fal.ai (paid — AI-generated B-Roll)</label>
+        <div class="row"><input class="form-input" id="keyFal" type="password" placeholder="Not set"><button class="btn btn-ghost btn-sm" onclick="clearApiKey('fal_api_key')" style="flex:0">✕ Clear</button></div>
+        <button class="btn btn-primary btn-sm" onclick="saveApiKeys()" style="margin-top:12px">💾 Save keys</button>
+        <div class="note" style="margin-top:8px">Keys are only ever used server-side to fetch B-Roll/SFX/AI clips — never shown back in full once saved (existing values show as "Using shared default"/masked, not the real key). Type a new value and Save to set/replace one, or use "✕ Clear" to reset it back to the shared default.</div>
       </div>
     </div>
 
@@ -464,6 +481,7 @@ let brandStyles = [];
 let templates = [];
 let autoeditPresets = [];
 let currentCues = [];
+let aiBrollPrompts = {}; // cue index -> in-progress prompt text, kept across renderCues() re-renders
 let currentProject = null;
 let selectedStyleId = 'bold-pop';
 let generatingForTemplate = null;
@@ -528,11 +546,47 @@ function applyAutoeditPreset() {
 }
 
 function showTab(tab) {
-  ['projects', 'templates', 'styles'].forEach(t => {
+  ['projects', 'templates', 'styles', 'apikeys'].forEach(t => {
     $id('tab-' + t).classList.toggle('active', t === tab);
     $id('page-' + t).classList.toggle('hidden', t !== tab);
   });
   $id('page-editor').classList.add('hidden');
+  if (tab === 'apikeys') loadApiKeys();
+}
+
+// ── CLIENT API KEYS — bring-your-own Pexels/Pixabay/Freesound/fal.ai, optional (falls back to
+// the shared render-pipeline default when blank). Loaded values are masked (e.g. "••••1234") —
+// shown as a placeholder, not filled into the password field, since there's no real value to
+// prefill with (the Worker never returns the full key back — see handleMarketingSettingsGet).
+async function loadApiKeys() {
+  const r = await fetch(`${WORKER_BASE}/marketing/settings/api-keys`, { headers: ncAuthHeaders() });
+  const data = await r.json().catch(() => ({ keys: {} }));
+  const keys = data.keys || {};
+  const fieldMap = { pexels_api_key: 'keyPexels', pixabay_api_key: 'keyPixabay', freesound_api_key: 'keyFreesound', fal_api_key: 'keyFal' };
+  Object.entries(fieldMap).forEach(([field, elId]) => {
+    $id(elId).placeholder = keys[field] || (elId === 'keyFal' ? 'Not set' : 'Using shared default');
+    $id(elId).value = '';
+  });
+}
+async function saveApiKeys() {
+  // Only fields the user actually typed into are sent — leaving a field untouched keeps whatever
+  // was already saved there, rather than every save clearing the three fields not being edited
+  // right now back to "use shared default".
+  const fieldMap = { pexels_api_key: 'keyPexels', pixabay_api_key: 'keyPixabay', freesound_api_key: 'keyFreesound', fal_api_key: 'keyFal' };
+  const body = {};
+  Object.entries(fieldMap).forEach(([field, elId]) => { if ($id(elId).value) body[field] = $id(elId).value.trim(); });
+  if (!Object.keys(body).length) { toastError('Nothing changed.'); return; }
+  const r = await fetch(`${WORKER_BASE}/marketing/settings/api-keys`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) { toastError(data.error || 'Could not save keys.'); return; }
+  toastSuccess('API keys saved.');
+  await loadApiKeys();
+}
+async function clearApiKey(field) {
+  const r = await fetch(`${WORKER_BASE}/marketing/settings/api-keys`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ [field]: '' }) });
+  if (!r.ok) { toastError('Could not clear key.'); return; }
+  toastSuccess('Reset to shared default.');
+  await loadApiKeys();
 }
 
 async function loadUsage() {
@@ -1206,8 +1260,57 @@ function renderCues() {
       <span class="cue-time">${fmtDuration(c.start)}</span>
       <span class="cue-label">${esc(c.label)} <span class="note">— "${esc(c.keyword || '')}"</span></span>
       <button class="btn btn-ghost btn-sm" onclick="removeCue(${i})">✕</button>
-    </div>`).join('');
+    </div>
+    ${c.type === 'broll' ? `
+    <div class="cue-row" style="border-top:none;margin-top:-8px">
+      <input type="text" class="form-input" style="font-size:12px" placeholder="Describe custom AI footage instead of stock (optional)…" id="aiBrollPrompt${i}" value="${esc(aiBrollPrompts[i] || '')}" oninput="aiBrollPrompts[${i}] = this.value">
+      <button class="btn btn-ghost btn-sm" id="aiBrollBtn${i}" onclick="generateAiBroll(${i})">🎬 AI B-roll</button>
+      <span class="note" id="aiBrollStatus${i}"></span>
+    </div>` : ''}`).join('');
   renderTimeline();
+}
+// AI-generated B-roll for one cue (see render-pipeline/lib/falBroll.js) — fal.ai is paid, so this
+// only works once a fal.ai key is set under 🔑 API Keys; it replaces this cue's tag's cached
+// asset, so the NEXT render/preview picks it up automatically with no other change needed.
+async function generateAiBroll(i) {
+  const c = currentCues[i];
+  if (!currentProject || !c) return;
+  const prompt = (aiBrollPrompts[i] || $id(`aiBrollPrompt${i}`)?.value || '').trim();
+  if (!prompt) { toastError('Describe what the AI footage should show first.'); return; }
+  const btn = $id(`aiBrollBtn${i}`);
+  const status = $id(`aiBrollStatus${i}`);
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = '⏳ Generating (can take a few minutes)…';
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/generate-ai-broll`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, tag: c.tag, prompt }) });
+  const data = await r.json();
+  if (!r.ok) {
+    if (status) status.textContent = '';
+    if (btn) btn.disabled = false;
+    toastError(data.error || 'Could not start AI B-roll generation.');
+    return;
+  }
+  pollAiBrollJob(data.job_id, i);
+}
+function pollAiBrollJob(jobId, i) {
+  const check = async () => {
+    const status = $id(`aiBrollStatus${i}`);
+    const btn = $id(`aiBrollBtn${i}`);
+    if (!status || !currentProject) return; // editor closed/navigated away mid-poll
+    const r = await fetch(`${WORKER_BASE}/marketing/projects/jobs?project_id=${currentProject.id}`, { headers: ncAuthHeaders() });
+    const data = await r.json().catch(() => ({ list: [] }));
+    const job = (data.list || []).find(j => j.id === jobId);
+    if (!job) return;
+    if (job.status === 'done') {
+      status.textContent = '✅ Ready — used automatically in your next render/preview.';
+      if (btn) btn.disabled = false;
+    } else if (job.status === 'failed') {
+      status.textContent = `❌ ${job.error || 'Generation failed.'}`;
+      if (btn) btn.disabled = false;
+    } else {
+      setTimeout(check, 5000);
+    }
+  };
+  check();
 }
 function toggleCue(i) { currentCues[i].accepted = currentCues[i].accepted === false; renderCues(); }
 function removeCue(i) { currentCues.splice(i, 1); renderCues(); }
@@ -1233,8 +1336,11 @@ async function saveCues() {
 async function startRender() {
   if (!currentProject) return;
   $id('renderBtn').disabled = true;
+  // "Cut silences / filler words" is one chip, so it drives both spec fields — the label already
+  // promised filler-word removal before the render pipeline actually did it; now it's true.
   const options = {
     silence_cut: $id('optSilence').classList.contains('on'),
+    filler_word_cut: $id('optSilence').classList.contains('on'),
     auto_zoom: $id('optZoom').classList.contains('on'),
     background_music: $id('optMusic').value || null,
     autoedit_preset: $id('optAutoeditPreset').value || null,
@@ -1275,6 +1381,7 @@ async function previewRender(sceneIndex, targetElId) {
   target.innerHTML = '<span class="note">⏳ Rendering preview…</span>';
   const options = {
     silence_cut: $id('optSilence').classList.contains('on'),
+    filler_word_cut: $id('optSilence').classList.contains('on'),
     auto_zoom: $id('optZoom').classList.contains('on'),
     background_music: $id('optMusic').value || null,
     autoedit_preset: $id('optAutoeditPreset').value || null,

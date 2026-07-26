@@ -5297,6 +5297,96 @@ downstream time value) and was deliberately scoped out rather than attempted hal
 exists today is real and useful (detection, grouping, thumbnails, a correctly-positioned timeline
 visualization, working preview renders) but is click-based, not drag-based.
 
+## Marketing Studio module — Client-level API keys, more free sources & AI B-roll (`migrations/0022_marketing_client_settings.sql`)
+Answers "give me more Auto-Edit/B-Roll/SFX/VFX options with free APIs, and let each client bring
+their own keys instead of one shared server default."
+
+### Client-level API keys (`marketing_client_settings`)
+One row per client, nullable key columns (`pexels_api_key`, `pixabay_api_key`,
+`freesound_api_key`, `fal_api_key`) — `NULL` means "fall back to the shared server env var," not
+"disabled." Lets each client bring their own account/quota/billing for these external sources
+instead of sharing one server-wide key.
+- `GET /marketing/settings/api-keys` — returns each key **masked** (`marketingMaskKey`: last 4
+  characters only, e.g. `••••ab12`); the real value is never sent back to the frontend once saved.
+- `POST /marketing/settings/api-keys` — partial update (only fields present in the body change);
+  sending an empty string for a field explicitly clears it back to "use shared default" (distinct
+  from omitting the field, which leaves it untouched). Frontend: Editor's new "🔑 API Keys" tab,
+  one password input + a dedicated "✕ Clear" button per field (needed because password inputs are
+  always blank on load, so a blank field alone can't distinguish "untouched" from "clear this").
+- `marketingGetClientKeys(env, clientId)` — the only place the real (unmasked) values are read;
+  called server-side when building a render spec (`marketingBuildRenderSpec`) and folded into
+  `spec.client_keys`, which the render pipeline consults before falling back to its own env vars
+  (`PEXELS_API_KEY`/`PIXABAY_API_KEY`/`FREESOUND_API_KEY` — `render-pipeline/lib/assets.js`'s
+  `apiKeyFor()` helper: `clientKeys?.[field] || env?.[envVarName]`).
+
+### Pixabay — second free B-roll source
+`fetchFromPixabay()` (`render-pipeline/lib/assets.js`) — tried as a fallback when Pexels has no
+key configured or returns nothing for a tag. Auth via `key=` query param (not a header); response
+shape `{hits:[{videos:{large,medium,small,tiny}:{url}}]}`, walked large→tiny for the first
+available quality tier (Pixabay's video search has no orientation/portrait filter, unlike its
+image API — same "gets scaled/cropped to the target resolution anyway" reasoning the existing
+Pexels 720p-floor logic already relies on). **Manual step**: set `PIXABAY_API_KEY` (shared
+default) and/or let clients set their own under 🔑 API Keys — free at pixabay.com/api/docs.
+
+### Freesound.org — free SFX auto-fetch
+Previously SFX cues required a manually-dropped file in `assets/sfx/`; `fetchFromFreesound()`
+mirrors the B-roll auto-fetch pattern. Auth via `token=` query param — confirmed via Freesound's
+own docs that **preview-quality files need no OAuth2** (only the full-quality Download endpoint
+does), which is what makes this viable for a server-to-server call with no interactive user in the
+loop. Query: `filter=duration:[0.2 TO 6]&sort=score`, picks the first hit's
+`previews['preview-hq-mp3']` (falling back to `preview-lq-mp3`) — short stings, quality difference
+is inaudible at this length. Cached to `assets/sfx/<tag>.mp3` on first use per tag, same as B-roll.
+**Manual step**: set `FREESOUND_API_KEY` (shared default) and/or per-client — free at
+freesound.org/apiv2/apply (a normal API key, issued instantly, no approval wait).
+
+### Filler-word removal
+The existing "✂️ Cut silences / filler words" chip's label already promised this before the code
+did it — now it actually does both. Zero new mechanism: `render-pipeline/lib/fillerWords.js`'s
+`findFillerWordRanges()` reuses the exact same `computeKeepSegments`/`makeTimeMapper` machinery
+silence-cut already uses (a cut range is a cut range, regardless of *why*), so filler-word ranges
+just get merged in alongside silence ranges before the single remap pass. Filler words are also
+filtered out of the caption word list itself (not just cut from the audio), since captioning a
+word whose audio was just removed would show text with nothing behind it. `FILLER_WORDS` is a
+small English set (um, uh, hmm, like, er, ...) — **does not cover Malayalam or other
+non-English filler words**, a real gap, not attempted here; a genuine future addition would need a
+per-language filler-word list, not a bigger English one.
+
+### AI B-roll generation (fal.ai) — **paid, not free**
+Unlike Pexels/Pixabay/Freesound above, fal.ai is a real per-second cost (roughly $0.05–$0.40/sec
+depending on model as of researching this) — flagged to the user before building, not silently
+integrated. **Requires a client-supplied `fal_api_key`** (🔑 API Keys tab) — there is no shared
+server default for this one field, so a client's own generation spend always bills to their own
+fal.ai account, never a shared key covering everyone's usage.
+- Use case: a B-roll cue whose tag has no good stock match (or a client just wants
+  purpose-generated footage) — an inline prompt field + "🎬 AI B-roll" button next to each B-roll
+  cue in the Cues step (`generateAiBroll()`/`pollAiBrollJob()` in `marketing-studio.html`).
+- `POST /marketing/projects/generate-ai-broll` (`handleMarketingGenerateAiBroll`) — validates the
+  project and the client's fal.ai key, then submits a job on the **same job queue/webhook
+  machinery every render already uses** (`marketingSubmitRenderJob(..., 'ai_broll', false)`) rather
+  than new infrastructure — a multi-minute AI generation is exactly the kind of job this pipeline's
+  existing async queue+callback pattern already exists for. `handleMarketingRenderWebhook`'s
+  project-state-mutation branch excludes `job.type==='ai_broll'` the same way it already excludes
+  `'preview'` — generation never touches the project's `output_key`/`status`/billed minutes.
+- `render-pipeline/lib/falBroll.js` — submits to fal.ai's queue API
+  (`POST https://queue.fal.run/{model}`, `Authorization: Key <key>` header, model
+  `fal-ai/wan/v2.7/text-to-video`), then **polls** (not webhooks — avoids standing up a new public
+  inbound endpoint + signature verification just for this one feature) every 5s for up to 5 minutes.
+  Result is downloaded and cached to `assets/broll/<tag>.mp4` — the exact same path/convention
+  Pexels/Pixabay use, so a render started right after generation completes finds it automatically
+  through the normal local-file lookup in `resolveBroll`, no separate "AI broll" code path at
+  render time. The frontend's status only ever shows "✅ Ready — used automatically in your next
+  render/preview," not an inline video preview, since the generated file lives on the render
+  pipeline's local disk, not a public R2 URL.
+- **What's verified vs. not**: the queue submit/status endpoints, the `Authorization: Key <key>`
+  header, and the polling approach are confirmed against fal.ai's own documentation. The exact
+  result payload field (`result.video.url`) is corroborated only by third-party
+  docs/code-examples quoting this model's API, **not** fal's own docs directly and **not** tested
+  against a real fal.ai key (none was available in the dev sandbox this was built in) — the polling
+  code defensively checks a couple of plausible field locations, and if a real generation completes
+  with none matching, the error message includes the actual response so the field name can be
+  corrected in one place (`extractVideoUrl()` in `falBroll.js`). **Test with a real fal.ai key
+  after deploying before relying on this.**
+
 ## Marketing Studio module — Text Behind Subject (beta)
 A render option (`spec.text_behind_subject`, a "🫥 Text behind subject (beta)" chip in the
 Editor's Auto-edit step) where captions sit behind the person on screen instead of on top —
