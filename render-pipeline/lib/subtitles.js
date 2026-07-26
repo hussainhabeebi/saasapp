@@ -54,7 +54,7 @@ function buildAssSubtitles(words, style, { resolutionW, resolutionH }) {
 ScriptType: v4.00+
 PlayResX: ${resolutionW}
 PlayResY: ${resolutionH}
-WrapStyle: 2
+WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]

@@ -74,6 +74,21 @@ available here) and a real video/transcript from the live Worker (only synthetic
 underlying ffmpeg behavior being confirmed, not a substitute for testing it against a real
 project once deployed.
 
+**Malayalam/Indic-script captions were separately verified**, not just assumed from the Latin
+tests: rendered real Malayalam text with conjunct consonants (e.g. `നിങ്ങൾക്ക്`) through the
+same `writeAssFile`→`subtitles` filter path, confirmed correct shaping (libass here is linked
+against `libharfbuzz`, which is what makes conjunct/vowel-sign shaping work at all rather than
+rendering isolated broken glyphs), and confirmed libass's automatic per-glyph font fallback
+correctly substitutes in a Malayalam-capable font even when a style's requested font (e.g. the
+"Bold Pop" preset's `Montserrat`) has no Malayalam coverage itself — no code branch needed to
+detect script and swap fonts. This surfaced two real bugs, both fixed: (1) `fonts-noto-core`
+was missing from the `Dockerfile` — without it, Malayalam/Tamil/Telugu/etc. text would render as
+empty tofu boxes since no installed font would have those glyphs at all; (2) `WrapStyle` was set
+to `2` (no auto-wrap), which let long caption lines run off the right edge of the frame instead
+of wrapping — this affected every language, not just Malayalam, and is now `0` (smart wrap).
+"Manglish" (Malayalam written in Latin letters) needed no special handling — it's just Latin
+script and already rendered fine with `fonts-liberation` alone.
+
 ## Known limitations
 
 - **Background music ducking is constant-level, not sidechain-triggered** — see

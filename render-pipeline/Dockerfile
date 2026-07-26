@@ -1,11 +1,18 @@
 FROM node:20-bookworm-slim
 
-# ffmpeg (the actual render engine) + fontconfig/liberation fonts (so caption burn-in has a real
-# font to substitute Arial/Helvetica/etc against — see lib/subtitles.js's fontName handling;
-# ffmpeg's `subtitles` filter resolves fonts via fontconfig, same as verified against this exact
-# combination during development, see README.md's dev notes).
+# ffmpeg (the actual render engine) + fonts. fonts-liberation covers the Latin style presets
+# (Arial/Helvetica/etc substitutes). fonts-noto-core adds Malayalam/Tamil/Telugu/Kannada/
+# Devanagari(Hindi)/Bengali/Gujarati/Gurmukhi/Oriya/Arabic/Hebrew coverage — this app already
+# targets Indic languages elsewhere (see wrangler.toml's SARVAM_API_KEY comment, "Indic languages
+# incl. Malayalam/Hindi/Tamil"), and a Malayalam transcript needs a Malayalam-capable font
+# installed SOMEWHERE on the system to render at all, regardless of what font name a caption
+# style requests — libass's automatic per-glyph font-fallback (verified during development, see
+# README.md's dev notes) picks up whichever installed font actually has the needed glyphs, even
+# when the requested style font (e.g. "Montserrat" in the Bold Pop preset) has no Malayalam
+# coverage itself. Without this package, Malayalam/Tamil/etc. captions would render as tofu boxes
+# no matter what font a style names.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation ca-certificates \
+  && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation fonts-noto-core ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
