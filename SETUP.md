@@ -4900,12 +4900,33 @@ like `/email/*`, never a client-supplied id — except the two routes below mark
   nothing here is expensive enough to need in-place editing).
 - `GET/POST/PATCH/DELETE /marketing/projects` — project CRUD. `DELETE` also removes the project's
   R2 objects (source + output, if any) and its `marketing_jobs` rows.
-- `POST /marketing/projects/upload` — multipart video upload (mirrors
-  `handleEcomCategoryMediaUpload`'s shape): `project_id`, `file`, `duration_sec` (from the
-  browser's `<video>.duration` — no ffprobe available). Max 100 MB — **Cloudflare Workers' own
-  request-body ceiling on most plans, not a limit chosen here**; a client needing bigger uploads
-  needs a Workers plan with a higher body-size limit, or a client-side pre-compression step (not
-  built). Accepts mp4/mov/webm/m4v.
+- `POST /marketing/projects/upload-init` + `POST /marketing/projects/upload-finish` — direct
+  browser-to-R2 upload, **not** a multipart body through the Worker. The old single-step upload
+  route hit Cloudflare Workers' own request-body ceiling (~100 MB on most plans — not a limit this
+  app chose); no application-level limit could raise that, since the platform rejects an
+  oversized request before the Worker's own code ever runs. `upload-init` returns a short-lived
+  (1 hour) presigned R2 `PUT` URL (`marketingR2PresignUrl` — hand-rolled AWS SigV4 query-string
+  signing against Web Crypto, since Workers can't bundle npm packages like `aws4fetch` the way
+  `render-pipeline`'s Node service can) and the R2 key the file will land at; the browser `PUT`s
+  the file straight to R2 with it (the Worker's own body limit is irrelevant — it never receives
+  the file bytes), then calls `upload-finish` with that key, which confirms the object actually
+  exists in R2 (`env.MARKETING_MEDIA.head(key)` — guards against a client claiming a successful
+  upload that never happened) and does the same D1 bookkeeping the old single-step handler did.
+  `MARKETING_SOURCE_MAX_BYTES` (now a real, chosen 2 GB application limit, not a platform
+  workaround) is enforced against the actual uploaded object's size at `upload-finish` time,
+  deleting it from R2 if it's over. Accepts mp4/mov/webm/m4v. The multi-clip upload route
+  (`POST /marketing/projects/clips/upload-init`/`upload-finish`) uses the identical pattern.
+  **Requires new Worker secrets**: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+  `R2_BUCKET_NAME` — reuse the same R2 API token `render-pipeline` already has (same bucket,
+  `leadvyne-marketing-media`), just also add it to the Worker via `wrangler secret put`. Without
+  these, `upload-init` returns a clear "not configured" error rather than silently failing.
+  **What's verified vs. not**: the SigV4 signing algorithm's HMAC-chain signing-key derivation was
+  cross-checked byte-for-byte against Node's independent `crypto` module for a fixed test vector,
+  and the canonical-request/presigned-URL structure was confirmed against AWS's documented S3
+  format — the exact function as it exists in `worker.js` was then run for real, producing a
+  correctly-structured, correctly-encoded presigned URL with a valid 64-character signature. What
+  wasn't verified: an actual signed PUT against live R2 (no R2 credentials were available in the
+  dev sandbox this was built in) — test a real large upload once the four secrets above are set.
 - `POST /marketing/projects/transcribe` — the one inline external call described above. Requests
   `verbose_json` + word-level timestamps; **not every OpenAI-Whisper-compatible provider actually
   returns word timestamps** even when asked (some self-hosted front-ends only return segment-level
@@ -5191,7 +5212,7 @@ A project can now hold several uploaded clips, stitched into one combined video 
 existing transcribe/caption/render pipeline runs unchanged.
 - **`marketing_project_clips`** — one row per clip (`project_id`, `source_key`,
   `source_duration_sec`, `order_index`). The very first upload
-  (`POST /marketing/projects/upload`) is now *also* registered here as `order_index=0` (in
+  (`POST /marketing/projects/upload-finish`) is now *also* registered here as `order_index=0` (in
   addition to setting the project's own `source_key` directly, unchanged) — so a project that
   only ever gets one video behaves exactly as before, while one that later adds more clips has a
   complete, correctly-ordered list to combine.

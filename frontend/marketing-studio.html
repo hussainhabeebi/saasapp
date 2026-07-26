@@ -297,7 +297,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
           <div class="card">
             <div class="card-head"><h2>Preview</h2></div>
             <div id="uploadZone" class="dropzone" onclick="document.getElementById('fileInput').click()">
-              📹 Click or drag a video here — mp4 / mov / webm / m4v (max 100 MB)
+              📹 Click or drag a video here — mp4 / mov / webm / m4v (max 2 GB)
               <input type="file" id="fileInput" accept="video/mp4,video/quicktime,video/webm,video/x-m4v" class="hidden" onchange="onFilePicked(event)">
             </div>
             <div class="hidden upload-progress-wrap" id="uploadProgressWrap">
@@ -671,10 +671,10 @@ async function saveProjectMeta() {
 
 // ── UPLOAD (drag-drop + real progress via XHR, since fetch() has no upload-progress event) ──
 function resetUploadZone() {
-  $id('uploadZone').textContent = '📹 Click or drag a video here — mp4 / mov / webm / m4v (max 100 MB)';
+  $id('uploadZone').textContent = '📹 Click or drag a video here — mp4 / mov / webm / m4v (max 2 GB)';
   $id('uploadProgressWrap').classList.add('hidden');
 }
-const MARKETING_SOURCE_MAX_BYTES = 100 * 1024 * 1024; // must match worker.js's MARKETING_SOURCE_MAX_BYTES
+const MARKETING_SOURCE_MAX_BYTES = 2 * 1024 * 1024 * 1024; // must match worker.js's MARKETING_SOURCE_MAX_BYTES
 function probeDuration(file) {
   return new Promise((resolve) => {
     const tmpUrl = URL.createObjectURL(file);
@@ -692,19 +692,33 @@ function probeDuration(file) {
     probe.src = tmpUrl;
   });
 }
-function xhrUpload(url, form, onProgress) {
+// Raw PUT straight to R2 via a presigned URL (no Authorization header — the URL itself carries
+// the signature) — used for large video uploads instead of routing the file body through the
+// Worker, which caps request bodies around 100 MB on most Cloudflare plans.
+function xhrPutToR2(url, file, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', url);
-    xhr.setRequestHeader('Authorization', 'Bearer ' + sessionToken);
+    xhr.open('PUT', url);
+    if (file.type) xhr.setRequestHeader('Content-Type', file.type);
     xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100)); };
-    xhr.onload = () => {
-      let data = {}; try { data = JSON.parse(xhr.responseText); } catch (e) {}
-      xhr.status >= 200 && xhr.status < 300 ? resolve(data) : reject(new Error(data.error || ('HTTP ' + xhr.status)));
-    };
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve() : reject(new Error(`Upload to storage failed (HTTP ${xhr.status}).`));
     xhr.onerror = () => reject(new Error('Network error during upload.'));
-    xhr.send(form);
+    xhr.send(file);
   });
+}
+// Shared two-step direct-to-R2 flow: ask the Worker for a presigned URL (initUrl), PUT the file
+// straight to R2 with it, then tell the Worker the upload is done (finishUrl) so it can record
+// the result in D1. Mirrors handleMarketingProjectUploadInit/Finish and
+// handleMarketingClipUploadInit/Finish's contract on the Worker side.
+async function uploadFileDirectToR2(initUrl, finishUrl, extraFields, file, onProgress) {
+  const initR = await fetch(initUrl, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ ...extraFields, content_type: file.type }) });
+  const initData = await initR.json().catch(() => ({}));
+  if (!initR.ok) throw new Error(initData.error || 'Could not start upload.');
+  await xhrPutToR2(initData.upload_url, file, onProgress);
+  const finishR = await fetch(finishUrl, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ ...extraFields, source_key: initData.source_key }) });
+  const finishData = await finishR.json().catch(() => ({}));
+  if (!finishR.ok) throw new Error(finishData.error || 'Upload did not finish correctly.');
+  return finishData;
 }
 
 function onFilePicked(evt) {
@@ -737,15 +751,14 @@ async function uploadPrimaryVideo(file) {
   $id('uploadZone').textContent = '⏳ Uploading…';
   $id('uploadProgressWrap').classList.remove('hidden');
   $id('uploadProgressFill').style.width = '0%';
-  const form = new FormData();
-  form.append('project_id', currentProject.id);
-  form.append('file', file);
-  form.append('duration_sec', String(durationSec));
   try {
-    const data = await xhrUpload(`${WORKER_BASE}/marketing/projects/upload`, form, pct => {
-      $id('uploadProgressFill').style.width = pct + '%';
-      $id('uploadProgressNote').textContent = `Uploading… ${pct}%`;
-    });
+    // Direct to R2 via a presigned URL, not through the Worker's own request body — see
+    // handleMarketingProjectUploadInit/Finish in worker.js.
+    const data = await uploadFileDirectToR2(
+      `${WORKER_BASE}/marketing/projects/upload-init`, `${WORKER_BASE}/marketing/projects/upload-finish`,
+      { project_id: currentProject.id, duration_sec: String(durationSec) }, file,
+      pct => { $id('uploadProgressFill').style.width = pct + '%'; $id('uploadProgressNote').textContent = `Uploading… ${pct}%`; }
+    );
     currentProject = data.project;
     const idx = projects.findIndex(p => p.id === currentProject.id);
     if (idx >= 0) projects[idx] = currentProject; else projects.unshift(currentProject);
@@ -788,13 +801,16 @@ function onClipFilePicked(evt) {
   evt.target.value = '';
 }
 async function uploadAdditionalClip(file) {
+  if (file.size > MARKETING_SOURCE_MAX_BYTES) {
+    toastError(`Video is too large — max ${Math.round(MARKETING_SOURCE_MAX_BYTES / 1024 / 1024)} MB (this file is ${(file.size / 1024 / 1024).toFixed(0)} MB).`);
+    return;
+  }
   const durationSec = await probeDuration(file);
-  const form = new FormData();
-  form.append('project_id', currentProject.id);
-  form.append('file', file);
-  form.append('duration_sec', String(durationSec));
   try {
-    await xhrUpload(`${WORKER_BASE}/marketing/projects/clips`, form);
+    await uploadFileDirectToR2(
+      `${WORKER_BASE}/marketing/projects/clips/upload-init`, `${WORKER_BASE}/marketing/projects/clips/upload-finish`,
+      { project_id: currentProject.id, duration_sec: String(durationSec) }, file
+    );
     toastSuccess('Clip added.');
     await loadClips();
   } catch (e) { toastError(e.message || 'Could not add clip.'); }
