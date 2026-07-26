@@ -8987,7 +8987,12 @@ async function handleHospitalityStats(request, env){
      renders fail immediately with a clear error instead of hanging — see SETUP.md for the exact
      request/callback contract an operator needs to implement on the other end. ── */
 
-const MARKETING_SOURCE_MAX_BYTES = 100*1024*1024; // Cloudflare Workers' own request-body ceiling on most plans — not a choice made here
+// Videos upload directly browser -> R2 via a presigned PUT URL (marketingR2PresignPutUrl below),
+// NOT through this Worker's own request body — Cloudflare Workers cap request bodies around
+// 100 MB on most plans, a platform ceiling no amount of application code can raise. Presigned R2
+// uploads bypass that entirely; this max is a real, chosen application limit instead (R2 itself
+// handles single-PUT objects up to 5 GB).
+const MARKETING_SOURCE_MAX_BYTES = 2*1024*1024*1024;
 const MARKETING_VIDEO_MIME_EXT = {'video/mp4':'mp4', 'video/quicktime':'mov', 'video/webm':'webm', 'video/x-m4v':'m4v'};
 const MARKETING_RESOLUTIONS = {'9:16':'1080x1920', '1:1':'1080x1080', '16:9':'1920x1080'};
 // Export quality — always MP4 (the only format the render pipeline produces); this is the encode
@@ -9137,6 +9142,66 @@ async function verifyHmacSignature(secret, body, sigHeader){
   return diff===0;
 }
 
+/* ── R2 presigned uploads (large-video direct-to-R2 upload, bypassing this Worker's own
+   ~100 MB-on-most-plans request-body ceiling — see MARKETING_SOURCE_MAX_BYTES above). AWS
+   SigV4 query-string ("presigned URL") signing, implemented directly against Web Crypto (no
+   dependency — Workers can't bundle npm packages like aws4fetch the way render-pipeline's Node
+   service can). Requires R2 API-token credentials as Worker secrets (R2_ACCOUNT_ID/
+   R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET_NAME) — separate from the native env.MARKETING_MEDIA
+   binding, which has no presign capability of its own; reuse the same R2 API token
+   render-pipeline already has, just also added as Worker secrets. Verified: the HMAC-chain
+   signing-key derivation was cross-checked byte-for-byte against Node's independent `crypto`
+   module for a fixed test vector, and the canonical-request/query-string structure was confirmed
+   against AWS's own documented format for S3 presigned URLs. NOT verified: an actual signed
+   request against live R2 (no R2 credentials available in the dev sandbox this was built in) —
+   test a real upload once R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY are set. ── */
+function marketingR2Configured(env){
+  return !!(env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_BUCKET_NAME);
+}
+function marketingToHex(bytes){ return Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join(''); }
+async function marketingHmacRaw(keyBytes, msg){
+  const key=await crypto.subtle.importKey('raw', keyBytes, {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, typeof msg==='string'?new TextEncoder().encode(msg):msg);
+  return new Uint8Array(sig);
+}
+async function marketingSha256Hex(str){
+  const buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return marketingToHex(new Uint8Array(buf));
+}
+async function marketingR2SigningKey(secretKey, dateStamp, region, service){
+  const kDate=await marketingHmacRaw(new TextEncoder().encode('AWS4'+secretKey), dateStamp);
+  const kRegion=await marketingHmacRaw(kDate, region);
+  const kService=await marketingHmacRaw(kRegion, service);
+  return await marketingHmacRaw(kService, 'aws4_request');
+}
+// method: 'PUT' (upload) or 'GET' (used nowhere yet, but the same signer works for either).
+async function marketingR2PresignUrl(env, method, key, expiresSec){
+  const region='auto', service='s3';
+  const host=`${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  const now=new Date();
+  const amzDate=now.toISOString().replace(/[:-]|\.\d{3}/g,''); // YYYYMMDDTHHMMSSZ
+  const dateStamp=amzDate.slice(0,8);
+  const credentialScope=`${dateStamp}/${region}/${service}/aws4_request`;
+  // R2 keys here are always plain marketing/<clientId>/<projectId>/... segments (no reserved
+  // characters) — encodeURIComponent per-segment then rejoined with literal '/' is exactly what
+  // S3/R2's canonical URI wants.
+  const canonicalUri='/'+env.R2_BUCKET_NAME+'/'+key.split('/').map(encodeURIComponent).join('/');
+  const queryParams={
+    'X-Amz-Algorithm':'AWS4-HMAC-SHA256',
+    'X-Amz-Credential':`${env.R2_ACCESS_KEY_ID}/${credentialScope}`,
+    'X-Amz-Date':amzDate,
+    'X-Amz-Expires':String(expiresSec),
+    'X-Amz-SignedHeaders':'host',
+  };
+  const canonicalQueryString=Object.keys(queryParams).sort().map(k=>`${encodeURIComponent(k)}=${encodeURIComponent(queryParams[k])}`).join('&');
+  const canonicalHeaders=`host:${host}\n`;
+  const canonicalRequest=`${method}\n${canonicalUri}\n${canonicalQueryString}\n${canonicalHeaders}\nhost\nUNSIGNED-PAYLOAD`;
+  const stringToSign=`AWS4-HMAC-SHA256\n${amzDate}\n${credentialScope}\n${await marketingSha256Hex(canonicalRequest)}`;
+  const signingKey=await marketingR2SigningKey(env.R2_SECRET_ACCESS_KEY, dateStamp, region, service);
+  const signature=marketingToHex(await marketingHmacRaw(signingKey, stringToSign));
+  return `https://${host}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`;
+}
+
 async function handleMarketingUsage(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -9233,23 +9298,48 @@ async function handleMarketingProjectDelete(request, env){
   return json({ok:true});
 }
 
-async function handleMarketingProjectUpload(request, env){
+// Two-step direct-to-R2 upload (replaces a single multipart-through-the-Worker POST, which
+// couldn't exceed Cloudflare's own ~100 MB-on-most-plans request-body ceiling regardless of any
+// limit this app chose): 1) upload-init returns a short-lived presigned R2 PUT URL, the browser
+// PUTs the file straight to R2 with it — the Worker never sees the file bytes, so its own
+// request-body limit is irrelevant; 2) upload-finish is called once that PUT succeeds, confirms
+// the object actually landed in R2 (a client calling this without a real successful PUT
+// shouldn't be able to point a project at a nonexistent/empty key), and does the exact same
+// D1 bookkeeping the old single-step handler did.
+async function handleMarketingProjectUploadInit(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const form=await request.formData().catch(()=>null);
-  if(!form) return json({error:'multipart form data required'}, 400);
-  const projectId=Number(form.get('project_id'));
-  const file=form.get('file');
-  const durationSec=Number(form.get('duration_sec'))||null; // reported by the browser's <video>.duration — the Worker never decodes video
-  if(!projectId||!file) return json({error:'project_id and file required'}, 400);
+  if(!marketingR2Configured(env)) return json({error:'Large video uploads require R2 credentials on the Worker — see SETUP.md "Marketing Studio module".'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  const mime=(body.content_type||'').split(';')[0];
+  const ext=MARKETING_VIDEO_MIME_EXT[mime];
+  if(!projectId) return json({error:'project_id required'}, 400);
+  if(!ext) return json({error:'Upload an mp4, mov, webm or m4v file.'}, 400);
   const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
   if(!project) return json({error:'Not found'}, 404);
-  if(file.size>MARKETING_SOURCE_MAX_BYTES) return json({error:'Video is too large — max 100 MB.'}, 400);
-  const mime=(file.type||'').split(';')[0];
-  const ext=MARKETING_VIDEO_MIME_EXT[mime];
-  if(!ext) return json({error:'Upload an mp4, mov, webm or m4v file.'}, 400);
   const key=marketingSourceKey(payload.cid, projectId, ext);
-  await env.MARKETING_MEDIA.put(key, await file.arrayBuffer(), {httpMetadata:{contentType:mime}});
+  const uploadUrl=await marketingR2PresignUrl(env, 'PUT', key, 3600);
+  return json({ok:true, upload_url:uploadUrl, source_key:key});
+}
+
+async function handleMarketingProjectUploadFinish(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  const key=String(body.source_key||'');
+  const durationSec=Number(body.duration_sec)||null; // reported by the browser's <video>.duration — the Worker never decodes video
+  if(!projectId||!key) return json({error:'project_id and source_key required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(key!==marketingSourceKey(payload.cid, projectId, key.split('.').pop())) return json({error:'source_key does not match this project.'}, 400);
+  const head=await env.MARKETING_MEDIA.head(key);
+  if(!head) return json({error:'Upload did not complete — the file was not found in storage. Try again.'}, 400);
+  if(head.size>MARKETING_SOURCE_MAX_BYTES){
+    await env.MARKETING_MEDIA.delete(key).catch(()=>{});
+    return json({error:`Video is too large — max ${Math.round(MARKETING_SOURCE_MAX_BYTES/1024/1024)} MB.`}, 400);
+  }
   const now=new Date().toISOString();
   await env.DB.prepare(`UPDATE marketing_projects SET source_key=?, source_duration_sec=?, trim_end_sec=?, status='uploaded', updated_at=? WHERE id=?`)
     .bind(key, durationSec, durationSec, now, projectId).run();
@@ -9285,23 +9375,45 @@ async function handleMarketingClipsList(request, env, url){
   return json({list:(results||[]).map(marketingSerializeClip)});
 }
 
-async function handleMarketingClipUpload(request, env){
+// Same two-step direct-to-R2 pattern as handleMarketingProjectUploadInit/Finish above — see that
+// pair's comment for why. The clip key embeds a random UUID (marketingClipKey) generated here at
+// init time, not reconstructible from client input the way the project's source key is, so
+// upload-finish's ownership check is a prefix match against this client+project's own clip
+// namespace instead of an exact-key rebuild — still exactly scoped to what this session owns.
+async function handleMarketingClipUploadInit(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const form=await request.formData().catch(()=>null);
-  if(!form) return json({error:'multipart form data required'}, 400);
-  const projectId=Number(form.get('project_id'));
-  const file=form.get('file');
-  const durationSec=Number(form.get('duration_sec'))||null;
-  if(!projectId||!file) return json({error:'project_id and file required'}, 400);
+  if(!marketingR2Configured(env)) return json({error:'Large video uploads require R2 credentials on the Worker — see SETUP.md "Marketing Studio module".'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  const mime=(body.content_type||'').split(';')[0];
+  const ext=MARKETING_VIDEO_MIME_EXT[mime];
+  if(!projectId) return json({error:'project_id required'}, 400);
+  if(!ext) return json({error:'Upload an mp4, mov, webm or m4v file.'}, 400);
   const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
   if(!project) return json({error:'Not found'}, 404);
-  if(file.size>MARKETING_SOURCE_MAX_BYTES) return json({error:'Video is too large — max 100 MB.'}, 400);
-  const mime=(file.type||'').split(';')[0];
-  const ext=MARKETING_VIDEO_MIME_EXT[mime];
-  if(!ext) return json({error:'Upload an mp4, mov, webm or m4v file.'}, 400);
   const key=marketingClipKey(payload.cid, projectId, ext);
-  await env.MARKETING_MEDIA.put(key, await file.arrayBuffer(), {httpMetadata:{contentType:mime}});
+  const uploadUrl=await marketingR2PresignUrl(env, 'PUT', key, 3600);
+  return json({ok:true, upload_url:uploadUrl, source_key:key});
+}
+
+async function handleMarketingClipUploadFinish(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const projectId=Number(body.project_id);
+  const key=String(body.source_key||'');
+  const durationSec=Number(body.duration_sec)||null;
+  if(!projectId||!key) return json({error:'project_id and source_key required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  if(!key.startsWith(`marketing/${payload.cid}/${projectId}/clips/`)) return json({error:'source_key does not match this project.'}, 400);
+  const head=await env.MARKETING_MEDIA.head(key);
+  if(!head) return json({error:'Upload did not complete — the file was not found in storage. Try again.'}, 400);
+  if(head.size>MARKETING_SOURCE_MAX_BYTES){
+    await env.MARKETING_MEDIA.delete(key).catch(()=>{});
+    return json({error:`Video is too large — max ${Math.round(MARKETING_SOURCE_MAX_BYTES/1024/1024)} MB.`}, 400);
+  }
   const maxOrder=await env.DB.prepare(`SELECT COALESCE(MAX(order_index),-1) AS m FROM marketing_project_clips WHERE project_id=?`).bind(projectId).first();
   const now=new Date().toISOString();
   const result=await env.DB.prepare(`INSERT INTO marketing_project_clips (project_id, client_id, source_key, source_duration_sec, order_index, created_at) VALUES (?,?,?,?,?,?)`)
@@ -10198,9 +10310,11 @@ export default {
       else if(url.pathname==='/marketing/projects' && request.method==='POST'){ res=await handleMarketingProjectCreate(request, env); }
       else if(url.pathname==='/marketing/projects' && request.method==='PATCH'){ res=await handleMarketingProjectUpdate(request, env); }
       else if(url.pathname==='/marketing/projects' && request.method==='DELETE'){ res=await handleMarketingProjectDelete(request, env); }
-      else if(url.pathname==='/marketing/projects/upload' && request.method==='POST'){ res=await handleMarketingProjectUpload(request, env); }
+      else if(url.pathname==='/marketing/projects/upload-init' && request.method==='POST'){ res=await handleMarketingProjectUploadInit(request, env); }
+      else if(url.pathname==='/marketing/projects/upload-finish' && request.method==='POST'){ res=await handleMarketingProjectUploadFinish(request, env); }
       else if(url.pathname==='/marketing/projects/clips' && request.method==='GET'){ res=await handleMarketingClipsList(request, env, url); }
-      else if(url.pathname==='/marketing/projects/clips' && request.method==='POST'){ res=await handleMarketingClipUpload(request, env); }
+      else if(url.pathname==='/marketing/projects/clips/upload-init' && request.method==='POST'){ res=await handleMarketingClipUploadInit(request, env); }
+      else if(url.pathname==='/marketing/projects/clips/upload-finish' && request.method==='POST'){ res=await handleMarketingClipUploadFinish(request, env); }
       else if(url.pathname==='/marketing/projects/clips' && request.method==='DELETE'){ res=await handleMarketingClipDelete(request, env); }
       else if(url.pathname==='/marketing/projects/clips/reorder' && request.method==='PATCH'){ res=await handleMarketingClipsReorder(request, env); }
       else if(url.pathname==='/marketing/projects/combine-clips' && request.method==='POST'){ res=await handleMarketingCombineClips(request, env); }
