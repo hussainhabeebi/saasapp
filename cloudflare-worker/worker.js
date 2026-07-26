@@ -9021,6 +9021,12 @@ const MARKETING_AUTOEDIT_PRESETS = [
   {id:'vlog', name:'Vlog / Storytime', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'medium'},
   {id:'announcement', name:'News / Announcement', silence_cut:true, auto_zoom:false, background_music:'cinematic', broll_density:'low'},
   {id:'raw', name:'Raw — No Auto-Edit', silence_cut:false, auto_zoom:false, background_music:null, broll_density:'none'},
+  {id:'sales-pitch', name:'Sales Pitch / Offer', silence_cut:true, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
+  {id:'faq-explainer', name:'FAQ / Explainer', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'low'},
+  {id:'before-after', name:'Before & After / Transformation', silence_cut:true, auto_zoom:true, background_music:'cinematic', broll_density:'medium'},
+  {id:'event-recap', name:'Event Recap', silence_cut:false, auto_zoom:true, background_music:'upbeat', broll_density:'medium'},
+  {id:'interview', name:'Interview / Podcast Clip', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
+  {id:'unboxing', name:'Unboxing / Demo', silence_cut:true, auto_zoom:true, background_music:'chill', broll_density:'high'},
 ];
 
 // Cue suggestion dictionary — deliberately a static keyword→cue-type table, not a model call:
