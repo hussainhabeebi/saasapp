@@ -397,6 +397,28 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div style="margin-top:14px" id="wordListWrap" class="hidden">
               <div id="sceneWordGroups"></div>
               <div class="note" style="margin-top:8px">Dotted-border words are approximate timing (the transcription provider only returned sentence-level timestamps) — text is still accurate. Clear a word and click away to delete it; use "+ Add word" in a scene to insert one.</div>
+              <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+                <label class="form-label">Translate captions to</label>
+                <div class="row">
+                  <select class="form-select" id="translateLang" style="max-width:200px">
+                    <option value="en">English</option>
+                    <option value="hi">Hindi</option>
+                    <option value="ml">Malayalam</option>
+                    <option value="ta">Tamil</option>
+                    <option value="te">Telugu</option>
+                    <option value="kn">Kannada</option>
+                    <option value="bn">Bengali</option>
+                    <option value="mr">Marathi</option>
+                    <option value="gu">Gujarati</option>
+                    <option value="es">Spanish</option>
+                    <option value="fr">French</option>
+                    <option value="ar">Arabic</option>
+                  </select>
+                  <button class="btn btn-ghost btn-sm" onclick="translateCaptions()">🌐 Translate</button>
+                </div>
+                <div class="note" style="margin-top:4px">Free (MyMemory API) — word timing is approximated (evenly spread), not word-for-word synced, since translation changes word count/order.</div>
+                <div id="translateResult" style="margin-top:8px"></div>
+              </div>
             </div>
           </div>
 
@@ -416,8 +438,26 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
               <span class="chip" id="optSilence" onclick="toggleOpt('optSilence')">✂️ Cut silences / filler words</span>
               <span class="chip" id="optZoom" onclick="toggleOpt('optZoom')">🔎 Auto-zoom on emphasis</span>
               <span class="chip" id="optTextBehindSubject" onclick="toggleOpt('optTextBehindSubject')">🫥 Text behind subject (beta)</span>
+              <span class="chip" id="optDenoise" onclick="toggleOpt('optDenoise')">🔇 Reduce background noise</span>
+              <span class="chip" id="optAutoReframe" onclick="toggleOpt('optAutoReframe')">🎯 Smart auto-reframe</span>
+              <span class="chip" id="optBeatSync" onclick="toggleOpt('optBeatSync')">🥁 Beat-synced cuts</span>
+              <span class="chip" id="optChromaKey" onclick="toggleOpt('optChromaKey')">🟩 Green screen</span>
             </div>
-            <div class="note" id="textBehindSubjectNote" style="margin-top:6px">Beta — free local person-detection, approximate edges. Turns off silence-cut/auto-zoom/B-roll/SFX for this render (not combinable yet).</div>
+            <div class="note" id="textBehindSubjectNote" style="margin-top:6px">Beta — free local person-detection, approximate edges. Turns off silence-cut/auto-zoom/B-roll/SFX for this render (not combinable yet). Smart auto-reframe uses the same free local model to keep you in frame instead of a fixed center-crop. Beat-synced cuts need background music picked below.</div>
+            <div class="hidden" id="chromaKeyOpts" style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+              <label class="note">Key color <input type="color" id="chromaKeyColor" value="#00ff00"></label>
+              <label class="note">Background <input type="color" id="chromaKeyBg" value="#000000"></label>
+            </div>
+            <label class="form-label" style="margin-top:12px">Playback speed</label>
+            <select class="form-select" id="optSpeed">
+              <option value="1">Normal (1x)</option>
+              <option value="0.5">0.5x — slow-mo</option>
+              <option value="0.75">0.75x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x — time-lapse</option>
+              <option value="2">2x</option>
+            </select>
+            <div class="note" style="margin-top:4px">A single speed for the whole clip, not a per-segment ramp.</div>
             <label class="form-label">Background music</label>
             <select class="form-select" id="optMusic">
               <option value="">None</option>
@@ -449,6 +489,9 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
               <option value="high">High — slower encode, best quality</option>
             </select>
             <div class="note" style="margin-top:4px">Always exports as MP4.</div>
+            <label class="form-label" style="margin-top:12px">Also export as (batch multi-aspect)</label>
+            <div class="chip-row" id="batchAspectRow"></div>
+            <div class="note" style="margin-top:4px">Each extra aspect is a real, separately-billed render — its result won't overwrite this project's main output.</div>
             <button class="btn btn-primary" id="renderBtn" onclick="startRender()" style="margin-top:10px">🚀 Render</button>
             <div class="progress hidden" id="renderProgressWrap"><div class="progress-fill" id="renderProgressFill" style="width:0%"></div></div>
             <div class="note" id="renderStatus" style="margin-top:8px"></div>
@@ -459,6 +502,19 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
                 <input class="form-input" id="waPhone" placeholder="WhatsApp number" style="max-width:170px">
                 <button class="btn btn-sec btn-sm" onclick="sendToWhatsapp()">📤 Send via WhatsApp</button>
               </div>
+            </div>
+            <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+              <label class="form-label">Social caption + hashtags</label>
+              <button class="btn btn-ghost btn-sm" onclick="suggestSocialCaption()">✨ Draft a caption for this post</button>
+              <div class="note" style="margin-top:2px">Free (reuses the AI already configured for this app; falls back to a plain heuristic if that's not set up).</div>
+              <div id="socialCaptionResult" style="margin-top:8px"></div>
+            </div>
+            <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+              <label class="form-label">🎙️ AI voiceover (beta)</label>
+              <div class="note">Free, fully local text-to-speech (espeak-ng) — sounds robotic, not a studio voice. Generates a standalone narration file; it does not auto-dub into the video export yet.</div>
+              <textarea class="form-input" id="voiceoverText" rows="3" style="margin-top:6px" placeholder="Leave blank to use the transcript"></textarea>
+              <button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="generateVoiceover()">🎙️ Generate voiceover</button>
+              <div id="voiceoverResult" style="margin-top:8px"></div>
             </div>
           </div>
         </div>
@@ -482,6 +538,7 @@ let templates = [];
 let autoeditPresets = [];
 let currentCues = [];
 let aiBrollPrompts = {}; // cue index -> in-progress prompt text, kept across renderCues() re-renders
+let pendingTranslatedCaptions = null; // last translateCaptions() result, awaiting applyTranslatedCaptions()
 let currentProject = null;
 let selectedStyleId = 'bold-pop';
 let generatingForTemplate = null;
@@ -695,7 +752,16 @@ function renderEditor() {
   $id('optSilence').classList.toggle('on', !!p._optSilence);
   $id('optZoom').classList.toggle('on', !!p._optZoom);
   $id('optTextBehindSubject').classList.toggle('on', !!p._optTextBehindSubject);
+  $id('optDenoise').classList.toggle('on', !!p._optDenoise);
+  $id('optAutoReframe').classList.toggle('on', !!p._optAutoReframe);
+  $id('optBeatSync').classList.toggle('on', !!p._optBeatSync);
+  $id('optChromaKey').classList.toggle('on', !!p._optChromaKey);
+  $id('chromaKeyOpts').classList.toggle('hidden', !p._optChromaKey);
   $id('optAutoeditPreset').value = '';
+
+  $id('batchAspectRow').innerHTML = ['9:16', '1:1', '16:9'].filter(a => a !== p.target_aspect).map(a =>
+    `<label class="chip" style="cursor:pointer"><input type="checkbox" id="aspect_${a.replace(':', '_')}" style="margin-right:4px">${a}</label>`
+  ).join('');
 
   currentCues = p.cues || [];
   $id('suggestCuesBtn').disabled = !(p.captions && (p.captions.words || []).length);
@@ -1089,6 +1155,32 @@ function redistributeCaptionsAcrossScenes() {
   renderEditor();
   toastSuccess('Captions redistributed across all scenes.');
 }
+// Auto-translate captions (free, MyMemory API — see worker.js's handleMarketingTranslateCaptions).
+// Shows a preview + explicit Apply step rather than overwriting captions immediately — translation
+// changes word count/order, so the resulting timing is an approximation the user should see before
+// committing (same "review before it overwrites your work" caution as other destructive actions
+// in this editor, e.g. redistributeCaptionsAcrossScenes's confirm() above).
+async function translateCaptions() {
+  if (!currentProject?.captions?.words?.length) { toastError('Transcribe first.'); return; }
+  const lang = $id('translateLang').value;
+  const result = $id('translateResult');
+  result.innerHTML = '<span class="note">⏳ Translating…</span>';
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/translate-captions`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, target_language: lang }) });
+  const data = await r.json();
+  if (!r.ok) { result.innerHTML = `<span class="note usage-warn">${esc(data.error || 'Translation failed.')}</span>`; return; }
+  pendingTranslatedCaptions = data.captions;
+  const preview = data.captions.words.map(w => w.word).join(' ');
+  result.innerHTML = `<div class="note" style="max-height:100px;overflow-y:auto">${esc(preview)}</div>
+    <button class="btn btn-sec btn-sm" style="margin-top:6px" onclick="applyTranslatedCaptions()">✅ Apply as captions</button>`;
+}
+function applyTranslatedCaptions() {
+  if (!pendingTranslatedCaptions || !currentProject) return;
+  if (!confirm('Replace the current captions with this translation? You can re-transcribe to get the original back.')) return;
+  currentProject.captions = pendingTranslatedCaptions;
+  saveCaptions();
+  renderEditor();
+  toastSuccess('Captions replaced with the translation.');
+}
 function addWordToScene(si) {
   const p = currentProject;
   const scene = (p?.scenes || [])[si];
@@ -1246,6 +1338,7 @@ function toggleOpt(id) {
   } else if ((id === 'optSilence' || id === 'optZoom') && $id(id).classList.contains('on')) {
     $id('optTextBehindSubject').classList.remove('on');
   }
+  if (id === 'optChromaKey') $id('chromaKeyOpts').classList.toggle('hidden', !$id('optChromaKey').classList.contains('on'));
 }
 
 // ── B-ROLL / SFX / VFX CUES — free (no AI call), keyword-based suggestions derived from the
@@ -1333,21 +1426,39 @@ async function saveCues() {
 }
 
 // ── RENDER ──
-async function startRender() {
-  if (!currentProject) return;
-  $id('renderBtn').disabled = true;
-  // "Cut silences / filler words" is one chip, so it drives both spec fields — the label already
-  // promised filler-word removal before the render pipeline actually did it; now it's true.
-  const options = {
+// Shared by startRender/previewRender so the two never drift on what a toggle/select actually
+// sends — quality is the one field only the real render sets (previews force their own 'draft'
+// server-side, see handleMarketingPreview).
+function collectRenderOptions() {
+  return {
+    // "Cut silences / filler words" is one chip, so it drives both spec fields — the label
+    // already promised filler-word removal before the render pipeline actually did it.
     silence_cut: $id('optSilence').classList.contains('on'),
     filler_word_cut: $id('optSilence').classList.contains('on'),
     auto_zoom: $id('optZoom').classList.contains('on'),
     background_music: $id('optMusic').value || null,
     autoedit_preset: $id('optAutoeditPreset').value || null,
     text_behind_subject: $id('optTextBehindSubject').classList.contains('on'),
-    quality: $id('optQuality').value || 'standard',
+    denoise: $id('optDenoise').classList.contains('on'),
+    auto_reframe: $id('optAutoReframe').classList.contains('on'),
+    beat_sync: $id('optBeatSync').classList.contains('on'),
+    speed_factor: Number($id('optSpeed').value) || 1,
+    chroma_key: $id('optChromaKey').classList.contains('on') ? {
+      enabled: true, color: $id('chromaKeyColor').value, background_color: $id('chromaKeyBg').value,
+    } : null,
   };
-  const r = await fetch(`${WORKER_BASE}/marketing/projects/render`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, options }) });
+}
+async function startRender() {
+  if (!currentProject) return;
+  $id('renderBtn').disabled = true;
+  const options = { ...collectRenderOptions(), quality: $id('optQuality').value || 'standard' };
+  const body = { project_id: currentProject.id, options };
+  // Batch multi-aspect export — the project's own aspect always renders as the primary output;
+  // any other checked boxes render as real, billable EXTRA renders whose result lives on their
+  // own job row only (see worker.js's handleMarketingRenderStart/render_extra job type).
+  const extraAspects = ['9:16', '1:1', '16:9'].filter(a => a !== currentProject.target_aspect && $id(`aspect_${a.replace(':', '_')}`)?.checked);
+  if (extraAspects.length) body.aspects = extraAspects;
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/render`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
   const data = await r.json();
   $id('renderBtn').disabled = false;
   if (!r.ok) { toastError(data.error || 'Could not start render.'); return; }
@@ -1379,14 +1490,7 @@ async function previewRender(sceneIndex, targetElId) {
   if (!currentProject) return;
   const target = $id(targetElId);
   target.innerHTML = '<span class="note">⏳ Rendering preview…</span>';
-  const options = {
-    silence_cut: $id('optSilence').classList.contains('on'),
-    filler_word_cut: $id('optSilence').classList.contains('on'),
-    auto_zoom: $id('optZoom').classList.contains('on'),
-    background_music: $id('optMusic').value || null,
-    autoedit_preset: $id('optAutoeditPreset').value || null,
-    text_behind_subject: $id('optTextBehindSubject').classList.contains('on'),
-  };
+  const options = collectRenderOptions();
   const body = { project_id: currentProject.id, options };
   if (Number.isInteger(sceneIndex)) body.scene_index = sceneIndex;
   const r = await fetch(`${WORKER_BASE}/marketing/projects/preview`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
@@ -1419,6 +1523,30 @@ async function sendToWhatsapp() {
   const r = await fetch(`${WORKER_BASE}/marketing/projects/send-whatsapp`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, phone }) });
   const data = await r.json();
   r.ok ? toastSuccess('Sent!') : toastError(data.error || 'Failed to send.');
+}
+
+async function suggestSocialCaption() {
+  if (!currentProject) return;
+  const result = $id('socialCaptionResult');
+  result.innerHTML = '<span class="note">⏳ Drafting…</span>';
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/suggest-caption`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id }) });
+  const data = await r.json();
+  if (!r.ok) { result.innerHTML = `<span class="note usage-warn">${esc(data.error || 'Could not draft a caption.')}</span>`; return; }
+  const hashtags = (data.hashtags || []).map(h => '#' + h).join(' ');
+  const full = `${data.caption}\n\n${hashtags}`;
+  result.innerHTML = `<div class="note" style="white-space:pre-wrap">${esc(full)}</div>
+    <button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="navigator.clipboard.writeText(${JSON.stringify(full)}).then(()=>toastSuccess('Copied.'))">📋 Copy</button>`;
+}
+
+async function generateVoiceover() {
+  if (!currentProject) return;
+  const text = $id('voiceoverText').value.trim();
+  const result = $id('voiceoverResult');
+  result.innerHTML = '<span class="note">⏳ Synthesizing…</span>';
+  const r = await fetch(`${WORKER_BASE}/marketing/projects/generate-voiceover`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, text: text || undefined }) });
+  const data = await r.json();
+  if (!r.ok) { result.innerHTML = `<span class="note usage-warn">${esc(data.error || 'Voiceover generation failed.')}</span>`; return; }
+  result.innerHTML = `<audio controls src="${data.output_url}" style="width:100%;max-width:280px"></audio>`;
 }
 
 // ── TEMPLATE LIBRARY — curated starter templates (worker.js's MARKETING_TEMPLATE_LIBRARY),

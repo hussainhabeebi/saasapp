@@ -5387,6 +5387,107 @@ fal.ai account, never a shared key covering everyone's usage.
   corrected in one place (`extractVideoUrl()` in `falBroll.js`). **Test with a real fal.ai key
   after deploying before relying on this.**
 
+## Marketing Studio module — CapCut-style extras (speed ramp, denoise, chroma key, batch export, social caption, auto-reframe, beat sync, translate, voiceover)
+A batch of further CapCut-style features, all free (no paid API — MyMemory and espeak-ng both need
+no key at all; everything else is pure ffmpeg or reuses the free local RVM model already running
+for Text Behind Subject). All render-affecting options here ride the same `spec` object and Editor
+step 3 chip row as the existing silence-cut/auto-zoom toggles.
+
+- **Global speed ramp** (`spec.speed_factor`, 0.5–2×) — a single clip-wide speed change
+  (slow-mo/time-lapse), applied as the LAST step in `filtergraph.js` (`setpts`/`atempo`), after
+  captions are already burned in and audio already mixed — both simply play back faster/slower
+  together, no caption-timing recomputation needed. **Not** CapCut's full per-segment speed
+  *ramping* (varying speed within one clip) — a real, deliberate v1 scope limit, not a bug.
+  Verified for real: ran the full filter graph (chroma key + denoise + 1.5× speed together)
+  through actual ffmpeg against synthetic video and confirmed the output duration matched exactly
+  (6s input → 4.04s output at 1.5×).
+- **Noise reduction** (`spec.denoise`) — ffmpeg's own built-in FFT denoiser (`afftdn`), applied to
+  the speech track before music/SFX mixing. No external model file to ship (unlike RNNoise/
+  `arnndn`) — genuinely zero extra setup or cost.
+- **Green screen / chroma key** (`spec.chroma_key: {enabled, color, similarity, blend,
+  background_color}`) — keys out the given color and composites onto a solid background color
+  (an actual background *image* is a natural future addition, not built here — v1 is
+  color-only). Hex colors are re-validated on BOTH the Worker (before signing the spec) and the
+  render pipeline (`filtergraph.js`'s own `sanitizeHexColor`) — defense in depth, since these
+  strings get interpolated straight into an ffmpeg filter expression.
+- **Batch multi-aspect export** (`POST /marketing/projects/render` with `body.aspects: ['1:1',
+  '16:9']`) — renders the project's own aspect as the normal primary render, plus any OTHER
+  checked aspect as a `jobType:'render_extra'` job on the SAME queue — a real, separately-billed
+  render (minutes billing runs for it too), but its result lives only on its own job row
+  (`marketing_jobs.output_url`), same as a preview, since a project only has one `output_key`
+  column. `handleMarketingRenderWebhook`'s project-row-mutation branch now checks
+  `job.type==='render'` specifically (was `!=='preview'`) so `render_extra` jobs bill minutes
+  without overwriting the project's canonical output.
+- **Social caption + hashtags** (`POST /marketing/projects/suggest-caption`) — drafts a short
+  social caption + 4-6 hashtags from the transcript, reusing the SAME shared `GEMINI_API_KEY` the
+  Conversation Engine already calls (`engineGeminiGenerate`) — no new integration. Falls back to a
+  plain heuristic (first sentence + generic hashtags) if no key is configured or the model call
+  fails, so the button always returns something usable rather than erroring.
+- **Smart auto-reframe** (`spec.auto_reframe`, `render-pipeline/lib/autoReframe.js`) — instead of
+  always center-cropping a landscape/square source down to a taller aspect, tracks the subject's
+  horizontal position (via the SAME local RobustVideoMatting model Text Behind Subject already
+  runs — no new model, no per-video cost) and keeps them in frame. Computes a per-frame centroid
+  from RVM's alpha output, smooths it (simple moving average — real jitter reduction, not a
+  Kalman/optical-flow tracker), and builds an ffmpeg `crop` filter `x` expression entirely in
+  terms of ffmpeg's own runtime `in_w`/`out_w` variables (resolution-independent, no baked-in
+  pixel math). Best-effort: falls back to the existing static center-crop if matting fails
+  (missing model file, decode error, no confident subject). **Verified for real**: a synthetic
+  moving "subject" blob correctly produced a rightward-moving centroid track, and the resulting
+  crop expression was run through actual ffmpeg (both standalone and inside the full filter graph)
+  and confirmed to execute correctly — not just syntax-checked.
+- **Beat-synced cuts** (`spec.beat_sync`, `render-pipeline/lib/beatDetect.js`) — snaps B-roll/SFX
+  cue start times to the nearest detected beat in the background music, so cuts land "on the
+  beat" like CapCut's auto-cut-to-beat. This is a real, from-scratch **energy-onset detector**
+  (spectral-flux-style: half-wave-rectified frame-to-frame RMS energy increase, adaptive-threshold
+  local-maxima peak-picking) — explicitly **not** a full tempo/beat-tracker like librosa's
+  `beat_track` (no BPM-grid fitting or phase estimation), because that's what actually matters for
+  short-form cut points, not a steady tempo claim. No new npm dependency — decodes PCM via the
+  ffmpeg binary already required everywhere else in this pipeline. The music's own detected beat
+  pattern is tiled across the full output duration to match how it loops in the final render
+  (`-stream_loop -1`). **Verified for real**: built a synthetic 16-click track (500ms apart) via
+  real ffmpeg and confirmed the detector found 15/16 clicks within 100ms (it structurally can't
+  detect the very first onset at t=0, a known and reasonable onset-detector characteristic — no
+  preceding energy to compare against).
+- **Auto-translate captions** (`POST /marketing/projects/translate-captions`,
+  [MyMemory Translation API](https://mymemory.translated.net/)) — genuinely free with **no API
+  key or signup at all**: 5,000 chars/day anonymously by IP, or 50,000/day with a contact email
+  set via the Worker's `MYMEMORY_EMAIL` (a shared server-level setting — it's a quota multiplier,
+  not a real credential, so it's not per-client like the Pexels/Pixabay/Freesound/fal.ai keys).
+  Splits the transcript into ~450-char chunks (MyMemory's own per-query limit is small) and
+  translates sequentially (not in parallel — the daily quota is shared Worker-wide). **Word-level
+  timing can't survive translation** (word count/order changes across languages) — translated
+  words are evenly spread across the SAME total time span the original transcript covered, the
+  same honest "equal split" approximation this module already uses elsewhere
+  (`splitSceneEvenly`/`redistributeCaptionsAcrossScenes`) rather than a false claim of exact sync.
+  Frontend shows a preview and requires an explicit "✅ Apply as captions" click — never silently
+  overwrites existing captions. **Not verified against a live call** in the dev sandbox this was
+  built in (outbound requests to arbitrary external hosts are proxied/blocked there) — the
+  request/response contract (`GET .../get?q=...&langpair=src|tgt`, response at
+  `responseData.translatedText`) is confirmed via MyMemory's own published documentation, not a
+  live test. Test a real translation after deploying.
+- **AI voiceover/dubbing (beta)** (`POST /marketing/projects/generate-voiceover`,
+  `render-pipeline/lib/tts.js`) — free, fully local text-to-speech via **espeak-ng** (apt-
+  installable, no API key, works offline). The honest tradeoff versus a paid neural TTS API
+  (ElevenLabs etc.): espeak-ng is a formant/rule-based synthesizer and sounds clearly
+  robotic/mechanical, not a studio-quality AI voice — documented upfront, not discovered after
+  shipping. **v1 scope**: produces a real, downloadable/playable narration audio file (from the
+  transcript, or custom typed text) — it does **not** automatically dub/time-align itself into the
+  video render. The original speech and a synthesized voiceover of the same text generally run
+  different lengths, and reconciling that against the existing silence-cut/caption-timing
+  machinery is real additional work, not attempted here — a natural future addition. Runs
+  synchronously on the render pipeline (`POST /synthesize-voiceover`, same HMAC-signed pattern as
+  `/transcribe`/`/detect-scenes` — espeak-ng synthesis is fast enough not to need the async job
+  queue a full video render uses). **Verified for real**: ran the actual espeak-ng → ffmpeg mp3
+  pipeline end-to-end in the dev sandbox and confirmed a real, correctly-sized, correct-duration
+  audio file was produced (not just that the commands parsed).
+
+### What's honestly not built here
+Per-segment speed *ramping* (as opposed to one clip-wide speed), a chroma-key background *image*
+(as opposed to a solid color), automatic voiceover dubbing/time-alignment into the render, and a
+true tempo/BPM beat-tracker (as opposed to onset/energy-peak detection) are all real, identified
+gaps versus a full CapCut feature set — each documented at its own section above rather than
+silently shipped as if complete.
+
 ## Marketing Studio module — Text Behind Subject (beta)
 A render option (`spec.text_behind_subject`, a "🫥 Text behind subject (beta)" chip in the
 Editor's Auto-edit step) where captions sit behind the person on screen instead of on top —

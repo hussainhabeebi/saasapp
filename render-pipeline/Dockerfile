@@ -17,8 +17,12 @@ FROM node:20-bookworm-slim
 # animated (Remotion) compositions are rendered by driving real headless Chrome, unlike everything
 # else in this service which is pure ffmpeg. Not needed if the Remotion engine is never removed
 # from templateRender's engine options, but it is, so it stays.
+#
+# espeak-ng — free, fully local text-to-speech for AI voiceover/dubbing (lib/tts.js). Genuinely
+# free (no API key, offline), at the cost of a clearly robotic voice compared to a paid neural TTS
+# API — documented tradeoff, not a placeholder for a "real" TTS to swap in later.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation fonts-noto-core ca-certificates curl \
+  && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation fonts-noto-core ca-certificates curl espeak-ng \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 libnspr4 \
     libx11-6 libxcb1 libxext6 libxi6 \

@@ -15,6 +15,15 @@ const QUALITY_PRESETS = {
   high: { crf: 17, preset: 'medium' },         // noticeably slower encode, visibly cleaner output
 };
 
+// Both re-validated here (not just at the Worker, which already validates before this spec is
+// HMAC-signed and sent over) since these strings get interpolated straight into an ffmpeg filter
+// expression — cheap defense in depth against a malformed/compromised spec producing filtergraph
+// (or, worse, argv) injection rather than just a render error.
+const HEX_COLOR_RE = /^#?[0-9a-fA-F]{6}$/;
+function sanitizeHexColor(c, fallback) {
+  return typeof c === 'string' && HEX_COLOR_RE.test(c) ? '0x' + c.replace('#', '') : fallback;
+}
+
 function buildFfmpegArgs({
   inputPath,
   keepSegments,          // [{start, end}] in the SOURCE video's absolute time — see lib/timeline.js
@@ -28,6 +37,14 @@ function buildFfmpegArgs({
   broll = [],             // [{path, startSec, endSec, scale}] — remapped to the OUTPUT timeline
   vfx = [],               // [{type, startSec, endSec}] — remapped to the OUTPUT timeline
   quality = 'standard',   // 'draft' | 'standard' | 'high' — see QUALITY_PRESETS
+  denoise = false,        // ffmpeg's built-in FFT denoiser (afftdn) — no external model file needed
+  chromaKey = null,       // {color, similarity, blend, background_color} or null — green-screen keying
+  speedFactor = 1,        // 0.5-2.0 — a single GLOBAL speed change (slow-mo/time-lapse), not CapCut's
+                           // full per-segment speed ramping — see SETUP.md's scope note on this
+  cropXExpr = null,       // pre-computed ffmpeg crop `x` expression from lib/autoReframe.js, or
+                           // null for the plain static center-crop — computed by render.js (needs
+                           // I/O: decode+matte) BEFORE calling this pure function, same division of
+                           // labor as words/broll/sfx resolution already happening upstream of here
   outputPath,
 }) {
   const q = QUALITY_PRESETS[quality] || QUALITY_PRESETS.standard;
@@ -54,9 +71,30 @@ function buildFfmpegArgs({
   const concatIn = segs.map((_, i) => `[cv${i}][ca${i}]`).join('');
   filters.push(`${concatIn}concat=n=${segs.length}:v=1:a=1[vcat][acat]`);
 
-  // 2) Crop/scale to the target aspect (center-crop after an upscale-to-cover).
-  filters.push(`[vcat]scale=${resolutionW}:${resolutionH}:force_original_aspect_ratio=increase,crop=${resolutionW}:${resolutionH}[vcrop]`);
+  // 2) Crop/scale to the target aspect — upscale-to-cover, then either a plain center-crop, or,
+  // when cropXExpr is given (smart auto-reframe, lib/autoReframe.js), a subject-tracking crop that
+  // moves the window instead of always taking the middle slice. `x` accepts a runtime expression
+  // string exactly the same way the existing zoompan/eq/overlay `enable` expressions below do —
+  // this isn't a new mechanism, just the first user of it on the crop filter specifically.
+  const cropX = cropXExpr || `(in_w-out_w)/2`;
+  filters.push(`[vcat]scale=${resolutionW}:${resolutionH}:force_original_aspect_ratio=increase,crop=${resolutionW}:${resolutionH}:x='${cropX}':y=0[vcrop]`);
   let vChain = 'vcrop';
+
+  // 2b) Green screen / chroma key — keys out the given color and composites onto a solid
+  // background instead (a background IMAGE, not just a color, is a natural future addition, not
+  // built here — v1 scope, same "real but bounded" pattern as B-roll PiP above). `color` here is
+  // an ffmpeg *source* filter (generates its own frames), not a second file input — no extra -i
+  // needed, same trick zoompan/subtitles use for not needing external assets.
+  if (chromaKey && chromaKey.enabled) {
+    const keyColor = sanitizeHexColor(chromaKey.color, '0x00FF00');
+    const bgColor = sanitizeHexColor(chromaKey.background_color, '0x000000');
+    const similarity = Math.min(0.6, Math.max(0.05, Number(chromaKey.similarity) || 0.3));
+    const blend = Math.min(0.5, Math.max(0, Number(chromaKey.blend) || 0.1));
+    filters.push(`color=c=${bgColor}:s=${resolutionW}x${resolutionH}:d=1200[ckbg]`);
+    filters.push(`[${vChain}]colorkey=${keyColor}:${similarity}:${blend},format=yuva420p[vkeyed]`);
+    filters.push(`[ckbg][vkeyed]overlay=shortest=1,format=yuv420p[vck]`);
+    vChain = 'vck';
+  }
 
   // 3) Auto-zoom — a slow, continuous punch-in for the whole clip (d=1 so it maps input frames
   // 1:1 instead of duplicating them, which is what makes zoompan usable on real video rather than
@@ -114,7 +152,16 @@ function buildFfmpegArgs({
   // 8) Audio — speech (already through the same segment concat as the video) plus optional
   // background music (volume-reduced, trimmed to the output length — a constant-level duck, not
   // true sidechain compression; see README's "known limitations") plus optional one-shot SFX.
-  const audioMixInputs = ['[acat]'];
+  // Noise reduction — ffmpeg's own FFT denoiser (afftdn), applied to the speech track only
+  // (before music/SFX are mixed in, which are already clean synthetic/stock audio that doesn't
+  // need it). No external model file to ship, unlike RNNoise's arnndn — genuinely zero extra cost.
+  let speechLabel = 'acat';
+  if (denoise) {
+    filters.push(`[acat]afftdn=nf=-25[adenoise]`);
+    speechLabel = 'adenoise';
+  }
+
+  const audioMixInputs = [`[${speechLabel}]`];
   if (music) {
     const idx = addInput(music.path, ['-stream_loop', '-1']);
     filters.push(`[${idx}:a]volume=${music.volume ?? 0.15}[bgm]`);
@@ -129,13 +176,29 @@ function buildFfmpegArgs({
   if (audioMixInputs.length > 1) {
     filters.push(`${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0[aout]`);
   } else {
-    filters.push(`[acat]anull[aout]`);
+    filters.push(`[${speechLabel}]anull[aout]`);
+  }
+  let aChain = 'aout';
+
+  // 9) Global speed ramp — applied LAST, after captions are already burned in and audio is
+  // already mixed, so both simply play back faster/slower together; captions don't need their own
+  // timing recomputed since they're baked into pixels at their original real-time position, which
+  // is what this step then uniformly stretches/compresses. A single clip-wide factor, not
+  // CapCut's full per-segment speed *ramping* (varying speed within one clip) — see SETUP.md.
+  // atempo's own valid range is 0.5-2.0 per instance, which is also this feature's clamp range, so
+  // one filter instance always covers it (no need to chain several for a wider range).
+  if (speedFactor && speedFactor !== 1) {
+    const clamped = Math.min(2, Math.max(0.5, Number(speedFactor) || 1));
+    filters.push(`[${vChain}]setpts=PTS/${clamped}[vspeed]`);
+    vChain = 'vspeed';
+    filters.push(`[${aChain}]atempo=${clamped}[aspeed]`);
+    aChain = 'aspeed';
   }
 
   const args = [
     '-y', ...inputs,
     '-filter_complex', filters.join('; '),
-    '-map', `[${vChain}]`, '-map', '[aout]',
+    '-map', `[${vChain}]`, '-map', `[${aChain}]`,
     '-c:v', 'libx264', '-preset', q.preset, '-crf', String(q.crf),
     '-c:a', 'aac', '-b:a', '160k',
     '-movflags', '+faststart',

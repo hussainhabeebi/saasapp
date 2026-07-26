@@ -131,4 +131,7 @@ async function generateMatte(sourceVideoPath, outputMattePath, aspectRatio) {
   return { path: outputMattePath, width: PROC_WIDTH, height: procHeight, fps: PROC_FPS };
 }
 
-module.exports = { generateMatte, MODEL_PATH };
+// decodeRawFrames/runMatting also exported for lib/autoReframe.js — it needs the raw per-frame
+// alpha data itself (to compute a subject centroid), not the encoded matte video generateMatte
+// produces, so it reuses these two steps directly instead of decoding+matting the source twice.
+module.exports = { generateMatte, decodeRawFrames, runMatting, MODEL_PATH, PROC_WIDTH, PROC_FPS };

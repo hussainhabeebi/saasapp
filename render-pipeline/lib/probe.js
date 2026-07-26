@@ -14,4 +14,19 @@ async function getDurationSec(filePath) {
   return Number.isFinite(n) ? n : 0;
 }
 
-module.exports = { getDurationSec };
+// Source video's own pixel dimensions — needed by lib/autoReframe.js to compute the right aspect
+// ratio for its reduced-resolution matting pass (must match the source's own aspect, not the
+// render's target aspect, since that's what it's tracking a subject within).
+async function getVideoDimensions(filePath) {
+  const { stdout } = await run('ffprobe', [
+    '-v', 'error',
+    '-select_streams', 'v:0',
+    '-show_entries', 'stream=width,height',
+    '-of', 'csv=s=x:p=0',
+    filePath,
+  ]);
+  const [w, h] = stdout.trim().split('x').map(Number);
+  return (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) ? { width: w, height: h } : null;
+}
+
+module.exports = { getDurationSec, getVideoDimensions };

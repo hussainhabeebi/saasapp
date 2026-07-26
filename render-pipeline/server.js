@@ -19,6 +19,8 @@ const { transcribe } = require('./lib/transcribe');
 const { detectScenes, generateSceneThumbnails } = require('./lib/sceneDetect');
 const { downloadToFile } = require('./lib/download');
 const { generateAiBroll } = require('./lib/falBroll');
+const { synthesizeVoiceover } = require('./lib/tts');
+const { uploadOutput } = require('./lib/storage');
 
 const env = process.env;
 const PORT = env.PORT || 8787;
@@ -154,6 +156,32 @@ app.post('/detect-scenes', async (req, res) => {
     res.json({ ok: true, scenes });
   } catch (err) {
     console.error('detect-scenes failed:', err.stderr || err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+// Also synchronous, same reasoning as /detect-scenes above — espeak-ng synthesis is fast (well
+// under real-time even for a full script), so there's no need for the async job queue the actual
+// video render uses. See lib/tts.js for what this is and isn't (genuinely free/local, but
+// robotic-sounding — not a paid neural voice).
+app.post('/synthesize-voiceover', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { text, language, client_id, project_id } = req.body || {};
+  if (!text || !client_id || !project_id) return res.status(400).json({ error: 'text, client_id and project_id required' });
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mkt-tts-'));
+  try {
+    const localPath = path.join(workDir, 'voiceover.mp3');
+    await synthesizeVoiceover(text, language, localPath);
+    const key = `marketing/${client_id}/${project_id}/voiceover-${Date.now()}.mp3`;
+    const result = await uploadOutput(env, localPath, key, 'audio/mpeg');
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('synthesize-voiceover failed:', err.stderr || err.message || err);
     res.status(502).json({ error: String(err.message || err).slice(0, 500) });
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });

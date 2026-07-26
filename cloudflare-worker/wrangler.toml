@@ -156,3 +156,10 @@ MARKETING_DEFAULT_MINUTES_LIMIT = "30"
 #                           and authenticates the pipeline's inbound callback to
 #                           POST /marketing/webhook/render-complete (same X-Signature HMAC-SHA256
 #                           scheme as verifyShopifyWebhookHmac, over the raw body).
+#   MYMEMORY_EMAIL          optional — a contact email appended to every MyMemory Translation API
+#                           call (auto-translate captions, handleMarketingTranslateCaptions).
+#                           MyMemory needs no API key/signup at all; adding an email via this var
+#                           just raises the free daily character quota 10x (5,000 -> 50,000/day),
+#                           shared across every client on this Worker — not a real credential, so
+#                           it's one server-level setting, not a per-client one like the keys
+#                           below.
