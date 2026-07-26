@@ -298,8 +298,12 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div class="card-head"><h2>Preview</h2></div>
             <div id="uploadZone" class="dropzone" onclick="document.getElementById('fileInput').click()">
               📹 Click or drag a video here — mp4 / mov / webm / m4v (max 2 GB)
-              <input type="file" id="fileInput" accept="video/mp4,video/quicktime,video/webm,video/x-m4v" class="hidden" onchange="onFilePicked(event)">
             </div>
+            <!-- Deliberately NOT nested inside #uploadZone — resetUploadZone()/uploadPrimaryVideo()
+                 set uploadZone.textContent to swap its label, which would silently delete this
+                 input (and every future click would call .click() on a null element) if it lived
+                 inside. This is what made the dropzone truly unclickable, not a styling issue. -->
+            <input type="file" id="fileInput" accept="video/mp4,video/quicktime,video/webm,video/x-m4v" class="hidden" onchange="onFilePicked(event)">
             <div class="hidden upload-progress-wrap" id="uploadProgressWrap">
               <div class="progress"><div class="progress-fill" id="uploadProgressFill" style="width:0%"></div></div>
               <div class="note" id="uploadProgressNote">Uploading…</div>
