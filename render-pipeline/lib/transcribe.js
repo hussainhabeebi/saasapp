@@ -1,0 +1,35 @@
+// Calls OpenAI's Whisper endpoint from THIS server rather than from the Worker. Real fix for a
+// real bug: OpenAI's API blocks requests whose source IP resolves to certain countries/regions —
+// Cloudflare Workers run on a globally distributed edge network with unpredictable egress IPs per
+// request, so calling OpenAI directly from worker.js hit "Country, region, or territory not
+// supported" even though the account/user's actual location is fine. This server runs on one
+// fixed host (whatever Coolify/VPS location it's deployed to), so its outbound IP is stable and
+// (assuming that location is one OpenAI serves) doesn't hit that block. Reuses extractAudio() for
+// the same reason /extract-audio does — sending audio-only keeps well under Whisper's 25 MB cap.
+const { extractAudio } = require('./extractAudio');
+
+async function transcribe(sourceUrl, language, env) {
+  const apiKey = env.MARKETING_TRANSCRIBE_API_KEY;
+  if (!apiKey) throw new Error('MARKETING_TRANSCRIBE_API_KEY is not set on the render pipeline.');
+
+  const audioBuffer = await extractAudio(sourceUrl);
+  const form = new FormData();
+  form.append('file', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'audio.mp3');
+  form.append('model', 'whisper-1');
+  form.append('response_format', 'verbose_json');
+  form.append('timestamp_granularities[]', 'word');
+  if (language) form.append('language', language); // omit to let the API auto-detect
+
+  const r = await fetch(env.MARKETING_TRANSCRIBE_API_URL || 'https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = new Error(data?.error?.message || `HTTP ${r.status}`);
+    err.status = r.status;
+    throw err;
+  }
+  return data;
+}
+
+module.exports = { transcribe };

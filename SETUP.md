@@ -4848,8 +4848,11 @@ same as `/email/*`, `/accounting/*`, etc.
 - **Real, self-contained Worker code (D1 + R2, no external service):** project/job bookkeeping,
   video upload, caption editing, style presets/brand styles, usage metering, WhatsApp delivery.
 - **Real, but one external HTTP call:** transcription — a single request to an
-  OpenAI-Whisper-compatible endpoint (`MARKETING_TRANSCRIBE_API_URL`/`MARKETING_TRANSCRIBE_API_KEY`
-  in `wrangler.toml`). No orchestration needed, so this runs inline inside the request.
+  OpenAI-Whisper-compatible endpoint. No orchestration needed, so this runs inline inside the
+  request. When the render pipeline is configured, that call is made *by the render pipeline*
+  (`MARKETING_TRANSCRIBE_API_KEY`/`MARKETING_TRANSCRIBE_API_URL` live there, not in `wrangler.toml`
+  — see "Transcription routing" below for why); otherwise the Worker calls it directly using its
+  own `MARKETING_TRANSCRIBE_API_KEY` secret, same as before.
 - **Genuinely delegated to an external pipeline the operator configures:** rendering — cropping to
   the target aspect, burning in captions, silence-cut, auto-zoom, background music + ducking,
   watermarking. **A Cloudflare Worker cannot do this** — there's no ffmpeg, no GPU, and a captioned
@@ -4908,21 +4911,41 @@ like `/email/*`, never a client-supplied id — except the two routes below mark
   returns word timestamps** even when asked (some self-hosted front-ends only return segment-level
   timing) — `marketingWordsFromTranscription()` falls back to splitting each segment's text evenly
   across its duration, flagged `approximate:true` so the caption editor can show a dotted border on
-  estimated words instead of silently presenting a guess as exact. OpenAI's own Whisper endpoint
-  also caps request size at 25 MB — a video comfortably under the 100 MB upload ceiling can still
-  exceed that purely because it's a *video* file (picture data dwarfs audio data), not because the
-  actual speech is long. **Fixed properly, not just documented**: if the render pipeline is
-  configured (`MARKETING_RENDER_WEBHOOK_URL`/`SECRET`), this route calls its
-  `POST /extract-audio` endpoint first (HMAC-signed, same secret as `/render` — see
-  `render-pipeline/lib/extractAudio.js`) to get just the audio track (16kHz mono, ~64kbps —
-  Whisper resamples to 16kHz internally regardless of input, so nothing is lost for transcription
-  purposes) and sends that instead of the raw video — dramatically smaller, comfortably under 25 MB
-  for the vast majority of real videos. Without the render pipeline configured, falls back to
-  sending the raw video (unchanged old behavior), still capped at whatever fits in 25 MB as a video
-  file. Language: pass a hint to bias detection, or omit it to
-  auto-detect (feature #4) — auto-detect and Malayalam/Manglish transcription quality (feature #6)
-  are both properties of whichever provider `MARKETING_TRANSCRIBE_API_URL` points at, not something
-  this Worker code can improve on its own.
+  estimated words instead of silently presenting a guess as exact. Language: pass a hint to bias
+  detection, or omit it to auto-detect (feature #4) — auto-detect and Malayalam/Manglish
+  transcription quality (feature #6) are both properties of whichever provider
+  `MARKETING_TRANSCRIBE_API_URL` points at, not something this Worker code can improve on its own.
+
+#### Transcription routing — why this isn't a single, always-the-same code path
+Two real problems with calling OpenAI's Whisper endpoint straight from `handleMarketingTranscribe`,
+both **hit in production, not hypothetical**:
+1. **The 25 MB request cap.** A video comfortably under the 100 MB upload ceiling can still exceed
+   Whisper's 25 MB limit purely because it's a *video* file (picture data dwarfs audio data), not
+   because the actual speech is long.
+2. **OpenAI's country/region block.** OpenAI rejects API requests whose source IP resolves to
+   certain countries/regions. Cloudflare Workers run on a globally distributed edge network with an
+   unpredictable egress IP per request — calling OpenAI directly from the Worker hit this
+   (`"Country, region, or territory not supported"`) for a real client project, even though the
+   account's actual location is fine.
+
+Both are fixed the same way: **when the render pipeline is configured**
+(`MARKETING_RENDER_WEBHOOK_URL`/`SECRET`), this route calls its `POST /transcribe` endpoint
+(HMAC-signed, same secret as `/render`/`/extract-audio` — see `render-pipeline/lib/transcribe.js`)
+instead of calling OpenAI itself. The render pipeline extracts audio-only first (16kHz mono,
+~64kbps — Whisper resamples to 16kHz internally regardless of input, so nothing is lost) — fixing
+problem 1 — and, because it runs on one fixed host rather than Cloudflare's edge, has a stable
+egress IP — fixing problem 2. **`MARKETING_TRANSCRIBE_API_KEY` therefore now lives on the render
+pipeline** (`.env`/Coolify env var), not as a Worker secret.
+
+**Without the render pipeline configured**, this route falls back to calling OpenAI directly from
+the Worker using its own `MARKETING_TRANSCRIBE_API_KEY` secret (the original behavior) — still
+capped at 25 MB as a raw video file, and still exposed to the country-block risk. This keeps
+transcription working for a bare-Worker setup with no render pipeline deployed at all, just without
+either fix.
+**Manual step if you're moving from the old setup**: set `MARKETING_TRANSCRIBE_API_KEY` on the
+render pipeline (Coolify env var — see `render-pipeline/.env.example`); the Worker's own
+`MARKETING_TRANSCRIBE_API_KEY` secret can stay as a fallback or be removed once the render pipeline
+is confirmed working.
 - `PATCH /marketing/projects/captions` — saves the caption editor's edits (`captions_json`).
 - `POST /marketing/projects/render` — see "The render pipeline contract" below.
 - `GET /marketing/projects/jobs?project_id=` — recent job history/polling target for a project.

@@ -14,6 +14,7 @@ const { renderTemplate } = require('./lib/templateRender');
 const { renderRemotionTemplate } = require('./lib/remotionRender');
 const { extractAudio } = require('./lib/extractAudio');
 const { concatClips } = require('./lib/concatClips');
+const { transcribe } = require('./lib/transcribe');
 
 const env = process.env;
 const PORT = env.PORT || 8787;
@@ -100,6 +101,28 @@ app.post('/concat-clips', async (req, res) => {
   } catch (err) {
     console.error('concat-clips failed:', err.stderr || err.message || err);
     res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  }
+});
+
+// Also synchronous, same reasoning as /extract-audio and /concat-clips — one bounded external API
+// call, and the Worker is waiting on the result inline. Calls OpenAI from THIS server's fixed
+// location instead of from the Worker's globally-distributed edge network — see lib/transcribe.js
+// for why that distinction actually matters (a real "Country, region, or territory not supported"
+// error from OpenAI, not a hypothetical). MARKETING_TRANSCRIBE_API_KEY lives here now, not on the
+// Worker.
+app.post('/transcribe', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { source_url, language } = req.body || {};
+  if (!source_url) return res.status(400).json({ error: 'source_url required' });
+  try {
+    const data = await transcribe(source_url, language, env);
+    res.json(data);
+  } catch (err) {
+    console.error('transcribe failed:', err.stderr || err.message || err);
+    res.status(err.status && err.status < 500 ? err.status : 502).json({ error: String(err.message || err).slice(0, 500) });
   }
 });
 
