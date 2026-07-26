@@ -45,6 +45,20 @@ for the full request/callback contract this implements.
   falls back to calling OpenAI directly (old behavior) when this service isn't configured, so
   transcription still works without it, just subject to both the 25 MB cap and the country-block
   risk.
+- **`POST /detect-scenes`** (synchronous): real shot/cut detection — ffmpeg's built-in
+  `select='gt(scene,0.3)'` filter piped through `showinfo` scores each frame's visual difference
+  from the previous one and logs a `pts_time` for every frame crossing the threshold, i.e. every
+  detected cut (same stderr-scraping pattern as `lib/timeline.js`'s silence detection, not a
+  separate detection library). Cuts closer together than 0.75s are merged into one boundary — real
+  footage can otherwise fire twice for what's really one hard cut a couple of frames apart. See
+  `lib/sceneDetect.js`. Verified against real synthetic test videos: a 3-scene clip (distinct
+  solid colors, cuts at exactly 3s/6s) detected both cuts precisely; a no-cut clip correctly
+  returned one scene; a clip with a 0.2s sliver scene correctly merged it into its neighbor. Used
+  by the Worker's `/marketing/projects/detect-scenes` to group the caption editor's word list by
+  scene instead of one flat block, and to power "split evenly" — re-distributing a scene's words
+  evenly across *that scene's* duration specifically, not the whole clip, when a transcription
+  provider only returned one coarse chunk covering a whole scene (a real accuracy improvement over
+  the existing clip-wide approximate-timing fallback).
 - **`POST /concat-clips`** (synchronous): stitches several uploaded clips into one combined video
   for Marketing Studio's multi-clip projects — normalizes each clip to the target resolution first
   (clips can come from different cameras/resolutions/codecs), then concatenates via the `concat`

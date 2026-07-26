@@ -78,6 +78,10 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .dropzone{border:2px dashed var(--line);border-radius:12px;padding:34px 16px;text-align:center;color:var(--muted);cursor:pointer;transition:border-color .18s ease,background .18s ease,transform .1s ease}
 .dropzone:hover{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-ink)}
 .dropzone:active{transform:scale(.99)}
+.scene-block{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.scene-block:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
+.scene-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;flex-wrap:wrap}
+.scene-label{font-size:11.5px;font-weight:700;color:var(--accent-ink);text-transform:uppercase;letter-spacing:.02em}
 .word-list{display:flex;flex-wrap:wrap;gap:5px;line-height:2.1}
 .word{background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:13px;transition:border-color .15s ease,background .15s ease,transform .1s ease}
 .word:hover{border-color:var(--accent);background:var(--accent-soft);transform:translateY(-1px)}
@@ -354,9 +358,10 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
           <div class="card" id="stepCard1">
             <div class="card-head"><h2><span class="step-num">1</span> Transcript & captions</h2><div class="sub">Word-level, auto-detected language unless you set one — tap a word to fix it.</div></div>
             <button class="btn btn-primary btn-sm" id="transcribeBtn" onclick="transcribeProject()">🌀 Transcribe</button>
+            <button class="btn btn-sec btn-sm" id="detectScenesBtn" onclick="detectScenes()" style="margin-left:8px">🎬 Detect scenes</button>
             <span class="note" id="transcribeNote" style="margin-left:8px"></span>
             <div style="margin-top:14px" id="wordListWrap" class="hidden">
-              <div class="word-list" id="wordList"></div>
+              <div id="sceneWordGroups"></div>
               <div class="note" style="margin-top:8px">Dotted-border words are approximate timing (the transcription provider only returned sentence-level timestamps) — text is still accurate.</div>
             </div>
           </div>
@@ -602,10 +607,11 @@ function renderEditor() {
   }
 
   $id('transcribeBtn').disabled = !hasVideo || p.status === 'transcribing';
+  $id('detectScenesBtn').disabled = !hasVideo;
   $id('transcribeNote').textContent = p.language ? `Detected/set language: ${p.language}` : '';
   const words = p.captions?.words || [];
   $id('wordListWrap').classList.toggle('hidden', words.length === 0);
-  $id('wordList').innerHTML = words.map((w, i) => `<span class="word${w.approximate ? ' approx' : ''}" data-idx="${i}" onclick="editWord(${i})" onblur="onWordBlur(${i}, this)" onkeydown="onWordKeydown(event)">${esc(w.word)}</span>`).join('');
+  renderWordGroups(words, p.scenes || []);
 
   selectedStyleId = p.style_id || 'bold-pop';
   renderStyleGrid();
@@ -883,12 +889,86 @@ async function transcribeProject() {
     // Auto-suggest B-Roll/SFX/VFX cues right away — free (no AI call), so there's no reason to
     // make this a separate manual click for the common case; the button stays for re-running it.
     await suggestCues();
+    // Same reasoning for scene detection — only the first time (a re-transcribe shouldn't
+    // silently discard scene boundaries you may have already reviewed/split).
+    if (!(currentProject.scenes || []).length) await detectScenes();
   } finally { $id('transcribeBtn').disabled = false; }
 }
+
+// ── SCENES — real ffmpeg shot/cut detection (render-pipeline/lib/sceneDetect.js), grouping the
+// word list below by scene instead of one flat block. "Split evenly" re-distributes a scene's
+// words evenly across ITS OWN start/end (not the whole clip's), which matters specifically when
+// the transcription provider only returned one coarse chunk covering a whole scene — splitting
+// against the scene's actual duration is a real accuracy improvement over the clip-wide fallback.
+async function detectScenes() {
+  if (!currentProject?.source_key) return;
+  $id('detectScenesBtn').disabled = true;
+  const prevLabel = $id('detectScenesBtn').textContent;
+  $id('detectScenesBtn').textContent = '🎬 Detecting…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/projects/detect-scenes`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id }) });
+    const data = await r.json();
+    if (!r.ok) { toastError(data.error || 'Scene detection failed.'); return; }
+    currentProject.scenes = data.scenes;
+    const idx = projects.findIndex(p => p.id === currentProject.id);
+    if (idx >= 0) projects[idx].scenes = data.scenes;
+    renderEditor();
+    toastSuccess(`Detected ${data.scenes.length} scene${data.scenes.length === 1 ? '' : 's'}.`);
+  } catch (e) {
+    toastError('Could not reach the server.');
+  } finally {
+    $id('detectScenesBtn').disabled = !currentProject?.source_key;
+    $id('detectScenesBtn').textContent = prevLabel;
+  }
+}
+function wordsInScene(words, scene) {
+  const idxs = [];
+  words.forEach((w, i) => { if (Number(w.start) >= scene.start && Number(w.start) < scene.end) idxs.push(i); });
+  return idxs;
+}
+function wordChipHtml(w, i) {
+  return `<span class="word${w.approximate ? ' approx' : ''}" data-idx="${i}" onclick="editWord(${i})" onblur="onWordBlur(${i}, this)" onkeydown="onWordKeydown(event)">${esc(w.word)}</span>`;
+}
+function renderWordGroups(words, scenes) {
+  const container = $id('sceneWordGroups');
+  if (!scenes.length) {
+    container.innerHTML = `<div class="word-list">${words.map((w, i) => wordChipHtml(w, i)).join('')}</div>`;
+    return;
+  }
+  container.innerHTML = scenes.map((scene, si) => {
+    const idxs = wordsInScene(words, scene);
+    return `
+    <div class="scene-block">
+      <div class="scene-head">
+        <span class="scene-label">Scene ${si + 1} · ${fmtDuration(scene.start)}–${fmtDuration(scene.end)}</span>
+        <button class="btn btn-ghost btn-sm" onclick="splitSceneEvenly(${si})">✂ Split evenly</button>
+      </div>
+      <div class="word-list">${idxs.length ? idxs.map(i => wordChipHtml(words[i], i)).join('') : '<span class="note">No captioned words in this scene yet.</span>'}</div>
+    </div>`;
+  }).join('');
+}
+function splitSceneEvenly(sceneIndex) {
+  const p = currentProject;
+  const scene = (p.scenes || [])[sceneIndex];
+  const words = p.captions?.words || [];
+  if (!scene || !words.length) return;
+  const idxs = wordsInScene(words, scene);
+  if (!idxs.length) { toastError('No words in this scene to split.'); return; }
+  const text = idxs.map(i => words[i].word).join(' ');
+  const tokens = text.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return;
+  const span = (scene.end - scene.start) / tokens.length;
+  const newWords = tokens.map((t, i) => ({ word: t, start: scene.start + i * span, end: scene.start + (i + 1) * span, approximate: true }));
+  words.splice(idxs[0], idxs[idxs.length - 1] - idxs[0] + 1, ...newWords);
+  saveCaptions();
+  renderEditor();
+  toastSuccess('Split evenly across the scene.');
+}
+
 // Inline, click-to-edit word correction (replaces a blocking prompt() dialog) — click a word,
 // type the fix directly in place, Enter or click-away commits it.
 function editWord(i) {
-  const el = document.querySelector(`#wordList .word[data-idx="${i}"]`);
+  const el = document.querySelector(`#sceneWordGroups .word[data-idx="${i}"]`);
   if (!el) return;
   el.setAttribute('contenteditable', 'true');
   el.focus();

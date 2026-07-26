@@ -6,6 +6,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const express = require('express');
 
 const hmac = require('./lib/hmac');
@@ -15,6 +16,8 @@ const { renderRemotionTemplate } = require('./lib/remotionRender');
 const { extractAudio } = require('./lib/extractAudio');
 const { concatClips } = require('./lib/concatClips');
 const { transcribe } = require('./lib/transcribe');
+const { detectScenes } = require('./lib/sceneDetect');
+const { downloadToFile } = require('./lib/download');
 
 const env = process.env;
 const PORT = env.PORT || 8787;
@@ -123,6 +126,29 @@ app.post('/transcribe', async (req, res) => {
   } catch (err) {
     console.error('transcribe failed:', err.stderr || err.message || err);
     res.status(err.status && err.status < 500 ? err.status : 502).json({ error: String(err.message || err).slice(0, 500) });
+  }
+});
+
+// Also synchronous, same reasoning as the routes above — one bounded ffmpeg analysis pass, and
+// the Worker is waiting on the result inline. See lib/sceneDetect.js.
+app.post('/detect-scenes', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { source_url } = req.body || {};
+  if (!source_url) return res.status(400).json({ error: 'source_url required' });
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mkt-scenes-'));
+  try {
+    const srcPath = path.join(workDir, 'source' + (path.extname(new URL(source_url).pathname) || '.mp4'));
+    await downloadToFile(source_url, srcPath);
+    const scenes = await detectScenes(srcPath);
+    res.json({ ok: true, scenes });
+  } catch (err) {
+    console.error('detect-scenes failed:', err.stderr || err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
   }
 });
 
