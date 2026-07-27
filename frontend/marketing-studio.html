@@ -6,9 +6,13 @@
 <title>Marketing Studio · Leadvyne</title>
 <style>
 :root{
-  --bg:#120E1B;--card:#1B1530;--card2:#221A3B;--ink:#F3F1FA;--muted:#9C93B8;
-  --accent:#A855F7;--accent-ink:#D8B4FE;--accent-soft:#2E2050;
-  --line:#33285A;--good:#22C55E;--good-soft:#123321;--bad:#F87171;--bad-soft:#3A1B1B;--warn:#FBBF24;--warn-soft:#3A2E12;
+  /* "Midnight Indigo" — a cooler, flatter modern SaaS look (Linear/Vercel-style) in place of the
+     previous warm violet theme. Every color still routes through these variables, so this is a
+     palette swap, not a structural rewrite — the handful of hardcoded hex values tied to the old
+     accent (button hovers, progress gradient, code editor) were updated to match below. */
+  --bg:#0A0A0F;--card:#13141F;--card2:#1A1B29;--ink:#F5F5F7;--muted:#8B8D9E;
+  --accent:#6366F1;--accent-ink:#A5B4FC;--accent-soft:#1E1F3D;
+  --line:#252736;--good:#34D399;--good-soft:#0F2922;--bad:#F87171;--bad-soft:#2E1518;--warn:#FBBF24;--warn-soft:#2E2410;
   --body:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
 }
 *{box-sizing:border-box}
@@ -27,21 +31,21 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
 .wrap{max-width:1080px;margin:0 auto;padding:22px}
 .hidden{display:none !important}
-.card{background:linear-gradient(180deg,var(--card),var(--card) 60%,var(--card2));border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px;transition:border-color .18s ease,box-shadow .18s ease}
+.card{background:linear-gradient(180deg,var(--card),var(--card) 60%,var(--card2));border:1px solid var(--line);border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 10px 30px rgba(0,0,0,.25);transition:border-color .18s ease,box-shadow .18s ease}
 .card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:10px;flex-wrap:wrap}
 .card-head h2{font-size:15px;margin:0;display:flex;align-items:center;gap:10px}
 .card-head .sub{font-size:12px;color:var(--muted);margin-top:2px}
 .step-num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-size:11.5px;font-weight:800;flex-shrink:0}
 .btn{display:inline-flex;align-items:center;gap:6px;border:none;border-radius:9px;padding:9px 16px;font-size:13.5px;font-weight:600;cursor:pointer;transition:background .15s ease,transform .1s ease,box-shadow .15s ease}
 .btn:active{transform:scale(.97)}
-.btn-primary{background:var(--accent);color:#fff;box-shadow:0 2px 10px rgba(168,85,247,.25)}
-.btn-primary:hover{background:#9333EA;box-shadow:0 4px 16px rgba(168,85,247,.35)}
+.btn-primary{background:var(--accent);color:#fff;box-shadow:0 2px 10px rgba(99,102,241,.3)}
+.btn-primary:hover{background:#4F46E5;box-shadow:0 4px 16px rgba(99,102,241,.4)}
 .btn-sec{background:var(--accent-soft);color:var(--accent-ink)}
-.btn-sec:hover{background:#3A2B66}
+.btn-sec:hover{background:#282A52}
 .btn-ghost{background:none;color:var(--muted);border:1px solid var(--line)}
 .btn-ghost:hover{border-color:var(--accent);color:var(--accent-ink)}
 .btn-danger{background:var(--bad-soft);color:var(--bad)}
-.btn-danger:hover{background:#4A2222}
+.btn-danger:hover{background:#42191D}
 .btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
 .btn-sm{padding:6px 11px;font-size:12.5px;border-radius:7px}
 .form-label{font-size:12.5px;font-weight:600;color:var(--muted);margin:12px 0 6px;display:block}
@@ -119,11 +123,11 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .step-rail-label{font-size:12.5px;color:var(--muted)}
 .step-rail-item.current .step-rail-label{color:var(--ink);font-weight:600}
 .progress{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:10px 0}
-.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),#D8B4FE);transition:width .3s ease;background-size:200% 100%;animation:progress-shimmer 1.6s linear infinite}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),#A5B4FC);transition:width .3s ease;background-size:200% 100%;animation:progress-shimmer 1.6s linear infinite}
 @keyframes progress-shimmer{0%{background-position:0% 0}100%{background-position:200% 0}}
 .note{font-size:12px;color:var(--muted);line-height:1.6}
 .usage-warn{color:var(--warn)}
-.code-editor{width:100%;min-height:160px;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:12.5px;background:#0B0814;color:#D6D0F0;border:1.5px solid var(--line);border-radius:9px;padding:10px 12px;resize:vertical}
+.code-editor{width:100%;min-height:160px;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:12.5px;background:#08090D;color:#C7C9E0;border:1.5px solid var(--line);border-radius:9px;padding:10px 12px;resize:vertical}
 .code-editor:focus{outline:none;border-color:var(--accent)}
 .tpl-card{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;background:var(--card2)}
 .tpl-card-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
