@@ -45,6 +45,10 @@ function buildFfmpegArgs({
                            // null for the plain static center-crop — computed by render.js (needs
                            // I/O: decode+matte) BEFORE calling this pure function, same division of
                            // labor as words/broll/sfx resolution already happening upstream of here
+  fontsDir = null,        // directory of custom .ttf/.otf files (render-pipeline/fonts/) — passed
+                           // to ffmpeg's subtitles filter's own `fontsdir` option so a caption
+                           // style's font name can resolve to a dropped-in file, not just whatever
+                           // happens to be installed system-wide (see fonts/README.md)
   outputPath,
 }) {
   const q = QUALITY_PRESETS[quality] || QUALITY_PRESETS.standard;
@@ -134,9 +138,15 @@ function buildFfmpegArgs({
     vChain = label;
   });
 
-  // 6) Captions burn-in.
+  // 6) Captions burn-in. `fontsdir` is libass's own documented mechanism for using font files that
+  // aren't installed as a system font — no fontconfig/fc-cache registration needed, and it's read
+  // straight off disk at render time, so a font file dropped in between renders is picked up
+  // immediately (see fonts/README.md for the "drop a .ttf/.otf in, reference its family name in a
+  // style" workflow this enables, e.g. for a specific Malayalam typeface instead of whatever
+  // system fallback font fonts-noto-core happens to provide).
   if (assPath) {
-    filters.push(`[${vChain}]subtitles=${escapeFilterPath(assPath)}[vsub]`);
+    const fontsdirClause = fontsDir ? `:fontsdir=${escapeFilterPath(fontsDir)}` : '';
+    filters.push(`[${vChain}]subtitles=${escapeFilterPath(assPath)}${fontsdirClause}[vsub]`);
     vChain = 'vsub';
   }
 

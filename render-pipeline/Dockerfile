@@ -56,8 +56,10 @@ RUN mkdir -p models && curl -fL -o models/rvm_mobilenetv3_fp32.onnx \
 
 # Bring your own royalty-free B-roll/SFX/music — see assets/*/README.md. Mounting a volume here
 # in production means new assets don't need a rebuild+redeploy to pick up (Coolify: add a
-# persistent volume at /app/assets).
-VOLUME ["/app/assets", "/app/public"]
+# persistent volume at /app/assets). Same for /app/fonts — see fonts/README.md — drop in a real
+# Malayalam (or any other) .ttf/.otf and it's usable on the very next render, no rebuild needed
+# (ffmpeg's `fontsdir` subtitles-filter option reads it straight off disk).
+VOLUME ["/app/assets", "/app/public", "/app/fonts"]
 
 ENV PORT=8787
 EXPOSE 8787

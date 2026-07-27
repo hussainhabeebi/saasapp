@@ -5497,6 +5497,40 @@ currently selected; the confusion this fixes is specifically "I toggled/unchecke
 didn't seem to apply," which for cues was a real bug (the render pipeline literally never saw the
 unsaved change), and for auto-edit toggles was persistence, not application.
 
+### Deploy-state diagnostics (build tags)
+Real, repeated confusion this session came from deploy *sequencing*, not code bugs: a stale local
+git checkout before `wrangler deploy`, D1 migrations run before pulling the migration files, a
+Coolify "redeploy" that restarted a cached image instead of rebuilding it. Two small additions
+make that a 5-second check instead of a guessing game:
+- `GET /health` on the Worker and `GET /health` on the render pipeline both now return a hand-
+  bumped `build`/`marketing_build` tag (`MARKETING_BUILD_TAG` in `worker.js`, `BUILD_TAG` in
+  `server.js` — kept in sync by hand, no shared source, since these are two separately-deployed
+  services). The render pipeline's `/health` also reports `espeak_ng_available` and
+  `rvm_model_present` — real checks (`spawnSync('espeak-ng', ...)`, `fs.existsSync(MODEL_PATH)`)
+  of THIS running container, not just "the process didn't crash" — since those two specifically
+  depend on Dockerfile steps that only run on a real image rebuild, not a restart.
+- The Worker's build tag is also surfaced directly in Marketing Studio's header (next to the usage
+  pill) via `GET /marketing/usage`'s new `build` field — no separate curl needed for the most
+  common case.
+
+### Custom caption fonts, incl. real Malayalam typefaces (`render-pipeline/fonts/`)
+Captions previously could only use whatever font happened to be installed system-wide
+(`fonts-liberation`/`fonts-noto-core`) — a real Malayalam typeface (Manjari, Meera, etc.) had no
+way in. `render-pipeline/fonts/` is a new drop-in directory (mounted as a Coolify persistent
+volume, same pattern as `assets/`): add a `.ttf`/`.otf` file, and it's usable on the very next
+render — no rebuild, no fontconfig/`fc-cache` registration. Mechanism: ffmpeg's `subtitles` filter
+has its own documented `fontsdir` option that makes libass read font files straight off that
+directory at render time (`lib/filtergraph.js`, and `lib/textBehindSubject.js` for the "text
+behind subject" pipeline's separate subtitles filter call) — genuinely simpler than the
+fontconfig-registration approach, and immune to any font-cache staleness. Frontend: a "Custom font
+family" field in Editor step 2 (Caption style), autosaving into the project's existing
+`style_overrides_json` (a mechanism that already existed server-side but had no UI until now).
+**Honest limitation**: the in-browser live caption preview can't actually render a font that only
+exists as a file on the render-pipeline server (browsers don't have access to it) — it silently
+falls back to a default typeface in the preview, while the real rendered video (server-side
+libass) uses the correct custom font. See `render-pipeline/fonts/README.md` for suggested free/
+open-license Malayalam fonts (not bundled — a licensing/repo-size decision, add the file yourself).
+
 ### What's honestly not built here
 Per-segment speed *ramping* (as opposed to one clip-wide speed), a chroma-key background *image*
 (as opposed to a solid color), automatic voiceover dubbing/time-alignment into the render, and a

@@ -9210,13 +9210,20 @@ async function marketingR2PresignUrl(env, method, key, expiresSec){
   return `https://${host}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`;
 }
 
+// Bumped by hand on every Marketing Studio deploy — NOT a git SHA (Workers don't have build-time
+// access to one). Exists purely as a fast, visual "is the Worker I'm hitting actually running the
+// code I just deployed" check, surfaced in the frontend header — see marketing-studio.html's
+// loadUsage(). Real, repeated confusion from deploy sequencing (stale local git checkout, D1
+// migrations run before pulling the migration files, Coolify restart vs rebuild) is what this is
+// for: one glance instead of re-deriving "did this actually take" from scratch each time.
+const MARKETING_BUILD_TAG='2026-07-27-autosave-fonts';
 async function handleMarketingUsage(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
   const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
   const used=Number(c?.marketing_minutes_used)||0;
-  return json({used, limit, remaining:Math.max(0, limit-used)});
+  return json({used, limit, remaining:Math.max(0, limit-used), build:MARKETING_BUILD_TAG});
 }
 
 // Client-level API keys (SETUP.md "Marketing Studio module — Client API keys") — Pexels/Pixabay/
@@ -10526,7 +10533,7 @@ export default {
 
     let res;
     try{
-      if(url.pathname==='/health'){ res=json({ok:true}); }
+      if(url.pathname==='/health'){ res=json({ok:true, marketing_build:MARKETING_BUILD_TAG}); }
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }

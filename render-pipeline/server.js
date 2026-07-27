@@ -7,6 +7,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('child_process');
 const express = require('express');
 
 const hmac = require('./lib/hmac');
@@ -21,6 +22,13 @@ const { downloadToFile } = require('./lib/download');
 const { generateAiBroll } = require('./lib/falBroll');
 const { synthesizeVoiceover } = require('./lib/tts');
 const { uploadOutput } = require('./lib/storage');
+const { MODEL_PATH } = require('./lib/segmentation');
+
+// Bumped by hand alongside worker.js's MARKETING_BUILD_TAG (kept in sync manually, no shared
+// source — these are two separately-deployed services). Same reasoning: repeated real confusion
+// from Coolify restart-vs-rebuild ambiguity means "curl /health and eyeball the build tag" needs
+// to be a fast, no-guessing check, not something re-derived from scratch every time.
+const BUILD_TAG = '2026-07-27-autosave-fonts';
 
 const env = process.env;
 const PORT = env.PORT || 8787;
@@ -40,7 +48,20 @@ app.use(express.json({
   verify: (req, _res, buf) => { req.rawBody = buf; },
 }));
 
-app.get('/health', (_req, res) => res.json({ ok: true }));
+// Reports real, checked facts about THIS running container, not just "the process is up" — the
+// specific things that have gone stale/missing in practice when a deploy didn't actually rebuild
+// the image (espeak-ng needs the Dockerfile's apt-get step; the RVM model needs its curl-download
+// build step). A `build` tag mismatch or a `false` here means the container isn't running what
+// was just pushed — curl this before assuming a "feature doesn't work" report is a code bug.
+app.get('/health', (_req, res) => {
+  const espeakAvailable = spawnSync('espeak-ng', ['--version']).status === 0;
+  res.json({
+    ok: true,
+    build: BUILD_TAG,
+    espeak_ng_available: espeakAvailable,
+    rvm_model_present: fs.existsSync(MODEL_PATH),
+  });
+});
 
 // Local-fallback static serving for LOCAL_PUBLIC_BASE_URL mode (see lib/storage.js) — only
 // relevant when R2 credentials aren't configured, e.g. running this locally without Cloudflare.
