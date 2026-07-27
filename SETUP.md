@@ -5481,6 +5481,22 @@ step 3 chip row as the existing silence-cut/auto-zoom toggles.
   pipeline end-to-end in the dev sandbox and confirmed a real, correctly-sized, correct-duration
   audio file was produced (not just that the commands parsed).
 
+### Autosave for Auto-edit options & cues (`migrations/0023_marketing_autoedit_options.sql`)
+A real UX gap, not just polish: cue checkboxes/removals in step 4 only ever mutated the browser's
+in-memory `currentCues` array — a render reads the PROJECT's saved `cues_json`, so an unsaved
+toggle silently had no effect on the actual render unless "💾 Save cues" was clicked first. Fixed
+by autosaving (debounced, 600ms) on every cue check/uncheck/remove — the manual button still works
+too, just isn't required anymore. Separately, the Auto-edit step's toggle/select picks (silence-
+cut, auto-zoom, denoise, chroma key, auto-reframe, beat-sync, speed, music) previously lived only
+as transient client-side flags (`p._optX`), reset on every reload — new column
+`marketing_projects.autoedit_options_json` persists them, autosaved the same debounced way and
+restored on `renderEditor()`. Note this is purely about the picks *surviving a reload* — a
+Render/Preview click already reads current toggle state live off the DOM
+(`collectRenderOptions()`), so nothing here was ever required for a render to pick up what's
+currently selected; the confusion this fixes is specifically "I toggled/unchecked something and it
+didn't seem to apply," which for cues was a real bug (the render pipeline literally never saw the
+unsaved change), and for auto-edit toggles was persistence, not application.
+
 ### What's honestly not built here
 Per-segment speed *ramping* (as opposed to one clip-wide speed), a chroma-key background *image*
 (as opposed to a solid color), automatic voiceover dubbing/time-alignment into the render, and a
