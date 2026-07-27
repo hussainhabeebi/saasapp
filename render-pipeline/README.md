@@ -79,6 +79,22 @@ for the full request/callback contract this implements.
   fallback for testing without Cloudflare), then POSTs a signed callback to
   `.../marketing/webhook/render-complete`.
 
+## Self-hosted transcription (`WHISPER_LOCAL_ENABLED`, `asr/transcribe.py`, `lib/whisperTranscribe.js`)
+
+Opt-in (off by default). Requested as "add whisperX + AI4Bharat" — what's actually here is
+`faster-whisper` instead, after real testing found: whisperX's own package fails to install
+(hard-depends on `pyannote.audio` for diarization, unused here, which pulls in
+`antlr4-python3-runtime`, whose sdist build fails against current setuptools), and AI4Bharat's
+Tamil/Malayalam wav2vec2-alignment model coverage couldn't be confirmed to exist (only Hindi/
+Odia/Bengali/Telugu were). `faster-whisper` — the same engine whisperX itself uses for the
+transcription stage — installs cleanly and has its own built-in `word_timestamps` (DTW-based, no
+separate per-language model needed), covering every language uniformly. Provider order in
+`lib/transcribe.js`: `WHISPER_LOCAL_ENABLED` → Sarvam (its supported languages) → OpenAI Whisper
+API. See SETUP.md's "Self-hosted transcription" section for the full detail, including exactly
+what was verified (clean pip install, every parsed field name confirmed against the installed
+package directly) vs. not (actual model download+inference — this dev sandbox's proxy blocks
+huggingface.co).
+
 ## Sarvam AI transcription for Indic languages (`SARVAM_API_KEY`, `lib/sarvamTranscribe.js`)
 
 Whisper's real-world Malayalam accuracy turned out to be weak — a real project's Malayalam audio

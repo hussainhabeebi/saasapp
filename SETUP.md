@@ -5548,6 +5548,47 @@ Two more debugging tools, added after repeated reports of "auto-edit/B-roll does
   Grab the render-pipeline logs around a transcription and the parser can finally be corrected
   against real data instead of plausible-shape guesses.
 
+### Self-hosted transcription (`WHISPER_LOCAL_ENABLED`, opt-in)
+Requested as "add m-bain/whisperX and AI4Bharat" to fix the recurring Sarvam response-shape bug —
+what actually shipped, and why it's not literally either of those:
+- **whisperX itself failed to install** in real testing (`pip install whisperx`) — it hard-depends
+  on `pyannote.audio` (for speaker diarization, a feature this app doesn't use), which transitively
+  pulls in `antlr4-python3-runtime`, whose legacy sdist failed to build against a current
+  setuptools. This wasn't a hypothetical concern raised and set aside — it's a real failure hit
+  while building this.
+- **AI4Bharat's Tamil/Malayalam coverage couldn't be confirmed.** WhisperX's actual differentiator
+  over plain Whisper — per-language wav2vec2 forced alignment — needs a matching model; AI4Bharat's
+  `IndicWav2Vec` models were confirmed to exist for Hindi/Odia/Bengali/Telugu
+  (`ai4bharat/indicwav2vec-hindi` etc. on Hugging Face) but NOT confirmed for Tamil or Malayalam
+  specifically — the two languages actually motivating this. Integrating AI4Bharat for languages
+  it may not cover would've been the same kind of unverified guess that caused the Sarvam bug in
+  the first place.
+- **What shipped instead**: `faster-whisper` (the same CTranslate2-backed engine whisperX itself
+  uses internally for transcription) — confirmed installing cleanly, and its own built-in
+  `word_timestamps` option (DTW over cross-attention weights, not a separate per-language model)
+  gives real word-level timing uniformly across every language Whisper supports, Tamil and
+  Malayalam included. This is the actual substance of what "add whisperX" was for — self-hosted,
+  no per-request API cost, no OpenAI country-block risk, and critically, a response shape
+  confirmed by direct inspection of the installed package's dataclasses
+  (`Segment.start/end/text/words`, `Word.word/start/end`) rather than guessed at from
+  documentation, unlike the Sarvam integration this replaces the risk profile of.
+- **`render-pipeline/asr/transcribe.py`** — the actual transcription script (spawned as a Python
+  subprocess from `lib/whisperTranscribe.js`, same pattern as every other external binary this
+  pipeline shells out to). **`lib/transcribe.js`**'s provider order: `WHISPER_LOCAL_ENABLED` (if
+  set) → Sarvam (for its supported Indic languages, if `SARVAM_API_KEY` set) → OpenAI Whisper API.
+  Entirely opt-in — doesn't change behavior for anyone who hasn't set the env var.
+- **Real, measured cost**: installed packages (`ctranslate2`+`onnxruntime`+`av`, no PyTorch needed)
+  total ~150-200MB — meaningfully lighter than a PyTorch-based stack would have been. The model
+  itself (`WHISPER_MODEL_SIZE`, default `small` — chosen for CPU-only hosts, since a larger model
+  is noticeably slower without a GPU) downloads lazily on first use, not baked into the image.
+- **What's verified vs. not**: `pip install faster-whisper` succeeding cleanly, and every field
+  name the parsing code relies on, were confirmed directly against the installed package in a real
+  Python 3.11 environment — not assumed from memory or docs. **Not verified**: actual model
+  download + inference end-to-end — this dev sandbox's outbound proxy returns 403 for
+  huggingface.co, so no real transcription could be run here. The first real transcription after
+  deploying will also be the first real test of this path — check it against a genuine Tamil or
+  Malayalam video before trusting it over Sarvam.
+
 ### What's honestly not built here
 Per-segment speed *ramping* (as opposed to one clip-wide speed), a chroma-key background *image*
 (as opposed to a solid color), automatic voiceover dubbing/time-alignment into the render, and a

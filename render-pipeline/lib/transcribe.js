@@ -12,8 +12,17 @@
 // Whisper's real-world Malayalam accuracy turned out to be weak (a production project came back
 // mislabeled/garbled), while Sarvam is purpose-built for Indian languages. No language hint at
 // all still goes to Whisper, since there's nothing to route on ahead of time.
+//
+// WHISPER_LOCAL_ENABLED (opt-in, off by default — see lib/whisperTranscribe.js) takes priority
+// over BOTH of the above when set: self-hosted, so no per-request API cost, no OpenAI
+// country-block risk, and — the reason it was added — a well-documented, verified response shape
+// instead of Sarvam's undocumented one, which became a real repeated source of production bugs
+// (captions landing in empty/wrong scenes). Genuinely heavier to run than either API-based path
+// (a real Python ML stack in this container), which is why it's opt-in rather than a silent
+// default swap.
 const { extractAudio } = require('./extractAudio');
 const { transcribeWithSarvam, supportsLanguage: sarvamSupportsLanguage } = require('./sarvamTranscribe');
+const { transcribeWithWhisperLocal } = require('./whisperTranscribe');
 
 async function callWhisper(apiKey, apiUrl, audioBuffer, language) {
   const form = new FormData();
@@ -34,6 +43,9 @@ async function callWhisper(apiKey, apiUrl, audioBuffer, language) {
 }
 
 async function transcribe(sourceUrl, language, env) {
+  if (env.WHISPER_LOCAL_ENABLED) {
+    return await transcribeWithWhisperLocal(sourceUrl, language, env);
+  }
   if (env.SARVAM_API_KEY && sarvamSupportsLanguage(language)) {
     return await transcribeWithSarvam(sourceUrl, language, env);
   }

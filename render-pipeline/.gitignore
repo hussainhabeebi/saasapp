@@ -15,3 +15,7 @@ assets/music/*
 
 # RVM ONNX model (~15 MB) — downloaded by the Dockerfile at build time, not committed.
 models/*.onnx
+
+# Python bytecode cache (asr/transcribe.py)
+__pycache__/
+*.pyc
