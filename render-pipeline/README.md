@@ -95,6 +95,24 @@ what was verified (clean pip install, every parsed field name confirmed against 
 package directly) vs. not (actual model download+inference — this dev sandbox's proxy blocks
 huggingface.co).
 
+## Self-hosted transcription — AI4Bharat (`AI4BHARAT_ENABLED`, `asr/transcribe_ai4bharat.py`, `lib/ai4bharatTranscribe.js`)
+
+Opt-in, added after the above — the user confirmed AI4Bharat specifically ("AI4Bharat is fine,
+dont use whisperX if its heavy"). Uses `ai4bharat/indic-conformer-600m-multilingual`, a
+600M-parameter Conformer covering all 22 official Indian languages including Tamil/Malayalam
+(confirmed via the model card — unlike the earlier `IndicWav2Vec` models, only confirmed for
+Hindi/Odia/Bengali/Telugu). REPLACES Sarvam for the ~10 languages it's wired up for
+(`lib/transcribe.js`'s provider order: `WHISPER_LOCAL_ENABLED` → `AI4BHARAT_ENABLED` → Sarvam →
+OpenAI Whisper) — no chunking/offset arithmetic needed (single whole-clip call, no per-request
+duration cap), removing the class of bug Sarvam's chunking introduced. **Real, honest cost**:
+`transformers`+`torch`+`torchaudio` (CPU wheel) measured ~1.2GB — heavier than faster-whisper's
+~150-200MB, but installs cleanly (the CPU-only PyTorch index in the Dockerfile is load-bearing —
+the default `pip install torch` pulls the full CUDA toolkit, 5GB+, confirmed in testing). **The
+one real gap**: this model's documented interface returns plain text only, no word-level
+timestamps — genuinely improves recognized text for Indic languages, but word timing still falls
+back to the same evenly-split approximation used elsewhere in this app. See SETUP.md for full
+detail on what was verified vs. not.
+
 ## Sarvam AI transcription for Indic languages (`SARVAM_API_KEY`, `lib/sarvamTranscribe.js`)
 
 Whisper's real-world Malayalam accuracy turned out to be weak — a real project's Malayalam audio

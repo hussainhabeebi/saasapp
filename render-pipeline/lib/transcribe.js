@@ -13,16 +13,25 @@
 // mislabeled/garbled), while Sarvam is purpose-built for Indian languages. No language hint at
 // all still goes to Whisper, since there's nothing to route on ahead of time.
 //
-// WHISPER_LOCAL_ENABLED (opt-in, off by default — see lib/whisperTranscribe.js) takes priority
-// over BOTH of the above when set: self-hosted, so no per-request API cost, no OpenAI
-// country-block risk, and — the reason it was added — a well-documented, verified response shape
-// instead of Sarvam's undocumented one, which became a real repeated source of production bugs
-// (captions landing in empty/wrong scenes). Genuinely heavier to run than either API-based path
-// (a real Python ML stack in this container), which is why it's opt-in rather than a silent
-// default swap.
+// WHISPER_LOCAL_ENABLED (opt-in, off by default — see lib/whisperTranscribe.js) takes top
+// priority when set: self-hosted, so no per-request API cost, no OpenAI country-block risk, and —
+// the reason it was added — a well-documented, verified response shape instead of Sarvam's
+// undocumented one, which became a real repeated source of production bugs (captions landing in
+// empty/wrong scenes). Genuinely heavier to run than either API-based path (a real Python ML
+// stack in this container), which is why it's opt-in rather than a silent default swap.
+//
+// AI4BHARAT_ENABLED (also opt-in — see lib/ai4bharatTranscribe.js) sits between local Whisper and
+// Sarvam: REPLACES Sarvam specifically for the Indic languages it covers, since it targets the
+// exact same problem (better Indic-language accuracy than generic Whisper) without Sarvam's
+// chunking/offset arithmetic — a single-pass call per video, no 30s-per-request cap to work
+// around, which removes the whole class of chunk-boundary bug Sarvam's integration had. Honest
+// tradeoff: no word-level timestamps from this model's documented interface (only faster-whisper,
+// above, has those) — word timing falls back to the same evenly-split-across-duration
+// approximation used elsewhere in this app, flagged approximate:true.
 const { extractAudio } = require('./extractAudio');
 const { transcribeWithSarvam, supportsLanguage: sarvamSupportsLanguage } = require('./sarvamTranscribe');
 const { transcribeWithWhisperLocal } = require('./whisperTranscribe');
+const { transcribeWithAi4Bharat, supportsLanguage: ai4bharatSupportsLanguage } = require('./ai4bharatTranscribe');
 
 async function callWhisper(apiKey, apiUrl, audioBuffer, language) {
   const form = new FormData();
@@ -45,6 +54,9 @@ async function callWhisper(apiKey, apiUrl, audioBuffer, language) {
 async function transcribe(sourceUrl, language, env) {
   if (env.WHISPER_LOCAL_ENABLED) {
     return await transcribeWithWhisperLocal(sourceUrl, language, env);
+  }
+  if (env.AI4BHARAT_ENABLED && ai4bharatSupportsLanguage(language)) {
+    return await transcribeWithAi4Bharat(sourceUrl, language, env);
   }
   if (env.SARVAM_API_KEY && sarvamSupportsLanguage(language)) {
     return await transcribeWithSarvam(sourceUrl, language, env);
