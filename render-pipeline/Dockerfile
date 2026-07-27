@@ -34,13 +34,25 @@ FROM node:20-bookworm-slim
 # baked into the image (network-dependent cold start on first real transcription, same tradeoff as
 # leaving RVM/Remotion's models to a build-time curl would avoid — a deliberate choice to keep the
 # image build itself fast and not fail if that download flakes).
+# AI4Bharat's IndicConformer (asr/transcribe_ai4bharat.py, gated behind AI4BHARAT_ENABLED — see
+# lib/ai4bharatTranscribe.js) needs transformers+torch+torchaudio — genuinely heavier than
+# faster-whisper above (no way around it: this model is a real PyTorch model, not a CTranslate2
+# one). `--index-url .../whl/cpu` is load-bearing, not decorative — without it, pip resolves
+# PyPI's default `torch` package, which bundles the full CUDA toolkit (confirmed in testing: this
+# alone pulled in 5GB+ of nvidia-* packages that a CPU-only host would never use). The CPU-only
+# wheel is a measured ~1.1GB for torch alone, ~1.2GB combined with transformers+torchaudio — still
+# meaningfully heavier than faster-whisper's ~150-200MB, but far short of the 5GB+ CUDA-default
+# install, and nowhere near whisperX's install-breaking dependency chain that this whole
+# self-hosted-transcription effort started by trying (and failing) to use.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation fonts-noto-core ca-certificates curl espeak-ng python3 python3-pip \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 libnspr4 \
     libx11-6 libxcb1 libxext6 libxi6 \
   && rm -rf /var/lib/apt/lists/* \
-  && pip3 install --no-cache-dir --break-system-packages faster-whisper
+  && pip3 install --no-cache-dir --break-system-packages faster-whisper \
+  && pip3 install --no-cache-dir --break-system-packages --index-url https://download.pytorch.org/whl/cpu torch torchaudio \
+  && pip3 install --no-cache-dir --break-system-packages transformers
 
 WORKDIR /app
 

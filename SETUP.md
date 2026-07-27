@@ -5548,7 +5548,7 @@ Two more debugging tools, added after repeated reports of "auto-edit/B-roll does
   Grab the render-pipeline logs around a transcription and the parser can finally be corrected
   against real data instead of plausible-shape guesses.
 
-### Self-hosted transcription (`WHISPER_LOCAL_ENABLED`, opt-in)
+### Self-hosted transcription — faster-whisper (`WHISPER_LOCAL_ENABLED`, opt-in)
 Requested as "add m-bain/whisperX and AI4Bharat" to fix the recurring Sarvam response-shape bug —
 what actually shipped, and why it's not literally either of those:
 - **whisperX itself failed to install** in real testing (`pip install whisperx`) — it hard-depends
@@ -5588,6 +5588,44 @@ what actually shipped, and why it's not literally either of those:
   huggingface.co, so no real transcription could be run here. The first real transcription after
   deploying will also be the first real test of this path — check it against a genuine Tamil or
   Malayalam video before trusting it over Sarvam.
+
+### Self-hosted transcription — AI4Bharat IndicConformer (`AI4BHARAT_ENABLED`, opt-in)
+After confirming whisperX's own install failure, the user explicitly asked for AI4Bharat
+specifically ("AI4Bharat is fine, implement that, dont use whisperX if its heavy") — so this went
+in as its own opt-in provider, not folded into the faster-whisper section above since it's a
+meaningfully different tradeoff.
+- **Model**: `ai4bharat/indic-conformer-600m-multilingual` — a 600M-parameter Conformer ASR model
+  (MIT-licensed) covering all 22 official Indian languages, explicitly including Tamil and
+  Malayalam (confirmed via the model's own Hugging Face card — unlike the earlier `IndicWav2Vec`
+  models, which were only confirmed for Hindi/Odia/Bengali/Telugu). Loaded via
+  `transformers.AutoModel.from_pretrained(..., trust_remote_code=True)`, per the model card's own
+  documented usage example.
+- **REPLACES Sarvam** for the languages it covers (`lib/transcribe.js`'s provider order:
+  `WHISPER_LOCAL_ENABLED` → `AI4BHARAT_ENABLED` (for its ~10 supported languages) → Sarvam →
+  OpenAI Whisper) — it targets the exact same problem (Indic-language accuracy) and, since it's a
+  single whole-clip call with no 30-second-per-request cap to chunk around, has no equivalent to
+  the chunk-boundary offset arithmetic that's the leading suspect in Sarvam's duplicated/misplaced
+  -word bug.
+- **Real, honest cost — heavier than faster-whisper, not as broken as whisperX.** Measured in
+  testing: `transformers`+`torch`+`torchaudio` together are ~1.2GB even with the CPU-only torch
+  wheel (`--index-url .../whl/cpu` in the Dockerfile is load-bearing — the DEFAULT `pip install
+  torch` pulled in the full CUDA toolkit, 5GB+ of `nvidia-*` packages a CPU-only host would never
+  use; confirmed directly in testing, not assumed). Meaningfully heavier than faster-whisper's
+  ~150-200MB, but installs cleanly (unlike whisperX/NeMo) and doesn't need a GPU to run.
+- **The one real gap: no word-level timestamps.** This model's documented interface
+  (`model(wav, lang, "ctc")`) returns plain text only — no confirmed timestamp API exists in its
+  model card or GitHub repo. So AI4Bharat genuinely improves the RECOGNIZED TEXT for Tamil/
+  Malayalam/other Indic languages, but word timing still falls back to the same evenly-split-
+  across-duration approximation this app already uses elsewhere as a fallback (flagged
+  `approximate:true`) — not a false claim of per-word precision. If exact word timing matters more
+  than recognition accuracy for a given project, `WHISPER_LOCAL_ENABLED` (faster-whisper, above)
+  is the one with real word-level timestamps.
+- **What's verified vs. not**: the model's documented usage pattern (load, resample to 16kHz mono
+  via torchaudio, call with a language code) is confirmed against the model's own Hugging Face
+  card. The dependency install and its real measured size were confirmed directly in testing.
+  **Not verified**: actual model download + inference (this dev sandbox's proxy blocks
+  huggingface.co, same limitation as the faster-whisper path above) — test against a real Tamil or
+  Malayalam video after deploying.
 
 ### What's honestly not built here
 Per-segment speed *ramping* (as opposed to one clip-wide speed), a chroma-key background *image*
