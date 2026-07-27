@@ -5627,6 +5627,20 @@ meaningfully different tradeoff.
   huggingface.co, same limitation as the faster-whisper path above) — test against a real Tamil or
   Malayalam video after deploying.
 
+### Fixed: models now pre-downloaded at build time, not on first use
+Real production failure, not hypothetical: the first live transcription with either
+`WHISPER_LOCAL_ENABLED` or `AI4BHARAT_ENABLED` turned on hit a bare `HTTP 502` — the model's
+network-dependent first-download took longer than Coolify's reverse-proxy timeout (typically
+60-120s), which killed the connection well before the code's own 20-minute wait would have. Fixed
+by pre-downloading both models AT BUILD TIME (`Dockerfile`, `python3 -c "...WhisperModel(...)"`
+/ `...AutoModel.from_pretrained(...)"`), same pattern the RVM/Remotion models already used —
+whichever feature you enable, its model is already sitting in the image before the container ever
+serves a request, so there's no cold-start download to time out on. Cost: a larger, slower image
+build (unavoidable — the weights have to come from somewhere). One edge case worth knowing:
+`WHISPER_MODEL_SIZE` changed at runtime without a matching `--build-arg WHISPER_MODEL_SIZE=<size>`
+at build time still triggers one lazy (and possibly timeout-prone) download for that new size —
+keep the two in sync, or expect that one extra rebuild.
+
 ### What's honestly not built here
 Per-segment speed *ramping* (as opposed to one clip-wide speed), a chroma-key background *image*
 (as opposed to a solid color), automatic voiceover dubbing/time-alignment into the render, and a

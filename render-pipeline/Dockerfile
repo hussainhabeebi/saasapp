@@ -29,11 +29,7 @@ FROM node:20-bookworm-slim
 # faster-whisper alone (confirmed installing cleanly) already provides the real word-level timing
 # this was for, uniformly across every language, without that broken dependency. Real, measured
 # footprint of the installed packages: ~150-200MB (ctranslate2+onnxruntime+av — no PyTorch needed,
-# unlike whisperX), well short of a multi-GB PyTorch stack; the Whisper model itself (small,
-# int8-quantized) adds roughly another few hundred MB, downloaded lazily on first use rather than
-# baked into the image (network-dependent cold start on first real transcription, same tradeoff as
-# leaving RVM/Remotion's models to a build-time curl would avoid — a deliberate choice to keep the
-# image build itself fast and not fail if that download flakes).
+# unlike whisperX), well short of a multi-GB PyTorch stack.
 # AI4Bharat's IndicConformer (asr/transcribe_ai4bharat.py, gated behind AI4BHARAT_ENABLED — see
 # lib/ai4bharatTranscribe.js) needs transformers+torch+torchaudio — genuinely heavier than
 # faster-whisper above (no way around it: this model is a real PyTorch model, not a CTranslate2
@@ -53,6 +49,23 @@ RUN apt-get update \
   && pip3 install --no-cache-dir --break-system-packages faster-whisper \
   && pip3 install --no-cache-dir --break-system-packages --index-url https://download.pytorch.org/whl/cpu torch torchaudio \
   && pip3 install --no-cache-dir --break-system-packages transformers
+
+# Pre-downloads both transcription models AT BUILD TIME instead of lazily on the first real
+# request — a real production failure (not hypothetical): the first live transcription with either
+# feature enabled hit a network-dependent cold-start download that took longer than Coolify's
+# reverse-proxy timeout, surfacing as a bare `HTTP 502` with no useful error to act on. Baking the
+# weights into the image avoids that class of failure entirely (same reasoning as the RVM/Remotion
+# build-time downloads below) at the cost of a larger, slower build — worth it once this has
+# actually broken in production once already. `WHISPER_MODEL_SIZE` build arg defaults to the same
+# 'small' the runtime code defaults to (lib/whisperTranscribe.js) so the cached model always
+# matches what's actually requested unless both are overridden together. If WHISPER_MODEL_SIZE is
+# changed at RUNTIME (Coolify env var) to something other than what this image was built with, that
+# different size still isn't cached — pass --build-arg WHISPER_MODEL_SIZE=<size> to match, or
+# accept one more lazy (and possibly timeout-prone) download for that new size.
+ARG WHISPER_MODEL_SIZE=small
+ENV WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE}
+RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL_SIZE}', device='cpu', compute_type='int8'); print('faster-whisper model cached')"
+RUN python3 -c "from transformers import AutoModel; AutoModel.from_pretrained('ai4bharat/indic-conformer-600m-multilingual', trust_remote_code=True); print('AI4Bharat model cached')"
 
 WORKDIR /app
 
