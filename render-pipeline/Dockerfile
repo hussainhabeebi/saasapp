@@ -21,12 +21,26 @@ FROM node:20-bookworm-slim
 # espeak-ng — free, fully local text-to-speech for AI voiceover/dubbing (lib/tts.js). Genuinely
 # free (no API key, offline), at the cost of a clearly robotic voice compared to a paid neural TTS
 # API — documented tradeoff, not a placeholder for a "real" TTS to swap in later.
+#
+# python3/python3-pip — for opt-in self-hosted transcription (asr/transcribe.py, gated behind
+# WHISPER_LOCAL_ENABLED — see lib/whisperTranscribe.js). Uses faster-whisper (CTranslate2), NOT
+# the literal "whisperX" package that was originally requested — whisperX's own dependency chain
+# (pyannote.audio, for speaker diarization, unused here) failed to install cleanly in testing;
+# faster-whisper alone (confirmed installing cleanly) already provides the real word-level timing
+# this was for, uniformly across every language, without that broken dependency. Real, measured
+# footprint of the installed packages: ~150-200MB (ctranslate2+onnxruntime+av — no PyTorch needed,
+# unlike whisperX), well short of a multi-GB PyTorch stack; the Whisper model itself (small,
+# int8-quantized) adds roughly another few hundred MB, downloaded lazily on first use rather than
+# baked into the image (network-dependent cold start on first real transcription, same tradeoff as
+# leaving RVM/Remotion's models to a build-time curl would avoid — a deliberate choice to keep the
+# image build itself fast and not fail if that download flakes).
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation fonts-noto-core ca-certificates curl espeak-ng \
+  && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation fonts-noto-core ca-certificates curl espeak-ng python3 python3-pip \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 libnspr4 \
     libx11-6 libxcb1 libxext6 libxi6 \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && pip3 install --no-cache-dir --break-system-packages faster-whisper
 
 WORKDIR /app
 
