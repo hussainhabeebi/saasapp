@@ -5641,6 +5641,23 @@ build (unavoidable — the weights have to come from somewhere). One edge case w
 at build time still triggers one lazy (and possibly timeout-prone) download for that new size —
 keep the two in sync, or expect that one extra rebuild.
 
+### Fixed: AI4Bharat's model repo is gated — needs `HF_TOKEN`
+Second real deploy failure, surfaced immediately by the build-time pre-download above instead of
+as another vague runtime 502 — exactly what that change was for.
+`ai4bharat/indic-conformer-600m-multilingual` turned out to be a **gated** Hugging Face repo (a
+`401 GatedRepoError` on the build-time download attempt) — not documented anywhere findable before
+hitting it for real. Downloading it needs: (1) a free Hugging Face account, (2) visiting
+[the model's page](https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual) and
+clicking "Agree and access repository", (3) a read-scoped access token (Settings > Access Tokens),
+passed to the Docker build as the `HF_TOKEN` build arg (Coolify: add `HF_TOKEN` as a build-time
+variable on the render-pipeline resource — **not** a runtime env var, since the model downloads at
+build time now, not per-request). The Dockerfile's AI4Bharat pre-download step is conditional on
+`HF_TOKEN` being set — a missing token skips that one step (with a clear build-log message)
+instead of failing the entire build for anyone who never intended to enable `AI4BHARAT_ENABLED` in
+the first place. Set `AI4BHARAT_ENABLED` without `HF_TOKEN` and the feature will still fail, just
+at runtime with the same real `GatedRepoError` message rather than a bare 502 — so set both
+together.
+
 ### What's honestly not built here
 Per-segment speed *ramping* (as opposed to one clip-wide speed), a chroma-key background *image*
 (as opposed to a solid color), automatic voiceover dubbing/time-alignment into the render, and a
