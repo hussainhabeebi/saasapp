@@ -433,7 +433,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
           </div>
 
           <div class="card" id="stepCard3">
-            <div class="card-head"><h2><span class="step-num">3</span> Auto-edit</h2><div class="sub">Pick a template to pre-fill these — still overridable per-project below.</div></div>
+            <div class="card-head"><h2><span class="step-num">3</span> Auto-edit</h2><div class="sub">Pick a template to pre-fill these — still overridable per-project below. Everything here autosaves and applies automatically when you hit Render in step 5 — no separate "apply" step.</div></div>
             <label class="form-label">Auto-edit template</label>
             <select class="form-select" id="optAutoeditPreset" onchange="applyAutoeditPreset()">
               <option value="">— Manual (no preset) —</option>
@@ -449,11 +449,11 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             </div>
             <div class="note" id="textBehindSubjectNote" style="margin-top:6px">Beta — free local person-detection, approximate edges. Turns off silence-cut/auto-zoom/B-roll/SFX for this render (not combinable yet). Smart auto-reframe uses the same free local model to keep you in frame instead of a fixed center-crop. Beat-synced cuts need background music picked below.</div>
             <div class="hidden" id="chromaKeyOpts" style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;align-items:center">
-              <label class="note">Key color <input type="color" id="chromaKeyColor" value="#00ff00"></label>
-              <label class="note">Background <input type="color" id="chromaKeyBg" value="#000000"></label>
+              <label class="note">Key color <input type="color" id="chromaKeyColor" value="#00ff00" onchange="autoSaveAutoeditOptions()"></label>
+              <label class="note">Background <input type="color" id="chromaKeyBg" value="#000000" onchange="autoSaveAutoeditOptions()"></label>
             </div>
             <label class="form-label" style="margin-top:12px">Playback speed</label>
-            <select class="form-select" id="optSpeed">
+            <select class="form-select" id="optSpeed" onchange="autoSaveAutoeditOptions()">
               <option value="1">Normal (1x)</option>
               <option value="0.5">0.5x — slow-mo</option>
               <option value="0.75">0.75x</option>
@@ -463,7 +463,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             </select>
             <div class="note" style="margin-top:4px">A single speed for the whole clip, not a per-segment ramp.</div>
             <label class="form-label">Background music</label>
-            <select class="form-select" id="optMusic">
+            <select class="form-select" id="optMusic" onchange="autoSaveAutoeditOptions()">
               <option value="">None</option>
               <option value="upbeat">Upbeat</option>
               <option value="chill">Chill / Lo-fi</option>
@@ -474,7 +474,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
           </div>
 
           <div class="card" id="stepCard4">
-            <div class="card-head"><h2><span class="step-num">4</span> B-Roll / SFX / VFX cues</h2><div class="sub">Suggested from the script's keywords, free (no AI call) — review, uncheck what you don't want, then save.</div></div>
+            <div class="card-head"><h2><span class="step-num">4</span> B-Roll / SFX / VFX cues</h2><div class="sub">Suggested from the script's keywords, free (no AI call) — review, check/uncheck what you want. Autosaves as you go; the Save button below is just a manual double-check.</div></div>
             <button class="btn btn-sec btn-sm" id="suggestCuesBtn" onclick="suggestCues()">✨ Suggest cues from script</button>
             <button class="btn btn-ghost btn-sm" onclick="saveCues()" style="margin-left:8px">💾 Save cues</button>
             <button class="btn btn-sec btn-sm" id="previewCuesBtn" onclick="previewRender(null, 'previewCuesResult')" style="margin-left:8px">🔍 Preview (first 12s)</button>
@@ -604,6 +604,7 @@ function applyAutoeditPreset() {
   $id('optSilence').classList.toggle('on', !!preset.silence_cut);
   $id('optZoom').classList.toggle('on', !!preset.auto_zoom);
   $id('optMusic').value = preset.background_music || '';
+  autoSaveAutoeditOptions();
 }
 
 function showTab(tab) {
@@ -753,14 +754,25 @@ function renderEditor() {
   renderStyleGrid();
   updateCaptionOverlay();
 
-  $id('optSilence').classList.toggle('on', !!p._optSilence);
-  $id('optZoom').classList.toggle('on', !!p._optZoom);
-  $id('optTextBehindSubject').classList.toggle('on', !!p._optTextBehindSubject);
-  $id('optDenoise').classList.toggle('on', !!p._optDenoise);
-  $id('optAutoReframe').classList.toggle('on', !!p._optAutoReframe);
-  $id('optBeatSync').classList.toggle('on', !!p._optBeatSync);
-  $id('optChromaKey').classList.toggle('on', !!p._optChromaKey);
-  $id('chromaKeyOpts').classList.toggle('hidden', !p._optChromaKey);
+  // Restores from the PERSISTED selections (autoedit_options_json, saved automatically as you
+  // change things — see autoSaveAutoeditOptions) so a reopened project shows exactly what was
+  // last picked, not always-reset defaults. Falls back to the transient p._opt* flags (set purely
+  // client-side, pre-persistence) only for continuity within the same tab session on an older
+  // in-memory project object that hasn't gone through a fresh load yet.
+  const saved = p.autoedit_options || {};
+  $id('optSilence').classList.toggle('on', saved.silence_cut ?? !!p._optSilence);
+  $id('optZoom').classList.toggle('on', saved.auto_zoom ?? !!p._optZoom);
+  $id('optTextBehindSubject').classList.toggle('on', saved.text_behind_subject ?? !!p._optTextBehindSubject);
+  $id('optDenoise').classList.toggle('on', saved.denoise ?? !!p._optDenoise);
+  $id('optAutoReframe').classList.toggle('on', saved.auto_reframe ?? !!p._optAutoReframe);
+  $id('optBeatSync').classList.toggle('on', saved.beat_sync ?? !!p._optBeatSync);
+  const chromaOn = saved.chroma_key ? !!saved.chroma_key.enabled : !!p._optChromaKey;
+  $id('optChromaKey').classList.toggle('on', chromaOn);
+  $id('chromaKeyOpts').classList.toggle('hidden', !chromaOn);
+  if (saved.chroma_key?.color) $id('chromaKeyColor').value = saved.chroma_key.color;
+  if (saved.chroma_key?.background_color) $id('chromaKeyBg').value = saved.chroma_key.background_color;
+  $id('optSpeed').value = saved.speed_factor || 1;
+  $id('optMusic').value = saved.background_music || '';
   $id('optAutoeditPreset').value = '';
 
   $id('batchAspectRow').innerHTML = ['9:16', '1:1', '16:9'].filter(a => a !== p.target_aspect).map(a =>
@@ -1343,6 +1355,22 @@ function toggleOpt(id) {
     $id('optTextBehindSubject').classList.remove('on');
   }
   if (id === 'optChromaKey') $id('chromaKeyOpts').classList.toggle('hidden', !$id('optChromaKey').classList.contains('on'));
+  autoSaveAutoeditOptions();
+}
+// Auto-edit selections autosave (debounced) as soon as you change anything — "apply without
+// clicking," per the Editor's own confusion this fixes: the toggles/selects already apply
+// automatically at render time (Render/Preview read the DOM live), this just makes sure the PICKS
+// themselves survive a reload instead of resetting, and can be freely amended again afterward
+// (every change just re-saves, nothing is one-shot).
+let autoeditOptionsSaveTimer = null;
+function autoSaveAutoeditOptions() {
+  if (!currentProject) return;
+  clearTimeout(autoeditOptionsSaveTimer);
+  autoeditOptionsSaveTimer = setTimeout(async () => {
+    const options = collectRenderOptions();
+    currentProject.autoedit_options = options;
+    await fetch(`${WORKER_BASE}/marketing/projects/autoedit-options`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ project_id: currentProject.id, options }) });
+  }, 600);
 }
 
 // ── B-ROLL / SFX / VFX CUES — free (no AI call), keyword-based suggestions derived from the
@@ -1409,8 +1437,20 @@ function pollAiBrollJob(jobId, i) {
   };
   check();
 }
-function toggleCue(i) { currentCues[i].accepted = currentCues[i].accepted === false; renderCues(); }
-function removeCue(i) { currentCues.splice(i, 1); renderCues(); }
+function toggleCue(i) { currentCues[i].accepted = currentCues[i].accepted === false; renderCues(); autoSaveCues(); }
+function removeCue(i) { currentCues.splice(i, 1); renderCues(); autoSaveCues(); }
+// Cues autosave (debounced) on every check/uncheck/remove — previously a cue toggle only changed
+// the in-browser array; a render reads the PROJECT's saved cues_json (not the live browser
+// state), so an unsaved toggle silently had no effect on the actual render unless "Save cues" was
+// clicked first. That's exactly the "how do I apply B-roll" confusion this fixes — every change
+// now saves itself, and the manual button below still works too (now just a "yes, definitely
+// saved" reassurance rather than a required step).
+let cuesSaveTimer = null;
+function autoSaveCues() {
+  if (!currentProject) return;
+  clearTimeout(cuesSaveTimer);
+  cuesSaveTimer = setTimeout(saveCues, 600);
+}
 async function suggestCues() {
   if (!currentProject) return;
   $id('suggestCuesBtn').disabled = true;

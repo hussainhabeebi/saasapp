@@ -9099,6 +9099,10 @@ function marketingSerializeProject(row){
     template_id:row.template_id||null, template_vars:parseJson(row.template_vars_json),
     cues:parseJson(row.cues_json)||[],
     scenes:parseJson(row.scenes_json)||[],
+    // The Auto-edit step's toggle selections, persisted so they're still there next time this
+    // project is opened (previously only lived transiently in the browser tab) — see
+    // handleMarketingAutoeditOptionsSave.
+    autoedit_options:parseJson(row.autoedit_options_json)||{},
     created_at:row.created_at, updated_at:row.updated_at,
   };
 }
@@ -9804,6 +9808,25 @@ async function handleMarketingCuesSave(request, env){
   const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
   if(!project) return json({error:'Not found'}, 404);
   await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.cues), new Date().toISOString(), id).run();
+  return json({ok:true});
+}
+
+// Auto-edit toggle selections ("apply without clicking Save, can still amend") — the frontend
+// autosaves here (debounced) on every chip/select change in Editor step 3, so a returning visit
+// restores exactly what was picked, same edit-in-place shape as cues_json/captions_json. Note this
+// is purely about PERSISTING the selections for next time — a render/preview already reads these
+// values live off the DOM at the moment you click Render/Preview (marketingBuildRenderSpec takes
+// `opts` straight from that request body), so nothing here is required for a render to pick up
+// current toggle state; this only prevents the picks themselves from being lost on reload.
+async function handleMarketingAutoeditOptionsSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.project_id);
+  if(!id||!body.options||typeof body.options!=='object') return json({error:'project_id and options (an object) required'}, 400);
+  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!project) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`UPDATE marketing_projects SET autoedit_options_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.options), new Date().toISOString(), id).run();
   return json({ok:true});
 }
 
@@ -10705,6 +10728,7 @@ export default {
       else if(url.pathname==='/marketing/projects/suggest-cues' && request.method==='POST'){ res=await handleMarketingSuggestCues(request, env); }
       else if(url.pathname==='/marketing/projects/suggest-caption' && request.method==='POST'){ res=await handleMarketingSuggestCaption(request, env); }
       else if(url.pathname==='/marketing/projects/cues' && request.method==='PATCH'){ res=await handleMarketingCuesSave(request, env); }
+      else if(url.pathname==='/marketing/projects/autoedit-options' && request.method==='PATCH'){ res=await handleMarketingAutoeditOptionsSave(request, env); }
       else if(url.pathname==='/marketing/projects/detect-scenes' && request.method==='POST'){ res=await handleMarketingDetectScenes(request, env); }
       else if(url.pathname==='/marketing/projects/render' && request.method==='POST'){ res=await handleMarketingRenderStart(request, env); }
       else if(url.pathname==='/marketing/projects/preview' && request.method==='POST'){ res=await handleMarketingPreview(request, env); }
