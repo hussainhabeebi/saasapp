@@ -501,6 +501,8 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div class="chip-row" id="batchAspectRow"></div>
             <div class="note" style="margin-top:4px">Each extra aspect is a real, separately-billed render — its result won't overwrite this project's main output.</div>
             <button class="btn btn-primary" id="renderBtn" onclick="startRender()" style="margin-top:10px">🚀 Render</button>
+            <button class="btn btn-ghost btn-sm" onclick="inspectRenderSpec()" style="margin-top:10px;margin-left:8px">🔍 Inspect settings that will be sent</button>
+            <div class="hidden" id="inspectSpecResult" style="margin-top:8px"></div>
             <div class="progress hidden" id="renderProgressWrap"><div class="progress-fill" id="renderProgressFill" style="width:0%"></div></div>
             <div class="note" id="renderStatus" style="margin-top:8px"></div>
             <div class="hidden" id="outputWrap" style="margin-top:12px">
@@ -1524,9 +1526,7 @@ function collectRenderOptions() {
     } : null,
   };
 }
-async function startRender() {
-  if (!currentProject) return;
-  $id('renderBtn').disabled = true;
+function buildRenderRequestBody() {
   const options = { ...collectRenderOptions(), quality: $id('optQuality').value || 'standard' };
   const body = { project_id: currentProject.id, options };
   // Batch multi-aspect export — the project's own aspect always renders as the primary output;
@@ -1534,6 +1534,39 @@ async function startRender() {
   // own job row only (see worker.js's handleMarketingRenderStart/render_extra job type).
   const extraAspects = ['9:16', '1:1', '16:9'].filter(a => a !== currentProject.target_aspect && $id(`aspect_${a.replace(':', '_')}`)?.checked);
   if (extraAspects.length) body.aspects = extraAspects;
+  return body;
+}
+// A direct answer to "is my toggle/B-roll cue actually being applied" — shows EXACTLY what
+// startRender() is about to POST, plus what's actually saved server-side for cues right now
+// (re-fetched fresh, not just trusted from in-memory state) — since a render reads the PROJECT's
+// saved cues_json, not the browser's live currentCues array, a stale/failed autosave would mean
+// "what I see checked" and "what the render will use" silently diverge. This turns that into
+// something visible instead of guessed at.
+async function inspectRenderSpec() {
+  if (!currentProject) return;
+  const box = $id('inspectSpecResult');
+  box.classList.remove('hidden');
+  box.innerHTML = '<span class="note">⏳ Checking server-saved state…</span>';
+  const r = await fetch(`${WORKER_BASE}/marketing/projects`, { headers: ncAuthHeaders() });
+  const data = await r.json().catch(() => ({ list: [] }));
+  const savedProject = (data.list || []).find(p => p.id === currentProject.id);
+  const savedCues = savedProject?.cues || [];
+  const acceptedSaved = savedCues.filter(c => c.accepted !== false);
+  const acceptedLocal = currentCues.filter(c => c.accepted !== false);
+  const cuesMismatch = JSON.stringify(savedCues) !== JSON.stringify(currentCues);
+  const body = buildRenderRequestBody();
+  box.innerHTML = `
+    <div class="note" style="${cuesMismatch ? 'color:var(--warn)' : ''}">${cuesMismatch
+      ? '⚠️ What you see checked in step 4 does NOT match what\'s saved on the server yet (autosave may still be pending, or failed) — wait a second and re-check before rendering.'
+      : '✅ Server-saved cues match what you see in step 4.'}</div>
+    <div class="note" style="margin-top:4px">Server has <b>${acceptedSaved.length}</b> accepted cue(s) (${savedCues.length} total). This render will send <b>${acceptedLocal.length}</b> accepted cue(s) via project's saved state, plus these auto-edit options:</div>
+    <pre class="code-editor" style="margin-top:6px;max-height:220px;overflow:auto">${esc(JSON.stringify({ ...body, note: 'cues are NOT in this body — the Worker reads them from the project\'s saved cues_json server-side' }, null, 2))}</pre>
+  `;
+}
+async function startRender() {
+  if (!currentProject) return;
+  $id('renderBtn').disabled = true;
+  const body = buildRenderRequestBody();
   const r = await fetch(`${WORKER_BASE}/marketing/projects/render`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
   const data = await r.json();
   $id('renderBtn').disabled = false;

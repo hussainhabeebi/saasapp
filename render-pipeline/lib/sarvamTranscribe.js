@@ -128,6 +128,7 @@ async function transcribeWithSarvam(sourceUrl, language, env) {
     const durationSec = await getDurationSec(audioPath);
     const silences = await detectSilence(audioPath, 0, durationSec);
     const chunks = planChunks(durationSec, silences, MAX_CHUNK_SEC);
+    console.log(`[SARVAM DEBUG] audio duration ${durationSec.toFixed(2)}s, planned ${chunks.length} chunk(s):`, chunks.map(c => `[${c.start.toFixed(2)}-${c.end.toFixed(2)}]`).join(' '));
 
     const allWords = [];
     const allText = [];
@@ -144,6 +145,14 @@ async function transcribeWithSarvam(sourceUrl, language, env) {
       }
       if (!detectedLang && data.language_code) detectedLang = String(data.language_code).split('-')[0];
       const parsed = parseSarvamWords(data, chunk.end - chunk.start);
+      // Deliberately verbose, distinctly tagged for easy grepping — the ONE genuinely unverified
+      // piece of this integration (see the module header comment) is Sarvam's actual response
+      // shape, and every attempt to debug it remotely so far has hit the same wall: no way to see
+      // what Sarvam really returned. This logs it in full, once per chunk, so a real production
+      // failure (words landing in the wrong scene, duplicated text, empty scenes) can finally be
+      // root-caused from render-pipeline logs instead of guessed at.
+      console.log(`[SARVAM DEBUG] chunk [${chunk.start.toFixed(2)}-${chunk.end.toFixed(2)}] raw response:`, JSON.stringify(data));
+      console.log(`[SARVAM DEBUG] chunk [${chunk.start.toFixed(2)}-${chunk.end.toFixed(2)}] parsed ${parsed.words.length} words, approximate=${parsed.words[0]?.approximate === true}, word times range [${Math.min(...parsed.words.map(w=>w.start), 0).toFixed(2)}-${Math.max(...parsed.words.map(w=>w.end), 0).toFixed(2)}] within a ${(chunk.end-chunk.start).toFixed(2)}s chunk`);
       if (parsed.text) allText.push(parsed.text);
       parsed.words.forEach(w => allWords.push({ ...w, start: w.start + chunk.start, end: w.end + chunk.start, ...(w.approximate ? { approximate: true } : {}) }));
     }
