@@ -65,7 +65,25 @@ RUN apt-get update \
 ARG WHISPER_MODEL_SIZE=small
 ENV WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE}
 RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL_SIZE}', device='cpu', compute_type='int8'); print('faster-whisper model cached')"
-RUN python3 -c "from transformers import AutoModel; AutoModel.from_pretrained('ai4bharat/indic-conformer-600m-multilingual', trust_remote_code=True); print('AI4Bharat model cached')"
+
+# ai4bharat/indic-conformer-600m-multilingual is a GATED Hugging Face repo — confirmed by a real
+# build failure (401 GatedRepoError), not documented anywhere findable beforehand. Downloading it
+# needs an HF account that has clicked "Agree and access repository" on the model's page
+# (https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual) plus a read-scoped access
+# token passed in as the HF_TOKEN build arg (Coolify: add HF_TOKEN as a build-time env var/secret
+# on this resource). Conditional, not a hard build requirement — AI4BHARAT_ENABLED is opt-in, so a
+# missing HF_TOKEN skips this step (with a clear message) instead of failing the ENTIRE build for
+# anyone who never intended to use this feature. Without HF_TOKEN, AI4BHARAT_ENABLED will still
+# fail at runtime with the same GatedRepoError if someone flips it on — a real, actionable error
+# message, not a repeat of the opaque 502 that pre-downloading was meant to avoid in the first
+# place, so set HF_TOKEN whenever AI4BHARAT_ENABLED is set.
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN}
+RUN if [ -n "$HF_TOKEN" ]; then \
+      python3 -c "from transformers import AutoModel; AutoModel.from_pretrained('ai4bharat/indic-conformer-600m-multilingual', trust_remote_code=True); print('AI4Bharat model cached')"; \
+    else \
+      echo "HF_TOKEN not set — skipping AI4Bharat model pre-download (AI4BHARAT_ENABLED will fail at runtime with a real GatedRepoError until HF_TOKEN is set and this is rebuilt)."; \
+    fi
 
 WORKDIR /app
 

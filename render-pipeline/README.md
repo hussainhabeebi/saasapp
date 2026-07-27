@@ -113,6 +113,14 @@ timestamps — genuinely improves recognized text for Indic languages, but word 
 back to the same evenly-split approximation used elsewhere in this app. See SETUP.md for full
 detail on what was verified vs. not.
 
+**Needs `HF_TOKEN`** — this specific model repo is GATED on Hugging Face (a real `401
+GatedRepoError` hit on the first build attempt, not documented anywhere findable beforehand).
+Requires an HF account that's clicked "Agree and access repository" on the model's page, plus a
+read-scoped token passed as the `HF_TOKEN` Docker build arg (Coolify build-time variable, not a
+runtime env var — the model is downloaded and baked in at build time). The Dockerfile's
+pre-download step skips gracefully (clear message, doesn't fail the whole build) when `HF_TOKEN`
+isn't set, so this only matters if you're actually turning `AI4BHARAT_ENABLED` on.
+
 ## Sarvam AI transcription for Indic languages (`SARVAM_API_KEY`, `lib/sarvamTranscribe.js`)
 
 Whisper's real-world Malayalam accuracy turned out to be weak — a real project's Malayalam audio
