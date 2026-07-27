@@ -4976,6 +4976,10 @@ async function markHumanDealWon(leadId){
   if(clientRecord.erpnext_base_url && clientRecord.erpnext_api_key && clientRecord.erpnext_api_secret){
     fetch(`${CONFIG.WORKER_BASE}/erpnext/customers/ensure`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:lead.Name, phone:lead.Phone, email:lead.Email})}).catch(()=>{});
   }
+  // Same search-or-create, best-effort push into the Financial Planning module (Accounting tab) —
+  // a won deal shows up as a recurring-billing customer record right away, with monthly_value left
+  // at 0 until someone sets the actual plan amount (see fp_customers/handleFpCustomerEnsure).
+  fetch(`${CONFIG.WORKER_BASE}/financial/customers/ensure`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:leadId, name:lead.Name, phone:lead.Phone, email:lead.Email})}).catch(()=>{});
 }
 
 // One-click "Spam" — see applyHumanDealOutcome's OptOut note above for what this actually does

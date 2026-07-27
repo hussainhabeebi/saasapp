@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 :root{
   --bg:#FFF7ED;--card:#FFFFFF;--ink:#241A0C;--muted:#8A6D4B;
@@ -92,6 +93,29 @@ tbody tr:hover{background:var(--bg)}
 .loading-row td{text-align:center;padding:30px;color:var(--muted)}
 .empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
 .empty-icon{font-size:36px;margin-bottom:10px}
+
+/* ── Financial Planning — internal sub-nav (this module's own view switcher, nested inside the
+   flat top-level tab row above; the module has enough distinct views — dashboard, customers,
+   collections, expenses, settings — that a second-level nav reads clearer than one long page) ── */
+.fp-subnav{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.fp-pill{font-family:var(--disp);font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;border:1.5px solid var(--line);background:var(--card);cursor:pointer;color:var(--muted)}
+.fp-pill.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.fp-sub{display:none}
+.fp-sub.active{display:block}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
+.stat-card{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);padding:14px 16px}
+.stat-card .stat-lbl{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+.stat-card .stat-val{font-family:var(--disp);font-size:22px;font-weight:700;color:var(--ink)}
+.stat-card .stat-sub{font-size:12px;color:var(--muted);margin-top:2px}
+.aging-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.aging-cell{border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;text-align:center}
+.aging-cell .k{font-size:11px;color:var(--muted);font-weight:600}
+.aging-cell .c{font-family:var(--disp);font-weight:700;font-size:18px;margin:2px 0}
+.aging-cell .a{font-size:12px;color:var(--muted)}
+.toggle-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.toggle-row input[type=checkbox]{width:36px;height:20px}
+.sortable{cursor:pointer;user-select:none}
+.sortable:hover{color:var(--accent-ink)}
 </style>
 </head>
 <body>
@@ -106,6 +130,7 @@ tbody tr:hover{background:var(--bg)}
   <div id="tabs">
     <button class="tab active" data-tab="documents" onclick="showTab('documents')">🧾 Documents</button>
     <button class="tab" data-tab="customers" onclick="showTab('customers')">👤 Customers</button>
+    <button class="tab" data-tab="financial" onclick="showTab('financial')">💰 Financial Planning</button>
     <button class="tab" data-tab="erpnext" onclick="showTab('erpnext')">⚙️ ERPNext</button>
   </div>
 
@@ -154,6 +179,163 @@ tbody tr:hover{background:var(--bg)}
             <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Actions</th></tr></thead>
             <tbody id="customersTbody"><tr class="loading-row"><td colspan="4"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- FINANCIAL PLANNING — this app's own recurring-billing/expense tracking (D1-backed, fully
+         separate from the live ERPNext passthrough above — see migrations/0015_financial_planning.sql
+         and SETUP.md "Financial Planning module"). -->
+    <div id="tabFinancial" class="page">
+      <div class="fp-subnav">
+        <button class="fp-pill active" data-fpsub="dashboard" onclick="showFpSub('dashboard')">📊 Dashboard</button>
+        <button class="fp-pill" data-fpsub="customers" onclick="showFpSub('customers')">👥 Customers</button>
+        <button class="fp-pill" data-fpsub="dues" onclick="showFpSub('dues')">💵 Collections</button>
+        <button class="fp-pill" data-fpsub="expenses" onclick="showFpSub('expenses')">🧾 Expenses</button>
+        <button class="fp-pill" data-fpsub="settings" onclick="showFpSub('settings')">⚙️ Settings</button>
+      </div>
+
+      <!-- DASHBOARD -->
+      <div id="fpSubDashboard" class="fp-sub active">
+        <div class="card" id="fpDashLoading"><span class="spinner"></span>Loading dashboard…</div>
+        <div id="fpDashContent" style="display:none">
+          <div class="card">
+            <div class="card-title" id="fpDashPeriodLabel">This Month</div>
+            <div class="stat-grid">
+              <div class="stat-card"><div class="stat-lbl">Expected</div><div class="stat-val" id="fpStatExpected">—</div></div>
+              <div class="stat-card"><div class="stat-lbl">Collected</div><div class="stat-val" id="fpStatCollected">—</div><div class="stat-sub" id="fpStatPct"></div></div>
+              <div class="stat-card"><div class="stat-lbl">Total Expenses</div><div class="stat-val" id="fpStatExpenses">—</div><div class="stat-sub" id="fpStatExpensesSplit"></div></div>
+              <div class="stat-card"><div class="stat-lbl">Net Position</div><div class="stat-val" id="fpStatNet">—</div><div class="stat-sub">Collected − Expenses</div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Aging — Outstanding Receivables by Days Overdue</div>
+            <div class="aging-grid" id="fpAgingGrid"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Last 6 Months — Expected vs Collected vs Expenses</div>
+            <div style="height:260px"><canvas id="fpTrendChart"></canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-title-row">
+              <div class="card-title">Outstanding Receivables</div>
+              <div class="card-actions">
+                <select class="s-input" id="fpOutstandingSort" style="width:auto" onchange="renderFpOutstanding()">
+                  <option value="overdue_days">Sort: Most overdue first</option>
+                  <option value="customer_name">Sort: Customer name</option>
+                  <option value="balance">Sort: Balance (highest first)</option>
+                </select>
+              </div>
+            </div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>Customer</th><th>Period</th><th>Due Date</th><th>Amount</th><th>Collected</th><th>Balance</th><th>Overdue</th><th>Aging</th></tr></thead>
+                <tbody id="fpOutstandingTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CUSTOMERS (this module's own recurring-billing record) -->
+      <div id="fpSubCustomers" class="fp-sub">
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">Recurring-Billing Customers</div>
+            <div class="card-actions">
+              <input class="search-input" id="fpCustSearch" type="text" placeholder="🔍 Search…" oninput="renderFpCustomersTable()">
+              <button class="save-btn" onclick="openFpCustomerModal()">+ Add Customer</button>
+            </div>
+          </div>
+          <div class="s-hint" style="margin-bottom:14px">Separate from the "👤 Customers" tab (that one is a live ERPNext lookup with no local record). These are the customers Expected Funds get generated for each billing cycle — a lead marked "✅ Won" is added here automatically.</div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Plan</th><th>Value</th><th>Cycle</th><th>Billing Day</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="fpCustomersTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- EXPECTED DUES + COLLECTIONS -->
+      <div id="fpSubDues" class="fp-sub">
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">Expected Funds</div>
+            <div class="card-actions">
+              <select class="s-input" id="fpDuesFilterStatus" style="width:auto" onchange="loadFpDuesAndRender()">
+                <option value="">All statuses</option>
+                <option value="open">Open</option>
+                <option value="partial">Partial</option>
+                <option value="paid">Paid</option>
+              </select>
+              <button class="save-btn sec" onclick="openFpCollectionModal(null)">+ Record Collection</button>
+            </div>
+          </div>
+          <div class="s-hint" style="margin-bottom:14px">One row per customer per billing period, auto-generated on the 1st of the month by the scheduled Worker. Record a payment against any row below — partial payments keep the balance open and trigger WhatsApp reminders once overdue.</div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Customer</th><th>Period</th><th>Due Date</th><th>Amount</th><th>Collected</th><th>Balance</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="fpDuesTbody"><tr class="loading-row"><td colspan="8"><span class="spinner"></span>Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- EXPENSES -->
+      <div id="fpSubExpenses" class="fp-sub">
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">Fixed Recurring Expenses</div>
+            <div class="card-actions"><button class="save-btn" onclick="openFpExpenseTemplateModal()">+ Add Fixed Expense</button></div>
+          </div>
+          <div class="s-hint" style="margin-bottom:14px">Rent, salaries, SaaS tools — auto-booked into the expense list below on the 1st of every month while marked Active.</div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Category</th><th>Amount</th><th>Active</th><th>Actions</th></tr></thead>
+              <tbody id="fpExpenseTemplatesTbody"><tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">All Expenses (Fixed + One-time)</div>
+            <div class="card-actions">
+              <select class="s-input" id="fpExpensesMonths" style="width:auto" onchange="loadFpExpensesAndRender()">
+                <option value="3">Last 3 months</option>
+                <option value="6" selected>Last 6 months</option>
+                <option value="12">Last 12 months</option>
+              </select>
+              <button class="save-btn sec" onclick="openFpOnetimeExpenseModal()">+ One-time Expense</button>
+            </div>
+          </div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Date</th><th>Name</th><th>Category</th><th>Type</th><th>Amount</th><th>Actions</th></tr></thead>
+              <tbody id="fpExpensesTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- SETTINGS — fp_config: gates for the monthly cron + reminder sweep, Razorpay credentials -->
+      <div id="fpSubSettings" class="fp-sub">
+        <div class="card">
+          <div class="card-title">⚙️ Financial Planning Settings</div>
+          <div class="toggle-row"><input type="checkbox" id="fpCfgEnabled"><label class="s-lbl" style="margin:0">Enabled — generate Expected Funds &amp; fixed expenses automatically on the 1st of each month</label></div>
+          <div class="toggle-row"><input type="checkbox" id="fpCfgRemindersEnabled"><label class="s-lbl" style="margin:0">Send WhatsApp reminders for overdue Expected Funds (via Chatwoot)</label></div>
+          <div class="card-title" style="margin-top:10px">Razorpay (optional)</div>
+          <div class="s-hint" style="margin-bottom:14px">Connect Razorpay to auto-record collections from webhook events (payment.captured / payment_link.paid). Pass <code>fp_customer_id</code> (and optionally <code>fp_expected_due_id</code>) in the payment's Notes so the webhook knows which customer to credit.</div>
+          <div class="modal-grid" style="margin-bottom:0">
+            <div><label class="s-lbl">Key ID</label><input class="s-input" id="fpCfgRzpKeyId" placeholder="rzp_live_…"></div>
+            <div><label class="s-lbl">Key Secret</label><input class="s-input" id="fpCfgRzpKeySecret" type="password" placeholder="Leave blank to keep unchanged"></div>
+            <div><label class="s-lbl">Webhook Secret</label><input class="s-input" id="fpCfgRzpWebhookSecret" type="password" placeholder="Webhook Secret"></div>
+          </div>
+          <div class="s-hint">Webhook URL to paste into Razorpay's Dashboard → Settings → Webhooks: <code id="fpWebhookUrlHint"></code></div>
+          <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+            <button class="save-btn" onclick="saveFpConfig()">Save Settings</button>
+            <span class="save-msg" id="fpCfgSaveMsg"></span>
+          </div>
         </div>
       </div>
     </div>
@@ -241,6 +423,103 @@ tbody tr:hover{background:var(--bg)}
   </div>
 </div>
 
+<!-- ── FINANCIAL PLANNING: CUSTOMER MODAL ── -->
+<div class="modal-overlay" id="fpCustomerModal">
+  <div class="modal-card" style="max-width:560px">
+    <div class="modal-title" id="fpCustomerModalTitle">Add Customer</div>
+    <input type="hidden" id="fpCustId">
+    <div class="modal-grid">
+      <div><label class="s-lbl">Name</label><input class="s-input" id="fpCustName" placeholder="e.g. Acme Corp"></div>
+      <div><label class="s-lbl">Plan / Service</label><input class="s-input" id="fpCustPlan" placeholder="e.g. Growth Retainer"></div>
+      <div><label class="s-lbl">Phone</label><input class="s-input" id="fpCustPhone"></div>
+      <div><label class="s-lbl">Email</label><input class="s-input" id="fpCustEmail" type="email"></div>
+      <div><label class="s-lbl">Monthly Value</label><input class="s-input" id="fpCustValue" type="number" placeholder="e.g. 1000"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="fpCustCurrency" placeholder="INR" value="INR"></div>
+      <div><label class="s-lbl">Billing Cycle</label>
+        <select class="s-input" id="fpCustCycle"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option></select>
+      </div>
+      <div><label class="s-lbl">Billing Day (1–28)</label><input class="s-input" id="fpCustBillingDay" type="number" min="1" max="28" value="1"></div>
+      <div><label class="s-lbl">Start Date</label><input class="s-input" id="fpCustStartDate" type="date"></div>
+      <div><label class="s-lbl">Status</label>
+        <select class="s-input" id="fpCustStatus"><option value="active">Active</option><option value="paused">Paused</option><option value="cancelled">Cancelled</option></select>
+      </div>
+    </div>
+    <label class="s-lbl">Notes</label>
+    <textarea class="s-input" id="fpCustNotes" rows="2" style="resize:vertical"></textarea>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeFpCustomerModal()">Cancel</button>
+      <button class="save-btn" onclick="saveFpCustomer()">Save</button>
+    </div>
+    <div class="save-msg" id="fpCustSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ── FINANCIAL PLANNING: COLLECTION MODAL ── -->
+<div class="modal-overlay" id="fpCollectionModal">
+  <div class="modal-card" style="max-width:460px">
+    <div class="modal-title">Record Collection</div>
+    <input type="hidden" id="fpColDueId">
+    <div class="modal-grid" style="grid-template-columns:1fr">
+      <div><label class="s-lbl">Customer</label>
+        <select class="s-input" id="fpColCustomerId" onchange="onFpColCustomerChange()"></select>
+      </div>
+      <div><label class="s-lbl">Against Expected Fund (optional)</label>
+        <select class="s-input" id="fpColDueSelect"><option value="">— Ad-hoc / advance —</option></select>
+      </div>
+      <div><label class="s-lbl">Amount</label><input class="s-input" id="fpColAmount" type="number"></div>
+      <div><label class="s-lbl">Mode</label>
+        <select class="s-input" id="fpColMode"><option value="bank">Bank Transfer</option><option value="upi">UPI</option><option value="razorpay">Razorpay</option><option value="cash">Cash</option><option value="other">Other</option></select>
+      </div>
+      <div><label class="s-lbl">Date</label><input class="s-input" id="fpColDate" type="date"></div>
+      <div><label class="s-lbl">Notes</label><input class="s-input" id="fpColNotes"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeFpCollectionModal()">Cancel</button>
+      <button class="save-btn" onclick="saveFpCollection()">Save</button>
+    </div>
+    <div class="save-msg" id="fpColSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ── FINANCIAL PLANNING: FIXED EXPENSE TEMPLATE MODAL ── -->
+<div class="modal-overlay" id="fpExpenseTemplateModal">
+  <div class="modal-card" style="max-width:440px">
+    <div class="modal-title">Fixed Recurring Expense</div>
+    <input type="hidden" id="fpTplId">
+    <div class="modal-grid" style="grid-template-columns:1fr">
+      <div><label class="s-lbl">Name</label><input class="s-input" id="fpTplName" placeholder="e.g. Office Rent"></div>
+      <div><label class="s-lbl">Category</label><input class="s-input" id="fpTplCategory" placeholder="e.g. rent, salaries, saas"></div>
+      <div><label class="s-lbl">Amount</label><input class="s-input" id="fpTplAmount" type="number"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="fpTplCurrency" value="INR"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeFpExpenseTemplateModal()">Cancel</button>
+      <button class="save-btn" onclick="saveFpExpenseTemplate()">Save</button>
+    </div>
+    <div class="save-msg" id="fpTplSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ── FINANCIAL PLANNING: ONE-TIME EXPENSE MODAL ── -->
+<div class="modal-overlay" id="fpOnetimeExpenseModal">
+  <div class="modal-card" style="max-width:440px">
+    <div class="modal-title">One-time Expense</div>
+    <div class="modal-grid" style="grid-template-columns:1fr">
+      <div><label class="s-lbl">Name</label><input class="s-input" id="fpOtName" placeholder="e.g. Client dinner"></div>
+      <div><label class="s-lbl">Category</label><input class="s-input" id="fpOtCategory" placeholder="e.g. marketing, infra, travel"></div>
+      <div><label class="s-lbl">Amount</label><input class="s-input" id="fpOtAmount" type="number"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="fpOtCurrency" value="INR"></div>
+      <div><label class="s-lbl">Date</label><input class="s-input" id="fpOtDate" type="date"></div>
+      <div><label class="s-lbl">Notes</label><input class="s-input" id="fpOtNotes"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeFpOnetimeExpenseModal()">Cancel</button>
+      <button class="save-btn" onclick="saveFpOnetimeExpense()">Save</button>
+    </div>
+    <div class="save-msg" id="fpOtSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
 <!-- ── SEND EMAIL MODAL ── -->
 <div class="modal-overlay" id="emailModal">
   <div class="modal-card" style="max-width:440px">
@@ -287,6 +566,11 @@ let allErpCurrencies = [];
 let allErpDebtorsAccounts = [];
 let erpCustomersLoadError = '';
 function erpAvailable(){ return !!(clientRecord?.erpnext_base_url&&clientRecord?.erpnext_api_key&&clientRecord?.erpnext_api_secret); }
+
+/* ── Financial Planning state (migrations/0015_financial_planning.sql) ── */
+let fpCustomers=[], fpDues=[], fpExpenseTemplates=[], fpExpenses=[], fpConfig=null, fpDashboardData=null;
+let fpLoadError='';
+let fpTrendChart=null;
 
 // Branding for the generated PDF (buildDocumentPdf) is shared with dashboard.html's Quotation
 // feature — quote_logo_url/quote_accent_color/quote_footer_address/quote_header_title/
@@ -368,6 +652,10 @@ async function init(){
     renderCustomersTable();
     populateItemsDatalist();
     populateCurrenciesDatalist();
+    // Financial Planning is D1-backed (see migrations/0015_financial_planning.sql) — same
+    // "own try/catch so it can't take the ERPNext tab down" reasoning as loadDocuments above.
+    try{ await loadFinancialPlanning(); }catch(e){ fpLoadError=e.message; }
+    renderFinancialPlanning();
   }catch(e){
     document.getElementById('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
   }
@@ -419,6 +707,403 @@ function showTab(name){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
   document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+}
+
+function showFpSub(name){
+  document.querySelectorAll('.fp-sub').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.fp-pill').forEach(t=>t.classList.remove('active'));
+  document.getElementById('fpSub'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
+  document.querySelector(`.fp-pill[data-fpsub="${name}"]`).classList.add('active');
+  if(name==='dashboard' && fpDashboardData) try{renderFpTrendChart();}catch(e){}
+}
+
+/* ══════════════════ FINANCIAL PLANNING ══════════════════ */
+async function loadFinancialPlanning(){
+  const [custRes, duesRes, tplRes, expRes, cfgRes, dashRes]=await Promise.all([
+    acctFetch('/financial/customers',{method:'GET'}),
+    acctFetch('/financial/expected-dues',{method:'GET'}),
+    acctFetch('/financial/expense-templates',{method:'GET'}),
+    acctFetch('/financial/expenses?months=6',{method:'GET'}),
+    acctFetch('/financial/config',{method:'GET'}),
+    acctFetch('/financial/dashboard',{method:'GET'}),
+  ]);
+  fpCustomers=custRes.list||[];
+  fpDues=duesRes.list||[];
+  fpExpenseTemplates=tplRes.list||[];
+  fpExpenses=expRes.list||[];
+  fpConfig=cfgRes||null;
+  fpDashboardData=dashRes||null;
+}
+function renderFinancialPlanning(){
+  renderFpDashboard();
+  renderFpCustomersTable();
+  renderFpDuesTable();
+  renderFpExpenseTemplatesTable();
+  renderFpExpensesTable();
+  renderFpConfigForm();
+}
+
+/* ── Dashboard ── */
+function renderFpDashboard(){
+  const loading=document.getElementById('fpDashLoading');
+  const content=document.getElementById('fpDashContent');
+  if(fpLoadError||!fpDashboardData){
+    loading.innerHTML=fpLoadError?`<div class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load Financial Planning (${esc(fpLoadError)}). Make sure migration 0015 has been applied and the Worker is deployed.</div>`:'<span class="spinner"></span>Loading dashboard…';
+    return;
+  }
+  loading.style.display='none';
+  content.style.display='block';
+  const d=fpDashboardData;
+  document.getElementById('fpDashPeriodLabel').textContent=`This Month (${d.current_period})`;
+  document.getElementById('fpStatExpected').textContent=fmtMoney(d.expected_this_month,d.currency);
+  document.getElementById('fpStatCollected').textContent=fmtMoney(d.collected_this_month,d.currency);
+  document.getElementById('fpStatPct').textContent=`${d.collection_pct}% collected`;
+  document.getElementById('fpStatExpenses').textContent=fmtMoney(d.total_expenses,d.currency);
+  document.getElementById('fpStatExpensesSplit').textContent=`Fixed ${fmtMoney(d.fixed_expense_total,d.currency)} · One-time ${fmtMoney(d.onetime_expense_total,d.currency)}`;
+  const netEl=document.getElementById('fpStatNet');
+  netEl.textContent=fmtMoney(d.net_position,d.currency);
+  netEl.style.color=d.net_position<0?'#DC2626':'var(--ink)';
+
+  document.getElementById('fpAgingGrid').innerHTML=(d.aging_buckets||[]).map(b=>`
+    <div class="aging-cell"><div class="k">${esc(b.key)} days</div><div class="c">${b.count}</div><div class="a">${fmtMoney(b.amount,d.currency)}</div></div>
+  `).join('');
+
+  renderFpOutstanding();
+  if(document.getElementById('fpSubDashboard').classList.contains('active')) try{renderFpTrendChart();}catch(e){}
+}
+function renderFpOutstanding(){
+  const d=fpDashboardData; if(!d) return;
+  const sortBy=document.getElementById('fpOutstandingSort').value;
+  const rows=[...(d.outstanding||[])];
+  if(sortBy==='customer_name') rows.sort((a,b)=>(a.customer_name||'').localeCompare(b.customer_name||''));
+  else if(sortBy==='balance') rows.sort((a,b)=>b.balance-a.balance);
+  else rows.sort((a,b)=>b.overdue_days-a.overdue_days);
+  const tbody=document.getElementById('fpOutstandingTbody');
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="8" class="empty-state">No outstanding receivables — everything is collected.</td></tr>'; return; }
+  tbody.innerHTML=rows.map(r=>`<tr>
+    <td>${esc(r.customer_name)}</td>
+    <td>${esc(r.period_key)}</td>
+    <td>${esc(r.due_date)}</td>
+    <td>${fmtMoney(r.amount,r.currency)}</td>
+    <td>${fmtMoney(r.collected_amount,r.currency)}</td>
+    <td>${fmtMoney(r.balance,r.currency)}</td>
+    <td>${r.overdue_days>0?r.overdue_days+'d':'—'}</td>
+    <td>${r.aging_bucket?`<span class="badge">${esc(r.aging_bucket)}</span>`:'—'}</td>
+  </tr>`).join('');
+}
+function renderFpTrendChart(){
+  const d=fpDashboardData; if(!d) return;
+  const canvas=document.getElementById('fpTrendChart');
+  // Chart.js loads from a CDN (see <head>) — if that's blocked or slow, the rest of this page
+  // (and the tables below the chart) shouldn't go down with it, same as dashboard.html's own
+  // try{renderChart();}catch(e){} around its Chart.js calls.
+  if(!canvas || typeof Chart==='undefined') return;
+  if(fpTrendChart){ fpTrendChart.destroy(); }
+  const labels=(d.trend||[]).map(t=>t.period);
+  fpTrendChart=new Chart(canvas,{
+    type:'bar',
+    data:{labels,datasets:[
+      {label:'Expected',data:(d.trend||[]).map(t=>t.expected),backgroundColor:'#FDBA74'},
+      {label:'Collected',data:(d.trend||[]).map(t=>t.collected),backgroundColor:'#C2410C'},
+      {label:'Expenses',data:(d.trend||[]).map(t=>t.expenses),backgroundColor:'#8A6D4B'},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:11}}}},scales:{x:{grid:{display:false},ticks:{font:{size:10}}},y:{beginAtZero:true,grid:{color:'#FDE8CE'},ticks:{font:{size:10}}}}}
+  });
+}
+
+/* ── Customers ── */
+function renderFpCustomersTable(){
+  const tbody=document.getElementById('fpCustomersTbody');
+  if(fpLoadError){ tbody.innerHTML=`<tr><td colspan="7" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load (${esc(fpLoadError)}).</td></tr>`; return; }
+  const q=(document.getElementById('fpCustSearch').value||'').toLowerCase();
+  const rows=fpCustomers.filter(c=>!q||(c.name||'').toLowerCase().includes(q));
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No customers yet — add one, or mark a lead "✅ Won" and it\'ll appear here automatically.</td></tr>'; return; }
+  tbody.innerHTML=rows.map(c=>`<tr>
+    <td>${esc(c.name)}</td>
+    <td>${esc(c.plan_name||'—')}</td>
+    <td>${fmtMoney(c.monthly_value,c.currency)}</td>
+    <td>${esc(c.billing_cycle)}</td>
+    <td>${esc(c.billing_day)}</td>
+    <td><span class="badge ${c.status==='active'?'paid':c.status==='paused'?'pending':'void'}">${esc((c.status||'').toUpperCase())}</span></td>
+    <td class="row-actions">
+      <button class="icon-btn" title="Edit" onclick="openFpCustomerModal(${c.Id})">✏️</button>
+      <button class="icon-btn" title="Record Collection" onclick="openFpCollectionModal(null,${c.Id})">💵</button>
+      <button class="icon-btn danger" title="Delete" onclick="deleteFpCustomer(${c.Id})">🗑</button>
+    </td>
+  </tr>`).join('');
+}
+function openFpCustomerModal(id){
+  const c=id?fpCustomers.find(x=>x.Id===id):null;
+  document.getElementById('fpCustomerModalTitle').textContent=c?'Edit Customer':'Add Customer';
+  document.getElementById('fpCustId').value=id||'';
+  document.getElementById('fpCustName').value=c?.name||'';
+  document.getElementById('fpCustPlan').value=c?.plan_name||'';
+  document.getElementById('fpCustPhone').value=c?.phone||'';
+  document.getElementById('fpCustEmail').value=c?.email||'';
+  document.getElementById('fpCustValue').value=c?.monthly_value??'';
+  document.getElementById('fpCustCurrency').value=c?.currency||'INR';
+  document.getElementById('fpCustCycle').value=c?.billing_cycle||'monthly';
+  document.getElementById('fpCustBillingDay').value=c?.billing_day||1;
+  document.getElementById('fpCustStartDate').value=(c?.start_date||new Date().toISOString().slice(0,10)).slice(0,10);
+  document.getElementById('fpCustStatus').value=c?.status||'active';
+  document.getElementById('fpCustNotes').value=c?.notes||'';
+  document.getElementById('fpCustSaveMsg').textContent='';
+  document.getElementById('fpCustomerModal').classList.add('active');
+}
+function closeFpCustomerModal(){ document.getElementById('fpCustomerModal').classList.remove('active'); }
+async function saveFpCustomer(){
+  const id=document.getElementById('fpCustId').value;
+  const name=document.getElementById('fpCustName').value.trim();
+  const msg=document.getElementById('fpCustSaveMsg');
+  if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
+  const body={
+    name, plan_name:document.getElementById('fpCustPlan').value.trim(),
+    phone:document.getElementById('fpCustPhone').value.trim(), email:document.getElementById('fpCustEmail').value.trim(),
+    monthly_value:Number(document.getElementById('fpCustValue').value)||0, currency:document.getElementById('fpCustCurrency').value.trim()||'INR',
+    billing_cycle:document.getElementById('fpCustCycle').value, billing_day:Number(document.getElementById('fpCustBillingDay').value)||1,
+    start_date:document.getElementById('fpCustStartDate').value, status:document.getElementById('fpCustStatus').value,
+    notes:document.getElementById('fpCustNotes').value.trim(),
+  };
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    if(id){
+      const updated=await acctFetch('/financial/customers',{method:'PATCH',body:JSON.stringify({id:Number(id), ...body})});
+      const idx=fpCustomers.findIndex(x=>x.Id===Number(id));
+      if(idx>=0) fpCustomers[idx]=updated;
+    }else{
+      const created=await acctFetch('/financial/customers',{method:'POST',body:JSON.stringify(body)});
+      fpCustomers.unshift(created);
+    }
+    closeFpCustomerModal();
+    renderFpCustomersTable();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function deleteFpCustomer(id){
+  if(!confirm('Delete this customer? Their Expected Funds and collections will be removed too.')) return;
+  try{
+    await acctFetch('/financial/customers',{method:'DELETE',body:JSON.stringify({id})});
+    fpCustomers=fpCustomers.filter(c=>c.Id!==id);
+    fpDues=fpDues.filter(d=>d.customer_id!==id);
+    renderFpCustomersTable(); renderFpDuesTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── Expected Dues + Collections ── */
+async function loadFpDuesAndRender(){
+  const status=document.getElementById('fpDuesFilterStatus').value;
+  try{
+    const data=await acctFetch(`/financial/expected-dues${status?`?status=${status}`:''}`,{method:'GET'});
+    fpDues=data.list||[];
+    renderFpDuesTable();
+  }catch(e){ alert('Failed to load: '+e.message); }
+}
+function renderFpDuesTable(){
+  const tbody=document.getElementById('fpDuesTbody');
+  if(fpLoadError){ tbody.innerHTML=`<tr><td colspan="8" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load (${esc(fpLoadError)}).</td></tr>`; return; }
+  if(!fpDues.length){ tbody.innerHTML='<tr><td colspan="8" class="empty-state">No Expected Funds yet — these are auto-generated on the 1st of each month for active customers.</td></tr>'; return; }
+  tbody.innerHTML=fpDues.map(d=>{
+    const balance=Math.round((d.amount-d.collected_amount)*100)/100;
+    return `<tr>
+    <td>${esc(d.customer_name)}</td>
+    <td>${esc(d.period_key)}</td>
+    <td>${esc(d.due_date)}</td>
+    <td>${fmtMoney(d.amount,d.currency)}</td>
+    <td>${fmtMoney(d.collected_amount,d.currency)}</td>
+    <td>${fmtMoney(balance,d.currency)}</td>
+    <td><span class="badge ${d.status==='paid'?'paid':d.status==='partial'?'sent':d.status==='void'?'void':'notsynced'}">${esc((d.status||'').toUpperCase())}</span></td>
+    <td class="row-actions">${d.status!=='paid'&&d.status!=='void'?`<button class="save-btn sec" onclick="openFpCollectionModal(${d.Id})">+ Collect</button>`:''}</td>
+  </tr>`;
+  }).join('');
+}
+function openFpCollectionModal(dueId, customerId){
+  const due=dueId?fpDues.find(x=>x.Id===dueId):null;
+  document.getElementById('fpColDueId').value='';
+  const custSel=document.getElementById('fpColCustomerId');
+  custSel.innerHTML=fpCustomers.map(c=>`<option value="${c.Id}">${esc(c.name)}</option>`).join('');
+  custSel.value=due?due.customer_id:(customerId||fpCustomers[0]?.Id||'');
+  onFpColCustomerChange(due?due.Id:'');
+  document.getElementById('fpColAmount').value=due?Math.round((due.amount-due.collected_amount)*100)/100:'';
+  document.getElementById('fpColMode').value='bank';
+  document.getElementById('fpColDate').value=new Date().toISOString().slice(0,10);
+  document.getElementById('fpColNotes').value='';
+  document.getElementById('fpColSaveMsg').textContent='';
+  document.getElementById('fpCollectionModal').classList.add('active');
+}
+function onFpColCustomerChange(preselectDueId){
+  const customerId=Number(document.getElementById('fpColCustomerId').value);
+  const sel=document.getElementById('fpColDueSelect');
+  const openDues=fpDues.filter(d=>d.customer_id===customerId&&d.status!=='paid'&&d.status!=='void');
+  sel.innerHTML='<option value="">— Ad-hoc / advance —</option>'+openDues.map(d=>`<option value="${d.Id}">${esc(d.period_key)} — balance ${fmtMoney(d.amount-d.collected_amount,d.currency)}</option>`).join('');
+  if(preselectDueId) sel.value=preselectDueId;
+}
+function closeFpCollectionModal(){ document.getElementById('fpCollectionModal').classList.remove('active'); }
+async function saveFpCollection(){
+  const msg=document.getElementById('fpColSaveMsg');
+  const customerId=Number(document.getElementById('fpColCustomerId').value);
+  const amount=Number(document.getElementById('fpColAmount').value);
+  if(!customerId){ msg.textContent='Select a customer.'; msg.className='save-msg err'; return; }
+  if(!amount||amount<=0){ msg.textContent='Enter a valid amount.'; msg.className='save-msg err'; return; }
+  const body={
+    customer_id:customerId, expected_due_id:document.getElementById('fpColDueSelect').value||null,
+    amount, mode:document.getElementById('fpColMode').value,
+    collected_at:document.getElementById('fpColDate').value, notes:document.getElementById('fpColNotes').value.trim(),
+  };
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    await acctFetch('/financial/collections',{method:'POST',body:JSON.stringify(body)});
+    await loadFpDuesAndRender();
+    closeFpCollectionModal();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+/* ── Expenses ── */
+function renderFpExpenseTemplatesTable(){
+  const tbody=document.getElementById('fpExpenseTemplatesTbody');
+  if(fpLoadError){ tbody.innerHTML=`<tr><td colspan="5" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load (${esc(fpLoadError)}).</td></tr>`; return; }
+  if(!fpExpenseTemplates.length){ tbody.innerHTML='<tr><td colspan="5" class="empty-state">No fixed recurring expenses yet.</td></tr>'; return; }
+  tbody.innerHTML=fpExpenseTemplates.map(t=>`<tr>
+    <td>${esc(t.name)}</td>
+    <td>${esc(t.category)}</td>
+    <td>${fmtMoney(t.amount,t.currency)}</td>
+    <td>${t.active?'✓':'—'}</td>
+    <td class="row-actions">
+      <button class="icon-btn" title="${t.active?'Deactivate':'Activate'}" onclick="toggleFpExpenseTemplate(${t.Id},${t.active?0:1})">${t.active?'⏸':'▶️'}</button>
+      <button class="icon-btn danger" title="Delete" onclick="deleteFpExpenseTemplate(${t.Id})">🗑</button>
+    </td>
+  </tr>`).join('');
+}
+function openFpExpenseTemplateModal(){
+  document.getElementById('fpTplId').value='';
+  document.getElementById('fpTplName').value='';
+  document.getElementById('fpTplCategory').value='';
+  document.getElementById('fpTplAmount').value='';
+  document.getElementById('fpTplCurrency').value='INR';
+  document.getElementById('fpTplSaveMsg').textContent='';
+  document.getElementById('fpExpenseTemplateModal').classList.add('active');
+}
+function closeFpExpenseTemplateModal(){ document.getElementById('fpExpenseTemplateModal').classList.remove('active'); }
+async function saveFpExpenseTemplate(){
+  const msg=document.getElementById('fpTplSaveMsg');
+  const name=document.getElementById('fpTplName').value.trim();
+  const amount=Number(document.getElementById('fpTplAmount').value);
+  if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
+  if(!amount||amount<=0){ msg.textContent='Enter a valid amount.'; msg.className='save-msg err'; return; }
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    const created=await acctFetch('/financial/expense-templates',{method:'POST',body:JSON.stringify({
+      name, category:document.getElementById('fpTplCategory').value.trim()||'general', amount, currency:document.getElementById('fpTplCurrency').value.trim()||'INR',
+    })});
+    fpExpenseTemplates.unshift(created);
+    closeFpExpenseTemplateModal();
+    renderFpExpenseTemplatesTable();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function toggleFpExpenseTemplate(id, active){
+  try{
+    const updated=await acctFetch('/financial/expense-templates',{method:'PATCH',body:JSON.stringify({id, active})});
+    const idx=fpExpenseTemplates.findIndex(t=>t.Id===id);
+    if(idx>=0) fpExpenseTemplates[idx]=updated;
+    renderFpExpenseTemplatesTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteFpExpenseTemplate(id){
+  if(!confirm('Delete this fixed expense definition? Already-booked expenses stay in the list below.')) return;
+  try{
+    await acctFetch('/financial/expense-templates',{method:'DELETE',body:JSON.stringify({id})});
+    fpExpenseTemplates=fpExpenseTemplates.filter(t=>t.Id!==id);
+    renderFpExpenseTemplatesTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function loadFpExpensesAndRender(){
+  const months=document.getElementById('fpExpensesMonths').value;
+  try{
+    const data=await acctFetch(`/financial/expenses?months=${months}`,{method:'GET'});
+    fpExpenses=data.list||[];
+    renderFpExpensesTable();
+  }catch(e){ alert('Failed to load: '+e.message); }
+}
+function renderFpExpensesTable(){
+  const tbody=document.getElementById('fpExpensesTbody');
+  if(fpLoadError){ tbody.innerHTML=`<tr><td colspan="6" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load (${esc(fpLoadError)}).</td></tr>`; return; }
+  if(!fpExpenses.length){ tbody.innerHTML='<tr><td colspan="6" class="empty-state">No expenses in this range yet.</td></tr>'; return; }
+  const rows=[...fpExpenses].sort((a,b)=>(b.expense_date||'').localeCompare(a.expense_date||''));
+  tbody.innerHTML=rows.map(e=>`<tr>
+    <td>${esc(e.expense_date)}</td>
+    <td>${esc(e.name)}</td>
+    <td>${esc(e.category)}</td>
+    <td>${esc(e.type)}</td>
+    <td>${fmtMoney(e.amount,e.currency)}</td>
+    <td class="row-actions">${e.type==='onetime'?`<button class="icon-btn danger" title="Delete" onclick="deleteFpExpense(${e.Id})">🗑</button>`:''}</td>
+  </tr>`).join('');
+}
+function openFpOnetimeExpenseModal(){
+  document.getElementById('fpOtName').value='';
+  document.getElementById('fpOtCategory').value='';
+  document.getElementById('fpOtAmount').value='';
+  document.getElementById('fpOtCurrency').value='INR';
+  document.getElementById('fpOtDate').value=new Date().toISOString().slice(0,10);
+  document.getElementById('fpOtNotes').value='';
+  document.getElementById('fpOtSaveMsg').textContent='';
+  document.getElementById('fpOnetimeExpenseModal').classList.add('active');
+}
+function closeFpOnetimeExpenseModal(){ document.getElementById('fpOnetimeExpenseModal').classList.remove('active'); }
+async function saveFpOnetimeExpense(){
+  const msg=document.getElementById('fpOtSaveMsg');
+  const name=document.getElementById('fpOtName').value.trim();
+  const amount=Number(document.getElementById('fpOtAmount').value);
+  if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
+  if(!amount||amount<=0){ msg.textContent='Enter a valid amount.'; msg.className='save-msg err'; return; }
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    const created=await acctFetch('/financial/expenses',{method:'POST',body:JSON.stringify({
+      name, category:document.getElementById('fpOtCategory').value.trim()||'general', amount, currency:document.getElementById('fpOtCurrency').value.trim()||'INR',
+      expense_date:document.getElementById('fpOtDate').value, notes:document.getElementById('fpOtNotes').value.trim(),
+    })});
+    fpExpenses.unshift(created);
+    closeFpOnetimeExpenseModal();
+    renderFpExpensesTable();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function deleteFpExpense(id){
+  if(!confirm('Delete this expense?')) return;
+  try{
+    await acctFetch('/financial/expenses',{method:'DELETE',body:JSON.stringify({id})});
+    fpExpenses=fpExpenses.filter(e=>e.Id!==id);
+    renderFpExpensesTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── Settings (fp_config) ── */
+function renderFpConfigForm(){
+  document.getElementById('fpWebhookUrlHint').textContent=`${WORKER_BASE}/financial/razorpay-webhook/${clientId}`;
+  if(!fpConfig) return;
+  document.getElementById('fpCfgEnabled').checked=!!fpConfig.enabled;
+  document.getElementById('fpCfgRemindersEnabled').checked=!!fpConfig.reminders_enabled;
+  document.getElementById('fpCfgRzpKeyId').value=fpConfig.razorpay_key_id||'';
+  document.getElementById('fpCfgRzpKeySecret').value=fpConfig.razorpay_key_secret||'';
+  document.getElementById('fpCfgRzpWebhookSecret').value=fpConfig.razorpay_webhook_secret||'';
+}
+async function saveFpConfig(){
+  const msg=document.getElementById('fpCfgSaveMsg');
+  msg.textContent='Saving…'; msg.className='save-msg';
+  // Key Secret is never sent back by GET /financial/config (kept write-only, like this app's other
+  // per-client secrets) — so an untouched, blank field here means "leave it as-is", not "clear it".
+  // Only include it (and the webhook secret, for the same reason) in the PATCH when the field
+  // actually has something typed into it, so re-saving the toggles above can never wipe it out.
+  const body={
+    enabled:document.getElementById('fpCfgEnabled').checked,
+    reminders_enabled:document.getElementById('fpCfgRemindersEnabled').checked,
+    razorpay_key_id:document.getElementById('fpCfgRzpKeyId').value.trim(),
+  };
+  const keySecret=document.getElementById('fpCfgRzpKeySecret').value.trim();
+  const webhookSecret=document.getElementById('fpCfgRzpWebhookSecret').value.trim();
+  if(keySecret) body.razorpay_key_secret=keySecret;
+  if(webhookSecret) body.razorpay_webhook_secret=webhookSecret;
+  try{
+    fpConfig=await acctFetch('/financial/config',{method:'PATCH',body:JSON.stringify(body)});
+    msg.textContent='✓ Saved'; msg.className='save-msg';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  setTimeout(()=>msg.textContent='',3000);
 }
 
 /* ── ERPNEXT SETTINGS ── */

@@ -8417,6 +8417,500 @@ async function handleAccountingDocumentSendEmail(request, env){
   return json({ok:true});
 }
 
+/* ── Financial Planning module (frontend/accounting.html — "💰 Financial Planning" tab,
+   SETUP.md "Financial Planning module") ──
+   Recurring revenue (fp_customers → fp_expected_dues → fp_collections) and expense tracking
+   (fp_expense_templates, auto-booked monthly, vs. one-off fp_expenses) — migrations/0015_financial_planning.sql.
+   Distinct from the existing "👤 Customers" tab (a live ERPNext passthrough with zero local
+   storage) — fp_customers is this app's own recurring-billing record, independent of whether
+   ERPNext is even connected. Every route below is session-gated and checks row ownership against
+   payload.cid the same way every other Accounting/Hospitality route in this file does. */
+
+function fpClampBillingDay(n){ const v=parseInt(n)||1; return Math.max(1, Math.min(28, v)); }
+function fpCustomerOut(r){ return {...r, Id:r.id}; }
+
+async function findFpCustomer(env, id){
+  return await env.DB.prepare(`SELECT * FROM fp_customers WHERE id=?`).bind(Number(id)).first();
+}
+// Every write to fp_customers/fp_expense_templates upserts this row so the monthly cron and
+// reminder sweep (below) only ever scan clients that actually have Financial Planning data,
+// instead of a full CLIENTS table paginate every tick — same "only scan opted-in clients" pattern
+// as review_config.
+async function fpEnsureConfigRow(env, clientId){
+  await env.DB.prepare(`INSERT INTO fp_config (client_id, enabled, reminders_enabled, updated_at) VALUES (?,1,1,?)
+    ON CONFLICT(client_id) DO NOTHING`).bind(Number(clientId), new Date().toISOString()).run();
+}
+
+async function handleFpCustomersList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=? ORDER BY name ASC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(fpCustomerOut)});
+}
+async function handleFpCustomerCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name) return json({error:'name required'}, 400);
+  const now=new Date().toISOString();
+  const fields={
+    client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
+    name:String(body.name).trim().slice(0,140), phone:String(body.phone||'').trim().slice(0,40),
+    email:String(body.email||'').trim().slice(0,140), plan_name:String(body.plan_name||'').trim().slice(0,140),
+    monthly_value:Number(body.monthly_value)||0, currency:String(body.currency||'INR').trim().slice(0,10).toUpperCase(),
+    billing_cycle:['monthly','quarterly','yearly'].includes(body.billing_cycle)?body.billing_cycle:'monthly',
+    billing_day:fpClampBillingDay(body.billing_day), start_date:body.start_date||now.slice(0,10),
+    status:['active','paused','cancelled'].includes(body.status)?body.status:'active',
+    notes:String(body.notes||'').trim().slice(0,1000), created_at:now,
+  };
+  const r=await env.DB.prepare(`INSERT INTO fp_customers
+    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at)
+    .run();
+  await fpEnsureConfigRow(env, payload.cid);
+  return json(fpCustomerOut({...fields, id:r.meta.last_row_id}));
+}
+async function handleFpCustomerUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findFpCustomer(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).trim().slice(0,140)); }
+  if(body.phone!==undefined){ sets.push('phone=?'); vals.push(String(body.phone).trim().slice(0,40)); }
+  if(body.email!==undefined){ sets.push('email=?'); vals.push(String(body.email).trim().slice(0,140)); }
+  if(body.plan_name!==undefined){ sets.push('plan_name=?'); vals.push(String(body.plan_name).trim().slice(0,140)); }
+  if(body.monthly_value!==undefined){ sets.push('monthly_value=?'); vals.push(Number(body.monthly_value)||0); }
+  if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10).toUpperCase()); }
+  if(body.billing_cycle!==undefined && ['monthly','quarterly','yearly'].includes(body.billing_cycle)){ sets.push('billing_cycle=?'); vals.push(body.billing_cycle); }
+  if(body.billing_day!==undefined){ sets.push('billing_day=?'); vals.push(fpClampBillingDay(body.billing_day)); }
+  if(body.start_date!==undefined){ sets.push('start_date=?'); vals.push(String(body.start_date)); }
+  if(body.status!==undefined && ['active','paused','cancelled'].includes(body.status)){ sets.push('status=?'); vals.push(body.status); }
+  if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE fp_customers SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleFpCustomerDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findFpCustomer(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM fp_customers WHERE id=?`).bind(Number(body.id)).run();
+  await env.DB.prepare(`DELETE FROM fp_expected_dues WHERE customer_id=?`).bind(Number(body.id)).run();
+  await env.DB.prepare(`DELETE FROM fp_collections WHERE customer_id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+// Search-or-create by lead_id — the fire-and-forget hook a lead's "✅ Won" outcome calls (mirrors
+// erpnextResolveCustomer's search-or-create idempotency exactly), so re-clicking Won or a lead
+// that already has a customer record never creates a duplicate. Distinct from the manual "🧾 Set
+// up recurring dues" flow (handleFpCustomerCreate above) — this ensure-route never needs
+// monthly_value/billing fields, since a bare placeholder customer with 0 value can be filled in
+// from the Financial Planning tab afterward instead of blocking the Won click on a form.
+async function handleFpCustomerEnsure(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.lead_id) return json({error:'lead_id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=? AND lead_id=?`).bind(Number(payload.cid), Number(body.lead_id)).first();
+  if(existing) return json({...fpCustomerOut(existing), created:false});
+  const now=new Date().toISOString();
+  const fields={
+    client_id:Number(payload.cid), lead_id:Number(body.lead_id),
+    name:String(body.name||'').trim().slice(0,140)||'Unnamed customer', phone:String(body.phone||'').trim().slice(0,40),
+    email:String(body.email||'').trim().slice(0,140), plan_name:'', monthly_value:0,
+    currency:String(body.currency||'INR').trim().slice(0,10).toUpperCase(), billing_cycle:'monthly', billing_day:1,
+    start_date:now.slice(0,10), status:'active', notes:'', created_at:now,
+  };
+  const r=await env.DB.prepare(`INSERT INTO fp_customers
+    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at)
+    .run();
+  await fpEnsureConfigRow(env, payload.cid);
+  return json({...fpCustomerOut({...fields, id:r.meta.last_row_id}), created:true});
+}
+
+async function handleFpExpectedDuesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const statusFilter=url.searchParams.get('status');
+  const customerId=url.searchParams.get('customer_id');
+  let where=`d.client_id=?`; const binds=[Number(payload.cid)];
+  if(statusFilter){ where+=` AND d.status=?`; binds.push(statusFilter); }
+  if(customerId){ where+=` AND d.customer_id=?`; binds.push(Number(customerId)); }
+  const {results}=await env.DB.prepare(`SELECT d.*, c.name as customer_name, c.phone as customer_phone FROM fp_expected_dues d JOIN fp_customers c ON c.id=d.customer_id WHERE ${where} ORDER BY d.due_date DESC`).bind(...binds).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+
+// Recomputes an Expected Fund's collected_amount/status from its linked fp_collections rows —
+// called after every collection create/delete so the two tables never drift out of sync, rather
+// than deriving it via a join on every single read.
+async function fpRecomputeDueStatus(env, dueId){
+  const due=await env.DB.prepare(`SELECT * FROM fp_expected_dues WHERE id=?`).bind(Number(dueId)).first();
+  if(!due) return;
+  const {results}=await env.DB.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM fp_collections WHERE expected_due_id=?`).bind(Number(dueId)).all();
+  const collected=Number(results?.[0]?.total)||0;
+  const status = collected<=0 ? 'open' : (collected>=due.amount ? 'paid' : 'partial');
+  await env.DB.prepare(`UPDATE fp_expected_dues SET collected_amount=?, status=? WHERE id=?`).bind(collected, status, Number(dueId)).run();
+}
+
+async function handleFpCollectionCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.customer_id||!body.amount) return json({error:'customer_id and amount required'}, 400);
+  const cust=await findFpCustomer(env, body.customer_id);
+  if(!cust || String(cust.client_id)!==String(payload.cid)) return json({error:'Customer not found'}, 404);
+  let dueId=null;
+  if(body.expected_due_id){
+    const due=await env.DB.prepare(`SELECT * FROM fp_expected_dues WHERE id=?`).bind(Number(body.expected_due_id)).first();
+    if(due && String(due.client_id)===String(payload.cid)) dueId=due.id;
+  }
+  const now=new Date().toISOString();
+  const fields={
+    client_id:Number(payload.cid), customer_id:Number(body.customer_id), expected_due_id:dueId,
+    amount:Number(body.amount)||0, currency:String(body.currency||cust.currency||'INR').trim().slice(0,10).toUpperCase(),
+    mode:['bank','upi','razorpay','cash','other'].includes(body.mode)?body.mode:'bank',
+    razorpay_payment_id:body.razorpay_payment_id?String(body.razorpay_payment_id).slice(0,100):null,
+    collected_at:body.collected_at||now, notes:String(body.notes||'').trim().slice(0,500), created_at:now,
+  };
+  const r=await env.DB.prepare(`INSERT INTO fp_collections
+    (client_id, customer_id, expected_due_id, amount, currency, mode, razorpay_payment_id, collected_at, notes, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.customer_id, fields.expected_due_id, fields.amount, fields.currency, fields.mode, fields.razorpay_payment_id, fields.collected_at, fields.notes, fields.created_at)
+    .run();
+  if(dueId) await fpRecomputeDueStatus(env, dueId);
+  return json({...fields, Id:r.meta.last_row_id});
+}
+async function handleFpCollectionDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM fp_collections WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM fp_collections WHERE id=?`).bind(Number(body.id)).run();
+  if(existing.expected_due_id) await fpRecomputeDueStatus(env, existing.expected_due_id);
+  return json({ok:true});
+}
+
+async function handleFpExpenseTemplatesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM fp_expense_templates WHERE client_id=? ORDER BY name ASC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleFpExpenseTemplateCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name||!body.amount) return json({error:'name and amount required'}, 400);
+  const now=new Date().toISOString();
+  const fields={
+    client_id:Number(payload.cid), name:String(body.name).trim().slice(0,140),
+    category:String(body.category||'general').trim().slice(0,60), amount:Number(body.amount)||0,
+    currency:String(body.currency||'INR').trim().slice(0,10).toUpperCase(), active:body.active===false?0:1, created_at:now,
+  };
+  const r=await env.DB.prepare(`INSERT INTO fp_expense_templates (client_id, name, category, amount, currency, active, created_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.name, fields.category, fields.amount, fields.currency, fields.active, fields.created_at).run();
+  await fpEnsureConfigRow(env, payload.cid);
+  return json({...fields, Id:r.meta.last_row_id});
+}
+async function handleFpExpenseTemplateUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM fp_expense_templates WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).trim().slice(0,140)); }
+  if(body.category!==undefined){ sets.push('category=?'); vals.push(String(body.category).trim().slice(0,60)); }
+  if(body.amount!==undefined){ sets.push('amount=?'); vals.push(Number(body.amount)||0); }
+  if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10).toUpperCase()); }
+  if(body.active!==undefined){ sets.push('active=?'); vals.push(body.active?1:0); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE fp_expense_templates SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleFpExpenseTemplateDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM fp_expense_templates WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM fp_expense_templates WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+
+async function handleFpExpensesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const months=Math.min(24, parseInt(url.searchParams.get('months'))||6);
+  const since=new Date(); since.setMonth(since.getMonth()-(months-1)); since.setDate(1);
+  const {results}=await env.DB.prepare(`SELECT * FROM fp_expenses WHERE client_id=? AND expense_date>=? ORDER BY expense_date DESC`)
+    .bind(Number(payload.cid), since.toISOString().slice(0,10)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleFpExpenseCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name||!body.amount) return json({error:'name and amount required'}, 400);
+  const now=new Date().toISOString();
+  const fields={
+    client_id:Number(payload.cid), template_id:null, type:'onetime',
+    category:String(body.category||'general').trim().slice(0,60), name:String(body.name).trim().slice(0,140),
+    amount:Number(body.amount)||0, currency:String(body.currency||'INR').trim().slice(0,10).toUpperCase(),
+    period_key:null, expense_date:body.expense_date||now.slice(0,10), notes:String(body.notes||'').trim().slice(0,500), created_at:now,
+  };
+  const r=await env.DB.prepare(`INSERT INTO fp_expenses (client_id, template_id, type, category, name, amount, currency, period_key, expense_date, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.template_id, fields.type, fields.category, fields.name, fields.amount, fields.currency, fields.period_key, fields.expense_date, fields.notes, fields.created_at).run();
+  return json({...fields, Id:r.meta.last_row_id});
+}
+async function handleFpExpenseDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM fp_expenses WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM fp_expenses WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+
+async function handleFpConfigGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const row=await env.DB.prepare(`SELECT client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
+  return json(row?{...row, razorpay_connected:!!(row.razorpay_key_id&&row.razorpay_webhook_secret)}:{client_id:Number(payload.cid), enabled:1, reminders_enabled:1, razorpay_connected:false});
+}
+async function handleFpConfigUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const now=new Date().toISOString();
+  // Ensure a row exists first (defaults, no-op if already present), then apply only the fields
+  // actually provided in a plain UPDATE — keeps the insert branch's placeholders and the dynamic
+  // update branch's placeholders from ever needing to line up positionally in one statement.
+  await env.DB.prepare(`INSERT INTO fp_config (client_id, enabled, reminders_enabled, updated_at) VALUES (?,1,1,?)
+    ON CONFLICT(client_id) DO NOTHING`).bind(Number(payload.cid), now).run();
+  const sets=['updated_at=?'], vals=[now];
+  if(body.enabled!==undefined){ sets.push('enabled=?'); vals.push(body.enabled?1:0); }
+  if(body.reminders_enabled!==undefined){ sets.push('reminders_enabled=?'); vals.push(body.reminders_enabled?1:0); }
+  if(body.razorpay_key_id!==undefined){ sets.push('razorpay_key_id=?'); vals.push(String(body.razorpay_key_id||'').trim()); }
+  if(body.razorpay_key_secret!==undefined){ sets.push('razorpay_key_secret=?'); vals.push(String(body.razorpay_key_secret||'').trim()); }
+  if(body.razorpay_webhook_secret!==undefined){ sets.push('razorpay_webhook_secret=?'); vals.push(String(body.razorpay_webhook_secret||'').trim()); }
+  vals.push(Number(payload.cid));
+  await env.DB.prepare(`UPDATE fp_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+// Month-end dashboard — one aggregate route (same "compute everything server-side, one response"
+// shape as handleReportsProducts) rather than the frontend stitching several fetches together.
+const FP_AGING_BUCKETS=[{key:'0-7',min:0,max:7},{key:'8-15',min:8,max:15},{key:'16-30',min:16,max:30},{key:'30+',min:31,max:Infinity}];
+async function handleFpDashboard(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const now=new Date();
+  const currentPeriod=now.toISOString().slice(0,7);
+  const todayStr=now.toISOString().slice(0,10);
+
+  const {results:dues}=await env.DB.prepare(`SELECT d.*, c.name as customer_name, c.phone as customer_phone FROM fp_expected_dues d JOIN fp_customers c ON c.id=d.customer_id WHERE d.client_id=?`).bind(clientId).all();
+  const allDues=dues||[];
+  const thisMonthDues=allDues.filter(d=>d.period_key===currentPeriod);
+  const expectedThisMonth=thisMonthDues.reduce((s,d)=>s+d.amount,0);
+  const collectedThisMonth=thisMonthDues.reduce((s,d)=>s+d.collected_amount,0);
+  const collectionPct=expectedThisMonth>0?Math.round(collectedThisMonth/expectedThisMonth*1000)/10:0;
+
+  const outstanding=allDues.filter(d=>d.status==='open'||d.status==='partial').map(d=>{
+    const overdueDays=Math.max(0, Math.floor((now.getTime()-new Date(d.due_date).getTime())/86400000));
+    const bucket=(FP_AGING_BUCKETS.find(b=>overdueDays>=b.min&&overdueDays<=b.max)||FP_AGING_BUCKETS[FP_AGING_BUCKETS.length-1]).key;
+    return {Id:d.id, customer_id:d.customer_id, customer_name:d.customer_name, customer_phone:d.customer_phone,
+      period_key:d.period_key, amount:d.amount, collected_amount:d.collected_amount, balance:Math.round((d.amount-d.collected_amount)*100)/100,
+      currency:d.currency, due_date:d.due_date, overdue_days:d.due_date<todayStr?overdueDays:0, aging_bucket:d.due_date<todayStr?bucket:null, status:d.status};
+  }).sort((a,b)=>b.overdue_days-a.overdue_days);
+
+  const agingBuckets=FP_AGING_BUCKETS.map(b=>({
+    key:b.key,
+    count:outstanding.filter(o=>o.aging_bucket===b.key).length,
+    amount:Math.round(outstanding.filter(o=>o.aging_bucket===b.key).reduce((s,o)=>s+o.balance,0)*100)/100,
+  }));
+
+  const {results:expenses}=await env.DB.prepare(`SELECT * FROM fp_expenses WHERE client_id=? AND expense_date>=?`).bind(clientId, currentPeriod+'-01').all();
+  const thisMonthExpenses=(expenses||[]).filter(e=>e.expense_date.slice(0,7)===currentPeriod);
+  const fixedExpenseTotal=thisMonthExpenses.filter(e=>e.type==='fixed').reduce((s,e)=>s+e.amount,0);
+  const onetimeExpenseTotal=thisMonthExpenses.filter(e=>e.type==='onetime').reduce((s,e)=>s+e.amount,0);
+  const totalExpenses=fixedExpenseTotal+onetimeExpenseTotal;
+  const netPosition=Math.round((collectedThisMonth-totalExpenses)*100)/100;
+
+  // 6-month trend — expected/collected from fp_expected_dues, expenses from fp_expenses, keyed by
+  // the same 'YYYY-MM' period_key/expense_date-prefix convention used throughout this module.
+  const {results:allExpensesForTrend}=await env.DB.prepare(`SELECT expense_date, amount FROM fp_expenses WHERE client_id=?`).bind(clientId).all();
+  const months=[];
+  for(let i=5;i>=0;i--){ const d=new Date(now.getFullYear(), now.getMonth()-i, 1); months.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')); }
+  const trend=months.map(m=>({
+    period:m,
+    expected:Math.round(allDues.filter(d=>d.period_key===m).reduce((s,d)=>s+d.amount,0)*100)/100,
+    collected:Math.round(allDues.filter(d=>d.period_key===m).reduce((s,d)=>s+d.collected_amount,0)*100)/100,
+    expenses:Math.round((allExpensesForTrend||[]).filter(e=>e.expense_date.slice(0,7)===m).reduce((s,e)=>s+e.amount,0)*100)/100,
+  }));
+
+  const currency=thisMonthDues[0]?.currency||allDues[0]?.currency||'INR';
+  return json({
+    currency, current_period:currentPeriod,
+    expected_this_month:Math.round(expectedThisMonth*100)/100, collected_this_month:Math.round(collectedThisMonth*100)/100, collection_pct:collectionPct,
+    fixed_expense_total:Math.round(fixedExpenseTotal*100)/100, onetime_expense_total:Math.round(onetimeExpenseTotal*100)/100, total_expenses:Math.round(totalExpenses*100)/100,
+    net_position:netPosition, aging_buckets:agingBuckets, outstanding, trend,
+  });
+}
+
+// ── Monthly generation cron — Expected Funds + fixed-recurring expenses ──
+// Piggybacks on the existing daily '0 2 * * *' tick (see scheduled() below) rather than adding a
+// new distinct cron string — the dispatcher's trailing `else` branch currently catches any cron
+// string it doesn't explicitly match, so introducing a 4th string without also fixing that
+// fallthrough risks silently misrouting an existing schedule. Self-gates on the UTC calendar date
+// instead, same "day-granularity cadence doesn't need its own tick" reasoning as the Pipeline
+// follow-up cadence's own comment in wrangler.toml.
+async function runFinancialPlanningMonthlyForAllClients(env){
+  if(new Date().getUTCDate()!==1) return;
+  const {results:configs}=await env.DB.prepare(`SELECT client_id FROM fp_config WHERE enabled=1`).all();
+  const periodKey=new Date().toISOString().slice(0,7);
+  for(const cfg of (configs||[])){
+    try{ await fpGenerateForClient(env, cfg.client_id, periodKey); }
+    catch(e){ console.error('[financial-planning] monthly generation failed for client', cfg.client_id, e.message); }
+  }
+}
+async function fpGenerateForClient(env, clientId, periodKey){
+  const monthNum=Number(periodKey.slice(5,7));
+  const now=new Date().toISOString();
+  const {results:customers}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=? AND status='active'`).bind(clientId).all();
+  for(const cust of (customers||[])){
+    // Quarterly/yearly customers only generate a due on the applicable months — monthly always
+    // fires. A quarterly customer bills every Jan/Apr/Jul/Oct regardless of which of those months
+    // they actually started in (simpler and more predictable than tracking an anniversary offset);
+    // yearly bills only in their own start-month.
+    if(cust.billing_cycle==='quarterly' && ![1,4,7,10].includes(monthNum)) continue;
+    if(cust.billing_cycle==='yearly' && (new Date(cust.start_date).getUTCMonth()+1)!==monthNum) continue;
+    const dueDate=`${periodKey}-${String(cust.billing_day).padStart(2,'0')}`;
+    try{
+      await env.DB.prepare(`INSERT INTO fp_expected_dues (client_id, customer_id, period_key, amount, currency, due_date, created_at) VALUES (?,?,?,?,?,?,?)`)
+        .bind(clientId, cust.id, periodKey, cust.monthly_value, cust.currency, dueDate, now).run();
+    }catch(e){ /* unique(customer_id, period_key) already hit — this period was already generated, harmless no-op */ }
+  }
+  const {results:templates}=await env.DB.prepare(`SELECT * FROM fp_expense_templates WHERE client_id=? AND active=1`).bind(clientId).all();
+  for(const t of (templates||[])){
+    try{
+      await env.DB.prepare(`INSERT INTO fp_expenses (client_id, template_id, type, category, name, amount, currency, period_key, expense_date, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .bind(clientId, t.id, 'fixed', t.category, t.name, t.amount, t.currency, periodKey, `${periodKey}-01`, now).run();
+    }catch(e){ /* unique(template_id, period_key) already hit — already booked this month */ }
+  }
+}
+
+// ── Overdue-payment reminder sweep — runs on the same daily tick (see scheduled() below), unlike
+// the monthly generation above. Re-notifies at most once every 3 days per due (reminder_sent_at
+// flag-and-check, same "flag-flip idempotency" idiom as sweepAbandonedShopifyCheckouts) rather
+// than every single day, so an overdue customer isn't messaged daily. Reuses the linked lead's own
+// Chatwoot ConversationID — a customer record with no linked lead (manually added, never a real
+// WhatsApp lead) has no thread to send into and is silently skipped. ──
+async function runFinancialPlanningRemindersForAllClients(env){
+  const {results:configs}=await env.DB.prepare(`SELECT client_id FROM fp_config WHERE enabled=1 AND reminders_enabled=1`).all();
+  for(const cfg of (configs||[])){
+    try{ await fpSendRemindersForClient(env, cfg.client_id); }
+    catch(e){ console.error('[financial-planning] reminder sweep failed for client', cfg.client_id, e.message); }
+  }
+}
+async function fpSendRemindersForClient(env, clientId){
+  const c=await getClientById(env, clientId);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return;
+  const todayStr=new Date().toISOString().slice(0,10);
+  const staleCutoff=new Date(Date.now()-3*86400000).toISOString();
+  const {results:overdue}=await env.DB.prepare(
+    `SELECT d.*, cu.name as customer_name, cu.lead_id FROM fp_expected_dues d JOIN fp_customers cu ON cu.id=d.customer_id
+     WHERE d.client_id=? AND d.status IN ('open','partial') AND d.due_date<? AND (d.reminder_sent_at IS NULL OR d.reminder_sent_at<?)`
+  ).bind(clientId, todayStr, staleCutoff).all();
+  for(const due of (overdue||[])){
+    if(!due.lead_id) continue;
+    let convId=null;
+    try{
+      const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${due.lead_id}?fields=ConversationID`);
+      const lead=await leadR.json().catch(()=>null);
+      convId=lead?.ConversationID||null;
+    }catch(e){}
+    if(!convId) continue;
+    const balance=Math.round((due.amount-due.collected_amount)*100)/100;
+    const msg=`Hi ${due.customer_name||''}, this is a friendly reminder that ${due.currency} ${balance.toFixed(2)} is due for ${due.period_key}. Please let us know once it's settled — thank you! 🙏`;
+    try{
+      const fd=new FormData();
+      fd.append('content', msg); fd.append('message_type','outgoing'); fd.append('private','false');
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok) await env.DB.prepare(`UPDATE fp_expected_dues SET reminder_sent_at=? WHERE id=?`).bind(new Date().toISOString(), due.id).run();
+    }catch(e){}
+    await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
+  }
+}
+
+// ── Razorpay webhook — a Collection Entry created straight from a payment.captured event.
+// Per-client credentials (razorpay_key_id/razorpay_key_secret/razorpay_webhook_secret on
+// fp_config), same "plaintext-on-CLIENTS-style-row convention as wa_token/chatwoot_token
+// elsewhere in this file — no dedicated secrets vault for per-client credentials anywhere in this
+// codebase" reasoning as the ERPNext integration. clientId travels in the URL path itself
+// (/financial/razorpay-webhook/<clientId>, same shape as /calcom/webhook/<clientId>) purely as a
+// lookup key — the actual trust boundary is the HMAC signature below, verified against that
+// specific client's own webhook secret, not the URL.
+async function verifyRazorpaySignature(secret, rawBody, sigHeader){
+  if(!sigHeader || !secret) return false;
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawBody));
+  const expected=hex(sig);
+  if(expected.length!==sigHeader.length) return false;
+  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
+  return diff===0;
+}
+async function handleRazorpayWebhook(request, env, clientIdParam){
+  const clientId=Number(clientIdParam);
+  if(!clientId) return json({ok:true}); // no client to act on — ack so Razorpay doesn't keep retrying
+  const cfg=await env.DB.prepare(`SELECT razorpay_webhook_secret FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  if(!cfg?.razorpay_webhook_secret) return json({ok:true}); // not connected — nothing configured to verify against
+  const rawBody=await request.text();
+  const valid=await verifyRazorpaySignature(cfg.razorpay_webhook_secret, rawBody, request.headers.get('X-Razorpay-Signature'));
+  if(!valid) return json({error:'Invalid signature'}, 401);
+  let data; try{ data=JSON.parse(rawBody); }catch(e){ return json({ok:true}); }
+  if(data.event!=='payment.captured' && data.event!=='payment_link.paid') return json({ok:true}); // not a payment-received event — nothing to record
+  const payment=data.payload?.payment?.entity || data.payload?.payment_link?.entity?.payments?.[0];
+  if(!payment) return json({ok:true});
+  const paymentId=payment.id||payment.payment_id;
+  const amount=(Number(payment.amount)||0)/100; // Razorpay amounts are in the smallest currency unit (paise)
+  const notes=payment.notes||data.payload?.payment_link?.entity?.notes||{};
+  const customerId=notes.fp_customer_id ? Number(notes.fp_customer_id) : null;
+  const dueId=notes.fp_expected_due_id ? Number(notes.fp_expected_due_id) : null;
+  if(!customerId) return json({ok:true}); // no way to attribute this payment to a customer — nothing to record
+  const cust=await findFpCustomer(env, customerId);
+  if(!cust || cust.client_id!==clientId) return json({ok:true});
+  const now=new Date().toISOString();
+  try{
+    const r=await env.DB.prepare(`INSERT INTO fp_collections (client_id, customer_id, expected_due_id, amount, currency, mode, razorpay_payment_id, collected_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .bind(clientId, customerId, dueId, amount, (payment.currency||cust.currency||'INR').toUpperCase(), 'razorpay', paymentId, now, now).run();
+    if(dueId) await fpRecomputeDueStatus(env, dueId);
+    return json({ok:true, collection_id:r.meta.last_row_id});
+  }catch(e){
+    // UNIQUE(razorpay_payment_id) collision — a redelivered webhook for a payment already recorded.
+    return json({ok:true, duplicate:true});
+  }
+}
+
 // ── Hospitality module (frontend/dashboard.html "🏨 Hospitality" nav tab — houseboats/hotels/
 // tourism stays) — fully D1 (migrations/0009_hospitality.sql), unlike the Agency/Recruit/
 // Appointments modules' per-client dynamic NocoDB tables: a date-range + occupancy-pricing data
@@ -10684,6 +11178,25 @@ export default {
       else if(url.pathname==='/accounting/documents/sync-erpnext' && request.method==='POST'){ res=await handleAccountingDocumentSyncErpnext(request, env); }
       else if(url.pathname==='/accounting/documents/submit-erpnext' && request.method==='POST'){ res=await handleAccountingDocumentSubmitErpnext(request, env); }
       else if(url.pathname==='/accounting/documents/send-email' && request.method==='POST'){ res=await handleAccountingDocumentSendEmail(request, env); }
+      else if(url.pathname==='/financial/customers' && request.method==='GET'){ res=await handleFpCustomersList(request, env); }
+      else if(url.pathname==='/financial/customers' && request.method==='POST'){ res=await handleFpCustomerCreate(request, env); }
+      else if(url.pathname==='/financial/customers' && request.method==='PATCH'){ res=await handleFpCustomerUpdate(request, env); }
+      else if(url.pathname==='/financial/customers' && request.method==='DELETE'){ res=await handleFpCustomerDelete(request, env); }
+      else if(url.pathname==='/financial/customers/ensure' && request.method==='POST'){ res=await handleFpCustomerEnsure(request, env); }
+      else if(url.pathname==='/financial/expected-dues' && request.method==='GET'){ res=await handleFpExpectedDuesList(request, env); }
+      else if(url.pathname==='/financial/collections' && request.method==='POST'){ res=await handleFpCollectionCreate(request, env); }
+      else if(url.pathname==='/financial/collections' && request.method==='DELETE'){ res=await handleFpCollectionDelete(request, env); }
+      else if(url.pathname==='/financial/expense-templates' && request.method==='GET'){ res=await handleFpExpenseTemplatesList(request, env); }
+      else if(url.pathname==='/financial/expense-templates' && request.method==='POST'){ res=await handleFpExpenseTemplateCreate(request, env); }
+      else if(url.pathname==='/financial/expense-templates' && request.method==='PATCH'){ res=await handleFpExpenseTemplateUpdate(request, env); }
+      else if(url.pathname==='/financial/expense-templates' && request.method==='DELETE'){ res=await handleFpExpenseTemplateDelete(request, env); }
+      else if(url.pathname==='/financial/expenses' && request.method==='GET'){ res=await handleFpExpensesList(request, env); }
+      else if(url.pathname==='/financial/expenses' && request.method==='POST'){ res=await handleFpExpenseCreate(request, env); }
+      else if(url.pathname==='/financial/expenses' && request.method==='DELETE'){ res=await handleFpExpenseDelete(request, env); }
+      else if(url.pathname==='/financial/config' && request.method==='GET'){ res=await handleFpConfigGet(request, env); }
+      else if(url.pathname==='/financial/config' && request.method==='PATCH'){ res=await handleFpConfigUpdate(request, env); }
+      else if(url.pathname==='/financial/dashboard' && request.method==='GET'){ res=await handleFpDashboard(request, env); }
+      else if(url.pathname.startsWith('/financial/razorpay-webhook/') && request.method==='POST'){ res=await handleRazorpayWebhook(request, env, url.pathname.slice('/financial/razorpay-webhook/'.length)); }
       else if(url.pathname==='/hospitality/units' && request.method==='GET'){ res=await handleHospitalityUnitsList(request, env); }
       else if(url.pathname==='/hospitality/units' && request.method==='POST'){ res=await handleHospitalityUnitCreate(request, env); }
       else if(url.pathname==='/hospitality/units' && request.method==='PATCH'){ res=await handleHospitalityUnitUpdate(request, env); }
@@ -10771,7 +11284,12 @@ export default {
   // of the three need finer-than-daily granularity), the Automations module's flow-advance tick,
   // and the Shopify abandoned-cart sweep.
   async scheduled(event, env, ctx){
-    if(event.cron==='0 2 * * *'){ ctx.waitUntil(runDailyHealthCheckForAllClients(env)); ctx.waitUntil(runPipelineFollowupsForAllClients(env)); ctx.waitUntil(runCalendarEventsForAllClients(env)); }
+    if(event.cron==='0 2 * * *'){
+      ctx.waitUntil(runDailyHealthCheckForAllClients(env)); ctx.waitUntil(runPipelineFollowupsForAllClients(env)); ctx.waitUntil(runCalendarEventsForAllClients(env));
+      // Financial Planning — monthly generation self-gates internally on the 1st of the month
+      // (see its own comment); the reminder sweep runs every day this tick fires.
+      ctx.waitUntil(runFinancialPlanningMonthlyForAllClients(env)); ctx.waitUntil(runFinancialPlanningRemindersForAllClients(env));
+    }
     else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }
