@@ -5531,6 +5531,23 @@ falls back to a default typeface in the preview, while the real rendered video (
 libass) uses the correct custom font. See `render-pipeline/fonts/README.md` for suggested free/
 open-license Malayalam fonts (not bundled — a licensing/repo-size decision, add the file yourself).
 
+### Settings inspector & Sarvam raw-response logging
+Two more debugging tools, added after repeated reports of "auto-edit/B-roll doesn't apply" and
+"captions land in the wrong scene" that couldn't be root-caused remotely without real data:
+- **"🔍 Inspect settings that will be sent"** (Editor step 5) — shows the EXACT JSON body
+  `startRender()` is about to POST, plus a live re-fetch of what's actually saved server-side for
+  cues right now (not just trusted from in-browser state) with an explicit mismatch warning if
+  they differ. Directly answers "is my toggle/cue actually being applied" with real data instead
+  of another guess.
+- **`[SARVAM DEBUG]` logging** (`render-pipeline/lib/sarvamTranscribe.js`) — every chunk boundary
+  and the FULL raw Sarvam response are now logged per transcription, distinctly tagged for easy
+  grepping in render-pipeline logs. This integration's response-shape parsing was flagged
+  genuinely unverified from the start (no live Sarvam key was available while building it — see
+  the file's header comment) and has now shown a real production symptom (words landing in empty/
+  wrong scenes, apparent duplicates) that can't be root-caused without seeing an actual response.
+  Grab the render-pipeline logs around a transcription and the parser can finally be corrected
+  against real data instead of plausible-shape guesses.
+
 ### What's honestly not built here
 Per-segment speed *ramping* (as opposed to one clip-wide speed), a chroma-key background *image*
 (as opposed to a solid color), automatic voiceover dubbing/time-alignment into the render, and a
