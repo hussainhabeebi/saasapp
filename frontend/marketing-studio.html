@@ -180,6 +180,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
     <div class="brand">🎬 <span>Marketing</span> Studio</div>
     <div class="hright">
       <div class="usage-pill" id="usagePill">Loading usage…</div>
+      <span class="note" id="buildTag" style="font-size:10px" title="Worker build — if this doesn't match what you expect after a deploy, the Worker hasn't picked up your latest push yet."></span>
       <button class="hback" onclick="goBack()">← Back to CRM</button>
     </div>
   </div>
@@ -430,6 +431,9 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div class="card-head"><h2><span class="step-num">2</span> Caption style</h2><div class="sub">Applied to the burned-in captions in the final export, previewed live on the left.</div></div>
             <div class="style-grid" id="styleGrid"></div>
             <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="saveCurrentAsBrandStyle()">💾 Save current look as a brand style</button>
+            <label class="form-label" style="margin-top:14px">Custom font family (optional)</label>
+            <input class="form-input" id="customFontFamily" placeholder="e.g. Manjari — must match a font dropped in render-pipeline/fonts/" oninput="autoSaveCustomFont()">
+            <div class="note" style="margin-top:4px">Overrides the selected style's font for THIS project — type the exact family name of a .ttf/.otf you've added to the render pipeline's fonts folder (see its README). Leave blank to use the style's own font.</div>
           </div>
 
           <div class="card" id="stepCard3">
@@ -658,6 +662,9 @@ async function loadUsage() {
     const pill = $id('usagePill');
     pill.innerHTML = `<b>${d.used ?? 0}</b> / ${d.limit ?? '—'} min used this period`;
     pill.classList.toggle('usage-warn', (d.remaining ?? 1) <= 0);
+    // Worker build tag — a fast "is the code I just deployed actually live" check, surfaced right
+    // in the UI instead of needing a separate curl. See worker.js's MARKETING_BUILD_TAG.
+    $id('buildTag').textContent = d.build ? `build: ${d.build}` : '';
   } catch (e) { $id('usagePill').textContent = 'Usage unavailable'; }
 }
 
@@ -752,6 +759,7 @@ function renderEditor() {
 
   selectedStyleId = p.style_id || 'bold-pop';
   renderStyleGrid();
+  $id('customFontFamily').value = p.style_overrides?.font || '';
   updateCaptionOverlay();
 
   // Restores from the PERSISTED selections (autoedit_options_json, saved automatically as you
@@ -1311,6 +1319,23 @@ function resolveStyle(id) {
   if ((id || '').startsWith('custom:')) { const bs = brandStyles.find(s => 'custom:' + s.id === id); return bs ? bs.config : stylePresets[0]; }
   return stylePresets.find(s => s.id === id) || stylePresets[0] || {};
 }
+// Custom font family override (fonts/README.md) — autosaves (debounced) into this project's
+// existing style_overrides_json via the project-update endpoint that already supported overrides
+// but had no UI for them until now. Sets/clears just the `font` key, leaving any other override
+// fields (none exist yet from the UI, but future-proof against clobbering ones set another way).
+let customFontSaveTimer = null;
+function autoSaveCustomFont() {
+  if (!currentProject) return;
+  clearTimeout(customFontSaveTimer);
+  customFontSaveTimer = setTimeout(async () => {
+    const font = $id('customFontFamily').value.trim();
+    const overrides = { ...(currentProject.style_overrides || {}) };
+    if (font) overrides.font = font; else delete overrides.font;
+    currentProject.style_overrides = overrides;
+    await fetch(`${WORKER_BASE}/marketing/projects`, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id: currentProject.id, style_overrides: overrides }) });
+    updateCaptionOverlay();
+  }, 600);
+}
 async function saveCurrentAsBrandStyle() {
   const name = prompt('Name this brand style (font/colors):');
   if (!name) return;
@@ -1331,7 +1356,14 @@ async function deleteBrandStyle(id) {
 function updateCaptionOverlay() {
   const overlay = $id('captionOverlay');
   if (!currentProject?.captions?.words?.length) { overlay.textContent = ''; return; }
-  const style = resolveStyle(selectedStyleId);
+  // Layers this project's style_overrides on top of the base preset — matches
+  // marketingBuildRenderSpec's own `{...style, ...overrides}` merge server-side, so what you see
+  // here reflects the same style the real render will use... with one honest exception: a custom
+  // font typed into "Custom font family" (see fonts/README.md) only exists as a file on the
+  // render pipeline server, not as a web font this browser tab has access to, so the BROWSER
+  // preview will silently fall back to a default typeface for that one field even though the
+  // actual rendered video (libass, server-side) will use the real custom font correctly.
+  const style = { ...resolveStyle(selectedStyleId), ...(currentProject.style_overrides || {}) };
   const t = $id('previewVideo')?.currentTime || 0;
   const words = currentProject.captions.words;
   const windowWords = words.filter(w => Math.abs(w.start - t) < 1.2).slice(0, 6);

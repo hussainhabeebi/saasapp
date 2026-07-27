@@ -67,6 +67,15 @@ async function renderCaptionClip(job, env, assetsRoot) {
 
     const { w: resolutionW, h: resolutionH } = parseResolution(spec.resolution);
 
+    // Custom caption fonts (fonts/README.md) — a real, good-looking Malayalam (or any other)
+    // typeface can be dropped in as a .ttf/.otf file and referenced by family name in a style,
+    // instead of relying on whatever generic font fonts-noto-core's fallback substitutes in. No
+    // fontconfig/fc-cache registration needed — ffmpeg's own `fontsdir` subtitles-filter option
+    // reads straight off disk at render time (see filtergraph.js / textBehindSubject.js). Computed
+    // once here since both the caption-clip and text-behind-subject pipelines below need it.
+    const fontsDirCandidate = env.FONTS_DIR || path.join(__dirname, '..', 'fonts');
+    const fontsDir = fs.existsSync(fontsDirCandidate) ? fontsDirCandidate : null;
+
     let music = null;
     if (spec.background_music) {
       const musicPath = resolveMusic(assetsRoot, spec.background_music);
@@ -140,7 +149,7 @@ async function renderCaptionClip(job, env, assetsRoot) {
       const outputPath = path.join(workDir, 'output.mp4');
       await renderTextBehindSubject({
         sourcePath: trimmedPath, resolutionW, resolutionH, fps: 30,
-        assPath, bgColor: spec.style?.bg_color, watermark: !!spec.watermark, quality: spec.quality, outputPath,
+        assPath, bgColor: spec.style?.bg_color, watermark: !!spec.watermark, quality: spec.quality, fontsDir, outputPath,
       }, mattePath);
       const durationSec = await getDurationSec(outputPath);
       const key = `marketing/${job.client_id}/${job.project_id}/render-${crypto.randomBytes(6).toString('hex')}.mp4`;
@@ -181,6 +190,7 @@ async function renderCaptionClip(job, env, assetsRoot) {
       chromaKey: spec.chroma_key || null,
       speedFactor: Number(spec.speed_factor) || 1,
       cropXExpr,
+      fontsDir,
       outputPath,
     });
     await run('ffmpeg', args, { timeoutMs: 20 * 60 * 1000 });

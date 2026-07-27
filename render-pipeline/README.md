@@ -305,6 +305,28 @@ All free — no paid API involved, unlike the fal.ai section above.
   standing limitation noted elsewhere in this file), and MyMemory's live response shape (network
   access to arbitrary external hosts is proxied/blocked in this sandbox).
 
+## Custom caption fonts (`fonts/`)
+
+Drop a `.ttf`/`.otf` in `fonts/` (mount as a persistent volume — see the `Dockerfile`'s `VOLUME`
+line) and it's usable in a caption style's `font` field on the very next render, no rebuild. Wired
+via ffmpeg's own `subtitles` filter `fontsdir` option (`lib/filtergraph.js`'s step 6, and
+`lib/textBehindSubject.js`'s separate subtitles call for that pipeline) — libass reads the
+directory straight off disk at render time, no fontconfig/`fc-cache` registration needed. Verified
+for real: a font file placed only in a scratch directory (not anywhere fontconfig would normally
+scan) was correctly used to render real, non-tofu text through actual ffmpeg, both as a standalone
+filter and combined into the full filter graph. See `fonts/README.md` for the workflow (find the
+font's own internal family name, not its filename) and a few suggested free/open-license Malayalam
+typefaces (not bundled here — download and drop in yourself).
+
+## Deploy-state diagnostics (`GET /health`)
+
+Returns `{ok, build, espeak_ng_available, rvm_model_present}` — `build` is a hand-bumped tag kept
+in sync with `worker.js`'s `MARKETING_BUILD_TAG` (no shared source, two separately-deployed
+services); the other two are REAL checks of this running container (`spawnSync('espeak-ng', ...)`,
+`fs.existsSync(MODEL_PATH)`), not just "the process is up" — both depend on Dockerfile steps that
+only run on an actual image rebuild, so this is the fast way to confirm a Coolify "redeploy"
+really rebuilt the image instead of restarting a stale one.
+
 ## Setup
 
 1. `npm install`
