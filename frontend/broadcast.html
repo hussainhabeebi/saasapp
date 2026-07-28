@@ -698,6 +698,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <button class="add-step-btn" onclick="addFlowStep('wait')">⏳ Wait</button>
         <button class="add-step-btn" onclick="addFlowStep('send_whatsapp_dm')">💬 WhatsApp DM</button>
         <button class="add-step-btn" onclick="addFlowStep('send_whatsapp_template')">📣 WhatsApp Template</button>
+        <button class="add-step-btn" onclick="addFlowStep('send_whatsapp_media')">🎬 WhatsApp Media</button>
         <button class="add-step-btn" onclick="addFlowStep('send_email')">✉️ Email</button>
         <button class="add-step-btn" onclick="addFlowStep('update_field')">🏷️ Update Field</button>
       </div>
@@ -1478,7 +1479,7 @@ function renderFollowupEngineSteps(){
   fuEngineVariants.forEach(v=>{ (byStep[v.step]=byStep[v.step]||{})[v.variant]=v; });
   $id('fuEngineSteps').innerHTML=[1,2,3].map(step=>{
     const cols=['A','B'].map(variant=>{
-      const v=byStep[step]?.[variant]||{message:'',cta:'',incentive_text:'',incentive_expires_hours:'',social_proof:false,active:true};
+      const v=byStep[step]?.[variant]||{message:'',cta:'',incentive_text:'',incentive_expires_hours:'',social_proof:false,active:true,media_url:'',media_caption:''};
       return `<div style="flex:1;min-width:260px;border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px">
         <div style="font-weight:700;font-size:13px;margin-bottom:8px">Variant ${variant}</div>
         <div class="form-field">
@@ -1490,6 +1491,8 @@ function renderFollowupEngineSteps(){
           <div class="form-field" style="flex:1"><label>Incentive</label><input type="text" id="${fuEngineFieldId(step,variant,'incentive_text')}" value="${escAttr(v.incentive_text)}" placeholder="e.g. 10% off"></div>
           <div class="form-field" style="width:110px"><label>Expires (h)</label><input type="number" min="1" id="${fuEngineFieldId(step,variant,'incentive_expires_hours')}" value="${esc(v.incentive_expires_hours||'')}"></div>
         </div>
+        <div class="form-field"><label>Media (optional) — Google Drive link, sent as a real video/image/audio/PDF attachment</label><input type="text" id="${fuEngineFieldId(step,variant,'media_url')}" value="${escAttr(v.media_url||'')}" placeholder="https://drive.google.com/file/d/…/view"></div>
+        <div class="form-field"><label>Media caption</label><input type="text" id="${fuEngineFieldId(step,variant,'media_caption')}" value="${escAttr(v.media_caption||'')}" placeholder="e.g. Here's what our last client got 📸"></div>
         <label style="display:inline-flex;align-items:center;gap:6px;margin-right:16px;font-size:12.5px"><input type="checkbox" style="width:auto" id="${fuEngineFieldId(step,variant,'social_proof')}" ${v.social_proof?'checked':''}> Include social proof</label>
         <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" style="width:auto" id="${fuEngineFieldId(step,variant,'active')}" ${v.active?'checked':''}> Active</label>
       </div>`;
@@ -1524,6 +1527,8 @@ async function saveFollowupEngine(){
         incentive_expires_hours:parseInt($id(fuEngineFieldId(step,variant,'incentive_expires_hours')).value)||null,
         social_proof:$id(fuEngineFieldId(step,variant,'social_proof')).checked,
         active:$id(fuEngineFieldId(step,variant,'active')).checked,
+        media_url:$id(fuEngineFieldId(step,variant,'media_url')).value.trim(),
+        media_caption:$id(fuEngineFieldId(step,variant,'media_caption')).value.trim(),
       });
     });
   });
@@ -1679,6 +1684,7 @@ const FLOW_STEP_META={
   wait:{icon:'⏳',label:'Wait'},
   send_whatsapp_dm:{icon:'💬',label:'Send WhatsApp DM'},
   send_whatsapp_template:{icon:'📣',label:'Send WhatsApp Template'},
+  send_whatsapp_media:{icon:'🎬',label:'Send WhatsApp Media'},
   send_email:{icon:'✉️',label:'Send Email'},
   update_field:{icon:'🏷️',label:'Update Field'},
 };
@@ -1686,6 +1692,7 @@ const FLOW_STEP_DEFAULTS={
   wait:()=>({type:'wait', hours:24}),
   send_whatsapp_dm:()=>({type:'send_whatsapp_dm', message:'Hi {name}, just checking in — still around?'}),
   send_whatsapp_template:()=>({type:'send_whatsapp_template', template_name:'', category:'MARKETING', language:'en'}),
+  send_whatsapp_media:()=>({type:'send_whatsapp_media', media_url:'', caption:''}),
   send_email:()=>({type:'send_email', subject:'', html_body:''}),
   update_field:()=>({type:'update_field', field:'Stage', value:''}),
 };
@@ -1840,6 +1847,17 @@ function renderFlowStepFields(s,i){
     </div>
     <div class="form-field" style="margin-bottom:0"><label>Language</label>
       <input type="text" value="${escAttr(s.language||'en')}" oninput="updateFlowStep(${i},'language',this.value)" style="max-width:140px"></div>`;
+  }
+  if(s.type==='send_whatsapp_media'){
+    return `<div class="form-field" style="margin-bottom:8px">
+      <label>Google Drive link — video, image, audio or PDF (must be shared "Anyone with the link")</label>
+      <input type="text" value="${escAttr(s.media_url||'')}" oninput="updateFlowStep(${i},'media_url',this.value)" placeholder="https://drive.google.com/file/d/…/view">
+    </div>
+    <div class="form-field" style="margin-bottom:0">
+      <label>Caption (optional) — use {name}, {stage}, {phone}</label>
+      <input type="text" value="${escAttr(s.caption||'')}" oninput="updateFlowStep(${i},'caption',this.value)" placeholder="e.g. Here's a quick intro to who we are 🎬">
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:6px">Sent as a real attachment — a playable video/audio, a viewable image, or a downloadable PDF — not just a link.</div>`;
   }
   if(s.type==='send_email'){
     return `<div class="form-field" style="margin-bottom:8px">
