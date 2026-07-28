@@ -1657,6 +1657,64 @@ async function pickFollowupVariant(env, clientId, step, fallbackText, leadName){
 // classic follow-up sequence (followup-template.json) and the recovery ladder (recovery.js).
 // Only covers the classic followup_messages sequence, not the recovery_* ladder, which stays
 // automation-only and read-only in the Follow-ups tab (see SETUP.md).
+// The actual "resolve variant, send (voice-first, falling back to text), attach media, mark
+// Follow up N, log followup_sends" work for one classic-sequence step — shared by the manual
+// "Send Next Now" route below and the automated cron (runClassicFollowupsForAllClients) further
+// down this file, so the automated side never has to fork its own copy of this logic (and, more to
+// the point, so a client's Follow-up Engine A/B content — resolved via pickFollowupVariant — is the
+// primary content for BOTH the manual and the fully-automatic sends, not just the manual one).
+// Throws on a hard send failure (bad Chatwoot config, HTTP error) so callers decide for themselves
+// how to report/log that — a 502 to the rep for the manual route, a caught-and-logged per-lead skip
+// for the cron sweep, same "one lead's failure can't take down the batch" pattern used everywhere
+// else in this file.
+async function sendClassicFollowupStep(env, c, lead, nextIdx, tmpl){
+  const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
+  const {text, variantLabel, mediaUrl, mediaCaption}=await pickFollowupVariant(env, c.Id, nextIdx+1, tmpl, lead.Name);
+  const clientId=String(c.Id);
+
+  // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live
+  // voice-to-voice replies (engineTtsWithFallback). Language: prefer this lead's own last-detected
+  // language (lead.Language, stamped by the live engine's engineClassifyIntent on every inbound
+  // message) over the client's static default — a follow-up should speak back in whatever language
+  // the customer was actually last using, not whatever the account happens to be configured for.
+  let sentViaVoice=false;
+  if(c.voice_followup_enabled==='Yes'){
+    const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
+    if(bcp47){
+      const audioBuf=await engineTtsWithFallback(env, text, (lead.Language||c.language||'en'));
+      if(audioBuf){
+        const vfd=new FormData();
+        vfd.append('content', engineExtractLinkPriceCaption(text));
+        vfd.append('message_type','outgoing'); vfd.append('private','false');
+        vfd.append('attachments[]', new Blob([audioBuf], {type:'audio/ogg; codecs=opus'}), 'followup.ogg');
+        const vr=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:vfd});
+        sentViaVoice=vr.ok;
+        if(!vr.ok) await reportOpsError(env, 'sendClassicFollowupStep — voice send failed, falling back to text', new Error('HTTP '+vr.status), {clientId, convId});
+      }
+    }
+  }
+
+  if(!sentViaVoice){
+    const fd=new FormData();
+    fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+  }
+
+  // Follow-up Engine — optional per-variant media attachment (video/image/audio/PDF via a Google
+  // Drive link), sent as a second message right after the text above. Best-effort: a failed/missing
+  // Drive fetch never fails this whole send, since the text follow-up (the part that already
+  // succeeded above) is the one thing either caller is actually waiting on.
+  if(mediaUrl) await sendDriveMediaToChatwoot(c, convId, mediaUrl, mediaCaption);
+
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+(nextIdx+1)]:'Yes'}});
+  try{
+    await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
+      .bind(Number(c.Id), Number(lead.Id), nextIdx+1, variantLabel, new Date().toISOString()).run();
+  }catch(e){ /* best-effort — the message already went out regardless of whether this logs */ }
+  return {text, variantLabel, sentViaVoice};
+}
+
 async function handleBroadcastFollowupSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -1679,55 +1737,80 @@ async function handleBroadcastFollowupSend(request, env){
   if(nextIdx===-1) return json({error:'No follow-up steps left to send for this lead.'}, 400);
   const tmpl=messages[nextIdx]||messages[messages.length-1];
   if(!tmpl) return json({error:'No follow-up message configured for this client.'}, 400);
-  const {text, variantLabel, mediaUrl, mediaCaption}=await pickFollowupVariant(env, payload.cid, nextIdx+1, tmpl, lead.Name);
-  const clientId=String(payload.cid);
 
-  // Voice Follow-ups (Settings → Voice) — same Sarvam pipeline as live voice-to-voice replies,
-  // applied to this scheduled/manual send instead. Unlike engineDeliverReply's fire-and-forget
-  // voice attempt, this is a rep clicking a button expecting real success/failure feedback in the
-  // UI, so a failed voice send falls through to the normal text send below rather than silently
-  // reporting success — same "customer never gets nothing" principle, but the rep still sees the
-  // true outcome instead of it being swallowed into an ops-only alert.
-  // Language: prefer this lead's own last-detected language (lead.Language, stamped by the live
-  // engine's engineClassifyIntent on every inbound message) over the client's static default —
-  // a follow-up should speak back in whatever language the customer was actually last using, not
-  // whatever the account happens to be configured for.
-  let sentViaVoice=false;
-  if(c.voice_followup_enabled==='Yes'){
-    const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
-    if(bcp47){
-      const audioBuf=await engineTtsWithFallback(env, text, (lead.Language||c.language||'en'));
-      if(audioBuf){
-        const vfd=new FormData();
-        vfd.append('content', engineExtractLinkPriceCaption(text));
-        vfd.append('message_type','outgoing'); vfd.append('private','false');
-        vfd.append('attachments[]', new Blob([audioBuf], {type:'audio/ogg; codecs=opus'}), 'followup.ogg');
-        const vr=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:vfd});
-        sentViaVoice=vr.ok;
-        if(!vr.ok) await reportOpsError(env, 'handleBroadcastFollowupSend — voice send failed, falling back to text', new Error('HTTP '+vr.status), {clientId, convId});
-      }
-    }
-  }
-
-  if(!sentViaVoice){
-    const fd=new FormData();
-    fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
-    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-    if(!r.ok) return json({error:'HTTP '+r.status}, 502);
-  }
-
-  // Follow-up Engine — optional per-variant media attachment (video/image/audio/PDF via a Google
-  // Drive link), sent as a second message right after the text above. Best-effort: a failed/missing
-  // Drive fetch never fails this whole send, since the text follow-up (the part that already
-  // succeeded above) is the one thing this route's caller is actually waiting on.
-  if(mediaUrl) await sendDriveMediaToChatwoot(c, convId, mediaUrl, mediaCaption);
-
-  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), ['Follow up '+(nextIdx+1)]:'Yes'}});
   try{
-    await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
-      .bind(Number(payload.cid), Number(lead_id), nextIdx+1, variantLabel, new Date().toISOString()).run();
-  }catch(e){ /* best-effort — the message already went out regardless of whether this logs */ }
-  return json({ok:true, stage:nextIdx+1, sentText:text, sentViaVoice, variant:variantLabel});
+    const {text, variantLabel, sentViaVoice}=await sendClassicFollowupStep(env, c, lead, nextIdx, tmpl);
+    return json({ok:true, stage:nextIdx+1, sentText:text, sentViaVoice, variant:variantLabel});
+  }catch(e){ return json({error:e.message||'Send failed'}, 502); }
+}
+
+// Automated classic follow-up sequence — this used to exist only as an external n8n workflow
+// (followup-template.json, a separate repo out of this codebase's scope) that read
+// `followup_messages` straight off the Clients table with zero awareness of this repo's Follow-up
+// Engine A/B variants — so a client's variant content only ever reached the manual "Send Next Now"
+// button above, never the actual scheduled/automatic sends. Migrated in natively so both paths run
+// through the same sendClassicFollowupStep/pickFollowupVariant: the Follow-up Engine's content is
+// now primary wherever a classic follow-up goes out, not just on a rep's click.
+// Runs on the existing `*/15 * * * *` tick (see scheduled() below) rather than the daily one —
+// `followup_hours` is commonly sub-daily (e.g. "6,24,48"), the same reasoning Automations & Flow's
+// own `wait N hours` steps are already checked at this granularity for. Gated per-client on
+// `followup_count>0` (and a configured Chatwoot connection) so a client who never set up the
+// classic sequence is never scanned.
+async function runClassicFollowupsForAllClients(env){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      const count=parseInt(c.followup_count||0);
+      if(!count||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) continue;
+      try{ await classicFollowupProcessClient(env, c, count); }
+      catch(e){ console.error('[classic-followups] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+// `followup_hours` is read as cumulative hours-of-silence-since-last-activity thresholds — step N
+// fires once a lead has been silent for at least hours[N-1] — the same "single fixed anchor,
+// elapsed-time-to-step lookup" model `pipelineFollowupTargetStep`'s cadence already uses in this
+// same file, rather than chaining each step's anchor off the previous step's own send time.
+async function classicFollowupProcessClient(env, c, count){
+  const hours=(c.followup_hours||'').split(',').map(s=>parseFloat(s.trim())).filter(n=>n>0);
+  const messages=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!hours.length||!messages.length) return;
+  const steps=Math.min(count,3,hours.length);
+  const where=`(ClientId,eq,${c.Id})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
+  let page=1;
+  while(true){
+    const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent('Id,Name,Stage,LastMsgAt,Date,Language,ConversationID,conv_id,ConversationId,chatwoot_conv_id,Follow up 1,Follow up 2,Follow up 3')}`);
+    if(!leadsR.ok) break;
+    const data=await leadsR.json().catch(()=>({}));
+    const leadRows=data?.list||[];
+    if(!leadRows.length) break;
+    for(const lead of leadRows){
+      if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
+      let nextIdx=-1;
+      for(let i=0;i<steps;i++){ if(lead['Follow up '+(i+1)]!=='Yes'){ nextIdx=i; break; } }
+      if(nextIdx===-1) continue; // sequence exhausted or fully sent
+      const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
+      if(!convId) continue;
+      const lastRealMs=lead.LastMsgAt||lead.Date;
+      if(!lastRealMs) continue;
+      const silentHours=(Date.now()-new Date(lastRealMs).getTime())/3600000;
+      if(silentHours<hours[nextIdx]) continue; // not due yet
+      const tmpl=messages[nextIdx]||messages[messages.length-1];
+      if(!tmpl) continue;
+      try{ await sendClassicFollowupStep(env, c, lead, nextIdx, tmpl); }
+      catch(e){ console.error('[classic-followups] send failed for lead', lead.Id, e.message); }
+      await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
+    }
+    if(leadRows.length<200) break;
+    page++;
+  }
 }
 
 // Human Deals "🧭 Coach" panel — surfaces the same Sentiment/LastObjectionCategory signals the
@@ -11428,7 +11511,7 @@ export default {
       // (see its own comment); the reminder sweep runs every day this tick fires.
       ctx.waitUntil(runFinancialPlanningMonthlyForAllClients(env)); ctx.waitUntil(runFinancialPlanningRemindersForAllClients(env));
     }
-    else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); }
+    else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }
 };
