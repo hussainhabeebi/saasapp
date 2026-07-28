@@ -48,8 +48,13 @@ FROM node:20-bookworm-slim
 # stays the PRIMARY provider (called directly from the Worker, unaffected by this). Reuses the same
 # torch/transformers already installed above for the ASR model — no additional heavy dependency,
 # just this one extra package plus soundfile for WAV writing.
+#
+# git — needed by `pip install git+https://...` for parler-tts below (confirmed by a real build
+# failure: "Cannot find command 'git'" — this base image has no git binary at all). Nothing else
+# in this Dockerfile needed git before parler-tts; every other pip package here comes from PyPI/a
+# wheel URL, no VCS installs.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation fonts-noto-core ca-certificates curl espeak-ng python3 python3-pip \
+  && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation fonts-noto-core ca-certificates curl git espeak-ng python3 python3-pip \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 libnspr4 \
     libx11-6 libxcb1 libxext6 libxi6 \
