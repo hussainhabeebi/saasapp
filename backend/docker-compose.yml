@@ -33,6 +33,11 @@ services:
       # Sarvam AI key as the Cloudflare Worker's SARVAM_API_KEY secret; leave unset/empty to keep
       # the recovery ladder text-only.
       SARVAM_API_KEY: ${SARVAM_API_KEY:-}
+      # Optional — STANDBY for the same feature, same MARKETING_RENDER_WEBHOOK_URL/_SECRET values
+      # as the Cloudflare Worker's own secrets. Leave unset to skip the AI4Bharat TTS standby and
+      # stay Sarvam-or-text only. See render-pipeline/lib/ai4bharatTts.js.
+      MARKETING_RENDER_WEBHOOK_URL: ${MARKETING_RENDER_WEBHOOK_URL:-}
+      MARKETING_RENDER_WEBHOOK_SECRET: ${MARKETING_RENDER_WEBHOOK_SECRET:-}
     logging:
       driver: json-file
       options:

@@ -21,6 +21,7 @@ const { detectScenes, generateSceneThumbnails } = require('./lib/sceneDetect');
 const { downloadToFile } = require('./lib/download');
 const { generateAiBroll } = require('./lib/falBroll');
 const { synthesizeVoiceover } = require('./lib/tts');
+const { synthesizeWithAi4Bharat, supportsLanguage: ai4bharatTtsSupportsLanguage } = require('./lib/ai4bharatTts');
 const { uploadOutput } = require('./lib/storage');
 const { MODEL_PATH } = require('./lib/segmentation');
 
@@ -206,6 +207,36 @@ app.post('/synthesize-voiceover', async (req, res) => {
     res.status(502).json({ error: String(err.message || err).slice(0, 500) });
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+// Synchronous, not queued — same reasoning as /synthesize-voiceover above. This is the STANDBY
+// text-to-speech provider for the WhatsApp voice-to-voice reply feature: Sarvam AI
+// (cloudflare-worker/worker.js's engineSarvamTts) stays the PRIMARY provider everywhere and is
+// called directly from the Worker, never routed through here — this endpoint only exists so the
+// Worker (and backend/recovery.js's automated recovery ladder) have something to fall back to
+// when Sarvam's call already failed or SARVAM_API_KEY isn't configured, so a customer still gets
+// a real voice-note reply instead of silently downgrading straight to text. Gated behind
+// AI4BHARAT_TTS_ENABLED (opt-in, off by default) since this loads a real PyTorch model — see
+// lib/ai4bharatTts.js and tts/synthesize_ai4bharat.py for what is and isn't verified about it.
+// Returns raw audio/ogg bytes (like /extract-audio returns raw audio/mpeg) rather than uploading
+// to R2 — this is a live chat reply, not a stored render asset.
+app.post('/synthesize-voice-reply', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  if (!env.AI4BHARAT_TTS_ENABLED) return res.status(503).json({ error: 'AI4BHARAT_TTS_ENABLED is not set on the render pipeline.' });
+  const { text, language } = req.body || {};
+  if (!text || !language) return res.status(400).json({ error: 'text and language required' });
+  if (!ai4bharatTtsSupportsLanguage(language)) return res.status(400).json({ error: `Unsupported language for AI4Bharat TTS: ${language}` });
+  try {
+    const audioBuf = await synthesizeWithAi4Bharat(text, language);
+    res.set('Content-Type', 'audio/ogg');
+    res.send(audioBuf);
+  } catch (err) {
+    console.error('synthesize-voice-reply failed:', err.stderr || err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
   }
 });
 

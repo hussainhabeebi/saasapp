@@ -3578,6 +3578,23 @@ sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
   combined), or the TTS call itself failing all fall straight back to
   `engineSendChatwootReply`/`engineSendChatwootImageReply`, same "customer never gets nothing"
   principle as the existing image-reply fallback.
+- **AI4Bharat standby, before falling back to text.** Sarvam AI stays the PRIMARY TTS provider —
+  unchanged — but `engineDeliverReply` and `handleBroadcastFollowupSend` now call a small
+  `engineTtsWithFallback(env, text, langCode)` helper instead of `engineSarvamTts` directly: it
+  tries Sarvam first, and only when that returns `null` (missing key, unsupported language,
+  transient failure) does it try `engineAi4BharatTts` — a self-hosted AI4Bharat Indic Parler-TTS
+  model running on the Marketing Studio render pipeline (`render-pipeline/lib/ai4bharatTts.js`,
+  `POST /synthesize-voice-reply`, gated behind that service's own `AI4BHARAT_TTS_ENABLED`). Reuses
+  the render pipeline's existing `MARKETING_RENDER_WEBHOOK_URL`/`_SECRET` Worker secrets — no new
+  secret to configure on the Worker. Same scope as this app's other AI4Bharat integration (the 10
+  Indic languages + English already mapped elsewhere, `AI4BHARAT_TTS_LANGS`), and same "silent
+  null when unconfigured, real ops report on an actual failure" convention as `engineSarvamTts`
+  itself. **Honest tradeoff**: a real self-hosted model call over HTTP to another server, not a
+  fast managed API — expect real added latency (seconds, possibly tens of seconds on CPU) versus
+  Sarvam, and this hasn't been verified against a live deploy (see
+  `render-pipeline/README.md`'s "AI4Bharat TTS standby" section for exactly what is and isn't
+  confirmed about the model itself). Falls through to the normal text reply if BOTH providers fail,
+  same as before this standby existed.
 - **Spoken-reply rewrite has a Gemini-via-OpenRouter backup; voice-note transcription does not.**
   `engineBuildSpokenReply` calls `engineGeminiGenerateWithFallback` (direct Gemini first, then
   OpenRouter routed to a Gemini model using the client's own `openrouter_key` if Gemini is unset or
@@ -3618,8 +3635,15 @@ sub-page in the Settings sub-nav (alongside General/Channels/Integrations — `S
     `leadvyne-recovery` container (`backend/.env.example`, `backend/docker-compose.yml`) — the same
     key value as the Worker's secret, just configured again since it's a different deployment
     that doesn't share environment with the Worker.
+  - **AI4Bharat standby, ported the same way.** `recovery.js` also has its own copy of
+    `engineTtsWithFallback`/`engineAi4BharatTts` (`ttsWithFallback`/`ai4BharatTts` — Sarvam first,
+    AI4Bharat standby second) since it can't import the Worker's version either. Needs
+    `MARKETING_RENDER_WEBHOOK_URL`/`MARKETING_RENDER_WEBHOOK_SECRET` env vars on the
+    `leadvyne-recovery` container — same values as the Worker's own secrets for the Marketing
+    Studio render pipeline — left unset, this standby is silently skipped and the ladder stays
+    Sarvam-or-text only, same as before it existed.
   - Both paths fall back to the ordinary text send on any failure (missing key, unsupported
-    language, the TTS call itself failing) — a follow-up is never skipped over a voice hiccup, same
+    language, both TTS providers failing) — a follow-up is never skipped over a voice hiccup, same
     "customer never gets nothing" principle as the live-reply pipeline.
 
 **Transcription accuracy: business-vocabulary hint.** `engineGeminiTranscribeVoice` now takes an
