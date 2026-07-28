@@ -5906,3 +5906,85 @@ previously-saved Razorpay Key Secret back to the browser (`GET /financial/config
 write-only) — the frontend only includes a secret field in its `PATCH` body when the user actually
 typed something into it, so re-saving the enabled/reminders toggles alone can never accidentally
 wipe out a previously-configured secret.
+
+## AI Sales Plan (`frontend/dashboard.html` — Leads page → 🧠 AI Analyst → "🤖 AI Sales Plan" tab)
+
+A ranked daily worklist, **not an autonomous agent** — every action needs a click. Computed entirely
+client-side over `allLeads` (same "pure computation, no new backend route" convention as
+`renderAiReps`/`renderAiOverview`), so it's always in sync with whatever's already loaded on the
+page and needs no storage of its own.
+
+### Ranking (`aiSalesPlanScore`)
+A deliberately simple, explainable weighted sum over signals already on the lead record — Score
+(Hot +40/Warm +20), a Hot Moment flag (+15), days since last activity (`LastMsgAt||Date`, capped at
++24), deal value (log-scaled, capped at +24), and a human-handover SLA-risk bump (+15 once
+`HandoverAt` is more than 30 minutes old). Each contributing signal becomes a reason chip on the
+lead's row (e.g. "🔴 Hot · 4d no reply · AED 50,000 deal"), so a rep can see exactly why a lead is
+ranked where it is rather than trusting an opaque score. Excludes only actually-resolved leads
+(`isWonLead`/`isLostLead`) and opted-out ones — **deliberately does NOT use this file's usual
+`!TERMINAL.has(l.Stage)` "active leads" filter**, since `TERMINAL` includes `human_handover` and a
+lead mid-handover is exactly the most actionable item for a rep-facing worklist (that blanket
+exclusion exists elsewhere to keep the *bot*/Automations from touching a handed-over lead, not to
+hide it from the human who now owns it). Top 20 shown, sorted by score. Each row: 📞 Call
+(`callHrefFor`), 💬 WhatsApp (opens the existing Send Template modal for that one lead), and a
+session-only ⏭️ "Skip for today" that never touches the lead record or any backend — it's just
+removed from this render pass.
+
+### Intro Media Auto-send
+"Send an intro video/PDF to every fresh lead N hours after they come in" maps directly onto the
+existing Automations & Flow engine (`⚡ Automations`, `frontend/broadcast.html`) rather than needing
+new scheduling machinery: a `new_lead` trigger with an empty segment (`leadsAudienceWhereClause`
+with no `stage`/`tags_any` resolves to "every lead for this client") already auto-enrolls every
+fresh lead, and a `wait` step already exists. The only missing piece was a step that sends a real
+file instead of text — see "Send WhatsApp Media step" below. This card manages exactly **one**
+reserved-name flow (`🎬 AI Sales Plan — Intro Media`) through the same `/automations/flows`
+GET/POST/PATCH routes the full flow editor uses (`aiSalesPlanLoadIntroFlow`/
+`saveAiSalesPlanIntroMedia`) — a 3-field quick-setup (delay hours, Drive link, caption) instead of
+the full editor, for the one specific use case this card exists for. Opening that same flow by name
+in the full Automations editor gives full control (audience restriction, extra steps) if the quick
+form isn't enough.
+
+### Conversion timing — "When conversion is high" (Rep Performance tab)
+Extends the existing Rep Performance tab's Activity-by-Hour/Activity-by-Day bar charts (raw message
+volume, from `LastMsgAt||Date`) with a second pair of charts bucketing the same hour/day by actual
+Won-rate (`isWonLead`/`isLostLead`) instead of volume — deliberately kept as two separate chart
+pairs rather than one overlay, since the two numbers frequently point at different times (the
+busiest hour is often just a queue backing up, not the hour deals actually close). A "When
+conversion is high" note calls out the top hours by win rate (minimum 3 resolved deals in that
+bucket, to avoid a single lucky/unlucky hour looking meaningful).
+
+## Send WhatsApp Media step + follow-up media attachments (`cloudflare-worker/worker.js`)
+
+A shared building block — fetch one Google Drive file (video/image/audio/PDF) and forward it into a
+Chatwoot conversation as a real attachment — reused by two features above and beyond the Hospitality
+module's existing per-unit media send:
+
+- **`driveGuessFilename(contentType)`** — maps a fetched Drive file's content-type to a sane
+  filename+extension (`video.mp4`, `image.jpg`, `audio.mp3`, `document.pdf`, …) so WhatsApp/Chatwoot
+  render it as the right kind of attachment (inline video player, image preview, audio player,
+  document icon) rather than a generic untyped blob.
+- **`sendDriveMediaToChatwoot(c, convId, driveUrl, caption)`** — resolves the Drive file id
+  (`driveFileId`), fetches its bytes (`driveFetchFile`, both pre-existing from the Hospitality
+  media switch), and POSTs a Chatwoot attachment message — the same FormData-with-`attachments[]`
+  shape `hospitalitySendUnitMedia` already uses, generalized to any single Drive link rather than a
+  fixed set of unit photo/video slots. Never throws; returns `false` on anything that didn't work
+  (unshared file, bad link, Chatwoot failure) so every caller can treat it as best-effort.
+
+**Automations & Flow** (`⚡ Automations`, `broadcast.html`) gains a 6th step type,
+`send_whatsapp_media` (`{type:'send_whatsapp_media', media_url, caption}`) — validated in
+`validateAutomationFlow` (needs a non-blank `media_url`) and executed in `advanceFlowLead` exactly
+like the existing `send_whatsapp_dm` step, just calling `sendDriveMediaToChatwoot` instead of a
+plain-text Chatwoot POST. `caption` runs through the same `fillFlowTokens` `{name}`/`{stage}`/
+`{phone}` substitution as every other step's text.
+
+**Follow-up Engine** (`💪 Follow-up Engine` tab, classic 3-step sequence) gains an optional media
+attachment **per variant** — `migrations/0024_followup_variants_media.sql` adds
+`media_url`/`media_caption` (both default `''`, additive-only ALTER on the existing
+`followup_variants` table from `migrations/0007_followup_engine.sql`). `pickFollowupVariant` now
+also returns `mediaUrl`/`mediaCaption` for whichever variant was picked; `handleBroadcastFollowupSend`
+sends the variant's text (or voice) exactly as before, then — if a `media_url` is set — sends the
+Drive file as a second message via `sendDriveMediaToChatwoot`. `handleFollowupVariantsList`/
+`handleFollowupVariantsSave` were extended to read/write the two new fields alongside the existing
+CTA/incentive/social-proof ones, and the variant-editor grid in `broadcast.html` gained matching
+"Media (optional)" + "Media caption" inputs per variant cell (`fuv_${step}_${variant}_media_url`/
+`_media_caption`, same `fuEngineFieldId` convention as every other field on that grid).

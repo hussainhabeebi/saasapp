@@ -1459,6 +1459,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <div id="leadsAnalystView" style="display:none">
         <div id="aiSubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
           <button class="hosp-tab active" data-ai="overview">🧭 Overview</button>
+          <button class="hosp-tab" data-ai="salesplan">🤖 AI Sales Plan</button>
           <button class="hosp-tab" data-ai="rootcause">🔍 Root Cause</button>
           <button class="hosp-tab" data-ai="objections">⚠️ Objections</button>
           <button class="hosp-tab" data-ai="forecast">📈 Forecast</button>
@@ -5745,7 +5746,7 @@ function renderAiAnalyst(){ renderAiSubPage(_aiPage); }
 function renderAiSubPage(page){
   _aiPage=page;
   document.querySelectorAll('#aiSubNav .hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.ai===page));
-  const fns={overview:renderAiOverview, rootcause:renderAiRootCause, objections:renderAiObjections, forecast:renderAiForecast, marketing:renderAiMarketing, churn:renderAiChurn, reps:renderAiReps, bottlenecks:renderAiBottlenecks, custom:renderAiCustom};
+  const fns={overview:renderAiOverview, salesplan:renderAiSalesPlan, rootcause:renderAiRootCause, objections:renderAiObjections, forecast:renderAiForecast, marketing:renderAiMarketing, churn:renderAiChurn, reps:renderAiReps, bottlenecks:renderAiBottlenecks, custom:renderAiCustom};
   (fns[page]||renderAiOverview)();
 }
 document.addEventListener('click', e=>{
@@ -6067,12 +6068,26 @@ function renderAiReps(){
   const hourCounts=new Array(24).fill(0);
   const dowCounts=new Array(7).fill(0);
   const dowLabels=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  // When conversion is high — same hour/day buckets as activity above, but keyed to actual
+  // Won/Lost outcomes rather than raw message volume, so this answers "when do leads convert" not
+  // just "when are reps busy" (the two can and do diverge — busiest hour is often a queue backing
+  // up, not the hour deals actually close). Same won/resolved definition as Speed to Lead below.
+  const hourResolved=new Array(24).fill(0), hourWon=new Array(24).fill(0);
+  const dowResolved=new Array(7).fill(0), dowWon=new Array(7).fill(0);
   allLeads.forEach(l=>{
     const d=new Date(l.LastMsgAt||l.Date||0); if(isNaN(d.getTime())) return;
-    hourCounts[d.getHours()]++; dowCounts[d.getDay()]++;
+    const h=d.getHours(), dow=d.getDay();
+    hourCounts[h]++; dowCounts[dow]++;
+    if(isWonLead(l)||isLostLead(l)){
+      hourResolved[h]++; dowResolved[dow]++;
+      if(isWonLead(l)){ hourWon[h]++; dowWon[dow]++; }
+    }
   });
   const maxHour=Math.max(1,...hourCounts), maxDow=Math.max(1,...dowCounts);
   const topHours=hourCounts.map((c,h)=>({h,c})).sort((a,b)=>b.c-a.c).slice(0,3).filter(x=>x.c>0).map(x=>`${x.h}:00`).join(', ');
+  const hourRates=hourResolved.map((r,h)=>r?Math.round(hourWon[h]/r*100):null);
+  const dowRates=dowResolved.map((r,i)=>r?Math.round(dowWon[i]/r*100):null);
+  const bestHours=hourRates.map((rate,h)=>({h,rate,n:hourResolved[h]})).filter(x=>x.rate!=null&&x.n>=3).sort((a,b)=>b.rate-a.rate).slice(0,3).map(x=>`${x.h}:00 (${x.rate}%)`).join(', ');
 
   el.innerHTML=`
     <div class="card" style="margin-bottom:14px">
@@ -6091,6 +6106,17 @@ function renderAiReps(){
       </div>
     </div>
     <div class="s-note" style="margin-top:10px">Busiest hours: ${topHours||'—'}. Based on last-message timestamps across all leads — a proxy for when leads are actually engaging, not a confirmed reply-speed measurement.</div>
+    <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr;margin-top:14px">
+      <div class="card">
+        <div class="s-head" style="margin-bottom:8px">Win Rate by Hour of Day</div>
+        ${hourRates.map((rate,h)=>`<div class="bar-row"><div style="min-width:40px;font-size:11px">${h}:00</div><div class="bar-bg"><div class="bar-fill" style="width:${rate||0}%"></div></div><div class="bar-val">${rate==null?'—':rate+'%'} <span style="color:var(--muted);font-weight:400">(${hourResolved[h]})</span></div></div>`).join('')}
+      </div>
+      <div class="card">
+        <div class="s-head" style="margin-bottom:8px">Win Rate by Day of Week</div>
+        ${dowLabels.map((lbl,i)=>`<div class="bar-row"><div style="min-width:40px;font-size:11px">${lbl}</div><div class="bar-bg"><div class="bar-fill" style="width:${dowRates[i]||0}%"></div></div><div class="bar-val">${dowRates[i]==null?'—':dowRates[i]+'%'} <span style="color:var(--muted);font-weight:400">(${dowResolved[i]})</span></div></div>`).join('')}
+      </div>
+    </div>
+    <div class="s-note" style="margin-top:10px">When conversion is high: ${bestHours||'Not enough resolved deals yet at any single hour (need 3+) to call out a clear winner.'} — win rate among leads last active at that hour, not raw activity volume. Use this alongside "Busiest hours" above: the two often point at different times.</div>
   `;
 }
 
@@ -6286,6 +6312,150 @@ async function emailAiOverviewSnapshot(){
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     showToast('✓ Sent to '+myEmail,'ok');
   }catch(e){ showToast('Failed to send: '+e.message,'err'); }
+}
+
+/* ══════════════════ AI SALES PLAN (SETUP.md "AI Sales Plan") ══════════════════
+   A ranked daily worklist, not an autonomous agent — every action below needs a click. Computed
+   entirely client-side over allLeads already loaded for this page (same "pure computation, no new
+   backend route" convention as renderAiReps/renderAiOverview above), so it's always in sync with
+   whatever's on screen and needs no new storage of its own. Also hosts the Intro Media quick-setup,
+   which itself is not new backend machinery — it manages one reserved-name Automations & Flow flow
+   (⚡ Automations, broadcast.html) through the existing /automations/flows CRUD, since "send an
+   intro video/PDF to every fresh lead after N hours" is exactly a new_lead trigger + wait step +
+   the new send_whatsapp_media step type. */
+let _aiSalesPlanSkipped=new Set(); // session-only "skip for today" — intentionally never persisted
+const AI_SALES_PLAN_INTRO_FLOW_NAME='🎬 AI Sales Plan — Intro Media';
+let _aiSpIntroFlowId=null;
+
+// Scores an open lead's urgency for today's plan. Not a single "the" formula — a deliberately
+// simple, explainable weighted sum (same "cheap and predictable" philosophy as this file's other
+// heuristics, e.g. HOSPITALITY_GENERAL_ENQUIRY_RE) so a rep can see exactly why a lead is ranked
+// where it is from the reason chips alone, rather than trusting an opaque score.
+function aiSalesPlanScore(l){
+  const reasons=[];
+  let score=0;
+  if(l.Score==='Hot'){ score+=40; reasons.push('🔴 Hot'); }
+  else if(l.Score==='Warm'){ score+=20; reasons.push('🟡 Warm'); }
+  if(l.HotMoment==='Yes'){ score+=15; reasons.push('⚡ Hot moment'); }
+  const lastMs=new Date(l.LastMsgAt||l.Date||0).getTime();
+  const daysSince=lastMs>0?Math.floor((Date.now()-lastMs)/86400000):null;
+  if(daysSince==null){ score+=10; reasons.push('never contacted'); }
+  else if(daysSince>0){ score+=Math.min(daysSince*4,24); reasons.push(`${daysSince}d no reply`); }
+  const dealValue=Number(l.DealValue)||0;
+  if(dealValue>0){ score+=Math.min(Math.log10(dealValue+1)*6,24); reasons.push(aiFmtMoney(dealValue)+' deal'); }
+  if(l.Handover==='Yes' && l.HandoverAt){
+    const waitingMins=(Date.now()-new Date(l.HandoverAt).getTime())/60000;
+    if(waitingMins>30){ score+=15; reasons.push('⏳ waiting on a human'); }
+  }
+  return {score, reasons, dealValue};
+}
+function renderAiSalesPlan(){
+  const el=$id('aiContent');
+  // Deliberately NOT the usual `!TERMINAL.has(l.Stage)` "active leads" filter used elsewhere in
+  // this file — TERMINAL includes 'human_handover', which is exactly the most actionable state for
+  // a REP-facing worklist (the bot handed it off; a human needs to respond — see the SLA-risk
+  // reason chip in aiSalesPlanScore below). That blanket exclusion exists elsewhere to keep the
+  // *bot*/automations from touching a handed-over lead, not to hide it from the humans who own it
+  // now. isWonLead/isLostLead alone correctly capture every actually-resolved (won or lost) stage.
+  const openLeads=allLeads.filter(l=>l.OptOut!=='Yes' && !isWonLead(l) && !isLostLead(l) && !_aiSalesPlanSkipped.has(l.Id));
+  const ranked=openLeads.map(l=>({lead:l, ...aiSalesPlanScore(l)})).sort((a,b)=>b.score-a.score).slice(0,20);
+  const atRiskValue=ranked.reduce((s,r)=>s+r.dealValue,0);
+
+  el.innerHTML=`
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:6px">Today's Plan</div>
+      <div style="font-family:var(--disp);font-size:22px;font-weight:700;margin-bottom:4px">${ranked.length} lead${ranked.length===1?'':'s'} need action</div>
+      <div style="font-size:12.5px;color:var(--muted)">${aiFmtMoney(atRiskValue)} in pipeline value across today's top picks. Suggestions only — nothing here sends or changes anything until you click it.</div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      ${ranked.length?ranked.map(aiSalesPlanRow).join(''):'<div class="empty-state"><div class="ei">✅</div>Nothing urgent right now — nice work.</div>'}
+    </div>
+    <div class="card">
+      <div class="s-head" style="margin-bottom:8px">🎬 Intro Media Auto-send</div>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Automatically sends a video or PDF to every fresh lead a set number of hours after they come in — a real attachment, not just a link. Built on the ⚡ Automations engine (Campaigns page) — open a flow there named "${esc(AI_SALES_PLAN_INTRO_FLOW_NAME)}" for finer control (audience, extra steps) than this quick form gives you.</div>
+      <div id="aiSpIntroForm">${aiSalesPlanIntroMediaForm()}</div>
+    </div>
+  `;
+  aiSalesPlanLoadIntroFlow();
+}
+function aiSalesPlanRow(r){
+  const l=r.lead;
+  return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)">
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;cursor:pointer" onclick="openDetail(${l.Id})">${esc(l.Name||l.Phone||'Unknown')}</div>
+      <div style="font-size:11.5px;color:var(--muted)">${r.reasons.map(esc).join(' · ')||'—'}</div>
+    </div>
+    <div style="display:flex;gap:6px;flex-shrink:0">
+      <a class="btn btn-secondary btn-sm" href="${callHrefFor(l)}" title="Call">📞</a>
+      <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])" title="WhatsApp">💬</button>
+      <button class="btn btn-secondary btn-sm" onclick="aiSalesPlanSkip(${l.Id})" title="Skip for today">⏭️</button>
+    </div>
+  </div>`;
+}
+function aiSalesPlanSkip(id){ _aiSalesPlanSkipped.add(id); renderAiSalesPlan(); }
+
+function aiSalesPlanIntroMediaForm(hours, mediaUrl, caption, active){
+  return `<div style="margin-bottom:12px;max-width:160px">
+      <label class="form-label">Send after (hours)</label>
+      <input class="form-input" type="number" min="1" id="aiSpIntroHours" value="${esc(hours??24)}">
+    </div>
+    <div style="margin-bottom:12px">
+      <label class="form-label">Google Drive link — video, image, audio or PDF (shared "Anyone with the link")</label>
+      <input class="form-input" type="text" id="aiSpIntroMediaUrl" value="${esc(mediaUrl||'')}" placeholder="https://drive.google.com/file/d/…/view">
+    </div>
+    <div style="margin-bottom:12px">
+      <label class="form-label">Caption (optional)</label>
+      <input class="form-input" type="text" id="aiSpIntroCaption" value="${esc(caption||'')}" placeholder="e.g. Hey {name}, here's a quick intro to who we are 🎬">
+    </div>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;margin-bottom:10px"><input type="checkbox" style="width:auto" id="aiSpIntroActive" ${active?'checked':''}> Active — send to every new lead automatically</label>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="btn btn-primary btn-sm" onclick="saveAiSalesPlanIntroMedia()">Save</button>
+      <span id="aiSpIntroMsg" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>`;
+}
+async function aiSalesPlanLoadIntroFlow(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/automations/flows`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    const flow=(data.list||[]).find(f=>f.name===AI_SALES_PLAN_INTRO_FLOW_NAME);
+    if(!flow){ _aiSpIntroFlowId=null; return; }
+    _aiSpIntroFlowId=flow.id;
+    const waitStep=flow.steps.find(s=>s.type==='wait');
+    const mediaStep=flow.steps.find(s=>s.type==='send_whatsapp_media');
+    const holder=$id('aiSpIntroForm');
+    if(holder) holder.innerHTML=aiSalesPlanIntroMediaForm(waitStep?.hours, mediaStep?.media_url, mediaStep?.caption, flow.active);
+  }catch(e){ /* best-effort — falls back to the blank/default form already rendered */ }
+}
+async function saveAiSalesPlanIntroMedia(){
+  const msg=$id('aiSpIntroMsg');
+  const hours=parseFloat($id('aiSpIntroHours').value);
+  const mediaUrl=$id('aiSpIntroMediaUrl').value.trim();
+  const caption=$id('aiSpIntroCaption').value.trim();
+  const active=$id('aiSpIntroActive').checked;
+  if(!(hours>0)){ msg.textContent='Enter a delay in hours.'; msg.style.color='#DC2626'; return; }
+  if(!mediaUrl){ msg.textContent='Paste a Google Drive link first.'; msg.style.color='#DC2626'; return; }
+  msg.textContent='Saving…'; msg.style.color='var(--muted)';
+  const steps=[{type:'wait', hours}, {type:'send_whatsapp_media', media_url:mediaUrl, caption}];
+  try{
+    if(_aiSpIntroFlowId){
+      const r=await fetch(`${CONFIG.WORKER_BASE}/automations/flows`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:_aiSpIntroFlowId, steps, active})});
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    }else{
+      const r=await fetch(`${CONFIG.WORKER_BASE}/automations/flows`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({
+        name:AI_SALES_PLAN_INTRO_FLOW_NAME, trigger:{type:'new_lead'}, segment:{stage:[],tags_any:[]}, steps
+      })});
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+      _aiSpIntroFlowId=data.flow.id;
+      if(active){
+        const r2=await fetch(`${CONFIG.WORKER_BASE}/automations/flows`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:_aiSpIntroFlowId, active:true})});
+        if(!r2.ok) throw new Error('Created, but failed to activate — try toggling Active and saving again.');
+      }
+    }
+    msg.textContent='✓ Saved'; msg.style.color='var(--muted)';
+    setTimeout(()=>{ if($id('aiSpIntroMsg')) $id('aiSpIntroMsg').textContent=''; },2500);
+  }catch(e){ msg.textContent='Error: '+e.message; msg.style.color='#DC2626'; }
 }
 
 // Automated Root Cause Analysis — interactive: pick a KPI and two comparison windows (defaults

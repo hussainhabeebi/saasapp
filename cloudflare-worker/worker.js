@@ -1650,7 +1650,7 @@ async function pickFollowupVariant(env, clientId, step, fallbackText, leadName){
     const count=await computeFollowupSocialProofCount(env, clientId);
     if(count>0) text+=`\n\n${count} customer(s) closed with us in the last 7 days.`;
   }
-  return {text, variantLabel};
+  return {text, variantLabel, mediaUrl:chosen?.media_url||'', mediaCaption:chosen?.media_caption||''};
 }
 
 // Manual "send next follow-up now" — a rep's on-demand override alongside the automated
@@ -1679,7 +1679,7 @@ async function handleBroadcastFollowupSend(request, env){
   if(nextIdx===-1) return json({error:'No follow-up steps left to send for this lead.'}, 400);
   const tmpl=messages[nextIdx]||messages[messages.length-1];
   if(!tmpl) return json({error:'No follow-up message configured for this client.'}, 400);
-  const {text, variantLabel}=await pickFollowupVariant(env, payload.cid, nextIdx+1, tmpl, lead.Name);
+  const {text, variantLabel, mediaUrl, mediaCaption}=await pickFollowupVariant(env, payload.cid, nextIdx+1, tmpl, lead.Name);
   const clientId=String(payload.cid);
 
   // Voice Follow-ups (Settings → Voice) — same Sarvam pipeline as live voice-to-voice replies,
@@ -1715,6 +1715,12 @@ async function handleBroadcastFollowupSend(request, env){
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
     if(!r.ok) return json({error:'HTTP '+r.status}, 502);
   }
+
+  // Follow-up Engine — optional per-variant media attachment (video/image/audio/PDF via a Google
+  // Drive link), sent as a second message right after the text above. Best-effort: a failed/missing
+  // Drive fetch never fails this whole send, since the text follow-up (the part that already
+  // succeeded above) is the one thing this route's caller is actually waiting on.
+  if(mediaUrl) await sendDriveMediaToChatwoot(c, convId, mediaUrl, mediaCaption);
 
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), ['Follow up '+(nextIdx+1)]:'Yes'}});
   try{
@@ -1764,8 +1770,8 @@ async function handleFollowupVariantsList(request, env){
     for(const variant of ['A','B']){
       const r=byKey[`${step}_${variant}`];
       list.push(r
-        ?{step, variant, message:r.message, cta:r.cta, incentive_text:r.incentive_text, incentive_expires_hours:r.incentive_expires_hours, social_proof:!!r.social_proof, active:!!r.active}
-        :{step, variant, message:'', cta:'', incentive_text:'', incentive_expires_hours:null, social_proof:false, active:true});
+        ?{step, variant, message:r.message, cta:r.cta, incentive_text:r.incentive_text, incentive_expires_hours:r.incentive_expires_hours, social_proof:!!r.social_proof, active:!!r.active, media_url:r.media_url||'', media_caption:r.media_caption||''}
+        :{step, variant, message:'', cta:'', incentive_text:'', incentive_expires_hours:null, social_proof:false, active:true, media_url:'', media_caption:''});
     }
   }
   return json({list});
@@ -1781,15 +1787,18 @@ async function handleFollowupVariantsSave(request, env){
     const step=parseInt(v.step);
     const variant=v.variant==='B'?'B':'A';
     if(!(step>=1&&step<=3)) continue;
-    await env.DB.prepare(`INSERT INTO followup_variants (client_id, step, variant, message, cta, incentive_text, incentive_expires_hours, social_proof, active, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(client_id, step, variant) DO UPDATE SET message=excluded.message, cta=excluded.cta, incentive_text=excluded.incentive_text, incentive_expires_hours=excluded.incentive_expires_hours, social_proof=excluded.social_proof, active=excluded.active, updated_at=excluded.updated_at`)
+    await env.DB.prepare(`INSERT INTO followup_variants (client_id, step, variant, message, cta, incentive_text, incentive_expires_hours, social_proof, active, media_url, media_caption, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(client_id, step, variant) DO UPDATE SET message=excluded.message, cta=excluded.cta, incentive_text=excluded.incentive_text, incentive_expires_hours=excluded.incentive_expires_hours, social_proof=excluded.social_proof, active=excluded.active, media_url=excluded.media_url, media_caption=excluded.media_caption, updated_at=excluded.updated_at`)
       .bind(Number(payload.cid), step, variant,
         String(v.message||'').trim().slice(0,1000),
         String(v.cta||'').trim().slice(0,200),
         String(v.incentive_text||'').trim().slice(0,300),
         v.incentive_expires_hours?Number(v.incentive_expires_hours):null,
-        v.social_proof?1:0, v.active===false?0:1, now)
+        v.social_proof?1:0, v.active===false?0:1,
+        String(v.media_url||'').trim().slice(0,500),
+        String(v.media_caption||'').trim().slice(0,300),
+        now)
       .run();
   }
   return json({ok:true});
@@ -1830,7 +1839,7 @@ async function handleFollowupStats(request, env){
    still comes from an explicit request rather than the tick, mirroring the Email module's
    send-init/send-one split (enroll now, sends still happen on the flow's own schedule). ── */
 
-const AUTOMATION_STEP_TYPES = new Set(['wait','send_whatsapp_dm','send_whatsapp_template','send_email','update_field']);
+const AUTOMATION_STEP_TYPES = new Set(['wait','send_whatsapp_dm','send_whatsapp_template','send_email','update_field','send_whatsapp_media']);
 const AUTOMATION_TRIGGER_TYPES = new Set(['manual','new_lead','stage_enter','no_reply']);
 // Same closed-out stages recovery.js already refuses to touch — a flow (especially a broad
 // "no reply in N hours" one) shouldn't keep nudging a lead that's Converted/Lost/Closed/opted out.
@@ -1852,6 +1861,7 @@ function validateAutomationFlow(body){
     if(s.type==='send_whatsapp_template' && !String(s.template_name||'').trim()) return 'a Send WhatsApp Template step needs a template_name';
     if(s.type==='send_email' && (!String(s.subject||'').trim()||!String(s.html_body||'').trim())) return 'a Send Email step needs a subject and html_body';
     if(s.type==='update_field' && !String(s.field||'').trim()) return 'an Update Field step needs a field name';
+    if(s.type==='send_whatsapp_media' && !String(s.media_url||'').trim()) return 'a Send WhatsApp Media step needs a media_url';
   }
   return null;
 }
@@ -2053,6 +2063,11 @@ async function advanceFlowLead(env, c, lead, flow, entry){
       await sendFlowEmail(env, c, lead, step);
     }else if(step.type==='update_field'){
       await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, [step.field]:step.value}});
+    }else if(step.type==='send_whatsapp_media'){
+      // Drive-fetch-and-forward as a real attachment (video/image/audio/PDF) — see
+      // sendDriveMediaToChatwoot below, the same fetch-bytes-and-FormData pattern
+      // hospitalitySendUnitMedia already uses for unit photos/video.
+      if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendDriveMediaToChatwoot(c, convId, step.media_url, fillFlowTokens(step.caption||'', lead));
     }
     entry.step++;
   }
@@ -9149,6 +9164,37 @@ async function driveFetchFile(fileId){
     if(!r.ok) return null;
     return {blob:await r.blob(), contentType:ct};
   }catch(e){ return null; }
+}
+
+// Guesses a sensible attachment filename from the fetched content-type — WhatsApp/Chatwoot render
+// an attachment differently (inline video player, image preview, audio player, document icon)
+// based on its extension, not just the MIME type header, so a bare extension-less blob would often
+// show up as a generic "document" regardless of what it actually is.
+function driveGuessFilename(contentType){
+  const map={'video/mp4':'video.mp4','video/quicktime':'video.mov','video/webm':'video.webm',
+    'image/jpeg':'image.jpg','image/png':'image.png','image/webp':'image.webp','image/gif':'image.gif',
+    'audio/mpeg':'audio.mp3','audio/ogg':'audio.ogg','audio/wav':'audio.wav','audio/mp4':'audio.m4a',
+    'application/pdf':'document.pdf'};
+  return map[(contentType||'').split(';')[0].trim()]||'file';
+}
+// Fetches one Google Drive file (video/image/audio/PDF) and forwards it into a Chatwoot
+// conversation as a real attachment — the general-purpose version of hospitalitySendUnitMedia's
+// per-item send, shared by the Automations & Flow module's send_whatsapp_media step and the
+// classic follow-up sequence's per-variant media attachment (see pickFollowupVariant/
+// handleBroadcastFollowupSend below). Returns false (never throws) on anything that didn't work —
+// an unshared file, a bad link, or a Chatwoot send failure — so callers can treat it as best-effort
+// exactly like every other WhatsApp send in this file.
+async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption){
+  const fileId=driveFileId(driveUrl);
+  if(!fileId) return false;
+  const fetched=await driveFetchFile(fileId);
+  if(!fetched) return false;
+  const fd=new FormData();
+  fd.append('content', caption||'');
+  fd.append('message_type','outgoing'); fd.append('private','false');
+  fd.append('attachments[]', fetched.blob, driveGuessFilename(fetched.contentType));
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+  return r.ok;
 }
 
 // Sends one unit's photos/video into the chat as real attachments and marks it sent so it's never
