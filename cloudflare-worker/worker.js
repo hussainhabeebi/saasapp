@@ -5047,6 +5047,22 @@ async function ecomFindProductsByCategory(env, clientId, category){
   return pd?.list||[];
 }
 
+// The shop-owner-managed category photo (ecom_categories.image_url_1/2/3, set up in the CRM's
+// Ecommerce → Categories tab) — distinct from the NocoDB `products` table category text matched
+// above. Same loose two-way substring match engineMaybeSendEcomCategoryMedia uses, since the
+// LLM's category guess and the CRM's category name aren't guaranteed to match exactly.
+async function ecomFindCategoryImage(env, clientId, category){
+  if(!category) return null;
+  const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=?`).bind(Number(clientId)).all();
+  const guess=category.trim().toLowerCase();
+  const match=(categories||[]).find(cat=>{
+    const name=(cat.name||'').trim().toLowerCase();
+    return name && (name.includes(guess) || guess.includes(name));
+  });
+  if(!match) return null;
+  return match.image_url_1||match.image_url_2||match.image_url_3||null;
+}
+
 async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
   const product=await ecomFindProductBySku(env, clientId, sku);
   const displayName=name||'there';
@@ -7292,18 +7308,23 @@ async function handleEngineWebhook(request, env, secret){
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && !product && detection.category){
           // Named a category ("shirts"), not one specific product — detectOrderSignal only returns
-          // this when no single product was a confident match. Answer with that category's photo
-          // (first matching product that has one) and ask which variant, instead of the generic
-          // FAQ LLM improvising an "I can't send images" apology with no real data to work from.
+          // this when no single product was a confident match. Answer with a representative photo
+          // and ask which variant, instead of the generic FAQ LLM improvising an "I can't send
+          // images" apology with no real data to work from. Prefer the shop-owner-curated category
+          // photo (ecom_categories.image_url_1/2/3, set up in the CRM) over a specific product's
+          // photo — a customer asking "which type of shirt" shouldn't be shown one arbitrary shirt
+          // as if it were the answer; fall back to the first matching product's photo only when the
+          // category itself has no photo configured.
           const categoryProducts=await ecomFindProductsByCategory(env, clientId, detection.category);
           if(categoryProducts.length){
+            const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
             const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
             const variants=[...new Set(categoryProducts.map(p=>(p.color||'').trim()).filter(Boolean))];
             const listText=(variants.length?variants:categoryProducts.map(p=>p.name)).map(v=>`- ${v}`).join('\n');
             const intro=variants.length?`Which type of ${detection.category} are you looking for?`:`Here's what we have in ${detection.category}:`;
             sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
             routing.reply=sentText;
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:withImage.image_url});
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:categoryImage||withImage.image_url});
             orderHandledInline=true;
           }
           // No products at all in that category — falls through to FAQ below ("we don't carry that").
