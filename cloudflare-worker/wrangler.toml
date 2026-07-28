@@ -124,10 +124,11 @@ MARKETING_DEFAULT_MINUTES_LIMIT = "30"
 #                           sent via Resend. Requires RESEND_API_KEY (above) to also be set.
 #   SARVAM_API_KEY          Sarvam AI API key — see SETUP.md "Voice-to-voice replies". Powers the
 #                           /engine/webhook voice-note reply (female TTS, Indic languages incl.
-#                           Malayalam/Hindi/Tamil/etc). One shared key for all clients, same pattern
-#                           as GEMINI_API_KEY. If unset, or the customer's detected language isn't a
-#                           supported Indic language, the engine falls back to a normal text reply
-#                           even for clients with voice_addon_active='Yes'.
+#                           Malayalam/Hindi/Tamil/etc), as the PRIMARY TTS provider. One shared key
+#                           for all clients, same pattern as GEMINI_API_KEY. If unset, or the
+#                           customer's detected language isn't a supported Indic language, the
+#                           engine tries the AI4Bharat standby below (if configured) before falling
+#                           back to a normal text reply, even for clients with voice_addon_active='Yes'.
 #   GOOGLE_CLIENT_ID        Google Cloud OAuth 2.0 Client (Web application type) Client ID — see
 #                           SETUP.md "Reports page" (SEO tab / Google Search Console) AND SETUP.md
 #                           "Google Calendar sync" (Task Manager) — the SAME Cloud OAuth Client is
@@ -156,6 +157,12 @@ MARKETING_DEFAULT_MINUTES_LIMIT = "30"
 #                           and authenticates the pipeline's inbound callback to
 #                           POST /marketing/webhook/render-complete (same X-Signature HMAC-SHA256
 #                           scheme as verifyShopifyWebhookHmac, over the raw body).
+#                           Also reused (both vars) by engineAi4BharatTts — the STANDBY text-to-speech
+#                           provider for voice-to-voice replies, calling the same render pipeline's
+#                           POST /synthesize-voice-reply. Sarvam (SARVAM_API_KEY, above) stays PRIMARY;
+#                           this only matters when Sarvam's call already failed. See SETUP.md
+#                           "Voice-to-voice replies" and render-pipeline/README.md's "AI4Bharat TTS
+#                           standby" section.
 #   MYMEMORY_EMAIL          optional — a contact email appended to every MyMemory Translation API
 #                           call (auto-translate captions, handleMarketingTranslateCaptions).
 #                           MyMemory needs no API key/signup at all; adding an email via this var

@@ -40,6 +40,14 @@ FROM node:20-bookworm-slim
 # meaningfully heavier than faster-whisper's ~150-200MB, but far short of the 5GB+ CUDA-default
 # install, and nowhere near whisperX's install-breaking dependency chain that this whole
 # self-hosted-transcription effort started by trying (and failing) to use.
+#
+# soundfile + parler-tts (git install — not published to PyPI under a stable package name, this is
+# the project's own documented install method) — AI4Bharat's Indic Parler-TTS
+# (tts/synthesize_ai4bharat.py, gated behind AI4BHARAT_TTS_ENABLED — see lib/ai4bharatTts.js). This
+# is a STANDBY text-to-speech provider for the WhatsApp voice-to-voice reply feature; Sarvam AI
+# stays the PRIMARY provider (called directly from the Worker, unaffected by this). Reuses the same
+# torch/transformers already installed above for the ASR model — no additional heavy dependency,
+# just this one extra package plus soundfile for WAV writing.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-liberation fonts-noto-core ca-certificates curl espeak-ng python3 python3-pip \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
@@ -48,7 +56,8 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && pip3 install --no-cache-dir --break-system-packages faster-whisper \
   && pip3 install --no-cache-dir --break-system-packages --index-url https://download.pytorch.org/whl/cpu torch torchaudio \
-  && pip3 install --no-cache-dir --break-system-packages transformers
+  && pip3 install --no-cache-dir --break-system-packages transformers \
+  && pip3 install --no-cache-dir --break-system-packages soundfile git+https://github.com/huggingface/parler-tts.git
 
 # Pre-downloads both transcription models AT BUILD TIME instead of lazily on the first real
 # request — a real production failure (not hypothetical): the first live transcription with either
@@ -83,6 +92,18 @@ RUN if [ -n "$HF_TOKEN" ]; then \
       python3 -c "from transformers import AutoModel; AutoModel.from_pretrained('ai4bharat/indic-conformer-600m-multilingual', trust_remote_code=True); print('AI4Bharat model cached')"; \
     else \
       echo "HF_TOKEN not set — skipping AI4Bharat model pre-download (AI4BHARAT_ENABLED will fail at runtime with a real GatedRepoError until HF_TOKEN is set and this is rebuilt)."; \
+    fi
+
+# ai4bharat/indic-parler-tts — the STANDBY TTS model (AI4BHARAT_TTS_ENABLED, see
+# lib/ai4bharatTts.js). Unlike indic-conformer above, this repo's gating status was NOT confirmed
+# (no network access to huggingface.co in the dev sandbox this was built in) — attempted
+# unconditionally with HF_TOKEN when set (harmless if the repo turns out to be ungated; a token
+# doesn't hurt a public repo download), same graceful-skip-with-a-clear-message behavior as above
+# if HF_TOKEN isn't set, rather than failing the whole build over a feature that's opt-in anyway.
+RUN if [ -n "$HF_TOKEN" ]; then \
+      python3 -c "from parler_tts import ParlerTTSForConditionalGeneration; from transformers import AutoTokenizer; m=ParlerTTSForConditionalGeneration.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained(m.config.text_encoder._name_or_path); print('AI4Bharat TTS model cached')"; \
+    else \
+      echo "HF_TOKEN not set — skipping AI4Bharat TTS model pre-download (AI4BHARAT_TTS_ENABLED will hit a slow cold-start download, and fail outright if the repo turns out to be gated, until HF_TOKEN is set and this is rebuilt)."; \
     fi
 
 WORKDIR /app

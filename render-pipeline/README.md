@@ -157,6 +157,57 @@ wrong guess degrades to less-precise caption timing, it doesn't break transcript
 `approximate:true`, the real response shape differs from every candidate tried here — paste a raw
 Sarvam response and the parser can be corrected in one place (`parseSarvamWords`).
 
+## AI4Bharat TTS standby for WhatsApp voice-to-voice replies (`AI4BHARAT_TTS_ENABLED`, `tts/synthesize_ai4bharat.py`, `lib/ai4bharatTts.js`)
+
+Not part of Marketing Studio — this is a STANDBY provider for a different feature entirely: the
+WhatsApp voice-to-voice customer reply pipeline in `cloudflare-worker/worker.js`
+(`engineDeliverReply`/Voice Follow-ups) and its ported copy in `backend/recovery.js`'s automated
+recovery ladder. **Sarvam AI stays the PRIMARY TTS provider everywhere, unchanged** — both call
+sites are wired through a small `engineTtsWithFallback`/`ttsWithFallback` helper that tries Sarvam
+first and only reaches for this endpoint when Sarvam's own call already failed or `SARVAM_API_KEY`
+isn't configured, so a customer still gets a real voice-note reply instead of silently downgrading
+straight to text.
+
+Opt-in (`AI4BHARAT_TTS_ENABLED`, off by default), exposed as `POST /synthesize-voice-reply`
+(synchronous, HMAC-signed same as `/transcribe`/`/synthesize-voiceover`) — takes `{text, language}`
+and returns raw `audio/ogg` bytes (16kHz, Opus), matching `engineSarvamTts`'s own
+`output_audio_codec:'opus'`/`speech_sample_rate:16000` contract exactly, so nothing on the calling
+side needs to know which provider produced the audio.
+
+Uses `ai4bharat/indic-parler-tts` (Indic Parler-TTS), reusing the same
+`torch`+`transformers` install already needed for AI4Bharat's ASR model above, plus one extra
+package (`parler-tts`, git-installed — not published to PyPI under a stable name — and
+`soundfile`). Scoped to the same 10 Indic languages + English this app already maps for AI4Bharat
+elsewhere (`AI4BHARAT_TTS_LANGS`), not Indic Parler-TTS's full ~21-language coverage.
+
+**What's honestly unverified** (no network access to huggingface.co and no machine large enough to
+load this model were available in the dev sandbox this was built in — same limitation noted
+throughout this file): the model's documented usage pattern (`ParlerTTSForConditionalGeneration` +
+a separate description-text tokenizer + a prompt-text tokenizer) is confirmed from the model's own
+card, not from a live call. Two specific things may need correction after a real deploy: (1) the
+per-language "description" prompt phrasing — a generic English description naming the target
+language is used rather than a named-speaker prompt, since specific recommended speaker names per
+language couldn't be confirmed without live docs access (see `tts/synthesize_ai4bharat.py`'s header
+comment); (2) this repo's Hugging Face gating status — unlike `indic-conformer-600m-multilingual`
+above (confirmed gated), whether `indic-parler-tts` is gated wasn't confirmed either way, so the
+Dockerfile's pre-download step attempts it with `HF_TOKEN` when set but doesn't treat a missing
+token as a hard blocker.
+
+**Real, honest cost, beyond the model risk above**: this is a self-hosted PyTorch model called over
+HTTP from another server (the Worker or `recovery.js`), not a fast managed API — expect real added
+latency (seconds, possibly tens of seconds on CPU, no GPU configured here) on top of whatever
+Sarvam's own failed attempt already cost, and it competes for CPU with this same server's ffmpeg
+render jobs (see "Single-instance by design" in Known limitations). This is a "customer still gets
+a voice note instead of falling back to text" standby, not a low-latency guarantee — test with
+real audio and a real client before relying on it in production.
+
+**Wiring on the other two services** (not part of this directory, listed here for the full
+picture): `cloudflare-worker/worker.js` reuses its existing `MARKETING_RENDER_WEBHOOK_URL`/
+`_SECRET` Worker secrets to reach this endpoint (no new Worker secret needed) via
+`engineAi4BharatTts`; `backend/recovery.js` needs its own copies of those two values as env vars
+(`backend/.env.example`, `backend/docker-compose.yml`) since it's a separate deployment with no
+access to the Worker's secrets, same reasoning as its existing ported `SARVAM_API_KEY`.
+
 ## Text behind subject (beta)
 
 The popular short-form effect where a caption appears to sit behind the person on screen, as if

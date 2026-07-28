@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import fetch from 'node-fetch';
+import crypto from 'node:crypto';
 
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Standalone recovery/win-back engine. Runs entirely separately from the n8n
@@ -31,6 +32,13 @@ const AI_TIMEOUT_MS   = 10000;
 // since this is a separate Node process with no access to that Worker's own secrets/helpers. One
 // shared key for all clients, same pattern as NOCODB_TOKEN above — not per-client.
 const SARVAM_API_KEY  = process.env.SARVAM_API_KEY  || '';
+// STANDBY for the same feature — self-hosted AI4Bharat TTS running on the Marketing Studio render
+// pipeline (see cloudflare-worker/worker.js's engineAi4BharatTts / engineTtsWithFallback for the
+// same fallback wired into the live-reply and manual-send paths). Sarvam stays PRIMARY here too;
+// this is only reached when sarvamTts() above already returned null. Both vars must be set (same
+// render-pipeline service the Worker already calls) or this standby is silently skipped.
+const RENDER_WEBHOOK_URL    = process.env.MARKETING_RENDER_WEBHOOK_URL    || '';
+const RENDER_WEBHOOK_SECRET = process.env.MARKETING_RENDER_WEBHOOK_SECRET || '';
 
 const TERMINAL_STAGES = new Set(['Converted', 'Lost', 'Closed', 'Opt Out']);
 
@@ -267,12 +275,13 @@ async function sendTemplateMessage(client, convId, templateName, leadName) {
   return r.json();
 }
 
-// ── VOICE FOLLOW-UPS (Sarvam AI TTS) ──────────────────────────────────────────
-// Ported from engineSarvamTts/ENGINE_TTS_LANG_MAP/ENGINE_TTS_SPEAKER/engineExtractLinkPriceCaption
-// in cloudflare-worker/worker.js — keep these in sync if the Worker's copy changes (speaker name,
-// codec, sample rate). Template messages (sendTemplateMessage above) never go through here — voice
-// notes aren't a WhatsApp template content type, so a lead outside the 24h session window always
-// gets its approved text template regardless of this toggle.
+// ── VOICE FOLLOW-UPS (Sarvam AI TTS, primary; AI4Bharat standby) ─────────────
+// Ported from engineSarvamTts/engineAi4BharatTts/engineTtsWithFallback/ENGINE_TTS_LANG_MAP/
+// ENGINE_TTS_SPEAKER/engineExtractLinkPriceCaption in cloudflare-worker/worker.js — keep these in
+// sync if the Worker's copies change (speaker name, codec, sample rate, provider order). Template
+// messages (sendTemplateMessage above) never go through here — voice notes aren't a WhatsApp
+// template content type, so a lead outside the 24h session window always gets its approved text
+// template regardless of this toggle.
 const TTS_LANG_MAP = { en: 'en-IN', ml: 'ml-IN', hi: 'hi-IN', ta: 'ta-IN', te: 'te-IN', kn: 'kn-IN', bn: 'bn-IN', gu: 'gu-IN', mr: 'mr-IN', pa: 'pa-IN', or: 'od-IN' };
 const TTS_SPEAKER = 'anushka'; // bulbul:v2's default female voice — see worker.js's ENGINE_TTS_SPEAKER comment
 
@@ -305,15 +314,59 @@ async function sarvamTts(text, targetLangCode) {
   }
 }
 
+// Ported from worker.js's AI4BHARAT_TTS_LANGS/engineAi4BharatTts — same scope (the languages this
+// app already maps for AI4Bharat elsewhere), same plain-ISO-639-1 keying (vs. TTS_LANG_MAP's
+// BCP-47 values above, which is Sarvam-specific).
+const AI4BHARAT_TTS_LANGS = new Set(['hi', 'bn', 'kn', 'ml', 'mr', 'or', 'pa', 'ta', 'te', 'gu', 'en']);
+
+function hmacSignBase64(secret, body) {
+  return crypto.createHmac('sha256', secret).update(body).digest('base64');
+}
+
+// STANDBY text-to-speech — self-hosted AI4Bharat Indic Parler-TTS on the Marketing Studio render
+// pipeline server, reached over the same signed-HTTP contract worker.js's engineAi4BharatTts uses.
+// Sarvam (sarvamTts above) stays PRIMARY; this only runs when that call already returned null. See
+// render-pipeline/lib/ai4bharatTts.js / tts/synthesize_ai4bharat.py for what is and isn't verified
+// about the model itself, and cloudflare-worker/worker.js's engineAi4BharatTts for the identical
+// Worker-side integration this mirrors. Real, honest cost: a self-hosted PyTorch model call over
+// HTTP to another server — expect real added latency (seconds, possibly tens of seconds on CPU).
+async function ai4BharatTts(text, isoLangCode) {
+  if (!RENDER_WEBHOOK_URL || !RENDER_WEBHOOK_SECRET || !text || !isoLangCode) return null;
+  if (!AI4BHARAT_TTS_LANGS.has(isoLangCode)) return null;
+  try {
+    const reqBody = JSON.stringify({ text: text.slice(0, 500), language: isoLangCode });
+    const sig = hmacSignBase64(RENDER_WEBHOOK_SECRET, reqBody);
+    const endpoint = `${new URL(RENDER_WEBHOOK_URL).origin}/synthesize-voice-reply`;
+    const r = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Signature': sig }, body: reqBody });
+    if (!r.ok) { console.warn(`  [ai4BharatTts] HTTP ${r.status}`); return null; }
+    const buf = Buffer.from(await r.arrayBuffer());
+    return buf.length >= 200 ? buf : null; // same "suspiciously small = failure" guard as sarvamTts
+  } catch (e) {
+    console.warn(`  [ai4BharatTts] threw: ${e.message}`);
+    return null;
+  }
+}
+
+// Tries Sarvam (PRIMARY) then the AI4Bharat standby — the same two-provider fallback as worker.js's
+// engineTtsWithFallback, ported here since this process has no access to that Worker-side helper.
+async function ttsWithFallback(text, isoLangCode) {
+  const bcp47 = TTS_LANG_MAP[isoLangCode];
+  if (bcp47) {
+    const sarvamBuf = await sarvamTts(text, bcp47);
+    if (sarvamBuf) return sarvamBuf;
+  }
+  return ai4BharatTts(text, isoLangCode);
+}
+
 // Returns true on a successful voice send, false on any failure (caller falls back to
 // sendPlainMessage's normal text send) — never throws, since a voice hiccup should never cost a
 // lead their follow-up entirely. leadLanguage (lead.Language, stamped by the live bot engine on
 // every inbound message) takes priority over the client's static default — a follow-up should
 // speak back in whatever language the customer was actually last using.
 async function sendVoiceMessage(client, convId, text, leadLanguage) {
-  const bcp47 = TTS_LANG_MAP[(leadLanguage || client.language || 'en').toLowerCase()];
-  if (!bcp47) return false; // Sarvam TTS is Indic-language-focused, same scope limit as the live-reply pipeline
-  const audioBuf = await sarvamTts(text, bcp47);
+  const isoLangCode = (leadLanguage || client.language || 'en').toLowerCase();
+  if (!TTS_LANG_MAP[isoLangCode] && !AI4BHARAT_TTS_LANGS.has(isoLangCode)) return false; // unsupported by either provider, same scope limit as the live-reply pipeline
+  const audioBuf = await ttsWithFallback(text, isoLangCode);
   if (!audioBuf) return false;
   try {
     const fd = new FormData();

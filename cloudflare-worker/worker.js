@@ -1696,7 +1696,7 @@ async function handleBroadcastFollowupSend(request, env){
   if(c.voice_followup_enabled==='Yes'){
     const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
     if(bcp47){
-      const audioBuf=await engineSarvamTts(env, text, bcp47);
+      const audioBuf=await engineTtsWithFallback(env, text, (lead.Language||c.language||'en'));
       if(audioBuf){
         const vfd=new FormData();
         vfd.append('content', engineExtractLinkPriceCaption(text));
@@ -6754,6 +6754,77 @@ async function engineSarvamTts(env, text, targetLangCode){
   }
 }
 
+// Same scope as this app's other AI4Bharat integration (render-pipeline/lib/ai4bharatTranscribe.js's
+// AI4BHARAT_LANGS / render-pipeline/lib/ai4bharatTts.js's AI4BHARAT_TTS_LANGS) — the languages this
+// app already has an AI4Bharat mapping for elsewhere, not Indic Parler-TTS's full ~21-language
+// coverage. Keyed by plain ISO 639-1 (this app's own convention), unlike ENGINE_TTS_LANG_MAP's
+// BCP-47 values — the two providers need different formats, handled in engineTtsWithFallback below.
+const AI4BHARAT_TTS_LANGS=new Set(['hi','bn','kn','ml','mr','or','pa','ta','te','gu','en']);
+
+// STANDBY text-to-speech provider — self-hosted AI4Bharat Indic Parler-TTS, running on the same
+// render-pipeline server that already hosts AI4Bharat's self-hosted ASR model (see
+// render-pipeline/lib/ai4bharatTts.js / render-pipeline/tts/synthesize_ai4bharat.py for what is and
+// isn't verified about the model itself — no live test was possible without a real deploy). Sarvam
+// AI (engineSarvamTts above) stays the PRIMARY TTS provider everywhere — this only exists to be
+// called from engineTtsWithFallback below when Sarvam's call already failed or SARVAM_API_KEY isn't
+// configured, so a customer still gets a real voice-note reply instead of silently downgrading
+// straight to text. Requires the render pipeline configured (MARKETING_RENDER_WEBHOOK_URL/_SECRET —
+// the same Marketing Studio render service this Worker already calls for transcription/scene
+// detection, reused rather than standing up a second service) AND AI4BHARAT_TTS_ENABLED set on that
+// service. Missing either is the expected/unconfigured case (silent null, no ops report), same
+// convention as engineSarvamTts's own missing-SARVAM_API_KEY case — this feature simply isn't set
+// up yet for this environment, not a bug.
+// Real, honest cost: this calls a self-hosted PyTorch model over HTTP on another server, not a fast
+// managed API — expect real added latency (seconds, possibly tens of seconds on CPU) on top of
+// whatever Sarvam's own failed attempt already cost. Acceptable for "customer still gets voice
+// instead of instantly falling back to text", not tuned for low latency.
+async function engineAi4BharatTts(env, text, isoLangCode){
+  if(!text || !isoLangCode) return null;
+  if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
+  if(!AI4BHARAT_TTS_LANGS.has(isoLangCode)) return null;
+  try{
+    const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
+    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
+    const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-voice-reply`;
+    const r=await engineFetchWithRetry(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      // A 503 here just means AI4BHARAT_TTS_ENABLED isn't set on the render pipeline — expected/
+      // unconfigured, not worth an ops alert, same as SARVAM_API_KEY missing above.
+      if(r.status!==503) await reportOpsError(env, 'engineAi4BharatTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      return null;
+    }
+    const buf=await r.arrayBuffer();
+    // Same "suspiciously small = failure" guard as engineSarvamTts.
+    if(buf.byteLength<200){
+      await reportOpsError(env, 'engineAi4BharatTts — returned audio suspiciously small, treating as failure', new Error(`${buf.byteLength} bytes`), {isoLangCode});
+      return null;
+    }
+    return buf;
+  }catch(e){
+    await reportOpsError(env, 'engineAi4BharatTts — request threw', e, {isoLangCode});
+    return null;
+  }
+}
+
+// Single entry point every voice-reply call site should use instead of calling engineSarvamTts
+// directly — tries Sarvam (PRIMARY) first, and only reaches for the self-hosted AI4Bharat standby
+// (engineAi4BharatTts above) when Sarvam's own call returns null (missing key, unsupported
+// language, transient failure, whatever). Takes the plain ISO 639-1 langCode (this app's own
+// convention, e.g. lead.Language/CLIENTS.language) rather than Sarvam's BCP-47 code — the two
+// providers need different formats internally, and this is the one place that difference is
+// handled, so callers don't need to know about it. Returns null (caller falls back to text) only
+// if BOTH providers fail or aren't configured.
+async function engineTtsWithFallback(env, text, langCode){
+  const iso=(langCode||'').toLowerCase();
+  const bcp47=ENGINE_TTS_LANG_MAP[iso];
+  if(bcp47){
+    const sarvamBuf=await engineSarvamTts(env, text, bcp47);
+    if(sarvamBuf) return sarvamBuf;
+  }
+  return engineAi4BharatTts(env, text, iso);
+}
+
 // Rewrites an already-composed reply into a short, natural, spoken sentence — never the literal
 // reply text, which may be a multi-sentence FAQ answer full of links/prices unsuitable to read
 // aloud. Same shared Gemini credential as the intent classifier/transcriber. Explicitly told to
@@ -6809,7 +6880,7 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // comment in dashboard.html), so a client controls this purely by flipping the toggle on or off.
   if(mediaType==='voice' && c.voice_reply_enabled==='Yes' && !imageUrl && bcp47){
     const spokenText=await engineBuildSpokenReply(env, c, trimmed, langCode);
-    const audioBuf=await engineSarvamTts(env, spokenText, bcp47);
+    const audioBuf=await engineTtsWithFallback(env, spokenText, langCode);
     if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
   }
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
