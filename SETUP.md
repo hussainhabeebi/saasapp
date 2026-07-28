@@ -2125,8 +2125,39 @@ automated systems: the classic `followup_messages` sequence (`Follow up 1/2/3` f
 sequence only**; the recovery ladder is shown read-only since it's a separate automation with its
 own escalation timing that a one-off manual send would desync. New Worker route: `POST
 /broadcast/followup-send` (`{lead_id}`) — sends the next unconfigured classic step via Chatwoot
-and marks the corresponding `Follow up N` field, reusing the same message templates the automated
-`followup-template.json` workflow already uses.
+and marks the corresponding `Follow up N` field. Shares its actual send logic with the automated
+cron below it (`sendClassicFollowupStep`) rather than a copy of it.
+
+### Automated classic follow-up sends — migrated off n8n into a native Worker cron
+The classic sequence's *automatic* sends (no rep click needed) used to exist only as an external
+n8n workflow (`followup-template.json`, a separate repo out of this codebase's scope) that read
+`followup_messages` straight off the Clients table with **zero awareness of the Follow-up Engine's
+A/B variants** — so a client's carefully-configured variant content only ever reached the manual
+"Send Next Now" button above, never the actual scheduled sends most follow-ups go out through.
+`runClassicFollowupsForAllClients` (`cloudflare-worker/worker.js`) replaces that workflow natively:
+- Runs on the existing `*/15 * * * *` Worker tick (alongside Automations & Flow/`sweepReviewRequests`
+  — see `scheduled()`), not the daily one, since `followup_hours` is commonly sub-daily (e.g.
+  `"6,24,48"`). Scans `CLIENTS`, skipping any client with `followup_count<=0` or no Chatwoot
+  connection, so a client who never configured the classic sequence is never touched.
+- `followup_hours` is read as **cumulative hours-of-silence-since-`LastMsgAt`** thresholds — step N
+  fires once a lead has been silent for at least `hours[N-1]` — the same "single fixed anchor,
+  elapsed-time-to-step lookup" model `pipelineFollowupTargetStep`'s own cadence already uses in
+  this file, rather than chaining each step off the previous step's send time.
+- Skips terminal-stage (`PIPELINE_TERMINAL_STAGES` — the same "won-ish"/"closed-ish" set the
+  Advanced Pipeline cadence uses), opted-out, and human-handover leads, same guards as everywhere
+  else follow-ups get sent automatically.
+- Both this cron and the manual "Send Next Now" route now call the same
+  `sendClassicFollowupStep(env, c, lead, nextIdx, tmpl)` — which itself calls `pickFollowupVariant`
+  first — so the Follow-up Engine's A/B content is the primary content for a classic follow-up
+  **everywhere it can go out**, not just when a rep clicks a button.
+
+**Required manual step**: if the old n8n `followup-template.json` workflow is still active for any
+client, **deactivate it** now that this Worker sends the classic sequence natively. Leaving both
+running won't double-send the exact same step (both check the same `Follow up N` flag before
+sending), but n8n's copy still has no idea the Follow-up Engine exists — if its tick happens to
+win the race for a given step, that occurrence goes out with the plain fallback text instead of the
+configured A/B variant, which is exactly the gap this migration closes. There's no way to disable
+the n8n workflow from this repo — it has to be turned off in n8n itself.
 
 **New tab: 💪 Follow-up Engine** — makes the classic follow-up sequence's messages themselves
 stronger, without changing *when* a step fires (`followup_count`/`followup_hours` in Settings
