@@ -540,6 +540,7 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .theme-healthcare{--bg:#EFFCFF;--accent:#0891B2;--accent-ink:#0E7490;--accent-soft:#CFFAFE;--line:#A5F3FC;--ls:#67E8F9}
 .theme-education{--bg:#F4F1FF;--accent:#7C3AED;--accent-ink:#6D28D9;--accent-soft:#EDE9FE;--line:#DDD6FE;--ls:#C4B5FD}
 .theme-automotive{--bg:#FFF4F4;--accent:#DC2626;--accent-ink:#B91C1C;--accent-soft:#FEE2E2;--line:#FECACA;--ls:#FCA5A5}
+.theme-saas_digital_marketing{--bg:#F5F5FF;--accent:#4F46E5;--accent-ink:#4338CA;--accent-soft:#E0E7FF;--line:#C7D2FE;--ls:#A5B4FC}
 
 /* ── TRAVEL MODULE ── */
 .travel-hero{background:linear-gradient(135deg,#0369A1,#0EA5E9);border-radius:var(--r);padding:22px;color:#fff;margin-bottom:16px;position:relative;overflow:hidden;box-shadow:var(--shadow-md)}
@@ -1019,6 +1020,8 @@ const INDUSTRIES = {
     extraFields:['Brand','Country'] },
   hospitality: { label:'Hospitality (Houseboats/Hotels/Stays)', booked:'Stays Booked', active:'Active Inquiries', tags:['Hot Lead','Dates Confirmed','No Answer','Price Query','Not Interested'],
     theme:{accent:'#EA580C',accentInk:'#C2410C',accentSoft:'#FFEDD5',bg:'#FFF7ED',line:'#FED7AA'} },
+  saas_digital_marketing: { label:'SaaS / Digital Marketing', booked:'Deals Closed', active:'Active Prospects', tags:['Trial Started','Demo Booked','Pricing Sent','Decision Maker','Budget Confirmed','Competitor','Not Interested'],
+    theme:{accent:'#4F46E5',accentInk:'#4338CA',accentSoft:'#E0E7FF',bg:'#F5F5FF',line:'#C7D2FE'} },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
