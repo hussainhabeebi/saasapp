@@ -12140,10 +12140,36 @@ async function renderReportsWhatsapp(){
 
 /* ── Shopify — needs Shopify connected (Settings → Integrations); if not, points there instead of
    rendering an empty report. */
+// Purely additive to the existing (unchanged) Top Products card — renders one extra card per
+// non-fashion style present in style_breakdown (Cosmetics/Haircare/General), each with its own
+// attribute tables (e.g. Cosmetics → By Shade / By Skin Type). Fashion & Garments products have
+// no entry in style_breakdown at all, so this renders nothing for them — Top Products (title-only)
+// stays their only breakdown, exactly as before this feature.
+function ecomStyleBreakdownCards(sb, fmt){
+  if(!sb) return '';
+  fmt = fmt || (n => n.toLocaleString());
+  const groups=[
+    {style:'cosmetics', title:'Cosmetics Breakdown', buckets:[['by_shade','Shade'],['by_skin_type','Skin Type']]},
+    {style:'haircare', title:'Haircare Breakdown', buckets:[['by_hair_type','Hair Type'],['by_concern','Concern']]},
+    {style:'general', title:'General Breakdown', buckets:[['by_brand','Brand'],['by_variant','Variant']]},
+  ];
+  return groups.map(g=>{
+    const data=sb[g.style];
+    if(!data) return '';
+    const tables=g.buckets.map(([key,label])=>{
+      const rows=data[key]||[];
+      if(!rows.length) return '';
+      return `<div style="margin-bottom:10px"><div class="s-note" style="margin-bottom:4px">By ${esc(label)}</div><div style="overflow-x:auto"><table class="leads-tbl" style="width:100%"><thead><tr><th>${esc(label)}</th><th>Quantity</th><th>Revenue</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.key)}</td><td>${r.quantity}</td><td>${r.revenue?fmt(r.revenue):'—'}</td></tr>`).join('')}</tbody></table></div></div>`;
+    }).join('');
+    if(!tables) return '';
+    return `<div class="card" style="margin-bottom:14px"><div class="s-head" style="margin-bottom:8px">${esc(g.title)}</div>${tables}</div>`;
+  }).join('');
+}
+
 async function renderReportsShopify(){
   const el=$id('reportsContent');
   el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
-  let d={has_orders_table:false, shopify_connected:false, months:[], order_count:0, total_revenue:0, aov:0, top_products:[], total_checkouts:0, completed_checkouts:0, abandonment_rate:0};
+  let d={has_orders_table:false, shopify_connected:false, months:[], order_count:0, total_revenue:0, aov:0, top_products:[], style_breakdown:{}, total_checkouts:0, completed_checkouts:0, abandonment_rate:0};
   try{ d=await (await fetch(`${CONFIG.WORKER_BASE}/shopify/analytics`,{headers:ncAuthHeaders()})).json(); }catch(e){}
 
   // Covers every order source landing in the Ecommerce module's orders table — Shopify-synced,
@@ -12168,10 +12194,11 @@ async function renderReportsShopify(){
       <div class="s-head" style="margin-bottom:8px">Revenue Trend</div>
       ${d.months.length?d.months.map(m=>`<div class="bar-row"><div style="min-width:60px;font-size:11px">${esc(m.key)}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(m.revenue/maxMonth*100)}%"></div></div><div class="bar-val">${fmtMoney(m.revenue)} <span style="color:var(--muted);font-weight:400">(${m.orders})</span></div></div>`).join(''):'<div style="color:var(--muted);font-size:12px">No orders in this window yet.</div>'}
     </div>
-    <div class="card">
+    <div class="card" style="margin-bottom:14px">
       <div class="s-head" style="margin-bottom:8px">Top Products <span style="font-weight:400;color:var(--muted);font-size:11px">(orders with no per-line price on record only count toward quantity, not revenue)</span></div>
       ${d.top_products.length?`<div style="overflow-x:auto"><table class="leads-tbl" style="width:100%"><thead><tr><th>Product</th><th>Quantity</th><th>Revenue</th></tr></thead><tbody>${d.top_products.map(p=>`<tr><td>${esc(p.title)}</td><td>${p.quantity}</td><td>${p.revenue?fmtMoney(p.revenue):'—'}</td></tr>`).join('')}</tbody></table></div>`:'<div style="color:var(--muted);font-size:12px">No product data yet.</div>'}
-    </div>`;
+    </div>
+    ${ecomStyleBreakdownCards(d.style_breakdown, fmtMoney)}`;
 }
 
 /* ── Product & Service Performance — Appointments' services (booked/confirmed only) + Shopify's
@@ -12180,7 +12207,7 @@ async function renderReportsShopify(){
 async function renderReportsProduct(){
   const el=$id('reportsContent');
   el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
-  let d={services:[], top_products:[], has_orders_table:false};
+  let d={services:[], top_products:[], style_breakdown:{}, has_orders_table:false};
   try{ d=await (await fetch(`${CONFIG.WORKER_BASE}/reports/products`,{headers:ncAuthHeaders()})).json(); }catch(e){}
 
   if(!d.services.length && !d.top_products.length){
@@ -12195,12 +12222,13 @@ async function renderReportsProduct(){
       ${d.services.map(s=>`<tr><td>${esc(s.name)}</td><td>${s.bookings}</td><td>${s.booked}</td><td>${s.revenue?esc(s.currency)+' '+s.revenue.toLocaleString():'—'}</td></tr>`).join('')}
       </tbody></table></div>
     </div>`:''}
-    ${d.top_products.length?`<div class="card">
+    ${d.top_products.length?`<div class="card" style="margin-bottom:14px">
       <div class="s-head" style="margin-bottom:8px">Top Products (Ecommerce)</div>
       <div style="overflow-x:auto"><table class="leads-tbl" style="width:100%"><thead><tr><th>Product</th><th>Quantity</th><th>Revenue</th></tr></thead><tbody>
       ${d.top_products.map(p=>`<tr><td>${esc(p.title)}</td><td>${p.quantity}</td><td>${p.revenue?p.revenue.toLocaleString():'—'}</td></tr>`).join('')}
       </tbody></table></div>
-    </div>`:''}`;
+    </div>`:''}
+    ${ecomStyleBreakdownCards(d.style_breakdown)}`;
 }
 
 /* ── SEO (Google Search Console) — the one report with an OAuth connect step of its own, same

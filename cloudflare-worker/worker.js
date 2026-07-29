@@ -3436,11 +3436,47 @@ async function handleShopifyAnalytics(request, env){
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   const tableId=await ecomResolveTable(env, payload.cid, 'orders');
-  if(!tableId) return json({has_orders_table:false, shopify_connected:!!c.shopify_shop_domain, months:[], order_count:0, total_revenue:0, aov:0, top_products:[], abandonment_rate:0});
+  if(!tableId) return json({has_orders_table:false, shopify_connected:!!c.shopify_shop_domain, months:[], order_count:0, total_revenue:0, aov:0, top_products:[], style_breakdown:{}, abandonment_rate:0});
 
   const months=6;
   const since=new Date(); since.setMonth(since.getMonth()-(months-1)); since.setDate(1);
   const sinceStr=since.toISOString().slice(0,10);
+
+  // Lookup for the style_breakdown below — line items only carry a title/sku, not a product's
+  // style/attributes, so this joins them back to the product record. Keyed by both sku and
+  // lowercased name since the `items`-text fallback path (non-Shopify orders) has no sku at all.
+  const productByKey={};
+  const productsTableId=await ecomResolveTable(env, payload.cid, 'products');
+  if(productsTableId){
+    try{
+      const ppr=await ncFetch(env, `api/v2/tables/${productsTableId}/records?where=(client_id,eq,${payload.cid})&limit=1000&fields=sku,name,style,shade,skin_type,hair_type,concern,brand,variant`);
+      const ppd=await ppr.json().catch(()=>({}));
+      (ppd?.list||[]).forEach(p=>{
+        if(p.sku) productByKey['sku:'+String(p.sku).toLowerCase()]=p;
+        if(p.name) productByKey['name:'+String(p.name).toLowerCase()]=p;
+      });
+    }catch(e){}
+  }
+  const styleBreakdown={cosmetics:{by_shade:{}, by_skin_type:{}}, haircare:{by_hair_type:{}, by_concern:{}}, general:{by_brand:{}, by_variant:{}}};
+  function bumpStyleBucket(bucket, key, qty, revenue){
+    if(!bucket[key]) bucket[key]={key, quantity:0, revenue:0};
+    bucket[key].quantity+=qty; bucket[key].revenue+=revenue;
+  }
+  // Additive only — fashion_garments/unset-style products never reach any of these branches, so
+  // top_products (below) stays the only breakdown for that style, exactly as before this feature.
+  function addStyleBreakdown(product, qty, revenue){
+    if(!product) return;
+    if(product.style==='cosmetics'){
+      if(product.shade) bumpStyleBucket(styleBreakdown.cosmetics.by_shade, product.shade, qty, revenue);
+      if(product.skin_type) bumpStyleBucket(styleBreakdown.cosmetics.by_skin_type, product.skin_type, qty, revenue);
+    }else if(product.style==='haircare'){
+      if(product.hair_type) bumpStyleBucket(styleBreakdown.haircare.by_hair_type, product.hair_type, qty, revenue);
+      if(product.concern) bumpStyleBucket(styleBreakdown.haircare.by_concern, product.concern, qty, revenue);
+    }else if(product.style==='general'){
+      if(product.brand) bumpStyleBucket(styleBreakdown.general.by_brand, product.brand, qty, revenue);
+      if(product.variant) bumpStyleBucket(styleBreakdown.general.by_variant, product.variant, qty, revenue);
+    }
+  }
 
   let orders=[];
   for(let page=1; page<=10; page++){
@@ -3467,8 +3503,11 @@ async function handleShopifyAnalytics(request, env){
       lineItems.forEach(li=>{
         const title=li.title||'Unknown';
         if(!productTotals[title]) productTotals[title]={title, quantity:0, revenue:0};
-        productTotals[title].quantity+=Number(li.quantity)||0;
-        productTotals[title].revenue+=(Number(li.price)||0)*(Number(li.quantity)||0);
+        const qty=Number(li.quantity)||0, rev=(Number(li.price)||0)*qty;
+        productTotals[title].quantity+=qty;
+        productTotals[title].revenue+=rev;
+        const matched=(li.sku&&productByKey['sku:'+String(li.sku).toLowerCase()])||productByKey['name:'+title.toLowerCase()];
+        addStyleBreakdown(matched, qty, rev);
       });
     }else if(o.items){
       String(o.items).split(',').map(s=>s.trim()).filter(Boolean).forEach(part=>{
@@ -3476,7 +3515,9 @@ async function handleShopifyAnalytics(request, env){
         if(!m) return;
         const title=m[2].trim();
         if(!productTotals[title]) productTotals[title]={title, quantity:0, revenue:0};
-        productTotals[title].quantity+=parseInt(m[1])||0;
+        const qty=parseInt(m[1])||0;
+        productTotals[title].quantity+=qty;
+        addStyleBreakdown(productByKey['name:'+title.toLowerCase()], qty, 0);
       });
     }
   });
@@ -3504,6 +3545,20 @@ async function handleShopifyAnalytics(request, env){
     total_revenue:Math.round(totalRevenue*100)/100,
     aov:orderCount?Math.round((totalRevenue/orderCount)*100)/100:0,
     top_products:Object.values(productTotals).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
+    style_breakdown:{
+      cosmetics:{
+        by_shade:Object.values(styleBreakdown.cosmetics.by_shade).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
+        by_skin_type:Object.values(styleBreakdown.cosmetics.by_skin_type).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
+      },
+      haircare:{
+        by_hair_type:Object.values(styleBreakdown.haircare.by_hair_type).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
+        by_concern:Object.values(styleBreakdown.haircare.by_concern).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
+      },
+      general:{
+        by_brand:Object.values(styleBreakdown.general.by_brand).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
+        by_variant:Object.values(styleBreakdown.general.by_variant).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
+      },
+    },
     total_checkouts:totalCheckouts, completed_checkouts:completedCheckouts,
     abandonment_rate:totalCheckouts?Math.round(((totalCheckouts-completedCheckouts)/totalCheckouts)*1000)/10:0,
   });
@@ -3558,14 +3613,15 @@ async function handleReportsProducts(request, env){
     services.sort((a,b)=>b.revenue-a.revenue||b.bookings-a.bookings);
   }
 
-  let topProducts=[], hasOrdersTable=false;
+  let topProducts=[], hasOrdersTable=false, styleBreakdown={};
   try{
     const ecomData=await (await handleShopifyAnalytics(request, env)).json();
     topProducts=ecomData.top_products||[];
     hasOrdersTable=!!ecomData.has_orders_table;
+    styleBreakdown=ecomData.style_breakdown||{};
   }catch(e){}
 
-  return json({services, top_products:topProducts, has_orders_table:hasOrdersTable});
+  return json({services, top_products:topProducts, style_breakdown:styleBreakdown, has_orders_table:hasOrdersTable});
 }
 
 // ── Leads page: AI Analyst — "Bottlenecks" tab (SETUP.md "Leads page: AI Analyst") ──
@@ -4333,6 +4389,26 @@ async function ecomResolveTable(env, clientId, kind){
   return ids[kind]||ECOM_DEFAULT_TABLE_IDS[kind]||null;
 }
 
+// Auto-creates the product "style" columns (Fashion & Garments stays the implicit default via a
+// blank/unrecognized `style` — every existing product keeps behaving exactly as before this
+// feature) the first time a client's products table is written to. Mirrors ensureFlowStateField/
+// ensureB2bLeadFields above, but memoized per table id (a Set, not a single boolean) since
+// ecomResolveTable returns a different products table per client rather than one shared constant.
+const _ecomStyleFieldsEnsured=new Set();
+const ECOM_STYLE_FIELD_TITLES=['style','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url'];
+async function ensureEcomProductStyleFields(env, tableId){
+  if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    for(const title of ECOM_STYLE_FIELD_TITLES){
+      if(!names.has(title)) await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{title, uidt:'SingleLineText'}});
+    }
+    _ecomStyleFieldsEnsured.add(tableId);
+  }catch(e){ console.error('[ecom] ensureEcomProductStyleFields failed', e.message); }
+}
+
 async function handleEcomClientGet(request, env){
   const url=new URL(request.url);
   const clientId=String(url.searchParams.get('client_id')||'');
@@ -4546,6 +4622,7 @@ async function handleEcomCreate(request, env, kind){
   if(!clientId) return json({error:'client_id required'},400);
   const tableId=await ecomResolveTable(env, clientId, kind);
   if(!tableId) return json({error:kind+' table not configured for this client'},400);
+  if(kind==='products') await ensureEcomProductStyleFields(env, tableId);
   const { client_id, Id, ...fields }=body;
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:{...fields, client_id:clientId}});
   const data=await r.json().catch(()=>({}));
@@ -4559,6 +4636,7 @@ async function handleEcomUpdate(request, env, kind){
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const tableId=await ecomResolveTable(env, clientId, kind);
   if(!tableId) return json({error:kind+' table not configured for this client'},400);
+  if(kind==='products') await ensureEcomProductStyleFields(env, tableId);
   const existingR=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
   const existing=await existingR.json().catch(()=>null);
   if(!existingR.ok || !existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
@@ -5051,13 +5129,20 @@ async function handlePipelineVideoSend(request, env){
 // handleWaSend), and always logs a 'pending' row in the client's ecom orders table — so "order
 // intent" leaves a paper trail even if the WhatsApp send itself fails (e.g. outside the 24h
 // free-form-message window) or the customer never finishes checking out.
-// Shared by handleEcomOrderLink and the KB-payload guidance's server-side equivalents — a client's
-// own external_store_link (Shopify or any other storefront they actually sell through, set in
-// Settings → Order Link) always wins; the built-in Ecommerce module's own storefront link
-// (onshope.com/<slug> or store.html?client=<id>) is only the fallback when it's blank. sku
-// deep-linking only applies to the built-in link — an external URL has no known query-param
-// scheme to append one to, so it's returned as-is.
-function buildOrderLink(c, clientId, sku){
+// Shared by handleEcomOrderLink and the KB-payload guidance's server-side equivalents. Priority:
+// the specific product's own shopify_product_url (if the matched product carries one) wins over
+// everything, since it's the most specific link possible; next, a client's own external_store_link
+// (Shopify or any other storefront they actually sell through, set in Settings → Order Link);
+// the built-in Ecommerce module's own storefront link (onshope.com/<slug> or
+// store.html?client=<id>) is only the fallback when both are blank. sku deep-linking only applies
+// to the built-in link — an external URL has no known query-param scheme to append one to, so it's
+// returned as-is.
+function buildOrderLink(c, clientId, sku, product){
+  // A per-product Shopify product-page URL (set in ecom.html, shown only when Shopify is
+  // connected) wins over everything else — it's the most specific link available, pointing
+  // straight at the real product page rather than a generic storefront/catalog link.
+  const shopifyProductUrl=(product?.shopify_product_url||'').trim();
+  if(shopifyProductUrl) return shopifyProductUrl;
   const ext=(c.external_store_link||'').trim();
   if(ext) return ext;
   const slug=c.client_slug;
@@ -5181,6 +5266,33 @@ async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
 // paragraph reciting sizes/colors nobody asked about, and price was always volunteered even when
 // the customer only asked about availability. This tells the model everything it's allowed to say
 // but leaves *what to actually say* up to what the customer asked.
+// Style-specific attribute lines, shared by engineBuildProductEnquirySystemPrompt (single-product
+// reply) and engineBuildEcomContext (whole-catalog context). `style` defaults to 'fashion_garments'
+// when blank/unrecognized, so every product created before this feature — and any product that
+// simply never had a style picked — keeps relying only on the existing color/size/category lines
+// each caller already builds; nothing here duplicates those.
+function ecomStyleAttributeLines(product){
+  const lines=[];
+  const style=product.style||'fashion_garments';
+  if(style==='cosmetics'){
+    if(product.shade) lines.push(`Shade: ${product.shade}`);
+    if(product.skin_type) lines.push(`Skin type: ${product.skin_type}`);
+    if(product.volume_ml) lines.push(`Volume: ${product.volume_ml}`);
+    if(product.expiry_date) lines.push(`Expiry date: ${product.expiry_date}`);
+    if(product.ingredient) lines.push(`Key ingredient: ${product.ingredient}`);
+  }else if(style==='haircare'){
+    if(product.hair_type) lines.push(`Hair type: ${product.hair_type}`);
+    if(product.concern) lines.push(`Addresses: ${product.concern}`);
+    if(product.volume_ml) lines.push(`Volume: ${product.volume_ml}`);
+    if(product.ingredient) lines.push(`Key ingredient: ${product.ingredient}`);
+  }else if(style==='general'){
+    if(product.brand) lines.push(`Brand: ${product.brand}`);
+    if(product.variant) lines.push(`Variant: ${product.variant}`);
+    if(product.warranty_period) lines.push(`Warranty: ${product.warranty_period}`);
+  }
+  return lines;
+}
+
 function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLink){
   const lang=replyLang||c.language||'en';
   const lines=[`Name: ${product.name}`];
@@ -5188,6 +5300,7 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
   if(product.color) lines.push(`Color: ${product.color}`);
   if(product.size) lines.push(`Size options: ${product.size}`);
   if(product.category) lines.push(`Category: ${product.category}`);
+  lines.push(...ecomStyleAttributeLines(product));
   const stockNum=Number(product.stock);
   lines.push(Number.isFinite(stockNum) && stockNum<=0 ? 'Currently out of stock' : 'In stock');
   // main_prompt goes first, same as engineBuildFaqSystemPrompt/engineBuildObjectionSystemPrompt/
@@ -5242,7 +5355,8 @@ function engineSubstituteOrderLinkPlaceholder(text, c, clientId, sku){
 // the implementation POST /ecom/order-link uses, and as sendOrderLinkViaChatwoot's fallback below.
 async function sendOrderLinkNow(env, c, clientId, phone, name, sku){
   if(!c.wa_phone_id||!c.wa_token) return {error:'WhatsApp phone / token not configured.'};
-  const link=buildOrderLink(c, clientId, sku);
+  const knownProduct=await ecomFindProductBySku(env, clientId, sku);
+  const link=buildOrderLink(c, clientId, sku, knownProduct);
   const {product, text}=await resolveOrderProductAndText(env, c, clientId, name, sku, link);
   const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
     method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
@@ -5260,7 +5374,8 @@ async function sendOrderLinkNow(env, c, clientId, phone, name, sku){
 // instead of this repo hand-building a Graph API payload for a path Chatwoot never learns about.
 async function sendOrderLinkViaChatwoot(env, c, clientId, conversationId, phone, name, sku){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return {error:'Chatwoot is not configured for this account.'};
-  const link=buildOrderLink(c, clientId, sku);
+  const knownProduct=await ecomFindProductBySku(env, clientId, sku);
+  const link=buildOrderLink(c, clientId, sku, knownProduct);
   const {product, text}=await resolveOrderProductAndText(env, c, clientId, name, sku, link);
   const fd=new FormData();
   fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
@@ -6357,12 +6472,15 @@ async function engineBuildEcomContext(env, c, clientId, phone){
   const lines=[];
   const productsTable=await ecomResolveTable(env, clientId, 'products');
   if(productsTable){
-    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=30&fields=name,sku,price,currency,stock,color,size,category`);
+    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=30&fields=name,sku,price,currency,stock,color,size,category,style,shade,skin_type,volume_ml,expiry_date,hair_type,concern,ingredient,brand,variant,warranty_period`);
     const pd=await pr.json().catch(()=>({}));
     const products=pd?.list||[];
     if(products.length){
       lines.push('## Product Catalog (partial — ask if something specific isn\'t listed)');
-      products.forEach(p=>lines.push(`- ${p.name}${p.sku?' [sku:'+p.sku+']':''} — ${p.currency||''} ${p.price??''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.category?' category:'+p.category:''} — ${(p.stock>0)?'in stock':'out of stock'}`));
+      products.forEach(p=>{
+        const extra=ecomStyleAttributeLines(p).join(', ');
+        lines.push(`- ${p.name}${p.sku?' [sku:'+p.sku+']':''} — ${p.currency||''} ${p.price??''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.category?' category:'+p.category:''}${extra?' '+extra:''} — ${(p.stock>0)?'in stock':'out of stock'}`);
+      });
     }
   }
   const ordersTable=await ecomResolveTable(env, clientId, 'orders');
