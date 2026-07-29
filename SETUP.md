@@ -6103,6 +6103,40 @@ Paddle's `Paddle-Signature: ts=…;h1=…` over `${ts}:${rawBody}`; Chargebee do
 default, so its "signature" here is a shared token compared from the webhook URL's `?token=`
 query param against `fp_config.chargebee_webhook_secret`.
 
+### ERPNext automation — beyond the initial invoice/payment push
+Three additions on top of the base `erpnextPushSalesDoc`/`erpnextPushPaymentEntry` bridge, all
+best-effort (a failure here never blocks the billing/reminder logic that triggered it — it's
+logged via `reportOpsError` and the D1-side state stays correct either way):
+
+- **Auto-submit billing-webhook-created documents.** The pre-existing manual Quote/Invoice flow
+  (accounting.html's "Sync" then "Publish" buttons) leaves a synced document as an ERPNext Draft
+  until a human clicks Publish — correct there, since a human is reviewing it. A billing webhook has
+  no human in the loop, so leaving its Sales Invoice/Payment Entry as an unpublished Draft would mean
+  it never actually posts to the client's ledger. `erpnextSubmitDocByName()` (factored out of
+  `handleAccountingDocumentSubmitErpnext`'s own submit logic, so both paths call the identical Frappe
+  sequence) is called automatically right after sync in `saasApplyBillingEvent`'s `payment_succeeded`
+  branch.
+- **Disable/re-enable the ERPNext Customer on churn/reactivation.** `erpnextFindCustomer()` (a
+  search-only sibling of `erpnextResolveCustomer` — never creates) looks up the matching Customer by
+  name when an account's `subscription_cancelled`/`subscription_active` event lands; if found,
+  `erpnextSetCustomerDisabled()` toggles Frappe's own `disabled` flag. A churned account that was
+  never synced to ERPNext has nothing to disable — silently skipped rather than creating a Customer
+  record just to immediately disable it.
+- **Auto-draft a renewal Quotation.** When the 30-day renewal reminder fires (`type==='renewal_30'`
+  in `runSaasRemindersForAllClients`), a Quotation for the account's current plan/price is created in
+  `accounting_documents` and pushed to ERPNext — left as a Draft, **not** auto-submitted, since a
+  quotation is a proposal a human should actually review/adjust before it goes out, unlike the
+  invoice/payment case above which is a completed transaction.
+
+**Deliberately not used: ERPNext's native Subscription/Auto Repeat doctypes.** Frappe has its own
+scheduler that can auto-generate recurring Sales Invoices from a Subscription record — the obvious-
+looking "more automation" move. Not wired up here: this app's own `fp_expected_dues` generation
+(the monthly cron above) and the billing-webhook-driven invoice creation in `saasApplyBillingEvent`
+are both already generating invoices independently: layering ERPNext's own recurring-invoice
+scheduler on top would risk **double-invoicing** the same billing period from two independent
+schedulers with no shared state between them. If ERPNext-native recurring invoicing is wanted later,
+it should *replace* one of the two existing generators, not run alongside both.
+
 ### Usage ingestion
 `POST /saas/usage-event`, `Authorization: Bearer <fp_config.usage_ingest_token>` — call this from
 the client's **own** product backend on real usage events. Feeds the health score and the weekly

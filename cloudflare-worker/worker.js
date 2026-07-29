@@ -8469,6 +8469,20 @@ async function erpnextResolveCustomer(c, leadName, leadPhone, leadEmail){
   if(!createR.ok) throw new Error('Customer — '+erpnextErrorMessage(createData, createR.status));
   return createData?.data?.name;
 }
+// Search-only variant — never creates. Used where an ERPNext side-effect (disabling a Customer on
+// churn) only makes sense if that Customer already exists; a churned account that was never synced
+// to ERPNext in the first place has nothing to disable, so this returns null rather than creating
+// one just to immediately disable it.
+async function erpnextFindCustomer(c, name){
+  if(!name) return null;
+  const filters=encodeURIComponent(JSON.stringify([['customer_name','=',String(name).trim().slice(0,140)]]));
+  const r=await erpnextFetch(c, `/api/resource/Customer?filters=${filters}&limit_page_length=1`);
+  const data=await r.json().catch(()=>({}));
+  return (r.ok && data?.data?.[0]?.name) || null;
+}
+async function erpnextSetCustomerDisabled(c, customerName, disabled){
+  await erpnextFetch(c, `/api/resource/Customer/${encodeURIComponent(customerName)}`, {method:'PUT', body:JSON.stringify({disabled:disabled?1:0})});
+}
 
 // Finds an existing Item by name, or creates a minimal non-stock service item. Same "must exist
 // first" constraint as Customer above — a line item's `item_code` has to reference a real Item.
@@ -8592,6 +8606,18 @@ async function handleAccountingDocumentSyncErpnext(request, env){
 // directly on the resource endpoint, which isn't reliably supported across Frappe versions — not
 // live-verified against a real Frappe Cloud site in this session, same honest caveat as the rest
 // of this ERPNext integration.
+// Raw GET-then-frappe.client.submit sequence, factored out of handleAccountingDocumentSubmitErpnext
+// below so a fully-automated caller (no human clicking "Publish") can reuse the exact same Frappe
+// call shape — e.g. saasApplyBillingEvent's billing-webhook-driven invoices, which have no human in
+// the loop to click Publish and would otherwise sit as unsubmitted Drafts in ERPNext forever.
+async function erpnextSubmitDocByName(c, doctype, docName){
+  const getR=await erpnextFetch(c, `/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(docName)}`);
+  const getData=await getR.json().catch(()=>({}));
+  if(!getR.ok) throw new Error(erpnextErrorMessage(getData, getR.status));
+  const submitR=await erpnextFetch(c, '/api/method/frappe.client.submit', {method:'POST', body:JSON.stringify({doc:JSON.stringify(getData.data)})});
+  const submitData=await submitR.json().catch(()=>({}));
+  if(!submitR.ok) throw new Error(erpnextErrorMessage(submitData, submitR.status));
+}
 async function handleAccountingDocumentSubmitErpnext(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -8604,12 +8630,7 @@ async function handleAccountingDocumentSubmitErpnext(request, env){
   if(!doc.erpnext_doc_name || !doc.erpnext_doctype) return json({error:'Sync this document to ERPNext first.'}, 400);
   if(doc.erpnext_submitted_at) return json({ok:true, already:true});
   try{
-    const getR=await erpnextFetch(c, `/api/resource/${encodeURIComponent(doc.erpnext_doctype)}/${encodeURIComponent(doc.erpnext_doc_name)}`);
-    const getData=await getR.json().catch(()=>({}));
-    if(!getR.ok) throw new Error(erpnextErrorMessage(getData, getR.status));
-    const submitR=await erpnextFetch(c, '/api/method/frappe.client.submit', {method:'POST', body:JSON.stringify({doc:JSON.stringify(getData.data)})});
-    const submitData=await submitR.json().catch(()=>({}));
-    if(!submitR.ok) throw new Error(erpnextErrorMessage(submitData, submitR.status));
+    await erpnextSubmitDocByName(c, doc.erpnext_doctype, doc.erpnext_doc_name);
     const submittedAt=new Date().toISOString();
     await env.DB.prepare(`UPDATE accounting_documents SET erpnext_submitted_at=? WHERE id=?`).bind(submittedAt, doc.id).run();
     return json({ok:true, erpnext_submitted_at:submittedAt});
@@ -9360,10 +9381,29 @@ async function saasApplyBillingEvent(env, clientId, {customerEmail, customerName
   }
 
   if(action==='subscription_active'){
+    const wasChurned=cust.lifecycle_stage==='churned';
     await env.DB.prepare(`UPDATE fp_customers SET status='active', lifecycle_stage=CASE WHEN lifecycle_stage='churned' OR lifecycle_stage IS NULL THEN 'active' ELSE lifecycle_stage END, plan_name=?, monthly_value=? WHERE id=?`)
       .bind(planName||cust.plan_name, amount||cust.monthly_value, cust.id).run();
+    // Re-enable the ERPNext Customer record on reactivation — best-effort, only if one was ever
+    // synced (a brand-new account has nothing to re-enable yet; erpnextPushSalesDoc below will
+    // resolve/create it on the first payment either way).
+    if(wasChurned){
+      const c=await getClientById(env, clientId);
+      if(c && erpnextConfigured(c)){
+        try{ const erpCust=await erpnextFindCustomer(c, cust.name); if(erpCust) await erpnextSetCustomerDisabled(c, erpCust, false); }
+        catch(e){ await reportOpsError(env, 'saasApplyBillingEvent — ERPNext re-enable failed', e, {clientId, customerId:cust.id}); }
+      }
+    }
   }else if(action==='subscription_cancelled'){
     await env.DB.prepare(`UPDATE fp_customers SET status='cancelled', lifecycle_stage='churned' WHERE id=?`).bind(cust.id).run();
+    // Disable (not delete) the matching ERPNext Customer — keeps their own sales/accounting team
+    // from seeing a churned account as active in ERPNext's own UI, without touching the customer's
+    // invoice/payment history there.
+    const c=await getClientById(env, clientId);
+    if(c && erpnextConfigured(c)){
+      try{ const erpCust=await erpnextFindCustomer(c, cust.name); if(erpCust) await erpnextSetCustomerDisabled(c, erpCust, true); }
+      catch(e){ await reportOpsError(env, 'saasApplyBillingEvent — ERPNext disable failed', e, {clientId, customerId:cust.id}); }
+    }
   }else if(action==='payment_succeeded'){
     const periodKey=occurredAt.slice(0,7);
     let due=await env.DB.prepare(`SELECT * FROM fp_expected_dues WHERE customer_id=? AND period_key=?`).bind(cust.id, periodKey).first();
@@ -9393,7 +9433,19 @@ async function saasApplyBillingEvent(env, clientId, {customerEmail, customerName
         if(doc.lead_id){ const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${doc.lead_id}`); if(leadR.ok) lead=await leadR.json().catch(()=>null); }
         const erpName=await erpnextPushSalesDoc(c, 'Sales Invoice', doc, lead);
         await env.DB.prepare(`UPDATE accounting_documents SET erpnext_doctype='Sales Invoice', erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_synced_at=? WHERE id=?`).bind(erpName||'', now, doc.id).run();
-        await erpnextPushPaymentEntry(c, doc, lead, erpName);
+        const paymentErpName=await erpnextPushPaymentEntry(c, doc, lead, erpName);
+        // Auto-submit — a webhook-driven charge has no human in the loop to click "Publish" the way
+        // the manual Quote/Invoice flow does, so a Draft here would just sit unposted in the
+        // client's ERPNext ledger forever. Best-effort: if either submit fails (e.g. a mandatory
+        // field Frappe requires isn't set), the document still exists as a correct, reviewable Draft
+        // — this only ever upgrades a Draft to Submitted, never blocks the sync itself.
+        try{
+          if(erpName) await erpnextSubmitDocByName(c, 'Sales Invoice', erpName);
+          if(paymentErpName) await erpnextSubmitDocByName(c, 'Payment Entry', paymentErpName);
+          await env.DB.prepare(`UPDATE accounting_documents SET erpnext_submitted_at=? WHERE id=?`).bind(new Date().toISOString(), doc.id).run();
+        }catch(submitErr){
+          await reportOpsError(env, 'saasApplyBillingEvent — ERPNext auto-submit failed (doc still synced as Draft)', submitErr, {clientId, customerId:cust.id, docId:doc.id});
+        }
       }catch(e){
         await reportOpsError(env, 'saasApplyBillingEvent — ERPNext bridge failed', e, {clientId, customerId:cust.id});
       }
@@ -9696,9 +9748,28 @@ async function runSaasRemindersForAllClients(env){
     const now=new Date().toISOString();
     const r=await env.DB.prepare(`INSERT INTO saas_account_reminders (client_id, customer_id, reminder_type, anchor_at, offset_days, created_at) VALUES (?,?,?,?,?,?)`)
       .bind(cust.client_id, cust.id, type, cust.renewal_date, daysOut, now).run();
+    const c=await getClientById(env, cust.client_id);
+    // 30 days out — auto-draft an ERPNext Quotation for the renewal, so the accounting/sales team
+    // has one ready to send without re-typing the plan/price by hand. Left as a Draft (not
+    // auto-submitted, unlike the billing-webhook invoices above) — a quotation is a proposal a
+    // human should actually review/adjust before it goes out, not a completed transaction.
+    if(type==='renewal_30' && c && erpnextConfigured(c)){
+      try{
+        const title=`Renewal — ${cust.plan_name||cust.plan_tier||'Subscription'} — ${cust.renewal_date}`;
+        const lineItemsJson=JSON.stringify([{name:cust.plan_name||cust.plan_tier||'Subscription', qty:1, price:cust.monthly_value||0}]);
+        const docR=await env.DB.prepare(`INSERT INTO accounting_documents (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, notes, doc_created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .bind(cust.client_id, cust.lead_id||null, 'quotation', title, lineItemsJson, cust.currency||'USD', cust.monthly_value||0, 0, 0, cust.monthly_value||0, 'draft', 'Auto-drafted from the 30-day renewal reminder (SaaS Ops)', now).run();
+        const qdoc=await findAccountingDocument(env, docR.meta.last_row_id);
+        let qlead=null;
+        if(qdoc.lead_id){ const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${qdoc.lead_id}`); if(leadR.ok) qlead=await leadR.json().catch(()=>null); }
+        const qErpName=await erpnextPushSalesDoc(c, 'Quotation', qdoc, qlead);
+        await env.DB.prepare(`UPDATE accounting_documents SET erpnext_doctype='Quotation', erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_synced_at=? WHERE id=?`).bind(qErpName||'', now, qdoc.id).run();
+      }catch(e){
+        await reportOpsError(env, 'runSaasRemindersForAllClients — renewal Quotation auto-draft failed', e, {clientId:cust.client_id, customerId:cust.id});
+      }
+    }
     if(!cust.lead_id) continue;
     try{
-      const c=await getClientById(env, cust.client_id);
       const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${cust.lead_id}?fields=ConversationID`);
       const lead=leadR.ok?await leadR.json().catch(()=>null):null;
       const sent=await saasSendChatwootMessage(c, lead?.ConversationID, `Hi ${cust.name}, just a heads up — your ${cust.plan_name||'plan'} renews in ${daysOut} days. Let us know if you'd like to review or change anything before then!`);
