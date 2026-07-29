@@ -1780,6 +1780,7 @@ const TODAY = new Date().toISOString().slice(0,10);
         <button class="hosp-tab" data-reports="whatsapp">💬 WhatsApp</button>
         <button class="hosp-tab" data-reports="shopify">🛍️ Ecommerce</button>
         <button class="hosp-tab" data-reports="product">🧩 Product</button>
+        <button class="hosp-tab" data-reports="saas">📈 SaaS</button>
         <button class="hosp-tab" data-reports="seo">🔍 SEO</button>
       </div>
       <div class="page-pad" id="reportsContent">
@@ -6783,6 +6784,7 @@ function openDetail(id){
   $id('detailCompany').value=lead.CompanyName||'';
   renderDetailReferral(lead);
   renderDetailSignals(lead);
+  renderDetailLinkedAccount(lead);
 
   // reminder badge
   if(lead.ReminderDate){
@@ -7157,6 +7159,47 @@ function renderDetailSignals(lead){
     chips.push(`<span class="tag" style="background:${wait.overdue?'#FEE2E2':'#F1F5F9'};color:${wait.overdue?'#991B1B':'var(--muted)'}">⏱ waiting ${wait.mins}m${wait.overdue?' — SLA breached':''}</span>`);
   }
   $id('detailSignals').innerHTML=chips.join('');
+}
+
+// Linked SaaS Ops account (fp_customers, D1 — see cloudflare-worker/migrations/0025_saas_ops.sql
+// and accounting.html's 💰 Financial Planning → Customers). Cached client-side after first fetch —
+// a supplementary info card, not this panel's primary data source, so it's fine if it doesn't
+// reflect an account created seconds ago until the next full page load, same "best effort" spirit
+// as the rest of this detail panel's secondary signals. Only shown for
+// industry==='saas_digital_marketing'; inserts its own container right after #detailSignals rather
+// than requiring a matching static element in the modal's HTML, since none exists there yet.
+let _saasAccountsCache=null;
+function ensureDetailLinkedAccountEl(){
+  let el=$id('detailLinkedAccount');
+  if(!el){
+    el=document.createElement('div');
+    el.id='detailLinkedAccount';
+    el.className='card';
+    el.style.marginTop='10px';
+    const signals=$id('detailSignals');
+    if(signals?.parentNode) signals.parentNode.insertBefore(el, signals.nextSibling);
+  }
+  return el;
+}
+async function renderDetailLinkedAccount(lead){
+  const el=ensureDetailLinkedAccountEl();
+  if(!el) return;
+  if(clientRecord?.industry!=='saas_digital_marketing'){ el.style.display='none'; return; }
+  if(!_saasAccountsCache){
+    try{ const data=await (await fetch(`${CONFIG.WORKER_BASE}/financial/customers`,{headers:ncAuthHeaders()})).json(); _saasAccountsCache=data.list||[]; }
+    catch(e){ _saasAccountsCache=[]; }
+  }
+  const acct=_saasAccountsCache.find(c=>c.lead_id===lead.Id);
+  if(!acct){ el.style.display='none'; return; }
+  el.style.display='block';
+  el.innerHTML=`<div class="s-head" style="margin-bottom:6px">🚀 Linked Account</div>
+    <div style="font-size:12px;line-height:1.7">
+      <div><strong>${esc(acct.name)}</strong>${acct.company_name?' — '+esc(acct.company_name):''}</div>
+      <div>Plan: ${esc(acct.plan_tier||acct.plan_name||'—')} · ${esc(acct.currency||'')} ${acct.monthly_value||0}/${esc(acct.billing_cycle||'month')}</div>
+      ${acct.lifecycle_stage?`<div>Stage: ${esc(acct.lifecycle_stage)}</div>`:''}
+      ${acct.health_score!=null?`<div>Health: <span style="color:${acct.health_score>=70?'var(--green,#0a7)':acct.health_score>=40?'inherit':'var(--red)'}">${acct.health_score}</span></div>`:''}
+      ${acct.renewal_date?`<div>Renews: ${esc(acct.renewal_date)}</div>`:''}
+    </div>`;
 }
 
 /* ── AI SUMMARY ── */
@@ -11804,7 +11847,7 @@ function renderReportsSubPage(page){
   const fns={
     overview:renderReportsOverview, sales:renderReportsSales, team:renderReportsTeamReport,
     marketing:renderReportsMarketing, whatsapp:renderReportsWhatsapp, shopify:renderReportsShopify,
-    product:renderReportsProduct, seo:renderReportsSeo,
+    product:renderReportsProduct, saas:renderReportsSaas, seo:renderReportsSeo,
   };
   (fns[page]||renderReportsOverview)();
 }
@@ -12232,6 +12275,57 @@ async function renderReportsProduct(){
       </tbody></table></div>
     </div>`:''}
     ${ecomStyleBreakdownCards(d.style_breakdown)}`;
+}
+
+/* ── SaaS (SaaS Ops module, cloudflare-worker/worker.js handleSaasReports — SETUP.md "SaaS Ops
+   module") — MRR/churn, health score distribution, activation funnel, renewal pipeline, expansion
+   candidates. Reads fp_customers/fp_expected_dues/fp_collections (Financial Planning's own D1
+   tables, extended with SaaS columns), not a separate data source. */
+async function renderReportsSaas(){
+  const el=$id('reportsContent');
+  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
+  let d={months:[], mrr:0, active_accounts:0, logo_churn_rate:0, health_distribution:{healthy:0,neutral:0,at_risk:0}, at_risk_accounts:[], renewal_pipeline:[], activation_funnel:[], expansion_candidates:[]};
+  let loadError=false;
+  try{ d=await (await fetch(`${CONFIG.WORKER_BASE}/saas/reports`,{headers:ncAuthHeaders()})).json(); }catch(e){ loadError=true; }
+
+  if(loadError || !d.active_accounts){
+    el.innerHTML='<div class="empty-state"><div class="ei">📈</div>No SaaS account data yet — this fills in once you have accounts in 💰 Accounting → Financial Planning → Customers (added manually, via a "✅ Won" lead, or synced from a connected billing provider).</div>';
+    return;
+  }
+  const maxMonth=Math.max(1,...d.months.map(m=>m.revenue));
+  el.innerHTML=`
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+      <div class="stat accent"><div class="stat-lbl">MRR</div><div class="stat-val">${Math.round(d.mrr).toLocaleString()}</div></div>
+      <div class="stat"><div class="stat-lbl">Active Accounts</div><div class="stat-val">${d.active_accounts}</div></div>
+      <div class="stat"><div class="stat-lbl">Logo Churn</div><div class="stat-val"${d.logo_churn_rate>10?' style="color:var(--red)"':''}>${d.logo_churn_rate}%</div></div>
+      <div class="stat"><div class="stat-lbl">At-Risk Accounts</div><div class="stat-val"${d.health_distribution.at_risk>0?' style="color:var(--red)"':''}>${d.health_distribution.at_risk}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:8px">Revenue Collected — Last 6 Months</div>
+      ${d.months.length?d.months.map(m=>`<div class="bar-row"><div style="min-width:60px;font-size:11px">${esc(m.key)}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(m.revenue/maxMonth*100)}%"></div></div><div class="bar-val">${Math.round(m.revenue).toLocaleString()}</div></div>`).join(''):'<div style="color:var(--muted);font-size:12px">No collections in this window yet.</div>'}
+    </div>
+    <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr;margin-bottom:14px">
+      <div class="card">
+        <div class="s-head" style="margin-bottom:8px">Health Score Distribution</div>
+        <div class="bar-row"><div style="min-width:70px;font-size:11px">Healthy</div><div class="bar-bg"><div class="bar-fill" style="width:${d.active_accounts?Math.round(d.health_distribution.healthy/d.active_accounts*100):0}%;background:var(--green,#0a7)"></div></div><div class="bar-val">${d.health_distribution.healthy}</div></div>
+        <div class="bar-row"><div style="min-width:70px;font-size:11px">Neutral</div><div class="bar-bg"><div class="bar-fill" style="width:${d.active_accounts?Math.round(d.health_distribution.neutral/d.active_accounts*100):0}%"></div></div><div class="bar-val">${d.health_distribution.neutral}</div></div>
+        <div class="bar-row"><div style="min-width:70px;font-size:11px">At Risk</div><div class="bar-bg"><div class="bar-fill" style="width:${d.active_accounts?Math.round(d.health_distribution.at_risk/d.active_accounts*100):0}%;background:var(--red)"></div></div><div class="bar-val">${d.health_distribution.at_risk}</div></div>
+      </div>
+      <div class="card">
+        <div class="s-head" style="margin-bottom:8px">At-Risk Accounts</div>
+        ${d.at_risk_accounts.length?`<table class="leads-tbl" style="width:100%"><thead><tr><th>Account</th><th>Health</th><th>MRR</th></tr></thead><tbody>${d.at_risk_accounts.map(a=>`<tr><td>${esc(a.name)}</td><td style="color:var(--red)">${a.health_score}</td><td>${Math.round(a.mrr||0).toLocaleString()}</td></tr>`).join('')}</tbody></table>`:'<div style="color:var(--muted);font-size:12px">None right now.</div>'}
+      </div>
+    </div>
+    <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+      <div class="card">
+        <div class="s-head" style="margin-bottom:8px">Renewal Pipeline (next 90 days)</div>
+        ${d.renewal_pipeline.length?`<table class="leads-tbl" style="width:100%"><thead><tr><th>Account</th><th>Renews</th><th>Days Out</th></tr></thead><tbody>${d.renewal_pipeline.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.renewal_date)}</td><td>${r.days_out}</td></tr>`).join('')}</tbody></table>`:'<div style="color:var(--muted);font-size:12px">Nothing renewing in the next 90 days.</div>'}
+      </div>
+      <div class="card">
+        <div class="s-head" style="margin-bottom:8px">Activation Funnel</div>
+        ${d.activation_funnel.length?d.activation_funnel.map(f=>`<div class="bar-row"><div style="min-width:120px;font-size:11px">${esc(f.milestone)}</div><div class="bar-bg"><div class="bar-fill" style="width:${d.active_accounts?Math.round(f.completed/d.active_accounts*100):0}%"></div></div><div class="bar-val">${f.completed}</div></div>`).join(''):'<div style="color:var(--muted);font-size:12px">Define activation milestones in 💰 Accounting → 🚀 SaaS Ops → Activation.</div>'}
+      </div>
+    </div>`;
 }
 
 /* ── SEO (Google Search Console) — the one report with an OAuth connect step of its own, same

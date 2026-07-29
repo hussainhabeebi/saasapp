@@ -6349,7 +6349,7 @@ function engineRouteFlow(c, state, userText, cls){
   // 'travel_faq' : 'faq')` — which industry-specific FAQ context (if any) this client's grounded
   // answers should pull in.
   const industry=c.industry||'general';
-  const industryFaqRoute=industry==='ecommerce'?'ecom_faq':(industry==='travel'?'travel_faq':'faq');
+  const industryFaqRoute=industry==='ecommerce'?'ecom_faq':(industry==='travel'?'travel_faq':(industry==='saas_digital_marketing'?'saas_faq':'faq'));
   let effIntent=intent;
   if(state.looping && botConfig.antiloop_enabled!==false) effIntent='WANTS_HUMAN';
 
@@ -6494,6 +6494,35 @@ async function engineBuildEcomContext(env, c, clientId, phone){
     }
   }
   lines.push(`## Order Link\nWhen a customer is ready to buy, share this link: ${buildOrderLink(c, clientId)}`);
+  return lines.length?('\n\n'+lines.join('\n')):'';
+}
+
+// SaaS/Digital-Marketing equivalent of engineBuildEcomContext, for the 'saas_faq' route — pulls
+// this phone's linked Account (fp_customers, D1 — see the SaaS Ops module above) and any
+// competitor battlecards, so the bot can answer plan/billing questions and "how are you different
+// from X" accurately instead of the generic fallback guessing.
+async function engineBuildSaasContext(env, c, clientId, phone){
+  const lines=[];
+  if(phone){
+    const cust=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=? AND phone=? ORDER BY id DESC LIMIT 1`).bind(clientId, phone).first();
+    if(cust){
+      lines.push('## This customer\'s account');
+      lines.push(`- Plan: ${cust.plan_tier||cust.plan_name||'(not set)'} — ${cust.currency||''} ${cust.monthly_value||0}/${cust.billing_cycle||'month'}`);
+      if(cust.trial_end_date) lines.push(`- Trial ends: ${cust.trial_end_date}`);
+      if(cust.renewal_date) lines.push(`- Renews: ${cust.renewal_date}`);
+      if(cust.seat_count) lines.push(`- Seats: ${cust.seat_count}`);
+      lines.push(`- Status: ${cust.status}${cust.lifecycle_stage?' ('+cust.lifecycle_stage+')':''}`);
+    }
+  }
+  const {results:battlecards}=await env.DB.prepare(`SELECT competitor_name, comparison_json, positioning_notes FROM saas_battlecards WHERE client_id=?`).bind(clientId).all().catch(()=>({results:[]}));
+  if(battlecards?.length){
+    lines.push('## Competitor comparisons (only use what\'s actually here — never invent a comparison point)');
+    battlecards.forEach(b=>{
+      let comparison='';
+      try{ const c2=JSON.parse(b.comparison_json||'{}'); comparison=Object.entries(c2).map(([k,v])=>`${k}: ${v}`).join('; '); }catch(e){}
+      lines.push(`- ${b.competitor_name}${comparison?' — '+comparison:''}${b.positioning_notes?' ('+b.positioning_notes+')':''}`);
+    });
+  }
   return lines.length?('\n\n'+lines.join('\n')):'';
 }
 
@@ -6651,6 +6680,8 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
     sys+=' A short reply that only mentions a size, color, quantity, or says something like "that one"/"the green one" — with no product name — almost always refers to whichever specific product you (the assistant) most recently described in the Recent Conversation above. Resolve it to that exact product (use its real SKU/price/stock from the catalog above) instead of treating it as a fresh, unscoped catalog search — only ask which product they mean if the recent conversation genuinely doesn\'t make it clear. If specific details are not available even after resolving the product, politely say you will connect them with support.';
   } else if(industry==='travel'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. A short reply like "the 30 min one" or "that package" with no name almost always refers to whichever specific package/service you most recently described in the Recent Conversation above — resolve it to that one rather than asking a fresh, unscoped question. If specific details are not available, politely say you will connect them with an advisor.';
+  } else if(industry==='saas_digital_marketing'){
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a SaaS/product assistant — answer questions about plans, trials, demos, pricing tiers, and how this product compares to competitors using the data above. Trial length, plan pricing, and renewal dates are only real if they appear in the data above for THIS specific customer — never invent a trial length or price you were not given. If a customer asks how you compare to a named competitor and no battlecard above covers it, say honestly that you\'ll find out rather than guessing a comparison. If specific details are not available, politely say you will connect them with the team.';
   } else {
     sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
@@ -7676,6 +7707,7 @@ async function handleEngineWebhook(request, env, secret){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
+      else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
@@ -8780,11 +8812,20 @@ async function handleFpCustomerCreate(request, env){
     billing_day:fpClampBillingDay(body.billing_day), start_date:body.start_date||now.slice(0,10),
     status:['active','paused','cancelled'].includes(body.status)?body.status:'active',
     notes:String(body.notes||'').trim().slice(0,1000), created_at:now,
+    // SaaS Ops columns (migrations/0025_saas_ops.sql) — optional on every industry, only actually
+    // shown/used by accounting.html's SaaS Ops tab (industry==='saas_digital_marketing').
+    company_name:String(body.company_name||'').trim().slice(0,200),
+    plan_tier:String(body.plan_tier||'').trim().slice(0,80),
+    trial_end_date:body.trial_end_date||null,
+    lifecycle_stage:SAAS_LIFECYCLE_STAGES.has(body.lifecycle_stage)?body.lifecycle_stage:null,
+    renewal_date:body.renewal_date||null,
+    seat_count:body.seat_count!==undefined?(parseInt(body.seat_count,10)||0):null,
+    csm_owner:String(body.csm_owner||'').trim().slice(0,140),
   };
   const r=await env.DB.prepare(`INSERT INTO fp_customers
-    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at)
+    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at, company_name, plan_tier, trial_end_date, lifecycle_stage, renewal_date, seat_count, csm_owner)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at, fields.company_name, fields.plan_tier, fields.trial_end_date, fields.lifecycle_stage, fields.renewal_date, fields.seat_count, fields.csm_owner)
     .run();
   await fpEnsureConfigRow(env, payload.cid);
   return json(fpCustomerOut({...fields, id:r.meta.last_row_id}));
@@ -8808,6 +8849,20 @@ async function handleFpCustomerUpdate(request, env){
   if(body.start_date!==undefined){ sets.push('start_date=?'); vals.push(String(body.start_date)); }
   if(body.status!==undefined && ['active','paused','cancelled'].includes(body.status)){ sets.push('status=?'); vals.push(body.status); }
   if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
+  if(body.company_name!==undefined){ sets.push('company_name=?'); vals.push(String(body.company_name).trim().slice(0,200)); }
+  if(body.plan_tier!==undefined){ sets.push('plan_tier=?'); vals.push(String(body.plan_tier).trim().slice(0,80)); }
+  if(body.trial_end_date!==undefined){ sets.push('trial_end_date=?'); vals.push(body.trial_end_date||null); }
+  if(body.lifecycle_stage!==undefined && SAAS_LIFECYCLE_STAGES.has(body.lifecycle_stage)){ sets.push('lifecycle_stage=?'); vals.push(body.lifecycle_stage); }
+  if(body.renewal_date!==undefined){ sets.push('renewal_date=?'); vals.push(body.renewal_date||null); }
+  if(body.seat_count!==undefined){ sets.push('seat_count=?'); vals.push(parseInt(body.seat_count,10)||0); }
+  if(body.csm_owner!==undefined){ sets.push('csm_owner=?'); vals.push(String(body.csm_owner).trim().slice(0,140)); }
+  // health_score itself is cron-computed (computeAccountHealthScore) — only a manual override may
+  // set it directly here, same "manual write locks out the automatic one" shape as
+  // LEADS.WinProbability/WinProbabilityManual.
+  if(body.health_score_manual!==undefined){
+    sets.push('health_score_manual=?'); vals.push(body.health_score_manual==='Yes'?'Yes':null);
+    if(body.health_score_manual==='Yes' && body.health_score!==undefined){ sets.push('health_score=?'); vals.push(Math.max(0,Math.min(100,parseInt(body.health_score,10)||0))); }
+  }
   if(!sets.length) return json({ok:true});
   vals.push(Number(body.id));
   await env.DB.prepare(`UPDATE fp_customers SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
@@ -9227,6 +9282,661 @@ async function handleRazorpayWebhook(request, env, clientIdParam){
     // UNIQUE(razorpay_payment_id) collision — a redelivered webhook for a payment already recorded.
     return json({ok:true, duplicate:true});
   }
+}
+
+// ── SaaS Ops module (frontend/accounting.html — "🚀 SaaS Ops" tab, shown only for
+//    industry==='saas_digital_marketing'; SETUP.md "SaaS Ops module") ──
+// Built on top of the Financial Planning module above rather than a second, parallel system:
+// fp_customers IS the Account record (extended with SaaS columns, migrations/0025_saas_ops.sql),
+// fp_expected_dues/fp_collections IS the MRR/billing ledger, fp_config IS the per-client settings
+// row. Every frontend-facing route below follows this file's Financial Planning conventions
+// (requireSession, row-ownership check against payload.cid); webhooks/usage ingestion use their
+// own external auth instead, since no session exists on those calls.
+
+const SAAS_LIFECYCLE_STAGES=new Set(['onboarding','active','at_risk','renewal','expansion','churned']);
+
+// Shared HMAC primitive, same shape as verifyRazorpaySignature above.
+async function hmacSha256Hex(secret, payload){
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
+  return hex(sig);
+}
+function timingSafeEqualStr(a, b){
+  if(a.length!==b.length) return false;
+  let diff=0; for(let i=0;i<a.length;i++) diff|=a.charCodeAt(i)^b.charCodeAt(i);
+  return diff===0;
+}
+// None of the three signature verifiers below have been exercised against a live provider account
+// in this session (no Stripe/Chargebee/Paddle test credentials exist here) — each is implemented
+// to that provider's own publicly documented, stable scheme. Verify with a real test webhook
+// (Stripe CLI's `stripe trigger`, Chargebee/Paddle's own webhook test-send) before relying on this.
+
+// Stripe: `Stripe-Signature` header is `t=<unix ts>,v1=<hex hmac>[,v1=<hex hmac>...]` over the
+// string `${ts}.${rawBody}` — https://docs.stripe.com/webhooks#verify-manually. Named distinctly
+// from the existing verifyStripeSignature(env, rawBody, sigHeader) above (platform-level — verifies
+// webhooks for THIS SaaS's own subscription billing via env.STRIPE_WEBHOOK_SECRET) — this one
+// verifies a per-client's OWN Stripe account's webhooks against their own fp_config secret; same
+// scheme, different secret source, so it can't reuse that function's signature.
+async function verifySaasStripeSignature(secret, rawBody, sigHeader){
+  if(!sigHeader || !secret) return false;
+  const parts={}; sigHeader.split(',').forEach(p=>{ const [k,v]=p.split('='); if(k==='t') parts.t=v; else if(k==='v1' && !parts.v1) parts.v1=v; });
+  if(!parts.t || !parts.v1) return false;
+  const expected=await hmacSha256Hex(secret, `${parts.t}.${rawBody}`);
+  return timingSafeEqualStr(expected, parts.v1);
+}
+// Chargebee doesn't HMAC-sign webhooks by default — its documented model is HTTP Basic Auth (or a
+// shared token in the endpoint URL) configured on the webhook itself in the Chargebee dashboard —
+// https://www.chargebee.com/docs/2.0/webhook_settings.html. `providedToken` is read from the URL
+// path this webhook route registers (see route registration below), compared to the client's own
+// chargebee_webhook_secret.
+function verifyChargebeeToken(secret, providedToken){
+  if(!secret || !providedToken) return false;
+  return timingSafeEqualStr(secret, providedToken);
+}
+// Paddle (Billing API, not Classic): `Paddle-Signature` header is `ts=<unix ts>;h1=<hex hmac>`
+// over `${ts}:${rawBody}` — https://developer.paddle.com/webhooks/signature-verification.
+async function verifyPaddleSignature(secret, rawBody, sigHeader){
+  if(!sigHeader || !secret) return false;
+  const parts={}; sigHeader.split(';').forEach(p=>{ const [k,v]=p.split('='); parts[k]=v; });
+  if(!parts.ts || !parts.h1) return false;
+  const expected=await hmacSha256Hex(secret, `${parts.ts}:${rawBody}`);
+  return timingSafeEqualStr(expected, parts.h1);
+}
+
+// Normalized billing event applied to fp_customers/fp_expected_dues/fp_collections — the 3 webhook
+// handlers below each parse their own provider's payload into this one shape, so the actual
+// ledger/lifecycle/ERPNext-bridge logic exists exactly once instead of duplicated 3 times.
+// action: 'subscription_active' | 'payment_succeeded' | 'subscription_cancelled'
+async function saasApplyBillingEvent(env, clientId, {customerEmail, customerName, planName, amount, currency, action, occurredAt}){
+  const now=new Date().toISOString();
+  occurredAt=occurredAt||now;
+  let cust=null;
+  if(customerEmail) cust=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=? AND email=? ORDER BY id DESC LIMIT 1`).bind(clientId, customerEmail).first();
+  if(!cust){
+    const r=await env.DB.prepare(`INSERT INTO fp_customers (client_id, name, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, lifecycle_stage, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(clientId, customerName||customerEmail||'Customer', customerEmail||'', planName||'', amount||0, currency||'USD', 'monthly', 1, now.slice(0,10), 'active', 'onboarding', now).run();
+    cust=await findFpCustomer(env, r.meta.last_row_id);
+    await fpEnsureConfigRow(env, clientId);
+  }
+
+  if(action==='subscription_active'){
+    await env.DB.prepare(`UPDATE fp_customers SET status='active', lifecycle_stage=CASE WHEN lifecycle_stage='churned' OR lifecycle_stage IS NULL THEN 'active' ELSE lifecycle_stage END, plan_name=?, monthly_value=? WHERE id=?`)
+      .bind(planName||cust.plan_name, amount||cust.monthly_value, cust.id).run();
+  }else if(action==='subscription_cancelled'){
+    await env.DB.prepare(`UPDATE fp_customers SET status='cancelled', lifecycle_stage='churned' WHERE id=?`).bind(cust.id).run();
+  }else if(action==='payment_succeeded'){
+    const periodKey=occurredAt.slice(0,7);
+    let due=await env.DB.prepare(`SELECT * FROM fp_expected_dues WHERE customer_id=? AND period_key=?`).bind(cust.id, periodKey).first();
+    if(!due){
+      const dueR=await env.DB.prepare(`INSERT INTO fp_expected_dues (client_id, customer_id, period_key, amount, currency, due_date, created_at) VALUES (?,?,?,?,?,?,?)`)
+        .bind(clientId, cust.id, periodKey, amount||0, currency||cust.currency, occurredAt.slice(0,10), now).run();
+      due=await env.DB.prepare(`SELECT * FROM fp_expected_dues WHERE id=?`).bind(dueR.meta.last_row_id).first();
+    }
+    await env.DB.prepare(`INSERT INTO fp_collections (client_id, customer_id, expected_due_id, amount, currency, mode, collected_at, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+      .bind(clientId, cust.id, due.id, amount||0, currency||cust.currency, 'bank', occurredAt, now).run();
+    await fpRecomputeDueStatus(env, due.id);
+    if(cust.lifecycle_stage==='onboarding' || cust.lifecycle_stage==='at_risk') await env.DB.prepare(`UPDATE fp_customers SET lifecycle_stage='active' WHERE id=?`).bind(cust.id).run();
+
+    // Bridge to the existing Accounting/ERPNext module — a real invoice + payment in the client's
+    // own ERPNext, through the sync functions that already work (erpnextPushSalesDoc/
+    // erpnextPushPaymentEntry) rather than a second, parallel invoicing concept.
+    const c=await getClientById(env, clientId);
+    if(c && erpnextConfigured(c)){
+      try{
+        const title=`${planName||cust.plan_name||'Subscription'} — ${periodKey}`;
+        const lineItemsJson=JSON.stringify([{name:planName||cust.plan_name||'Subscription', qty:1, price:amount||0}]);
+        const cur=currency||cust.currency||'USD';
+        const docR=await env.DB.prepare(`INSERT INTO accounting_documents (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, doc_created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .bind(clientId, cust.lead_id||null, 'invoice', title, lineItemsJson, cur, amount||0, 0, 0, amount||0, 'paid', now).run();
+        const doc=await findAccountingDocument(env, docR.meta.last_row_id);
+        let lead=null;
+        if(doc.lead_id){ const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${doc.lead_id}`); if(leadR.ok) lead=await leadR.json().catch(()=>null); }
+        const erpName=await erpnextPushSalesDoc(c, 'Sales Invoice', doc, lead);
+        await env.DB.prepare(`UPDATE accounting_documents SET erpnext_doctype='Sales Invoice', erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_synced_at=? WHERE id=?`).bind(erpName||'', now, doc.id).run();
+        await erpnextPushPaymentEntry(c, doc, lead, erpName);
+      }catch(e){
+        await reportOpsError(env, 'saasApplyBillingEvent — ERPNext bridge failed', e, {clientId, customerId:cust.id});
+      }
+    }
+  }
+  return cust;
+}
+
+// clientId travels in the URL path (/saas/webhooks/stripe/<clientId> etc.), same lookup-key-only
+// role as Razorpay's own webhook route above — the real trust boundary is the signature/token
+// check against that specific client's own fp_config secret, not the URL.
+async function handleSaasStripeWebhook(request, env, clientIdParam){
+  const clientId=Number(clientIdParam);
+  if(!clientId) return json({ok:true});
+  const cfg=await env.DB.prepare(`SELECT stripe_webhook_secret FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  if(!cfg?.stripe_webhook_secret) return json({ok:true});
+  const rawBody=await request.text();
+  const valid=await verifySaasStripeSignature(cfg.stripe_webhook_secret, rawBody, request.headers.get('Stripe-Signature'));
+  if(!valid) return json({error:'Invalid signature'}, 401);
+  let evt; try{ evt=JSON.parse(rawBody); }catch(e){ return json({ok:true}); }
+  const obj=evt.data?.object||{};
+  try{
+    if(evt.type==='customer.subscription.created' || evt.type==='customer.subscription.updated'){
+      if(obj.status==='canceled'){
+        await saasApplyBillingEvent(env, clientId, {customerEmail:obj.customer_email, action:'subscription_cancelled'});
+      }else{
+        await saasApplyBillingEvent(env, clientId, {
+          customerEmail:obj.customer_email||obj.customer?.email, customerName:obj.customer?.name,
+          planName:obj.items?.data?.[0]?.price?.nickname||obj.plan?.nickname,
+          amount:(Number(obj.items?.data?.[0]?.price?.unit_amount)||0)/100, currency:(obj.currency||'usd').toUpperCase(),
+          action:'subscription_active', occurredAt:new Date().toISOString(),
+        });
+      }
+    }else if(evt.type==='customer.subscription.deleted'){
+      await saasApplyBillingEvent(env, clientId, {customerEmail:obj.customer_email, action:'subscription_cancelled'});
+    }else if(evt.type==='invoice.paid' || evt.type==='invoice.payment_succeeded'){
+      await saasApplyBillingEvent(env, clientId, {
+        customerEmail:obj.customer_email, customerName:obj.customer_name,
+        planName:obj.lines?.data?.[0]?.description, amount:(Number(obj.amount_paid)||0)/100, currency:(obj.currency||'usd').toUpperCase(),
+        action:'payment_succeeded', occurredAt:new Date((obj.status_transitions?.paid_at||obj.created)*1000).toISOString(),
+      });
+    }
+  }catch(e){ await reportOpsError(env, 'handleSaasStripeWebhook', e, {clientId, type:evt.type}); }
+  return json({ok:true});
+}
+
+async function handleSaasChargebeeWebhook(request, env, clientIdParam){
+  const clientId=Number(clientIdParam);
+  if(!clientId) return json({ok:true});
+  const cfg=await env.DB.prepare(`SELECT chargebee_webhook_secret FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  if(!cfg?.chargebee_webhook_secret) return json({ok:true});
+  const url=new URL(request.url);
+  if(!verifyChargebeeToken(cfg.chargebee_webhook_secret, url.searchParams.get('token'))) return json({error:'Invalid token'}, 401);
+  let evt; try{ evt=JSON.parse(await request.text()); }catch(e){ return json({ok:true}); }
+  const sub=evt.content?.subscription||{};
+  const cust=evt.content?.customer||{};
+  const invoice=evt.content?.invoice||{};
+  try{
+    if(evt.event_type==='subscription_activated' || evt.event_type==='subscription_renewed'){
+      await saasApplyBillingEvent(env, clientId, {
+        customerEmail:cust.email, customerName:cust.first_name?`${cust.first_name} ${cust.last_name||''}`.trim():cust.company,
+        planName:sub.plan_id, amount:(Number(sub.plan_unit_price)||0)/100, currency:sub.currency_code||'USD',
+        action:'subscription_active', occurredAt:new Date().toISOString(),
+      });
+    }else if(evt.event_type==='subscription_cancelled'){
+      await saasApplyBillingEvent(env, clientId, {customerEmail:cust.email, action:'subscription_cancelled'});
+    }else if(evt.event_type==='payment_succeeded' || evt.event_type==='invoice_generated'){
+      await saasApplyBillingEvent(env, clientId, {
+        customerEmail:cust.email, customerName:cust.first_name?`${cust.first_name} ${cust.last_name||''}`.trim():cust.company,
+        planName:sub.plan_id, amount:(Number(invoice.total)||0)/100, currency:invoice.currency_code||'USD',
+        action:'payment_succeeded', occurredAt:new Date((invoice.date||Date.now()/1000)*1000).toISOString(),
+      });
+    }
+  }catch(e){ await reportOpsError(env, 'handleSaasChargebeeWebhook', e, {clientId, type:evt.event_type}); }
+  return json({ok:true});
+}
+
+async function handleSaasPaddleWebhook(request, env, clientIdParam){
+  const clientId=Number(clientIdParam);
+  if(!clientId) return json({ok:true});
+  const cfg=await env.DB.prepare(`SELECT paddle_webhook_secret FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  if(!cfg?.paddle_webhook_secret) return json({ok:true});
+  const rawBody=await request.text();
+  const valid=await verifyPaddleSignature(cfg.paddle_webhook_secret, rawBody, request.headers.get('Paddle-Signature'));
+  if(!valid) return json({error:'Invalid signature'}, 401);
+  let evt; try{ evt=JSON.parse(rawBody); }catch(e){ return json({ok:true}); }
+  const d=evt.data||{};
+  try{
+    if(evt.event_type==='subscription.activated' || evt.event_type==='subscription.updated'){
+      if(d.status==='canceled'){
+        await saasApplyBillingEvent(env, clientId, {customerEmail:d.customer?.email, action:'subscription_cancelled'});
+      }else{
+        await saasApplyBillingEvent(env, clientId, {
+          customerEmail:d.customer?.email, customerName:d.customer?.name,
+          planName:d.items?.[0]?.price?.name, amount:(Number(d.items?.[0]?.price?.unit_price?.amount)||0)/100, currency:d.currency_code||'USD',
+          action:'subscription_active', occurredAt:new Date().toISOString(),
+        });
+      }
+    }else if(evt.event_type==='subscription.canceled'){
+      await saasApplyBillingEvent(env, clientId, {customerEmail:d.customer?.email, action:'subscription_cancelled'});
+    }else if(evt.event_type==='transaction.completed'){
+      await saasApplyBillingEvent(env, clientId, {
+        customerEmail:d.customer?.email, customerName:d.customer?.name,
+        planName:d.items?.[0]?.price?.name, amount:(Number(d.details?.totals?.total)||0)/100, currency:d.currency_code||'USD',
+        action:'payment_succeeded', occurredAt:new Date(d.billed_at||Date.now()).toISOString(),
+      });
+    }
+  }catch(e){ await reportOpsError(env, 'handleSaasPaddleWebhook', e, {clientId, type:evt.event_type}); }
+  return json({ok:true});
+}
+
+// ── Usage / PQL ingestion — bearer-token-per-client (fp_config.usage_ingest_token, generated on
+// first Integrations-tab load, see handleSaasConfigGet below), the client's own product calls this
+// from its own backend on real usage events. Not session-gated — this is a server-to-server call
+// from the client's own SaaS product, which has no Leadvyne session.
+async function handleSaasUsageEvent(request, env){
+  const auth=(request.headers.get('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
+  if(!auth) return json({error:'Missing bearer token'}, 401);
+  const cfg=await env.DB.prepare(`SELECT client_id FROM fp_config WHERE usage_ingest_token=?`).bind(auth).first();
+  if(!cfg) return json({error:'Invalid token'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const customerId=parseInt(body.customer_id,10);
+  if(!customerId || !body.event_name) return json({error:'customer_id and event_name required'}, 400);
+  const cust=await findFpCustomer(env, customerId);
+  if(!cust || cust.client_id!==cfg.client_id) return json({error:'Unknown customer_id'}, 404);
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO saas_usage_events (client_id, customer_id, event_name, event_count, occurred_at, created_at) VALUES (?,?,?,?,?,?)`)
+    .bind(cfg.client_id, customerId, String(body.event_name).slice(0,100), parseInt(body.event_count,10)||1, body.occurred_at||now, now).run();
+  return json({ok:true});
+}
+
+// ── Activation milestones ──
+async function handleSaasMilestonesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM saas_activation_milestones WHERE client_id=? ORDER BY sort_order ASC, id ASC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleSaasMilestoneCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.label) return json({error:'label required'}, 400);
+  const key=String(body.milestone_key||body.label).toLowerCase().replace(/[^a-z0-9]+/g,'_').slice(0,60);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO saas_activation_milestones (client_id, milestone_key, label, sort_order, created_at) VALUES (?,?,?,?,?)`)
+    .bind(Number(payload.cid), key, String(body.label).trim().slice(0,140), parseInt(body.sort_order,10)||0, now).run();
+  return json({Id:r.meta.last_row_id, milestone_key:key});
+}
+async function handleSaasMilestoneDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  await env.DB.prepare(`DELETE FROM saas_activation_milestones WHERE id=? AND client_id=?`).bind(Number(body.id), Number(payload.cid)).run();
+  return json({ok:true});
+}
+async function handleSaasAccountMilestonesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const customerId=Number(url.searchParams.get('customer_id'));
+  const {results}=await env.DB.prepare(`SELECT * FROM saas_account_milestones WHERE client_id=? AND customer_id=?`).bind(Number(payload.cid), customerId).all();
+  return json({list:results||[]});
+}
+async function handleSaasAccountMilestoneComplete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const customerId=Number(body.customer_id);
+  const cust=await findFpCustomer(env, customerId);
+  if(!cust || cust.client_id!==Number(payload.cid)) return json({error:'Not found'}, 404);
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO saas_account_milestones (client_id, customer_id, milestone_key, completed_at, created_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(customer_id, milestone_key) DO UPDATE SET completed_at=excluded.completed_at`)
+    .bind(Number(payload.cid), customerId, String(body.milestone_key), now, now).run();
+  return json({ok:true});
+}
+
+// ── Health score — rule-based blend (LLM-scored fields elsewhere in this file are for lead/deal
+// sentiment specifically; this is a deterministic account-level score so it's cheap to recompute
+// for every account, every day, without an LLM call per account). Writes fp_customers.health_score
+// unless health_score_manual==='Yes' (same manual-override convention as
+// LEADS.WinProbability/WinProbabilityManual). 0-100, higher is healthier.
+async function computeAccountHealthScore(env, cust){
+  let score=50; // neutral baseline
+  // Billing signal: a recent successful collection is healthy; an open/overdue due is not.
+  const recentDue=await env.DB.prepare(`SELECT * FROM fp_expected_dues WHERE customer_id=? ORDER BY due_date DESC LIMIT 1`).bind(cust.id).first();
+  if(recentDue){
+    if(recentDue.status==='paid') score+=15;
+    else if(recentDue.status==='open' && recentDue.due_date<new Date().toISOString().slice(0,10)) score-=20;
+  }
+  if(cust.status==='cancelled') score-=40;
+  // Usage trend: last 30 days vs. the 30 days before that.
+  const now=Date.now();
+  const d30=new Date(now-30*86400000).toISOString();
+  const d60=new Date(now-60*86400000).toISOString();
+  const recent=await env.DB.prepare(`SELECT COALESCE(SUM(event_count),0) c FROM saas_usage_events WHERE customer_id=? AND occurred_at>=?`).bind(cust.id, d30).first();
+  const prior=await env.DB.prepare(`SELECT COALESCE(SUM(event_count),0) c FROM saas_usage_events WHERE customer_id=? AND occurred_at>=? AND occurred_at<?`).bind(cust.id, d60, d30).first();
+  const recentCount=recent?.c||0, priorCount=prior?.c||0;
+  if(recentCount===0 && priorCount===0) score+=0; // no usage data at all — no signal either way
+  else if(recentCount===0) score-=25; // usage went silent
+  else if(priorCount>0 && recentCount<priorCount*0.5) score-=15; // usage dropped sharply
+  else if(priorCount>0 && recentCount>priorCount*1.2) score+=10; // usage growing
+
+  // Support signal: ticket spike / low CSAT.
+  const support=await env.DB.prepare(`SELECT * FROM saas_support_signals WHERE customer_id=? ORDER BY period_end DESC LIMIT 1`).bind(cust.id).first();
+  if(support){
+    if(support.avg_csat!=null && support.avg_csat<3) score-=15;
+    if(support.ticket_count>5) score-=10;
+  }
+
+  // Sentiment: the linked lead's own WinProbability, if any — read-only, never written back to.
+  if(cust.lead_id){
+    try{
+      const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${cust.lead_id}?fields=WinProbability`);
+      if(leadR.ok){ const lead=await leadR.json().catch(()=>null); const wp=Number(lead?.WinProbability); if(Number.isFinite(wp)) score+=(wp-50)*0.2; }
+    }catch(e){}
+  }
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+async function runSaasHealthScoresForAllClients(env){
+  const {results:customers}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE status!='cancelled' AND (health_score_manual IS NULL OR health_score_manual!='Yes')`).all();
+  for(const cust of (customers||[])){
+    try{ const score=await computeAccountHealthScore(env, cust); await env.DB.prepare(`UPDATE fp_customers SET health_score=? WHERE id=?`).bind(score, cust.id).run(); }
+    catch(e){ console.error('[saas-ops] health score failed for customer', cust.id, e.message); }
+  }
+}
+
+// ── Support-ticket signals — pulled periodically (one auth pattern: an API key), not raw webhook
+// ingestion — see the plan's "ground rules" for why. Rollups only (ticket count + avg CSAT for the
+// period), not per-ticket sync; none of these three have been exercised against a live account in
+// this session — verify field names against a real API response before relying on this.
+async function pullZendeskSignals(env, clientId, cfg){
+  // https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/#list-tickets
+  const since=new Date(Date.now()-86400000).toISOString();
+  const r=await fetch(`https://${cfg.support_subdomain}.zendesk.com/api/v2/tickets.json?sort_by=created_at&sort_order=desc`, {
+    headers:{Authorization:`Basic ${btoa(cfg.support_api_key+'/token:'+cfg.support_api_key)}`},
+  }).catch(()=>null);
+  if(!r || !r.ok) return null;
+  const data=await r.json().catch(()=>({}));
+  const tickets=(data.tickets||[]).filter(t=>t.created_at>=since);
+  return {ticket_count:tickets.length, avg_csat:null};
+}
+async function pullIntercomSignals(env, clientId, cfg){
+  // https://developer.intercom.com/intercom-api-reference/reference/list-conversations
+  const r=await fetch(`https://api.intercom.io/conversations`, {headers:{Authorization:`Bearer ${cfg.support_api_key}`, Accept:'application/json'}}).catch(()=>null);
+  if(!r || !r.ok) return null;
+  const data=await r.json().catch(()=>({}));
+  const since=Date.now()/1000-86400;
+  const conversations=(data.conversations||[]).filter(c=>c.created_at>=since);
+  return {ticket_count:conversations.length, avg_csat:null};
+}
+async function pullFreshdeskSignals(env, clientId, cfg){
+  // https://developers.freshdesk.com/api/#list_all_tickets
+  const r=await fetch(`https://${cfg.support_subdomain}.freshdesk.com/api/v2/tickets?order_by=created_at&order_type=desc`, {
+    headers:{Authorization:`Basic ${btoa(cfg.support_api_key+':X')}`},
+  }).catch(()=>null);
+  if(!r || !r.ok) return null;
+  const data=await r.json().catch(()=>[]);
+  const since=new Date(Date.now()-86400000).toISOString();
+  const tickets=(Array.isArray(data)?data:[]).filter(t=>t.created_at>=since);
+  return {ticket_count:tickets.length, avg_csat:null};
+}
+async function runSaasSupportPullForAllClients(env){
+  const {results:configs}=await env.DB.prepare(`SELECT * FROM fp_config WHERE support_provider IS NOT NULL AND support_api_key IS NOT NULL`).all();
+  for(const cfg of (configs||[])){
+    try{
+      const puller={zendesk:pullZendeskSignals, intercom:pullIntercomSignals, freshdesk:pullFreshdeskSignals}[cfg.support_provider];
+      if(!puller) continue;
+      const result=await puller(env, cfg.client_id, cfg);
+      if(!result) continue;
+      const now=new Date().toISOString();
+      const periodStart=new Date(Date.now()-86400000).toISOString();
+      await env.DB.prepare(`INSERT INTO saas_support_signals (client_id, period_start, period_end, ticket_count, avg_csat, source, created_at) VALUES (?,?,?,?,?,?,?)`)
+        .bind(cfg.client_id, periodStart, now, result.ticket_count, result.avg_csat, cfg.support_provider, now).run();
+    }catch(e){ console.error('[saas-ops] support pull failed for client', cfg.client_id, e.message); }
+  }
+}
+
+// ── Reminders — renewal (90/60/30 days before renewal_date) and activation-milestone-miss nudges.
+// pipeline_followups couldn't be reused for this (see migration comment); saas_account_reminders
+// holds several independent reminder rows per account. Sent via the same Chatwoot conversations-
+// API pattern used throughout this file (fpSendRemindersForClient, sendClassicFollowupStep).
+async function saasSendChatwootMessage(c, convId, text){
+  if(!c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token || !convId) return false;
+  const fd=new FormData();
+  fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+  return r.ok;
+}
+async function runSaasRemindersForAllClients(env){
+  const todayStr=new Date().toISOString().slice(0,10);
+  const {results:customers}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE status!='cancelled' AND renewal_date IS NOT NULL`).all();
+  for(const cust of (customers||[])){
+    const daysOut=Math.round((new Date(cust.renewal_date)-new Date(todayStr))/86400000);
+    const type=({90:'renewal_90',60:'renewal_60',30:'renewal_30'})[daysOut];
+    if(!type) continue;
+    const exists=await env.DB.prepare(`SELECT id FROM saas_account_reminders WHERE customer_id=? AND reminder_type=? AND anchor_at=?`).bind(cust.id, type, cust.renewal_date).first();
+    if(exists) continue;
+    const now=new Date().toISOString();
+    const r=await env.DB.prepare(`INSERT INTO saas_account_reminders (client_id, customer_id, reminder_type, anchor_at, offset_days, created_at) VALUES (?,?,?,?,?,?)`)
+      .bind(cust.client_id, cust.id, type, cust.renewal_date, daysOut, now).run();
+    if(!cust.lead_id) continue;
+    try{
+      const c=await getClientById(env, cust.client_id);
+      const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${cust.lead_id}?fields=ConversationID`);
+      const lead=leadR.ok?await leadR.json().catch(()=>null):null;
+      const sent=await saasSendChatwootMessage(c, lead?.ConversationID, `Hi ${cust.name}, just a heads up — your ${cust.plan_name||'plan'} renews in ${daysOut} days. Let us know if you'd like to review or change anything before then!`);
+      if(sent) await env.DB.prepare(`UPDATE saas_account_reminders SET sent_at=? WHERE id=?`).bind(new Date().toISOString(), r.meta.last_row_id).run();
+    }catch(e){}
+  }
+  // Activation-milestone-miss: an account still in 'onboarding' 7+ days after start_date with zero
+  // completed milestones gets one nudge, not repeated daily.
+  const {results:stalled}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE lifecycle_stage='onboarding' AND start_date<=? AND lead_id IS NOT NULL`)
+    .bind(new Date(Date.now()-7*86400000).toISOString().slice(0,10)).all();
+  for(const cust of (stalled||[])){
+    const done=await env.DB.prepare(`SELECT COUNT(*) n FROM saas_account_milestones WHERE customer_id=? AND completed_at IS NOT NULL`).bind(cust.id).first();
+    if((done?.n||0)>0) continue;
+    const exists=await env.DB.prepare(`SELECT id FROM saas_account_reminders WHERE customer_id=? AND reminder_type='milestone_miss'`).bind(cust.id).first();
+    if(exists) continue;
+    const now=new Date().toISOString();
+    const r=await env.DB.prepare(`INSERT INTO saas_account_reminders (client_id, customer_id, reminder_type, anchor_at, offset_days, created_at) VALUES (?,?,?,?,?,?)`)
+      .bind(cust.client_id, cust.id, 'milestone_miss', cust.start_date, 7, now).run();
+    try{
+      const c=await getClientById(env, cust.client_id);
+      const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${cust.lead_id}?fields=ConversationID`);
+      const lead=leadR.ok?await leadR.json().catch(()=>null):null;
+      const sent=await saasSendChatwootMessage(c, lead?.ConversationID, `Hi ${cust.name}, noticed you haven't gotten set up yet — happy to help you get started, just let us know if anything's unclear!`);
+      if(sent) await env.DB.prepare(`UPDATE saas_account_reminders SET sent_at=? WHERE id=?`).bind(new Date().toISOString(), r.meta.last_row_id).run();
+    }catch(e){}
+  }
+}
+
+// ── Weekly digests — new weekly cron branch (see scheduled() below + wrangler.toml).
+async function runWeeklyOwnerDigest(env){
+  const {results:configs}=await env.DB.prepare(`SELECT client_id FROM fp_config WHERE enabled=1`).all();
+  const weekAgo=new Date(Date.now()-7*86400000).toISOString();
+  for(const cfg of (configs||[])){
+    try{
+      const c=await getClientById(env, cfg.client_id);
+      if(!c?.chatwoot_base && !c?.wa_phone_id) continue;
+      const {results:newCust}=await env.DB.prepare(`SELECT COUNT(*) n FROM fp_customers WHERE client_id=? AND created_at>=?`).bind(cfg.client_id, weekAgo).all();
+      const {results:churned}=await env.DB.prepare(`SELECT COUNT(*) n FROM fp_customers WHERE client_id=? AND lifecycle_stage='churned' AND status='cancelled'`).bind(cfg.client_id).all();
+      const {results:collected}=await env.DB.prepare(`SELECT COALESCE(SUM(amount),0) t FROM fp_collections WHERE client_id=? AND collected_at>=?`).bind(cfg.client_id, weekAgo).all();
+      const {results:atRisk}=await env.DB.prepare(`SELECT name FROM fp_customers WHERE client_id=? AND status!='cancelled' AND health_score<40 ORDER BY health_score ASC LIMIT 5`).bind(cfg.client_id).all();
+      const text=`📈 Weekly SaaS digest\nNew accounts: ${newCust?.[0]?.n||0}\nRevenue collected (7d): ${collected?.[0]?.t||0}\nAt-risk accounts: ${(atRisk||[]).map(a=>a.name).join(', ')||'none'}`;
+      if(c.support_phone && c.wa_phone_id && c.wa_token){
+        await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+          method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+          body:JSON.stringify({messaging_product:'whatsapp', to:c.support_phone, type:'text', text:{body:text}}),
+        }).catch(()=>{});
+      }
+    }catch(e){ console.error('[saas-ops] weekly owner digest failed for client', cfg.client_id, e.message); }
+  }
+}
+async function runWeeklyCustomerValueUpdate(env){
+  const weekAgo=new Date(Date.now()-7*86400000).toISOString();
+  const {results:customers}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE status='active' AND lead_id IS NOT NULL`).all();
+  for(const cust of (customers||[])){
+    try{
+      const {results:events}=await env.DB.prepare(`SELECT event_name, SUM(event_count) c FROM saas_usage_events WHERE customer_id=? AND occurred_at>=? GROUP BY event_name ORDER BY c DESC LIMIT 3`).bind(cust.id, weekAgo).all();
+      if(!events?.length) continue; // no usage this week — nothing to recap, avoid an empty/noise message
+      const c=await getClientById(env, cust.client_id);
+      const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${cust.lead_id}?fields=ConversationID`);
+      const lead=leadR.ok?await leadR.json().catch(()=>null):null;
+      const summary=events.map(e=>`${e.event_name} ×${e.c}`).join(', ');
+      await saasSendChatwootMessage(c, lead?.ConversationID, `Hi ${cust.name}, here's what you were up to this week: ${summary}. Let us know if there's anything we can help with!`);
+      await new Promise(res=>setTimeout(res, 300));
+    }catch(e){}
+  }
+}
+
+// ── Battlecards / Touchpoints / Surveys — straightforward D1 CRUD, same shape as
+// handleEcomCategor*/handleFpCustomer*.
+async function handleSaasBattlecardsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM saas_battlecards WHERE client_id=? ORDER BY competitor_name ASC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleSaasBattlecardCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.competitor_name) return json({error:'competitor_name required'}, 400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO saas_battlecards (client_id, competitor_name, comparison_json, positioning_notes, created_at) VALUES (?,?,?,?,?)`)
+    .bind(Number(payload.cid), String(body.competitor_name).trim().slice(0,140), JSON.stringify(body.comparison||{}), String(body.positioning_notes||'').slice(0,2000), now).run();
+  return json({Id:r.meta.last_row_id});
+}
+async function handleSaasBattlecardUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const sets=[], vals=[];
+  if(body.competitor_name!==undefined){ sets.push('competitor_name=?'); vals.push(String(body.competitor_name).trim().slice(0,140)); }
+  if(body.comparison!==undefined){ sets.push('comparison_json=?'); vals.push(JSON.stringify(body.comparison)); }
+  if(body.positioning_notes!==undefined){ sets.push('positioning_notes=?'); vals.push(String(body.positioning_notes).slice(0,2000)); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id), Number(payload.cid));
+  await env.DB.prepare(`UPDATE saas_battlecards SET ${sets.join(', ')} WHERE id=? AND client_id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleSaasBattlecardDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  await env.DB.prepare(`DELETE FROM saas_battlecards WHERE id=? AND client_id=?`).bind(Number(body.id), Number(payload.cid)).run();
+  return json({ok:true});
+}
+
+async function handleSaasTouchpointsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const customerId=url.searchParams.get('customer_id');
+  let sql=`SELECT * FROM saas_touchpoints WHERE client_id=?`; const binds=[Number(payload.cid)];
+  if(customerId){ sql+=` AND customer_id=?`; binds.push(Number(customerId)); }
+  sql+=` ORDER BY occurred_at DESC LIMIT 200`;
+  const {results}=await env.DB.prepare(sql).bind(...binds).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleSaasTouchpointCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.customer_id || !body.touchpoint_type) return json({error:'customer_id and touchpoint_type required'}, 400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO saas_touchpoints (client_id, customer_id, touchpoint_type, notes, occurred_at, created_at) VALUES (?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), Number(body.customer_id), String(body.touchpoint_type).slice(0,40), String(body.notes||'').slice(0,2000), body.occurred_at||now, now).run();
+  return json({Id:r.meta.last_row_id});
+}
+
+async function handleSaasSurveysList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const customerId=url.searchParams.get('customer_id');
+  let sql=`SELECT * FROM saas_surveys WHERE client_id=?`; const binds=[Number(payload.cid)];
+  if(customerId){ sql+=` AND customer_id=?`; binds.push(Number(customerId)); }
+  sql+=` ORDER BY created_at DESC LIMIT 200`;
+  const {results}=await env.DB.prepare(sql).bind(...binds).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleSaasSurveyCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.customer_id || !body.survey_type) return json({error:'customer_id and survey_type required'}, 400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO saas_surveys (client_id, customer_id, survey_type, sent_at, created_at) VALUES (?,?,?,?,?)`)
+    .bind(Number(payload.cid), Number(body.customer_id), body.survey_type==='nps'?'nps':'csat', now, now).run();
+  return json({Id:r.meta.last_row_id});
+}
+async function handleSaasSurveyRespond(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  await env.DB.prepare(`UPDATE saas_surveys SET score=?, comment=?, responded_at=? WHERE id=? AND client_id=?`)
+    .bind(parseInt(body.score,10)||null, String(body.comment||'').slice(0,1000), new Date().toISOString(), Number(body.id), Number(payload.cid)).run();
+  return json({ok:true});
+}
+
+// ── SaaS Ops config — Integrations sub-view of accounting.html's new tab. Same paste-in-your-own-
+// key pattern as accounting.html's own ERPNext settings fields; usage_ingest_token is generated
+// once and shown for the client to paste into their own product's backend.
+async function handleSaasConfigGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await fpEnsureConfigRow(env, payload.cid);
+  let cfg=await env.DB.prepare(`SELECT * FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
+  if(!cfg.usage_ingest_token){
+    const token=crypto.randomUUID().replace(/-/g,'');
+    await env.DB.prepare(`UPDATE fp_config SET usage_ingest_token=? WHERE client_id=?`).bind(token, Number(payload.cid)).run();
+    cfg=await env.DB.prepare(`SELECT * FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
+  }
+  // Secrets are write-only from the browser's perspective past initial save — never echo a stored
+  // secret back, same "never reaches the browser" convention as shopify_access_token/erpnext_api_secret.
+  const {stripe_secret_key, chargebee_api_key, paddle_api_key, support_api_key, chargebee_webhook_secret, paddle_webhook_secret, stripe_webhook_secret, ...safe}=cfg;
+  return json({...safe,
+    stripe_connected:!!stripe_secret_key, chargebee_connected:!!chargebee_api_key, paddle_connected:!!paddle_api_key, support_connected:!!support_api_key,
+  });
+}
+async function handleSaasConfigUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await fpEnsureConfigRow(env, payload.cid);
+  const body=await request.json().catch(()=>({}));
+  const sets=[], vals=[];
+  for(const f of ['stripe_secret_key','stripe_webhook_secret','chargebee_site','chargebee_api_key','chargebee_webhook_secret','paddle_api_key','paddle_webhook_secret','support_provider','support_api_key','support_subdomain']){
+    if(body[f]!==undefined && body[f]!==''){ sets.push(`${f}=?`); vals.push(String(body[f]).trim().slice(0,500)); }
+  }
+  if(!sets.length) return json({ok:true});
+  sets.push('updated_at=?'); vals.push(new Date().toISOString());
+  vals.push(Number(payload.cid));
+  await env.DB.prepare(`UPDATE fp_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+// ── Reports — GET /saas/reports, dashboard.html's new "📈 SaaS" Reports sub-tab.
+async function handleSaasReports(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const months=6;
+  const since=new Date(); since.setMonth(since.getMonth()-(months-1)); since.setDate(1);
+  const sinceStr=since.toISOString().slice(0,7);
+
+  const {results:collections}=await env.DB.prepare(`SELECT collected_at, amount, currency FROM fp_collections WHERE client_id=? AND collected_at>=?`).bind(clientId, since.toISOString()).all();
+  const byMonth={};
+  (collections||[]).forEach(c=>{ const m=c.collected_at.slice(0,7); if(!byMonth[m]) byMonth[m]={key:m, revenue:0}; byMonth[m].revenue+=Number(c.amount)||0; });
+
+  const {results:allCust}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=?`).bind(clientId).all();
+  const active=(allCust||[]).filter(c=>c.status!=='cancelled');
+  const churned=(allCust||[]).filter(c=>c.lifecycle_stage==='churned');
+  const mrr=active.reduce((s,c)=>s+(Number(c.monthly_value)||0),0);
+  const logoChurnRate=allCust?.length?Math.round((churned.length/allCust.length)*1000)/10:0;
+
+  const healthDistribution={healthy:0, neutral:0, at_risk:0};
+  active.forEach(c=>{ const s=c.health_score; if(s==null) return; if(s>=70) healthDistribution.healthy++; else if(s>=40) healthDistribution.neutral++; else healthDistribution.at_risk++; });
+  const atRisk=active.filter(c=>c.health_score!=null && c.health_score<40).sort((a,b)=>a.health_score-b.health_score).slice(0,10).map(c=>({name:c.name, health_score:c.health_score, mrr:c.monthly_value}));
+
+  const todayStr=new Date().toISOString().slice(0,10);
+  const renewalPipeline=active.filter(c=>c.renewal_date).map(c=>({name:c.name, renewal_date:c.renewal_date, days_out:Math.round((new Date(c.renewal_date)-new Date(todayStr))/86400000)}))
+    .filter(c=>c.days_out>=0 && c.days_out<=90).sort((a,b)=>a.days_out-b.days_out);
+
+  const {results:milestoneDefs}=await env.DB.prepare(`SELECT milestone_key, label FROM saas_activation_milestones WHERE client_id=?`).bind(clientId).all();
+  const activationFunnel=[];
+  for(const m of (milestoneDefs||[])){
+    const {results} =await env.DB.prepare(`SELECT COUNT(*) n FROM saas_account_milestones WHERE client_id=? AND milestone_key=? AND completed_at IS NOT NULL`).bind(clientId, m.milestone_key).all();
+    activationFunnel.push({milestone:m.label, completed:results?.[0]?.n||0});
+  }
+
+  const expansionCandidates=active.filter(c=>c.seat_count!=null && c.seat_count>0).map(c=>({name:c.name, seat_count:c.seat_count})).slice(0,10);
+
+  return json({
+    months:Object.values(byMonth).sort((a,b)=>a.key.localeCompare(b.key)),
+    mrr:Math.round(mrr*100)/100, active_accounts:active.length, logo_churn_rate:logoChurnRate,
+    health_distribution:healthDistribution, at_risk_accounts:atRisk,
+    renewal_pipeline:renewalPipeline, activation_funnel:activationFunnel, expansion_candidates:expansionCandidates,
+  });
 }
 
 // ── Hospitality module (frontend/dashboard.html "🏨 Hospitality" nav tab — houseboats/hotels/
@@ -11546,6 +12256,27 @@ export default {
       else if(url.pathname==='/financial/config' && request.method==='PATCH'){ res=await handleFpConfigUpdate(request, env); }
       else if(url.pathname==='/financial/dashboard' && request.method==='GET'){ res=await handleFpDashboard(request, env); }
       else if(url.pathname.startsWith('/financial/razorpay-webhook/') && request.method==='POST'){ res=await handleRazorpayWebhook(request, env, url.pathname.slice('/financial/razorpay-webhook/'.length)); }
+      else if(url.pathname.startsWith('/saas/webhooks/stripe/') && request.method==='POST'){ res=await handleSaasStripeWebhook(request, env, url.pathname.slice('/saas/webhooks/stripe/'.length)); }
+      else if(url.pathname.startsWith('/saas/webhooks/chargebee/') && request.method==='POST'){ res=await handleSaasChargebeeWebhook(request, env, url.pathname.slice('/saas/webhooks/chargebee/'.length)); }
+      else if(url.pathname.startsWith('/saas/webhooks/paddle/') && request.method==='POST'){ res=await handleSaasPaddleWebhook(request, env, url.pathname.slice('/saas/webhooks/paddle/'.length)); }
+      else if(url.pathname==='/saas/usage-event' && request.method==='POST'){ res=await handleSaasUsageEvent(request, env); }
+      else if(url.pathname==='/saas/milestones' && request.method==='GET'){ res=await handleSaasMilestonesList(request, env); }
+      else if(url.pathname==='/saas/milestones' && request.method==='POST'){ res=await handleSaasMilestoneCreate(request, env); }
+      else if(url.pathname==='/saas/milestones' && request.method==='DELETE'){ res=await handleSaasMilestoneDelete(request, env); }
+      else if(url.pathname==='/saas/account-milestones' && request.method==='GET'){ res=await handleSaasAccountMilestonesList(request, env); }
+      else if(url.pathname==='/saas/account-milestones/complete' && request.method==='POST'){ res=await handleSaasAccountMilestoneComplete(request, env); }
+      else if(url.pathname==='/saas/battlecards' && request.method==='GET'){ res=await handleSaasBattlecardsList(request, env); }
+      else if(url.pathname==='/saas/battlecards' && request.method==='POST'){ res=await handleSaasBattlecardCreate(request, env); }
+      else if(url.pathname==='/saas/battlecards' && request.method==='PATCH'){ res=await handleSaasBattlecardUpdate(request, env); }
+      else if(url.pathname==='/saas/battlecards' && request.method==='DELETE'){ res=await handleSaasBattlecardDelete(request, env); }
+      else if(url.pathname==='/saas/touchpoints' && request.method==='GET'){ res=await handleSaasTouchpointsList(request, env); }
+      else if(url.pathname==='/saas/touchpoints' && request.method==='POST'){ res=await handleSaasTouchpointCreate(request, env); }
+      else if(url.pathname==='/saas/surveys' && request.method==='GET'){ res=await handleSaasSurveysList(request, env); }
+      else if(url.pathname==='/saas/surveys' && request.method==='POST'){ res=await handleSaasSurveyCreate(request, env); }
+      else if(url.pathname==='/saas/surveys/respond' && request.method==='POST'){ res=await handleSaasSurveyRespond(request, env); }
+      else if(url.pathname==='/saas/config' && request.method==='GET'){ res=await handleSaasConfigGet(request, env); }
+      else if(url.pathname==='/saas/config' && request.method==='PATCH'){ res=await handleSaasConfigUpdate(request, env); }
+      else if(url.pathname==='/saas/reports' && request.method==='GET'){ res=await handleSaasReports(request, env); }
       else if(url.pathname==='/hospitality/units' && request.method==='GET'){ res=await handleHospitalityUnitsList(request, env); }
       else if(url.pathname==='/hospitality/units' && request.method==='POST'){ res=await handleHospitalityUnitCreate(request, env); }
       else if(url.pathname==='/hospitality/units' && request.method==='PATCH'){ res=await handleHospitalityUnitUpdate(request, env); }
@@ -11626,20 +12357,29 @@ export default {
     return new Response(res.body, {status:res.status, headers});
   },
 
-  // Cloudflare Cron Triggers — see wrangler.toml [triggers]. Three schedules share this one
-  // entry point: the daily health check (now also advancing the Advanced Pipeline follow-up
-  // cadence and the Calendar Events module's due-today sends — see
-  // runPipelineFollowupsForAllClients/runCalendarEventsForAllClients above, same tick since none
-  // of the three need finer-than-daily granularity), the Automations module's flow-advance tick,
-  // and the Shopify abandoned-cart sweep.
+  // Cloudflare Cron Triggers — see wrangler.toml [triggers]. Four schedules share this one entry
+  // point: the daily health check (now also advancing the Advanced Pipeline follow-up cadence,
+  // the Calendar Events module's due-today sends, and the SaaS Ops module's health-score/
+  // reminder/support-pull sweeps — see runPipelineFollowupsForAllClients/
+  // runCalendarEventsForAllClients/runSaasHealthScoresForAllClients above, same tick since none
+  // need finer-than-daily granularity), the Automations module's flow-advance tick, the SaaS Ops
+  // weekly digests (its own explicit branch — NOT folded into the trailing `else` below, which
+  // would silently misroute it onto the 20-min Shopify sweep instead of ever running), and the
+  // Shopify abandoned-cart sweep (the trailing `else`, since it's the only schedule left once the
+  // other three are matched explicitly).
   async scheduled(event, env, ctx){
     if(event.cron==='0 2 * * *'){
       ctx.waitUntil(runDailyHealthCheckForAllClients(env)); ctx.waitUntil(runPipelineFollowupsForAllClients(env)); ctx.waitUntil(runCalendarEventsForAllClients(env));
       // Financial Planning — monthly generation self-gates internally on the 1st of the month
       // (see its own comment); the reminder sweep runs every day this tick fires.
       ctx.waitUntil(runFinancialPlanningMonthlyForAllClients(env)); ctx.waitUntil(runFinancialPlanningRemindersForAllClients(env));
+      // SaaS Ops — health score recompute, renewal/activation reminders, support-signal pull; all
+      // daily-granularity, piggybacked here rather than a 5th cron string, same reasoning as
+      // Financial Planning's own comment above.
+      ctx.waitUntil(runSaasHealthScoresForAllClients(env)); ctx.waitUntil(runSaasRemindersForAllClients(env)); ctx.waitUntil(runSaasSupportPullForAllClients(env));
     }
     else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env)); }
+    else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }
 };

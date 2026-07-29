@@ -6031,6 +6031,135 @@ write-only) — the frontend only includes a secret field in its `PATCH` body wh
 typed something into it, so re-saving the enabled/reminders toggles alone can never accidentally
 wipe out a previously-configured secret.
 
+## SaaS Ops module (`frontend/accounting.html` — "🚀 SaaS Ops" tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0025_saas_ops.sql`)
+
+Subscription/lifecycle tracking, activation, product usage/PQL signals, account health scoring,
+support-ticket signals, CSM touchpoints, NPS/CSAT surveys, competitor battlecards, and renewal/
+activation reminders for the **SaaS / Digital Marketing** industry (`INDUSTRIES.saas_digital_marketing`
+in `frontend/dashboard.html`).
+
+**Built on top of the Financial Planning module above, not a second parallel system.**
+`fp_customers` already is the recurring-billing "Account" record (plan/monthly_value/billing_cycle/
+status) — this module just ALTERs it with SaaS-specific columns. `fp_expected_dues`/`fp_collections`
+already is the MRR/collections ledger — Stripe/Chargebee/Paddle webhooks upsert into those same
+tables rather than a new `saas_subscription_events` table. `fp_config` already is the per-client
+single-row settings table — the new billing/support credentials are just more columns on it. The
+existing ERPNext bridge (`erpnextPushSalesDoc`/`erpnextPushPaymentEntry`) is reused unchanged for
+real invoice/payment sync — a billing webhook creates an `accounting_documents` row and pushes it
+through the same functions the Accounting module's own "Sync to ERPNext" button uses.
+
+### No OAuth apps — paste-your-own-key pattern
+Registering an OAuth app with each of Stripe, Chargebee, Paddle, Zendesk, Intercom, and Freshdesk
+needs a live developer account per provider. Instead this reuses the pattern already in this
+codebase for ERPNext (`accounting.html`'s `erpBaseUrl`/`erpApiKey`/`erpApiSecret` fields): a client
+pastes their **own** API key(s) for their own provider account into the 🚀 SaaS Ops → Integrations
+sub-view, saved via `PATCH /saas/config` onto `fp_config`. Billing providers additionally get a
+webhook secret to paste into their own provider dashboard, pointed at the webhook URL shown on that
+same screen (`/saas/webhooks/<provider>/<client_id>`).
+
+**None of the six provider integrations below have been exercised against a live account in this
+build** — each is implemented to that provider's own publicly documented, stable API/webhook shape
+(Stripe's especially well-established). Verify with a real test webhook (Stripe CLI's `stripe
+trigger`, Chargebee/Paddle's own webhook test-send, a real API call to Zendesk/Intercom/Freshdesk)
+before relying on this in production.
+
+### Schema (migration 0025)
+- **`fp_customers`** ALTER: `company_name`, `plan_tier`, `trial_end_date`, `lifecycle_stage`
+  (onboarding/active/at_risk/renewal/expansion/churned — a second axis alongside the existing
+  generic `status`, untouched), `renewal_date`, `seat_count`, `health_score`,
+  `health_score_manual` (`'Yes'` locks it against the daily recompute cron, same convention as
+  `LEADS.WinProbability`/`WinProbabilityManual`), `csm_owner`.
+- **`fp_config`** ALTER: `stripe_secret_key`/`stripe_webhook_secret`,
+  `chargebee_site`/`chargebee_api_key`/`chargebee_webhook_secret`,
+  `paddle_api_key`/`paddle_webhook_secret`, `support_provider`/`support_api_key`/`support_subdomain`,
+  `usage_ingest_token` (bearer token for the usage-event endpoint, generated on first Integrations
+  load).
+- **`saas_usage_events`** — product usage/PQL ingestion, `client_id, customer_id, event_name,
+  event_count, occurred_at`. Nothing in this app tracked real in-product usage before this, for any
+  industry.
+- **`saas_activation_milestones`** + **`saas_account_milestones`** — client-configurable milestone
+  checklist + per-account completion. **Deliberately not built on `pipeline_followups`**
+  (migration 0013) — that table is uniquely keyed one row per `lead_id`, anchored to pipeline
+  Stage, incompatible with an account needing several independent milestones tracked at once.
+- **`saas_support_signals`** — periodic ticket-count/avg-CSAT rollups per period, pulled (not
+  webhook-pushed) once a day.
+- **`saas_touchpoints`** — CSM check-ins/QBRs/escalations log.
+- **`saas_surveys`** — NPS/CSAT send + response tracking.
+- **`saas_battlecards`** — per-competitor feature/pricing comparison data, feeds the FAQ prompt.
+- **`saas_account_reminders`** — generic account-anchored reminder (`reminder_type, anchor_at,
+  offset_days, sent_at`), for renewal (90/60/30 days out) and activation-stall nudges —
+  `pipeline_followups` couldn't hold several independent reminder rows per account, this can.
+
+### Billing webhooks (`cloudflare-worker/worker.js`)
+`handleSaasStripeWebhook`/`handleSaasChargebeeWebhook`/`handleSaasPaddleWebhook`, routed at
+`/saas/webhooks/<provider>/<client_id>` (the URL's `client_id` is a lookup key only, same
+`/financial/razorpay-webhook/<clientId>` shape as the Razorpay webhook above — the real trust
+boundary is the signature/token check against that specific client's own `fp_config` secret).
+Each provider's payload is normalized into one shared shape and applied by
+`saasApplyBillingEvent()` — the actual `fp_expected_dues`/`fp_collections`/lifecycle-stage/
+ERPNext-bridge logic exists exactly once, not duplicated three times. Signature schemes (all HMAC-
+SHA256, timing-safe compared): Stripe's `Stripe-Signature: t=…,v1=…` over `${t}.${rawBody}`;
+Paddle's `Paddle-Signature: ts=…;h1=…` over `${ts}:${rawBody}`; Chargebee doesn't HMAC-sign by
+default, so its "signature" here is a shared token compared from the webhook URL's `?token=`
+query param against `fp_config.chargebee_webhook_secret`.
+
+### Usage ingestion
+`POST /saas/usage-event`, `Authorization: Bearer <fp_config.usage_ingest_token>` — call this from
+the client's **own** product backend on real usage events. Feeds the health score and the weekly
+customer value update.
+
+### Health score (`computeAccountHealthScore`)
+Deterministic, rule-based (not an LLM call per account — cheap enough to recompute for every
+account, every day): starts at 50, then adjusts for recent billing status, 30-day usage trend
+(vs. the prior 30 days), support ticket volume/CSAT, and the linked lead's own `WinProbability`
+(read-only — never written back to). Recomputed daily by `runSaasHealthScoresForAllClients`
+unless `health_score_manual==='Yes'`.
+
+### Support-ticket signals — pulled, not pushed
+`pullZendeskSignals`/`pullIntercomSignals`/`pullFreshdeskSignals`, called daily by
+`runSaasSupportPullForAllClients` for every client with `fp_config.support_provider` set. One auth
+pattern (an API key) instead of three more provider-specific webhook signature schemes with no
+live account to verify them against.
+
+### Reminders & weekly digests (Cloudflare Cron Triggers)
+`runSaasRemindersForAllClients` (renewal 90/60/30-day nudges + one activation-stall nudge, sent via
+the same Chatwoot conversations-API pattern as `fpSendRemindersForClient`) is piggybacked onto the
+existing daily `0 2 * * *` tick, same reasoning as Financial Planning's own monthly-generation
+comment. `runWeeklyOwnerDigest`/`runWeeklyCustomerValueUpdate` get a **new, explicit 4th cron
+string** (`0 9 * * 1`, Mondays 09:00 UTC) in `wrangler.toml` — **not** folded into the `scheduled()`
+dispatcher's trailing `else` (that branch is the Shopify abandoned-cart sweep; any cron string it
+doesn't explicitly match falls through to it, so a 5th schedule added later must get its own
+explicit `else if` before that trailing `else`, not just a new string in the `crons` array).
+
+### FAQ prompt (`engineBuildFaqSystemPrompt`, `worker.js`)
+A third industry branch (alongside the existing `ecommerce`/`travel` ones) for
+`industry==='saas_digital_marketing'`, fed by a new `engineBuildSaasContext()` — the customer's own
+linked account (plan/trial/renewal/seats) plus `saas_battlecards` rows, so "how are you different
+from X" gets a real answer when a battlecard covers it, and an honest "I'll find out" when it
+doesn't, instead of an invented comparison.
+
+### Frontend (`frontend/accounting.html`)
+No new top-level dashboard.html module — `accounting.html` already has the tab bar this belongs in
+(`Documents | Customers | Financial Planning | ERPNext`), and its Financial Planning tab already is
+the `fp_customers` UI. The Financial Planning Customer modal/table got the new SaaS columns added
+in place; a **new 5th tab, "🚀 SaaS Ops"**, shown only for `industry==='saas_digital_marketing'`
+(`applySaasOpsVisibility()`), covers Activation, Battlecards, Touchpoints & Surveys, Reminders
+(read-only log), and Integrations — reached through the same Accounting nav entry, not a new one.
+`dashboard.html`'s Reports page gets a matching "📈 SaaS" sub-tab (`renderReportsSaas`, trivial
+extension of `renderReportsSubPage`'s `fns` map), and the lead detail panel gets a small "🚀 Linked
+Account" card (inserted right after the existing `#detailSignals` chips) when the open lead links
+to an `fp_customers` row.
+
+### Manual test checklist (no live provider credentials exist in this build)
+- **Billing**: `stripe listen --forward-to <worker>/saas/webhooks/stripe/<client_id>` +
+  `stripe trigger invoice.paid` → confirm an `fp_expected_dues`/`fp_collections` row appears, and
+  (if ERPNext is also connected) a Sales Invoice + Payment Entry appear in that client's real
+  ERPNext site.
+- **Usage**: `curl -X POST <worker>/saas/usage-event -H "Authorization: Bearer <token>" -d '{"customer_id":1,"event_name":"test"}'`
+  → confirm the next day's health-score recompute reflects it.
+- **Cron**: confirm `wrangler.toml`'s `crons` array and the `scheduled()` dispatcher's `event.cron`
+  checks match exactly, character-for-character, especially the new `"0 9 * * 1"` string.
+
 ## AI Sales Plan (`frontend/dashboard.html` — Leads page → 🧠 AI Analyst → "🤖 AI Sales Plan" tab)
 
 A ranked daily worklist, **not an autonomous agent** — every action needs a click. Computed entirely
