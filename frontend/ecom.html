@@ -167,11 +167,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <thead>
           <tr>
             <th style="width:1%"><input type="checkbox" id="selectAllProducts" onchange="toggleSelectAllProducts(this.checked)"></th>
-            <th>Image</th><th>Name</th><th>SKU</th><th>Category</th><th>Color</th><th>Size</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th>
+            <th>Image</th><th>Name</th><th>SKU</th><th>Category</th><th>Style</th><th>Color</th><th>Size</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="productsTbody">
-          <tr class="loading-row"><td colspan="11"><span class="spinner"></span>Loading…</td></tr>
+          <tr class="loading-row"><td colspan="12"><span class="spinner"></span>Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -403,8 +403,27 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <div class="s-sec"><span class="s-lbl">Name *</span><input class="s-input" id="pmName" type="text"></div>
       <div class="s-sec"><span class="s-lbl">SKU</span><input class="s-input" id="pmSku" type="text"></div>
       <div class="s-sec"><span class="s-lbl">Category</span><select class="s-input" id="pmCategory" onchange="onCategorySelectChange(this)"></select></div>
-      <div class="s-sec"><span class="s-lbl">Color</span><input class="s-input" id="pmColor" type="text" placeholder="e.g. Black"></div>
-      <div class="s-sec"><span class="s-lbl">Size</span><input class="s-input" id="pmSize" type="text" placeholder="e.g. M, 42, 10ml"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Style</span>
+        <select class="s-input" id="pmStyle" onchange="onProductStyleChange()">
+          <option value="fashion_garments">Fashion & Garments</option>
+          <option value="general">General</option>
+          <option value="cosmetics">Cosmetics</option>
+          <option value="haircare">Haircare</option>
+        </select>
+      </div>
+      <div class="s-sec" data-style-group="fashion_garments"><span class="s-lbl">Color</span><input class="s-input" id="pmColor" type="text" placeholder="e.g. Black"></div>
+      <div class="s-sec" data-style-group="fashion_garments"><span class="s-lbl">Size</span><input class="s-input" id="pmSize" type="text" placeholder="e.g. M, 42, 10ml"></div>
+      <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Shade</span><input class="s-input" id="pmShade" type="text" placeholder="e.g. Rose Nude"></div>
+      <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Skin Type</span><input class="s-input" id="pmSkinType" type="text" placeholder="e.g. Oily, Dry, Combination"></div>
+      <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Expiry Date</span><input class="s-input" id="pmExpiryDate" type="text" placeholder="e.g. 2027-03"></div>
+      <div class="s-sec" data-style-group="haircare"><span class="s-lbl">Hair Type</span><input class="s-input" id="pmHairType" type="text" placeholder="e.g. Straight, Curly, All"></div>
+      <div class="s-sec" data-style-group="haircare"><span class="s-lbl">Addresses (Concern)</span><input class="s-input" id="pmConcern" type="text" placeholder="e.g. Dandruff, Hairfall"></div>
+      <div class="s-sec" data-style-group="cosmetics,haircare"><span class="s-lbl">Volume</span><input class="s-input" id="pmVolumeMl" type="text" placeholder="e.g. 50ml"></div>
+      <div class="s-sec" data-style-group="cosmetics,haircare"><span class="s-lbl">Key Ingredient</span><input class="s-input" id="pmIngredient" type="text" placeholder="e.g. Hyaluronic Acid"></div>
+      <div class="s-sec" data-style-group="general"><span class="s-lbl">Brand</span><input class="s-input" id="pmBrand" type="text"></div>
+      <div class="s-sec" data-style-group="general"><span class="s-lbl">Variant</span><input class="s-input" id="pmVariant" type="text" placeholder="e.g. 500ml, Pack of 2"></div>
+      <div class="s-sec" data-style-group="general"><span class="s-lbl">Warranty</span><input class="s-input" id="pmWarrantyPeriod" type="text" placeholder="e.g. 1 Year"></div>
       <div class="s-sec"><span class="s-lbl">Price</span><input class="s-input" id="pmPrice" type="number" step="0.01"></div>
       <div class="s-sec"><span class="s-lbl">Currency</span><input class="s-input" id="pmCurrency" type="text" placeholder="INR"></div>
       <div class="s-sec"><span class="s-lbl">Stock</span><input class="s-input" id="pmStock" type="number"></div>
@@ -413,6 +432,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <select class="s-input" id="pmStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
       </div>
       <div class="s-sec"><span class="s-lbl">Image Link</span><input class="s-input" id="pmImage" type="url"></div>
+      <div class="s-sec" id="pmShopifyUrlWrap" style="display:none"><span class="s-lbl">Shopify Product Link</span><input class="s-input" id="pmShopifyUrl" type="url" placeholder="https://yourstore.myshopify.com/products/..."></div>
     </div>
     <div class="s-sec">
       <span class="s-lbl">Description</span>
@@ -509,8 +529,20 @@ const PRODUCT_FIELDS = [
   { key:'name',        label:'Name',        required:true },
   { key:'sku',         label:'SKU' },
   { key:'category',    label:'Category' },
+  { key:'style',       label:'Style' },
   { key:'color',       label:'Color' },
   { key:'size',        label:'Size' },
+  { key:'shade',       label:'Shade' },
+  { key:'skin_type',   label:'Skin Type' },
+  { key:'expiry_date', label:'Expiry Date' },
+  { key:'hair_type',   label:'Hair Type' },
+  { key:'concern',     label:'Concern' },
+  { key:'volume_ml',   label:'Volume' },
+  { key:'ingredient',  label:'Key Ingredient' },
+  { key:'brand',       label:'Brand' },
+  { key:'variant',     label:'Variant' },
+  { key:'warranty_period', label:'Warranty' },
+  { key:'shopify_product_url', label:'Shopify Product Link' },
   { key:'price',       label:'Price' },
   { key:'currency',    label:'Currency' },
   { key:'stock',       label:'Stock' },
@@ -641,6 +673,17 @@ function renderShopifyConnection() {
   document.getElementById('shopifyConnected').style.display = connected ? 'block' : 'none';
   if (connected) document.getElementById('shopifyDomainDisplay').textContent = clientRecord.shopify_shop_domain;
   else document.getElementById('shopifyConnectLink').href = `https://app.leadvyne.com/dashboard.html?client=${encodeURIComponent(clientId)}&integrations`;
+  // Per-product Shopify link only makes sense once Shopify is actually connected — hidden
+  // otherwise so it doesn't imply a feature that isn't wired up yet.
+  document.getElementById('pmShopifyUrlWrap').style.display = connected ? '' : 'none';
+}
+
+function onProductStyleChange() {
+  const style = document.getElementById('pmStyle').value || 'fashion_garments';
+  document.querySelectorAll('[data-style-group]').forEach(el => {
+    const groups = el.getAttribute('data-style-group').split(',');
+    el.style.display = groups.includes(style) ? '' : 'none';
+  });
 }
 
 function renderShopifyLog() {
@@ -673,7 +716,7 @@ function showTab(name) {
 async function loadProducts() {
   const tbody = document.getElementById('productsTbody');
   if (!ecomTableIds.products) {
-    tbody.innerHTML = '<tr><td colspan="11" class="loading-row">Set Products Table ID in Settings first</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" class="loading-row">Set Products Table ID in Settings first</td></tr>';
     return;
   }
   try {
@@ -684,7 +727,7 @@ async function loadProducts() {
     [...selectedProductIds].forEach(id => { if (!liveIds.has(id)) selectedProductIds.delete(id); });
     renderProductsTable();
   } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="11" class="loading-row">Error: ${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="loading-row">Error: ${e.message}</td></tr>`;
   }
 }
 
@@ -702,7 +745,7 @@ function renderProductsTable() {
   document.getElementById('statOutOfStock').textContent = outOfStock;
 
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="11"><div class="empty-state"><div class="empty-icon">📦</div>${allProducts.length ? 'No products match your search' : 'No products found'}</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12"><div class="empty-state"><div class="empty-icon">📦</div>${allProducts.length ? 'No products match your search' : 'No products found'}</div></td></tr>`;
   } else {
     tbody.innerHTML = list.map(p => `
       <tr>
@@ -711,6 +754,7 @@ function renderProductsTable() {
         <td><strong>${esc(p.name||p.title||'—')}</strong></td>
         <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
         <td>${esc(p.category||'—')}</td>
+        <td>${esc(PRODUCT_STYLE_LABELS[p.style] || PRODUCT_STYLE_LABELS.fashion_garments)}</td>
         <td>${esc(p.color||'—')}</td>
         <td>${esc(p.size||'—')}</td>
         <td>${esc(p.currency||'INR')} ${Number(p.price||0).toLocaleString()}</td>
@@ -781,7 +825,11 @@ async function bulkDeleteProducts() {
 }
 
 // ── ADD / EDIT / DELETE PRODUCT ───────────────────
-const PRODUCT_MODAL_FIELDS = ['pmName','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmDescription'];
+const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'General', cosmetics:'Cosmetics', haircare:'Haircare' };
+// Fields specific to the non-default styles (Cosmetics/Haircare/General) — see onProductStyleChange
+// and the data-style-group attributes on their <div class="s-sec"> in the modal markup above.
+const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod'];
+const PRODUCT_MODAL_FIELDS = ['pmName','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmDescription','pmShopifyUrl', ...PRODUCT_STYLE_FIELDS];
 
 function openAddProductModal() {
   if (!ecomTableIds.products) { alert('Set the Products Table ID in Settings first.'); return; }
@@ -789,6 +837,8 @@ function openAddProductModal() {
   PRODUCT_MODAL_FIELDS.forEach(id => document.getElementById(id).value = '');
   document.getElementById('pmCurrency').value = 'INR';
   document.getElementById('pmStatus').value = 'active';
+  document.getElementById('pmStyle').value = 'fashion_garments';
+  onProductStyleChange();
   document.getElementById('productModalTitle').textContent = 'Add Product';
   document.getElementById('productModalSaveBtn').textContent = 'Save Product';
   document.getElementById('productModalMsg').textContent = '';
@@ -804,8 +854,21 @@ function openEditProductModal(id) {
   document.getElementById('pmSku').value = p.sku || '';
   ensureCategoryOptionExists(p.category);
   document.getElementById('pmCategory').value = p.category || '';
+  document.getElementById('pmStyle').value = p.style || 'fashion_garments';
+  onProductStyleChange();
   document.getElementById('pmColor').value = p.color || '';
   document.getElementById('pmSize').value = p.size || '';
+  document.getElementById('pmShade').value = p.shade || '';
+  document.getElementById('pmSkinType').value = p.skin_type || '';
+  document.getElementById('pmExpiryDate').value = p.expiry_date || '';
+  document.getElementById('pmHairType').value = p.hair_type || '';
+  document.getElementById('pmConcern').value = p.concern || '';
+  document.getElementById('pmVolumeMl').value = p.volume_ml || '';
+  document.getElementById('pmIngredient').value = p.ingredient || '';
+  document.getElementById('pmBrand').value = p.brand || '';
+  document.getElementById('pmVariant').value = p.variant || '';
+  document.getElementById('pmWarrantyPeriod').value = p.warranty_period || '';
+  document.getElementById('pmShopifyUrl').value = p.shopify_product_url || '';
   document.getElementById('pmPrice').value = p.price ?? '';
   document.getElementById('pmCurrency').value = p.currency || 'INR';
   document.getElementById('pmStock').value = p.stock ?? '';
@@ -831,8 +894,20 @@ async function submitProductForm() {
     name,
     sku: document.getElementById('pmSku').value.trim(),
     category: document.getElementById('pmCategory').value.trim(),
+    style: document.getElementById('pmStyle').value || 'fashion_garments',
     color: document.getElementById('pmColor').value.trim(),
     size: document.getElementById('pmSize').value.trim(),
+    shade: document.getElementById('pmShade').value.trim(),
+    skin_type: document.getElementById('pmSkinType').value.trim(),
+    expiry_date: document.getElementById('pmExpiryDate').value.trim(),
+    hair_type: document.getElementById('pmHairType').value.trim(),
+    concern: document.getElementById('pmConcern').value.trim(),
+    volume_ml: document.getElementById('pmVolumeMl').value.trim(),
+    ingredient: document.getElementById('pmIngredient').value.trim(),
+    brand: document.getElementById('pmBrand').value.trim(),
+    variant: document.getElementById('pmVariant').value.trim(),
+    warranty_period: document.getElementById('pmWarrantyPeriod').value.trim(),
+    shopify_product_url: document.getElementById('pmShopifyUrl').value.trim(),
     price: parseFloat(document.getElementById('pmPrice').value) || 0,
     currency: document.getElementById('pmCurrency').value.trim() || 'INR',
     stock: parseInt(document.getElementById('pmStock').value, 10) || 0,
@@ -905,8 +980,15 @@ let _importRows = [];
 
 function downloadProductTemplate() {
   const headers = PRODUCT_FIELDS.map(f => f.key);
-  const sample = ['Classic T-Shirt','TSHIRT-BLK-M','Apparel','Black','M','19.99','USD','25','active','100% cotton crew neck','https://example.com/images/tshirt-black-m.jpg'];
-  const csv = [headers.join(','), sample.map(csvCell).join(',')].join('\r\n');
+  // One sample row per style, so importers see how the style-specific columns line up — every
+  // row leaves the columns that don't apply to its own style blank.
+  const samples = [
+    ['Classic T-Shirt','TSHIRT-BLK-M','Apparel','fashion_garments','Black','M','','','','','','','','','','','','19.99','USD','25','active','100% cotton crew neck','https://example.com/images/tshirt-black-m.jpg'],
+    ['Wireless Mouse','MOUSE-BLK','Electronics','general','','','','','','','','','','LogiTech','Black - Wired','1 Year','','14.99','USD','40','active','Ergonomic wired mouse','https://example.com/images/mouse.jpg'],
+    ['Matte Lipstick','LIP-ROSE-01','Makeup','cosmetics','','','Rose Nude','Combination','2027-03','','','5ml','Vitamin E','','','','','9.99','USD','60','active','Long-lasting matte finish','https://example.com/images/lipstick.jpg'],
+    ['Anti-Dandruff Shampoo','HAIR-SH-200','Shampoo','haircare','','','','','','All','Dandruff','200ml','Tea Tree Oil','','','','','8.49','USD','35','active','Gentle daily-use shampoo','https://example.com/images/shampoo.jpg'],
+  ];
+  const csv = [headers.join(','), ...samples.map(row => row.map(csvCell).join(','))].join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -1001,8 +1083,20 @@ function parseImportCsv(text) {
       data: {
         name, sku,
         category: get('category'),
+        style: get('style') || 'fashion_garments',
         color: get('color'),
         size: get('size'),
+        shade: get('shade'),
+        skin_type: get('skin_type'),
+        expiry_date: get('expiry_date'),
+        hair_type: get('hair_type'),
+        concern: get('concern'),
+        volume_ml: get('volume_ml'),
+        ingredient: get('ingredient'),
+        brand: get('brand'),
+        variant: get('variant'),
+        warranty_period: get('warranty_period'),
+        shopify_product_url: get('shopify_product_url'),
         price: parseFloat(get('price')) || 0,
         currency: get('currency') || 'INR',
         stock: parseInt(get('stock'), 10) || 0,

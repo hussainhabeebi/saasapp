@@ -2882,6 +2882,68 @@ dump appended to the same reply. Only fires for `industry==='ecommerce'`.
   opening an old product for edit never silently blanks out (and then overwrites on save) a
   legacy category value that predates this feature.
 
+## Product styles (`frontend/ecom.html` — product modal's Style field)
+Every product optionally carries a `style` — **Fashion & Garments** (the default, and the only
+style that existed before this feature — its fields and behavior are completely unchanged),
+**General**, **Cosmetics**, or **Haircare**. Style is picked **per product**, not per client/store,
+so one catalog can mix styles (e.g. a store selling both clothing and cosmetics). A blank or
+unrecognized `style` on a product is always treated as `fashion_garments` — no existing product
+needs to be touched for anything to keep working exactly as before.
+
+### Schema — NocoDB product table columns, auto-provisioned
+Products live in the client's own NocoDB products table (`ecomResolveTable(..., 'products')`),
+not this repo's D1 DB — same as every other product field. New columns: `style`, `shade`,
+`skin_type`, `volume_ml`, `expiry_date`, `hair_type`, `concern`, `ingredient`, `brand`, `variant`,
+`warranty_period`, `shopify_product_url`. `volume_ml`/`ingredient` are shared between Cosmetics and
+Haircare rather than duplicated per style, to keep the schema smaller.
+
+`ensureEcomProductStyleFields()` (`cloudflare-worker/worker.js`) auto-creates any missing column
+the first time a client's products table is written to (`handleEcomCreate`/`handleEcomUpdate`) —
+same GET-fields-then-POST-if-missing pattern as `ensureFlowStateField`/`ensureB2bLeadFields`,
+memoized per table id (not a single shared boolean, since every client can have a different
+products table). No manual NocoDB setup step is required to start using a new style.
+
+### Fields per style
+- **Fashion & Garments** (default): `color`, `size` — unchanged from before this feature.
+- **General**: `brand`, `variant` (e.g. "500ml", "Pack of 2"), `warranty_period`.
+- **Cosmetics**: `shade`, `skin_type`, `volume_ml`, `expiry_date`, `ingredient`.
+- **Haircare**: `hair_type`, `concern` (e.g. dandruff, hairfall), `volume_ml`, `ingredient`.
+
+### Frontend (`frontend/ecom.html`)
+- Product modal has a **Style** `<select>` (`pmStyle`); the fields for the other three styles sit
+  in the same `.modal-grid` as `<div data-style-group="...">` blocks, shown/hidden by
+  `onProductStyleChange()` based on the selected style — no separate popup or page.
+- Products table has a **Style** column (`PRODUCT_STYLE_LABELS`).
+- CSV import/export (`PRODUCT_FIELDS`, `downloadProductTemplate()`, `parseImportCsv()`) covers all
+  style fields — the template download includes one sample row per style.
+
+### Chat / AI behavior (`cloudflare-worker/worker.js`)
+`ecomStyleAttributeLines(product)` builds the style-specific detail lines (e.g. "Shade: Rose Nude",
+"Hair type: Curly") from a product's `style`, shared by:
+- `engineBuildProductEnquirySystemPrompt` — the single-product WhatsApp reply prompt, right after
+  the existing color/size/category lines (which stay exactly as before).
+- `engineBuildEcomContext` — the whole-catalog KB block injected into the general chat prompt.
+
+### Reports — `style_breakdown` (`handleShopifyAnalytics`, reused by `/reports/products`)
+`top_products` (title/quantity/revenue) is **unchanged** — this is still the only breakdown for
+Fashion & Garments products, by design. A new, purely additive `style_breakdown` object in the same
+response adds, only for styles that have data: `cosmetics.by_shade`/`by_skin_type`,
+`haircare.by_hair_type`/`by_concern`, `general.by_brand`/`by_variant` (same `{key, quantity,
+revenue}` shape as `top_products`, top 10 each). Built by joining each order line item back to its
+product (by `sku`, falling back to a lowercased name match for the non-Shopify `items`-text order
+path, which has no sku) — line items themselves never carry style/attribute data.
+`frontend/dashboard.html`'s `ecomStyleBreakdownCards()` renders one extra card per style present,
+after the existing (untouched) Top Products card, in both the Shopify Analytics and Product
+Performance report tabs.
+
+## Per-product Shopify link → chat order links (`buildOrderLink`, `cloudflare-worker/worker.js`)
+A product can optionally carry its own `shopify_product_url` (set in the product modal, field only
+shown once `clientRecord.shopify_shop_domain` shows Shopify is connected — see
+`renderShopifyConnection()`). `buildOrderLink(c, clientId, sku, product)` now checks it first,
+ahead of the client-level `external_store_link` and the built-in storefront fallback — the most
+specific link available wins. `sendOrderLinkNow`/`sendOrderLinkViaChatwoot` resolve the matched
+product before building the link so it's available to pass in.
+
 ## onshope.com — dedicated storefront domain, client slugs, and the real WhatsApp number
 `store.html` above lives under `app.leadvyne.com`, which reads as "the SaaS backend" to a
 customer and produces long, tracking-parameter-looking links (`?client=1&sku=...`). onshope.com
