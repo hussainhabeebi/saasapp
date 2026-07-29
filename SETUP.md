@@ -64,6 +64,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | wa_credits_balance | Number (running balance from WhatsApp-credit add-on purchases) |
 | voice_addon_active | Single line ("Yes"/"No") |
 | voice_reply_enabled | Single line ("Yes"/"No", default No/opt-in when blank) — Integrations → Voice-to-Voice Reply toggle. The only gate on the voice-to-voice reply feature — not tied to `voice_addon_active`/billing in any way. See "Voice-to-voice replies" below. |
+| voice_tts_provider | Single line (blank/`sarvam`/`ai4bharat`, default blank = Auto) — Settings → Voice → 🔧 TTS Provider (testing) dropdown. Overrides which TTS engine `engineTtsWithFallback` (worker.js) and `ttsWithFallback` (backend/recovery.js) use for this client: blank is normal production behavior (Sarvam primary, AI4Bharat standby on failure); `ai4bharat` forces the standby directly; `sarvam` skips the standby. A testing/debug knob, not a production feature — see "Voice-to-voice replies" below. |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | billing_email | Single line (**required before a Stripe Customer is ever created** — `ensureStripeCustomer` refuses to create one without it; both `handleBillingCheckoutSubscription` and `handleBillingCheckoutAddon` return a 400 telling the customer to set it first, rather than silently falling back to `authentik_email`, since the login address is sometimes a shared/ops account, not who should receive billing mail. Once a `stripe_customer_id` already exists this field can still be edited/updated freely — the "required" check only guards *creating* the Stripe account in the first place) |
@@ -3626,6 +3627,12 @@ sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
   `render-pipeline/README.md`'s "AI4Bharat TTS standby" section for exactly what is and isn't
   confirmed about the model itself). Falls through to the normal text reply if BOTH providers fail,
   same as before this standby existed.
+- **Testing knob**: `voice_tts_provider` (Settings → Voice → 🔧 TTS Provider (testing) dropdown,
+  `dashboard.html`) lets you force a specific provider per client — "AI4Bharat only" calls the
+  standby directly (skipping Sarvam entirely) so you can test it against a real WhatsApp
+  conversation without needing to break the shared `SARVAM_API_KEY` Worker secret, which would
+  otherwise affect every client's voice replies at once. Leave on "Auto" (blank) for normal
+  operation — it's purely a testing/debug override, not something a client would set day-to-day.
 - **Spoken-reply rewrite has a Gemini-via-OpenRouter backup; voice-note transcription does not.**
   `engineBuildSpokenReply` calls `engineGeminiGenerateWithFallback` (direct Gemini first, then
   OpenRouter routed to a Gemini model using the client's own `openrouter_key` if Gemini is unset or

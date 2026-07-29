@@ -349,12 +349,18 @@ async function ai4BharatTts(text, isoLangCode) {
 
 // Tries Sarvam (PRIMARY) then the AI4Bharat standby — the same two-provider fallback as worker.js's
 // engineTtsWithFallback, ported here since this process has no access to that Worker-side helper.
-async function ttsWithFallback(text, isoLangCode) {
+// `provider` is client.voice_tts_provider (Settings → Voice → TTS Provider (testing)) — blank
+// means this normal auto behavior; 'ai4bharat' forces the standby directly (for testing it against
+// real traffic without touching the shared SARVAM_API_KEY); 'sarvam' skips the standby.
+async function ttsWithFallback(text, isoLangCode, provider) {
   const bcp47 = TTS_LANG_MAP[isoLangCode];
+  const mode = (provider || '').toLowerCase();
+  if (mode === 'ai4bharat') return ai4BharatTts(text, isoLangCode);
   if (bcp47) {
     const sarvamBuf = await sarvamTts(text, bcp47);
     if (sarvamBuf) return sarvamBuf;
   }
+  if (mode === 'sarvam') return null;
   return ai4BharatTts(text, isoLangCode);
 }
 
@@ -366,7 +372,7 @@ async function ttsWithFallback(text, isoLangCode) {
 async function sendVoiceMessage(client, convId, text, leadLanguage) {
   const isoLangCode = (leadLanguage || client.language || 'en').toLowerCase();
   if (!TTS_LANG_MAP[isoLangCode] && !AI4BHARAT_TTS_LANGS.has(isoLangCode)) return false; // unsupported by either provider, same scope limit as the live-reply pipeline
-  const audioBuf = await ttsWithFallback(text, isoLangCode);
+  const audioBuf = await ttsWithFallback(text, isoLangCode, client.voice_tts_provider);
   if (!audioBuf) return false;
   try {
     const fd = new FormData();
