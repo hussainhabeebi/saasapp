@@ -1681,7 +1681,7 @@ async function sendClassicFollowupStep(env, c, lead, nextIdx, tmpl){
   if(c.voice_followup_enabled==='Yes'){
     const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
     if(bcp47){
-      const audioBuf=await engineTtsWithFallback(env, text, (lead.Language||c.language||'en'));
+      const audioBuf=await engineTtsWithFallback(env, text, (lead.Language||c.language||'en'), c.voice_tts_provider);
       if(audioBuf){
         const vfd=new FormData();
         vfd.append('content', engineExtractLinkPriceCaption(text));
@@ -6898,13 +6898,23 @@ async function engineAi4BharatTts(env, text, isoLangCode){
 // providers need different formats internally, and this is the one place that difference is
 // handled, so callers don't need to know about it. Returns null (caller falls back to text) only
 // if BOTH providers fail or aren't configured.
-async function engineTtsWithFallback(env, text, langCode){
+//
+// `provider` is CLIENTS.voice_tts_provider (Settings → Voice → 🔧 TTS Provider (testing),
+// dashboard.html) — blank/unset means this normal auto behavior, unchanged. Added specifically so
+// the AI4Bharat standby can be tested against real WhatsApp traffic for one client without
+// touching the shared SARVAM_API_KEY (which affects every client at once): 'ai4bharat' skips
+// Sarvam and calls the standby directly; 'sarvam' skips the standby (Sarvam-or-nothing, so a
+// forced failure there falls straight to a text reply, same as before this standby existed).
+async function engineTtsWithFallback(env, text, langCode, provider){
   const iso=(langCode||'').toLowerCase();
   const bcp47=ENGINE_TTS_LANG_MAP[iso];
+  const mode=(provider||'').toLowerCase();
+  if(mode==='ai4bharat') return engineAi4BharatTts(env, text, iso);
   if(bcp47){
     const sarvamBuf=await engineSarvamTts(env, text, bcp47);
     if(sarvamBuf) return sarvamBuf;
   }
+  if(mode==='sarvam') return null;
   return engineAi4BharatTts(env, text, iso);
 }
 
@@ -6963,7 +6973,7 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // comment in dashboard.html), so a client controls this purely by flipping the toggle on or off.
   if(mediaType==='voice' && c.voice_reply_enabled==='Yes' && !imageUrl && bcp47){
     const spokenText=await engineBuildSpokenReply(env, c, trimmed, langCode);
-    const audioBuf=await engineTtsWithFallback(env, spokenText, langCode);
+    const audioBuf=await engineTtsWithFallback(env, spokenText, langCode, c.voice_tts_provider);
     if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
   }
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);

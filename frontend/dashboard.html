@@ -2534,6 +2534,29 @@ const TODAY = new Date().toISOString().slice(0,10);
           </div>
         </div>
 
+        <!-- TTS provider override — lets you force which text-to-speech engine voice-to-voice
+             replies AND voice follow-ups use (CLIENTS.voice_tts_provider, read by worker.js's
+             engineTtsWithFallback and backend/recovery.js's ttsWithFallback). Auto (blank, default)
+             is unchanged production behavior: Sarvam AI primary, self-hosted AI4Bharat standby on
+             any Sarvam failure. Added specifically so the AI4Bharat standby can be tested against
+             real WhatsApp traffic for just this one client, without needing to break the shared
+             SARVAM_API_KEY Worker secret (which would affect every client's voice replies at once). -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🔧 TTS Provider (testing)</div>
+            <div class="s-note">Which text-to-speech engine voice-to-voice replies and voice follow-ups use for this client. Leave on Auto for normal operation. Use "AI4Bharat only" to test the self-hosted standby directly against real conversations without touching Sarvam for anyone else.</div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <select class="form-input" id="cfgVoiceTtsProvider" style="max-width:300px">
+                <option value="">Auto — Sarvam, AI4Bharat standby</option>
+                <option value="sarvam">Sarvam only (no standby)</option>
+                <option value="ai4bharat">AI4Bharat only (force, for testing)</option>
+              </select>
+              <button class="save-btn" onclick="saveVoiceTtsProvider()">Save</button>
+              <span class="save-msg" id="saveVoiceTtsProviderMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- Voice Follow-ups — same Sarvam voice/pipeline as the reply toggle above, applied to
              scheduled outbound messages instead of live replies: the classic follow-up sequence
              (Follow-ups tab / POST /broadcast/followup-send) and the automated recovery/win-back
@@ -8642,6 +8665,7 @@ function integrationsInit(){
 // pageVoice — Voice-to-Voice Reply (moved from Integrations) + Voice Follow-ups.
 function voiceInit(){
   renderVoiceAddonCard();
+  renderVoiceTtsProviderCard();
   renderVoiceFollowupCard();
   renderPipelineFollowupCard();
 }
@@ -8670,6 +8694,32 @@ async function saveVoiceReplyToggle(){
   }catch(e){
     input.checked=!input.checked;
     label.textContent=input.checked?'On — reply with voice':'Off — always reply with text';
+    msg.textContent='Error: '+e.message;msg.className='save-msg err';
+  }finally{
+    input.disabled=false;
+    setTimeout(()=>msg.textContent='',3000);
+  }
+}
+
+// TTS provider override — reads/writes CLIENTS.voice_tts_provider (blank='', 'sarvam', or
+// 'ai4bharat'). Purely a testing/debug knob — see the card's own HTML comment for why this exists.
+function renderVoiceTtsProviderCard(){
+  const input=$id('cfgVoiceTtsProvider');
+  if(!input) return;
+  input.value=clientRecord?.voice_tts_provider||'';
+}
+
+async function saveVoiceTtsProvider(){
+  const input=$id('cfgVoiceTtsProvider'),msg=$id('saveVoiceTtsProviderMsg');
+  const value=input.value,prev=clientRecord?.voice_tts_provider||'';
+  msg.textContent='';msg.className='save-msg';
+  input.disabled=true;
+  try{
+    await patchClient({voice_tts_provider:value});
+    clientRecord.voice_tts_provider=value;
+    msg.textContent='✓ Saved';
+  }catch(e){
+    input.value=prev;
     msg.textContent='Error: '+e.message;msg.className='save-msg err';
   }finally{
     input.disabled=false;
