@@ -1464,6 +1464,49 @@ credentials anywhere in this codebase). Generate the API Key/Secret pair in ERPN
   this session (no ERPNext instance reachable from this environment); test a real sync against your
   own site's chart of accounts/tax setup before relying on it for real customer documents.
 
+### Expense Entry (`frontend/accounting.html` — "💸 Expense Entry" tab, `cloudflare-worker/migrations/0028_accounting_expenses.sql`)
+A general "book a one-off expense against this client's own ERPNext" flow, separate from
+`accounting_documents` (Quotation/Invoice/Receipt — customer-facing sales documents) and from
+Financial Planning's `fp_expenses`/`fp_expense_templates` (local-only recurring/fixed-cost
+bookkeeping, migration 0015 — **never** pushed to ERPNext, and unaffected by this feature).
+
+- **Modeled as an ERPNext Journal Entry**, not Purchase Invoice or Expense Claim — a Journal Entry
+  needs only a `Company` and two GL `Account`s (one debited, one credited) to post; Purchase
+  Invoice requires a `Supplier` master record and Expense Claim requires an `Employee` +
+  `Expense Claim Type` (not a real Chart-of-Accounts account) to exist first. Debits the picked
+  **Expense Account**, credits the picked **Paid From** account, both for the entry's amount
+  (`erpnextPushExpenseEntry`, `worker.js`).
+- **Company** and **Expense Account** are the two selections that actually decide what gets booked
+  and where — reuses the existing Company picker (`handleErpnextCompaniesList`) unchanged. Both
+  Expense Account and Paid From Account come from a shared, generalized `GET /erpnext/accounts`
+  (`handleErpnextAccountsList`) — previously hardcoded to `account_type=Receivable` for the
+  Documents modal's Debtors Account field only; now accepts `?root_type=Expense` /
+  `?root_type=Asset` (every ERPNext Account has a `root_type` — Asset/Liability/Income/Expense/
+  Equity — a more reliable filter than `account_type`, which plain ledger accounts often leave
+  blank) while defaulting to the original `Receivable` behavior when neither query param is passed,
+  so the existing Debtors Account call site needed zero changes.
+- **Paid From Account auto-suggests** from the picked Company's own `default_cash_account`
+  (falling back to `default_bank_account`) the moment a Company is chosen — `default_cash_account`/
+  `default_bank_account` were added to `handleErpnextCompaniesList`'s fetched fields for exactly
+  this. Stays editable in case the expense wasn't actually paid from the company's default account.
+- **Schema** (`accounting_expenses`, migration 0028): `client_id, company, expense_account,
+  expense_account_name, paid_from_account, paid_from_account_name, amount, currency, expense_date,
+  category, vendor, description, cost_center, status, erpnext_doctype, erpnext_doc_name,
+  erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, erpnext_submitted_at, created_at` —
+  same sync/submit-status columns as `accounting_documents`, so the same badge UI
+  (`expErpBadge`/`erpBadge`) and "🔄 ERPNext" / "📮 Publish" button pattern applies.
+- **Create → Sync → Publish**, same 3-step flow as Documents: `POST /accounting/expenses` saves it
+  locally only (`status:'unsynced'`); `POST /accounting/expenses/sync-erpnext` pushes the Journal
+  Entry (still an editable Draft in ERPNext); `POST /accounting/expenses/submit-erpnext` calls the
+  same `erpnextSubmitDocByName` used by Documents' Publish to post it. A synced expense can't be
+  edited in place (delete-and-recreate instead) — mirrors the same reasoning as not letting a
+  synced Document's line items be edited after the fact.
+- **Not live-verified against a real Frappe Cloud site** in this session, same caveat as the rest of
+  this ERPNext integration — in particular, verify the `accounts` child table field names
+  (`debit_in_account_currency`/`credit_in_account_currency`) and that `cost_center` is accepted
+  un-set (falls back to ERPNext's own default) against your actual Frappe version before relying on
+  it for real bookkeeping.
+
 ## Billing module (Stripe — self-serve portal, add-on purchases, usage dashboard)
 Implements: a self-serve billing portal (invoices, upgrade/downgrade, renewal date), in-app
 add-on purchases (WhatsApp credits, voice add-on), and a client-facing usage dashboard

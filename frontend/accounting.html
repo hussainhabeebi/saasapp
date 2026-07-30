@@ -132,6 +132,7 @@ tbody tr:hover{background:var(--bg)}
     <button class="tab" data-tab="customers" onclick="showTab('customers')">👤 Customers</button>
     <button class="tab" data-tab="financial" onclick="showTab('financial')">💰 Financial Planning</button>
     <button class="tab" data-tab="erpnext" onclick="showTab('erpnext')">⚙️ ERPNext</button>
+    <button class="tab" data-tab="expenses" onclick="showTab('expenses')">💸 Expense Entry</button>
   </div>
 
   <main>
@@ -358,6 +359,30 @@ tbody tr:hover{background:var(--bg)}
       </div>
     </div>
 
+    <!-- EXPENSE ENTRY — a one-off expense pushed to ERPNext as a Journal Entry (Company + Expense
+         Account debit, a cash/bank Paid From Account credit). Separate from Financial Planning's
+         "🧾 Expenses" sub-tab (fp_expenses — local-only recurring/fixed-cost bookkeeping, never
+         synced to ERPNext); this is the general "book a real expense against the client's own
+         ERPNext ledger" flow. -->
+    <div id="tabExpenses" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Expense Entries</div>
+          <div class="card-actions">
+            <input class="search-input" id="expSearch" type="text" placeholder="🔍 Search…" oninput="renderExpensesTable()">
+            <button class="save-btn" onclick="openExpenseModal()">+ New Expense</button>
+          </div>
+        </div>
+        <div class="s-hint" style="margin-bottom:14px">Books a real Journal Entry in this account's own ERPNext — debiting the Expense Account you pick, crediting a cash/bank "Paid From" account (auto-suggested from the Company's default, once ERPNext is connected in the ⚙️ tab).</div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Expense Account</th><th>Amount</th><th>ERPNext</th><th>Actions</th></tr></thead>
+            <tbody id="expensesTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- SaaS Ops moved — the "🚀 SaaS Ops" module now lives in its own standalone top-level tab
          (frontend/saas-ops.html, iframe-embedded from dashboard.html), backed directly by the
          client's own live NocoDB customers table instead of fp_customers below. -->
@@ -407,6 +432,43 @@ tbody tr:hover{background:var(--bg)}
       <button class="save-btn sec" onclick="closeDocumentModal()">Cancel</button>
       <button class="save-btn" onclick="saveDocument()">Save</button>
     </div>
+  </div>
+</div>
+
+<!-- ── EXPENSE ENTRY MODAL — Company + Expense Account are the two fields that actually matter
+     here (they decide what gets debited, and in which ERPNext Company); Paid From Account is
+     auto-suggested from the Company's default Cash/Bank Account once picked, but stays editable
+     since not every ERPNext site has one configured. ── -->
+<div class="modal-overlay" id="expenseModal">
+  <div class="modal-card" style="max-width:560px">
+    <div class="modal-title">New Expense Entry</div>
+    <input type="hidden" id="expId">
+    <div class="modal-grid">
+      <div><label class="s-lbl">Company</label>
+        <select class="s-input" id="expCompany" onchange="onExpenseCompanyChange()"><option value="">— None —</option></select>
+        <div class="s-hint" id="expCompanyHint" style="margin-top:4px"></div>
+      </div>
+      <div><label class="s-lbl">Expense Account</label>
+        <select class="s-input" id="expExpenseAccount"><option value="">— Pick a company first —</option></select>
+      </div>
+      <div><label class="s-lbl">Paid From (Cash/Bank Account)</label>
+        <select class="s-input" id="expPaidFromAccount"><option value="">— Pick a company first —</option></select>
+        <div class="s-hint" style="margin-top:4px">Auto-suggested from the Company's default Cash/Bank Account — change if this expense was paid from somewhere else.</div>
+      </div>
+      <div><label class="s-lbl">Amount</label><input class="s-input" id="expAmount" type="number" placeholder="e.g. 250"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="expCurrency" list="erpCurrenciesDatalist" placeholder="e.g. AED" value="AED"></div>
+      <div><label class="s-lbl">Date</label><input class="s-input" id="expDate" type="date"></div>
+      <div><label class="s-lbl">Category</label><input class="s-input" id="expCategory" placeholder="e.g. Rent, Software, Travel"></div>
+      <div><label class="s-lbl">Vendor / Paid To</label><input class="s-input" id="expVendor" placeholder="e.g. AWS, Landlord"></div>
+      <div><label class="s-lbl">Cost Center (optional)</label><input class="s-input" id="expCostCenter" placeholder="Leave blank to use ERPNext's default"></div>
+    </div>
+    <label class="s-lbl">Description / Remarks</label>
+    <textarea class="s-input" id="expDescription" rows="2" style="resize:vertical"></textarea>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeExpenseModal()">Cancel</button>
+      <button class="save-btn" onclick="saveExpense()">Save</button>
+    </div>
+    <div class="save-msg" id="expSaveMsg" style="margin-top:8px"></div>
   </div>
 </div>
 
@@ -589,6 +651,12 @@ let allErpCompanies = [];
 let allErpCurrencies = [];
 let allErpDebtorsAccounts = [];
 let erpCustomersLoadError = '';
+
+/* ── Expense Entry state (migrations/0028_accounting_expenses.sql) ── */
+let allExpenses = [];
+let expensesLoadError = '';
+let allErpExpenseAccounts = [];
+let allErpPaidFromAccounts = [];
 function erpAvailable(){ return !!(clientRecord?.erpnext_base_url&&clientRecord?.erpnext_api_key&&clientRecord?.erpnext_api_secret); }
 
 /* ── Financial Planning state (migrations/0015_financial_planning.sql) ── */
@@ -665,6 +733,8 @@ async function init(){
     // settings tab above.
     try{ await loadDocuments(); }catch(e){ documentsLoadError=e.message; allDocuments=[]; }
     renderDocumentsTable();
+    try{ await loadExpenses(); }catch(e){ expensesLoadError=e.message; allExpenses=[]; }
+    renderExpensesTable();
     // ERPNext customers/items are only reachable once the client has saved a connection — best
     // effort, and skipped entirely rather than surfacing an error if they haven't gotten there yet.
     if(erpAvailable()){
@@ -693,6 +763,10 @@ async function loadLeads(){
 async function loadDocuments(){
   const data=await acctFetch('/accounting/documents',{method:'GET'});
   allDocuments=data.list||[];
+}
+async function loadExpenses(){
+  const data=await acctFetch('/accounting/expenses',{method:'GET'});
+  allExpenses=data.list||[];
 }
 async function loadErpCustomers(){
   const data=await acctFetch('/erpnext/customers',{method:'GET'});
@@ -1377,6 +1451,142 @@ function renderDocumentsTable(){
       </td>
     </tr>`;
   }).join('');
+}
+
+/* ── EXPENSE ENTRY (migrations/0028_accounting_expenses.sql) — same open/save/sync/submit shape
+   as Documents above, own state/table since an expense is a Journal Entry, not a Quotation/
+   Invoice/Receipt. ── */
+function openExpenseModal(){
+  document.getElementById('expId').value='';
+  document.getElementById('expAmount').value='';
+  document.getElementById('expCurrency').value=clientRecord?.deal_currency||'AED';
+  document.getElementById('expDate').value=new Date().toISOString().slice(0,10);
+  document.getElementById('expCategory').value='';
+  document.getElementById('expVendor').value='';
+  document.getElementById('expCostCenter').value='';
+  document.getElementById('expDescription').value='';
+  const sel=document.getElementById('expCompany');
+  sel.innerHTML='<option value="">— None —</option>'+allErpCompanies.map(c=>`<option value="${escAttr(c.name)}">${esc(c.name)}</option>`).join('');
+  sel.value='';
+  document.getElementById('expCompanyHint').textContent=erpAvailable()?'Pick a Company to load its Expense/Paid From accounts.':'Connect ERPNext (⚙️ tab) to pick a company here.';
+  allErpExpenseAccounts=[]; allErpPaidFromAccounts=[];
+  populateExpenseAccountSelects();
+  document.getElementById('expenseModal').classList.add('active');
+}
+function closeExpenseModal(){ document.getElementById('expenseModal').classList.remove('active'); }
+function populateExpenseAccountSelects(selectedExpense, selectedPaidFrom){
+  const expSel=document.getElementById('expExpenseAccount');
+  expSel.innerHTML=allErpExpenseAccounts.length
+    ? '<option value="">— Select —</option>'+allErpExpenseAccounts.map(a=>`<option value="${escAttr(a.name)}">${esc(a.account_name||a.name)}</option>`).join('')
+    : '<option value="">— Pick a company first —</option>';
+  expSel.value=selectedExpense||'';
+  const pfSel=document.getElementById('expPaidFromAccount');
+  pfSel.innerHTML=allErpPaidFromAccounts.length
+    ? '<option value="">— Select —</option>'+allErpPaidFromAccounts.map(a=>`<option value="${escAttr(a.name)}">${esc(a.account_name||a.name)}</option>`).join('')
+    : '<option value="">— Pick a company first —</option>';
+  pfSel.value=selectedPaidFrom||'';
+}
+// Expense/Paid-From accounts are company-scoped in ERPNext — re-fetch both whenever Company
+// changes, same pattern as onDocCompanyChange. Paid From auto-preselects the Company's own default
+// Cash Account (falling back to its default Bank Account) so most expenses need zero extra picking
+// beyond Company + Expense Account, while staying fully editable if that's not where this one was
+// actually paid from.
+async function onExpenseCompanyChange(){
+  const company=document.getElementById('expCompany').value;
+  if(!company){ allErpExpenseAccounts=[]; allErpPaidFromAccounts=[]; populateExpenseAccountSelects(); return; }
+  const companyRec=allErpCompanies.find(c=>c.name===company);
+  if(companyRec?.default_currency) document.getElementById('expCurrency').value=companyRec.default_currency;
+  try{
+    const [expR, assetR]=await Promise.all([
+      acctFetch(`/erpnext/accounts?company=${encodeURIComponent(company)}&root_type=Expense`,{method:'GET'}),
+      acctFetch(`/erpnext/accounts?company=${encodeURIComponent(company)}&root_type=Asset`,{method:'GET'}),
+    ]);
+    allErpExpenseAccounts=expR.list||[];
+    allErpPaidFromAccounts=assetR.list||[];
+  }catch(e){ allErpExpenseAccounts=[]; allErpPaidFromAccounts=[]; }
+  const defaultPaidFrom=companyRec?.default_cash_account||companyRec?.default_bank_account||'';
+  populateExpenseAccountSelects('', defaultPaidFrom);
+}
+async function saveExpense(){
+  const expenseAccount=document.getElementById('expExpenseAccount').value;
+  const amount=Number(document.getElementById('expAmount').value);
+  const expenseDate=document.getElementById('expDate').value;
+  if(!expenseAccount){ alert('Pick an Expense Account.'); return; }
+  if(!amount){ alert('Enter an amount.'); return; }
+  if(!expenseDate){ alert('Pick a date.'); return; }
+  const expSel=document.getElementById('expExpenseAccount');
+  const pfSel=document.getElementById('expPaidFromAccount');
+  const body={
+    company:document.getElementById('expCompany').value||null,
+    expense_account:expenseAccount,
+    expense_account_name:expSel.options[expSel.selectedIndex]?.textContent||'',
+    paid_from_account:pfSel.value||null,
+    paid_from_account_name:pfSel.options[pfSel.selectedIndex]?.textContent||'',
+    amount, currency:document.getElementById('expCurrency').value.trim()||'USD',
+    expense_date:expenseDate,
+    category:document.getElementById('expCategory').value.trim(),
+    vendor:document.getElementById('expVendor').value.trim(),
+    cost_center:document.getElementById('expCostCenter').value.trim(),
+    description:document.getElementById('expDescription').value.trim(),
+  };
+  try{
+    const created=await acctFetch('/accounting/expenses',{method:'POST',body:JSON.stringify(body)});
+    allExpenses.unshift({...body, Id:created.Id, id:created.Id, status:'unsynced'});
+    closeExpenseModal();
+    renderExpensesTable();
+  }catch(e){ alert('Failed to save: '+e.message); }
+}
+async function syncExpenseToErpnext(id){
+  try{
+    await acctFetch('/accounting/expenses/sync-erpnext',{method:'POST',body:JSON.stringify({id})});
+    await loadExpenses();
+    renderExpensesTable();
+  }catch(e){ alert('Sync failed: '+e.message); }
+}
+async function submitExpenseToErpnext(id){
+  try{
+    await acctFetch('/accounting/expenses/submit-erpnext',{method:'POST',body:JSON.stringify({id})});
+    await loadExpenses();
+    renderExpensesTable();
+  }catch(e){ alert('Publish failed: '+e.message); }
+}
+async function deleteExpense(id){
+  if(!confirm('Delete this expense entry? (This only removes it here — it does not cancel an already-synced ERPNext Journal Entry.)')) return;
+  try{ await acctFetch('/accounting/expenses',{method:'DELETE',body:JSON.stringify({id})}); allExpenses=allExpenses.filter(e=>e.Id!==id); renderExpensesTable(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+function expErpBadge(exp){
+  if(!exp.erpnext_sync_status) return '<span class="badge notsynced">Not synced</span>';
+  if(exp.erpnext_sync_status==='synced'){
+    if(exp.erpnext_submitted_at) return `<span class="badge paid" title="${escAttr(exp.erpnext_doc_name||'')}">✓ Published</span>`;
+    return `<span class="badge synced" title="${escAttr(exp.erpnext_doc_name||'')} — still a Draft in ERPNext until Published">✓ Synced (draft)</span>`;
+  }
+  if(exp.erpnext_sync_status==='failed') return `<span class="badge failed" title="${escAttr(exp.erpnext_sync_error||'Sync failed')}">⚠ Failed</span>`;
+  return '<span class="badge pending">Pending</span>';
+}
+function renderExpensesTable(){
+  const q=(document.getElementById('expSearch').value||'').toLowerCase();
+  const tbody=document.getElementById('expensesTbody');
+  if(expensesLoadError){
+    tbody.innerHTML=`<tr><td colspan="7" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load expenses (${esc(expensesLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
+    return;
+  }
+  const rows=allExpenses.filter(e=>!q||(e.category||'').toLowerCase().includes(q)||(e.vendor||'').toLowerCase().includes(q)||(e.expense_account_name||e.expense_account||'').toLowerCase().includes(q));
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No expense entries yet — click "+ New Expense" above to book one against this account\'s ERPNext.</td></tr>'; return; }
+  const erpReady=erpAvailable();
+  tbody.innerHTML=rows.map(e=>`<tr>
+      <td>${esc(e.expense_date||'')}</td>
+      <td>${esc(e.category||'—')}</td>
+      <td>${esc(e.vendor||'—')}</td>
+      <td>${esc(e.expense_account_name||e.expense_account||'')}</td>
+      <td>${fmtMoney(e.amount,e.currency)}</td>
+      <td>${expErpBadge(e)}</td>
+      <td class="row-actions">
+        <button class="icon-btn" title="${erpReady?'Sync to ERPNext':'Connect ERPNext first (⚙️ tab)'}" ${erpReady?'':'disabled'} onclick="syncExpenseToErpnext(${e.Id})">🔄 ERPNext</button>
+        ${e.erpnext_sync_status==='synced'&&!e.erpnext_submitted_at?`<button class="icon-btn" title="Publish — submits it in ERPNext so it posts to the ledger" onclick="submitExpenseToErpnext(${e.Id})">📮 Publish</button>`:''}
+        <button class="icon-btn danger" onclick="deleteExpense(${e.Id})">🗑</button>
+      </td>
+    </tr>`).join('');
 }
 
 async function convertDocument(id, toType){

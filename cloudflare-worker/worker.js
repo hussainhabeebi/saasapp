@@ -8558,6 +8558,32 @@ async function erpnextPushPaymentEntry(c, doc, lead, invoiceErpnextName){
   return data?.data?.name;
 }
 
+// Pushes an Expense Entry as a real ERPNext Journal Entry — debits the picked Expense Account,
+// credits the picked (or company-default) cash/bank Account, for the same amount, which is all a
+// Journal Entry needs to balance. Chosen over Purchase Invoice/Expense Claim specifically because
+// neither of those can post from just a Company + a GL Account: a Purchase Invoice needs a Supplier
+// master record, an Expense Claim needs an Employee + "Expense Claim Type" (not a real Chart-of-
+// Accounts Account) — a Journal Entry is the one ERPNext doctype that matches "pick a company, pick
+// an expense account, enter an amount" with no other master data required to exist first.
+async function erpnextPushExpenseEntry(c, expense){
+  if(!expense.paid_from_account) throw new Error('No "Paid From" account set — pick one, or set a default Cash/Bank Account on the Company in ERPNext.');
+  const amount=Number(expense.amount)||0;
+  const payload={
+    voucher_type:'Journal Entry',
+    posting_date:expense.expense_date,
+    user_remark:expense.description||expense.category||'Expense',
+    accounts:[
+      {account:expense.expense_account, debit_in_account_currency:amount, cost_center:expense.cost_center||undefined},
+      {account:expense.paid_from_account, credit_in_account_currency:amount},
+    ],
+  };
+  if(expense.company) payload.company=expense.company;
+  const r=await erpnextFetch(c, '/api/resource/Journal Entry', {method:'POST', body:JSON.stringify(payload)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
+  return data?.data?.name;
+}
+
 const ACCOUNTING_ERPNEXT_DOCTYPE_MAP={quotation:'Quotation', invoice:'Sales Invoice', receipt:'Payment Entry'};
 async function handleAccountingDocumentSyncErpnext(request, env){
   const payload=await requireSession(request, env);
@@ -8644,6 +8670,101 @@ async function handleAccountingDocumentSubmitErpnext(request, env){
   }
 }
 
+// ── Expense Entry (migration 0028) — a general "book an expense against ERPNext" flow for the
+// Accounting module, separate from Financial Planning's fp_expenses (which is local-only recurring/
+// fixed-cost bookkeeping, never pushed anywhere — see SETUP.md). Same create-then-sync-then-submit
+// shape as accounting_documents above, just its own table/routes since an expense isn't a
+// quotation/invoice/receipt and doesn't fit ACCOUNTING_ERPNEXT_DOCTYPE_MAP.
+function acctExpenseOut(row){ return {...row, Id:row.id}; }
+async function findAccountingExpense(env, id){ return await env.DB.prepare(`SELECT * FROM accounting_expenses WHERE id=?`).bind(id).first(); }
+async function handleAccountingExpensesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM accounting_expenses WHERE client_id=? ORDER BY expense_date DESC, id DESC LIMIT 500`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(acctExpenseOut)});
+}
+async function handleAccountingExpenseCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.expense_account || !body.amount || !body.expense_date) return json({error:'expense_account, amount and expense_date required'}, 400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO accounting_expenses (client_id, company, expense_account, expense_account_name, paid_from_account, paid_from_account_name, amount, currency, expense_date, category, vendor, description, cost_center, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), String(body.company||'').slice(0,140), String(body.expense_account).slice(0,140), String(body.expense_account_name||'').slice(0,140),
+      String(body.paid_from_account||'').slice(0,140), String(body.paid_from_account_name||'').slice(0,140), Number(body.amount)||0, String(body.currency||'USD').slice(0,10).toUpperCase(),
+      String(body.expense_date).slice(0,10), String(body.category||'').slice(0,100), String(body.vendor||'').slice(0,140), String(body.description||'').slice(0,1000), String(body.cost_center||'').slice(0,140),
+      'unsynced', now).run();
+  return json({Id:r.meta.last_row_id});
+}
+async function handleAccountingExpenseUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const exp=await findAccountingExpense(env, Number(body.id));
+  if(!exp || String(exp.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(exp.erpnext_doc_name) return json({error:'Already synced to ERPNext — delete and re-create instead of editing a synced expense.'}, 400);
+  const sets=[], vals=[];
+  for(const f of ['company','expense_account','expense_account_name','paid_from_account','paid_from_account_name','currency','expense_date','category','vendor','description','cost_center']){
+    if(body[f]!==undefined){ sets.push(`${f}=?`); vals.push(String(body[f]).slice(0,1000)); }
+  }
+  if(body.amount!==undefined){ sets.push('amount=?'); vals.push(Number(body.amount)||0); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id), Number(payload.cid));
+  await env.DB.prepare(`UPDATE accounting_expenses SET ${sets.join(', ')} WHERE id=? AND client_id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleAccountingExpenseDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  await env.DB.prepare(`DELETE FROM accounting_expenses WHERE id=? AND client_id=?`).bind(Number(body.id), Number(payload.cid)).run();
+  return json({ok:true});
+}
+async function handleAccountingExpenseSyncErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const exp=await findAccountingExpense(env, Number(body.id));
+  if(!exp || String(exp.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  try{
+    const erpName=await erpnextPushExpenseEntry(c, exp);
+    const now=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_expenses SET erpnext_doctype='Journal Entry', erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_sync_error=NULL, erpnext_synced_at=?, status='synced' WHERE id=?`).bind(erpName||'', now, exp.id).run();
+    return json({ok:true, erpnext_doc_name:erpName});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await env.DB.prepare(`UPDATE accounting_expenses SET erpnext_sync_status='failed', erpnext_sync_error=? WHERE id=?`).bind(msg, exp.id).run();
+    await reportOpsError(env, 'handleAccountingExpenseSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, expenseId:exp.id});
+    return json({error:'ERPNext sync failed: '+msg}, 502);
+  }
+}
+async function handleAccountingExpenseSubmitErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const exp=await findAccountingExpense(env, Number(body.id));
+  if(!exp || String(exp.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(!exp.erpnext_doc_name) return json({error:'Sync this expense to ERPNext first.'}, 400);
+  if(exp.erpnext_submitted_at) return json({ok:true, already:true});
+  try{
+    await erpnextSubmitDocByName(c, 'Journal Entry', exp.erpnext_doc_name);
+    const submittedAt=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_expenses SET erpnext_submitted_at=?, status='submitted' WHERE id=?`).bind(submittedAt, exp.id).run();
+    return json({ok:true, erpnext_submitted_at:submittedAt});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await reportOpsError(env, 'handleAccountingExpenseSubmitErpnext — ERPNext submit failed', e, {clientId:payload.cid, expenseId:exp.id});
+    return json({error:'ERPNext submit failed: '+msg}, 502);
+  }
+}
+
 // ── ERPNext Customers / Items — live lookups for the accounting.html Customers tab and the
 // Document modal's customer/item pickers. Always fetched live, no local cache/mirror table — same
 // "no persisted local mapping" choice as erpnextResolveCustomer/erpnextResolveItem above, just
@@ -8718,12 +8839,15 @@ async function handleErpnextItemsList(request, env){
 
 // Companies — for the Document modal's Company picker (accounting_documents.company, passed
 // through to every synced doctype below since Frappe requires it once a site has more than one).
+// default_cash_account/default_bank_account are also pulled here (unused by the Documents modal,
+// which only reads default_currency) so the Expense Entry modal can auto-suggest a "Paid From"
+// account the moment a Company is picked, without a second round-trip.
 async function handleErpnextCompaniesList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
   if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in the ⚙️ ERPNext tab.'}, 400);
-  const fields=encodeURIComponent(JSON.stringify(['name','default_currency']));
+  const fields=encodeURIComponent(JSON.stringify(['name','default_currency','default_cash_account','default_bank_account']));
   const r=await erpnextFetch(c, `/api/resource/Company?fields=${fields}&limit_page_length=100&order_by=name asc`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
@@ -8745,10 +8869,15 @@ async function handleErpnextCurrenciesList(request, env){
   return json({list:data?.data||[]});
 }
 
-// Debtors (Receivable) accounts — for the Document modal's Debtors Account picker
-// (accounting_documents.erpnext_debtors_account). ERPNext's Account doctype is company-scoped, so
-// this is only useful once a Company has been picked (accounting.html re-fetches on company
+// Account picker, shared by the Document modal's Debtors Account field and the Expense Entry
+// modal's Expense Account / Paid From Account fields. ERPNext's Account doctype is company-scoped,
+// so this is only useful once a Company has been picked (accounting.html re-fetches on company
 // change); ?company= is optional here purely so the route doesn't hard-fail before that.
+// Defaults to account_type=Receivable (the Debtors picker's original, only behavior) when neither
+// ?account_type= nor ?root_type= is passed, so that existing call site keeps working unchanged;
+// the Expense Entry modal instead passes ?root_type=Expense (every Account has a root_type —
+// Asset/Liability/Income/Expense/Equity — a more reliable filter than account_type, which is often
+// left blank on plain ledger accounts) or ?root_type=Asset for the Paid From picker.
 async function handleErpnextAccountsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -8756,8 +8885,12 @@ async function handleErpnextAccountsList(request, env){
   if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in the ⚙️ ERPNext tab.'}, 400);
   const url=new URL(request.url);
   const company=(url.searchParams.get('company')||'').trim();
-  const fields=encodeURIComponent(JSON.stringify(['name','account_name','company']));
-  const filterList=[['account_type','=','Receivable']];
+  const rootType=(url.searchParams.get('root_type')||'').trim();
+  const accountType=(url.searchParams.get('account_type')||(rootType?'':'Receivable')).trim();
+  const fields=encodeURIComponent(JSON.stringify(['name','account_name','company','account_type','root_type']));
+  const filterList=[];
+  if(accountType) filterList.push(['account_type','=',accountType]);
+  if(rootType) filterList.push(['root_type','=',rootType]);
   if(company) filterList.push(['company','=',company]);
   const filters=encodeURIComponent(JSON.stringify(filterList));
   const r=await erpnextFetch(c, `/api/resource/Account?fields=${fields}&filters=${filters}&limit_page_length=200&order_by=account_name asc`);
@@ -12596,6 +12729,12 @@ export default {
       else if(url.pathname==='/accounting/documents/sync-erpnext' && request.method==='POST'){ res=await handleAccountingDocumentSyncErpnext(request, env); }
       else if(url.pathname==='/accounting/documents/submit-erpnext' && request.method==='POST'){ res=await handleAccountingDocumentSubmitErpnext(request, env); }
       else if(url.pathname==='/accounting/documents/send-email' && request.method==='POST'){ res=await handleAccountingDocumentSendEmail(request, env); }
+      else if(url.pathname==='/accounting/expenses' && request.method==='GET'){ res=await handleAccountingExpensesList(request, env); }
+      else if(url.pathname==='/accounting/expenses' && request.method==='POST'){ res=await handleAccountingExpenseCreate(request, env); }
+      else if(url.pathname==='/accounting/expenses' && request.method==='PATCH'){ res=await handleAccountingExpenseUpdate(request, env); }
+      else if(url.pathname==='/accounting/expenses' && request.method==='DELETE'){ res=await handleAccountingExpenseDelete(request, env); }
+      else if(url.pathname==='/accounting/expenses/sync-erpnext' && request.method==='POST'){ res=await handleAccountingExpenseSyncErpnext(request, env); }
+      else if(url.pathname==='/accounting/expenses/submit-erpnext' && request.method==='POST'){ res=await handleAccountingExpenseSubmitErpnext(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='GET'){ res=await handleFpCustomersList(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='POST'){ res=await handleFpCustomerCreate(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='PATCH'){ res=await handleFpCustomerUpdate(request, env); }
