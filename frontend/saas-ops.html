@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Leadvyne · SaaS Ops</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#FFF7ED;--card:#FFFFFF;--ink:#241A0C;--muted:#8A6D4B;
+  --accent:#C2410C;--accent-ink:#9A3412;--accent-soft:#FFEDD5;
+  --line:#FDE8CE;--ls:#FBCFA0;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --r:16px;--r-sm:10px;
+  --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column}
+
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:56px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 1px 0 var(--line)}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700;display:inline-flex;align-items:center;gap:6px}
+.brand span{color:var(--accent)}
+.chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
+.hback{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body)}
+.hback:hover{background:var(--bg)}
+
+main{flex:1;overflow-y:auto;overflow-x:hidden;padding:20px;min-height:0}
+.inner{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+
+.card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:20px;box-shadow:var(--shadow)}
+.card-title{font-family:var(--disp);font-size:14px;font-weight:700;color:var(--muted);margin-bottom:14px;text-transform:uppercase;letter-spacing:.04em}
+.card-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.card-title-row .card-title{margin-bottom:0}
+.card-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--bg)}
+
+.search-input{border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:200px}
+.save-btn{background:linear-gradient(135deg,#C2410C,#F97316);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
+.save-btn:hover{opacity:.9}
+.save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)}
+.save-btn:disabled{opacity:.5;cursor:default}
+.save-msg{font-size:12px;color:var(--accent);align-self:center}
+.save-msg.err{color:#DC2626}
+.icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
+.icon-btn:hover{background:var(--bg)}
+.icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
+.row-actions{display:flex;gap:6px;flex-wrap:wrap}
+
+.s-lbl{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;display:block;text-transform:uppercase;letter-spacing:.04em}
+.s-input,select.s-input{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg)}
+.s-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.s-hint{font-size:12px;color:var(--muted);margin-top:5px}
+
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(36,26,12,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal-card{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal-title{font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:18px}
+.modal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-row td{text-align:center;padding:30px;color:var(--muted)}
+.empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty-icon{font-size:36px;margin-bottom:10px}
+
+.saas-subnav{display:flex;gap:8px;margin-bottom:4px;flex-wrap:wrap}
+.saas-pill{font-family:var(--disp);font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;border:1.5px solid var(--line);background:var(--card);cursor:pointer;color:var(--muted)}
+.saas-pill.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.saas-sub{display:none}
+.saas-sub.active{display:block}
+.saas-board{display:flex;gap:14px;overflow-x:auto;padding-bottom:4px}
+.saas-board-col{flex:1 0 200px;min-width:200px;background:var(--bg);border-radius:var(--r-sm);padding:10px}
+.saas-board-col-head{font-family:var(--disp);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:10px;display:flex;justify-content:space-between}
+.saas-board-card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer;font-size:12px;transition:box-shadow .15s}
+.saas-board-card:hover{box-shadow:var(--shadow)}
+.saas-board-card .sbc-name{font-weight:700;margin-bottom:4px}
+.saas-board-card .sbc-meta{color:var(--muted);font-size:11px;display:flex;justify-content:space-between}
+.saas-board-empty{font-size:11px;color:var(--muted);text-align:center;padding:10px 0}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
+.stat-card{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);padding:14px 16px}
+.stat-card .stat-lbl{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+.stat-card .stat-val{font-family:var(--disp);font-size:22px;font-weight:700;color:var(--ink)}
+</style>
+</head>
+<body>
+
+<div id="app" style="display:none;height:100%;display:flex;flex-direction:column">
+  <header>
+    <span class="brand">Leadvyne<span>.</span></span>
+    <span class="chip">🚀 SaaS Ops</span>
+    <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
+  </header>
+
+  <main>
+  <div class="inner">
+
+    <div class="saas-subnav">
+      <button class="saas-pill active" data-saassub="dashboard" onclick="showSaasSub('dashboard')">📊 Dashboard</button>
+      <button class="saas-pill" data-saassub="accounts" onclick="showSaasSub('accounts')">👥 Accounts</button>
+      <button class="saas-pill" data-saassub="milestones" onclick="showSaasSub('milestones')">✅ Activation</button>
+      <button class="saas-pill" data-saassub="usage" onclick="showSaasSub('usage')">📈 Usage</button>
+      <button class="saas-pill" data-saassub="battlecards" onclick="showSaasSub('battlecards')">⚔️ Battlecards</button>
+      <button class="saas-pill" data-saassub="engagement" onclick="showSaasSub('engagement')">🤝 Touchpoints &amp; Surveys</button>
+      <button class="saas-pill" data-saassub="reminders" onclick="showSaasSub('reminders')">⏰ Reminders</button>
+      <button class="saas-pill" data-saassub="unmatched" onclick="showSaasSub('unmatched')">⚠️ Unmatched Events</button>
+      <button class="saas-pill" data-saassub="integrations" onclick="showSaasSub('integrations')">🔌 Integrations</button>
+    </div>
+
+    <div id="saasNotConfiguredBanner" class="card" style="display:none;border-color:#F59E0B">
+      <div class="empty-state" style="padding:10px 0">
+        <div class="empty-icon">🔗</div>
+        No NocoDB customers table connected yet. Your live SaaS customers table is the account system of record for this module — go to <b>🔌 Integrations</b> and paste its Table ID to get started.
+      </div>
+    </div>
+
+    <!-- DASHBOARD -->
+    <div id="saasSubDashboard" class="saas-sub active">
+      <div class="card" id="saasDashLoading"><span class="spinner"></span>Loading dashboard…</div>
+      <div id="saasDashContent" style="display:none">
+        <div class="card" style="margin-bottom:16px">
+          <div class="stat-grid">
+            <div class="stat-card"><div class="stat-lbl">MRR</div><div class="stat-val" id="saasStatMrr">—</div></div>
+            <div class="stat-card"><div class="stat-lbl">Active Accounts</div><div class="stat-val" id="saasStatActive">—</div></div>
+            <div class="stat-card"><div class="stat-lbl">Logo Churn</div><div class="stat-val" id="saasStatChurn">—</div></div>
+            <div class="stat-card"><div class="stat-lbl">At-Risk Accounts</div><div class="stat-val" id="saasStatAtRisk">—</div></div>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-title">Revenue Collected — Last 6 Months</div>
+          <div style="height:260px"><canvas id="saasRevenueChart"></canvas></div>
+        </div>
+        <div style="display:grid;gap:16px;grid-template-columns:1fr 1fr;margin-bottom:16px">
+          <div class="card">
+            <div class="card-title">Health Score Distribution</div>
+            <div style="height:220px"><canvas id="saasHealthChart"></canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Activation Funnel</div>
+            <div style="height:220px"><canvas id="saasFunnelChart"></canvas></div>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-title">At-Risk Accounts</div>
+          <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Health Score</th><th>MRR</th></tr></thead><tbody id="saasDashAtRiskTbody"></tbody></table></div>
+        </div>
+        <div style="display:grid;gap:16px;grid-template-columns:1fr 1fr">
+          <div class="card">
+            <div class="card-title">Renewal Pipeline (next 90 days)</div>
+            <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Renews</th><th>Days Out</th></tr></thead><tbody id="saasDashRenewalTbody"></tbody></table></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Expansion Candidates</div>
+            <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Seats</th></tr></thead><tbody id="saasDashExpansionTbody"></tbody></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ACCOUNTS -->
+    <div id="saasSubAccounts" class="saas-sub">
+      <div class="s-hint" style="margin-bottom:14px">Accounts are rows from your own live NocoDB customers table — nothing here is a copy. Click a card to edit; only the SaaS Ops fields (health score, lifecycle stage, plan, etc.) are ever written back, never your own columns.</div>
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Accounts by Lifecycle Stage</div>
+        </div>
+        <div id="saasAccountsBoard" class="saas-board"></div>
+      </div>
+    </div>
+
+    <div id="saasSubMilestones" class="saas-sub">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Activation Milestones</div>
+          <div class="card-actions"><button class="save-btn" onclick="addSaasMilestone()">+ Add Milestone</button></div>
+        </div>
+        <div class="s-hint" style="margin-bottom:14px">Define the steps a new account should complete to be considered "activated" — an account stuck in Onboarding 7+ days with none completed gets one automatic nudge.</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Label</th><th>Key</th><th>Actions</th></tr></thead><tbody id="saasMilestonesTbody"><tr class="loading-row"><td colspan="3"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Per-Account Completion</div>
+        <div class="modal-grid" style="margin-bottom:10px;grid-template-columns:1fr">
+          <div><label class="s-lbl">Account</label><select class="s-input" id="saasMilestoneAccountSelect" onchange="loadSaasAccountMilestones()"><option value="">— Select an account —</option></select></div>
+        </div>
+        <div id="saasAccountMilestonesList" class="s-hint">Select an account above.</div>
+      </div>
+    </div>
+
+    <!-- USAGE -->
+    <div id="saasSubUsage" class="saas-sub">
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title-row">
+          <div class="card-title">Usage — Last 30 Days</div>
+          <div class="card-actions"><select class="s-input" id="saasUsageAccountFilter" style="width:auto" onchange="renderSaasUsage()"><option value="">All accounts</option></select></div>
+        </div>
+        <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Event</th><th>Count (30d)</th><th>Occurrences</th><th>Last Seen</th></tr></thead><tbody id="saasUsageSummaryTbody"><tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Recent Events</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Event</th><th>Count</th><th>Occurred</th></tr></thead><tbody id="saasUsageRecentTbody"></tbody></table></div>
+      </div>
+    </div>
+
+    <div id="saasSubBattlecards" class="saas-sub">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Competitor Battlecards</div>
+          <div class="card-actions"><button class="save-btn" onclick="openSaasBattlecardModal()">+ Add Competitor</button></div>
+        </div>
+        <div class="s-hint" style="margin-bottom:14px">Feeds directly into the chat AI's replies when a customer asks how you compare to a named competitor — only what's here gets said, nothing invented.</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Competitor</th><th>Positioning Notes</th><th>Actions</th></tr></thead><tbody id="saasBattlecardsTbody"><tr class="loading-row"><td colspan="3"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <div id="saasSubEngagement" class="saas-sub">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">CSM Touchpoints</div>
+          <div class="card-actions"><button class="save-btn" onclick="document.getElementById('saasTpForm').style.display='grid'">+ Log Touchpoint</button></div>
+        </div>
+        <div id="saasTpForm" style="display:none;margin-bottom:14px" class="modal-grid">
+          <div><label class="s-lbl">Account</label><select class="s-input" id="saasTpAccountId"></select></div>
+          <div><label class="s-lbl">Type</label><select class="s-input" id="saasTpType"><option value="qbr">QBR</option><option value="checkin">Check-in</option><option value="escalation">Escalation</option></select></div>
+          <div style="grid-column:1/-1"><label class="s-lbl">Notes</label><textarea class="s-input" id="saasTpNotes" rows="2" style="resize:vertical"></textarea></div>
+          <div><button class="save-btn" onclick="saveSaasTouchpoint()">Save</button></div>
+        </div>
+        <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Type</th><th>Notes</th><th>Date</th></tr></thead><tbody id="saasTouchpointsTbody"><tr class="loading-row"><td colspan="4"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">NPS / CSAT Surveys</div>
+          <div class="card-actions"><button class="save-btn" onclick="document.getElementById('saasSurveyForm').style.display='grid'">+ Send Survey</button></div>
+        </div>
+        <div id="saasSurveyForm" style="display:none;margin-bottom:14px" class="modal-grid">
+          <div><label class="s-lbl">Account</label><select class="s-input" id="saasSurveyAccountId"></select></div>
+          <div><label class="s-lbl">Type</label><select class="s-input" id="saasSurveyType"><option value="nps">NPS</option><option value="csat">CSAT</option></select></div>
+          <div><button class="save-btn" onclick="saveSaasSurvey()">Record Sent</button></div>
+        </div>
+        <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Type</th><th>Score</th><th>Sent</th><th>Responded</th><th>Actions</th></tr></thead><tbody id="saasSurveysTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <div id="saasSubReminders" class="saas-sub">
+      <div class="card">
+        <div class="card-title">Renewal &amp; Activation Reminders</div>
+        <div class="s-hint" style="margin-bottom:14px">Auto-generated daily — renewal nudges at 90/60/30 days out, and one activation nudge for accounts stalled 7+ days. Sent by WhatsApp/Chatwoot when the account's phone number matches a lead conversation.</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Type</th><th>Anchor Date</th><th>Sent</th></tr></thead><tbody id="saasRemindersTbody"><tr class="loading-row"><td colspan="4"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- UNMATCHED EVENTS -->
+    <div id="saasSubUnmatched" class="saas-sub">
+      <div class="card">
+        <div class="card-title">Unmatched Billing Events</div>
+        <div class="s-hint" style="margin-bottom:14px">A billing webhook charge whose customer email/phone didn't match any row in your NocoDB customers table. Never written into that table on a guess — link it to the right account by hand below.</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Source</th><th>Action</th><th>Customer</th><th>Plan</th><th>Amount</th><th>Occurred</th><th>Link to Account</th></tr></thead><tbody id="saasUnmatchedTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <div id="saasSubIntegrations" class="saas-sub">
+      <div class="card">
+        <div class="card-title">NocoDB Customers Table</div>
+        <div class="s-hint" style="margin-bottom:14px">Point this at the NocoDB table that already holds your real, live SaaS customers — that table becomes the account system of record for this whole module. Every column stays exactly as-is; this app only ever adds its own new "saas_…" columns for computed fields (health score, lifecycle stage, etc.) and never touches or overwrites anything you already have.</div>
+        <div class="modal-grid" style="grid-template-columns:2fr 1fr;align-items:end">
+          <div><label class="s-lbl">NocoDB Table ID</label><input class="s-input" id="saasNocodbTableId" placeholder="e.g. mjlc2vi6iqbp87c"></div>
+          <div><button class="save-btn" onclick="saveSaasNocodbTable()">Save</button></div>
+        </div>
+        <div class="save-msg" id="saasNocodbSaveMsg" style="margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Billing Providers</div>
+        <div class="s-hint" style="margin-bottom:16px">Paste your own Stripe/Chargebee/Paddle credentials. After saving, point that provider's webhook at the URL shown below for your Client ID.</div>
+        <div class="modal-grid">
+          <div><label class="s-lbl">Stripe Secret Key</label><input class="s-input" id="saasStripeKey" type="password" placeholder="sk_live_…"></div>
+          <div><label class="s-lbl">Stripe Webhook Secret</label><input class="s-input" id="saasStripeWebhookSecret" type="password" placeholder="whsec_…"></div>
+          <div><label class="s-lbl">Chargebee Site</label><input class="s-input" id="saasChargebeeSite" placeholder="yoursite"></div>
+          <div><label class="s-lbl">Chargebee API Key</label><input class="s-input" id="saasChargebeeKey" type="password"></div>
+          <div><label class="s-lbl">Chargebee Webhook Token</label><input class="s-input" id="saasChargebeeWebhookSecret" type="password" placeholder="Your own shared secret — appended as ?token= below"></div>
+          <div><label class="s-lbl">Paddle API Key</label><input class="s-input" id="saasPaddleKey" type="password"></div>
+          <div><label class="s-lbl">Paddle Webhook Secret</label><input class="s-input" id="saasPaddleWebhookSecret" type="password"></div>
+        </div>
+        <div class="s-hint" id="saasWebhookUrls" style="margin:12px 0;font-family:monospace;font-size:11px;line-height:1.8"></div>
+        <button class="save-btn" onclick="saveSaasBillingConfig()">Save Billing Connections</button>
+        <span class="save-msg" id="saasBillingSaveMsg"></span>
+      </div>
+      <div class="card">
+        <div class="card-title">Support Tool</div>
+        <div class="modal-grid">
+          <div><label class="s-lbl">Provider</label><select class="s-input" id="saasSupportProvider"><option value="">— None —</option><option value="zendesk">Zendesk</option><option value="intercom">Intercom</option><option value="freshdesk">Freshdesk</option></select></div>
+          <div><label class="s-lbl">API Key/Token</label><input class="s-input" id="saasSupportApiKey" type="password"></div>
+          <div><label class="s-lbl">Subdomain</label><input class="s-input" id="saasSupportSubdomain" placeholder="e.g. yourcompany (Zendesk/Freshdesk only)"></div>
+        </div>
+        <button class="save-btn" style="margin-top:10px" onclick="saveSaasSupportConfig()">Save Support Connection</button>
+        <span class="save-msg" id="saasSupportSaveMsg"></span>
+        <div class="s-hint" style="margin-top:10px">Ticket volume/CSAT are pulled once a day, not synced live — no webhook to configure here.</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Product Usage Ingestion</div>
+        <div class="s-hint" style="margin-bottom:10px">Call this from your own product's backend on real usage events (customer_id is the NocoDB row's Id from 👥 Accounts), to feed the health score and weekly customer value updates.</div>
+        <div class="s-hint" style="font-family:monospace;font-size:11px;background:var(--bg,#f7f7f7);padding:10px;border-radius:8px" id="saasUsageIngestInfo">Loading…</div>
+      </div>
+    </div>
+
+  </div>
+  </main>
+</div>
+
+<!-- ── ACCOUNT EDIT MODAL — writes only saas_*-prefixed fields on the NocoDB row ── -->
+<div class="modal-overlay" id="saasAccountModal">
+  <div class="modal-card" style="max-width:560px">
+    <div class="modal-title" id="saasAccountModalTitle">Edit Account</div>
+    <input type="hidden" id="saasAcctId">
+    <div class="s-hint" style="margin-bottom:14px">This account's own columns (name/email/phone/etc.) are read-only here — edit them in NocoDB directly. Only the fields below are written by Leadvyne.</div>
+    <div class="modal-grid">
+      <div><label class="s-lbl">Plan / Tier</label><input class="s-input" id="saasAcctPlanTier" placeholder="e.g. Pro, Enterprise"></div>
+      <div><label class="s-lbl">Plan Name</label><input class="s-input" id="saasAcctPlanName" placeholder="e.g. Growth Monthly"></div>
+      <div><label class="s-lbl">Monthly Value</label><input class="s-input" id="saasAcctMonthlyValue" type="number"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="saasAcctCurrency" placeholder="USD"></div>
+      <div><label class="s-lbl">Lifecycle Stage</label>
+        <select class="s-input" id="saasAcctLifecycleStage"><option value="">—</option><option value="onboarding">Onboarding</option><option value="active">Active</option><option value="at_risk">At Risk</option><option value="renewal">Renewal</option><option value="expansion">Expansion</option><option value="churned">Churned</option></select>
+      </div>
+      <div><label class="s-lbl">Trial Ends</label><input class="s-input" id="saasAcctTrialEndDate" type="date"></div>
+      <div><label class="s-lbl">Renewal Date</label><input class="s-input" id="saasAcctRenewalDate" type="date"></div>
+      <div><label class="s-lbl">Seats</label><input class="s-input" id="saasAcctSeatCount" type="number" min="0"></div>
+      <div><label class="s-lbl">CSM Owner</label><input class="s-input" id="saasAcctCsmOwner"></div>
+      <div><label class="s-lbl">Health Score <span style="font-weight:400;color:var(--muted)">(auto-computed daily unless overridden)</span></label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input class="s-input" id="saasAcctHealthScore" type="number" min="0" max="100" disabled style="flex:1">
+          <label style="font-size:11px;white-space:nowrap"><input type="checkbox" id="saasAcctHealthScoreManual" onchange="document.getElementById('saasAcctHealthScore').disabled=!this.checked"> Override</label>
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeSaasAccountModal()">Cancel</button>
+      <button class="save-btn" onclick="saveSaasAccount()">Save</button>
+    </div>
+    <div class="save-msg" id="saasAcctSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<script>
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const CONFIG = { NOCODB_BASE: WORKER_BASE+'/nocodb', CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj', WORKER_BASE };
+
+const params = new URLSearchParams(location.search);
+let clientId = params.get('client') || '';
+let sessionToken = params.get('token') || '';
+const isEmbedded = params.get('embed') === '1';
+let clientRecord = null;
+
+function esc(str){ return String(str==null?'':str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmtMoney(n,cur){ return `${cur||''} ${Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2})}`.trim(); }
+function ncAuthHeaders(extra){ return {'Authorization':'Bearer '+sessionToken, ...extra}; }
+async function ncGet(url){ const r=await fetch(url,{headers:ncAuthHeaders()}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+async function acctFetch(path,opts){
+  const r=await fetch(`${WORKER_BASE}${path}`,{...opts,headers:ncAuthHeaders({'Content-Type':'application/json',...(opts&&opts.headers)})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||data.error) throw new Error(data.error||('HTTP '+r.status));
+  return data;
+}
+
+async function init(){
+  if(isEmbedded){ const hdr=document.querySelector('header'); if(hdr) hdr.style.display='none'; }
+  if(!clientId){ clientId=prompt('Enter your Client ID:')||''; }
+  if(!clientId||!sessionToken){ document.body.innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>Missing client/session — open this page from the SaaS Ops tab inside your dashboard.</div>'; return; }
+  document.getElementById('app').style.display='flex';
+  try{
+    clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
+    await loadSaasOps();
+    renderSaasOps();
+  }catch(e){
+    document.getElementById('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+/* ── State ── */
+let saasCustomers=[], saasMilestones=[], saasBattlecards=[], saasTouchpoints=[], saasSurveys=[], saasConfig=null, saasUnmatched=[];
+let saasReportsData=null, saasUsageData=null, saasNocodbConfigured=true;
+let saasRevenueChart=null, saasHealthChart=null, saasFunnelChart=null;
+const SAAS_LIFECYCLE_STAGES_UI=[
+  {key:'onboarding', label:'Onboarding'}, {key:'active', label:'Active'}, {key:'at_risk', label:'At Risk'},
+  {key:'renewal', label:'Renewal'}, {key:'expansion', label:'Expansion'}, {key:'churned', label:'Churned'},
+];
+function saasCustName(c){ return c?._name||c?.saas_plan_name||`Customer #${c?.Id}`||'Customer'; }
+
+function showSaasSub(name){
+  document.querySelectorAll('.saas-sub').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.saas-pill').forEach(t=>t.classList.remove('active'));
+  document.getElementById('saasSub'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
+  document.querySelector(`.saas-pill[data-saassub="${name}"]`).classList.add('active');
+  if(name==='dashboard' && saasReportsData) try{ renderSaasDashboardCharts(); }catch(e){}
+}
+function saasAccountOptions(selected){
+  return '<option value="">— Select an account —</option>'+saasCustomers.map(c=>`<option value="${c.Id}" ${String(selected)===String(c.Id)?'selected':''}>${esc(saasCustName(c))}</option>`).join('');
+}
+
+async function loadSaasOps(){
+  const [custRes, msRes, bcRes, tpRes, svRes, cfgRes, reportsRes, usageRes, unmatchedRes]=await Promise.all([
+    acctFetch('/saas/customers',{method:'GET'}),
+    acctFetch('/saas/milestones',{method:'GET'}),
+    acctFetch('/saas/battlecards',{method:'GET'}),
+    acctFetch('/saas/touchpoints',{method:'GET'}),
+    acctFetch('/saas/surveys',{method:'GET'}),
+    acctFetch('/saas/config',{method:'GET'}),
+    acctFetch('/saas/reports',{method:'GET'}).catch(()=>null),
+    acctFetch('/saas/usage-events',{method:'GET'}).catch(()=>null),
+    acctFetch('/saas/unmatched-events',{method:'GET'}).catch(()=>({list:[]})),
+  ]);
+  saasCustomers=custRes.list||[]; saasNocodbConfigured=!custRes.nocodb_not_configured;
+  saasMilestones=msRes.list||[]; saasBattlecards=bcRes.list||[]; saasTouchpoints=tpRes.list||[]; saasSurveys=svRes.list||[]; saasConfig=cfgRes||null;
+  saasReportsData=reportsRes||null;
+  saasUsageData=usageRes||{list:[], summary_30d:[]};
+  saasUnmatched=unmatchedRes.list||[];
+}
+function renderSaasOps(){
+  document.getElementById('saasNotConfiguredBanner').style.display=saasNocodbConfigured?'none':'block';
+  renderSaasDashboard();
+  renderSaasAccountsBoard();
+  renderSaasMilestonesTable();
+  document.getElementById('saasMilestoneAccountSelect').innerHTML=saasAccountOptions();
+  renderSaasBattlecardsTable();
+  document.getElementById('saasTpAccountId').innerHTML=saasAccountOptions();
+  document.getElementById('saasSurveyAccountId').innerHTML=saasAccountOptions();
+  renderSaasTouchpointsTable();
+  renderSaasSurveysTable();
+  renderSaasRemindersTable();
+  renderSaasIntegrationsForm();
+  renderSaasUsage();
+  renderSaasUnmatchedTable();
+}
+
+/* Dashboard */
+function renderSaasDashboard(){
+  const loading=document.getElementById('saasDashLoading');
+  const content=document.getElementById('saasDashContent');
+  const d=saasReportsData;
+  if(!d || !d.active_accounts){
+    loading.innerHTML='<div class="empty-state"><div class="empty-icon">📊</div>No SaaS account data yet — connect your NocoDB customers table in 🔌 Integrations to see analytics here.</div>';
+    content.style.display='none';
+    return;
+  }
+  loading.style.display='none';
+  content.style.display='block';
+  document.getElementById('saasStatMrr').textContent=Math.round(d.mrr).toLocaleString();
+  document.getElementById('saasStatActive').textContent=d.active_accounts;
+  document.getElementById('saasStatChurn').textContent=d.logo_churn_rate+'%';
+  document.getElementById('saasStatAtRisk').textContent=d.health_distribution.at_risk;
+  document.getElementById('saasDashAtRiskTbody').innerHTML=d.at_risk_accounts.length
+    ? d.at_risk_accounts.map(a=>`<tr><td>${esc(a.name)}</td><td style="color:var(--red,#c33)">${a.health_score}</td><td>${fmtMoney(a.mrr,'')}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="empty-state">None right now.</td></tr>';
+  document.getElementById('saasDashRenewalTbody').innerHTML=d.renewal_pipeline.length
+    ? d.renewal_pipeline.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.renewal_date)}</td><td>${r.days_out}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="empty-state">Nothing renewing in the next 90 days.</td></tr>';
+  document.getElementById('saasDashExpansionTbody').innerHTML=d.expansion_candidates.length
+    ? d.expansion_candidates.map(e=>`<tr><td>${esc(e.name)}</td><td>${e.seat_count}</td></tr>`).join('')
+    : '<tr><td colspan="2" class="empty-state">None right now.</td></tr>';
+  try{ renderSaasDashboardCharts(); }catch(e){}
+}
+function renderSaasDashboardCharts(){
+  const d=saasReportsData;
+  if(!d || typeof Chart==='undefined') return;
+  const revCanvas=document.getElementById('saasRevenueChart');
+  if(revCanvas){
+    if(saasRevenueChart) saasRevenueChart.destroy();
+    saasRevenueChart=new Chart(revCanvas,{
+      type:'bar',
+      data:{labels:(d.months||[]).map(m=>m.key), datasets:[{label:'Revenue', data:(d.months||[]).map(m=>m.revenue), backgroundColor:'#4F46E5'}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{beginAtZero:true}}}
+    });
+  }
+  const healthCanvas=document.getElementById('saasHealthChart');
+  if(healthCanvas){
+    if(saasHealthChart) saasHealthChart.destroy();
+    const hd=d.health_distribution||{healthy:0,neutral:0,at_risk:0};
+    saasHealthChart=new Chart(healthCanvas,{
+      type:'doughnut',
+      data:{labels:['Healthy','Neutral','At Risk'], datasets:[{data:[hd.healthy,hd.neutral,hd.at_risk], backgroundColor:['#16A34A','#F59E0B','#DC2626']}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:11}}}}}
+    });
+  }
+  const funnelCanvas=document.getElementById('saasFunnelChart');
+  if(funnelCanvas){
+    if(saasFunnelChart) saasFunnelChart.destroy();
+    const funnel=d.activation_funnel||[];
+    saasFunnelChart=funnel.length ? new Chart(funnelCanvas,{
+      type:'bar',
+      data:{labels:funnel.map(f=>f.milestone), datasets:[{label:'Completed', data:funnel.map(f=>f.completed), backgroundColor:'#4F46E5'}]},
+      options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{beginAtZero:true}}}
+    }) : null;
+  }
+}
+
+/* Accounts board */
+function renderSaasAccountsBoard(){
+  const board=document.getElementById('saasAccountsBoard');
+  if(!board) return;
+  if(!saasNocodbConfigured){ board.innerHTML='<div class="empty-state" style="width:100%"><div class="empty-icon">🔗</div>Connect your NocoDB customers table in 🔌 Integrations first.</div>'; return; }
+  board.innerHTML=SAAS_LIFECYCLE_STAGES_UI.map(stage=>{
+    const accts=saasCustomers.filter(c=>(c.saas_lifecycle_stage||'active')===stage.key);
+    const cards=accts.map(c=>`<div class="saas-board-card" onclick="openSaasAccountModal(${c.Id})">
+      <div class="sbc-name">${esc(saasCustName(c))}</div>
+      <div class="sbc-meta"><span>${esc(c.saas_plan_tier||c.saas_plan_name||'—')}</span><span>${c.saas_health_score!=null&&c.saas_health_score!==''?'❤ '+c.saas_health_score:''}</span></div>
+      <div class="sbc-meta"><span>${fmtMoney(c.saas_monthly_value,c.saas_currency)}</span><span>${esc(c.saas_renewal_date||'')}</span></div>
+    </div>`).join('');
+    return `<div class="saas-board-col">
+      <div class="saas-board-col-head"><span>${esc(stage.label)}</span><span>${accts.length}</span></div>
+      ${cards||'<div class="saas-board-empty">No accounts</div>'}
+    </div>`;
+  }).join('');
+}
+function openSaasAccountModal(id){
+  const c=saasCustomers.find(x=>x.Id===id);
+  if(!c) return;
+  document.getElementById('saasAccountModalTitle').textContent=`Edit Account — ${saasCustName(c)}`;
+  document.getElementById('saasAcctId').value=id;
+  document.getElementById('saasAcctPlanTier').value=c.saas_plan_tier||'';
+  document.getElementById('saasAcctPlanName').value=c.saas_plan_name||'';
+  document.getElementById('saasAcctMonthlyValue').value=c.saas_monthly_value||'';
+  document.getElementById('saasAcctCurrency').value=c.saas_currency||'';
+  document.getElementById('saasAcctLifecycleStage').value=c.saas_lifecycle_stage||'';
+  document.getElementById('saasAcctTrialEndDate').value=(c.saas_trial_end_date||'').slice(0,10);
+  document.getElementById('saasAcctRenewalDate').value=(c.saas_renewal_date||'').slice(0,10);
+  document.getElementById('saasAcctSeatCount').value=c.saas_seat_count||'';
+  document.getElementById('saasAcctCsmOwner').value=c.saas_csm_owner||'';
+  document.getElementById('saasAcctHealthScore').value=c.saas_health_score||'';
+  document.getElementById('saasAcctHealthScoreManual').checked=c.saas_health_score_manual==='Yes';
+  document.getElementById('saasAcctHealthScore').disabled=c.saas_health_score_manual!=='Yes';
+  document.getElementById('saasAcctSaveMsg').textContent='';
+  document.getElementById('saasAccountModal').classList.add('active');
+}
+function closeSaasAccountModal(){ document.getElementById('saasAccountModal').classList.remove('active'); }
+async function saveSaasAccount(){
+  const id=Number(document.getElementById('saasAcctId').value);
+  const msg=document.getElementById('saasAcctSaveMsg');
+  const body={
+    id,
+    plan_tier:document.getElementById('saasAcctPlanTier').value.trim(),
+    plan_name:document.getElementById('saasAcctPlanName').value.trim(),
+    monthly_value:document.getElementById('saasAcctMonthlyValue').value,
+    currency:document.getElementById('saasAcctCurrency').value.trim(),
+    lifecycle_stage:document.getElementById('saasAcctLifecycleStage').value,
+    trial_end_date:document.getElementById('saasAcctTrialEndDate').value,
+    renewal_date:document.getElementById('saasAcctRenewalDate').value,
+    seat_count:document.getElementById('saasAcctSeatCount').value,
+    csm_owner:document.getElementById('saasAcctCsmOwner').value.trim(),
+    health_score_manual:document.getElementById('saasAcctHealthScoreManual').checked?'Yes':'No',
+  };
+  if(document.getElementById('saasAcctHealthScoreManual').checked) body.health_score=document.getElementById('saasAcctHealthScore').value;
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    await acctFetch('/saas/customers',{method:'PATCH',body:JSON.stringify(body)});
+    await loadSaasOps();
+    renderSaasOps();
+    closeSaasAccountModal();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+/* Usage */
+function renderSaasUsage(){
+  const sel=document.getElementById('saasUsageAccountFilter');
+  if(sel && sel.options.length<=1) sel.insertAdjacentHTML('beforeend', saasCustomers.map(c=>`<option value="${c.Id}">${esc(saasCustName(c))}</option>`).join(''));
+  const filterId=sel?sel.value:'';
+  const d=saasUsageData||{list:[], summary_30d:[]};
+  const summary=filterId?d.summary_30d.filter(s=>String(s.customer_id)===String(filterId)):d.summary_30d;
+  const recent=filterId?d.list.filter(e=>String(e.customer_id)===String(filterId)):d.list;
+  const nameFor=id=>saasCustName(saasCustomers.find(c=>c.Id===id))||`#${id}`;
+  document.getElementById('saasUsageSummaryTbody').innerHTML=summary.length
+    ? summary.map(s=>`<tr><td>${esc(nameFor(s.customer_id))}</td><td>${esc(s.event_name)}</td><td>${s.total}</td><td>${s.events}</td><td>${esc((s.last_seen||'').slice(0,10))}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="empty-state">No usage events in the last 30 days — see Integrations for how to send them from your own product.</td></tr>';
+  document.getElementById('saasUsageRecentTbody').innerHTML=recent.length
+    ? recent.slice(0,50).map(e=>`<tr><td>${esc(nameFor(e.customer_id))}</td><td>${esc(e.event_name)}</td><td>${e.event_count}</td><td>${esc((e.occurred_at||'').slice(0,16).replace('T',' '))}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="empty-state">No events yet.</td></tr>';
+}
+
+/* Activation milestones */
+function renderSaasMilestonesTable(){
+  const tbody=document.getElementById('saasMilestonesTbody');
+  if(!saasMilestones.length){ tbody.innerHTML='<tr><td colspan="3" class="empty-state">No milestones defined yet.</td></tr>'; return; }
+  tbody.innerHTML=saasMilestones.map(m=>`<tr><td>${esc(m.label)}</td><td style="font-family:monospace;font-size:11px">${esc(m.milestone_key)}</td><td class="row-actions"><button class="icon-btn danger" title="Delete" onclick="deleteSaasMilestone(${m.Id})">🗑</button></td></tr>`).join('');
+}
+async function addSaasMilestone(){
+  const label=prompt('Milestone label (e.g. "Invited a teammate"):');
+  if(!label) return;
+  try{
+    const created=await acctFetch('/saas/milestones',{method:'POST',body:JSON.stringify({label})});
+    saasMilestones.push({Id:created.Id, label, milestone_key:created.milestone_key});
+    renderSaasMilestonesTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteSaasMilestone(id){
+  if(!confirm('Delete this milestone definition?')) return;
+  try{ await acctFetch('/saas/milestones',{method:'DELETE',body:JSON.stringify({id})}); saasMilestones=saasMilestones.filter(m=>m.Id!==id); renderSaasMilestonesTable(); }catch(e){ alert('Failed: '+e.message); }
+}
+async function loadSaasAccountMilestones(){
+  const customerId=document.getElementById('saasMilestoneAccountSelect').value;
+  const list=document.getElementById('saasAccountMilestonesList');
+  if(!customerId){ list.textContent='Select an account above.'; return; }
+  if(!saasMilestones.length){ list.textContent='Define at least one milestone above first.'; return; }
+  list.innerHTML='<span class="spinner"></span>Loading…';
+  try{
+    const data=await acctFetch(`/saas/account-milestones?customer_id=${customerId}`,{method:'GET'});
+    const done=new Set((data.list||[]).filter(r=>r.completed_at).map(r=>r.milestone_key));
+    list.innerHTML=saasMilestones.map(m=>`<label style="display:block;margin-bottom:8px;font-size:13px"><input type="checkbox" ${done.has(m.milestone_key)?'checked':''} onchange="toggleSaasAccountMilestone(${customerId},'${m.milestone_key}')"> ${esc(m.label)}</label>`).join('');
+  }catch(e){ list.textContent='Failed to load: '+e.message; }
+}
+async function toggleSaasAccountMilestone(customerId, milestoneKey){
+  try{ await acctFetch('/saas/account-milestones/complete',{method:'POST',body:JSON.stringify({customer_id:customerId, milestone_key:milestoneKey})}); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+
+/* Battlecards */
+function renderSaasBattlecardsTable(){
+  const tbody=document.getElementById('saasBattlecardsTbody');
+  if(!saasBattlecards.length){ tbody.innerHTML='<tr><td colspan="3" class="empty-state">No battlecards yet.</td></tr>'; return; }
+  tbody.innerHTML=saasBattlecards.map(b=>`<tr><td>${esc(b.competitor_name)}</td><td>${esc((b.positioning_notes||'').slice(0,120))}</td><td class="row-actions"><button class="icon-btn" title="Edit" onclick="openSaasBattlecardModal(${b.Id})">✏️</button><button class="icon-btn danger" title="Delete" onclick="deleteSaasBattlecard(${b.Id})">🗑</button></td></tr>`).join('');
+}
+function openSaasBattlecardModal(id){
+  const b=id?saasBattlecards.find(x=>x.Id===id):null;
+  const name=prompt('Competitor name:', b?.competitor_name||'');
+  if(!name) return;
+  let comparison={};
+  try{ comparison=JSON.parse(b?.comparison_json||'{}'); }catch(e){}
+  const compStr=prompt('Feature comparison, one "Feature: how we differ" per line:', Object.entries(comparison).map(([k,v])=>`${k}: ${v}`).join('\n'))||'';
+  const parsed={};
+  compStr.split('\n').forEach(line=>{ const i=line.indexOf(':'); if(i>0) parsed[line.slice(0,i).trim()]=line.slice(i+1).trim(); });
+  const notes=prompt('Positioning notes (optional):', b?.positioning_notes||'')||'';
+  saveSaasBattlecard(id, name, parsed, notes);
+}
+async function saveSaasBattlecard(id, competitor_name, comparison, positioning_notes){
+  try{
+    if(id){ await acctFetch('/saas/battlecards',{method:'PATCH',body:JSON.stringify({id,competitor_name,comparison,positioning_notes})}); const idx=saasBattlecards.findIndex(x=>x.Id===id); if(idx>=0) saasBattlecards[idx]={...saasBattlecards[idx],competitor_name,comparison_json:JSON.stringify(comparison),positioning_notes}; }
+    else{ const created=await acctFetch('/saas/battlecards',{method:'POST',body:JSON.stringify({competitor_name,comparison,positioning_notes})}); saasBattlecards.push({Id:created.Id,competitor_name,comparison_json:JSON.stringify(comparison),positioning_notes}); }
+    renderSaasBattlecardsTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteSaasBattlecard(id){
+  if(!confirm('Delete this battlecard?')) return;
+  try{ await acctFetch('/saas/battlecards',{method:'DELETE',body:JSON.stringify({id})}); saasBattlecards=saasBattlecards.filter(b=>b.Id!==id); renderSaasBattlecardsTable(); }catch(e){ alert('Failed: '+e.message); }
+}
+
+/* Touchpoints */
+function renderSaasTouchpointsTable(){
+  const tbody=document.getElementById('saasTouchpointsTbody');
+  if(!saasTouchpoints.length){ tbody.innerHTML='<tr><td colspan="4" class="empty-state">No touchpoints logged yet.</td></tr>'; return; }
+  tbody.innerHTML=saasTouchpoints.map(t=>{
+    const acct=saasCustomers.find(c=>c.Id===t.customer_id);
+    return `<tr><td>${esc(acct?saasCustName(acct):'—')}</td><td>${esc(t.touchpoint_type)}</td><td>${esc((t.notes||'').slice(0,140))}</td><td>${esc((t.occurred_at||'').slice(0,10))}</td></tr>`;
+  }).join('');
+}
+async function saveSaasTouchpoint(){
+  const customer_id=Number(document.getElementById('saasTpAccountId').value);
+  if(!customer_id){ alert('Select an account.'); return; }
+  const touchpoint_type=document.getElementById('saasTpType').value;
+  const notes=document.getElementById('saasTpNotes').value.trim();
+  try{
+    const created=await acctFetch('/saas/touchpoints',{method:'POST',body:JSON.stringify({customer_id,touchpoint_type,notes})});
+    saasTouchpoints.unshift({Id:created.Id, customer_id, touchpoint_type, notes, occurred_at:new Date().toISOString()});
+    document.getElementById('saasTpNotes').value='';
+    document.getElementById('saasTpForm').style.display='none';
+    renderSaasTouchpointsTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+
+/* Surveys */
+function renderSaasSurveysTable(){
+  const tbody=document.getElementById('saasSurveysTbody');
+  if(!saasSurveys.length){ tbody.innerHTML='<tr><td colspan="6" class="empty-state">No surveys sent yet.</td></tr>'; return; }
+  tbody.innerHTML=saasSurveys.map(s=>{
+    const acct=saasCustomers.find(c=>c.Id===s.customer_id);
+    return `<tr><td>${esc(acct?saasCustName(acct):'—')}</td><td>${esc(s.survey_type.toUpperCase())}</td><td>${s.score??'—'}</td><td>${esc((s.sent_at||'').slice(0,10))}</td><td>${esc((s.responded_at||'').slice(0,10))||'—'}</td>
+      <td class="row-actions">${s.responded_at?'':`<button class="icon-btn" title="Record response" onclick="recordSaasSurveyResponse(${s.Id})">📝</button>`}</td></tr>`;
+  }).join('');
+}
+async function saveSaasSurvey(){
+  const customer_id=Number(document.getElementById('saasSurveyAccountId').value);
+  if(!customer_id){ alert('Select an account.'); return; }
+  const survey_type=document.getElementById('saasSurveyType').value;
+  try{
+    const created=await acctFetch('/saas/surveys',{method:'POST',body:JSON.stringify({customer_id,survey_type})});
+    saasSurveys.unshift({Id:created.Id, customer_id, survey_type, sent_at:new Date().toISOString()});
+    document.getElementById('saasSurveyForm').style.display='none';
+    renderSaasSurveysTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function recordSaasSurveyResponse(id){
+  const score=prompt('Score (0-10 for NPS, 1-5 for CSAT):');
+  if(score===null) return;
+  const comment=prompt('Comment (optional):')||'';
+  try{
+    await acctFetch('/saas/surveys/respond',{method:'POST',body:JSON.stringify({id,score:Number(score),comment})});
+    const s=saasSurveys.find(x=>x.Id===id); if(s){ s.score=Number(score); s.responded_at=new Date().toISOString(); }
+    renderSaasSurveysTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+
+/* Reminders — read-only log */
+function renderSaasRemindersTable(){
+  const tbody=document.getElementById('saasRemindersTbody');
+  tbody.innerHTML='<tr><td colspan="4" class="empty-state">Reminders are generated automatically each day (renewal 90/60/30-day nudges, activation stall nudges) and sent via WhatsApp when the account\'s phone number matches a lead conversation.</td></tr>';
+}
+
+/* Unmatched billing events */
+function renderSaasUnmatchedTable(){
+  const tbody=document.getElementById('saasUnmatchedTbody');
+  if(!saasUnmatched.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No unmatched billing events — nice.</td></tr>'; return; }
+  const acctOptions=saasCustomers.map(c=>`<option value="${c.Id}">${esc(saasCustName(c))}</option>`).join('');
+  tbody.innerHTML=saasUnmatched.map(e=>`<tr>
+    <td>${esc(e.source)}</td><td>${esc(e.action)}</td>
+    <td>${esc(e.customer_name||'')}${e.customer_email?' ('+esc(e.customer_email)+')':''}</td>
+    <td>${esc(e.plan_name||'—')}</td><td>${e.amount?fmtMoney(e.amount,e.currency):'—'}</td>
+    <td>${esc((e.occurred_at||'').slice(0,10))}</td>
+    <td class="row-actions">
+      <select class="s-input" id="saasUnmatchedSel${e.Id}" style="width:auto"><option value="">— Select account —</option>${acctOptions}</select>
+      <button class="save-btn sec" onclick="resolveSaasUnmatched(${e.Id})">Link</button>
+    </td>
+  </tr>`).join('');
+}
+async function resolveSaasUnmatched(id){
+  const sel=document.getElementById('saasUnmatchedSel'+id);
+  const nocodb_customer_id=sel.value;
+  if(!nocodb_customer_id){ alert('Select an account first.'); return; }
+  try{
+    await acctFetch('/saas/unmatched-events/resolve',{method:'POST',body:JSON.stringify({id, nocodb_customer_id})});
+    saasUnmatched=saasUnmatched.filter(e=>e.Id!==id);
+    renderSaasUnmatchedTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+
+/* Integrations */
+function renderSaasIntegrationsForm(){
+  if(!saasConfig) return;
+  document.getElementById('saasNocodbTableId').value=saasConfig.nocodb_customers_table_id||'';
+  document.getElementById('saasChargebeeSite').value=saasConfig.chargebee_site||'';
+  document.getElementById('saasSupportProvider').value=saasConfig.support_provider||'';
+  document.getElementById('saasSupportSubdomain').value=saasConfig.support_subdomain||'';
+  const base=WORKER_BASE;
+  document.getElementById('saasWebhookUrls').innerHTML=
+    `Stripe webhook URL: ${base}/saas/webhooks/stripe/${esc(clientId)}<br>`+
+    `Chargebee webhook URL: ${base}/saas/webhooks/chargebee/${esc(clientId)}?token=&lt;your Chargebee Webhook Token above&gt;<br>`+
+    `Paddle webhook URL: ${base}/saas/webhooks/paddle/${esc(clientId)}`;
+  const token=saasConfig.usage_ingest_token;
+  document.getElementById('saasUsageIngestInfo').innerHTML=token
+    ? `POST ${base}/saas/usage-event<br>Authorization: Bearer ${esc(token)}<br>Body: {"customer_id": 123, "event_name": "report_generated", "event_count": 1}`
+    : 'Loading…';
+}
+async function saveSaasNocodbTable(){
+  const tableId=document.getElementById('saasNocodbTableId').value.trim();
+  const msg=document.getElementById('saasNocodbSaveMsg');
+  if(!tableId){ msg.textContent='Enter a NocoDB Table ID first.'; msg.className='save-msg err'; return; }
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    await acctFetch('/saas/config',{method:'PATCH',body:JSON.stringify({nocodb_customers_table_id:tableId})});
+    msg.textContent='✓ Saved — accounts will load from that table now.'; msg.className='save-msg';
+    await loadSaasOps();
+    renderSaasOps();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function saveSaasBillingConfig(){
+  const msg=document.getElementById('saasBillingSaveMsg');
+  const body={};
+  ['saasStripeKey:stripe_secret_key','saasStripeWebhookSecret:stripe_webhook_secret','saasChargebeeSite:chargebee_site','saasChargebeeKey:chargebee_api_key','saasChargebeeWebhookSecret:chargebee_webhook_secret','saasPaddleKey:paddle_api_key','saasPaddleWebhookSecret:paddle_webhook_secret']
+    .forEach(pair=>{ const [elId,field]=pair.split(':'); const v=document.getElementById(elId).value.trim(); if(v) body[field]=v; });
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{ await acctFetch('/saas/config',{method:'PATCH',body:JSON.stringify(body)}); saasConfig=await acctFetch('/saas/config',{method:'GET'}); renderSaasIntegrationsForm(); msg.textContent='✓ Saved'; msg.className='save-msg'; ['saasStripeKey','saasStripeWebhookSecret','saasChargebeeKey','saasChargebeeWebhookSecret','saasPaddleKey','saasPaddleWebhookSecret'].forEach(id=>document.getElementById(id).value=''); }
+  catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function saveSaasSupportConfig(){
+  const msg=document.getElementById('saasSupportSaveMsg');
+  const body={support_provider:document.getElementById('saasSupportProvider').value, support_subdomain:document.getElementById('saasSupportSubdomain').value.trim()};
+  const key=document.getElementById('saasSupportApiKey').value.trim();
+  if(key) body.support_api_key=key;
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{ await acctFetch('/saas/config',{method:'PATCH',body:JSON.stringify(body)}); msg.textContent='✓ Saved'; msg.className='save-msg'; document.getElementById('saasSupportApiKey').value=''; }
+  catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+init();
+</script>
+</body>
+</html>
