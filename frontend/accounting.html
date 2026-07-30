@@ -133,6 +133,7 @@ tbody tr:hover{background:var(--bg)}
     <button class="tab" data-tab="financial" onclick="showTab('financial')">💰 Financial Planning</button>
     <button class="tab" data-tab="erpnext" onclick="showTab('erpnext')">⚙️ ERPNext</button>
     <button class="tab" data-tab="expenses" onclick="showTab('expenses')">💸 Expense Entry</button>
+    <button class="tab" data-tab="vendorbills" onclick="showTab('vendorbills')">📥 Vendor Bills</button>
   </div>
 
   <main>
@@ -383,6 +384,28 @@ tbody tr:hover{background:var(--bg)}
       </div>
     </div>
 
+    <!-- VENDOR BILLS — accounts-payable counterpart to Documents: what a client's own supplier
+         billed them, pushed as an ERPNext Purchase Invoice, then optionally a Payment Entry once
+         it's paid. -->
+    <div id="tabVendorbills" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Vendor Bills</div>
+          <div class="card-actions">
+            <input class="search-input" id="vbSearch" type="text" placeholder="🔍 Search…" oninput="renderVendorBillsTable()">
+            <button class="save-btn" onclick="openVendorBillModal()">+ New Bill</button>
+          </div>
+        </div>
+        <div class="s-hint" style="margin-bottom:14px">Books a real Purchase Invoice in this account's own ERPNext — pick (or type) a Supplier, add line items, then Sync and Publish. Once published, "Record Payment" posts a Payment Entry marking it paid.</div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Bill Date</th><th>Supplier</th><th>Vendor Ref #</th><th>Total</th><th>Status</th><th>ERPNext</th><th>Actions</th></tr></thead>
+            <tbody id="vendorBillsTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- SaaS Ops moved — the "🚀 SaaS Ops" module now lives in its own standalone top-level tab
          (frontend/saas-ops.html, iframe-embedded from dashboard.html), backed directly by the
          client's own live NocoDB customers table instead of fp_customers below. -->
@@ -469,6 +492,45 @@ tbody tr:hover{background:var(--bg)}
       <button class="save-btn" onclick="saveExpense()">Save</button>
     </div>
     <div class="save-msg" id="expSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ── VENDOR BILL MODAL — Supplier is a free-text field with suggestions (like the Documents
+     modal's line-item names), resolved-or-created by name in ERPNext on Sync rather than requiring
+     it to be picked from a pre-fetched list. ── -->
+<div class="modal-overlay" id="vendorBillModal">
+  <div class="modal-card">
+    <div class="modal-title">New Vendor Bill</div>
+    <input type="hidden" id="vbId">
+    <div class="modal-grid">
+      <div><label class="s-lbl">Supplier</label><input class="s-input" id="vbSupplier" list="erpSuppliersDatalist" placeholder="e.g. AWS, Landlord"></div>
+      <div><label class="s-lbl">Vendor's Invoice/Ref #</label><input class="s-input" id="vbVendorInvoiceNo" placeholder="Their own bill number"></div>
+      <div><label class="s-lbl">Company</label>
+        <select class="s-input" id="vbCompany" onchange="onVendorBillCompanyChange()"><option value="">— None —</option></select>
+        <div class="s-hint" id="vbCompanyHint" style="margin-top:4px"></div>
+      </div>
+      <div><label class="s-lbl">Payable Account</label>
+        <select class="s-input" id="vbPayableAccount"><option value="">— Default —</option></select>
+      </div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="vbCurrency" list="erpCurrenciesDatalist" placeholder="e.g. AED" value="AED"></div>
+      <div><label class="s-lbl">Bill Date</label><input class="s-input" id="vbBillDate" type="date"></div>
+      <div><label class="s-lbl">Due Date (optional)</label><input class="s-input" id="vbDueDate" type="date"></div>
+    </div>
+    <datalist id="erpSuppliersDatalist"></datalist>
+    <label class="s-lbl">Line Items</label>
+    <div class="s-hint" style="margin-bottom:6px">Type a product/service name — matching an existing ERPNext item name lets Sync reuse that exact item; otherwise a new one is created automatically.</div>
+    <div id="vbLineItems"></div>
+    <button class="save-btn sec" type="button" onclick="addVbLineItemRow()" style="margin-top:6px">+ Add Line Item</button>
+    <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="vbTotalPreview">Total: —</div>
+    <div style="margin-top:14px">
+      <label class="s-lbl">Notes</label>
+      <textarea class="s-input" id="vbNotes" rows="2" style="resize:vertical"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeVendorBillModal()">Cancel</button>
+      <button class="save-btn" onclick="saveVendorBill()">Save</button>
+    </div>
+    <div class="save-msg" id="vbSaveMsg" style="margin-top:8px"></div>
   </div>
 </div>
 
@@ -657,6 +719,12 @@ let allExpenses = [];
 let expensesLoadError = '';
 let allErpExpenseAccounts = [];
 let allErpPaidFromAccounts = [];
+
+/* ── Vendor Bills state (migrations/0029_accounting_vendor_bills.sql) ── */
+let allVendorBills = [];
+let vendorBillsLoadError = '';
+let allErpSuppliers = [];
+let allErpPayableAccounts = [];
 function erpAvailable(){ return !!(clientRecord?.erpnext_base_url&&clientRecord?.erpnext_api_key&&clientRecord?.erpnext_api_secret); }
 
 /* ── Financial Planning state (migrations/0015_financial_planning.sql) ── */
@@ -735,6 +803,8 @@ async function init(){
     renderDocumentsTable();
     try{ await loadExpenses(); }catch(e){ expensesLoadError=e.message; allExpenses=[]; }
     renderExpensesTable();
+    try{ await loadVendorBills(); }catch(e){ vendorBillsLoadError=e.message; allVendorBills=[]; }
+    renderVendorBillsTable();
     // ERPNext customers/items are only reachable once the client has saved a connection — best
     // effort, and skipped entirely rather than surfacing an error if they haven't gotten there yet.
     if(erpAvailable()){
@@ -742,10 +812,12 @@ async function init(){
       try{ await loadErpItems(); }catch(e){ allErpItems=[]; }
       try{ const d=await acctFetch('/erpnext/companies',{method:'GET'}); allErpCompanies=d.list||[]; }catch(e){ allErpCompanies=[]; }
       try{ const d=await acctFetch('/erpnext/currencies',{method:'GET'}); allErpCurrencies=d.list||[]; }catch(e){ allErpCurrencies=[]; }
+      try{ const d=await acctFetch('/erpnext/suppliers',{method:'GET'}); allErpSuppliers=d.list||[]; }catch(e){ allErpSuppliers=[]; }
     }
     renderCustomersTable();
     populateItemsDatalist();
     populateCurrenciesDatalist();
+    populateSuppliersDatalist();
     // Financial Planning is D1-backed (see migrations/0015_financial_planning.sql) — same
     // "own try/catch so it can't take the ERPNext tab down" reasoning as loadDocuments above.
     try{ await loadFinancialPlanning(); }catch(e){ fpLoadError=e.message; }
@@ -767,6 +839,14 @@ async function loadDocuments(){
 async function loadExpenses(){
   const data=await acctFetch('/accounting/expenses',{method:'GET'});
   allExpenses=data.list||[];
+}
+async function loadVendorBills(){
+  const data=await acctFetch('/accounting/vendor-bills',{method:'GET'});
+  allVendorBills=data.list||[];
+}
+function populateSuppliersDatalist(){
+  const dl=document.getElementById('erpSuppliersDatalist');
+  dl.innerHTML=allErpSuppliers.map(s=>`<option value="${escAttr(s.supplier_name||s.name)}">`).join('');
 }
 async function loadErpCustomers(){
   const data=await acctFetch('/erpnext/customers',{method:'GET'});
@@ -1585,6 +1665,170 @@ function renderExpensesTable(){
         <button class="icon-btn" title="${erpReady?'Sync to ERPNext':'Connect ERPNext first (⚙️ tab)'}" ${erpReady?'':'disabled'} onclick="syncExpenseToErpnext(${e.Id})">🔄 ERPNext</button>
         ${e.erpnext_sync_status==='synced'&&!e.erpnext_submitted_at?`<button class="icon-btn" title="Publish — submits it in ERPNext so it posts to the ledger" onclick="submitExpenseToErpnext(${e.Id})">📮 Publish</button>`:''}
         <button class="icon-btn danger" onclick="deleteExpense(${e.Id})">🗑</button>
+      </td>
+    </tr>`).join('');
+}
+
+/* ── VENDOR BILLS (migrations/0029_accounting_vendor_bills.sql) — same modal/line-item shape as
+   Documents, own state/table since a bill needs a Supplier + Payable Account instead of a
+   Customer + Debtors Account, and a 4th "Record Payment" step instead of a separate Receipt row. ── */
+function openVendorBillModal(){
+  document.getElementById('vbId').value='';
+  document.getElementById('vbSupplier').value='';
+  document.getElementById('vbVendorInvoiceNo').value='';
+  document.getElementById('vbCurrency').value=clientRecord?.deal_currency||'AED';
+  document.getElementById('vbBillDate').value=new Date().toISOString().slice(0,10);
+  document.getElementById('vbDueDate').value='';
+  document.getElementById('vbNotes').value='';
+  document.getElementById('vbLineItems').innerHTML='';
+  addVbLineItemRow();
+  const sel=document.getElementById('vbCompany');
+  sel.innerHTML='<option value="">— None —</option>'+allErpCompanies.map(c=>`<option value="${escAttr(c.name)}">${esc(c.name)}</option>`).join('');
+  sel.value='';
+  document.getElementById('vbCompanyHint').textContent=erpAvailable()?'Pick a Company to load its Payable accounts.':'Connect ERPNext (⚙️ tab) to pick a company here.';
+  allErpPayableAccounts=[];
+  populateVbPayableAccountSelect();
+  document.getElementById('vendorBillModal').classList.add('active');
+  updateVbTotalPreview();
+}
+function closeVendorBillModal(){ document.getElementById('vendorBillModal').classList.remove('active'); }
+function populateVbPayableAccountSelect(selected){
+  const sel=document.getElementById('vbPayableAccount');
+  sel.innerHTML=allErpPayableAccounts.length
+    ? '<option value="">— Default —</option>'+allErpPayableAccounts.map(a=>`<option value="${escAttr(a.name)}">${esc(a.account_name||a.name)}</option>`).join('')
+    : '<option value="">— Default —</option>';
+  sel.value=selected||'';
+}
+// Payable accounts are company-scoped in ERPNext — re-fetch whenever Company changes, same pattern
+// as onDocCompanyChange/onExpenseCompanyChange. account_type=Payable (ERPNext's standard type for
+// accounts-payable ledger accounts) reuses the same generalized /erpnext/accounts endpoint the
+// Debtors/Expense pickers use.
+async function onVendorBillCompanyChange(){
+  const payableSel=document.getElementById('vbPayableAccount');
+  const current=payableSel.value;
+  const company=document.getElementById('vbCompany').value;
+  const companyRec=allErpCompanies.find(c=>c.name===company);
+  if(companyRec?.default_currency) document.getElementById('vbCurrency').value=companyRec.default_currency;
+  try{ allErpPayableAccounts=(await acctFetch(`/erpnext/accounts?company=${encodeURIComponent(company)}&account_type=Payable`,{method:'GET'})).list||[]; }
+  catch(e){ allErpPayableAccounts=[]; }
+  populateVbPayableAccountSelect(current);
+}
+function addVbLineItemRow(li){
+  li=li||{name:'',qty:1,price:0};
+  const row=document.createElement('div'); row.className='li-row';
+  row.innerHTML=`
+    <input class="li-name" list="erpItemsDatalist" placeholder="Product / service" value="${escAttr(li.name)}">
+    <input class="li-qty" type="number" placeholder="Qty" value="${esc(li.qty)}">
+    <input class="li-price" type="number" placeholder="Price" value="${esc(li.price)}">
+    <span class="li-total" style="font-family:var(--mono);font-size:13px;text-align:right"></span>
+    <button class="icon-btn danger" type="button" onclick="this.parentElement.remove();updateVbTotalPreview()">✕</button>`;
+  document.getElementById('vbLineItems').appendChild(row);
+  row.querySelectorAll('input').forEach(el=>el.addEventListener('input',updateVbTotalPreview));
+  updateVbTotalPreview();
+}
+function collectVbLineItems(){
+  return [...document.querySelectorAll('#vbLineItems .li-row')].map(row=>({
+    name:row.querySelector('.li-name').value.trim(),
+    qty:Number(row.querySelector('.li-qty').value)||0,
+    price:Number(row.querySelector('.li-price').value)||0
+  })).filter(li=>li.name);
+}
+function updateVbTotalPreview(){
+  const items=[...document.querySelectorAll('#vbLineItems .li-row')];
+  let subtotal=0;
+  items.forEach(row=>{
+    const qty=Number(row.querySelector('.li-qty').value)||0;
+    const price=Number(row.querySelector('.li-price').value)||0;
+    const total=qty*price;
+    subtotal+=total;
+    row.querySelector('.li-total').textContent=total.toLocaleString();
+  });
+  const cur=document.getElementById('vbCurrency').value||'';
+  document.getElementById('vbTotalPreview').textContent=`Total: ${fmtMoney(subtotal,cur)}`;
+}
+async function saveVendorBill(){
+  const supplier=document.getElementById('vbSupplier').value.trim();
+  if(!supplier){ alert('Enter a supplier name.'); return; }
+  const billDate=document.getElementById('vbBillDate').value;
+  if(!billDate){ alert('Pick a bill date.'); return; }
+  const lineItems=collectVbLineItems();
+  if(!lineItems.length){ alert('Add at least one line item.'); return; }
+  const body={
+    supplier, vendor_invoice_no:document.getElementById('vbVendorInvoiceNo').value.trim(),
+    company:document.getElementById('vbCompany').value||null,
+    erpnext_payable_account:document.getElementById('vbPayableAccount').value||null,
+    currency:document.getElementById('vbCurrency').value.trim()||'USD',
+    bill_date:billDate, due_date:document.getElementById('vbDueDate').value||null,
+    notes:document.getElementById('vbNotes').value.trim(),
+    line_items:lineItems,
+  };
+  try{
+    const created=await acctFetch('/accounting/vendor-bills',{method:'POST',body:JSON.stringify(body)});
+    const subtotal=lineItems.reduce((s,li)=>s+(li.qty*li.price),0);
+    allVendorBills.unshift({...body, Id:created.Id, id:created.Id, subtotal, total:subtotal, status:'unpaid'});
+    closeVendorBillModal();
+    renderVendorBillsTable();
+  }catch(e){ alert('Failed to save: '+e.message); }
+}
+async function syncVendorBillToErpnext(id){
+  try{
+    await acctFetch('/accounting/vendor-bills/sync-erpnext',{method:'POST',body:JSON.stringify({id})});
+    await loadVendorBills();
+    renderVendorBillsTable();
+  }catch(e){ alert('Sync failed: '+e.message); }
+}
+async function submitVendorBillToErpnext(id){
+  try{
+    await acctFetch('/accounting/vendor-bills/submit-erpnext',{method:'POST',body:JSON.stringify({id})});
+    await loadVendorBills();
+    renderVendorBillsTable();
+  }catch(e){ alert('Publish failed: '+e.message); }
+}
+async function recordVendorBillPayment(id){
+  if(!confirm('Record this bill as paid? This posts a real Payment Entry in ERPNext.')) return;
+  try{
+    await acctFetch('/accounting/vendor-bills/record-payment',{method:'POST',body:JSON.stringify({id})});
+    await loadVendorBills();
+    renderVendorBillsTable();
+  }catch(e){ alert('Recording payment failed: '+e.message); }
+}
+async function deleteVendorBill(id){
+  if(!confirm('Delete this vendor bill? (This only removes it here — it does not cancel an already-synced ERPNext Purchase Invoice.)')) return;
+  try{ await acctFetch('/accounting/vendor-bills',{method:'DELETE',body:JSON.stringify({id})}); allVendorBills=allVendorBills.filter(b=>b.Id!==id); renderVendorBillsTable(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+function vbErpBadge(bill){
+  if(!bill.erpnext_sync_status) return '<span class="badge notsynced">Not synced</span>';
+  if(bill.erpnext_sync_status==='synced'){
+    if(bill.erpnext_paid_at) return `<span class="badge paid" title="${escAttr(bill.erpnext_payment_doc_name||'')}">✓ Paid</span>`;
+    if(bill.erpnext_submitted_at) return `<span class="badge accepted" title="${escAttr(bill.erpnext_doc_name||'')}">✓ Published</span>`;
+    return `<span class="badge synced" title="${escAttr(bill.erpnext_doc_name||'')} — still a Draft in ERPNext until Published">✓ Synced (draft)</span>`;
+  }
+  if(bill.erpnext_sync_status==='failed') return `<span class="badge failed" title="${escAttr(bill.erpnext_sync_error||'Sync failed')}">⚠ Failed</span>`;
+  return '<span class="badge pending">Pending</span>';
+}
+function renderVendorBillsTable(){
+  const q=(document.getElementById('vbSearch').value||'').toLowerCase();
+  const tbody=document.getElementById('vendorBillsTbody');
+  if(vendorBillsLoadError){
+    tbody.innerHTML=`<tr><td colspan="7" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load vendor bills (${esc(vendorBillsLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
+    return;
+  }
+  const rows=allVendorBills.filter(b=>!q||(b.supplier||'').toLowerCase().includes(q)||(b.vendor_invoice_no||'').toLowerCase().includes(q));
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No vendor bills yet — click "+ New Bill" above to book one against this account\'s ERPNext.</td></tr>'; return; }
+  const erpReady=erpAvailable();
+  tbody.innerHTML=rows.map(b=>`<tr>
+      <td>${esc(b.bill_date||'')}</td>
+      <td>${esc(b.supplier||'')}</td>
+      <td>${esc(b.vendor_invoice_no||'—')}</td>
+      <td>${fmtMoney(b.total,b.currency)}</td>
+      <td><span class="badge ${b.status==='paid'?'paid':'pending'}">${esc((b.status||'unpaid').toUpperCase())}</span></td>
+      <td>${vbErpBadge(b)}</td>
+      <td class="row-actions">
+        <button class="icon-btn" title="${erpReady?'Sync to ERPNext':'Connect ERPNext first (⚙️ tab)'}" ${erpReady?'':'disabled'} onclick="syncVendorBillToErpnext(${b.Id})">🔄 ERPNext</button>
+        ${b.erpnext_sync_status==='synced'&&!b.erpnext_submitted_at?`<button class="icon-btn" title="Publish — submits it in ERPNext so it posts to the ledger" onclick="submitVendorBillToErpnext(${b.Id})">📮 Publish</button>`:''}
+        ${b.erpnext_submitted_at&&!b.erpnext_paid_at?`<button class="icon-btn" title="Record Payment — posts a Payment Entry in ERPNext" onclick="recordVendorBillPayment(${b.Id})">💵 Record Payment</button>`:''}
+        <button class="icon-btn danger" onclick="deleteVendorBill(${b.Id})">🗑</button>
       </td>
     </tr>`).join('');
 }

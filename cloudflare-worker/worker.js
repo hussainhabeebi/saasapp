@@ -8487,6 +8487,21 @@ async function erpnextSetCustomerDisabled(c, customerName, disabled){
   await erpnextFetch(c, `/api/resource/Customer/${encodeURIComponent(customerName)}`, {method:'PUT', body:JSON.stringify({disabled:disabled?1:0})});
 }
 
+// Supplier counterpart of erpnextResolveCustomer, for Vendor Bills — ERPNext's Purchase Invoice
+// doctype requires a real Supplier record to exist first, same "must exist before you can post
+// against it" constraint as Customer.
+async function erpnextResolveSupplier(c, supplierName){
+  const name=String(supplierName||'Supplier').trim().slice(0,140)||'Supplier';
+  const filters=encodeURIComponent(JSON.stringify([['supplier_name','=',name]]));
+  const searchR=await erpnextFetch(c, `/api/resource/Supplier?filters=${filters}&limit_page_length=1`);
+  const searchData=await searchR.json().catch(()=>({}));
+  if(searchR.ok && searchData?.data?.[0]?.name) return searchData.data[0].name;
+  const createR=await erpnextFetch(c, '/api/resource/Supplier', {method:'POST', body:JSON.stringify({supplier_name:name, supplier_group:'All Supplier Groups', supplier_type:'Individual'})});
+  const createData=await createR.json().catch(()=>({}));
+  if(!createR.ok) throw new Error('Supplier — '+erpnextErrorMessage(createData, createR.status));
+  return createData?.data?.name;
+}
+
 // Finds an existing Item by name, or creates a minimal non-stock service item. Same "must exist
 // first" constraint as Customer above — a line item's `item_code` has to reference a real Item.
 // Auto-creating on first use (rather than requiring the client to pre-map every service to an
@@ -8579,6 +8594,53 @@ async function erpnextPushExpenseEntry(c, expense){
   };
   if(expense.company) payload.company=expense.company;
   const r=await erpnextFetch(c, '/api/resource/Journal Entry', {method:'POST', body:JSON.stringify(payload)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
+  return data?.data?.name;
+}
+
+// Pushes a Vendor Bill as a real ERPNext Purchase Invoice — the accounts-payable counterpart of
+// erpnextPushSalesDoc. Resolves the Supplier and every line item's Item first (both required to
+// exist before the parent document can be created, same constraint as the sales-side push).
+// `bill_no`/`bill_date` carry the vendor's own invoice reference through to ERPNext's own "Bill No"/
+// "Bill Date" fields; `credit_to` is Purchase Invoice's own field name for the payable account
+// (the accounts-payable equivalent of Sales Invoice's `debit_to`), set from erpnext_payable_account
+// when picked, otherwise left for ERPNext to default from the Supplier/Company as it normally would.
+async function erpnextPushVendorBill(c, bill){
+  const supplier=await erpnextResolveSupplier(c, bill.supplier);
+  const lineItems=engineParseJsonField(bill.line_items_json, []);
+  const items=[];
+  for(const li of lineItems){
+    const itemCode=li.item_code||await erpnextResolveItem(c, li.name);
+    items.push({item_code:itemCode, qty:Number(li.qty)||1, rate:Number(li.price)||0});
+  }
+  if(!items.length) throw new Error('No line items to send');
+  const payload={supplier, items, bill_date:bill.bill_date};
+  if(bill.vendor_invoice_no) payload.bill_no=String(bill.vendor_invoice_no).slice(0,140);
+  if(bill.due_date) payload.due_date=bill.due_date;
+  if(bill.company) payload.company=bill.company;
+  if(bill.erpnext_payable_account) payload.credit_to=bill.erpnext_payable_account;
+  const r=await erpnextFetch(c, '/api/resource/Purchase Invoice', {method:'POST', body:JSON.stringify(payload)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
+  return {name:data?.data?.name, supplier};
+}
+
+// Records a Vendor Bill as paid — an ERPNext Payment Entry with payment_type:'Pay' (the
+// accounts-payable mirror of erpnextPushPaymentEntry's 'Receive'), allocated against the bill's own
+// submitted Purchase Invoice. `paid_to` is Payment Entry's own field name for the target account on
+// a Pay payment (normally the supplier's payable account) — set from erpnext_payable_account when
+// picked, otherwise left for ERPNext to default as it normally would.
+async function erpnextPushVendorBillPayment(c, bill){
+  const amount=Number(bill.total)||0;
+  const payload={
+    payment_type:'Pay', party_type:'Supplier', party:bill.erpnext_supplier,
+    paid_amount:amount, received_amount:amount,
+    references:bill.erpnext_doc_name?[{reference_doctype:'Purchase Invoice', reference_name:bill.erpnext_doc_name, allocated_amount:amount}]:[],
+  };
+  if(bill.company) payload.company=bill.company;
+  if(bill.erpnext_payable_account) payload.paid_to=bill.erpnext_payable_account;
+  const r=await erpnextFetch(c, '/api/resource/Payment Entry', {method:'POST', body:JSON.stringify(payload)});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
   return data?.data?.name;
@@ -8765,6 +8827,134 @@ async function handleAccountingExpenseSubmitErpnext(request, env){
   }
 }
 
+// ── Vendor Bills (migration 0029) — accounts-payable counterpart to accounting_documents: what a
+// client's own supplier billed them, pushed as an ERPNext Purchase Invoice, then optionally a
+// Payment Entry once it's paid. Same create→sync→submit shape as Documents/Expenses above, plus a
+// 4th "record payment" step (Documents' Receipt achieves the sales-side equivalent by being its own
+// separate document; a vendor bill tracks paid/unpaid directly on the one row instead, since there's
+// no reason to model "bill" and "payment" as two separate list rows the way quotation/invoice/
+// receipt are for the sales side).
+function acctVendorBillOut(row){ return {...row, Id:row.id, line_items:engineParseJsonField(row.line_items_json, [])}; }
+async function findVendorBill(env, id){ return await env.DB.prepare(`SELECT * FROM accounting_vendor_bills WHERE id=?`).bind(id).first(); }
+async function handleVendorBillsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM accounting_vendor_bills WHERE client_id=? ORDER BY bill_date DESC, id DESC LIMIT 500`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(acctVendorBillOut)});
+}
+async function handleVendorBillCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.supplier || !body.bill_date) return json({error:'supplier and bill_date required'}, 400);
+  const lineItems=Array.isArray(body.line_items)?body.line_items:[];
+  if(!lineItems.length) return json({error:'At least one line item required'}, 400);
+  const subtotal=lineItems.reduce((s,li)=>s+((Number(li.qty)||0)*(Number(li.price)||0)),0);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO accounting_vendor_bills (client_id, company, supplier, vendor_invoice_no, bill_date, due_date, line_items_json, currency, subtotal, total, notes, erpnext_payable_account, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), String(body.company||'').slice(0,140), String(body.supplier).slice(0,140), String(body.vendor_invoice_no||'').slice(0,140),
+      String(body.bill_date).slice(0,10), body.due_date?String(body.due_date).slice(0,10):null, JSON.stringify(lineItems), String(body.currency||'USD').slice(0,10).toUpperCase(),
+      subtotal, subtotal, String(body.notes||'').slice(0,1000), String(body.erpnext_payable_account||'').slice(0,140), 'unpaid', now).run();
+  return json({Id:r.meta.last_row_id});
+}
+async function handleVendorBillUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(bill.erpnext_doc_name) return json({error:'Already synced to ERPNext — delete and re-create instead of editing a synced bill.'}, 400);
+  const sets=[], vals=[];
+  for(const f of ['company','supplier','vendor_invoice_no','bill_date','due_date','currency','notes','erpnext_payable_account']){
+    if(body[f]!==undefined){ sets.push(`${f}=?`); vals.push(String(body[f]).slice(0,1000)); }
+  }
+  if(body.line_items!==undefined){
+    const lineItems=Array.isArray(body.line_items)?body.line_items:[];
+    const subtotal=lineItems.reduce((s,li)=>s+((Number(li.qty)||0)*(Number(li.price)||0)),0);
+    sets.push('line_items_json=?', 'subtotal=?', 'total=?'); vals.push(JSON.stringify(lineItems), subtotal, subtotal);
+  }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id), Number(payload.cid));
+  await env.DB.prepare(`UPDATE accounting_vendor_bills SET ${sets.join(', ')} WHERE id=? AND client_id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleVendorBillDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  await env.DB.prepare(`DELETE FROM accounting_vendor_bills WHERE id=? AND client_id=?`).bind(Number(body.id), Number(payload.cid)).run();
+  return json({ok:true});
+}
+async function handleVendorBillSyncErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  try{
+    const {name:erpName, supplier}=await erpnextPushVendorBill(c, bill);
+    const now=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_vendor_bills SET erpnext_doctype='Purchase Invoice', erpnext_doc_name=?, erpnext_supplier=?, erpnext_sync_status='synced', erpnext_sync_error=NULL, erpnext_synced_at=? WHERE id=?`).bind(erpName||'', supplier||'', now, bill.id).run();
+    return json({ok:true, erpnext_doc_name:erpName});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await env.DB.prepare(`UPDATE accounting_vendor_bills SET erpnext_sync_status='failed', erpnext_sync_error=? WHERE id=?`).bind(msg, bill.id).run();
+    await reportOpsError(env, 'handleVendorBillSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, billId:bill.id});
+    return json({error:'ERPNext sync failed: '+msg}, 502);
+  }
+}
+async function handleVendorBillSubmitErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(!bill.erpnext_doc_name) return json({error:'Sync this bill to ERPNext first.'}, 400);
+  if(bill.erpnext_submitted_at) return json({ok:true, already:true});
+  try{
+    await erpnextSubmitDocByName(c, 'Purchase Invoice', bill.erpnext_doc_name);
+    const submittedAt=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_vendor_bills SET erpnext_submitted_at=? WHERE id=?`).bind(submittedAt, bill.id).run();
+    return json({ok:true, erpnext_submitted_at:submittedAt});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await reportOpsError(env, 'handleVendorBillSubmitErpnext — ERPNext submit failed', e, {clientId:payload.cid, billId:bill.id});
+    return json({error:'ERPNext submit failed: '+msg}, 502);
+  }
+}
+// Records payment against an already-submitted bill — a submitted (not merely synced) Purchase
+// Invoice is required, same reasoning as the sales-side Receipt only ever allocating against an
+// invoice that's actually posted: ERPNext doesn't let a Payment Entry allocate against a Draft.
+async function handleVendorBillRecordPayment(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(!bill.erpnext_submitted_at) return json({error:'Publish (submit) this bill in ERPNext first.'}, 400);
+  if(bill.erpnext_paid_at) return json({ok:true, already:true});
+  try{
+    const paymentName=await erpnextPushVendorBillPayment(c, bill);
+    const now=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_vendor_bills SET erpnext_payment_doc_name=?, erpnext_paid_at=?, status='paid' WHERE id=?`).bind(paymentName||'', now, bill.id).run();
+    return json({ok:true, erpnext_payment_doc_name:paymentName});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await reportOpsError(env, 'handleVendorBillRecordPayment — ERPNext payment push failed', e, {clientId:payload.cid, billId:bill.id});
+    return json({error:'ERPNext payment failed: '+msg}, 502);
+  }
+}
+
 // ── ERPNext Customers / Items — live lookups for the accounting.html Customers tab and the
 // Document modal's customer/item pickers. Always fetched live, no local cache/mirror table — same
 // "no persisted local mapping" choice as erpnextResolveCustomer/erpnextResolveItem above, just
@@ -8779,6 +8969,25 @@ async function handleErpnextCustomersList(request, env){
   const fields=encodeURIComponent(JSON.stringify(['name','customer_name','email_id','mobile_no']));
   let path=`/api/resource/Customer?fields=${fields}&limit_page_length=200&order_by=customer_name asc`;
   if(q) path+=`&filters=${encodeURIComponent(JSON.stringify([['customer_name','like',`%${q}%`]]))}`;
+  const r=await erpnextFetch(c, path);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
+  return json({list:data?.data||[]});
+}
+
+// Suppliers — for the Vendor Bill modal's Supplier field (a `<datalist>`, not a hard `<select>`,
+// same free-text-with-suggestions pattern as the Documents modal's Item field — resolved/created by
+// name on sync via erpnextResolveSupplier, not required to be picked from this exact list).
+async function handleErpnextSuppliersList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in the ⚙️ ERPNext tab.'}, 400);
+  const url=new URL(request.url);
+  const q=(url.searchParams.get('q')||'').trim();
+  const fields=encodeURIComponent(JSON.stringify(['name','supplier_name']));
+  let path=`/api/resource/Supplier?fields=${fields}&limit_page_length=200&order_by=supplier_name asc`;
+  if(q) path+=`&filters=${encodeURIComponent(JSON.stringify([['supplier_name','like',`%${q}%`]]))}`;
   const r=await erpnextFetch(c, path);
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:erpnextErrorMessage(data, r.status)}, 502);
@@ -12735,6 +12944,13 @@ export default {
       else if(url.pathname==='/accounting/expenses' && request.method==='DELETE'){ res=await handleAccountingExpenseDelete(request, env); }
       else if(url.pathname==='/accounting/expenses/sync-erpnext' && request.method==='POST'){ res=await handleAccountingExpenseSyncErpnext(request, env); }
       else if(url.pathname==='/accounting/expenses/submit-erpnext' && request.method==='POST'){ res=await handleAccountingExpenseSubmitErpnext(request, env); }
+      else if(url.pathname==='/accounting/vendor-bills' && request.method==='GET'){ res=await handleVendorBillsList(request, env); }
+      else if(url.pathname==='/accounting/vendor-bills' && request.method==='POST'){ res=await handleVendorBillCreate(request, env); }
+      else if(url.pathname==='/accounting/vendor-bills' && request.method==='PATCH'){ res=await handleVendorBillUpdate(request, env); }
+      else if(url.pathname==='/accounting/vendor-bills' && request.method==='DELETE'){ res=await handleVendorBillDelete(request, env); }
+      else if(url.pathname==='/accounting/vendor-bills/sync-erpnext' && request.method==='POST'){ res=await handleVendorBillSyncErpnext(request, env); }
+      else if(url.pathname==='/accounting/vendor-bills/submit-erpnext' && request.method==='POST'){ res=await handleVendorBillSubmitErpnext(request, env); }
+      else if(url.pathname==='/accounting/vendor-bills/record-payment' && request.method==='POST'){ res=await handleVendorBillRecordPayment(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='GET'){ res=await handleFpCustomersList(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='POST'){ res=await handleFpCustomerCreate(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='PATCH'){ res=await handleFpCustomerUpdate(request, env); }
@@ -12793,6 +13009,7 @@ export default {
       else if(url.pathname==='/hospitality/bookings' && request.method==='PATCH'){ res=await handleHospitalityBookingUpdate(request, env); }
       else if(url.pathname==='/hospitality/bookings' && request.method==='DELETE'){ res=await handleHospitalityBookingDelete(request, env); }
       else if(url.pathname==='/hospitality/stats' && request.method==='GET'){ res=await handleHospitalityStats(request, env); }
+      else if(url.pathname==='/erpnext/suppliers' && request.method==='GET'){ res=await handleErpnextSuppliersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }
       else if(url.pathname==='/erpnext/customers/ensure' && request.method==='POST'){ res=await handleErpnextCustomerEnsure(request, env); }

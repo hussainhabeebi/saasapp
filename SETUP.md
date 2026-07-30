@@ -1507,6 +1507,57 @@ bookkeeping, migration 0015 — **never** pushed to ERPNext, and unaffected by t
   un-set (falls back to ERPNext's own default) against your actual Frappe version before relying on
   it for real bookkeeping.
 
+### Vendor Bills (`frontend/accounting.html` — "📥 Vendor Bills" tab, `cloudflare-worker/migrations/0029_accounting_vendor_bills.sql`)
+The accounts-payable counterpart to `accounting_documents`'s Quotation/Invoice/Receipt (which only
+ever models the client's own sales) — what a client's own **supplier** billed *them*, pushed to
+ERPNext as a real `Purchase Invoice`, then optionally a `Payment Entry` once it's actually paid.
+
+- **Supplier** is a free-text field with autocomplete suggestions (`GET /erpnext/suppliers`, a
+  `<datalist>` fed into `#erpSuppliersDatalist`), not a hard picker — same "type a name, it gets
+  resolved-or-created on sync" pattern as the Documents modal's line-item names use for Items.
+  `erpnextResolveSupplier` (worker.js) searches ERPNext's `Supplier` doctype by `supplier_name`
+  first, creating a minimal one (`supplier_group:'All Supplier Groups'`, `supplier_type:'Individual'`
+  — an assumption about a fresh site's default supplier group, same caveat as Item's
+  `item_group:'Services'` guess) only when no match exists.
+- **Company** and **Payable Account** reuse the exact same pickers/endpoints as Expense Entry and
+  Documents: `handleErpnextCompaniesList` for Company, and the shared, generalized
+  `GET /erpnext/accounts?company=<x>&account_type=Payable` for the Payable Account dropdown — no new
+  backend endpoint needed, since that endpoint already accepts an arbitrary `account_type`/
+  `root_type` filter (added for Expense Entry's Expense/Paid-From pickers).
+- **Line items** work exactly like the Documents modal (same `.li-row` markup/JS, same
+  `erpItemsDatalist` for product/service name suggestions, same by-name Item resolve-or-create via
+  `erpnextResolveItem` on sync) — a vendor bill's line items are just as real as a sales invoice's.
+- **`erpnextPushVendorBill`** (worker.js) posts `POST /api/resource/Purchase Invoice` with
+  `supplier`, `items`, `bill_date`, and — when present — `bill_no` (the vendor's own invoice
+  number, carried through to ERPNext's own "Bill No" field for reference/reconciliation),
+  `due_date`, `company`, and `credit_to` (Purchase Invoice's own field name for the payable account,
+  the accounts-payable mirror of Sales Invoice's `debit_to`).
+- **Schema** (`accounting_vendor_bills`, migration 0029): `client_id, company, supplier,
+  erpnext_supplier` (the resolved/created ERPNext Supplier name, captured on sync so the payment
+  step below doesn't have to re-resolve it), `vendor_invoice_no, bill_date, due_date,
+  line_items_json, currency, subtotal, total, notes, erpnext_payable_account, status` (`unpaid` |
+  `paid`), plus the same `erpnext_doctype/doc_name/sync_status/sync_error/synced_at/submitted_at`
+  columns `accounting_documents`/`accounting_expenses` use, plus `erpnext_payment_doc_name`/
+  `erpnext_paid_at` for the payment step.
+- **Create → Sync → Publish → Record Payment**, a 4th step beyond Documents/Expenses' 3:
+  `POST /accounting/vendor-bills` saves locally only; `.../sync-erpnext` pushes the Purchase Invoice
+  Draft; `.../submit-erpnext` publishes it (`erpnextSubmitDocByName`, same as Documents/Expenses);
+  `.../record-payment` (only enabled once published) calls **`erpnextPushVendorBillPayment`** — a
+  `Payment Entry` with `payment_type:'Pay'`, `party_type:'Supplier'` (the accounts-payable mirror of
+  `erpnextPushPaymentEntry`'s `'Receive'`/`'Customer'` used for sales Receipts), allocated against
+  the bill's own submitted Purchase Invoice via `references`, using `paid_to` (Payment Entry's field
+  name for the target account on a Pay payment) from `erpnext_payable_account` when picked.
+  Deliberately **not** a separate document row the way Receipt is for sales (quotation→invoice→
+  receipt each get their own row so they can each be listed/searched independently) — a bill only
+  ever has one payment status worth tracking (paid/unpaid), so it lives directly on the bill row
+  instead of adding a second row type with no real independent lifecycle of its own.
+- Same edit-lock-once-synced and delete-doesn't-cancel-in-ERPNext caveats as Expense Entry, and same
+  **not live-verified against a real Frappe Cloud site** caveat as the rest of this integration —
+  verify Purchase Invoice's exact required fields (some Frappe versions require `set_posting_time`
+  or a default `Purchase Taxes and Charges Template` even with a zero-tax bill) and that `paid_to`/
+  `credit_to` resolve correctly against your own chart of accounts before relying on this for real
+  vendor payments.
+
 ## Billing module (Stripe — self-serve portal, add-on purchases, usage dashboard)
 Implements: a self-serve billing portal (invoices, upgrade/downgrade, renewal date), in-app
 add-on purchases (WhatsApp credits, voice add-on), and a client-facing usage dashboard
