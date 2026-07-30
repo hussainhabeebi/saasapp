@@ -9576,6 +9576,32 @@ async function handleSaasUsageEvent(request, env){
     .bind(cfg.client_id, customerId, String(body.event_name).slice(0,100), parseInt(body.event_count,10)||1, body.occurred_at||now, now).run();
   return json({ok:true});
 }
+// Read side for the ingestion above — GET /saas/usage-events, the 🚀 SaaS Ops → Usage sub-tab.
+// Was write-only until now (nothing surfaced what actually landed from a client's own product
+// backend). Returns both a recent raw log (capped, most-recent-first) and a 30-day per-account/
+// per-event-name summary — computed here rather than client-side since saas_usage_events can grow
+// large and the summary aggregation is cheap to do once in SQL vs. shipping every row to the
+// browser to group there.
+async function handleSaasUsageEventsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const url=new URL(request.url);
+  const customerId=url.searchParams.get('customer_id');
+  let recentSql=`SELECT * FROM saas_usage_events WHERE client_id=?`; const recentBinds=[clientId];
+  if(customerId){ recentSql+=` AND customer_id=?`; recentBinds.push(Number(customerId)); }
+  recentSql+=` ORDER BY occurred_at DESC LIMIT 300`;
+  const {results:recent}=await env.DB.prepare(recentSql).bind(...recentBinds).all();
+
+  const since=new Date(Date.now()-30*86400000).toISOString();
+  let summarySql=`SELECT customer_id, event_name, SUM(event_count) total, COUNT(*) events, MAX(occurred_at) last_seen FROM saas_usage_events WHERE client_id=? AND occurred_at>=?`;
+  const summaryBinds=[clientId, since];
+  if(customerId){ summarySql+=` AND customer_id=?`; summaryBinds.push(Number(customerId)); }
+  summarySql+=` GROUP BY customer_id, event_name ORDER BY total DESC LIMIT 200`;
+  const {results:summary}=await env.DB.prepare(summarySql).bind(...summaryBinds).all();
+
+  return json({list:(recent||[]).map(r=>({...r, Id:r.id})), summary_30d:summary||[]});
+}
 
 // ── Activation milestones ──
 async function handleSaasMilestonesList(request, env){
@@ -12426,6 +12452,7 @@ export default {
       else if(url.pathname.startsWith('/saas/webhooks/chargebee/') && request.method==='POST'){ res=await handleSaasChargebeeWebhook(request, env, url.pathname.slice('/saas/webhooks/chargebee/'.length)); }
       else if(url.pathname.startsWith('/saas/webhooks/paddle/') && request.method==='POST'){ res=await handleSaasPaddleWebhook(request, env, url.pathname.slice('/saas/webhooks/paddle/'.length)); }
       else if(url.pathname==='/saas/usage-event' && request.method==='POST'){ res=await handleSaasUsageEvent(request, env); }
+      else if(url.pathname==='/saas/usage-events' && request.method==='GET'){ res=await handleSaasUsageEventsList(request, env); }
       else if(url.pathname==='/saas/milestones' && request.method==='GET'){ res=await handleSaasMilestonesList(request, env); }
       else if(url.pathname==='/saas/milestones' && request.method==='POST'){ res=await handleSaasMilestoneCreate(request, env); }
       else if(url.pathname==='/saas/milestones' && request.method==='DELETE'){ res=await handleSaasMilestoneDelete(request, env); }

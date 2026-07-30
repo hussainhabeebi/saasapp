@@ -12281,6 +12281,7 @@ async function renderReportsProduct(){
    module") — MRR/churn, health score distribution, activation funnel, renewal pipeline, expansion
    candidates. Reads fp_customers/fp_expected_dues/fp_collections (Financial Planning's own D1
    tables, extended with SaaS columns), not a separate data source. */
+let _saasRevenueChart=null, _saasHealthChart=null, _saasFunnelChart=null;
 async function renderReportsSaas(){
   const el=$id('reportsContent');
   el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
@@ -12289,10 +12290,11 @@ async function renderReportsSaas(){
   try{ d=await (await fetch(`${CONFIG.WORKER_BASE}/saas/reports`,{headers:ncAuthHeaders()})).json(); }catch(e){ loadError=true; }
 
   if(loadError || !d.active_accounts){
-    el.innerHTML='<div class="empty-state"><div class="ei">📈</div>No SaaS account data yet — this fills in once you have accounts in 💰 Accounting → Financial Planning → Customers (added manually, via a "✅ Won" lead, or synced from a connected billing provider).</div>';
+    el.innerHTML='<div class="empty-state"><div class="ei">📈</div>No SaaS account data yet — this fills in once you have accounts in 💰 Accounting → Financial Planning → Customers (added manually, via a "✅ Won" lead, imported from an existing NocoDB table, or synced from a connected billing provider).</div>';
     return;
   }
-  const maxMonth=Math.max(1,...d.months.map(m=>m.revenue));
+  // Every section below is a full-width card, stacked — no side-by-side 2-column grid — so each
+  // chart/table gets real room instead of being squeezed to half the page.
   el.innerHTML=`
     <div style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
       <div class="stat accent"><div class="stat-lbl">MRR</div><div class="stat-val">${Math.round(d.mrr).toLocaleString()}</div></div>
@@ -12302,30 +12304,60 @@ async function renderReportsSaas(){
     </div>
     <div class="card" style="margin-bottom:14px">
       <div class="s-head" style="margin-bottom:8px">Revenue Collected — Last 6 Months</div>
-      ${d.months.length?d.months.map(m=>`<div class="bar-row"><div style="min-width:60px;font-size:11px">${esc(m.key)}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(m.revenue/maxMonth*100)}%"></div></div><div class="bar-val">${Math.round(m.revenue).toLocaleString()}</div></div>`).join(''):'<div style="color:var(--muted);font-size:12px">No collections in this window yet.</div>'}
+      <div style="height:280px"><canvas id="saasReportsRevenueChart"></canvas></div>
     </div>
-    <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr;margin-bottom:14px">
-      <div class="card">
-        <div class="s-head" style="margin-bottom:8px">Health Score Distribution</div>
-        <div class="bar-row"><div style="min-width:70px;font-size:11px">Healthy</div><div class="bar-bg"><div class="bar-fill" style="width:${d.active_accounts?Math.round(d.health_distribution.healthy/d.active_accounts*100):0}%;background:var(--green,#0a7)"></div></div><div class="bar-val">${d.health_distribution.healthy}</div></div>
-        <div class="bar-row"><div style="min-width:70px;font-size:11px">Neutral</div><div class="bar-bg"><div class="bar-fill" style="width:${d.active_accounts?Math.round(d.health_distribution.neutral/d.active_accounts*100):0}%"></div></div><div class="bar-val">${d.health_distribution.neutral}</div></div>
-        <div class="bar-row"><div style="min-width:70px;font-size:11px">At Risk</div><div class="bar-bg"><div class="bar-fill" style="width:${d.active_accounts?Math.round(d.health_distribution.at_risk/d.active_accounts*100):0}%;background:var(--red)"></div></div><div class="bar-val">${d.health_distribution.at_risk}</div></div>
-      </div>
-      <div class="card">
-        <div class="s-head" style="margin-bottom:8px">At-Risk Accounts</div>
-        ${d.at_risk_accounts.length?`<table class="leads-tbl" style="width:100%"><thead><tr><th>Account</th><th>Health</th><th>MRR</th></tr></thead><tbody>${d.at_risk_accounts.map(a=>`<tr><td>${esc(a.name)}</td><td style="color:var(--red)">${a.health_score}</td><td>${Math.round(a.mrr||0).toLocaleString()}</td></tr>`).join('')}</tbody></table>`:'<div style="color:var(--muted);font-size:12px">None right now.</div>'}
-      </div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:8px">Health Score Distribution</div>
+      <div style="height:240px;max-width:480px;margin:0 auto"><canvas id="saasReportsHealthChart"></canvas></div>
     </div>
-    <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
-      <div class="card">
-        <div class="s-head" style="margin-bottom:8px">Renewal Pipeline (next 90 days)</div>
-        ${d.renewal_pipeline.length?`<table class="leads-tbl" style="width:100%"><thead><tr><th>Account</th><th>Renews</th><th>Days Out</th></tr></thead><tbody>${d.renewal_pipeline.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.renewal_date)}</td><td>${r.days_out}</td></tr>`).join('')}</tbody></table>`:'<div style="color:var(--muted);font-size:12px">Nothing renewing in the next 90 days.</div>'}
-      </div>
-      <div class="card">
-        <div class="s-head" style="margin-bottom:8px">Activation Funnel</div>
-        ${d.activation_funnel.length?d.activation_funnel.map(f=>`<div class="bar-row"><div style="min-width:120px;font-size:11px">${esc(f.milestone)}</div><div class="bar-bg"><div class="bar-fill" style="width:${d.active_accounts?Math.round(f.completed/d.active_accounts*100):0}%"></div></div><div class="bar-val">${f.completed}</div></div>`).join(''):'<div style="color:var(--muted);font-size:12px">Define activation milestones in 💰 Accounting → 🚀 SaaS Ops → Activation.</div>'}
-      </div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:8px">Activation Funnel</div>
+      ${d.activation_funnel.length?`<div style="height:${Math.max(160,d.activation_funnel.length*42)}px"><canvas id="saasReportsFunnelChart"></canvas></div>`:'<div style="color:var(--muted);font-size:12px">Define activation milestones in 💰 Accounting → 🚀 SaaS Ops → Activation.</div>'}
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:8px">At-Risk Accounts</div>
+      ${d.at_risk_accounts.length?`<div style="overflow-x:auto"><table class="leads-tbl" style="width:100%"><thead><tr><th>Account</th><th>Health</th><th>MRR</th></tr></thead><tbody>${d.at_risk_accounts.map(a=>`<tr><td>${esc(a.name)}</td><td style="color:var(--red)">${a.health_score}</td><td>${Math.round(a.mrr||0).toLocaleString()}</td></tr>`).join('')}</tbody></table></div>`:'<div style="color:var(--muted);font-size:12px">None right now.</div>'}
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:8px">Renewal Pipeline (next 90 days)</div>
+      ${d.renewal_pipeline.length?`<div style="overflow-x:auto"><table class="leads-tbl" style="width:100%"><thead><tr><th>Account</th><th>Renews</th><th>Days Out</th></tr></thead><tbody>${d.renewal_pipeline.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.renewal_date)}</td><td>${r.days_out}</td></tr>`).join('')}</tbody></table></div>`:'<div style="color:var(--muted);font-size:12px">Nothing renewing in the next 90 days.</div>'}
+    </div>
+    <div class="card">
+      <div class="s-head" style="margin-bottom:8px">Expansion Candidates</div>
+      ${d.expansion_candidates.length?`<div style="overflow-x:auto"><table class="leads-tbl" style="width:100%"><thead><tr><th>Account</th><th>Seats</th></tr></thead><tbody>${d.expansion_candidates.map(e=>`<tr><td>${esc(e.name)}</td><td>${e.seat_count}</td></tr>`).join('')}</tbody></table></div>`:'<div style="color:var(--muted);font-size:12px">None right now.</div>'}
     </div>`;
+
+  // Chart.js loads from a CDN (see <head>) — same fail-open reasoning as renderFunnel/renderLeadsChart
+  // above: the stat tiles and tables render fine without it either way.
+  if(typeof Chart==='undefined') return;
+  const revCanvas=$id('saasReportsRevenueChart');
+  if(revCanvas){
+    if(_saasRevenueChart) _saasRevenueChart.destroy();
+    _saasRevenueChart=new Chart(revCanvas,{
+      type:'bar',
+      data:{labels:d.months.map(m=>m.key), datasets:[{label:'Revenue', data:d.months.map(m=>m.revenue), backgroundColor:'#4F46E5', borderRadius:6}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{font:{size:10}}},y:{beginAtZero:true,grid:{color:'#EEF2F0'},ticks:{font:{size:10}}}}}
+    });
+  }
+  const healthCanvas=$id('saasReportsHealthChart');
+  if(healthCanvas){
+    if(_saasHealthChart) _saasHealthChart.destroy();
+    const hd=d.health_distribution;
+    _saasHealthChart=new Chart(healthCanvas,{
+      type:'doughnut',
+      data:{labels:['Healthy','Neutral','At Risk'], datasets:[{data:[hd.healthy,hd.neutral,hd.at_risk], backgroundColor:['#16A34A','#F59E0B','#DC2626']}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:11}}}}}
+    });
+  }
+  const funnelCanvas=$id('saasReportsFunnelChart');
+  if(funnelCanvas && d.activation_funnel.length){
+    if(_saasFunnelChart) _saasFunnelChart.destroy();
+    _saasFunnelChart=new Chart(funnelCanvas,{
+      type:'bar',
+      data:{labels:d.activation_funnel.map(f=>f.milestone), datasets:[{data:d.activation_funnel.map(f=>f.completed), backgroundColor:'#4F46E5', borderRadius:6}]},
+      options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,grid:{color:'#EEF2F0'},ticks:{font:{size:10}}},y:{grid:{display:false},ticks:{font:{size:10}}}}}
+    });
+  }
 }
 
 /* ── SEO (Google Search Console) — the one report with an OAuth connect step of its own, same
