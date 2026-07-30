@@ -8,22 +8,29 @@ compatibility_date = "2026-01-01"
 enabled = true
 invocation_logs = true
 
-# Three schedules, dispatched by event.cron in `scheduled()`:
+# Four schedules, dispatched by event.cron in `scheduled()`:
 #  - "0 2 * * *"     Integrations tab health check, once daily for every client
 #                    (runDailyHealthCheckForAllClients in worker.js) — AND the Advanced Pipeline
 #                    module's follow-up cadence advance (runPipelineFollowupsForAllClients) — AND
-#                    the Calendar Events module's due-today sends (runCalendarEventsForAllClients),
-#                    all piggybacked on the same tick since none of the three need finer-than-daily
-#                    granularity.
+#                    the Calendar Events module's due-today sends (runCalendarEventsForAllClients)
+#                    — AND the SaaS Ops module's health-score/reminder/support-pull sweeps
+#                    (runSaasHealthScoresForAllClients etc.), all piggybacked on the same tick
+#                    since none of them need finer-than-daily granularity.
 #  - "*/15 * * * *"  Automations module — advances every client's active flows
 #                    (runAutomationFlowsForAllClients in worker.js) — AND the Review Request
 #                    module's own sweep (sweepReviewRequests in worker.js), piggybacked on the
 #                    same tick since a multi-hour/day review-request delay doesn't need its own
 #                    finer-grained schedule.
 #  - "*/20 * * * *"  Shopify module — abandoned-cart nudge sweep
-#                    (sweepAbandonedShopifyCheckouts in worker.js).
+#                    (sweepAbandonedShopifyCheckouts in worker.js). Also the `scheduled()`
+#                    dispatcher's trailing `else` — any cron string not explicitly matched lands
+#                    here, so a 5th schedule added later MUST get its own explicit `else if`
+#                    branch before this one, not just a new string in the array below.
+#  - "0 9 * * 1"     SaaS Ops module — weekly owner digest + weekly customer value update
+#                    (runWeeklyOwnerDigest/runWeeklyCustomerValueUpdate in worker.js), Mondays
+#                    09:00 UTC.
 [triggers]
-crons = ["0 2 * * *", "*/15 * * * *", "*/20 * * * *"]
+crons = ["0 2 * * *", "*/15 * * * *", "*/20 * * * *", "0 9 * * 1"]
 
 # D1 — sidecar storage for the Review Request and Referral tracking modules only (see
 # migrations/0001_reviews_referrals.sql and SETUP.md). Everything else in this app still lives in
