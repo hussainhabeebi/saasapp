@@ -993,10 +993,10 @@ on it for production onboarding.
 ## Shopify module (order/fulfillment/abandoned-cart WhatsApp notifications, no n8n)
 A separate connection from item 4 above — Chatwoot's Shopify integration only shows order
 context inside a conversation. This one lets the Worker itself read a client's Shopify store
-(order/fulfillment/checkout webhooks → WhatsApp templates straight through Meta's Graph API),
-one-click OAuth connect from **Settings → Integrations** (`dashboard.html`), with the
-notification template setup and send log living in the Ecommerce module's new **Shopify** tab
-(`ecom.html`).
+(order/fulfillment/checkout webhooks → WhatsApp templates straight through Meta's Graph API).
+Connect, notification-template setup and the send log all live on one page now —
+**Settings → Integrations** (`dashboard.html`) — instead of the connect step being there and the
+notification setup living in a separate Ecommerce-module tab.
 
 **One-time Shopify Partners setup:**
 1. Create an app in [partners.shopify.com](https://partners.shopify.com) (Custom or Public
@@ -1014,10 +1014,14 @@ notification template setup and send log living in the Ecommerce module's new **
 shape as `ecom_wa_templates`: `{config:{received,paid,shipped,delivered,abandoned}, templates:[...]}`),
 `shopify_notify_log` (Long text, JSON array, capped at the last 30 entries).
 
-**New NocoDB table** `shopify_checkouts` (abandoned-cart tracking) — fields: `client_id`,
+**NocoDB table** `shopify_checkouts` (abandoned-cart tracking) — fields: `client_id`,
 `checkout_token`, `phone`, `customer_name`, `cart_summary`, `total`, `currency`, `recovery_url`,
-`created_at`, `nudge_sent` (Yes/No), `completed` (Yes/No). Paste its table id into
-`SHOPIFY_CHECKOUTS_TABLE` in `worker.js` (same pattern as `EMAIL_CAMPAIGNS_TABLE` above it).
+`created_at`, `nudge_sent`, `completed`. **Self-provisioning** — `getShopifyCheckoutsTableId()` in
+`worker.js` creates this table itself (via NocoDB's Meta API, same one dashboard.html's own
+`ensure*Column()` helpers already use client-side) the first time it's needed, and memoizes the
+resolved id for the life of the Worker isolate. Nothing to create by hand or paste into a
+constant — this used to require creating the table manually in NocoDB and pasting its id into a
+`SHOPIFY_CHECKOUTS_TABLE` constant (same pattern as `EMAIL_CAMPAIGNS_TABLE`); that step is gone.
 
 **New Ecommerce Orders column** `shopify_order_id` (Single line text) — add this to whatever
 table `ecom_table_ids.orders` resolves to (the shared default `mjqaeatoe88gay6`, or a client's own
@@ -1046,8 +1050,9 @@ Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp not
    it directly via Shopify's Admin API. **Stores connected before `orders/paid` was added** won't
    have that webhook registered — disconnect and reconnect (Settings → Integrations → Shopify) to
    pick it up; reconnecting re-runs the full webhook registration step.
-3. **Notifications** — set up per-event WhatsApp templates in the Ecommerce module's Shopify tab
-   (`GET /ecom/wa-templates` pulls approved templates straight from Meta's Graph API — no n8n
+3. **Notifications** — set up per-event WhatsApp templates right below the connect card on the
+   same **Settings → Integrations** page (`GET /ecom/wa-templates` pulls approved templates
+   straight from Meta's Graph API — no n8n
    hop, unlike the existing Order Delivery Notifications section which still uses the
    `leadvyne-ecom-wa-templates` n8n webhook). `POST /shopify/webhook` verifies each webhook's
    HMAC over the raw body, then sends the matching template via `sendShopifyNotification` and
@@ -4503,6 +4508,59 @@ generic "One moment 🙏" reply, a signal-detection call erroring, an analytics-
 are still swallowed silently by design — alerting on every best-effort fallback throughout this
 file would be noisy without much operational value. The three wiring points above were chosen as
 the highest-signal: total silence to a customer, or a fully unhandled crash.
+
+## Instagram DM module (`POST /ig/webhook` — native, no Chatwoot)
+Unlike WhatsApp above, Instagram DMs never touch Chatwoot at all: this Worker receives Meta's raw
+webhook itself, sends replies straight through the Graph API, and conversations show up in
+`dashboard.html`'s existing Chats page (a new "📷 Instagram" switch — same `ConvHistory` shape,
+same Leads table). Reuses the engine's classify/route/reply pipeline
+(`engineClassifyIntent`/`engineRouteFlow`/`engineCallLlm`) unchanged — confirmed channel-agnostic
+— but is deliberately leaner than `handleEngineWebhook`: only the qualify/FAQ/objection/human/drop
+routes are implemented. The ecommerce order-link automation, hospitality/category media sends and
+booking-signal auto-send that WhatsApp also gets are **not** replicated here — this is a
+text-only, core-conversation channel for now, not full parity with every WhatsApp
+business-vertical feature.
+
+**One-time Meta setup:**
+1. On the same Meta app used for WhatsApp Embedded Signup (`META_APP_ID`/`META_APP_SECRET`,
+   already set), add the **Instagram** product → **Business Login for Instagram** → create a
+   config, copy its config id into `frontend/dashboard.html`'s `CONFIG.META_INSTAGRAM_CONFIG_ID`.
+2. Add a webhook subscription for the **Instagram** product pointing at
+   `{WORKER_BASE_URL}/ig/webhook`, subscribed to the `messages` field. Meta will call this URL with
+   a `GET` verification challenge first — set a `META_IG_VERIFY_TOKEN` Worker secret
+   (`wrangler secret put META_IG_VERIFY_TOKEN`, any random string) and enter the same value as the
+   "Verify Token" in Meta's webhook subscription dialog.
+3. Nothing else to create by hand — connecting (below) both discovers the Instagram Business
+   Account and auto-provisions every column it needs.
+
+**Connect flow:** Settings → Integrations → "📷 Instagram DM" → Connect → same Embedded-Signup
+`FB.login` pattern as WhatsApp (`connectInstagram()`), but returns `code` directly in the login
+callback (no `WA_EMBEDDED_SIGNUP`-style postMessage event to wait on) → `POST
+/channels/instagram/connect` exchanges it for a user token, walks `GET /me/accounts` for the first
+Facebook Page with a linked Instagram Business Account, and stores that Page's own access token
+(Instagram messaging authenticates as the Page, not the raw user) — `ig_id`, `ig_access_token`,
+`ig_username`, `ig_connected_at` on the CLIENTS row. These are auto-created via NocoDB's Meta API
+the moment you connect (`ensureClientColumns()` in `worker.js`) — nothing to add by hand.
+
+**Data model** — Instagram leads live in the *same* Leads table as WhatsApp, not a separate one
+(one unified pipeline/dashboard): a new `IgId` column (Instagram has no phone number, only an
+IGSID) and a `Channel` column (`whatsapp`/`instagram`, defaults to `whatsapp` for every existing
+row). Both auto-created the same way (`ensureLeadsColumns()`), the first time a DM comes in.
+`engineGetLeadState`/`engineBuildLeadUpsertBody` both take an optional identity-field parameter
+now (`'Phone'` by default — every WhatsApp call site is unaffected) so the same upsert logic works
+for either channel.
+
+**Human handover** reuses the exact same `Handover`/`HandoverAt`/`SlaAlerted` fields
+`engineBuildLeadUpsertBody` already sets for WhatsApp — the SLA-breach alert
+(`n8n/notifications.json`) polls the Leads table generically, not by channel, so an Instagram
+handover surfaces there for free. There's no Chatwoot conversation to label
+(`engineSendHandoverLabel`), so the Instagram path simply doesn't call it; the lead shows up under
+the Chats page's existing "Needs You" filter exactly like a WhatsApp handover does.
+
+**Manual replies** — the Chats page's "📷 Instagram" switch reuses the exact same contact
+list/thread UI as WhatsApp (`chatConvoLeads`/`chatSelectLead`, filtered by `Channel`); sending
+posts to `POST /instagram/send` (`{lead_id, text}`) instead of `/chat/send`, since there's no
+Chatwoot conversation id to send through.
 
 ## Dashboard reorganization (`frontend/dashboard.html`, `frontend/broadcast.html`, `frontend/ecom.html`)
 A single information-architecture pass: two new pages, one page promoted out of Settings, two
