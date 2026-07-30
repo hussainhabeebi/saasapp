@@ -9956,7 +9956,7 @@ async function handleSaasConfigUpdate(request, env){
   await fpEnsureConfigRow(env, payload.cid);
   const body=await request.json().catch(()=>({}));
   const sets=[], vals=[];
-  for(const f of ['stripe_secret_key','stripe_webhook_secret','chargebee_site','chargebee_api_key','chargebee_webhook_secret','paddle_api_key','paddle_webhook_secret','support_provider','support_api_key','support_subdomain']){
+  for(const f of ['stripe_secret_key','stripe_webhook_secret','chargebee_site','chargebee_api_key','chargebee_webhook_secret','paddle_api_key','paddle_webhook_secret','support_provider','support_api_key','support_subdomain','nocodb_customers_table_id']){
     if(body[f]!==undefined && body[f]!==''){ sets.push(`${f}=?`); vals.push(String(body[f]).trim().slice(0,500)); }
   }
   if(!sets.length) return json({ok:true});
@@ -9964,6 +9964,101 @@ async function handleSaasConfigUpdate(request, env){
   vals.push(Number(payload.cid));
   await env.DB.prepare(`UPDATE fp_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
   return json({ok:true});
+}
+
+// ── Import Accounts from an existing NocoDB customers table (SETUP.md "SaaS Ops module —
+// importing from an existing NocoDB customers table") — for a client who already tracks their
+// customers in their own NocoDB table rather than starting fresh in Financial Planning.
+// Deliberately schema-agnostic: this app has no idea what columns that table has, so every row is
+// fetched in full (no `fields=` restriction) and recognizable field NAMES are best-effort matched
+// case-insensitively against a list of common aliases — anything that doesn't match a known
+// fp_customers column is kept verbatim in raw_nocodb_json rather than dropped. Manual-trigger only
+// (POST /saas/nocodb-import), no automatic re-sync — see the module's own comment for why:
+// re-syncing automatically risks silently overwriting an Account field a user has since hand-edited
+// in SaaS Ops with a possibly-stale value from the NocoDB table.
+const SAAS_NOCODB_IMPORT_FIELD_ALIASES={
+  name:['name','customer_name','full_name','client_name','contact_name'],
+  email:['email','email_id','customer_email','emailaddress'],
+  phone:['phone','mobile','mobile_no','phone_number','customer_phone','contact_number'],
+  company_name:['company','company_name','organization','org_name','business_name'],
+  plan_name:['plan','plan_name','subscription_plan','package','service'],
+  plan_tier:['plan_tier','tier','subscription_tier'],
+  monthly_value:['monthly_value','mrr','value','amount','price','subscription_value','monthly_amount'],
+  currency:['currency','curr'],
+  billing_cycle:['billing_cycle','cycle'],
+  start_date:['start_date','signup_date','joined_date','customer_since'],
+  status:['status','account_status'],
+  renewal_date:['renewal_date','renewal','next_renewal','next_billing_date'],
+  trial_end_date:['trial_end_date','trial_end','trial_ends'],
+  seat_count:['seat_count','seats','users','user_count','licenses'],
+  notes:['notes','remarks','comment','description'],
+};
+function saasFindFieldByAlias(row, aliases){
+  const keys=Object.keys(row);
+  for(const alias of aliases){
+    const hit=keys.find(k=>k.toLowerCase().replace(/[^a-z0-9]/g,'')===alias.replace(/[^a-z0-9]/g,''));
+    if(hit && row[hit]!==null && row[hit]!==undefined && row[hit]!=='') return row[hit];
+  }
+  return undefined;
+}
+async function handleSaasNocodbImport(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const cfg=await env.DB.prepare(`SELECT nocodb_customers_table_id FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  const tableId=(cfg?.nocodb_customers_table_id||'').trim();
+  if(!tableId) return json({error:'Add a NocoDB Table ID in Integrations first.'}, 400);
+
+  let rows=[];
+  for(let page=1; page<=20; page++){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok){
+      const data=await r.json().catch(()=>({}));
+      return json({error:`Couldn't read that NocoDB table — ${data?.msg||data?.error||'HTTP '+r.status}. Double-check the Table ID.`}, 400);
+    }
+    const data=await r.json().catch(()=>({}));
+    const list=data?.list||[];
+    rows=rows.concat(list);
+    if(list.length<200) break;
+  }
+  if(!rows.length) return json({imported:0, updated:0, total_rows_seen:0});
+
+  const now=new Date().toISOString();
+  let imported=0, updated=0;
+  for(const row of rows){
+    const nocodbRowId=String(row.Id??row.id??'').trim();
+    if(!nocodbRowId) continue; // no stable id to key the upsert on — skip rather than risk duplicate-importing on every re-run
+    const mapped={
+      name:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.name)||`NocoDB Customer #${nocodbRowId}`,
+      email:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.email)||'',
+      phone:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.phone)||'',
+      company_name:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.company_name)||'',
+      plan_name:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.plan_name)||'',
+      plan_tier:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.plan_tier)||'',
+      monthly_value:Number(saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.monthly_value))||0,
+      currency:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.currency)||'USD',
+      billing_cycle:['monthly','quarterly','yearly'].includes(saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.billing_cycle))?saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.billing_cycle):'monthly',
+      start_date:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.start_date)||now.slice(0,10),
+      status:['active','paused','cancelled'].includes(saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.status))?saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.status):'active',
+      renewal_date:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.renewal_date)||null,
+      trial_end_date:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.trial_end_date)||null,
+      seat_count:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.seat_count),
+      notes:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.notes)||'',
+    };
+    const rawJson=JSON.stringify(row).slice(0,10000); // generous but bounded — a runaway wide table shouldn't blow out a D1 row
+    const existing=await env.DB.prepare(`SELECT id FROM fp_customers WHERE client_id=? AND nocodb_row_id=?`).bind(clientId, nocodbRowId).first();
+    if(existing){
+      await env.DB.prepare(`UPDATE fp_customers SET name=?, email=?, phone=?, company_name=?, plan_name=?, plan_tier=?, monthly_value=?, currency=?, billing_cycle=?, status=?, renewal_date=?, trial_end_date=?, seat_count=?, notes=?, raw_nocodb_json=? WHERE id=?`)
+        .bind(String(mapped.name).slice(0,140), String(mapped.email).slice(0,140), String(mapped.phone).slice(0,40), String(mapped.company_name).slice(0,200), String(mapped.plan_name).slice(0,140), String(mapped.plan_tier).slice(0,80), mapped.monthly_value, String(mapped.currency).slice(0,10).toUpperCase(), mapped.billing_cycle, mapped.status, mapped.renewal_date, mapped.trial_end_date, mapped.seat_count!=null?parseInt(mapped.seat_count,10)||0:null, String(mapped.notes).slice(0,1000), rawJson, existing.id).run();
+      updated++;
+    }else{
+      await env.DB.prepare(`INSERT INTO fp_customers (client_id, name, email, phone, company_name, plan_name, plan_tier, monthly_value, currency, billing_cycle, billing_day, start_date, status, renewal_date, trial_end_date, seat_count, notes, lifecycle_stage, nocodb_row_id, raw_nocodb_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(clientId, String(mapped.name).slice(0,140), String(mapped.email).slice(0,140), String(mapped.phone).slice(0,40), String(mapped.company_name).slice(0,200), String(mapped.plan_name).slice(0,140), String(mapped.plan_tier).slice(0,80), mapped.monthly_value, String(mapped.currency).slice(0,10).toUpperCase(), mapped.billing_cycle, 1, String(mapped.start_date).slice(0,10), mapped.status, mapped.renewal_date, mapped.trial_end_date, mapped.seat_count!=null?parseInt(mapped.seat_count,10)||0:null, String(mapped.notes).slice(0,1000), 'active', nocodbRowId, rawJson, now).run();
+      imported++;
+    }
+  }
+  await fpEnsureConfigRow(env, clientId);
+  return json({imported, updated, total_rows_seen:rows.length});
 }
 
 // ── Reports — GET /saas/reports, dashboard.html's new "📈 SaaS" Reports sub-tab.
@@ -12347,6 +12442,7 @@ export default {
       else if(url.pathname==='/saas/surveys/respond' && request.method==='POST'){ res=await handleSaasSurveyRespond(request, env); }
       else if(url.pathname==='/saas/config' && request.method==='GET'){ res=await handleSaasConfigGet(request, env); }
       else if(url.pathname==='/saas/config' && request.method==='PATCH'){ res=await handleSaasConfigUpdate(request, env); }
+      else if(url.pathname==='/saas/nocodb-import' && request.method==='POST'){ res=await handleSaasNocodbImport(request, env); }
       else if(url.pathname==='/saas/reports' && request.method==='GET'){ res=await handleSaasReports(request, env); }
       else if(url.pathname==='/hospitality/units' && request.method==='GET'){ res=await handleHospitalityUnitsList(request, env); }
       else if(url.pathname==='/hospitality/units' && request.method==='POST'){ res=await handleHospitalityUnitCreate(request, env); }

@@ -478,6 +478,15 @@ tbody tr:hover{background:var(--bg)}
           <div class="s-hint" style="margin-bottom:10px">Call this from your own product's backend on real usage events (customer_id is the Account's Id from Financial Planning → Customers), to feed the health score and weekly customer value updates.</div>
           <div class="s-hint" style="font-family:monospace;font-size:11px;background:var(--bg,#f7f7f7);padding:10px;border-radius:8px" id="saasUsageIngestInfo">Loading…</div>
         </div>
+        <div class="card">
+          <div class="card-title">Import Accounts from an Existing NocoDB Table</div>
+          <div class="s-hint" style="margin-bottom:14px">Already track your customers in your own NocoDB table? Paste its Table ID below and every row's columns get pulled in — recognizable fields (name/email/phone/plan/value/renewal date/etc., matched by column name regardless of exact spelling) become real Account fields; anything else is kept as-is and viewable per-account. Re-running this later updates the same Accounts (matched by NocoDB row) rather than creating duplicates — nothing re-syncs automatically.</div>
+          <div class="modal-grid" style="grid-template-columns:2fr 1fr;align-items:end">
+            <div><label class="s-lbl">NocoDB Table ID</label><input class="s-input" id="saasNocodbTableId" placeholder="e.g. mjlc2vi6iqbp87c"></div>
+            <div><button class="save-btn" onclick="runSaasNocodbImport()">🔄 Fetch &amp; Import</button></div>
+          </div>
+          <div class="save-msg" id="saasNocodbImportMsg" style="margin-top:8px"></div>
+        </div>
       </div>
     </div>
 
@@ -594,6 +603,18 @@ tbody tr:hover{background:var(--bg)}
       <button class="save-btn" onclick="saveFpCustomer()">Save</button>
     </div>
     <div class="save-msg" id="fpCustSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ── NOCODB SOURCE DATA VIEWER — read-only, every column of an imported Account's original
+     NocoDB row (see runSaasNocodbImport/viewSaasNocodbRaw). ── -->
+<div class="modal-overlay" id="saasNocodbRawModal">
+  <div class="modal-card" style="max-width:560px">
+    <div class="modal-title" id="saasNocodbRawTitle">NocoDB source data</div>
+    <div class="tbl-wrap"><table><thead><tr><th>Column</th><th>Value</th></tr></thead><tbody id="saasNocodbRawTbody"></tbody></table></div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeSaasNocodbRawModal()">Close</button>
+    </div>
   </div>
 </div>
 
@@ -1065,6 +1086,7 @@ function renderSaasIntegrationsForm(){
   document.getElementById('saasChargebeeSite').value=saasConfig.chargebee_site||'';
   document.getElementById('saasSupportProvider').value=saasConfig.support_provider||'';
   document.getElementById('saasSupportSubdomain').value=saasConfig.support_subdomain||'';
+  document.getElementById('saasNocodbTableId').value=saasConfig.nocodb_customers_table_id||'';
   const base=WORKER_BASE;
   document.getElementById('saasWebhookUrls').innerHTML=
     `Stripe webhook URL: ${base}/saas/webhooks/stripe/${esc(clientId)}<br>`+
@@ -1093,6 +1115,35 @@ async function saveSaasSupportConfig(){
   try{ await acctFetch('/saas/config',{method:'PATCH',body:JSON.stringify(body)}); msg.textContent='✓ Saved'; msg.className='save-msg'; document.getElementById('saasSupportApiKey').value=''; }
   catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
+async function runSaasNocodbImport(){
+  const tableId=document.getElementById('saasNocodbTableId').value.trim();
+  const msg=document.getElementById('saasNocodbImportMsg');
+  if(!tableId){ msg.textContent='Enter a NocoDB Table ID first.'; msg.className='save-msg err'; return; }
+  msg.textContent='Saving table ID…'; msg.className='save-msg';
+  try{
+    await acctFetch('/saas/config',{method:'PATCH',body:JSON.stringify({nocodb_customers_table_id:tableId})});
+    msg.textContent='Fetching & importing… this can take a moment for a large table.'; msg.className='save-msg';
+    const result=await acctFetch('/saas/nocodb-import',{method:'POST',body:JSON.stringify({})});
+    msg.textContent=`✓ Done — ${result.imported} new account(s), ${result.updated} updated, ${result.total_rows_seen} row(s) seen.`;
+    msg.className='save-msg';
+    await loadFinancialPlanning();
+    renderFinancialPlanning();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+// Read-only viewer for an imported Account's full original NocoDB row — every column that didn't
+// map onto a known fp_customers field (or even ones that did, side by side) is visible here rather
+// than only living inside raw_nocodb_json with no way to actually look at it.
+function viewSaasNocodbRaw(customerId){
+  const c=fpCustomers.find(x=>x.Id===customerId);
+  if(!c || !c.raw_nocodb_json) return;
+  let raw={};
+  try{ raw=JSON.parse(c.raw_nocodb_json); }catch(e){}
+  const rows=Object.entries(raw).map(([k,v])=>`<tr><td style="font-family:monospace;font-size:11px;color:var(--muted)">${esc(k)}</td><td>${esc(typeof v==='object'?JSON.stringify(v):v)}</td></tr>`).join('');
+  document.getElementById('saasNocodbRawTitle').textContent=`NocoDB source data — ${c.name}`;
+  document.getElementById('saasNocodbRawTbody').innerHTML=rows||'<tr><td colspan="2" class="empty-state">No data.</td></tr>';
+  document.getElementById('saasNocodbRawModal').classList.add('active');
+}
+function closeSaasNocodbRawModal(){ document.getElementById('saasNocodbRawModal').classList.remove('active'); }
 
 /* ── Dashboard ── */
 function renderFpDashboard(){
@@ -1182,6 +1233,7 @@ function renderFpCustomersTable(){
     <td class="row-actions">
       <button class="icon-btn" title="Edit" onclick="openFpCustomerModal(${c.Id})">✏️</button>
       <button class="icon-btn" title="Record Collection" onclick="openFpCollectionModal(null,${c.Id})">💵</button>
+      ${c.raw_nocodb_json?`<button class="icon-btn" title="View NocoDB source data" onclick="viewSaasNocodbRaw(${c.Id})">🔗</button>`:''}
       <button class="icon-btn danger" title="Delete" onclick="deleteFpCustomer(${c.Id})">🗑</button>
     </td>
   </tr>`).join('');

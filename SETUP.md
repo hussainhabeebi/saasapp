@@ -6137,6 +6137,31 @@ scheduler on top would risk **double-invoicing** the same billing period from tw
 schedulers with no shared state between them. If ERPNext-native recurring invoicing is wanted later,
 it should *replace* one of the two existing generators, not run alongside both.
 
+### Importing from an existing NocoDB customers table (migration 0026)
+For a client who already tracks their customers in their own NocoDB table rather than starting
+fresh in Financial Planning. 🚀 SaaS Ops → Integrations has a "NocoDB Table ID" field + **Fetch &
+Import** button (`runSaasNocodbImport()` → `POST /saas/nocodb-import` → `handleSaasNocodbImport`).
+
+- **Schema-agnostic on purpose** — this app has no idea what columns a client's own table has, so
+  every row is fetched in full (no `fields=` restriction) rather than assuming a fixed shape.
+  `saasFindFieldByAlias()` case/punctuation-insensitively matches each row's own column names
+  against a list of common aliases per `fp_customers` field (e.g. `monthly_value` matches `mrr`,
+  `value`, `amount`, `price`, `subscription_value`, …) — see `SAAS_NOCODB_IMPORT_FIELD_ALIASES`
+  for the full list. Whatever doesn't match anything is **not dropped** — the entire original row
+  is kept verbatim in `fp_customers.raw_nocodb_json`, viewable per-account via the 🔗 button next
+  to Edit/Record Collection in the Financial Planning Customers table
+  (`viewSaasNocodbRaw()` — a plain column/value table, so "what did the source data actually say"
+  is always answerable, not just buried in a JSON blob nobody opens).
+- **Idempotent, not additive** — `fp_customers.nocodb_row_id` (the source NocoDB record's `Id`)
+  plus a unique index on `(client_id, nocodb_row_id)` means re-running the import **updates** the
+  same Accounts instead of creating duplicates.
+- **Manual trigger only, no automatic re-sync** — confirmed with the user explicitly: an automatic
+  daily re-sync risks silently overwriting an Account field someone's since hand-edited in SaaS Ops
+  with a possibly-stale value from the NocoDB table. Re-import is a deliberate, visible action.
+- Imported Accounts are indistinguishable from any other `fp_customers` row once created — they get
+  health scores, reminders, show up in Reports, and can have milestones/touchpoints/surveys logged
+  against them like any Account created by hand or via a "✅ Won" lead.
+
 ### Usage ingestion
 `POST /saas/usage-event`, `Authorization: Bearer <fp_config.usage_ingest_token>` — call this from
 the client's **own** product backend on real usage events. Feeds the health score and the weekly
