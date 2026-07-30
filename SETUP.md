@@ -6165,7 +6165,8 @@ Import** button (`runSaasNocodbImport()` → `POST /saas/nocodb-import` → `han
 ### Usage ingestion
 `POST /saas/usage-event`, `Authorization: Bearer <fp_config.usage_ingest_token>` — call this from
 the client's **own** product backend on real usage events. Feeds the health score and the weekly
-customer value update.
+customer value update. Viewable (not just write-only) via `GET /saas/usage-events` and the 🚀 SaaS
+Ops → Usage sub-tab — see the Frontend section below.
 
 ### Health score (`computeAccountHealthScore`)
 Deterministic, rule-based (not an LLM call per account — cheap enough to recompute for every
@@ -6202,12 +6203,36 @@ No new top-level dashboard.html module — `accounting.html` already has the tab
 (`Documents | Customers | Financial Planning | ERPNext`), and its Financial Planning tab already is
 the `fp_customers` UI. The Financial Planning Customer modal/table got the new SaaS columns added
 in place; a **new 5th tab, "🚀 SaaS Ops"**, shown only for `industry==='saas_digital_marketing'`
-(`applySaasOpsVisibility()`), covers Activation, Battlecards, Touchpoints & Surveys, Reminders
-(read-only log), and Integrations — reached through the same Accounting nav entry, not a new one.
-`dashboard.html`'s Reports page gets a matching "📈 SaaS" sub-tab (`renderReportsSaas`, trivial
-extension of `renderReportsSubPage`'s `fns` map), and the lead detail panel gets a small "🚀 Linked
-Account" card (inserted right after the existing `#detailSignals` chips) when the open lead links
-to an `fp_customers` row.
+(`applySaasOpsVisibility()`), reached through the same Accounting nav entry, not a new one. Sub-nav,
+in order: **📊 Dashboard** (default view — full-width analytics, see below), **👥 Accounts**
+(interactive lifecycle-stage board), **✅ Activation**, **📈 Usage**, **⚔️ Battlecards**, **🤝
+Touchpoints & Surveys**, **⏰ Reminders** (read-only log), **🔌 Integrations**.
+
+- **📊 Dashboard** — the same `/saas/reports` payload the Reports page's "📈 SaaS" sub-tab uses
+  (`handleSaasReports`), surfaced directly inside SaaS Ops too so a client doesn't have to leave
+  Accounting to see it: full-width stat tiles, a Chart.js revenue-trend bar chart, a health-score
+  doughnut, an activation-funnel horizontal bar chart, and full-width At-Risk/Renewal/Expansion
+  tables (`renderSaasDashboard`/`renderSaasDashboardCharts`). Charts are destroyed and recreated
+  every time this sub-tab is shown (`showSaasSub('dashboard')`) rather than only once at load —
+  same safety-redraw idiom as Financial Planning's own `renderFpTrendChart`, since a Chart.js
+  canvas created while its container is `display:none` can size itself to zero.
+- **👥 Accounts** — `renderSaasAccountsBoard()`: one column per lifecycle stage
+  (Onboarding/Active/At Risk/Renewal/Expansion/Churned), cards built from the same `fpCustomers`
+  array Financial Planning → Customers already loads — **not a second account list**, clicking a
+  card opens the identical `openFpCustomerModal()` editor either screen uses.
+- **📈 Usage** — was write-only until now (`POST /saas/usage-event` had nothing to view what
+  actually landed). New `GET /saas/usage-events` (`handleSaasUsageEventsList`) returns a 30-day
+  per-account/per-event-name summary (aggregated server-side in SQL, cheap even as the table
+  grows) plus a capped recent-events log; the account filter dropdown filters both client-side
+  from the same already-fetched payload rather than re-querying per interaction.
+- `dashboard.html`'s Reports page "📈 SaaS" sub-tab (`renderReportsSaas`) was upgraded to match:
+  every section is now a full-width stacked card (no 2-column grid), the CSS bar-row visuals for
+  revenue/health/funnel became real Chart.js charts (bar/doughnut/horizontal-bar — Chart.js was
+  already loaded in this file for the Leads funnel/trend charts, just unused here before), and it
+  now also renders Expansion Candidates, which the endpoint always returned but this page never
+  displayed.
+- The lead detail panel gets a small "🚀 Linked Account" card (inserted right after the existing
+  `#detailSignals` chips) when the open lead links to an `fp_customers` row.
 
 ### Manual test checklist (no live provider credentials exist in this build)
 - **Billing**: `stripe listen --forward-to <worker>/saas/webhooks/stripe/<client_id>` +

@@ -109,6 +109,16 @@ tbody tr:hover{background:var(--bg)}
 .saas-pill.active{background:var(--accent);border-color:var(--accent);color:#fff}
 .saas-sub{display:none}
 .saas-sub.active{display:block}
+/* Accounts board (👥 Accounts sub-tab) — one column per lifecycle stage, horizontally scrollable
+   full width rather than wrapping, so all 6 stages stay readable side by side. */
+.saas-board{display:flex;gap:14px;overflow-x:auto;padding-bottom:4px}
+.saas-board-col{flex:1 0 200px;min-width:200px;background:var(--bg);border-radius:var(--r-sm);padding:10px}
+.saas-board-col-head{font-family:var(--disp);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:10px;display:flex;justify-content:space-between}
+.saas-board-card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer;font-size:12px;transition:box-shadow .15s}
+.saas-board-card:hover{box-shadow:var(--shadow)}
+.saas-board-card .sbc-name{font-weight:700;margin-bottom:4px}
+.saas-board-card .sbc-meta{color:var(--muted);font-size:11px;display:flex;justify-content:space-between}
+.saas-board-empty{font-size:11px;color:var(--muted);text-align:center;padding:10px 0}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
 .stat-card{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);padding:14px 16px}
 .stat-card .stat-lbl{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
@@ -372,15 +382,75 @@ tbody tr:hover{background:var(--bg)}
          than a second customer list — see migrations/0025_saas_ops.sql / SETUP.md "SaaS Ops module". -->
     <div id="tabSaasops" class="page">
       <div class="saas-subnav">
-        <button class="saas-pill active" data-saassub="milestones" onclick="showSaasSub('milestones')">✅ Activation</button>
+        <button class="saas-pill active" data-saassub="dashboard" onclick="showSaasSub('dashboard')">📊 Dashboard</button>
+        <button class="saas-pill" data-saassub="accounts" onclick="showSaasSub('accounts')">👥 Accounts</button>
+        <button class="saas-pill" data-saassub="milestones" onclick="showSaasSub('milestones')">✅ Activation</button>
+        <button class="saas-pill" data-saassub="usage" onclick="showSaasSub('usage')">📈 Usage</button>
         <button class="saas-pill" data-saassub="battlecards" onclick="showSaasSub('battlecards')">⚔️ Battlecards</button>
         <button class="saas-pill" data-saassub="engagement" onclick="showSaasSub('engagement')">🤝 Touchpoints &amp; Surveys</button>
         <button class="saas-pill" data-saassub="reminders" onclick="showSaasSub('reminders')">⏰ Reminders</button>
         <button class="saas-pill" data-saassub="integrations" onclick="showSaasSub('integrations')">🔌 Integrations</button>
       </div>
-      <div class="s-hint" style="margin-bottom:14px">Accounts themselves live in 💰 Financial Planning → Customers (one Account per customer, with plan tier/lifecycle stage/health score) — this tab covers activation, competitive positioning, engagement, and integrations for those same accounts.</div>
 
-      <div id="saasSubMilestones" class="saas-sub active">
+      <!-- DASHBOARD — full-width analytics, same /saas/reports data Reports→SaaS uses, surfaced
+           directly in this module instead of only in the separate Reports page. -->
+      <div id="saasSubDashboard" class="saas-sub active">
+        <div class="card" id="saasDashLoading"><span class="spinner"></span>Loading dashboard…</div>
+        <div id="saasDashContent" style="display:none">
+          <div class="card" style="margin-bottom:16px">
+            <div class="stat-grid">
+              <div class="stat-card"><div class="stat-lbl">MRR</div><div class="stat-val" id="saasStatMrr">—</div></div>
+              <div class="stat-card"><div class="stat-lbl">Active Accounts</div><div class="stat-val" id="saasStatActive">—</div></div>
+              <div class="stat-card"><div class="stat-lbl">Logo Churn</div><div class="stat-val" id="saasStatChurn">—</div></div>
+              <div class="stat-card"><div class="stat-lbl">At-Risk Accounts</div><div class="stat-val" id="saasStatAtRisk">—</div></div>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:16px">
+            <div class="card-title">Revenue Collected — Last 6 Months</div>
+            <div style="height:260px"><canvas id="saasRevenueChart"></canvas></div>
+          </div>
+          <div style="display:grid;gap:16px;grid-template-columns:1fr 1fr;margin-bottom:16px">
+            <div class="card">
+              <div class="card-title">Health Score Distribution</div>
+              <div style="height:220px"><canvas id="saasHealthChart"></canvas></div>
+            </div>
+            <div class="card">
+              <div class="card-title">Activation Funnel</div>
+              <div style="height:220px"><canvas id="saasFunnelChart"></canvas></div>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:16px">
+            <div class="card-title">At-Risk Accounts</div>
+            <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Health Score</th><th>MRR</th></tr></thead><tbody id="saasDashAtRiskTbody"></tbody></table></div>
+          </div>
+          <div style="display:grid;gap:16px;grid-template-columns:1fr 1fr">
+            <div class="card">
+              <div class="card-title">Renewal Pipeline (next 90 days)</div>
+              <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Renews</th><th>Days Out</th></tr></thead><tbody id="saasDashRenewalTbody"></tbody></table></div>
+            </div>
+            <div class="card">
+              <div class="card-title">Expansion Candidates</div>
+              <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Seats</th></tr></thead><tbody id="saasDashExpansionTbody"></tbody></table></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ACCOUNTS — interactive lifecycle-stage board over the same fp_customers rows Financial
+           Planning → Customers manages; click a card to open that exact same edit modal (no second,
+           divergent account editor). -->
+      <div id="saasSubAccounts" class="saas-sub">
+        <div class="s-hint" style="margin-bottom:14px">Accounts are fp_customers rows — the same records as 💰 Financial Planning → Customers, just grouped here by lifecycle stage. Click a card to edit; changes save to the one shared record either way.</div>
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">Accounts by Lifecycle Stage</div>
+            <div class="card-actions"><button class="save-btn" onclick="openFpCustomerModal()">+ Add Account</button></div>
+          </div>
+          <div id="saasAccountsBoard" class="saas-board"></div>
+        </div>
+      </div>
+
+      <div id="saasSubMilestones" class="saas-sub">
         <div class="card">
           <div class="card-title-row">
             <div class="card-title">Activation Milestones</div>
@@ -395,6 +465,22 @@ tbody tr:hover{background:var(--bg)}
             <div><label class="s-lbl">Account</label><select class="s-input" id="saasMilestoneAccountSelect" onchange="loadSaasAccountMilestones()"><option value="">— Select an account —</option></select></div>
           </div>
           <div id="saasAccountMilestonesList" class="s-hint">Select an account above.</div>
+        </div>
+      </div>
+
+      <!-- USAGE — was write-only until now (POST /saas/usage-event had nothing to view what
+           actually landed). 30-day per-account summary + a recent raw event log. -->
+      <div id="saasSubUsage" class="saas-sub">
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-title-row">
+            <div class="card-title">Usage — Last 30 Days</div>
+            <div class="card-actions"><select class="s-input" id="saasUsageAccountFilter" style="width:auto" onchange="renderSaasUsage()"><option value="">All accounts</option></select></div>
+          </div>
+          <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Event</th><th>Count (30d)</th><th>Occurrences</th><th>Last Seen</th></tr></thead><tbody id="saasUsageSummaryTbody"><tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Recent Events</div>
+          <div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Event</th><th>Count</th><th>Occurred</th></tr></thead><tbody id="saasUsageRecentTbody"></tbody></table></div>
         </div>
       </div>
 
@@ -915,6 +1001,12 @@ function renderFinancialPlanning(){
    industry==='saas_digital_marketing'. Accounts themselves are fp_customers (above); everything
    here is the activation/battlecard/engagement/reminder/integration layer on top of them. ── */
 let saasMilestones=[], saasBattlecards=[], saasTouchpoints=[], saasSurveys=[], saasReminders=[], saasConfig=null;
+let saasReportsData=null, saasUsageData=null;
+let saasRevenueChart=null, saasHealthChart=null, saasFunnelChart=null;
+const SAAS_LIFECYCLE_STAGES_UI=[
+  {key:'onboarding', label:'Onboarding'}, {key:'active', label:'Active'}, {key:'at_risk', label:'At Risk'},
+  {key:'renewal', label:'Renewal'}, {key:'expansion', label:'Expansion'}, {key:'churned', label:'Churned'},
+];
 
 function applySaasOpsVisibility(){
   const shown=clientRecord?.industry==='saas_digital_marketing';
@@ -925,21 +1017,31 @@ function showSaasSub(name){
   document.querySelectorAll('.saas-pill').forEach(t=>t.classList.remove('active'));
   document.getElementById('saasSub'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
   document.querySelector(`.saas-pill[data-saassub="${name}"]`).classList.add('active');
+  // Chart.js sizes itself off the canvas's rendered box — a chart created while its .saas-sub was
+  // display:none can end up 0-height. Redraw on the moment this sub-tab actually becomes visible,
+  // same safety-redraw idea as showFpSub's own `if(name==='dashboard') renderFpTrendChart()`.
+  if(name==='dashboard' && saasReportsData) try{ renderSaasDashboardCharts(); }catch(e){}
 }
 function saasAccountOptions(selected){
   return '<option value="">— Select an account —</option>'+fpCustomers.map(c=>`<option value="${c.Id}" ${String(selected)===String(c.Id)?'selected':''}>${esc(c.name)}${c.company_name?' ('+esc(c.company_name)+')':''}</option>`).join('');
 }
 async function loadSaasOps(){
-  const [msRes, bcRes, tpRes, svRes, cfgRes]=await Promise.all([
+  const [msRes, bcRes, tpRes, svRes, cfgRes, reportsRes, usageRes]=await Promise.all([
     acctFetch('/saas/milestones',{method:'GET'}),
     acctFetch('/saas/battlecards',{method:'GET'}),
     acctFetch('/saas/touchpoints',{method:'GET'}),
     acctFetch('/saas/surveys',{method:'GET'}),
     acctFetch('/saas/config',{method:'GET'}),
+    acctFetch('/saas/reports',{method:'GET'}).catch(()=>null),
+    acctFetch('/saas/usage-events',{method:'GET'}).catch(()=>null),
   ]);
   saasMilestones=msRes.list||[]; saasBattlecards=bcRes.list||[]; saasTouchpoints=tpRes.list||[]; saasSurveys=svRes.list||[]; saasConfig=cfgRes||null;
+  saasReportsData=reportsRes||null;
+  saasUsageData=usageRes||{list:[], summary_30d:[]};
 }
 function renderSaasOps(){
+  renderSaasDashboard();
+  renderSaasAccountsBoard();
   renderSaasMilestonesTable();
   document.getElementById('saasMilestoneAccountSelect').innerHTML=saasAccountOptions();
   renderSaasBattlecardsTable();
@@ -949,6 +1051,110 @@ function renderSaasOps(){
   renderSaasSurveysTable();
   renderSaasRemindersTable();
   renderSaasIntegrationsForm();
+  renderSaasUsage();
+}
+
+/* Dashboard — full-width analytics, same /saas/reports payload Reports→SaaS (dashboard.html)
+   uses, surfaced directly inside this module too so a client doesn't have to leave Accounting to
+   see it. */
+function renderSaasDashboard(){
+  const loading=document.getElementById('saasDashLoading');
+  const content=document.getElementById('saasDashContent');
+  const d=saasReportsData;
+  if(!d || !d.active_accounts){
+    loading.innerHTML='<div class="empty-state"><div class="empty-icon">📊</div>No SaaS account data yet — add an Account in 💰 Financial Planning → Customers, or import one from Integrations, to see analytics here.</div>';
+    content.style.display='none';
+    return;
+  }
+  loading.style.display='none';
+  content.style.display='block';
+  document.getElementById('saasStatMrr').textContent=Math.round(d.mrr).toLocaleString();
+  document.getElementById('saasStatActive').textContent=d.active_accounts;
+  document.getElementById('saasStatChurn').textContent=d.logo_churn_rate+'%';
+  document.getElementById('saasStatAtRisk').textContent=d.health_distribution.at_risk;
+  document.getElementById('saasDashAtRiskTbody').innerHTML=d.at_risk_accounts.length
+    ? d.at_risk_accounts.map(a=>`<tr><td>${esc(a.name)}</td><td style="color:var(--red,#c33)">${a.health_score}</td><td>${fmtMoney(a.mrr,'')}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="empty-state">None right now.</td></tr>';
+  document.getElementById('saasDashRenewalTbody').innerHTML=d.renewal_pipeline.length
+    ? d.renewal_pipeline.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.renewal_date)}</td><td>${r.days_out}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="empty-state">Nothing renewing in the next 90 days.</td></tr>';
+  document.getElementById('saasDashExpansionTbody').innerHTML=d.expansion_candidates.length
+    ? d.expansion_candidates.map(e=>`<tr><td>${esc(e.name)}</td><td>${e.seat_count}</td></tr>`).join('')
+    : '<tr><td colspan="2" class="empty-state">None right now.</td></tr>';
+  try{ renderSaasDashboardCharts(); }catch(e){}
+}
+function renderSaasDashboardCharts(){
+  const d=saasReportsData;
+  // Chart.js loads from a CDN (see <head>) — same fail-open reasoning as renderFpTrendChart: if
+  // it's blocked/slow, the stat tiles and tables above still work fine without it.
+  if(!d || typeof Chart==='undefined') return;
+  const revCanvas=document.getElementById('saasRevenueChart');
+  if(revCanvas){
+    if(saasRevenueChart) saasRevenueChart.destroy();
+    saasRevenueChart=new Chart(revCanvas,{
+      type:'bar',
+      data:{labels:(d.months||[]).map(m=>m.key), datasets:[{label:'Revenue', data:(d.months||[]).map(m=>m.revenue), backgroundColor:'#4F46E5'}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{beginAtZero:true}}}
+    });
+  }
+  const healthCanvas=document.getElementById('saasHealthChart');
+  if(healthCanvas){
+    if(saasHealthChart) saasHealthChart.destroy();
+    const hd=d.health_distribution||{healthy:0,neutral:0,at_risk:0};
+    saasHealthChart=new Chart(healthCanvas,{
+      type:'doughnut',
+      data:{labels:['Healthy','Neutral','At Risk'], datasets:[{data:[hd.healthy,hd.neutral,hd.at_risk], backgroundColor:['#16A34A','#F59E0B','#DC2626']}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:11}}}}}
+    });
+  }
+  const funnelCanvas=document.getElementById('saasFunnelChart');
+  if(funnelCanvas){
+    if(saasFunnelChart) saasFunnelChart.destroy();
+    const funnel=d.activation_funnel||[];
+    saasFunnelChart=funnel.length ? new Chart(funnelCanvas,{
+      type:'bar',
+      data:{labels:funnel.map(f=>f.milestone), datasets:[{label:'Completed', data:funnel.map(f=>f.completed), backgroundColor:'#4F46E5'}]},
+      options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{beginAtZero:true}}}
+    }) : null;
+  }
+}
+
+/* Accounts board — interactive lifecycle-stage view over the same fp_customers rows Financial
+   Planning → Customers manages (click a card → the one shared edit modal, not a second editor). */
+function renderSaasAccountsBoard(){
+  const board=document.getElementById('saasAccountsBoard');
+  if(!board) return;
+  board.innerHTML=SAAS_LIFECYCLE_STAGES_UI.map(stage=>{
+    const accts=fpCustomers.filter(c=>(c.lifecycle_stage||(c.status==='cancelled'?'churned':'active'))===stage.key);
+    const cards=accts.map(c=>`<div class="saas-board-card" onclick="openFpCustomerModal(${c.Id})">
+      <div class="sbc-name">${esc(c.name)}</div>
+      <div class="sbc-meta"><span>${esc(c.plan_tier||c.plan_name||'—')}</span><span>${c.health_score!=null?'❤ '+c.health_score:''}</span></div>
+      <div class="sbc-meta"><span>${fmtMoney(c.monthly_value,c.currency)}</span><span>${esc(c.renewal_date||'')}</span></div>
+    </div>`).join('');
+    return `<div class="saas-board-col">
+      <div class="saas-board-col-head"><span>${esc(stage.label)}</span><span>${accts.length}</span></div>
+      ${cards||'<div class="saas-board-empty">No accounts</div>'}
+    </div>`;
+  }).join('');
+}
+
+/* Usage — filters client-side over the already-fetched payload rather than re-fetching per
+   dropdown change (saas_usage_events isn't large enough per client to need server-side filtering
+   on every UI interaction). */
+function renderSaasUsage(){
+  const sel=document.getElementById('saasUsageAccountFilter');
+  if(sel && sel.options.length<=1) sel.insertAdjacentHTML('beforeend', fpCustomers.map(c=>`<option value="${c.Id}">${esc(c.name)}</option>`).join(''));
+  const filterId=sel?sel.value:'';
+  const d=saasUsageData||{list:[], summary_30d:[]};
+  const summary=filterId?d.summary_30d.filter(s=>String(s.customer_id)===String(filterId)):d.summary_30d;
+  const recent=filterId?d.list.filter(e=>String(e.customer_id)===String(filterId)):d.list;
+  const nameFor=id=>fpCustomers.find(c=>c.Id===id)?.name||`#${id}`;
+  document.getElementById('saasUsageSummaryTbody').innerHTML=summary.length
+    ? summary.map(s=>`<tr><td>${esc(nameFor(s.customer_id))}</td><td>${esc(s.event_name)}</td><td>${s.total}</td><td>${s.events}</td><td>${esc((s.last_seen||'').slice(0,10))}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="empty-state">No usage events in the last 30 days — see Integrations for how to send them from your own product.</td></tr>';
+  document.getElementById('saasUsageRecentTbody').innerHTML=recent.length
+    ? recent.slice(0,50).map(e=>`<tr><td>${esc(nameFor(e.customer_id))}</td><td>${esc(e.event_name)}</td><td>${e.event_count}</td><td>${esc((e.occurred_at||'').slice(0,16).replace('T',' '))}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="empty-state">No events yet.</td></tr>';
 }
 
 /* Activation milestones */
