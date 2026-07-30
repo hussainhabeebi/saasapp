@@ -6031,31 +6031,53 @@ write-only) — the frontend only includes a secret field in its `PATCH` body wh
 typed something into it, so re-saving the enabled/reminders toggles alone can never accidentally
 wipe out a previously-configured secret.
 
-## SaaS Ops module (`frontend/accounting.html` — "🚀 SaaS Ops" tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0025_saas_ops.sql`)
+## SaaS Ops module (`frontend/saas-ops.html` — own top-level tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0025_saas_ops.sql` + `0027_saas_nocodb_accounts.sql`)
 
 Subscription/lifecycle tracking, activation, product usage/PQL signals, account health scoring,
 support-ticket signals, CSM touchpoints, NPS/CSAT surveys, competitor battlecards, and renewal/
 activation reminders for the **SaaS / Digital Marketing** industry (`INDUSTRIES.saas_digital_marketing`
 in `frontend/dashboard.html`).
 
-**Built on top of the Financial Planning module above, not a second parallel system.**
-`fp_customers` already is the recurring-billing "Account" record (plan/monthly_value/billing_cycle/
-status) — this module just ALTERs it with SaaS-specific columns. `fp_expected_dues`/`fp_collections`
-already is the MRR/collections ledger — Stripe/Chargebee/Paddle webhooks upsert into those same
-tables rather than a new `saas_subscription_events` table. `fp_config` already is the per-client
-single-row settings table — the new billing/support credentials are just more columns on it. The
-existing ERPNext bridge (`erpnextPushSalesDoc`/`erpnextPushPaymentEntry`) is reused unchanged for
-real invoice/payment sync — a billing webhook creates an `accounting_documents` row and pushes it
-through the same functions the Accounting module's own "Sync to ERPNext" button uses.
+**v2 architecture (this section) — the client's own live NocoDB customers table is the account
+system of record, not a D1 shadow table.** The module originally shipped built on top of the
+Financial Planning module's `fp_customers` table (v1 — see git history / migration 0025's own
+comments for that version's reasoning). The user running this app clarified explicitly that their
+NocoDB customers table already holds their real, live SaaS customers, and that this module must not
+conflate that with `fp_customers`/ERPNext. This section describes the current (v2) design:
+
+- **Account = a row in the client's own NocoDB table**, pointed at via
+  `saas_config.nocodb_customers_table_id` (a dedicated settings table, split out of Financial
+  Planning's own `fp_config` — see Schema below). Every SaaS Ops read fetches the full row (all
+  columns, schema-agnostic — same approach as the rest of this app's per-client dynamic-table
+  integrations).
+- **This app only ever WRITES to columns it created itself**, all prefixed `saas_`
+  (`saas_lifecycle_stage`, `saas_health_score`, `saas_health_score_manual`, `saas_plan_tier`,
+  `saas_plan_name`, `saas_monthly_value`, `saas_currency`, `saas_trial_end_date`,
+  `saas_renewal_date`, `saas_seat_count`, `saas_csm_owner`), auto-provisioned by
+  `ensureSaasCustomerFields()` — the same GET-fields-then-POST-if-missing pattern as
+  `ensureEcomProductStyleFields`. **This is the load-bearing safety rule of the whole module**:
+  it never guesses at, overwrites, or reads assumptions into a column the client already uses for
+  their own purposes — every other design choice below exists in service of that rule.
+- **ERPNext's role is narrowed to exactly what it's for: generating the actual invoice/quote
+  documents**, not modeling who the customers are. The push mechanism itself
+  (`erpnextPushSalesDoc`/`erpnextPushPaymentEntry`/`erpnextSubmitDocByName`) is reused completely
+  unchanged from the Accounting module — only the *trigger data* (customer name/phone) now comes
+  from the resolved NocoDB row instead of `fp_customers`/a linked Lead, via a synthetic
+  `{Name, Phone}` object standing in for a Lead record.
+- **`fp_customers`' SaaS-specific columns (migration 0025) and the old accounting.html-nested
+  "🚀 SaaS Ops" tab are not deleted, just no longer used for SaaS Ops** — this repo's migrations are
+  additive-only (no down-migrations anywhere), so the leftover columns stay, inert. The accounting.html
+  tab and its JS were removed outright (not left as a stale second UI) once the standalone
+  `frontend/saas-ops.html` page replaced it.
 
 ### No OAuth apps — paste-your-own-key pattern
 Registering an OAuth app with each of Stripe, Chargebee, Paddle, Zendesk, Intercom, and Freshdesk
 needs a live developer account per provider. Instead this reuses the pattern already in this
 codebase for ERPNext (`accounting.html`'s `erpBaseUrl`/`erpApiKey`/`erpApiSecret` fields): a client
-pastes their **own** API key(s) for their own provider account into the 🚀 SaaS Ops → Integrations
-sub-view, saved via `PATCH /saas/config` onto `fp_config`. Billing providers additionally get a
-webhook secret to paste into their own provider dashboard, pointed at the webhook URL shown on that
-same screen (`/saas/webhooks/<provider>/<client_id>`).
+pastes their **own** API key(s) for their own provider account into 🚀 SaaS Ops → Integrations,
+saved via `PATCH /saas/config` onto `saas_config`. Billing providers additionally get a webhook
+secret to paste into their own provider dashboard, pointed at the webhook URL shown on that same
+screen (`/saas/webhooks/<provider>/<client_id>`).
 
 **None of the six provider integrations below have been exercised against a live account in this
 build** — each is implemented to that provider's own publicly documented, stable API/webhook shape
@@ -6063,50 +6085,84 @@ build** — each is implemented to that provider's own publicly documented, stab
 trigger`, Chargebee/Paddle's own webhook test-send, a real API call to Zendesk/Intercom/Freshdesk)
 before relying on this in production.
 
-### Schema (migration 0025)
-- **`fp_customers`** ALTER: `company_name`, `plan_tier`, `trial_end_date`, `lifecycle_stage`
-  (onboarding/active/at_risk/renewal/expansion/churned — a second axis alongside the existing
-  generic `status`, untouched), `renewal_date`, `seat_count`, `health_score`,
-  `health_score_manual` (`'Yes'` locks it against the daily recompute cron, same convention as
-  `LEADS.WinProbability`/`WinProbabilityManual`), `csm_owner`.
-- **`fp_config`** ALTER: `stripe_secret_key`/`stripe_webhook_secret`,
+### Schema (migration 0025 + migration 0027)
+- **`saas_config`** (migration 0027, replaces `fp_config` for this module) — `client_id`,
+  `nocodb_customers_table_id`, `stripe_secret_key`/`stripe_webhook_secret`,
   `chargebee_site`/`chargebee_api_key`/`chargebee_webhook_secret`,
   `paddle_api_key`/`paddle_webhook_secret`, `support_provider`/`support_api_key`/`support_subdomain`,
   `usage_ingest_token` (bearer token for the usage-event endpoint, generated on first Integrations
   load).
+- **`saas_collections`** (migration 0027, replaces `fp_expected_dues`/`fp_collections` for this
+  module) — one row per payment received from a billing webhook: `client_id, nocodb_customer_id,
+  amount, currency, source, occurred_at`. Every SaaS billing event already originates from a
+  provider telling us a charge succeeded, so a plain ledger is sufficient — no "expected due"
+  concept needed here the way Financial Planning's own recurring-billing tracking needs one.
+- **`saas_unmatched_billing_events`** (migration 0027) — a billing webhook event whose customer
+  email/phone didn't match any row in the client's configured NocoDB customers table. Never
+  blind-written into that live table on a guess; surfaced in the 🚀 SaaS Ops → ⚠️ Unmatched Events
+  sub-view for manual reconciliation (link it to the right account by hand — see
+  `handleSaasUnmatchedEventResolve`).
 - **`saas_usage_events`** — product usage/PQL ingestion, `client_id, customer_id, event_name,
-  event_count, occurred_at`. Nothing in this app tracked real in-product usage before this, for any
-  industry.
+  event_count, occurred_at`, where `customer_id` is the NocoDB row's `Id`.
 - **`saas_activation_milestones`** + **`saas_account_milestones`** — client-configurable milestone
-  checklist + per-account completion. **Deliberately not built on `pipeline_followups`**
-  (migration 0013) — that table is uniquely keyed one row per `lead_id`, anchored to pipeline
-  Stage, incompatible with an account needing several independent milestones tracked at once.
+  checklist + per-account completion (`customer_id` = NocoDB row `Id`). **Deliberately not built on
+  `pipeline_followups`** (migration 0013) — that table is uniquely keyed one row per `lead_id`,
+  anchored to pipeline Stage, incompatible with an account needing several independent milestones
+  tracked at once.
 - **`saas_support_signals`** — periodic ticket-count/avg-CSAT rollups per period, pulled (not
   webhook-pushed) once a day.
-- **`saas_touchpoints`** — CSM check-ins/QBRs/escalations log.
-- **`saas_surveys`** — NPS/CSAT send + response tracking.
+- **`saas_touchpoints`** — CSM check-ins/QBRs/escalations log (`customer_id` = NocoDB row `Id`).
+- **`saas_surveys`** — NPS/CSAT send + response tracking (`customer_id` = NocoDB row `Id`).
 - **`saas_battlecards`** — per-competitor feature/pricing comparison data, feeds the FAQ prompt.
 - **`saas_account_reminders`** — generic account-anchored reminder (`reminder_type, anchor_at,
-  offset_days, sent_at`), for renewal (90/60/30 days out) and activation-stall nudges —
-  `pipeline_followups` couldn't hold several independent reminder rows per account, this can.
+  offset_days, sent_at`), for renewal (90/60/30 days out) and activation-stall nudges
+  (`customer_id` = NocoDB row `Id`).
+
+`fp_customers`/`fp_expected_dues`/`fp_collections`/`fp_config` (Financial Planning's own tables) are
+**no longer read or written anywhere in this module** — they stay exactly as Financial Planning's
+own recurring-billing tracking uses them, fully separate.
+
+### Column-name resolution — reading/matching an arbitrary client-owned table
+Since this app has no idea what a client actually named their own columns, two helpers do
+alias-based matching against a small list of common spellings per logical field
+(`SAAS_CUSTOMER_FIELD_ALIASES` — name/email/phone/start-date):
+- **`saasGetCustomerField(row, aliases)`** — case/punctuation-insensitive match against a single
+  row's own keys, returns the *value*. Used for display (customer name/phone in the UI) and for
+  building the ERPNext bridge's synthetic Lead-shaped object.
+- **`saasResolveColumnName(rows, aliases)`** / **`saasResolveColumnNames(env, tableId)`** — same
+  matching, but returns the matched *column name* (cached per table), so a billing webhook's
+  email/phone lookup can build an efficient server-side NocoDB `where=(<realColumn>,eq,<value>)`
+  filter instead of downloading the whole table per event.
 
 ### Billing webhooks (`cloudflare-worker/worker.js`)
 `handleSaasStripeWebhook`/`handleSaasChargebeeWebhook`/`handleSaasPaddleWebhook`, routed at
 `/saas/webhooks/<provider>/<client_id>` (the URL's `client_id` is a lookup key only, same
 `/financial/razorpay-webhook/<clientId>` shape as the Razorpay webhook above — the real trust
-boundary is the signature/token check against that specific client's own `fp_config` secret).
+boundary is the signature/token check against that specific client's own `saas_config` secret).
 Each provider's payload is normalized into one shared shape and applied by
-`saasApplyBillingEvent()` — the actual `fp_expected_dues`/`fp_collections`/lifecycle-stage/
-ERPNext-bridge logic exists exactly once, not duplicated three times. Signature schemes (all HMAC-
-SHA256, timing-safe compared): Stripe's `Stripe-Signature: t=…,v1=…` over `${t}.${rawBody}`;
-Paddle's `Paddle-Signature: ts=…;h1=…` over `${ts}:${rawBody}`; Chargebee doesn't HMAC-sign by
-default, so its "signature" here is a shared token compared from the webhook URL's `?token=`
-query param against `fp_config.chargebee_webhook_secret`.
+`saasApplyBillingEvent()`:
+1. Resolve `saas_config.nocodb_customers_table_id` for the client — no table configured yet →
+   the event lands in `saas_unmatched_billing_events` and nothing else happens.
+2. Match the event's customer email (then phone) against the table via
+   `saasFindCustomerByEmailOrPhone()` — no match → same `saas_unmatched_billing_events` fallback,
+   **never** a blind-created row in the client's live table.
+3. On match, `ensureSaasCustomerFields()` provisions the `saas_*` columns if needed, then only
+   those columns are ever written (lifecycle stage, plan, monthly value). `payment_succeeded`
+   additionally inserts into `saas_collections` and runs the ERPNext bridge (below).
+
+Signature schemes (all HMAC-SHA256, timing-safe compared): Stripe's `Stripe-Signature: t=…,v1=…`
+over `${t}.${rawBody}`; Paddle's `Paddle-Signature: ts=…;h1=…` over `${ts}:${rawBody}`; Chargebee
+doesn't HMAC-sign by default, so its "signature" here is a shared token compared from the webhook
+URL's `?token=` query param against `saas_config.chargebee_webhook_secret`.
 
 ### ERPNext automation — beyond the initial invoice/payment push
 Three additions on top of the base `erpnextPushSalesDoc`/`erpnextPushPaymentEntry` bridge, all
 best-effort (a failure here never blocks the billing/reminder logic that triggered it — it's
-logged via `reportOpsError` and the D1-side state stays correct either way):
+logged via `reportOpsError` and the D1-side state stays correct either way). The customer's
+name/phone for each of these now comes from the resolved NocoDB row (via `saasGetCustomerField`)
+wrapped in a synthetic `{Name, Phone}` object, since `erpnextResolveCustomer`/`erpnextPushSalesDoc`
+only ever read those two fields off whatever Lead-shaped object they're passed — no signature
+changes were needed to reuse them:
 
 - **Auto-submit billing-webhook-created documents.** The pre-existing manual Quote/Invoice flow
   (accounting.html's "Sync" then "Publish" buttons) leaves a synced document as an ERPNext Draft
@@ -6123,126 +6179,127 @@ logged via `reportOpsError` and the D1-side state stays correct either way):
   never synced to ERPNext has nothing to disable — silently skipped rather than creating a Customer
   record just to immediately disable it.
 - **Auto-draft a renewal Quotation.** When the 30-day renewal reminder fires (`type==='renewal_30'`
-  in `runSaasRemindersForAllClients`), a Quotation for the account's current plan/price is created in
-  `accounting_documents` and pushed to ERPNext — left as a Draft, **not** auto-submitted, since a
-  quotation is a proposal a human should actually review/adjust before it goes out, unlike the
-  invoice/payment case above which is a completed transaction.
+  in `runSaasRemindersForAllClients`), a Quotation for the account's current `saas_plan_tier`/
+  `saas_monthly_value` is created in `accounting_documents` and pushed to ERPNext — left as a
+  Draft, **not** auto-submitted, since a quotation is a proposal a human should actually
+  review/adjust before it goes out, unlike the invoice/payment case above which is a completed
+  transaction.
 
 **Deliberately not used: ERPNext's native Subscription/Auto Repeat doctypes.** Frappe has its own
 scheduler that can auto-generate recurring Sales Invoices from a Subscription record — the obvious-
-looking "more automation" move. Not wired up here: this app's own `fp_expected_dues` generation
-(the monthly cron above) and the billing-webhook-driven invoice creation in `saasApplyBillingEvent`
-are both already generating invoices independently: layering ERPNext's own recurring-invoice
-scheduler on top would risk **double-invoicing** the same billing period from two independent
-schedulers with no shared state between them. If ERPNext-native recurring invoicing is wanted later,
-it should *replace* one of the two existing generators, not run alongside both.
-
-### Importing from an existing NocoDB customers table (migration 0026)
-For a client who already tracks their customers in their own NocoDB table rather than starting
-fresh in Financial Planning. 🚀 SaaS Ops → Integrations has a "NocoDB Table ID" field + **Fetch &
-Import** button (`runSaasNocodbImport()` → `POST /saas/nocodb-import` → `handleSaasNocodbImport`).
-
-- **Schema-agnostic on purpose** — this app has no idea what columns a client's own table has, so
-  every row is fetched in full (no `fields=` restriction) rather than assuming a fixed shape.
-  `saasFindFieldByAlias()` case/punctuation-insensitively matches each row's own column names
-  against a list of common aliases per `fp_customers` field (e.g. `monthly_value` matches `mrr`,
-  `value`, `amount`, `price`, `subscription_value`, …) — see `SAAS_NOCODB_IMPORT_FIELD_ALIASES`
-  for the full list. Whatever doesn't match anything is **not dropped** — the entire original row
-  is kept verbatim in `fp_customers.raw_nocodb_json`, viewable per-account via the 🔗 button next
-  to Edit/Record Collection in the Financial Planning Customers table
-  (`viewSaasNocodbRaw()` — a plain column/value table, so "what did the source data actually say"
-  is always answerable, not just buried in a JSON blob nobody opens).
-- **Idempotent, not additive** — `fp_customers.nocodb_row_id` (the source NocoDB record's `Id`)
-  plus a unique index on `(client_id, nocodb_row_id)` means re-running the import **updates** the
-  same Accounts instead of creating duplicates.
-- **Manual trigger only, no automatic re-sync** — confirmed with the user explicitly: an automatic
-  daily re-sync risks silently overwriting an Account field someone's since hand-edited in SaaS Ops
-  with a possibly-stale value from the NocoDB table. Re-import is a deliberate, visible action.
-- Imported Accounts are indistinguishable from any other `fp_customers` row once created — they get
-  health scores, reminders, show up in Reports, and can have milestones/touchpoints/surveys logged
-  against them like any Account created by hand or via a "✅ Won" lead.
+looking "more automation" move. Not wired up here: the billing-webhook-driven invoice creation in
+`saasApplyBillingEvent` (and Financial Planning's own independent `fp_expected_dues` generation for
+*that* module) are already generating invoices; layering ERPNext's own recurring-invoice scheduler
+on top would risk **double-invoicing** the same billing period from two independent schedulers with
+no shared state between them.
 
 ### Usage ingestion
-`POST /saas/usage-event`, `Authorization: Bearer <fp_config.usage_ingest_token>` — call this from
-the client's **own** product backend on real usage events. Feeds the health score and the weekly
-customer value update. Viewable (not just write-only) via `GET /saas/usage-events` and the 🚀 SaaS
-Ops → Usage sub-tab — see the Frontend section below.
+`POST /saas/usage-event`, `Authorization: Bearer <saas_config.usage_ingest_token>` — call this from
+the client's **own** product backend on real usage events, where `customer_id` is the NocoDB row's
+`Id` (visible in 🚀 SaaS Ops → 👥 Accounts). Feeds the health score and the weekly customer value
+update. Viewable (not just write-only) via `GET /saas/usage-events` and the 🚀 SaaS Ops → 📈 Usage
+sub-tab.
 
 ### Health score (`computeAccountHealthScore`)
 Deterministic, rule-based (not an LLM call per account — cheap enough to recompute for every
-account, every day): starts at 50, then adjusts for recent billing status, 30-day usage trend
-(vs. the prior 30 days), support ticket volume/CSAT, and the linked lead's own `WinProbability`
-(read-only — never written back to). Recomputed daily by `runSaasHealthScoresForAllClients`
-unless `health_score_manual==='Yes'`.
+account, every day): starts at 50, then adjusts for recent-collection recency (`saas_collections`),
+30-day usage trend (vs. the prior 30 days), and support ticket volume/CSAT. **Drops the
+lead-sentiment (`WinProbability`) term the v1 version had** — a bare NocoDB customer row has no
+reliable `lead_id` chain to a Lead's sentiment score the way `fp_customers` did; billing + usage +
+support signals still drive it, and sentiment could be re-added later via the same phone-based
+lookup the reminders/digests use, if wanted. Recomputed daily by
+`runSaasHealthScoresForAllClients` (iterates every client's NocoDB customers table via
+`saasFetchAllCustomers`) unless `saas_health_score_manual==='Yes'` or the account is churned.
 
 ### Support-ticket signals — pulled, not pushed
 `pullZendeskSignals`/`pullIntercomSignals`/`pullFreshdeskSignals`, called daily by
-`runSaasSupportPullForAllClients` for every client with `fp_config.support_provider` set. One auth
-pattern (an API key) instead of three more provider-specific webhook signature schemes with no
+`runSaasSupportPullForAllClients` for every client with `saas_config.support_provider` set. One
+auth pattern (an API key) instead of three more provider-specific webhook signature schemes with no
 live account to verify them against.
 
 ### Reminders & weekly digests (Cloudflare Cron Triggers)
-`runSaasRemindersForAllClients` (renewal 90/60/30-day nudges + one activation-stall nudge, sent via
-the same Chatwoot conversations-API pattern as `fpSendRemindersForClient`) is piggybacked onto the
-existing daily `0 2 * * *` tick, same reasoning as Financial Planning's own monthly-generation
-comment. `runWeeklyOwnerDigest`/`runWeeklyCustomerValueUpdate` get a **new, explicit 4th cron
-string** (`0 9 * * 1`, Mondays 09:00 UTC) in `wrangler.toml` — **not** folded into the `scheduled()`
-dispatcher's trailing `else` (that branch is the Shopify abandoned-cart sweep; any cron string it
-doesn't explicitly match falls through to it, so a 5th schedule added later must get its own
-explicit `else if` before that trailing `else`, not just a new string in the `crons` array).
+`runSaasRemindersForAllClients` (renewal 90/60/30-day nudges + one activation-stall nudge) and the
+weekly `runWeeklyOwnerDigest`/`runWeeklyCustomerValueUpdate` all now iterate every client's own
+NocoDB customers table (`saasFetchAllCustomers`) instead of scanning `fp_customers`, and resolve
+messaging by **phone** — `saasFindLeadConversationByPhone(env, clientId, phone)` (a NocoDB
+`where=(ClientId,eq,X)~and(Phone,eq,Y)` query against LEADS for `ConversationID`), using the
+phone value read off the NocoDB row via `saasGetCustomerField` — instead of the old `lead_id`
+chain, since a bare NocoDB customer row has no `lead_id`. Sent via the same Chatwoot
+conversations-API pattern as `fpSendRemindersForClient`.
+
+The activation-stall nudge (7+ days in `onboarding` with zero completed milestones) prefers a
+recognizable start-date-like column on the client's table (`saasGetCustomerField` against the
+`startDate` alias list) when one exists, and falls back to "always eligible" when it can't
+recognize one — a client's table isn't guaranteed to have anything resembling a signup date.
+
+`runSaasRemindersForAllClients`/`runSaasSupportPullForAllClients`/`runSaasHealthScoresForAllClients`
+are piggybacked onto the existing daily `0 2 * * *` tick; `runWeeklyOwnerDigest`/
+`runWeeklyCustomerValueUpdate` use the explicit 4th cron string (`0 9 * * 1`, Mondays 09:00 UTC) in
+`wrangler.toml` — none of the cron *call sites* changed for this rework, only the functions'
+internals. The weekly owner digest **drops the "new accounts this week" stat** the v1 version had —
+there's no reliable client-controlled created-at column on an arbitrary NocoDB row to key off
+without further column-guessing; revenue collected and churned/at-risk counts are unaffected.
 
 ### FAQ prompt (`engineBuildFaqSystemPrompt`, `worker.js`)
 A third industry branch (alongside the existing `ecommerce`/`travel` ones) for
-`industry==='saas_digital_marketing'`, fed by a new `engineBuildSaasContext()` — the customer's own
-linked account (plan/trial/renewal/seats) plus `saas_battlecards` rows, so "how are you different
-from X" gets a real answer when a battlecard covers it, and an honest "I'll find out" when it
-doesn't, instead of an invented comparison.
+`industry==='saas_digital_marketing'`, fed by `engineBuildSaasContext()` — looks the customer up by
+**phone** in the client's configured NocoDB table (`saasFindCustomerByEmailOrPhone`, email arg
+null) instead of `fp_customers.phone`, surfacing `saas_plan_tier`/`saas_trial_end_date`/
+`saas_renewal_date`/`saas_seat_count`/`saas_lifecycle_stage` plus `saas_battlecards` rows, so "how
+are you different from X" gets a real answer when a battlecard covers it, and an honest "I'll find
+out" when it doesn't, instead of an invented comparison.
 
-### Frontend (`frontend/accounting.html`)
-No new top-level dashboard.html module — `accounting.html` already has the tab bar this belongs in
-(`Documents | Customers | Financial Planning | ERPNext`), and its Financial Planning tab already is
-the `fp_customers` UI. The Financial Planning Customer modal/table got the new SaaS columns added
-in place; a **new 5th tab, "🚀 SaaS Ops"**, shown only for `industry==='saas_digital_marketing'`
-(`applySaasOpsVisibility()`), reached through the same Accounting nav entry, not a new one. Sub-nav,
-in order: **📊 Dashboard** (default view — full-width analytics, see below), **👥 Accounts**
-(interactive lifecycle-stage board), **✅ Activation**, **📈 Usage**, **⚔️ Battlecards**, **🤝
-Touchpoints & Surveys**, **⏰ Reminders** (read-only log), **🔌 Integrations**.
+### Frontend (`frontend/saas-ops.html` — own top-level `dashboard.html` tab)
+**Moved out of `accounting.html` into its own standalone page**, following the exact iframe-embed
+pattern already used for Ecommerce/B2B/Accounting (`renderEcommerce`/`renderB2b`/`renderAccounting`
+in `dashboard.html`): a `.dnTab.industry-tab[data-industry="saas_digital_marketing"]` nav button
+(auto-shown/hidden by `applyTheme()`'s existing `.industry-tab` loop — no new visibility JS needed),
+a `<div class="page hidden" id="pageSaasops"><iframe id="saasOpsFrame">`, `renderSaasOps()` lazy-
+loading `saas-ops.html?client=<id>&token=<token>&embed=1` (needs the session token — every `/saas/*`
+route is `requireSession`-gated), and one line in the central page-switch dispatcher. Sub-nav, in
+order: **📊 Dashboard**, **👥 Accounts**, **✅ Activation**, **📈 Usage**, **⚔️ Battlecards**, **🤝
+Touchpoints & Surveys**, **⏰ Reminders** (read-only log), **⚠️ Unmatched Events** (new — the
+reconciliation UI for the billing-webhook-matching fallback above), **🔌 Integrations**.
 
 - **📊 Dashboard** — the same `/saas/reports` payload the Reports page's "📈 SaaS" sub-tab uses
-  (`handleSaasReports`), surfaced directly inside SaaS Ops too so a client doesn't have to leave
-  Accounting to see it: full-width stat tiles, a Chart.js revenue-trend bar chart, a health-score
-  doughnut, an activation-funnel horizontal bar chart, and full-width At-Risk/Renewal/Expansion
-  tables (`renderSaasDashboard`/`renderSaasDashboardCharts`). Charts are destroyed and recreated
-  every time this sub-tab is shown (`showSaasSub('dashboard')`) rather than only once at load —
-  same safety-redraw idiom as Financial Planning's own `renderFpTrendChart`, since a Chart.js
-  canvas created while its container is `display:none` can size itself to zero.
+  (`handleSaasReports`, now computed from the NocoDB table's `saas_*` fields + `saas_collections`):
+  full-width stat tiles, a Chart.js revenue-trend bar chart, a health-score doughnut, an
+  activation-funnel horizontal bar chart, and full-width At-Risk/Renewal/Expansion tables.
 - **👥 Accounts** — `renderSaasAccountsBoard()`: one column per lifecycle stage
-  (Onboarding/Active/At Risk/Renewal/Expansion/Churned), cards built from the same `fpCustomers`
-  array Financial Planning → Customers already loads — **not a second account list**, clicking a
-  card opens the identical `openFpCustomerModal()` editor either screen uses.
-- **📈 Usage** — was write-only until now (`POST /saas/usage-event` had nothing to view what
-  actually landed). New `GET /saas/usage-events` (`handleSaasUsageEventsList`) returns a 30-day
-  per-account/per-event-name summary (aggregated server-side in SQL, cheap even as the table
-  grows) plus a capped recent-events log; the account filter dropdown filters both client-side
-  from the same already-fetched payload rather than re-querying per interaction.
-- `dashboard.html`'s Reports page "📈 SaaS" sub-tab (`renderReportsSaas`) was upgraded to match:
-  every section is now a full-width stacked card (no 2-column grid), the CSS bar-row visuals for
-  revenue/health/funnel became real Chart.js charts (bar/doughnut/horizontal-bar — Chart.js was
-  already loaded in this file for the Leads funnel/trend charts, just unused here before), and it
-  now also renders Expansion Candidates, which the endpoint always returned but this page never
-  displayed.
-- The lead detail panel gets a small "🚀 Linked Account" card (inserted right after the existing
-  `#detailSignals` chips) when the open lead links to an `fp_customers` row.
+  (Onboarding/Active/At Risk/Renewal/Expansion/Churned), cards built from `GET /saas/customers`
+  (the client's live NocoDB table, `handleSaasCustomersList` — every original column plus the
+  `saas_*` computed fields and alias-resolved `_name`/`_email`/`_phone`). Clicking a card opens an
+  edit modal that **only ever writes the `saas_*` fields** via `PATCH /saas/customers`
+  (`handleSaasCustomerUpdate`) — the account's own columns are shown as read-only, edited in
+  NocoDB directly.
+- **📈 Usage** — `GET /saas/usage-events` (`handleSaasUsageEventsList`, unchanged from v1) returns
+  a 30-day per-account/per-event-name summary plus a capped recent-events log.
+- **⚠️ Unmatched Events** — lists `saas_unmatched_billing_events`, with a per-row account picker
+  + "Link" button (`POST /saas/unmatched-events/resolve`) that replays the collection/lifecycle
+  effect the webhook would have had, now that the right account is known.
+- **🔌 Integrations** — the "NocoDB Customers Table" card is now the primary, first setting on this
+  page (`saveSaasNocodbTable()` → `PATCH /saas/config`) — pointing this at the client's live table
+  is what makes the rest of the module work, replacing the old one-time "Fetch & Import" flow.
+- `dashboard.html`'s Reports page "📈 SaaS" sub-tab (`renderReportsSaas`) needed no data-shape
+  changes — `handleSaasReports`'s response shape is unchanged — only its empty-state copy was
+  updated to point at 🚀 SaaS Ops → Integrations.
+- The lead detail panel's "🚀 Linked Account" card now looks the open lead's `Phone` up against
+  `GET /saas/customers`' `_phone` field instead of matching `fp_customers.lead_id`.
 
 ### Manual test checklist (no live provider credentials exist in this build)
+- **NocoDB connection**: set a real Table ID in 🚀 SaaS Ops → Integrations, confirm 👥 Accounts
+  populates and that only new `saas_*` columns appear on the live table — no existing column's
+  value changes.
 - **Billing**: `stripe listen --forward-to <worker>/saas/webhooks/stripe/<client_id>` +
-  `stripe trigger invoice.paid` → confirm an `fp_expected_dues`/`fp_collections` row appears, and
-  (if ERPNext is also connected) a Sales Invoice + Payment Entry appear in that client's real
-  ERPNext site.
-- **Usage**: `curl -X POST <worker>/saas/usage-event -H "Authorization: Bearer <token>" -d '{"customer_id":1,"event_name":"test"}'`
+  `stripe trigger invoice.paid` with a test customer email that matches a real row in the
+  configured table → confirm a `saas_collections` row appears, the row's `saas_*` fields update,
+  and (if ERPNext is also connected) a Sales Invoice + Payment Entry appear in that client's real
+  ERPNext site. Retry with a non-matching email → confirm it lands in ⚠️ Unmatched Events instead
+  of creating anything in the live table.
+- **Usage**: `curl -X POST <worker>/saas/usage-event -H "Authorization: Bearer <token>" -d '{"customer_id":<a real NocoDB row Id>,"event_name":"test"}'`
   → confirm the next day's health-score recompute reflects it.
 - **Cron**: confirm `wrangler.toml`'s `crons` array and the `scheduled()` dispatcher's `event.cron`
-  checks match exactly, character-for-character, especially the new `"0 9 * * 1"` string.
+  checks match exactly, character-for-character, especially the `"0 9 * * 1"` weekly string.
 
 ## AI Sales Plan (`frontend/dashboard.html` — Leads page → 🧠 AI Analyst → "🤖 AI Sales Plan" tab)
 

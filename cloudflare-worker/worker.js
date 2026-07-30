@@ -6498,20 +6498,23 @@ async function engineBuildEcomContext(env, c, clientId, phone){
 }
 
 // SaaS/Digital-Marketing equivalent of engineBuildEcomContext, for the 'saas_faq' route — pulls
-// this phone's linked Account (fp_customers, D1 — see the SaaS Ops module above) and any
-// competitor battlecards, so the bot can answer plan/billing questions and "how are you different
-// from X" accurately instead of the generic fallback guessing.
+// this phone's linked Account (the client's own NocoDB customers table — see the SaaS Ops module
+// above) and any competitor battlecards, so the bot can answer plan/billing questions and "how are
+// you different from X" accurately instead of the generic fallback guessing.
 async function engineBuildSaasContext(env, c, clientId, phone){
   const lines=[];
   if(phone){
-    const cust=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=? AND phone=? ORDER BY id DESC LIMIT 1`).bind(clientId, phone).first();
-    if(cust){
-      lines.push('## This customer\'s account');
-      lines.push(`- Plan: ${cust.plan_tier||cust.plan_name||'(not set)'} — ${cust.currency||''} ${cust.monthly_value||0}/${cust.billing_cycle||'month'}`);
-      if(cust.trial_end_date) lines.push(`- Trial ends: ${cust.trial_end_date}`);
-      if(cust.renewal_date) lines.push(`- Renews: ${cust.renewal_date}`);
-      if(cust.seat_count) lines.push(`- Seats: ${cust.seat_count}`);
-      lines.push(`- Status: ${cust.status}${cust.lifecycle_stage?' ('+cust.lifecycle_stage+')':''}`);
+    const tableId=await saasResolveCustomersTable(env, clientId);
+    if(tableId){
+      const cust=await saasFindCustomerByEmailOrPhone(env, tableId, null, phone);
+      if(cust){
+        lines.push('## This customer\'s account');
+        lines.push(`- Plan: ${cust.saas_plan_tier||cust.saas_plan_name||'(not set)'} — ${cust.saas_currency||''} ${cust.saas_monthly_value||0}/month`);
+        if(cust.saas_trial_end_date) lines.push(`- Trial ends: ${cust.saas_trial_end_date}`);
+        if(cust.saas_renewal_date) lines.push(`- Renews: ${cust.saas_renewal_date}`);
+        if(cust.saas_seat_count) lines.push(`- Seats: ${cust.saas_seat_count}`);
+        if(cust.saas_lifecycle_stage) lines.push(`- Status: ${cust.saas_lifecycle_stage}`);
+      }
     }
   }
   const {results:battlecards}=await env.DB.prepare(`SELECT competitor_name, comparison_json, positioning_notes FROM saas_battlecards WHERE client_id=?`).bind(clientId).all().catch(()=>({results:[]}));
@@ -9305,14 +9308,19 @@ async function handleRazorpayWebhook(request, env, clientIdParam){
   }
 }
 
-// ── SaaS Ops module (frontend/accounting.html — "🚀 SaaS Ops" tab, shown only for
+// ── SaaS Ops module (frontend/saas-ops.html — own top-level dashboard.html tab, shown only for
 //    industry==='saas_digital_marketing'; SETUP.md "SaaS Ops module") ──
-// Built on top of the Financial Planning module above rather than a second, parallel system:
-// fp_customers IS the Account record (extended with SaaS columns, migrations/0025_saas_ops.sql),
-// fp_expected_dues/fp_collections IS the MRR/billing ledger, fp_config IS the per-client settings
-// row. Every frontend-facing route below follows this file's Financial Planning conventions
-// (requireSession, row-ownership check against payload.cid); webhooks/usage ingestion use their
-// own external auth instead, since no session exists on those calls.
+// v2 architecture: the client's OWN live NocoDB customers table (saas_config.nocodb_customers_
+// table_id) is the Account system of record — NOT fp_customers (Financial Planning's own table,
+// kept fully separate). saas_config/saas_collections/saas_unmatched_billing_events (migration 0027)
+// replace fp_config/fp_expected_dues/fp_collections for this module. This app only ever writes
+// `saas_`-prefixed columns it provisions itself onto the client's table (ensureSaasCustomerFields)
+// — it never guesses at or overwrites a column the client already uses for their own purposes.
+// ERPNext's role is narrowed to generating the actual invoice/quote documents (erpnextPushSalesDoc/
+// erpnextPushPaymentEntry, reused unchanged) — not modeling who the customers are. Every
+// frontend-facing route below follows this file's Financial Planning conventions (requireSession,
+// row-ownership check against payload.cid); webhooks/usage ingestion use their own external auth
+// instead, since no session exists on those calls.
 
 const SAAS_LIFECYCLE_STAGES=new Set(['onboarding','active','at_risk','renewal','expansion','churned']);
 
@@ -9364,76 +9372,211 @@ async function verifyPaddleSignature(secret, rawBody, sigHeader){
   return timingSafeEqualStr(expected, parts.h1);
 }
 
-// Normalized billing event applied to fp_customers/fp_expected_dues/fp_collections — the 3 webhook
-// handlers below each parse their own provider's payload into this one shape, so the actual
-// ledger/lifecycle/ERPNext-bridge logic exists exactly once instead of duplicated 3 times.
+// ── NocoDB-as-account-store layer ───────────────────────────────────────────────────────────
+// The client's OWN NocoDB customers table (saas_config.nocodb_customers_table_id) is the account
+// system of record — not a D1 shadow table. We only ever WRITE to columns we create ourselves,
+// all prefixed `saas_`, auto-provisioned below the same way ensureEcomProductStyleFields does for
+// Ecommerce. We never guess at or overwrite a column the client already uses for their own data.
+const SAAS_CUSTOMER_COMPUTED_FIELDS=['saas_lifecycle_stage','saas_health_score','saas_health_score_manual','saas_plan_tier','saas_plan_name','saas_monthly_value','saas_currency','saas_trial_end_date','saas_renewal_date','saas_seat_count','saas_csm_owner'];
+const _saasCustomerFieldsEnsured=new Set();
+async function ensureSaasCustomerFields(env, tableId){
+  if(!tableId || _saasCustomerFieldsEnsured.has(tableId)) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    for(const title of SAAS_CUSTOMER_COMPUTED_FIELDS){
+      if(!names.has(title)) await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{title, uidt:'SingleLineText'}});
+    }
+    _saasCustomerFieldsEnsured.add(tableId);
+  }catch(e){ console.error('[saas-ops] ensureSaasCustomerFields failed', e.message); }
+}
+
+async function saasEnsureConfigRow(env, clientId){
+  await env.DB.prepare(`INSERT INTO saas_config (client_id, updated_at) VALUES (?,?) ON CONFLICT(client_id) DO NOTHING`).bind(Number(clientId), new Date().toISOString()).run();
+}
+
+async function saasResolveCustomersTable(env, clientId){
+  const cfg=await env.DB.prepare(`SELECT nocodb_customers_table_id FROM saas_config WHERE client_id=?`).bind(clientId).first();
+  return (cfg?.nocodb_customers_table_id||'').trim()||null;
+}
+
+// Paginated full-row fetch (all columns, schema-agnostic) — same approach as the earlier
+// NocoDB-import feature's fetch loop, promoted here into a shared helper.
+async function saasFetchAllCustomers(env, tableId){
+  let rows=[];
+  for(let page=1; page<=20; page++){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const list=data?.list||[];
+    rows=rows.concat(list);
+    if(list.length<200) break;
+  }
+  return rows;
+}
+
+async function saasFetchCustomerById(env, tableId, id){
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
+  if(!r.ok) return null;
+  return await r.json().catch(()=>null);
+}
+
+async function saasWriteCustomerFields(env, tableId, rowId, fields){
+  await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:Number(rowId), ...fields}});
+}
+
+// Column-name aliases for the logical fields we need to read off an arbitrary client-owned table —
+// reused from the earlier NocoDB-import feature (SAAS_NOCODB_IMPORT_FIELD_ALIASES), now used both
+// for reading a value (saasGetCustomerField) and for resolving the real column name that means
+// "email"/"phone" so we can build a NocoDB where= filter (saasResolveColumnName).
+const SAAS_CUSTOMER_FIELD_ALIASES={
+  name:['name','customername','customer','company','companyname','fullname','client','clientname','account','accountname'],
+  email:['email','emailaddress','contactemail','billingemail','customeremail'],
+  phone:['phone','phonenumber','mobile','mobilenumber','contactnumber','whatsapp','whatsappnumber','contact'],
+  startDate:['startdate','signupdate','joindate','createdat','createddate','onboardeddate','subscriptionstart'],
+};
+
+function saasGetCustomerField(row, aliases){
+  if(!row) return null;
+  const keys=Object.keys(row);
+  for(const alias of aliases){
+    const norm=alias.replace(/[^a-z0-9]/g,'');
+    const hit=keys.find(k=>k.toLowerCase().replace(/[^a-z0-9]/g,'')===norm);
+    if(hit && row[hit]!=null && row[hit]!=='') return row[hit];
+  }
+  return null;
+}
+// Sibling of saasGetCustomerField — returns the matched COLUMN NAME instead of a value, for
+// building where= filters. Scans a small sample of rows since a column present-but-blank on row 1
+// shouldn't cause a false miss.
+function saasResolveColumnName(rows, aliases){
+  for(const row of rows){
+    const keys=Object.keys(row);
+    for(const alias of aliases){
+      const norm=alias.replace(/[^a-z0-9]/g,'');
+      const hit=keys.find(k=>k.toLowerCase().replace(/[^a-z0-9]/g,'')===norm);
+      if(hit) return hit;
+    }
+  }
+  return null;
+}
+const _saasColumnNameCache=new Map(); // tableId -> {name, email, phone, startDate}
+async function saasResolveColumnNames(env, tableId){
+  if(_saasColumnNameCache.has(tableId)) return _saasColumnNameCache.get(tableId);
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?limit=5`);
+  const data=await r.json().catch(()=>({}));
+  const rows=data?.list||[];
+  const resolved={};
+  if(rows.length){
+    for(const field of Object.keys(SAAS_CUSTOMER_FIELD_ALIASES)) resolved[field]=saasResolveColumnName(rows, SAAS_CUSTOMER_FIELD_ALIASES[field]);
+  }
+  _saasColumnNameCache.set(tableId, resolved);
+  return resolved;
+}
+
+// Matches a billing webhook event to a real NocoDB customer row by email (then phone). Never
+// creates a row on a miss — callers fall back to saas_unmatched_billing_events instead.
+async function saasFindCustomerByEmailOrPhone(env, tableId, email, phone){
+  const cols=await saasResolveColumnNames(env, tableId);
+  if(email && cols.email){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(${cols.email},eq,${ecomSanitizeFilterValue(email)})`)}&limit=1`);
+    const data=await r.json().catch(()=>({}));
+    if(data?.list?.[0]) return data.list[0];
+  }
+  if(phone && cols.phone){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(${cols.phone},eq,${ecomSanitizeFilterValue(phone)})`)}&limit=1`);
+    const data=await r.json().catch(()=>({}));
+    if(data?.list?.[0]) return data.list[0];
+  }
+  return null;
+}
+
+// Resolves a Chatwoot conversation for messaging (reminders, digests) by phone — replaces the old
+// cust.lead_id chain, since a bare NocoDB customer row has no lead_id.
+async function saasFindLeadConversationByPhone(env, clientId, phone){
+  if(!phone) return null;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})~and(Phone,eq,${ecomSanitizeFilterValue(phone)})`)}&fields=ConversationID&limit=1`);
+  const data=await r.json().catch(()=>({}));
+  return data?.list?.[0]?.ConversationID||null;
+}
+
+// Normalized billing event applied to the client's NocoDB customers table + saas_collections — the
+// 3 webhook handlers below each parse their own provider's payload into this one shape, so the
+// actual matching/lifecycle/ERPNext-bridge logic exists exactly once instead of duplicated 3 times.
 // action: 'subscription_active' | 'payment_succeeded' | 'subscription_cancelled'
 async function saasApplyBillingEvent(env, clientId, {customerEmail, customerName, planName, amount, currency, action, occurredAt}){
   const now=new Date().toISOString();
   occurredAt=occurredAt||now;
-  let cust=null;
-  if(customerEmail) cust=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=? AND email=? ORDER BY id DESC LIMIT 1`).bind(clientId, customerEmail).first();
-  if(!cust){
-    const r=await env.DB.prepare(`INSERT INTO fp_customers (client_id, name, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, lifecycle_stage, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .bind(clientId, customerName||customerEmail||'Customer', customerEmail||'', planName||'', amount||0, currency||'USD', 'monthly', 1, now.slice(0,10), 'active', 'onboarding', now).run();
-    cust=await findFpCustomer(env, r.meta.last_row_id);
-    await fpEnsureConfigRow(env, clientId);
-  }
+
+  const recordUnmatched=async()=>{
+    await env.DB.prepare(`INSERT INTO saas_unmatched_billing_events (client_id, source, action, customer_email, customer_name, plan_name, amount, currency, raw_payload, occurred_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(clientId, 'webhook', action, customerEmail||'', customerName||'', planName||'', amount||0, currency||'', '', occurredAt, now).run();
+  };
+
+  const tableId=await saasResolveCustomersTable(env, clientId);
+  if(!tableId){ await recordUnmatched(); return null; }
+
+  const custRow=await saasFindCustomerByEmailOrPhone(env, tableId, customerEmail, null);
+  if(!custRow){ await recordUnmatched(); return null; }
+
+  await ensureSaasCustomerFields(env, tableId);
+  const custId=custRow.Id;
+  const custName=saasGetCustomerField(custRow, SAAS_CUSTOMER_FIELD_ALIASES.name)||customerName||customerEmail||'Customer';
 
   if(action==='subscription_active'){
-    const wasChurned=cust.lifecycle_stage==='churned';
-    await env.DB.prepare(`UPDATE fp_customers SET status='active', lifecycle_stage=CASE WHEN lifecycle_stage='churned' OR lifecycle_stage IS NULL THEN 'active' ELSE lifecycle_stage END, plan_name=?, monthly_value=? WHERE id=?`)
-      .bind(planName||cust.plan_name, amount||cust.monthly_value, cust.id).run();
+    const wasChurned=custRow.saas_lifecycle_stage==='churned';
+    await saasWriteCustomerFields(env, tableId, custId, {
+      saas_lifecycle_stage: (custRow.saas_lifecycle_stage==='churned'||!custRow.saas_lifecycle_stage)?'active':custRow.saas_lifecycle_stage,
+      saas_plan_name: planName||custRow.saas_plan_name||'',
+      saas_monthly_value: String(amount||custRow.saas_monthly_value||0),
+    });
     // Re-enable the ERPNext Customer record on reactivation — best-effort, only if one was ever
     // synced (a brand-new account has nothing to re-enable yet; erpnextPushSalesDoc below will
     // resolve/create it on the first payment either way).
     if(wasChurned){
       const c=await getClientById(env, clientId);
       if(c && erpnextConfigured(c)){
-        try{ const erpCust=await erpnextFindCustomer(c, cust.name); if(erpCust) await erpnextSetCustomerDisabled(c, erpCust, false); }
-        catch(e){ await reportOpsError(env, 'saasApplyBillingEvent — ERPNext re-enable failed', e, {clientId, customerId:cust.id}); }
+        try{ const erpCust=await erpnextFindCustomer(c, custName); if(erpCust) await erpnextSetCustomerDisabled(c, erpCust, false); }
+        catch(e){ await reportOpsError(env, 'saasApplyBillingEvent — ERPNext re-enable failed', e, {clientId, customerId:custId}); }
       }
     }
   }else if(action==='subscription_cancelled'){
-    await env.DB.prepare(`UPDATE fp_customers SET status='cancelled', lifecycle_stage='churned' WHERE id=?`).bind(cust.id).run();
+    await saasWriteCustomerFields(env, tableId, custId, {saas_lifecycle_stage:'churned'});
     // Disable (not delete) the matching ERPNext Customer — keeps their own sales/accounting team
     // from seeing a churned account as active in ERPNext's own UI, without touching the customer's
     // invoice/payment history there.
     const c=await getClientById(env, clientId);
     if(c && erpnextConfigured(c)){
-      try{ const erpCust=await erpnextFindCustomer(c, cust.name); if(erpCust) await erpnextSetCustomerDisabled(c, erpCust, true); }
-      catch(e){ await reportOpsError(env, 'saasApplyBillingEvent — ERPNext disable failed', e, {clientId, customerId:cust.id}); }
+      try{ const erpCust=await erpnextFindCustomer(c, custName); if(erpCust) await erpnextSetCustomerDisabled(c, erpCust, true); }
+      catch(e){ await reportOpsError(env, 'saasApplyBillingEvent — ERPNext disable failed', e, {clientId, customerId:custId}); }
     }
   }else if(action==='payment_succeeded'){
     const periodKey=occurredAt.slice(0,7);
-    let due=await env.DB.prepare(`SELECT * FROM fp_expected_dues WHERE customer_id=? AND period_key=?`).bind(cust.id, periodKey).first();
-    if(!due){
-      const dueR=await env.DB.prepare(`INSERT INTO fp_expected_dues (client_id, customer_id, period_key, amount, currency, due_date, created_at) VALUES (?,?,?,?,?,?,?)`)
-        .bind(clientId, cust.id, periodKey, amount||0, currency||cust.currency, occurredAt.slice(0,10), now).run();
-      due=await env.DB.prepare(`SELECT * FROM fp_expected_dues WHERE id=?`).bind(dueR.meta.last_row_id).first();
+    const cur=currency||custRow.saas_currency||'USD';
+    await env.DB.prepare(`INSERT INTO saas_collections (client_id, nocodb_customer_id, amount, currency, source, occurred_at, created_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(clientId, String(custId), amount||0, cur, 'webhook', occurredAt, now).run();
+    if(custRow.saas_lifecycle_stage==='onboarding' || custRow.saas_lifecycle_stage==='at_risk' || !custRow.saas_lifecycle_stage){
+      await saasWriteCustomerFields(env, tableId, custId, {saas_lifecycle_stage:'active'});
     }
-    await env.DB.prepare(`INSERT INTO fp_collections (client_id, customer_id, expected_due_id, amount, currency, mode, collected_at, created_at) VALUES (?,?,?,?,?,?,?,?)`)
-      .bind(clientId, cust.id, due.id, amount||0, currency||cust.currency, 'bank', occurredAt, now).run();
-    await fpRecomputeDueStatus(env, due.id);
-    if(cust.lifecycle_stage==='onboarding' || cust.lifecycle_stage==='at_risk') await env.DB.prepare(`UPDATE fp_customers SET lifecycle_stage='active' WHERE id=?`).bind(cust.id).run();
 
     // Bridge to the existing Accounting/ERPNext module — a real invoice + payment in the client's
     // own ERPNext, through the sync functions that already work (erpnextPushSalesDoc/
-    // erpnextPushPaymentEntry) rather than a second, parallel invoicing concept.
+    // erpnextPushPaymentEntry) rather than a second, parallel invoicing concept. No fp_customers/
+    // Lead chain exists here anymore, so a synthetic {Name, Phone} object stands in for a Lead —
+    // erpnextResolveCustomer only ever reads .Name/.Phone off it.
     const c=await getClientById(env, clientId);
     if(c && erpnextConfigured(c)){
       try{
-        const title=`${planName||cust.plan_name||'Subscription'} — ${periodKey}`;
-        const lineItemsJson=JSON.stringify([{name:planName||cust.plan_name||'Subscription', qty:1, price:amount||0}]);
-        const cur=currency||cust.currency||'USD';
+        const title=`${planName||custRow.saas_plan_name||'Subscription'} — ${periodKey}`;
+        const lineItemsJson=JSON.stringify([{name:planName||custRow.saas_plan_name||'Subscription', qty:1, price:amount||0}]);
         const docR=await env.DB.prepare(`INSERT INTO accounting_documents (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, doc_created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-          .bind(clientId, cust.lead_id||null, 'invoice', title, lineItemsJson, cur, amount||0, 0, 0, amount||0, 'paid', now).run();
+          .bind(clientId, null, 'invoice', title, lineItemsJson, cur, amount||0, 0, 0, amount||0, 'paid', now).run();
         const doc=await findAccountingDocument(env, docR.meta.last_row_id);
-        let lead=null;
-        if(doc.lead_id){ const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${doc.lead_id}`); if(leadR.ok) lead=await leadR.json().catch(()=>null); }
-        const erpName=await erpnextPushSalesDoc(c, 'Sales Invoice', doc, lead);
+        const fakeLead={Name:custName, Phone:saasGetCustomerField(custRow, SAAS_CUSTOMER_FIELD_ALIASES.phone)||''};
+        const erpName=await erpnextPushSalesDoc(c, 'Sales Invoice', doc, fakeLead);
         await env.DB.prepare(`UPDATE accounting_documents SET erpnext_doctype='Sales Invoice', erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_synced_at=? WHERE id=?`).bind(erpName||'', now, doc.id).run();
-        const paymentErpName=await erpnextPushPaymentEntry(c, doc, lead, erpName);
+        const paymentErpName=await erpnextPushPaymentEntry(c, doc, fakeLead, erpName);
         // Auto-submit — a webhook-driven charge has no human in the loop to click "Publish" the way
         // the manual Quote/Invoice flow does, so a Draft here would just sit unposted in the
         // client's ERPNext ledger forever. Best-effort: if either submit fails (e.g. a mandatory
@@ -9444,23 +9587,23 @@ async function saasApplyBillingEvent(env, clientId, {customerEmail, customerName
           if(paymentErpName) await erpnextSubmitDocByName(c, 'Payment Entry', paymentErpName);
           await env.DB.prepare(`UPDATE accounting_documents SET erpnext_submitted_at=? WHERE id=?`).bind(new Date().toISOString(), doc.id).run();
         }catch(submitErr){
-          await reportOpsError(env, 'saasApplyBillingEvent — ERPNext auto-submit failed (doc still synced as Draft)', submitErr, {clientId, customerId:cust.id, docId:doc.id});
+          await reportOpsError(env, 'saasApplyBillingEvent — ERPNext auto-submit failed (doc still synced as Draft)', submitErr, {clientId, customerId:custId, docId:doc.id});
         }
       }catch(e){
-        await reportOpsError(env, 'saasApplyBillingEvent — ERPNext bridge failed', e, {clientId, customerId:cust.id});
+        await reportOpsError(env, 'saasApplyBillingEvent — ERPNext bridge failed', e, {clientId, customerId:custId});
       }
     }
   }
-  return cust;
+  return custRow;
 }
 
 // clientId travels in the URL path (/saas/webhooks/stripe/<clientId> etc.), same lookup-key-only
 // role as Razorpay's own webhook route above — the real trust boundary is the signature/token
-// check against that specific client's own fp_config secret, not the URL.
+// check against that specific client's own saas_config secret, not the URL.
 async function handleSaasStripeWebhook(request, env, clientIdParam){
   const clientId=Number(clientIdParam);
   if(!clientId) return json({ok:true});
-  const cfg=await env.DB.prepare(`SELECT stripe_webhook_secret FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  const cfg=await env.DB.prepare(`SELECT stripe_webhook_secret FROM saas_config WHERE client_id=?`).bind(clientId).first();
   if(!cfg?.stripe_webhook_secret) return json({ok:true});
   const rawBody=await request.text();
   const valid=await verifySaasStripeSignature(cfg.stripe_webhook_secret, rawBody, request.headers.get('Stripe-Signature'));
@@ -9495,7 +9638,7 @@ async function handleSaasStripeWebhook(request, env, clientIdParam){
 async function handleSaasChargebeeWebhook(request, env, clientIdParam){
   const clientId=Number(clientIdParam);
   if(!clientId) return json({ok:true});
-  const cfg=await env.DB.prepare(`SELECT chargebee_webhook_secret FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  const cfg=await env.DB.prepare(`SELECT chargebee_webhook_secret FROM saas_config WHERE client_id=?`).bind(clientId).first();
   if(!cfg?.chargebee_webhook_secret) return json({ok:true});
   const url=new URL(request.url);
   if(!verifyChargebeeToken(cfg.chargebee_webhook_secret, url.searchParams.get('token'))) return json({error:'Invalid token'}, 401);
@@ -9526,7 +9669,7 @@ async function handleSaasChargebeeWebhook(request, env, clientIdParam){
 async function handleSaasPaddleWebhook(request, env, clientIdParam){
   const clientId=Number(clientIdParam);
   if(!clientId) return json({ok:true});
-  const cfg=await env.DB.prepare(`SELECT paddle_webhook_secret FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  const cfg=await env.DB.prepare(`SELECT paddle_webhook_secret FROM saas_config WHERE client_id=?`).bind(clientId).first();
   if(!cfg?.paddle_webhook_secret) return json({ok:true});
   const rawBody=await request.text();
   const valid=await verifyPaddleSignature(cfg.paddle_webhook_secret, rawBody, request.headers.get('Paddle-Signature'));
@@ -9557,20 +9700,18 @@ async function handleSaasPaddleWebhook(request, env, clientIdParam){
   return json({ok:true});
 }
 
-// ── Usage / PQL ingestion — bearer-token-per-client (fp_config.usage_ingest_token, generated on
+// ── Usage / PQL ingestion — bearer-token-per-client (saas_config.usage_ingest_token, generated on
 // first Integrations-tab load, see handleSaasConfigGet below), the client's own product calls this
 // from its own backend on real usage events. Not session-gated — this is a server-to-server call
 // from the client's own SaaS product, which has no Leadvyne session.
 async function handleSaasUsageEvent(request, env){
   const auth=(request.headers.get('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
   if(!auth) return json({error:'Missing bearer token'}, 401);
-  const cfg=await env.DB.prepare(`SELECT client_id FROM fp_config WHERE usage_ingest_token=?`).bind(auth).first();
+  const cfg=await env.DB.prepare(`SELECT client_id FROM saas_config WHERE usage_ingest_token=?`).bind(auth).first();
   if(!cfg) return json({error:'Invalid token'}, 401);
   const body=await request.json().catch(()=>({}));
   const customerId=parseInt(body.customer_id,10);
   if(!customerId || !body.event_name) return json({error:'customer_id and event_name required'}, 400);
-  const cust=await findFpCustomer(env, customerId);
-  if(!cust || cust.client_id!==cfg.client_id) return json({error:'Unknown customer_id'}, 404);
   const now=new Date().toISOString();
   await env.DB.prepare(`INSERT INTO saas_usage_events (client_id, customer_id, event_name, event_count, occurred_at, created_at) VALUES (?,?,?,?,?,?)`)
     .bind(cfg.client_id, customerId, String(body.event_name).slice(0,100), parseInt(body.event_count,10)||1, body.occurred_at||now, now).run();
@@ -9641,8 +9782,7 @@ async function handleSaasAccountMilestoneComplete(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
   const customerId=Number(body.customer_id);
-  const cust=await findFpCustomer(env, customerId);
-  if(!cust || cust.client_id!==Number(payload.cid)) return json({error:'Not found'}, 404);
+  if(!customerId) return json({error:'customer_id required'}, 400);
   const now=new Date().toISOString();
   await env.DB.prepare(`INSERT INTO saas_account_milestones (client_id, customer_id, milestone_key, completed_at, created_at) VALUES (?,?,?,?,?)
     ON CONFLICT(customer_id, milestone_key) DO UPDATE SET completed_at=excluded.completed_at`)
@@ -9652,24 +9792,26 @@ async function handleSaasAccountMilestoneComplete(request, env){
 
 // ── Health score — rule-based blend (LLM-scored fields elsewhere in this file are for lead/deal
 // sentiment specifically; this is a deterministic account-level score so it's cheap to recompute
-// for every account, every day, without an LLM call per account). Writes fp_customers.health_score
-// unless health_score_manual==='Yes' (same manual-override convention as
-// LEADS.WinProbability/WinProbabilityManual). 0-100, higher is healthier.
-async function computeAccountHealthScore(env, cust){
+// for every account, every day, without an LLM call per account). Writes saas_health_score onto the
+// NocoDB customer row unless saas_health_score_manual==='Yes'. 0-100, higher is healthier. Takes a
+// NocoDB customer row (not a D1 fp_customers row) — the lead-sentiment (WinProbability) term from
+// the earlier fp_customers-based version is dropped here: there's no reliable lead_id chain off a
+// bare NocoDB row. Billing + usage + support signals still drive it.
+async function computeAccountHealthScore(env, custId){
   let score=50; // neutral baseline
-  // Billing signal: a recent successful collection is healthy; an open/overdue due is not.
-  const recentDue=await env.DB.prepare(`SELECT * FROM fp_expected_dues WHERE customer_id=? ORDER BY due_date DESC LIMIT 1`).bind(cust.id).first();
-  if(recentDue){
-    if(recentDue.status==='paid') score+=15;
-    else if(recentDue.status==='open' && recentDue.due_date<new Date().toISOString().slice(0,10)) score-=20;
+  // Billing signal: a recent collection is healthy; none in the last 45 days is a bad sign.
+  const recentCollection=await env.DB.prepare(`SELECT * FROM saas_collections WHERE nocodb_customer_id=? ORDER BY occurred_at DESC LIMIT 1`).bind(String(custId)).first();
+  if(recentCollection){
+    const daysSince=(Date.now()-new Date(recentCollection.occurred_at).getTime())/86400000;
+    if(daysSince<=35) score+=15;
+    else if(daysSince>45) score-=20;
   }
-  if(cust.status==='cancelled') score-=40;
   // Usage trend: last 30 days vs. the 30 days before that.
   const now=Date.now();
   const d30=new Date(now-30*86400000).toISOString();
   const d60=new Date(now-60*86400000).toISOString();
-  const recent=await env.DB.prepare(`SELECT COALESCE(SUM(event_count),0) c FROM saas_usage_events WHERE customer_id=? AND occurred_at>=?`).bind(cust.id, d30).first();
-  const prior=await env.DB.prepare(`SELECT COALESCE(SUM(event_count),0) c FROM saas_usage_events WHERE customer_id=? AND occurred_at>=? AND occurred_at<?`).bind(cust.id, d60, d30).first();
+  const recent=await env.DB.prepare(`SELECT COALESCE(SUM(event_count),0) c FROM saas_usage_events WHERE customer_id=? AND occurred_at>=?`).bind(custId, d30).first();
+  const prior=await env.DB.prepare(`SELECT COALESCE(SUM(event_count),0) c FROM saas_usage_events WHERE customer_id=? AND occurred_at>=? AND occurred_at<?`).bind(custId, d60, d30).first();
   const recentCount=recent?.c||0, priorCount=prior?.c||0;
   if(recentCount===0 && priorCount===0) score+=0; // no usage data at all — no signal either way
   else if(recentCount===0) score-=25; // usage went silent
@@ -9677,26 +9819,27 @@ async function computeAccountHealthScore(env, cust){
   else if(priorCount>0 && recentCount>priorCount*1.2) score+=10; // usage growing
 
   // Support signal: ticket spike / low CSAT.
-  const support=await env.DB.prepare(`SELECT * FROM saas_support_signals WHERE customer_id=? ORDER BY period_end DESC LIMIT 1`).bind(cust.id).first();
+  const support=await env.DB.prepare(`SELECT * FROM saas_support_signals WHERE customer_id=? ORDER BY period_end DESC LIMIT 1`).bind(custId).first();
   if(support){
     if(support.avg_csat!=null && support.avg_csat<3) score-=15;
     if(support.ticket_count>5) score-=10;
   }
-
-  // Sentiment: the linked lead's own WinProbability, if any — read-only, never written back to.
-  if(cust.lead_id){
-    try{
-      const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${cust.lead_id}?fields=WinProbability`);
-      if(leadR.ok){ const lead=await leadR.json().catch(()=>null); const wp=Number(lead?.WinProbability); if(Number.isFinite(wp)) score+=(wp-50)*0.2; }
-    }catch(e){}
-  }
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 async function runSaasHealthScoresForAllClients(env){
-  const {results:customers}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE status!='cancelled' AND (health_score_manual IS NULL OR health_score_manual!='Yes')`).all();
-  for(const cust of (customers||[])){
-    try{ const score=await computeAccountHealthScore(env, cust); await env.DB.prepare(`UPDATE fp_customers SET health_score=? WHERE id=?`).bind(score, cust.id).run(); }
-    catch(e){ console.error('[saas-ops] health score failed for customer', cust.id, e.message); }
+  const {results:configs}=await env.DB.prepare(`SELECT client_id, nocodb_customers_table_id FROM saas_config WHERE nocodb_customers_table_id IS NOT NULL AND nocodb_customers_table_id!=''`).all();
+  for(const cfg of (configs||[])){
+    try{
+      const tableId=cfg.nocodb_customers_table_id;
+      const customers=await saasFetchAllCustomers(env, tableId);
+      for(const cust of customers){
+        if(cust.saas_lifecycle_stage==='churned' || cust.saas_health_score_manual==='Yes') continue;
+        try{
+          const score=await computeAccountHealthScore(env, cust.Id);
+          await saasWriteCustomerFields(env, tableId, cust.Id, {saas_health_score:String(score)});
+        }catch(e){ console.error('[saas-ops] health score failed for customer', cust.Id, e.message); }
+      }
+    }catch(e){ console.error('[saas-ops] health score run failed for client', cfg.client_id, e.message); }
   }
 }
 
@@ -9736,7 +9879,7 @@ async function pullFreshdeskSignals(env, clientId, cfg){
   return {ticket_count:tickets.length, avg_csat:null};
 }
 async function runSaasSupportPullForAllClients(env){
-  const {results:configs}=await env.DB.prepare(`SELECT * FROM fp_config WHERE support_provider IS NOT NULL AND support_api_key IS NOT NULL`).all();
+  const {results:configs}=await env.DB.prepare(`SELECT * FROM saas_config WHERE support_provider IS NOT NULL AND support_api_key IS NOT NULL`).all();
   for(const cfg of (configs||[])){
     try{
       const puller={zendesk:pullZendeskSignals, intercom:pullIntercomSignals, freshdesk:pullFreshdeskSignals}[cfg.support_provider];
@@ -9762,81 +9905,104 @@ async function saasSendChatwootMessage(c, convId, text){
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   return r.ok;
 }
+// Reminders/digests below iterate every client's own NocoDB customers table via saasFetchAllCustomers
+// instead of scanning fp_customers, and resolve messaging by phone (saasFindLeadConversationByPhone)
+// instead of a cust.lead_id chain — there is no lead_id on a bare NocoDB row.
 async function runSaasRemindersForAllClients(env){
   const todayStr=new Date().toISOString().slice(0,10);
-  const {results:customers}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE status!='cancelled' AND renewal_date IS NOT NULL`).all();
-  for(const cust of (customers||[])){
-    const daysOut=Math.round((new Date(cust.renewal_date)-new Date(todayStr))/86400000);
-    const type=({90:'renewal_90',60:'renewal_60',30:'renewal_30'})[daysOut];
-    if(!type) continue;
-    const exists=await env.DB.prepare(`SELECT id FROM saas_account_reminders WHERE customer_id=? AND reminder_type=? AND anchor_at=?`).bind(cust.id, type, cust.renewal_date).first();
-    if(exists) continue;
-    const now=new Date().toISOString();
-    const r=await env.DB.prepare(`INSERT INTO saas_account_reminders (client_id, customer_id, reminder_type, anchor_at, offset_days, created_at) VALUES (?,?,?,?,?,?)`)
-      .bind(cust.client_id, cust.id, type, cust.renewal_date, daysOut, now).run();
-    const c=await getClientById(env, cust.client_id);
-    // 30 days out — auto-draft an ERPNext Quotation for the renewal, so the accounting/sales team
-    // has one ready to send without re-typing the plan/price by hand. Left as a Draft (not
-    // auto-submitted, unlike the billing-webhook invoices above) — a quotation is a proposal a
-    // human should actually review/adjust before it goes out, not a completed transaction.
-    if(type==='renewal_30' && c && erpnextConfigured(c)){
-      try{
-        const title=`Renewal — ${cust.plan_name||cust.plan_tier||'Subscription'} — ${cust.renewal_date}`;
-        const lineItemsJson=JSON.stringify([{name:cust.plan_name||cust.plan_tier||'Subscription', qty:1, price:cust.monthly_value||0}]);
-        const docR=await env.DB.prepare(`INSERT INTO accounting_documents (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, notes, doc_created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-          .bind(cust.client_id, cust.lead_id||null, 'quotation', title, lineItemsJson, cust.currency||'USD', cust.monthly_value||0, 0, 0, cust.monthly_value||0, 'draft', 'Auto-drafted from the 30-day renewal reminder (SaaS Ops)', now).run();
-        const qdoc=await findAccountingDocument(env, docR.meta.last_row_id);
-        let qlead=null;
-        if(qdoc.lead_id){ const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${qdoc.lead_id}`); if(leadR.ok) qlead=await leadR.json().catch(()=>null); }
-        const qErpName=await erpnextPushSalesDoc(c, 'Quotation', qdoc, qlead);
-        await env.DB.prepare(`UPDATE accounting_documents SET erpnext_doctype='Quotation', erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_synced_at=? WHERE id=?`).bind(qErpName||'', now, qdoc.id).run();
-      }catch(e){
-        await reportOpsError(env, 'runSaasRemindersForAllClients — renewal Quotation auto-draft failed', e, {clientId:cust.client_id, customerId:cust.id});
+  const {results:configs}=await env.DB.prepare(`SELECT client_id, nocodb_customers_table_id FROM saas_config WHERE nocodb_customers_table_id IS NOT NULL AND nocodb_customers_table_id!=''`).all();
+  for(const cfg of (configs||[])){
+    const tableId=cfg.nocodb_customers_table_id;
+    const clientId=cfg.client_id;
+    let customers=[];
+    try{ customers=await saasFetchAllCustomers(env, tableId); }catch(e){ continue; }
+    const c=await getClientById(env, clientId);
+    for(const cust of customers){
+      const custId=cust.Id;
+      const custName=saasGetCustomerField(cust, SAAS_CUSTOMER_FIELD_ALIASES.name)||'Customer';
+      const custPhone=saasGetCustomerField(cust, SAAS_CUSTOMER_FIELD_ALIASES.phone);
+      if(cust.saas_lifecycle_stage!=='churned' && cust.saas_renewal_date){
+        const daysOut=Math.round((new Date(cust.saas_renewal_date)-new Date(todayStr))/86400000);
+        const type=({90:'renewal_90',60:'renewal_60',30:'renewal_30'})[daysOut];
+        if(type){
+          const exists=await env.DB.prepare(`SELECT id FROM saas_account_reminders WHERE customer_id=? AND reminder_type=? AND anchor_at=?`).bind(custId, type, cust.saas_renewal_date).first();
+          if(!exists){
+            const now=new Date().toISOString();
+            const r=await env.DB.prepare(`INSERT INTO saas_account_reminders (client_id, customer_id, reminder_type, anchor_at, offset_days, created_at) VALUES (?,?,?,?,?,?)`)
+              .bind(clientId, custId, type, cust.saas_renewal_date, daysOut, now).run();
+            // 30 days out — auto-draft an ERPNext Quotation for the renewal, so the accounting/sales
+            // team has one ready to send without re-typing the plan/price by hand. Left as a Draft
+            // (not auto-submitted, unlike the billing-webhook invoices) — a quotation is a proposal
+            // a human should review/adjust before it goes out, not a completed transaction.
+            if(type==='renewal_30' && c && erpnextConfigured(c)){
+              try{
+                const title=`Renewal — ${cust.saas_plan_name||cust.saas_plan_tier||'Subscription'} — ${cust.saas_renewal_date}`;
+                const lineItemsJson=JSON.stringify([{name:cust.saas_plan_name||cust.saas_plan_tier||'Subscription', qty:1, price:Number(cust.saas_monthly_value)||0}]);
+                const docR=await env.DB.prepare(`INSERT INTO accounting_documents (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, notes, doc_created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+                  .bind(clientId, null, 'quotation', title, lineItemsJson, cust.saas_currency||'USD', Number(cust.saas_monthly_value)||0, 0, 0, Number(cust.saas_monthly_value)||0, 'draft', 'Auto-drafted from the 30-day renewal reminder (SaaS Ops)', now).run();
+                const qdoc=await findAccountingDocument(env, docR.meta.last_row_id);
+                const fakeLead={Name:custName, Phone:custPhone||''};
+                const qErpName=await erpnextPushSalesDoc(c, 'Quotation', qdoc, fakeLead);
+                await env.DB.prepare(`UPDATE accounting_documents SET erpnext_doctype='Quotation', erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_synced_at=? WHERE id=?`).bind(qErpName||'', now, qdoc.id).run();
+              }catch(e){
+                await reportOpsError(env, 'runSaasRemindersForAllClients — renewal Quotation auto-draft failed', e, {clientId, customerId:custId});
+              }
+            }
+            if(custPhone){
+              try{
+                const convId=await saasFindLeadConversationByPhone(env, clientId, custPhone);
+                const sent=await saasSendChatwootMessage(c, convId, `Hi ${custName}, just a heads up — your ${cust.saas_plan_name||'plan'} renews in ${daysOut} days. Let us know if you'd like to review or change anything before then!`);
+                if(sent) await env.DB.prepare(`UPDATE saas_account_reminders SET sent_at=? WHERE id=?`).bind(new Date().toISOString(), r.meta.last_row_id).run();
+              }catch(e){}
+            }
+          }
+        }
+      }
+      // Activation-milestone-miss: an account still in 'onboarding' 7+ days after a recognizable
+      // start-date-like column (falls back to always-eligible if the client's table has none we can
+      // identify) with zero completed milestones gets one nudge, not repeated daily.
+      if(cust.saas_lifecycle_stage==='onboarding'){
+        const startVal=saasGetCustomerField(cust, SAAS_CUSTOMER_FIELD_ALIASES.startDate);
+        const startDate=startVal?new Date(startVal):null;
+        const eligible=!startDate || (Date.now()-startDate.getTime())>=7*86400000;
+        if(eligible){
+          const done=await env.DB.prepare(`SELECT COUNT(*) n FROM saas_account_milestones WHERE customer_id=? AND completed_at IS NOT NULL`).bind(custId).first();
+          if((done?.n||0)===0){
+            const exists=await env.DB.prepare(`SELECT id FROM saas_account_reminders WHERE customer_id=? AND reminder_type='milestone_miss'`).bind(custId).first();
+            if(!exists){
+              const now=new Date().toISOString();
+              const r=await env.DB.prepare(`INSERT INTO saas_account_reminders (client_id, customer_id, reminder_type, anchor_at, offset_days, created_at) VALUES (?,?,?,?,?,?)`)
+                .bind(clientId, custId, 'milestone_miss', startVal||now, 7, now).run();
+              if(custPhone){
+                try{
+                  const convId=await saasFindLeadConversationByPhone(env, clientId, custPhone);
+                  const sent=await saasSendChatwootMessage(c, convId, `Hi ${custName}, noticed you haven't gotten set up yet — happy to help you get started, just let us know if anything's unclear!`);
+                  if(sent) await env.DB.prepare(`UPDATE saas_account_reminders SET sent_at=? WHERE id=?`).bind(new Date().toISOString(), r.meta.last_row_id).run();
+                }catch(e){}
+              }
+            }
+          }
+        }
       }
     }
-    if(!cust.lead_id) continue;
-    try{
-      const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${cust.lead_id}?fields=ConversationID`);
-      const lead=leadR.ok?await leadR.json().catch(()=>null):null;
-      const sent=await saasSendChatwootMessage(c, lead?.ConversationID, `Hi ${cust.name}, just a heads up — your ${cust.plan_name||'plan'} renews in ${daysOut} days. Let us know if you'd like to review or change anything before then!`);
-      if(sent) await env.DB.prepare(`UPDATE saas_account_reminders SET sent_at=? WHERE id=?`).bind(new Date().toISOString(), r.meta.last_row_id).run();
-    }catch(e){}
-  }
-  // Activation-milestone-miss: an account still in 'onboarding' 7+ days after start_date with zero
-  // completed milestones gets one nudge, not repeated daily.
-  const {results:stalled}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE lifecycle_stage='onboarding' AND start_date<=? AND lead_id IS NOT NULL`)
-    .bind(new Date(Date.now()-7*86400000).toISOString().slice(0,10)).all();
-  for(const cust of (stalled||[])){
-    const done=await env.DB.prepare(`SELECT COUNT(*) n FROM saas_account_milestones WHERE customer_id=? AND completed_at IS NOT NULL`).bind(cust.id).first();
-    if((done?.n||0)>0) continue;
-    const exists=await env.DB.prepare(`SELECT id FROM saas_account_reminders WHERE customer_id=? AND reminder_type='milestone_miss'`).bind(cust.id).first();
-    if(exists) continue;
-    const now=new Date().toISOString();
-    const r=await env.DB.prepare(`INSERT INTO saas_account_reminders (client_id, customer_id, reminder_type, anchor_at, offset_days, created_at) VALUES (?,?,?,?,?,?)`)
-      .bind(cust.client_id, cust.id, 'milestone_miss', cust.start_date, 7, now).run();
-    try{
-      const c=await getClientById(env, cust.client_id);
-      const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${cust.lead_id}?fields=ConversationID`);
-      const lead=leadR.ok?await leadR.json().catch(()=>null):null;
-      const sent=await saasSendChatwootMessage(c, lead?.ConversationID, `Hi ${cust.name}, noticed you haven't gotten set up yet — happy to help you get started, just let us know if anything's unclear!`);
-      if(sent) await env.DB.prepare(`UPDATE saas_account_reminders SET sent_at=? WHERE id=?`).bind(new Date().toISOString(), r.meta.last_row_id).run();
-    }catch(e){}
   }
 }
 
 // ── Weekly digests — new weekly cron branch (see scheduled() below + wrangler.toml).
 async function runWeeklyOwnerDigest(env){
-  const {results:configs}=await env.DB.prepare(`SELECT client_id FROM fp_config WHERE enabled=1`).all();
+  const {results:configs}=await env.DB.prepare(`SELECT client_id, nocodb_customers_table_id FROM saas_config WHERE nocodb_customers_table_id IS NOT NULL AND nocodb_customers_table_id!=''`).all();
   const weekAgo=new Date(Date.now()-7*86400000).toISOString();
   for(const cfg of (configs||[])){
     try{
       const c=await getClientById(env, cfg.client_id);
       if(!c?.chatwoot_base && !c?.wa_phone_id) continue;
-      const {results:newCust}=await env.DB.prepare(`SELECT COUNT(*) n FROM fp_customers WHERE client_id=? AND created_at>=?`).bind(cfg.client_id, weekAgo).all();
-      const {results:churned}=await env.DB.prepare(`SELECT COUNT(*) n FROM fp_customers WHERE client_id=? AND lifecycle_stage='churned' AND status='cancelled'`).bind(cfg.client_id).all();
-      const {results:collected}=await env.DB.prepare(`SELECT COALESCE(SUM(amount),0) t FROM fp_collections WHERE client_id=? AND collected_at>=?`).bind(cfg.client_id, weekAgo).all();
-      const {results:atRisk}=await env.DB.prepare(`SELECT name FROM fp_customers WHERE client_id=? AND status!='cancelled' AND health_score<40 ORDER BY health_score ASC LIMIT 5`).bind(cfg.client_id).all();
-      const text=`📈 Weekly SaaS digest\nNew accounts: ${newCust?.[0]?.n||0}\nRevenue collected (7d): ${collected?.[0]?.t||0}\nAt-risk accounts: ${(atRisk||[]).map(a=>a.name).join(', ')||'none'}`;
+      const customers=await saasFetchAllCustomers(env, cfg.nocodb_customers_table_id);
+      const churned=customers.filter(cust=>cust.saas_lifecycle_stage==='churned').length;
+      const atRisk=customers.filter(cust=>cust.saas_lifecycle_stage!=='churned' && Number(cust.saas_health_score)<40).slice(0,5);
+      const {results:collected}=await env.DB.prepare(`SELECT COALESCE(SUM(amount),0) t FROM saas_collections WHERE client_id=? AND occurred_at>=?`).bind(cfg.client_id, weekAgo).all();
+      // "New accounts this week" is dropped here — there's no reliable client-controlled created-at
+      // column on an arbitrary NocoDB row to key off without further column-guessing.
+      const text=`📈 Weekly SaaS digest\nRevenue collected (7d): ${collected?.[0]?.t||0}\nChurned accounts: ${churned}\nAt-risk accounts: ${atRisk.map(a=>saasGetCustomerField(a, SAAS_CUSTOMER_FIELD_ALIASES.name)||'Customer').join(', ')||'none'}`;
       if(c.support_phone && c.wa_phone_id && c.wa_token){
         await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
           method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
@@ -9848,18 +10014,25 @@ async function runWeeklyOwnerDigest(env){
 }
 async function runWeeklyCustomerValueUpdate(env){
   const weekAgo=new Date(Date.now()-7*86400000).toISOString();
-  const {results:customers}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE status='active' AND lead_id IS NOT NULL`).all();
-  for(const cust of (customers||[])){
-    try{
-      const {results:events}=await env.DB.prepare(`SELECT event_name, SUM(event_count) c FROM saas_usage_events WHERE customer_id=? AND occurred_at>=? GROUP BY event_name ORDER BY c DESC LIMIT 3`).bind(cust.id, weekAgo).all();
-      if(!events?.length) continue; // no usage this week — nothing to recap, avoid an empty/noise message
-      const c=await getClientById(env, cust.client_id);
-      const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${cust.lead_id}?fields=ConversationID`);
-      const lead=leadR.ok?await leadR.json().catch(()=>null):null;
-      const summary=events.map(e=>`${e.event_name} ×${e.c}`).join(', ');
-      await saasSendChatwootMessage(c, lead?.ConversationID, `Hi ${cust.name}, here's what you were up to this week: ${summary}. Let us know if there's anything we can help with!`);
-      await new Promise(res=>setTimeout(res, 300));
-    }catch(e){}
+  const {results:configs}=await env.DB.prepare(`SELECT client_id, nocodb_customers_table_id FROM saas_config WHERE nocodb_customers_table_id IS NOT NULL AND nocodb_customers_table_id!=''`).all();
+  for(const cfg of (configs||[])){
+    let customers=[];
+    try{ customers=await saasFetchAllCustomers(env, cfg.nocodb_customers_table_id); }catch(e){ continue; }
+    const c=await getClientById(env, cfg.client_id);
+    for(const cust of customers){
+      if(cust.saas_lifecycle_stage==='churned') continue;
+      const custPhone=saasGetCustomerField(cust, SAAS_CUSTOMER_FIELD_ALIASES.phone);
+      if(!custPhone) continue;
+      try{
+        const {results:events}=await env.DB.prepare(`SELECT event_name, SUM(event_count) c FROM saas_usage_events WHERE customer_id=? AND occurred_at>=? GROUP BY event_name ORDER BY c DESC LIMIT 3`).bind(cust.Id, weekAgo).all();
+        if(!events?.length) continue; // no usage this week — nothing to recap, avoid an empty/noise message
+        const convId=await saasFindLeadConversationByPhone(env, cfg.client_id, custPhone);
+        const custName=saasGetCustomerField(cust, SAAS_CUSTOMER_FIELD_ALIASES.name)||'Customer';
+        const summary=events.map(e=>`${e.event_name} ×${e.c}`).join(', ');
+        await saasSendChatwootMessage(c, convId, `Hi ${custName}, here's what you were up to this week: ${summary}. Let us know if there's anything we can help with!`);
+        await new Promise(res=>setTimeout(res, 300));
+      }catch(e){}
+    }
   }
 }
 
@@ -9962,12 +10135,12 @@ async function handleSaasSurveyRespond(request, env){
 async function handleSaasConfigGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  await fpEnsureConfigRow(env, payload.cid);
-  let cfg=await env.DB.prepare(`SELECT * FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
+  await saasEnsureConfigRow(env, payload.cid);
+  let cfg=await env.DB.prepare(`SELECT * FROM saas_config WHERE client_id=?`).bind(Number(payload.cid)).first();
   if(!cfg.usage_ingest_token){
     const token=crypto.randomUUID().replace(/-/g,'');
-    await env.DB.prepare(`UPDATE fp_config SET usage_ingest_token=? WHERE client_id=?`).bind(token, Number(payload.cid)).run();
-    cfg=await env.DB.prepare(`SELECT * FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
+    await env.DB.prepare(`UPDATE saas_config SET usage_ingest_token=? WHERE client_id=?`).bind(token, Number(payload.cid)).run();
+    cfg=await env.DB.prepare(`SELECT * FROM saas_config WHERE client_id=?`).bind(Number(payload.cid)).first();
   }
   // Secrets are write-only from the browser's perspective past initial save — never echo a stored
   // secret back, same "never reaches the browser" convention as shopify_access_token/erpnext_api_secret.
@@ -9979,7 +10152,7 @@ async function handleSaasConfigGet(request, env){
 async function handleSaasConfigUpdate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  await fpEnsureConfigRow(env, payload.cid);
+  await saasEnsureConfigRow(env, payload.cid);
   const body=await request.json().catch(()=>({}));
   const sets=[], vals=[];
   for(const f of ['stripe_secret_key','stripe_webhook_secret','chargebee_site','chargebee_api_key','chargebee_webhook_secret','paddle_api_key','paddle_webhook_secret','support_provider','support_api_key','support_subdomain','nocodb_customers_table_id']){
@@ -9988,130 +10161,124 @@ async function handleSaasConfigUpdate(request, env){
   if(!sets.length) return json({ok:true});
   sets.push('updated_at=?'); vals.push(new Date().toISOString());
   vals.push(Number(payload.cid));
-  await env.DB.prepare(`UPDATE fp_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
+  await env.DB.prepare(`UPDATE saas_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
+  // A Table ID was just set for the first time — clear any cached column-name resolution from a
+  // stale/empty lookup so the next billing event re-resolves against the real table.
+  if(body.nocodb_customers_table_id) _saasColumnNameCache.delete(String(body.nocodb_customers_table_id).trim());
   return json({ok:true});
 }
 
-// ── Import Accounts from an existing NocoDB customers table (SETUP.md "SaaS Ops module —
-// importing from an existing NocoDB customers table") — for a client who already tracks their
-// customers in their own NocoDB table rather than starting fresh in Financial Planning.
-// Deliberately schema-agnostic: this app has no idea what columns that table has, so every row is
-// fetched in full (no `fields=` restriction) and recognizable field NAMES are best-effort matched
-// case-insensitively against a list of common aliases — anything that doesn't match a known
-// fp_customers column is kept verbatim in raw_nocodb_json rather than dropped. Manual-trigger only
-// (POST /saas/nocodb-import), no automatic re-sync — see the module's own comment for why:
-// re-syncing automatically risks silently overwriting an Account field a user has since hand-edited
-// in SaaS Ops with a possibly-stale value from the NocoDB table.
-const SAAS_NOCODB_IMPORT_FIELD_ALIASES={
-  name:['name','customer_name','full_name','client_name','contact_name'],
-  email:['email','email_id','customer_email','emailaddress'],
-  phone:['phone','mobile','mobile_no','phone_number','customer_phone','contact_number'],
-  company_name:['company','company_name','organization','org_name','business_name'],
-  plan_name:['plan','plan_name','subscription_plan','package','service'],
-  plan_tier:['plan_tier','tier','subscription_tier'],
-  monthly_value:['monthly_value','mrr','value','amount','price','subscription_value','monthly_amount'],
-  currency:['currency','curr'],
-  billing_cycle:['billing_cycle','cycle'],
-  start_date:['start_date','signup_date','joined_date','customer_since'],
-  status:['status','account_status'],
-  renewal_date:['renewal_date','renewal','next_renewal','next_billing_date'],
-  trial_end_date:['trial_end_date','trial_end','trial_ends'],
-  seat_count:['seat_count','seats','users','user_count','licenses'],
-  notes:['notes','remarks','comment','description'],
-};
-function saasFindFieldByAlias(row, aliases){
-  const keys=Object.keys(row);
-  for(const alias of aliases){
-    const hit=keys.find(k=>k.toLowerCase().replace(/[^a-z0-9]/g,'')===alias.replace(/[^a-z0-9]/g,''));
-    if(hit && row[hit]!==null && row[hit]!==undefined && row[hit]!=='') return row[hit];
-  }
-  return undefined;
-}
-async function handleSaasNocodbImport(request, env){
+// ── Accounts — the client's own NocoDB customers table, read/written directly (no D1 shadow copy).
+// GET returns every row's full original columns plus the saas_* computed fields, with name/email/
+// phone additionally surfaced under generic keys (alias-resolved) so the UI doesn't need to know
+// the client's actual column names to render a card. PATCH only ever writes saas_*-prefixed fields
+// — the column-ownership safety rule applies here exactly as it does to the billing webhook path.
+async function handleSaasCustomersList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const clientId=Number(payload.cid);
-  const cfg=await env.DB.prepare(`SELECT nocodb_customers_table_id FROM fp_config WHERE client_id=?`).bind(clientId).first();
-  const tableId=(cfg?.nocodb_customers_table_id||'').trim();
-  if(!tableId) return json({error:'Add a NocoDB Table ID in Integrations first.'}, 400);
-
-  let rows=[];
-  for(let page=1; page<=20; page++){
-    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?limit=200&offset=${(page-1)*200}`);
-    if(!r.ok){
-      const data=await r.json().catch(()=>({}));
-      return json({error:`Couldn't read that NocoDB table — ${data?.msg||data?.error||'HTTP '+r.status}. Double-check the Table ID.`}, 400);
-    }
-    const data=await r.json().catch(()=>({}));
-    const list=data?.list||[];
-    rows=rows.concat(list);
-    if(list.length<200) break;
+  const tableId=await saasResolveCustomersTable(env, clientId);
+  if(!tableId) return json({list:[], nocodb_not_configured:true});
+  await ensureSaasCustomerFields(env, tableId);
+  const rows=await saasFetchAllCustomers(env, tableId);
+  const list=rows.map(row=>({
+    ...row,
+    Id:row.Id,
+    _name:saasGetCustomerField(row, SAAS_CUSTOMER_FIELD_ALIASES.name)||`Customer #${row.Id}`,
+    _email:saasGetCustomerField(row, SAAS_CUSTOMER_FIELD_ALIASES.email)||'',
+    _phone:saasGetCustomerField(row, SAAS_CUSTOMER_FIELD_ALIASES.phone)||'',
+  }));
+  return json({list, table_id:tableId});
+}
+async function handleSaasCustomerUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const tableId=await saasResolveCustomersTable(env, clientId);
+  if(!tableId) return json({error:'No NocoDB customers table configured'}, 400);
+  await ensureSaasCustomerFields(env, tableId);
+  const fields={};
+  for(const f of SAAS_CUSTOMER_COMPUTED_FIELDS){
+    const key=f.replace(/^saas_/,'');
+    if(body[key]!==undefined) fields[f]=body[key]===null?'':String(body[key]).slice(0,500);
   }
-  if(!rows.length) return json({imported:0, updated:0, total_rows_seen:0});
-
-  const now=new Date().toISOString();
-  let imported=0, updated=0;
-  for(const row of rows){
-    const nocodbRowId=String(row.Id??row.id??'').trim();
-    if(!nocodbRowId) continue; // no stable id to key the upsert on — skip rather than risk duplicate-importing on every re-run
-    const mapped={
-      name:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.name)||`NocoDB Customer #${nocodbRowId}`,
-      email:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.email)||'',
-      phone:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.phone)||'',
-      company_name:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.company_name)||'',
-      plan_name:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.plan_name)||'',
-      plan_tier:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.plan_tier)||'',
-      monthly_value:Number(saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.monthly_value))||0,
-      currency:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.currency)||'USD',
-      billing_cycle:['monthly','quarterly','yearly'].includes(saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.billing_cycle))?saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.billing_cycle):'monthly',
-      start_date:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.start_date)||now.slice(0,10),
-      status:['active','paused','cancelled'].includes(saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.status))?saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.status):'active',
-      renewal_date:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.renewal_date)||null,
-      trial_end_date:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.trial_end_date)||null,
-      seat_count:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.seat_count),
-      notes:saasFindFieldByAlias(row, SAAS_NOCODB_IMPORT_FIELD_ALIASES.notes)||'',
-    };
-    const rawJson=JSON.stringify(row).slice(0,10000); // generous but bounded — a runaway wide table shouldn't blow out a D1 row
-    const existing=await env.DB.prepare(`SELECT id FROM fp_customers WHERE client_id=? AND nocodb_row_id=?`).bind(clientId, nocodbRowId).first();
-    if(existing){
-      await env.DB.prepare(`UPDATE fp_customers SET name=?, email=?, phone=?, company_name=?, plan_name=?, plan_tier=?, monthly_value=?, currency=?, billing_cycle=?, status=?, renewal_date=?, trial_end_date=?, seat_count=?, notes=?, raw_nocodb_json=? WHERE id=?`)
-        .bind(String(mapped.name).slice(0,140), String(mapped.email).slice(0,140), String(mapped.phone).slice(0,40), String(mapped.company_name).slice(0,200), String(mapped.plan_name).slice(0,140), String(mapped.plan_tier).slice(0,80), mapped.monthly_value, String(mapped.currency).slice(0,10).toUpperCase(), mapped.billing_cycle, mapped.status, mapped.renewal_date, mapped.trial_end_date, mapped.seat_count!=null?parseInt(mapped.seat_count,10)||0:null, String(mapped.notes).slice(0,1000), rawJson, existing.id).run();
-      updated++;
-    }else{
-      await env.DB.prepare(`INSERT INTO fp_customers (client_id, name, email, phone, company_name, plan_name, plan_tier, monthly_value, currency, billing_cycle, billing_day, start_date, status, renewal_date, trial_end_date, seat_count, notes, lifecycle_stage, nocodb_row_id, raw_nocodb_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .bind(clientId, String(mapped.name).slice(0,140), String(mapped.email).slice(0,140), String(mapped.phone).slice(0,40), String(mapped.company_name).slice(0,200), String(mapped.plan_name).slice(0,140), String(mapped.plan_tier).slice(0,80), mapped.monthly_value, String(mapped.currency).slice(0,10).toUpperCase(), mapped.billing_cycle, 1, String(mapped.start_date).slice(0,10), mapped.status, mapped.renewal_date, mapped.trial_end_date, mapped.seat_count!=null?parseInt(mapped.seat_count,10)||0:null, String(mapped.notes).slice(0,1000), 'active', nocodbRowId, rawJson, now).run();
-      imported++;
-    }
-  }
-  await fpEnsureConfigRow(env, clientId);
-  return json({imported, updated, total_rows_seen:rows.length});
+  if(!Object.keys(fields).length) return json({ok:true});
+  await saasWriteCustomerFields(env, tableId, body.id, fields);
+  return json({ok:true});
 }
 
-// ── Reports — GET /saas/reports, dashboard.html's new "📈 SaaS" Reports sub-tab.
+// ── Unmatched billing events — a webhook charge that couldn't be matched to a row in the client's
+// NocoDB customers table by email/phone. Never blind-written into that live table on a guess;
+// surfaced here so a human can link it to the right account by hand.
+async function handleSaasUnmatchedEventsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM saas_unmatched_billing_events WHERE client_id=? AND resolved_at IS NULL ORDER BY occurred_at DESC LIMIT 200`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleSaasUnmatchedEventResolve(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id || !body.nocodb_customer_id) return json({error:'id and nocodb_customer_id required'}, 400);
+  const evt=await env.DB.prepare(`SELECT * FROM saas_unmatched_billing_events WHERE id=? AND client_id=?`).bind(Number(body.id), clientId).first();
+  if(!evt) return json({error:'Not found'}, 404);
+  const tableId=await saasResolveCustomersTable(env, clientId);
+  if(!tableId) return json({error:'No NocoDB customers table configured'}, 400);
+  const custRow=await saasFetchCustomerById(env, tableId, body.nocodb_customer_id);
+  if(!custRow) return json({error:'That NocoDB customer id was not found in the configured table'}, 404);
+  const now=new Date().toISOString();
+  // Replay the same effect saasApplyBillingEvent would have had, now that we know the account.
+  if(evt.action==='payment_succeeded'){
+    await env.DB.prepare(`INSERT INTO saas_collections (client_id, nocodb_customer_id, amount, currency, source, occurred_at, created_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(clientId, String(body.nocodb_customer_id), evt.amount||0, evt.currency||'USD', 'webhook_reconciled', evt.occurred_at, now).run();
+  }
+  await ensureSaasCustomerFields(env, tableId);
+  if(evt.action==='subscription_cancelled'){
+    await saasWriteCustomerFields(env, tableId, body.nocodb_customer_id, {saas_lifecycle_stage:'churned'});
+  }else if(evt.action==='subscription_active' || evt.action==='payment_succeeded'){
+    await saasWriteCustomerFields(env, tableId, body.nocodb_customer_id, {
+      saas_lifecycle_stage: custRow.saas_lifecycle_stage==='churned'||!custRow.saas_lifecycle_stage?'active':custRow.saas_lifecycle_stage,
+      saas_plan_name: evt.plan_name||custRow.saas_plan_name||'',
+    });
+  }
+  await env.DB.prepare(`UPDATE saas_unmatched_billing_events SET resolved_at=?, resolved_nocodb_customer_id=? WHERE id=?`).bind(now, String(body.nocodb_customer_id), evt.id).run();
+  return json({ok:true});
+}
+
+// ── Reports — GET /saas/reports, dashboard.html's new "📈 SaaS" Reports sub-tab. Recomputed from
+// each client's NocoDB customer rows' saas_* fields + saas_collections, instead of fp_customers.
 async function handleSaasReports(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const clientId=Number(payload.cid);
+  const tableId=await saasResolveCustomersTable(env, clientId);
+  if(!tableId){
+    return json({months:[], mrr:0, active_accounts:0, logo_churn_rate:0, health_distribution:{healthy:0,neutral:0,at_risk:0}, at_risk_accounts:[], renewal_pipeline:[], activation_funnel:[], expansion_candidates:[], nocodb_not_configured:true});
+  }
   const months=6;
   const since=new Date(); since.setMonth(since.getMonth()-(months-1)); since.setDate(1);
-  const sinceStr=since.toISOString().slice(0,7);
 
-  const {results:collections}=await env.DB.prepare(`SELECT collected_at, amount, currency FROM fp_collections WHERE client_id=? AND collected_at>=?`).bind(clientId, since.toISOString()).all();
+  const {results:collections}=await env.DB.prepare(`SELECT occurred_at, amount, currency FROM saas_collections WHERE client_id=? AND occurred_at>=?`).bind(clientId, since.toISOString()).all();
   const byMonth={};
-  (collections||[]).forEach(c=>{ const m=c.collected_at.slice(0,7); if(!byMonth[m]) byMonth[m]={key:m, revenue:0}; byMonth[m].revenue+=Number(c.amount)||0; });
+  (collections||[]).forEach(c=>{ const m=c.occurred_at.slice(0,7); if(!byMonth[m]) byMonth[m]={key:m, revenue:0}; byMonth[m].revenue+=Number(c.amount)||0; });
 
-  const {results:allCust}=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=?`).bind(clientId).all();
-  const active=(allCust||[]).filter(c=>c.status!=='cancelled');
-  const churned=(allCust||[]).filter(c=>c.lifecycle_stage==='churned');
-  const mrr=active.reduce((s,c)=>s+(Number(c.monthly_value)||0),0);
-  const logoChurnRate=allCust?.length?Math.round((churned.length/allCust.length)*1000)/10:0;
+  const allCust=await saasFetchAllCustomers(env, tableId);
+  const active=allCust.filter(c=>c.saas_lifecycle_stage!=='churned');
+  const churned=allCust.filter(c=>c.saas_lifecycle_stage==='churned');
+  const mrr=active.reduce((s,c)=>s+(Number(c.saas_monthly_value)||0),0);
+  const logoChurnRate=allCust.length?Math.round((churned.length/allCust.length)*1000)/10:0;
 
+  const custName=c=>saasGetCustomerField(c, SAAS_CUSTOMER_FIELD_ALIASES.name)||`Customer #${c.Id}`;
   const healthDistribution={healthy:0, neutral:0, at_risk:0};
-  active.forEach(c=>{ const s=c.health_score; if(s==null) return; if(s>=70) healthDistribution.healthy++; else if(s>=40) healthDistribution.neutral++; else healthDistribution.at_risk++; });
-  const atRisk=active.filter(c=>c.health_score!=null && c.health_score<40).sort((a,b)=>a.health_score-b.health_score).slice(0,10).map(c=>({name:c.name, health_score:c.health_score, mrr:c.monthly_value}));
+  active.forEach(c=>{ const s=c.saas_health_score!=null?Number(c.saas_health_score):null; if(s==null||Number.isNaN(s)) return; if(s>=70) healthDistribution.healthy++; else if(s>=40) healthDistribution.neutral++; else healthDistribution.at_risk++; });
+  const atRisk=active.filter(c=>c.saas_health_score!=null && Number(c.saas_health_score)<40).sort((a,b)=>Number(a.saas_health_score)-Number(b.saas_health_score)).slice(0,10).map(c=>({name:custName(c), health_score:Number(c.saas_health_score), mrr:Number(c.saas_monthly_value)||0}));
 
   const todayStr=new Date().toISOString().slice(0,10);
-  const renewalPipeline=active.filter(c=>c.renewal_date).map(c=>({name:c.name, renewal_date:c.renewal_date, days_out:Math.round((new Date(c.renewal_date)-new Date(todayStr))/86400000)}))
+  const renewalPipeline=active.filter(c=>c.saas_renewal_date).map(c=>({name:custName(c), renewal_date:c.saas_renewal_date, days_out:Math.round((new Date(c.saas_renewal_date)-new Date(todayStr))/86400000)}))
     .filter(c=>c.days_out>=0 && c.days_out<=90).sort((a,b)=>a.days_out-b.days_out);
 
   const {results:milestoneDefs}=await env.DB.prepare(`SELECT milestone_key, label FROM saas_activation_milestones WHERE client_id=?`).bind(clientId).all();
@@ -10121,7 +10288,7 @@ async function handleSaasReports(request, env){
     activationFunnel.push({milestone:m.label, completed:results?.[0]?.n||0});
   }
 
-  const expansionCandidates=active.filter(c=>c.seat_count!=null && c.seat_count>0).map(c=>({name:c.name, seat_count:c.seat_count})).slice(0,10);
+  const expansionCandidates=active.filter(c=>c.saas_seat_count!=null && Number(c.saas_seat_count)>0).map(c=>({name:custName(c), seat_count:Number(c.saas_seat_count)})).slice(0,10);
 
   return json({
     months:Object.values(byMonth).sort((a,b)=>a.key.localeCompare(b.key)),
@@ -12469,7 +12636,10 @@ export default {
       else if(url.pathname==='/saas/surveys/respond' && request.method==='POST'){ res=await handleSaasSurveyRespond(request, env); }
       else if(url.pathname==='/saas/config' && request.method==='GET'){ res=await handleSaasConfigGet(request, env); }
       else if(url.pathname==='/saas/config' && request.method==='PATCH'){ res=await handleSaasConfigUpdate(request, env); }
-      else if(url.pathname==='/saas/nocodb-import' && request.method==='POST'){ res=await handleSaasNocodbImport(request, env); }
+      else if(url.pathname==='/saas/customers' && request.method==='GET'){ res=await handleSaasCustomersList(request, env); }
+      else if(url.pathname==='/saas/customers' && request.method==='PATCH'){ res=await handleSaasCustomerUpdate(request, env); }
+      else if(url.pathname==='/saas/unmatched-events' && request.method==='GET'){ res=await handleSaasUnmatchedEventsList(request, env); }
+      else if(url.pathname==='/saas/unmatched-events/resolve' && request.method==='POST'){ res=await handleSaasUnmatchedEventResolve(request, env); }
       else if(url.pathname==='/saas/reports' && request.method==='GET'){ res=await handleSaasReports(request, env); }
       else if(url.pathname==='/hospitality/units' && request.method==='GET'){ res=await handleHospitalityUnitsList(request, env); }
       else if(url.pathname==='/hospitality/units' && request.method==='POST'){ res=await handleHospitalityUnitCreate(request, env); }
