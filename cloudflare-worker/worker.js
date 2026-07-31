@@ -77,6 +77,8 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>p.startsWith('/b2b/doc/')&&p.endsWith('/accept')&&m==='POST', bucket:'b2b-doc-accept', limit:20, windowSec:600},
   {test:(p,m)=>m==='GET'&&(p==='/ecom/public/products'||p==='/ecom/public/client'||p==='/ecom/public/stores'), bucket:'ecom-public-read', limit:120, windowSec:60},
   {test:(p,m)=>m==='GET'&&(p==='/appt/public/client'||p==='/appt/public/services'), bucket:'appt-public-read', limit:120, windowSec:60},
+  {test:(p,m)=>p==='/re/webhook/lead'&&m==='POST', bucket:'re-lead-webhook', limit:60, windowSec:600},
+  {test:(p,m)=>p.startsWith('/re/cp-portal/')&&p.endsWith('/leads')&&m==='POST', bucket:'re-cp-portal-lead', limit:30, windowSec:600},
 ];
 function clientIp(request){
   return request.headers.get('CF-Connecting-IP')||request.headers.get('X-Forwarded-For')||'unknown';
@@ -13268,6 +13270,606 @@ async function handleMarketingTemplateGenerate(request, env){
   return json({ok:true, results});
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════════════════
+   REAL ESTATE MODULE (frontend/real-estate.html — "🏘️ Real Estate" dashboard nav tab, gated by
+   CLIENTS.real_estate_enabled same as b2b_enabled/hospitality_enabled). Same iframe-embed pattern
+   as B2B/Accounting — its own self-contained page, passed client id + session token.
+
+   Storage split: Leads (source portal, project interest, budget, urgency, zone, language, score,
+   investor flag, CP attribution) stay plain LEADS columns on the existing NocoDB table — every
+   existing lead view (kanban, lead list, Team Performance, exports) already reads leads out of
+   NocoDB and gains these fields for free, same reasoning as B2B's Brand/Country. Everything with a
+   genuinely new shape (tower/floor/unit inventory with hold-expiry states, payment-milestone
+   schedules, channel-partner commissions, RERA document repository, price-change audit trail) is
+   Cloudflare D1 (env.DB, migrations/0031_real_estate.sql) — same "sidecar data with no other
+   NocoDB reader" reasoning as the Hospitality module.
+
+   Lead Management & Scoring: reProcessNewLead() is the shared entry point for both the public
+   multi-source capture webhook (handleReLeadWebhook — portals/website forms/WhatsApp/referrals
+   post here) and the module's own "+ Add Lead" form (handleReLeadCreate, session-gated, covers
+   walk-ins). Both create-or-dedup by phone, auto-score, and auto-assign through the same code
+   path, so "duplicate detection" and "auto-scoring" can never drift between the two entry points.
+   ══════════════════════════════════════════════════════════════════════════════════════════ */
+
+// Auto-creates the Real Estate Leads columns the first time the module touches them — mirrors
+// ensureB2bLeadFields (memoized per Worker isolate, best-effort).
+let _reLeadFieldsEnsured=false;
+async function ensureRealEstateLeadFields(env){
+  if(_reLeadFieldsEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    const wanted=[
+      ['re_source','SingleLineText'], ['re_project','SingleLineText'], ['re_budget','Number'],
+      ['re_urgency','SingleLineText'], ['re_zone','SingleLineText'], ['re_language','SingleLineText'],
+      ['re_score','Number'], ['re_investor','SingleLineText'], ['re_cp_id','Number']
+    ];
+    for(const [title,uidt] of wanted){
+      if(!names.has(title)) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title, uidt}});
+    }
+    _reLeadFieldsEnsured=true;
+  }catch(e){ console.error('[realestate] ensureRealEstateLeadFields failed', e.message); }
+}
+
+// Mirrors ensureB2bClientFields — Smart Lists (re_segments_json) and the agent round-robin
+// routing config/pointer live as plain CLIENTS columns, same as b2b_segments_json.
+let _reClientFieldsEnsured=false;
+async function ensureRealEstateClientFields(env){
+  if(_reClientFieldsEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    const wanted=[
+      ['re_segments_json','LongText'], ['re_agent_routing_json','LongText'],
+      ['re_rr_state_json','LongText'], ['re_webhook_secret','SingleLineText']
+    ];
+    for(const [title,uidt] of wanted){
+      if(!names.has(title)) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title, uidt}});
+    }
+    _reClientFieldsEnsured=true;
+  }catch(e){ console.error('[realestate] ensureRealEstateClientFields failed', e.message); }
+}
+
+async function handleReInit(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await ensureRealEstateLeadFields(env);
+  await ensureRealEstateClientFields(env);
+  // Issue a webhook secret the first time the module is opened, so the "🔌 Lead Capture" tab has
+  // something to show immediately instead of a chicken-and-egg "generate a secret" extra step.
+  const client=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${payload.cid}`).then(r=>r.json()).catch(()=>null);
+  if(client && !client.re_webhook_secret){
+    const secret=crypto.randomUUID().replace(/-/g,'');
+    await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(payload.cid), re_webhook_secret:secret}});
+  }
+  return json({ok:true});
+}
+
+/* ── Lead scoring / dedup / round-robin assignment (shared by the public webhook and the
+   module's own manual "+ Add Lead") ── */
+function normalizePhone(phone){ return String(phone||'').replace(/\D/g,'').slice(-10); }
+
+// Budget/urgency-weighted heuristic, deliberately simple and explainable (a sales team needs to
+// trust *why* a lead scored 75, not just the number) — not a trained model. Engagement signal
+// (site visit booked) is folded in by the caller, which has already looked up re_site_visits.
+function computeLeadScore({budget, urgency, hasSiteVisit, hasProjectInterest}){
+  let score=0;
+  if(Number(budget)>0) score+=20;
+  const u=String(urgency||'').toLowerCase();
+  if(u==='high') score+=40; else if(u==='medium') score+=20; else if(u==='low') score+=5;
+  if(hasSiteVisit) score+=25;
+  if(hasProjectInterest) score+=15;
+  return Math.min(100, score);
+}
+
+// Round-robin by zone/project/language — re_agent_routing_json is a client-managed array of
+// {agent, zones:[], projects:[], languages:[]}; re_rr_state_json remembers the last-picked index
+// per matching rule set (keyed on the sorted list of eligible agent names) so repeat calls cycle
+// through the same pool evenly instead of always starting at index 0.
+function pickRoundRobinAgent(routingRules, rrState, {zone, project, language}){
+  const rules=Array.isArray(routingRules)?routingRules:[];
+  const eligible=rules.filter(r=>{
+    const zoneOk=!r.zones?.length || (zone && r.zones.some(z=>z.toLowerCase()===String(zone).toLowerCase()));
+    const projOk=!r.projects?.length || (project && r.projects.some(p=>p.toLowerCase()===String(project).toLowerCase()));
+    const langOk=!r.languages?.length || (language && r.languages.some(l=>l.toLowerCase()===String(language).toLowerCase()));
+    return zoneOk && projOk && langOk;
+  });
+  const pool=(eligible.length?eligible:rules).map(r=>r.agent).filter(Boolean);
+  if(!pool.length) return {agent:null, rrState};
+  const key=[...new Set(pool)].sort().join('|');
+  const next=((rrState[key]||0))%pool.length;
+  const agent=pool[next];
+  return {agent, rrState:{...rrState, [key]:next+1}};
+}
+
+// Shared create-or-dedup-and-process path. `fields` is the raw lead payload (Name, Phone,
+// re_source, re_project, re_budget, re_urgency, re_zone, re_language, re_investor). Returns
+// {lead, duplicate}. On a phone match against an existing lead, no new row is created — instead
+// the existing lead's re_source gets the new portal appended (comma-separated, deduped) so "same
+// lead from 3 portals" is visible on one record instead of three, and the lead is rescored.
+async function reProcessNewLead(env, clientId, fields){
+  await ensureRealEstateLeadFields(env);
+  // Ensures re_agent_routing_json/re_rr_state_json exist even if this is the very first write
+  // this client ever makes to the module (e.g. a portal webhook fires before anyone has opened
+  // real-estate.html, which is what normally triggers /re/init) — otherwise the round-robin
+  // pointer PATCH below silently no-ops against a column NocoDB doesn't have yet.
+  await ensureRealEstateClientFields(env);
+  const phone10=normalizePhone(fields.Phone);
+  let existing=null;
+  if(phone10){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=2000`);
+    const data=await r.json().catch(()=>({list:[]}));
+    existing=(data.list||[]).find(l=>normalizePhone(l.Phone)===phone10)||null;
+  }
+  const clientRes=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`).then(r=>r.json()).catch(()=>({}));
+  let routingRules=[]; try{ routingRules=JSON.parse(clientRes.re_agent_routing_json||'[]'); }catch(e){}
+  let rrState={}; try{ rrState=JSON.parse(clientRes.re_rr_state_json||'{}'); }catch(e){}
+
+  let leadId, duplicate=false, mergedSources=fields.re_source||'';
+  if(existing){
+    duplicate=true;
+    leadId=existing.Id;
+    const sources=new Set((existing.re_source||'').split(',').map(s=>s.trim()).filter(Boolean));
+    if(fields.re_source) sources.add(fields.re_source);
+    mergedSources=[...sources].join(', ');
+  }
+
+  const hasSiteVisit=false; // caller (webhook/manual add) has no visit yet at creation time — Site
+  // Visits' own scheduling flow rescoring happens client-side when a visit is booked, see
+  // real-estate.html's afterSiteVisitSave().
+  const score=computeLeadScore({budget:fields.re_budget, urgency:fields.re_urgency, hasSiteVisit, hasProjectInterest:!!fields.re_project});
+
+  const {agent, rrState:newRrState}=pickRoundRobinAgent(routingRules, rrState, {zone:fields.re_zone, project:fields.re_project, language:fields.re_language});
+
+  const leadPatch={
+    re_source:mergedSources, re_project:fields.re_project||existing?.re_project||'',
+    re_budget:Number(fields.re_budget)||Number(existing?.re_budget)||0,
+    re_urgency:fields.re_urgency||existing?.re_urgency||'', re_zone:fields.re_zone||existing?.re_zone||'',
+    re_language:fields.re_language||existing?.re_language||'', re_score:score,
+    re_investor:fields.re_investor||existing?.re_investor||'', re_cp_id:fields.re_cp_id||existing?.re_cp_id||null
+  };
+
+  if(existing){
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, ...leadPatch}});
+  }else{
+    const createBody={ClientId:String(clientId), Name:fields.Name||'Unknown', Phone:fields.Phone||'', Stage:'new', ...leadPatch};
+    if(agent && !fields.Owner) createBody.Owner=agent;
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:createBody});
+    const created=await r.json().catch(()=>({}));
+    leadId=created.Id;
+  }
+  if(agent){
+    await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), re_rr_state_json:JSON.stringify(newRrState)}});
+  }
+  return {leadId, duplicate, assignedAgent:agent||null, score};
+}
+
+// Public — no session, by design: hit by an external portal/Zapier/Make.com integration, a
+// website form, or a WhatsApp/referral capture tool. Gated by a per-client shared secret
+// (?secret=, generated in handleReInit and shown in the module's "🔌 Lead Capture" tab) rather
+// than a session token, since the caller is a third-party system with no login of its own — same
+// trust model as the Ecommerce/Appointments public routes (see RATE_LIMIT_RULES for this route).
+async function handleReLeadWebhook(request, env){
+  const url=new URL(request.url);
+  const clientId=url.searchParams.get('client_id');
+  const secret=url.searchParams.get('secret');
+  if(!clientId||!secret) return json({error:'client_id and secret are required'}, 400);
+  const client=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`).then(r=>r.json()).catch(()=>null);
+  if(!client||!client.re_webhook_secret||client.re_webhook_secret!==secret) return json({error:'Invalid client_id/secret'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.phone && !body.Phone) return json({error:'phone is required'}, 400);
+  const result=await reProcessNewLead(env, clientId, {
+    Name:body.name||body.Name||'', Phone:body.phone||body.Phone||'',
+    re_source:body.source||body.portal||'Website', re_project:body.project||'', re_budget:body.budget||0,
+    re_urgency:body.urgency||'', re_zone:body.zone||'', re_language:body.language||'', re_investor:body.investor?'Yes':''
+  });
+  return json({ok:true, lead_id:result.leadId, duplicate:result.duplicate, assigned_agent:result.assignedAgent, score:result.score});
+}
+
+// Session-gated equivalent of the webhook above, used by the module's own "+ Add Lead" (walk-ins/
+// referrals entered directly by a rep) — same dedup/score/assign path.
+async function handleReLeadCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.Phone) return json({error:'Phone is required'}, 400);
+  const result=await reProcessNewLead(env, payload.cid, {
+    Name:body.Name||'', Phone:body.Phone||'', re_source:body.re_source||'Walk-in', re_project:body.re_project||'',
+    re_budget:body.re_budget||0, re_urgency:body.re_urgency||'', re_zone:body.re_zone||'', re_language:body.re_language||'',
+    re_investor:body.re_investor?'Yes':'', Owner:body.Owner||''
+  });
+  return json({ok:true, lead_id:result.leadId, duplicate:result.duplicate, assigned_agent:result.assignedAgent, score:result.score});
+}
+
+// Duplicate detection across sources — groups every lead by normalized (last-10-digit) phone
+// number and returns only groups with more than one row, so the frontend can surface "these N
+// leads look like the same person" even for leads that predate reProcessNewLead's own live
+// dedup-on-capture (e.g. two reps manually added the same buyer before this module existed).
+async function handleReDuplicateLeads(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${payload.cid})`)}&limit=2000`);
+  const data=await r.json().catch(()=>({list:[]}));
+  const groups=new Map();
+  (data.list||[]).forEach(l=>{
+    const key=normalizePhone(l.Phone);
+    if(!key) return;
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({Id:l.Id, Name:l.Name, Phone:l.Phone, re_source:l.re_source||'', Stage:l.Stage||'', Owner:l.Owner||''});
+  });
+  const duplicates=[...groups.values()].filter(g=>g.length>1);
+  return json({groups:duplicates});
+}
+
+// Manual "🎯 Auto-Assign" — same round-robin pool as reProcessNewLead, exposed for leads that
+// already exist (imported, or created before routing rules were configured) rather than only new
+// captures.
+async function handleReAssignLead(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.lead_id) return json({error:'lead_id required'}, 400);
+  const client=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${payload.cid}`).then(r=>r.json()).catch(()=>({}));
+  let routingRules=[]; try{ routingRules=JSON.parse(client.re_agent_routing_json||'[]'); }catch(e){}
+  let rrState={}; try{ rrState=JSON.parse(client.re_rr_state_json||'{}'); }catch(e){}
+  const {agent, rrState:newRrState}=pickRoundRobinAgent(routingRules, rrState, {zone:body.zone, project:body.project, language:body.language});
+  if(!agent) return json({error:'No routing rule matches — configure Agent Routing first.'}, 400);
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(body.lead_id), Owner:agent}});
+  await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(payload.cid), re_rr_state_json:JSON.stringify(newRrState)}});
+  return json({ok:true, assigned_agent:agent});
+}
+
+/* ── Generic D1 CRUD for the module's flat-shaped resources (Projects, Site Visits, Payment
+   Milestones, Tickets, CP Commissions, Documents) — all session-gated, client_id-scoped, same
+   list/create/update/delete shape, so one factory replaces six nearly-identical handler sets.
+   Units, Bookings and Channel Partners get their own handlers below since they carry real side
+   effects (hold-expiry sweep, price audit, unit status flips, portal token issuance). ── */
+function reCrud(table, fields){
+  function coerce(f, v){
+    if(f.type==='number') return (v===undefined||v===null||v==='')?0:(Number(v)||0);
+    if(f.type==='bool') return v?1:0;
+    if(f.type==='nullable') return (v===undefined||v===null||v==='')?null:String(v).slice(f.maxLen||1000);
+    return (v===undefined||v===null)?'':String(v).slice(f.maxLen||1000);
+  }
+  async function list(request, env){
+    const payload=await requireSession(request, env);
+    if(!payload) return json({error:'Invalid or expired session'}, 401);
+    const url=new URL(request.url);
+    const binds=[Number(payload.cid)];
+    let where='client_id=?';
+    for(const f of fields){
+      if(url.searchParams.has(f.key)){ where+=` AND ${f.key}=?`; binds.push(f.type==='number'?Number(url.searchParams.get(f.key)):url.searchParams.get(f.key)); }
+    }
+    const {results}=await env.DB.prepare(`SELECT * FROM ${table} WHERE ${where} ORDER BY id DESC LIMIT 1000`).bind(...binds).all();
+    return json({list:results||[]});
+  }
+  async function create(request, env){
+    const payload=await requireSession(request, env);
+    if(!payload) return json({error:'Invalid or expired session'}, 401);
+    const body=await request.json().catch(()=>({}));
+    for(const f of fields){ if(f.required && !body[f.key]) return json({error:`${f.key} is required`}, 400); }
+    const cols=['client_id','created_at'], vals=[Number(payload.cid), new Date().toISOString()];
+    for(const f of fields){ cols.push(f.key); vals.push(coerce(f, body[f.key])); }
+    const r=await env.DB.prepare(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})`).bind(...vals).run();
+    const row=await env.DB.prepare(`SELECT * FROM ${table} WHERE id=?`).bind(r.meta.last_row_id).first();
+    return json(row);
+  }
+  async function update(request, env){
+    const payload=await requireSession(request, env);
+    if(!payload) return json({error:'Invalid or expired session'}, 401);
+    const body=await request.json().catch(()=>({}));
+    if(!body.id) return json({error:'id required'}, 400);
+    const existing=await env.DB.prepare(`SELECT * FROM ${table} WHERE id=?`).bind(Number(body.id)).first();
+    if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+    const sets=[], vals=[];
+    for(const f of fields){ if(body[f.key]===undefined) continue; sets.push(`${f.key}=?`); vals.push(coerce(f, body[f.key])); }
+    if(!sets.length) return json({ok:true});
+    vals.push(Number(body.id));
+    await env.DB.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+    return json({ok:true});
+  }
+  async function del(request, env){
+    const payload=await requireSession(request, env);
+    if(!payload) return json({error:'Invalid or expired session'}, 401);
+    const body=await request.json().catch(()=>({}));
+    if(!body.id) return json({error:'id required'}, 400);
+    const existing=await env.DB.prepare(`SELECT * FROM ${table} WHERE id=?`).bind(Number(body.id)).first();
+    if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+    await env.DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(Number(body.id)).run();
+    return json({ok:true});
+  }
+  return {list, create, update, del};
+}
+
+const reProjectsCrud=reCrud('re_projects', [
+  {key:'name', type:'text', required:true, maxLen:200}, {key:'location', type:'text', maxLen:200},
+  {key:'rera_number', type:'text', maxLen:100}, {key:'total_towers', type:'number'},
+  {key:'description', type:'text', maxLen:2000}, {key:'virtual_tour_url', type:'text', maxLen:500},
+  {key:'price_list_version', type:'text', maxLen:50}, {key:'base_price_per_sqft', type:'number'},
+  {key:'status', type:'text', maxLen:30}
+]);
+const reSiteVisitsCrud=reCrud('re_site_visits', [
+  {key:'lead_id', type:'number'}, {key:'unit_id', type:'number'}, {key:'project_id', type:'number'},
+  {key:'scheduled_at', type:'text', required:true, maxLen:40}, {key:'status', type:'text', maxLen:30},
+  {key:'transport_notes', type:'text', maxLen:500}, {key:'feedback', type:'text', maxLen:1000}
+]);
+const rePaymentMilestonesCrud=reCrud('re_payment_milestones', [
+  {key:'booking_id', type:'number', required:true}, {key:'name', type:'text', required:true, maxLen:120},
+  {key:'due_date', type:'nullable', maxLen:20}, {key:'amount', type:'number'}, {key:'status', type:'text', maxLen:30},
+  {key:'paid_date', type:'nullable', maxLen:20}, {key:'demand_note_sent_at', type:'nullable', maxLen:40}
+]);
+const reTicketsCrud=reCrud('re_tickets', [
+  {key:'booking_id', type:'number'}, {key:'subject', type:'text', required:true, maxLen:200},
+  {key:'description', type:'text', maxLen:2000}, {key:'priority', type:'text', maxLen:20},
+  {key:'status', type:'text', maxLen:30}, {key:'resolved_at', type:'nullable', maxLen:40}
+]);
+const reCpCommissionsCrud=reCrud('re_cp_commissions', [
+  {key:'cp_id', type:'number', required:true}, {key:'booking_id', type:'number', required:true},
+  {key:'milestone', type:'text', maxLen:60}, {key:'amount', type:'number'}, {key:'status', type:'text', maxLen:30},
+  {key:'payout_date', type:'nullable', maxLen:20}
+]);
+const reDocumentsCrud=reCrud('re_documents', [
+  {key:'project_id', type:'number'}, {key:'unit_id', type:'number'}, {key:'doc_type', type:'text', maxLen:40},
+  {key:'title', type:'text', required:true, maxLen:200}, {key:'url', type:'text', required:true, maxLen:1000},
+  {key:'is_rera', type:'bool'}
+]);
+
+/* ── Units — its own handlers (not the generic factory) for two side effects the generic CRUD
+   can't express: sweeping expired holds back to "available" on every list, and writing a
+   re_price_audit row whenever base_price/plc_charges/floor_rise_charges change (RERA compliance —
+   "audit trail for price changes and discount approvals"). ── */
+const RE_UNIT_PRICE_FIELDS=['base_price','plc_charges','floor_rise_charges'];
+async function handleReUnitsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await env.DB.prepare(`UPDATE re_units SET status='available', hold_expires_at=NULL WHERE client_id=? AND status='hold' AND hold_expires_at IS NOT NULL AND hold_expires_at < ?`)
+    .bind(Number(payload.cid), new Date().toISOString()).run();
+  const url=new URL(request.url);
+  const binds=[Number(payload.cid)]; let where='client_id=?';
+  if(url.searchParams.has('project_id')){ where+=' AND project_id=?'; binds.push(Number(url.searchParams.get('project_id'))); }
+  const {results}=await env.DB.prepare(`SELECT * FROM re_units WHERE ${where} ORDER BY tower, floor, unit_no LIMIT 2000`).bind(...binds).all();
+  return json({list:results||[]});
+}
+async function handleReUnitCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.project_id||!body.unit_no) return json({error:'project_id and unit_no are required'}, 400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO re_units (client_id,project_id,tower,floor,unit_no,unit_type,area_sqft,base_price,plc_charges,floor_rise_charges,status,virtual_tour_url,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+    Number(payload.cid), Number(body.project_id), String(body.tower||''), Number(body.floor)||0, String(body.unit_no).slice(0,40),
+    String(body.unit_type||'').slice(0,60), Number(body.area_sqft)||0, Number(body.base_price)||0, Number(body.plc_charges)||0,
+    Number(body.floor_rise_charges)||0, String(body.status||'available').slice(0,30), String(body.virtual_tour_url||'').slice(0,500), now
+  ).run();
+  const row=await env.DB.prepare(`SELECT * FROM re_units WHERE id=?`).bind(r.meta.last_row_id).first();
+  return json(row);
+}
+async function handleReUnitUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM re_units WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  const strFields={tower:40, unit_type:60, virtual_tour_url:500};
+  for(const [k,len] of Object.entries(strFields)){ if(body[k]!==undefined){ sets.push(`${k}=?`); vals.push(String(body[k]).slice(0,len)); } }
+  if(body.floor!==undefined){ sets.push('floor=?'); vals.push(Number(body.floor)||0); }
+  if(body.area_sqft!==undefined){ sets.push('area_sqft=?'); vals.push(Number(body.area_sqft)||0); }
+  for(const f of RE_UNIT_PRICE_FIELDS){
+    if(body[f]===undefined) continue;
+    const newVal=Number(body[f])||0;
+    if(newVal!==Number(existing[f])){
+      sets.push(`${f}=?`); vals.push(newVal);
+      await env.DB.prepare(`INSERT INTO re_price_audit (client_id,unit_id,field,old_value,new_value,changed_by,reason,created_at) VALUES (?,?,?,?,?,?,?,?)`)
+        .bind(Number(payload.cid), Number(body.id), f, String(existing[f]), String(newVal), String(body.changed_by||'').slice(0,80), String(body.reason||'').slice(0,300), new Date().toISOString()).run();
+    }
+  }
+  if(body.status!==undefined){
+    sets.push('status=?'); vals.push(String(body.status).slice(0,30));
+    if(body.status==='hold'){
+      const hours=Number(body.hold_hours)||24;
+      sets.push('hold_expires_at=?'); vals.push(new Date(Date.now()+hours*3600000).toISOString());
+    }else{
+      sets.push('hold_expires_at=?'); vals.push(null);
+    }
+  }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE re_units SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleReUnitDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM re_units WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM re_units WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+async function handleRePriceAudit(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const binds=[Number(payload.cid)]; let where='client_id=?';
+  if(url.searchParams.has('unit_id')){ where+=' AND unit_id=?'; binds.push(Number(url.searchParams.get('unit_id'))); }
+  const {results}=await env.DB.prepare(`SELECT * FROM re_price_audit WHERE ${where} ORDER BY id DESC LIMIT 500`).bind(...binds).all();
+  return json({list:results||[]});
+}
+
+/* ── Bookings — its own handlers for the unit-status side effects a plain CRUD can't express:
+   booking a unit flips it to "booked" and clears any hold; cancelling flips it back to
+   "available"; marking it resale-listed (investor/resale tracking) flips it to "resale_listed".
+   Booking with a channel partner attached also auto-creates the first commission row (tiered/
+   milestone payouts are just more rows added later against the same booking_id+cp_id via
+   re_cp_commissions above). ── */
+async function handleReBookingsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const binds=[Number(payload.cid)]; let where='client_id=?';
+  if(url.searchParams.has('unit_id')){ where+=' AND unit_id=?'; binds.push(Number(url.searchParams.get('unit_id'))); }
+  const {results}=await env.DB.prepare(`SELECT * FROM re_bookings WHERE ${where} ORDER BY id DESC LIMIT 2000`).bind(...binds).all();
+  return json({list:results||[]});
+}
+async function handleReBookingCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.unit_id) return json({error:'unit_id is required'}, 400);
+  const unit=await env.DB.prepare(`SELECT * FROM re_units WHERE id=?`).bind(Number(body.unit_id)).first();
+  if(!unit||String(unit.client_id)!==String(payload.cid)) return json({error:'Unit not found'}, 404);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO re_bookings
+    (client_id,unit_id,lead_id,cp_id,buyer_name,buyer_phone,is_investor,token_amount,total_price,payment_plan,status,agreement_url,loan_status,booking_date,possession_date,notes,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+    Number(payload.cid), Number(body.unit_id), body.lead_id?Number(body.lead_id):null, body.cp_id?Number(body.cp_id):null,
+    String(body.buyer_name||'').slice(0,120), String(body.buyer_phone||'').slice(0,30), body.is_investor?1:0,
+    Number(body.token_amount)||0, Number(body.total_price)||0, String(body.payment_plan||'construction_linked').slice(0,40),
+    'booked', String(body.agreement_url||'').slice(0,500), String(body.loan_status||'').slice(0,40),
+    body.booking_date||now.slice(0,10), body.possession_date||null, String(body.notes||'').slice(0,1000), now
+  ).run();
+  const bookingId=r.meta.last_row_id;
+  await env.DB.prepare(`UPDATE re_units SET status='booked', hold_expires_at=NULL WHERE id=?`).bind(Number(body.unit_id)).run();
+  if(body.cp_id){
+    const cp=await env.DB.prepare(`SELECT * FROM re_channel_partners WHERE id=?`).bind(Number(body.cp_id)).first();
+    if(cp && Number(cp.commission_slab_pct)>0){
+      const amount=(Number(body.total_price)||0) * Number(cp.commission_slab_pct)/100;
+      await env.DB.prepare(`INSERT INTO re_cp_commissions (client_id,cp_id,booking_id,milestone,amount,status,payout_date,created_at) VALUES (?,?,?,?,?,?,?,?)`)
+        .bind(Number(payload.cid), Number(body.cp_id), bookingId, 'booking', amount, 'pending', null, now).run();
+    }
+  }
+  const row=await env.DB.prepare(`SELECT * FROM re_bookings WHERE id=?`).bind(bookingId).first();
+  return json(row);
+}
+async function handleReBookingUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM re_bookings WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  const strFields={status:30, agreement_url:500, loan_status:40, notes:1000};
+  for(const [k,len] of Object.entries(strFields)){ if(body[k]!==undefined){ sets.push(`${k}=?`); vals.push(String(body[k]).slice(0,len)); } }
+  if(body.possession_date!==undefined){ sets.push('possession_date=?'); vals.push(body.possession_date||null); }
+  if(sets.length){ vals.push(Number(body.id)); await env.DB.prepare(`UPDATE re_bookings SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run(); }
+  if(body.status==='cancelled'){
+    await env.DB.prepare(`UPDATE re_units SET status='available', hold_expires_at=NULL WHERE id=?`).bind(existing.unit_id).run();
+  }
+  if(body.mark_resale){
+    await env.DB.prepare(`UPDATE re_units SET status='resale_listed' WHERE id=?`).bind(existing.unit_id).run();
+  }
+  return json({ok:true});
+}
+async function handleReBookingDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM re_bookings WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM re_bookings WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+
+/* ── Channel Partners — its own handlers only because create needs to mint a portal_token
+   (unique, used by the unauthenticated CP portal routes below); list/update/delete are otherwise
+   identical to the generic factory's shape. ── */
+async function handleReChannelPartnersList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM re_channel_partners WHERE client_id=? ORDER BY id DESC LIMIT 1000`).bind(Number(payload.cid)).all();
+  return json({list:results||[]});
+}
+async function handleReChannelPartnerCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name) return json({error:'name is required'}, 400);
+  const now=new Date().toISOString();
+  const token=crypto.randomUUID().replace(/-/g,'');
+  const r=await env.DB.prepare(`INSERT INTO re_channel_partners (client_id,name,phone,email,company,kyc_status,commission_slab_pct,portal_token,active,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), String(body.name).slice(0,150), String(body.phone||'').slice(0,30), String(body.email||'').slice(0,150),
+      String(body.company||'').slice(0,150), String(body.kyc_status||'pending').slice(0,20), Number(body.commission_slab_pct)||0, token, 1, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM re_channel_partners WHERE id=?`).bind(r.meta.last_row_id).first();
+  return json(row);
+}
+async function handleReChannelPartnerUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM re_channel_partners WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  const strFields={name:150, phone:30, email:150, company:150, kyc_status:20};
+  for(const [k,len] of Object.entries(strFields)){ if(body[k]!==undefined){ sets.push(`${k}=?`); vals.push(String(body[k]).slice(0,len)); } }
+  if(body.commission_slab_pct!==undefined){ sets.push('commission_slab_pct=?'); vals.push(Number(body.commission_slab_pct)||0); }
+  if(body.active!==undefined){ sets.push('active=?'); vals.push(body.active?1:0); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE re_channel_partners SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleReChannelPartnerDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM re_channel_partners WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM re_channel_partners WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+
+// Public — no session: the CP portal (real-estate.html?cp=<portal_token>) a broker opens to
+// submit leads and see their own status/commissions, without ever getting a full CRM login.
+async function handleReCpPortalGet(request, env, token){
+  const cp=await env.DB.prepare(`SELECT * FROM re_channel_partners WHERE portal_token=?`).bind(token).first();
+  if(!cp||!cp.active) return json({error:'Invalid or inactive partner link'}, 404);
+  const {results:commissions}=await env.DB.prepare(`SELECT * FROM re_cp_commissions WHERE cp_id=? ORDER BY id DESC LIMIT 200`).bind(cp.id).all();
+  const {results:bookings}=await env.DB.prepare(`SELECT id, buyer_name, status, total_price, booking_date FROM re_bookings WHERE cp_id=? ORDER BY id DESC LIMIT 200`).bind(cp.id).all();
+  return json({partner:{name:cp.name, company:cp.company, kyc_status:cp.kyc_status, commission_slab_pct:cp.commission_slab_pct}, commissions:commissions||[], bookings:bookings||[]});
+}
+async function handleReCpPortalLeadCreate(request, env, token){
+  const cp=await env.DB.prepare(`SELECT * FROM re_channel_partners WHERE portal_token=?`).bind(token).first();
+  if(!cp||!cp.active) return json({error:'Invalid or inactive partner link'}, 404);
+  const body=await request.json().catch(()=>({}));
+  if(!body.phone) return json({error:'phone is required'}, 400);
+  const result=await reProcessNewLead(env, cp.client_id, {
+    Name:body.name||'', Phone:body.phone||'', re_source:`CP: ${cp.name}`, re_project:body.project||'',
+    re_budget:body.budget||0, re_urgency:body.urgency||'', re_zone:body.zone||'', re_language:body.language||'', re_cp_id:cp.id
+  });
+  return json({ok:true, duplicate:result.duplicate});
+}
+
+/* ── Analytics — computed on demand from D1 (Units/Bookings/Site Visits/CP Commissions) rather
+   than cached, since a sales team's own inventory is small enough (hundreds to low thousands of
+   units/bookings per client) that a live COUNT/SUM is cheap and never goes stale. Lead-side
+   numbers (funnel by source, agent leaderboard) are computed client-side in real-estate.html from
+   the leads it already loads for the Leads tab, same reasoning B2B's Analytics tab uses. ── */
+async function handleReAnalytics(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cid=Number(payload.cid);
+  const [unitsAgg, bookingsAgg, visitsAgg, ticketsAgg]=await Promise.all([
+    env.DB.prepare(`SELECT status, COUNT(*) as n FROM re_units WHERE client_id=? GROUP BY status`).bind(cid).all(),
+    env.DB.prepare(`SELECT status, COUNT(*) as n, SUM(total_price) as total FROM re_bookings WHERE client_id=? GROUP BY status`).bind(cid).all(),
+    env.DB.prepare(`SELECT status, COUNT(*) as n FROM re_site_visits WHERE client_id=? GROUP BY status`).bind(cid).all(),
+    env.DB.prepare(`SELECT status, COUNT(*) as n FROM re_tickets WHERE client_id=? GROUP BY status`).bind(cid).all()
+  ]);
+  return json({
+    units_by_status:unitsAgg.results||[], bookings_by_status:bookingsAgg.results||[],
+    visits_by_status:visitsAgg.results||[], tickets_by_status:ticketsAgg.results||[]
+  });
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -13518,6 +14120,50 @@ export default {
       else if(url.pathname==='/hospitality/bookings' && request.method==='PATCH'){ res=await handleHospitalityBookingUpdate(request, env); }
       else if(url.pathname==='/hospitality/bookings' && request.method==='DELETE'){ res=await handleHospitalityBookingDelete(request, env); }
       else if(url.pathname==='/hospitality/stats' && request.method==='GET'){ res=await handleHospitalityStats(request, env); }
+      else if(url.pathname==='/re/init' && request.method==='GET'){ res=await handleReInit(request, env); }
+      else if(url.pathname==='/re/webhook/lead' && request.method==='POST'){ res=await handleReLeadWebhook(request, env); }
+      else if(url.pathname==='/re/leads' && request.method==='POST'){ res=await handleReLeadCreate(request, env); }
+      else if(url.pathname==='/re/leads/duplicates' && request.method==='GET'){ res=await handleReDuplicateLeads(request, env); }
+      else if(url.pathname==='/re/leads/assign' && request.method==='POST'){ res=await handleReAssignLead(request, env); }
+      else if(url.pathname==='/re/projects' && request.method==='GET'){ res=await reProjectsCrud.list(request, env); }
+      else if(url.pathname==='/re/projects' && request.method==='POST'){ res=await reProjectsCrud.create(request, env); }
+      else if(url.pathname==='/re/projects' && request.method==='PATCH'){ res=await reProjectsCrud.update(request, env); }
+      else if(url.pathname==='/re/projects' && request.method==='DELETE'){ res=await reProjectsCrud.del(request, env); }
+      else if(url.pathname==='/re/units' && request.method==='GET'){ res=await handleReUnitsList(request, env); }
+      else if(url.pathname==='/re/units' && request.method==='POST'){ res=await handleReUnitCreate(request, env); }
+      else if(url.pathname==='/re/units' && request.method==='PATCH'){ res=await handleReUnitUpdate(request, env); }
+      else if(url.pathname==='/re/units' && request.method==='DELETE'){ res=await handleReUnitDelete(request, env); }
+      else if(url.pathname==='/re/price-audit' && request.method==='GET'){ res=await handleRePriceAudit(request, env); }
+      else if(url.pathname==='/re/site-visits' && request.method==='GET'){ res=await reSiteVisitsCrud.list(request, env); }
+      else if(url.pathname==='/re/site-visits' && request.method==='POST'){ res=await reSiteVisitsCrud.create(request, env); }
+      else if(url.pathname==='/re/site-visits' && request.method==='PATCH'){ res=await reSiteVisitsCrud.update(request, env); }
+      else if(url.pathname==='/re/site-visits' && request.method==='DELETE'){ res=await reSiteVisitsCrud.del(request, env); }
+      else if(url.pathname==='/re/bookings' && request.method==='GET'){ res=await handleReBookingsList(request, env); }
+      else if(url.pathname==='/re/bookings' && request.method==='POST'){ res=await handleReBookingCreate(request, env); }
+      else if(url.pathname==='/re/bookings' && request.method==='PATCH'){ res=await handleReBookingUpdate(request, env); }
+      else if(url.pathname==='/re/bookings' && request.method==='DELETE'){ res=await handleReBookingDelete(request, env); }
+      else if(url.pathname==='/re/payment-milestones' && request.method==='GET'){ res=await rePaymentMilestonesCrud.list(request, env); }
+      else if(url.pathname==='/re/payment-milestones' && request.method==='POST'){ res=await rePaymentMilestonesCrud.create(request, env); }
+      else if(url.pathname==='/re/payment-milestones' && request.method==='PATCH'){ res=await rePaymentMilestonesCrud.update(request, env); }
+      else if(url.pathname==='/re/payment-milestones' && request.method==='DELETE'){ res=await rePaymentMilestonesCrud.del(request, env); }
+      else if(url.pathname==='/re/tickets' && request.method==='GET'){ res=await reTicketsCrud.list(request, env); }
+      else if(url.pathname==='/re/tickets' && request.method==='POST'){ res=await reTicketsCrud.create(request, env); }
+      else if(url.pathname==='/re/tickets' && request.method==='PATCH'){ res=await reTicketsCrud.update(request, env); }
+      else if(url.pathname==='/re/tickets' && request.method==='DELETE'){ res=await reTicketsCrud.del(request, env); }
+      else if(url.pathname==='/re/channel-partners' && request.method==='GET'){ res=await handleReChannelPartnersList(request, env); }
+      else if(url.pathname==='/re/channel-partners' && request.method==='POST'){ res=await handleReChannelPartnerCreate(request, env); }
+      else if(url.pathname==='/re/channel-partners' && request.method==='PATCH'){ res=await handleReChannelPartnerUpdate(request, env); }
+      else if(url.pathname==='/re/channel-partners' && request.method==='DELETE'){ res=await handleReChannelPartnerDelete(request, env); }
+      else if(url.pathname==='/re/cp-commissions' && request.method==='GET'){ res=await reCpCommissionsCrud.list(request, env); }
+      else if(url.pathname==='/re/cp-commissions' && request.method==='POST'){ res=await reCpCommissionsCrud.create(request, env); }
+      else if(url.pathname==='/re/cp-commissions' && request.method==='PATCH'){ res=await reCpCommissionsCrud.update(request, env); }
+      else if(url.pathname==='/re/cp-commissions' && request.method==='DELETE'){ res=await reCpCommissionsCrud.del(request, env); }
+      else if(url.pathname.startsWith('/re/cp-portal/') && url.pathname.endsWith('/leads') && request.method==='POST'){ res=await handleReCpPortalLeadCreate(request, env, url.pathname.slice('/re/cp-portal/'.length, -'/leads'.length)); }
+      else if(url.pathname.startsWith('/re/cp-portal/') && request.method==='GET'){ res=await handleReCpPortalGet(request, env, url.pathname.slice('/re/cp-portal/'.length)); }
+      else if(url.pathname==='/re/documents' && request.method==='GET'){ res=await reDocumentsCrud.list(request, env); }
+      else if(url.pathname==='/re/documents' && request.method==='POST'){ res=await reDocumentsCrud.create(request, env); }
+      else if(url.pathname==='/re/documents' && request.method==='DELETE'){ res=await reDocumentsCrud.del(request, env); }
+      else if(url.pathname==='/re/analytics' && request.method==='GET'){ res=await handleReAnalytics(request, env); }
       else if(url.pathname==='/erpnext/suppliers' && request.method==='GET'){ res=await handleErpnextSuppliersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }

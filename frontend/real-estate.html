@@ -1,0 +1,1557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Leadvyne · Real Estate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#FFFBEB;--card:#FFFFFF;--ink:#231A08;--muted:#7A6741;
+  --accent:#B45309;--accent-ink:#92400E;--accent-soft:#FEF3C7;
+  --line:#FDE9B8;--ls:#FCD34D;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --r:16px;--r-sm:10px;
+  --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column}
+
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:56px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 1px 0 var(--line)}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700;display:inline-flex;align-items:center;gap:6px}
+.brand span{color:var(--accent)}
+.chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
+.hback{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body)}
+.hback:hover{background:var(--bg)}
+
+#tabs{background:var(--card);border-bottom:1px solid var(--line);display:flex;padding:0 20px;flex-shrink:0;overflow-x:auto}
+.tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:11px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap}
+.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+
+main{flex:1;overflow-y:auto;overflow-x:hidden;padding:20px;min-height:0}
+.inner{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.page{display:none}
+.page.active{display:block}
+
+.card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:20px;box-shadow:var(--shadow)}
+.card-title{font-family:var(--disp);font-size:14px;font-weight:700;color:var(--muted);margin-bottom:14px;text-transform:uppercase;letter-spacing:.04em}
+.card-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.card-title-row .card-title{margin-bottom:0}
+.card-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.stat{background:var(--card);border-radius:var(--r-sm);border:1px solid var(--line);padding:16px 18px}
+.stat-val{font-family:var(--disp);font-size:26px;font-weight:700;color:var(--accent-ink)}
+.stat-lbl{font-size:12px;color:var(--muted);margin-top:2px}
+
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--bg)}
+.badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;background:var(--accent-soft);color:var(--accent-ink);white-space:nowrap}
+.badge.gray{background:#F1F5F9;color:#475569}
+.badge.blue{background:#DBEAFE;color:#1E3A8A}
+.badge.yellow{background:#FEF3C7;color:#92400E}
+.badge.green{background:#D1FAE5;color:#065F46}
+.badge.red{background:#FEE2E2;color:#991B1B}
+.badge.purple{background:#EDE9FE;color:#5B21B6}
+
+.search-input{border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:190px}
+.search-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.save-btn{background:linear-gradient(135deg,#B45309,#D97706);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
+.save-btn:hover{opacity:.9}
+.save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)}
+.save-btn.sm{padding:6px 11px;font-size:12px}
+.save-btn:disabled{opacity:.5;cursor:default}
+.save-msg{font-size:12px;color:var(--accent);align-self:center}
+.icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
+.icon-btn:hover{background:var(--bg)}
+.icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
+.row-actions{display:flex;gap:6px;flex-wrap:wrap}
+
+.s-lbl{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;display:block;text-transform:uppercase;letter-spacing:.04em}
+.s-input,select.s-input{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg)}
+.s-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.s-hint{font-size:12px;color:var(--muted);margin-top:5px}
+
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(35,26,8,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal-card{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:680px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal-title{font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:18px}
+.modal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-row td{text-align:center;padding:30px;color:var(--muted)}
+.empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty-icon{font-size:36px;margin-bottom:10px}
+
+.proj-card{border:1px solid var(--line);border-radius:var(--r-sm);padding:14px 16px;margin-bottom:10px;cursor:pointer;transition:border-color .15s}
+.proj-card:hover{border-color:var(--accent)}
+.proj-card.active{border-color:var(--accent);background:var(--accent-soft)}
+.proj-name{font-family:var(--disp);font-weight:700}
+.proj-meta{font-size:12px;color:var(--muted);margin-top:2px}
+
+.rr-row{display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.rr-row input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;background:var(--bg)}
+
+.score-pill{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-weight:600;font-size:12px}
+.dup-group{border:1px solid var(--line);border-radius:var(--r-sm);padding:12px 14px;margin-bottom:10px}
+.dup-group b{font-family:var(--disp)}
+
+/* ── PUBLIC CP PORTAL VIEW ── */
+#cpPortalView{display:none;height:100%;overflow-y:auto;background:var(--bg)}
+.cp-wrap{max-width:760px;margin:0 auto;padding:32px 20px}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════
+     PUBLIC CHANNEL-PARTNER PORTAL (?cp=<portal_token>) — no login. A broker submits a lead and
+     sees their own commission/booking status without a full CRM account.
+     ══════════════════════════════════════════════ -->
+<div id="cpPortalView">
+  <div class="cp-wrap">
+    <header style="position:static;margin-bottom:18px"><span class="brand">Leadvyne<span>.</span></span> <span class="chip">🤝 Partner Portal</span></header>
+    <div id="cpCard" class="card"><div class="loading-row"><span class="spinner"></span>Loading…</div></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     AUTHENTICATED REAL ESTATE MODULE (embedded in dashboard.html's Real Estate tab)
+     ══════════════════════════════════════════════ -->
+<div id="app" style="display:none;height:100%;display:flex;flex-direction:column">
+  <header>
+    <span class="brand">Leadvyne<span>.</span></span>
+    <span class="chip">🏘️ Real Estate</span>
+    <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
+  </header>
+
+  <div id="tabs">
+    <button class="tab active" data-tab="overview" onclick="showTab('overview')">🏠 Overview</button>
+    <button class="tab" data-tab="leads" onclick="showTab('leads')">👥 Leads</button>
+    <button class="tab" data-tab="inventory" onclick="showTab('inventory')">🏢 Inventory</button>
+    <button class="tab" data-tab="visits" onclick="showTab('visits')">📅 Site Visits</button>
+    <button class="tab" data-tab="bookings" onclick="showTab('bookings')">🧾 Bookings</button>
+    <button class="tab" data-tab="postsales" onclick="showTab('postsales')">🛠️ Post-Sales</button>
+    <button class="tab" data-tab="partners" onclick="showTab('partners')">🤝 Channel Partners</button>
+    <button class="tab" data-tab="marketing" onclick="showTab('marketing')">📢 Marketing</button>
+    <button class="tab" data-tab="analytics" onclick="showTab('analytics')">📊 Analytics</button>
+    <button class="tab" data-tab="compliance" onclick="showTab('compliance')">📁 Documents</button>
+  </div>
+
+  <main>
+  <div class="inner">
+
+    <!-- OVERVIEW -->
+    <div id="tabOverview" class="page active">
+      <div class="stats" id="ovStats">
+        <div class="stat"><div class="stat-val" id="ovLeads">—</div><div class="stat-lbl">Active Buyers</div></div>
+        <div class="stat"><div class="stat-val" id="ovUnitsAvailable">—</div><div class="stat-lbl">Units Available</div></div>
+        <div class="stat"><div class="stat-val" id="ovUnitsHold">—</div><div class="stat-lbl">On Hold</div></div>
+        <div class="stat"><div class="stat-val" id="ovUnitsBooked">—</div><div class="stat-lbl">Booked/Sold</div></div>
+        <div class="stat"><div class="stat-val" id="ovVisitsUpcoming">—</div><div class="stat-lbl">Upcoming Site Visits</div></div>
+        <div class="stat"><div class="stat-val" id="ovOpenTickets">—</div><div class="stat-lbl">Open Tickets</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Getting started</div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.7">
+          <b>👥 Leads</b> — capture from portals/website/WhatsApp/walk-ins, auto-scored and duplicate-checked. Set up Agent Routing to auto-assign by zone/project/language.<br>
+          <b>🏢 Inventory</b> — tower → floor → unit availability, price lists (base + PLC + floor rise), and holds with an expiry timer.<br>
+          <b>📅 Site Visits</b> — schedule viewings and log feedback for the conversion funnel.<br>
+          <b>🧾 Bookings</b> — token amount → payment schedule → possession, with channel-partner commission auto-calculated.<br>
+          <b>🛠️ Post-Sales</b> — complaint tickets and resale/renewal tracking for investor clients.<br>
+          <b>🤝 Channel Partners</b> — broker KYC, commission slabs, and a self-serve partner portal link.<br>
+          <b>📁 Documents</b> — RERA disclosures/brochures/floor plans, and the price-change audit trail.
+        </div>
+      </div>
+    </div>
+
+    <!-- LEADS -->
+    <div id="tabLeads" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Leads</div>
+          <div class="card-actions">
+            <input class="search-input" id="leadSearch" type="text" placeholder="🔍 Search leads…" oninput="renderLeadsTable()">
+            <button class="save-btn sec" onclick="openDuplicatesModal()">🧬 Find Duplicates</button>
+            <button class="save-btn sec" onclick="openRoutingModal()">🎯 Agent Routing</button>
+            <button class="save-btn sec" onclick="openLeadCaptureModal()">🔌 Lead Capture</button>
+            <button class="save-btn" onclick="openAddLeadModal()">+ Add Lead</button>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Phone</th><th>Source</th><th>Project</th><th>Budget</th><th>Urgency</th><th>Score</th><th>Zone</th><th>Language</th><th>Investor</th><th>Owner</th><th>Stage</th><th>Actions</th></tr></thead>
+            <tbody id="leadsTbody"><tr class="loading-row"><td colspan="13"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- INVENTORY -->
+    <div id="tabInventory" class="page">
+      <div style="display:grid;grid-template-columns:280px 1fr;gap:18px;align-items:flex-start">
+        <div class="card">
+          <div class="card-title-row"><div class="card-title">Projects</div></div>
+          <div id="projectsList"><div class="empty-state"><div class="empty-icon">🏢</div>No projects yet.</div></div>
+          <button class="save-btn" style="width:100%;margin-top:8px" onclick="openProjectModal()">+ New Project</button>
+        </div>
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title" id="unitsCardTitle">Units</div>
+            <div class="card-actions">
+              <input class="search-input" id="unitSearch" type="text" placeholder="🔍 Search units…" oninput="renderUnitsTable()">
+              <button class="save-btn sec" onclick="openPriceAuditModal()">📜 Price Audit</button>
+              <button class="save-btn" onclick="openUnitModal()" id="addUnitBtn" disabled>+ Add Unit</button>
+            </div>
+          </div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Tower</th><th>Floor</th><th>Unit</th><th>Type</th><th>Area (sqft)</th><th>Price</th><th>Status</th><th>Hold Expires</th><th>Actions</th></tr></thead>
+              <tbody id="unitsTbody"><tr><td colspan="9" class="empty-state">Select a project to see its units.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SITE VISITS -->
+    <div id="tabVisits" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Site Visits</div>
+          <div class="card-actions"><button class="save-btn" onclick="openVisitModal()">+ Schedule Visit</button></div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Lead</th><th>Project / Unit</th><th>Scheduled</th><th>Status</th><th>Transport Notes</th><th>Feedback</th><th>Actions</th></tr></thead>
+            <tbody id="visitsTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- BOOKINGS -->
+    <div id="tabBookings" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Bookings &amp; Payments</div>
+          <div class="card-actions"><button class="save-btn" onclick="openBookingModal()">+ New Booking</button></div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Unit</th><th>Buyer</th><th>CP</th><th>Token</th><th>Total</th><th>Plan</th><th>Status</th><th>Loan</th><th>Possession</th><th>Actions</th></tr></thead>
+            <tbody id="bookingsTbody"><tr class="loading-row"><td colspan="10"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- POST-SALES -->
+    <div id="tabPostsales" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Post-Sales Tickets</div>
+          <div class="card-actions"><button class="save-btn" onclick="openTicketModal()">+ New Ticket</button></div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Booking</th><th>Subject</th><th>Priority</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+            <tbody id="ticketsTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">🔁 Resale / Renewal — Investor Units</div>
+        <div class="s-hint" style="margin-bottom:10px">Units an investor has marked for resale (Bookings tab → "List for Resale").</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Unit</th><th>Project</th><th>Investor</th><th>Original Price</th></tr></thead><tbody id="resaleTbody"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- CHANNEL PARTNERS -->
+    <div id="tabPartners" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Channel Partners</div>
+          <div class="card-actions"><button class="save-btn" onclick="openCpModal()">+ New Partner</button></div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Company</th><th>Phone</th><th>KYC</th><th>Commission %</th><th>Portal Link</th><th>Actions</th></tr></thead>
+            <tbody id="cpTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Commission Payouts</div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Partner</th><th>Booking</th><th>Milestone</th><th>Amount</th><th>Status</th><th>Payout Date</th><th>Actions</th></tr></thead>
+            <tbody id="commTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- MARKETING -->
+    <div id="tabMarketing" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Smart Lists</div>
+          <div class="card-actions"><button class="save-btn" onclick="openSegmentModal()">+ New Smart List</button></div>
+        </div>
+        <div class="s-hint" style="margin-bottom:10px">Build a segment from Project/Zone/Urgency/Investor, then send it a WhatsApp/SMS/Email broadcast from Campaigns — template approval and sending both stay in Campaigns, this just targets the list.</div>
+        <div id="segmentsList"><div class="empty-state"><div class="empty-icon">🎯</div>No Smart Lists yet.</div></div>
+      </div>
+    </div>
+
+    <!-- ANALYTICS -->
+    <div id="tabAnalytics" class="page">
+      <div class="card">
+        <div class="card-title">🏗️ Inventory Velocity</div>
+        <div class="stats" id="anInventoryStats"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🎯 Funnel by Source</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>Site Visits</th><th>Booked</th><th>Conversion</th></tr></thead><tbody id="anSourceTbody"></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🏙️ Funnel by Project</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Project</th><th>Leads</th><th>Site Visits</th><th>Booked</th></tr></thead><tbody id="anProjectTbody"></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🏆 Agent Leaderboard</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Agent</th><th>Leads</th><th>Booked</th><th>Avg. Score</th></tr></thead><tbody id="anAgentTbody"></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-title">💰 ROI by Channel <span style="font-weight:400;text-transform:none;font-size:11px">(enter monthly spend per source)</span></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>Booked Value</th><th>Spend</th><th>ROI</th></tr></thead><tbody id="anRoiTbody"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- DOCUMENTS & COMPLIANCE -->
+    <div id="tabCompliance" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">Document Repository</div>
+          <div class="card-actions"><button class="save-btn" onclick="openDocModal()">+ Add Document</button></div>
+        </div>
+        <div class="s-hint" style="margin-bottom:10px">RERA disclosures, brochures, floor plans — link to a file already hosted on Drive/S3/your DMS.</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Title</th><th>Type</th><th>Project</th><th>RERA</th><th>Link</th><th>Actions</th></tr></thead><tbody id="docsTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-title">💎 Investor Dashboard <span style="font-weight:400;text-transform:none;font-size:11px">(NRI / multi-unit buyers)</span></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Investor</th><th>Units Held</th><th>Total Value</th><th>Loan Status</th></tr></thead><tbody id="investorTbody"></tbody></table></div>
+      </div>
+    </div>
+
+  </div>
+  </main>
+</div>
+
+<!-- ── ADD LEAD MODAL ── -->
+<div class="modal-overlay" id="leadModal">
+  <div class="modal-card">
+    <div class="modal-title">+ Add Lead</div>
+    <div class="modal-grid">
+      <div><label class="s-lbl">Name</label><input class="s-input" id="lName"></div>
+      <div><label class="s-lbl">Phone</label><input class="s-input" id="lPhone" placeholder="+971…"></div>
+      <div><label class="s-lbl">Source</label>
+        <select class="s-input" id="lSource"><option>Walk-in</option><option>Referral</option><option>Website</option><option>WhatsApp</option><option>99acres</option><option>MagicBricks</option><option>Bayut</option><option>Property Finder</option></select>
+      </div>
+      <div><label class="s-lbl">Project Interest</label><input class="s-input" id="lProject" placeholder="e.g. Marina Heights"></div>
+      <div><label class="s-lbl">Budget</label><input class="s-input" id="lBudget" type="number"></div>
+      <div><label class="s-lbl">Urgency</label><select class="s-input" id="lUrgency"><option value="">—</option><option value="High">High</option><option value="Medium">Medium</option><option value="Low">Low</option></select></div>
+      <div><label class="s-lbl">Zone</label><input class="s-input" id="lZone"></div>
+      <div><label class="s-lbl">Language</label><input class="s-input" id="lLanguage"></div>
+      <div><label class="s-lbl">Investor?</label><select class="s-input" id="lInvestor"><option value="">No</option><option value="Yes">Yes</option></select></div>
+    </div>
+    <div class="s-hint" id="leadModalMsg"></div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('leadModal')">Cancel</button>
+      <button class="save-btn" onclick="saveLead()">Save Lead</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── DUPLICATES MODAL ── -->
+<div class="modal-overlay" id="duplicatesModal">
+  <div class="modal-card" style="max-width:760px">
+    <div class="modal-title">🧬 Duplicate Leads</div>
+    <div id="dupList"><div class="empty-state">Checking…</div></div>
+    <div class="modal-actions"><button class="save-btn sec" onclick="closeModal('duplicatesModal')">Close</button></div>
+  </div>
+</div>
+
+<!-- ── AGENT ROUTING MODAL ── -->
+<div class="modal-overlay" id="routingModal">
+  <div class="modal-card" style="max-width:760px">
+    <div class="modal-title">🎯 Agent Routing (Round-Robin)</div>
+    <div class="s-hint" style="margin-bottom:10px">Leave zones/projects/languages blank to match anything. New leads (and the "Auto-Assign" button) cycle evenly through the agents whose rule matches.</div>
+    <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr auto;gap:8px;margin-bottom:6px"><b class="s-lbl">Agent</b><b class="s-lbl">Zones</b><b class="s-lbl">Projects</b><b class="s-lbl">Languages</b><span></span></div>
+    <div id="routingRows"></div>
+    <button class="save-btn sec" type="button" onclick="addRoutingRow()" style="margin-top:6px">+ Add Rule</button>
+    <div class="s-hint" id="routingModalMsg"></div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('routingModal')">Cancel</button>
+      <button class="save-btn" onclick="saveRouting()">Save Routing</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── LEAD CAPTURE (WEBHOOK) MODAL ── -->
+<div class="modal-overlay" id="captureModal">
+  <div class="modal-card">
+    <div class="modal-title">🔌 Multi-Source Lead Capture</div>
+    <div class="s-hint" style="margin-bottom:10px">Point a portal integration (99acres/MagicBricks/Bayut/Property Finder via Zapier/Make.com), your website form, or a WhatsApp capture tool at this URL. Duplicate phone numbers auto-merge; every capture is auto-scored and auto-assigned.</div>
+    <label class="s-lbl">Webhook URL</label>
+    <input class="s-input" id="captureUrl" readonly style="font-family:var(--mono);font-size:12px">
+    <button class="save-btn sec sm" style="margin-top:8px" onclick="navigator.clipboard&&navigator.clipboard.writeText($id('captureUrl').value);showMsg('captureModalMsg','Copied!')">📋 Copy URL</button>
+    <div class="s-hint" style="margin-top:14px">POST JSON body: <code>{"phone":"+971...","name":"...","source":"99acres","project":"...","budget":1200000,"urgency":"High","zone":"...","language":"Arabic"}</code></div>
+    <div class="s-hint" id="captureModalMsg" style="margin-top:8px"></div>
+    <div class="modal-actions"><button class="save-btn" onclick="closeModal('captureModal')">Done</button></div>
+  </div>
+</div>
+
+<!-- ── PROJECT MODAL ── -->
+<div class="modal-overlay" id="projectModal">
+  <div class="modal-card">
+    <div class="modal-title">+ New Project</div>
+    <div class="modal-grid">
+      <div><label class="s-lbl">Name</label><input class="s-input" id="pName"></div>
+      <div><label class="s-lbl">Location</label><input class="s-input" id="pLocation"></div>
+      <div><label class="s-lbl">RERA Number</label><input class="s-input" id="pRera"></div>
+      <div><label class="s-lbl">Total Towers</label><input class="s-input" id="pTowers" type="number" value="1"></div>
+      <div><label class="s-lbl">Base Price / sqft</label><input class="s-input" id="pBasePrice" type="number"></div>
+      <div><label class="s-lbl">Price List Version</label><input class="s-input" id="pPriceVersion" value="v1"></div>
+      <div><label class="s-lbl">Virtual Tour URL</label><input class="s-input" id="pTourUrl" placeholder="https://…"></div>
+    </div>
+    <label class="s-lbl">Description</label>
+    <textarea class="s-input" id="pDescription" rows="2"></textarea>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('projectModal')">Cancel</button>
+      <button class="save-btn" onclick="saveProject()">Save Project</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── UNIT MODAL ── -->
+<div class="modal-overlay" id="unitModal">
+  <div class="modal-card">
+    <div class="modal-title" id="unitModalTitle">+ Add Unit</div>
+    <input type="hidden" id="uId">
+    <div class="modal-grid">
+      <div><label class="s-lbl">Tower</label><input class="s-input" id="uTower"></div>
+      <div><label class="s-lbl">Floor</label><input class="s-input" id="uFloor" type="number"></div>
+      <div><label class="s-lbl">Unit No.</label><input class="s-input" id="uUnitNo"></div>
+      <div><label class="s-lbl">Type</label><input class="s-input" id="uType" placeholder="e.g. 2BHK"></div>
+      <div><label class="s-lbl">Area (sqft)</label><input class="s-input" id="uArea" type="number"></div>
+      <div><label class="s-lbl">Base Price</label><input class="s-input" id="uBasePrice" type="number"></div>
+      <div><label class="s-lbl">PLC Charges</label><input class="s-input" id="uPlc" type="number"></div>
+      <div><label class="s-lbl">Floor Rise Charges</label><input class="s-input" id="uFloorRise" type="number"></div>
+      <div><label class="s-lbl">Virtual Tour URL</label><input class="s-input" id="uTourUrl"></div>
+    </div>
+    <div id="uPriceReasonWrap" style="display:none;margin-bottom:12px">
+      <label class="s-lbl">Reason for price change (audit trail)</label>
+      <input class="s-input" id="uPriceReason" placeholder="e.g. Festive discount approved by sales head">
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('unitModal')">Cancel</button>
+      <button class="save-btn" onclick="saveUnit()">Save Unit</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── PRICE AUDIT MODAL ── -->
+<div class="modal-overlay" id="priceAuditModal">
+  <div class="modal-card" style="max-width:760px">
+    <div class="modal-title">📜 Price Change Audit Trail</div>
+    <div class="tbl-wrap"><table><thead><tr><th>Unit</th><th>Field</th><th>Old</th><th>New</th><th>By</th><th>Reason</th><th>When</th></tr></thead><tbody id="auditTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody></table></div>
+    <div class="modal-actions"><button class="save-btn sec" onclick="closeModal('priceAuditModal')">Close</button></div>
+  </div>
+</div>
+
+<!-- ── SITE VISIT MODAL ── -->
+<div class="modal-overlay" id="visitModal">
+  <div class="modal-card">
+    <div class="modal-title">+ Schedule Site Visit</div>
+    <div class="modal-grid">
+      <div>
+        <label class="s-lbl">Lead</label>
+        <input class="s-input" id="vLeadSearch" placeholder="🔍 Search leads…" oninput="renderVisitLeadPicker()">
+        <select class="s-input" id="vLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+      </div>
+      <div><label class="s-lbl">Project</label><select class="s-input" id="vProjectId" onchange="renderVisitUnitOptions()"><option value="">— None —</option></select></div>
+      <div><label class="s-lbl">Unit</label><select class="s-input" id="vUnitId"><option value="">— Any —</option></select></div>
+      <div><label class="s-lbl">Scheduled At</label><input class="s-input" id="vScheduledAt" type="datetime-local"></div>
+    </div>
+    <label class="s-lbl">Transport / Driver Notes</label>
+    <textarea class="s-input" id="vTransport" rows="2" placeholder="Pickup point, driver name, car number…"></textarea>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('visitModal')">Cancel</button>
+      <button class="save-btn" onclick="saveVisit()">Schedule</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── BOOKING MODAL ── -->
+<div class="modal-overlay" id="bookingModal">
+  <div class="modal-card">
+    <div class="modal-title">+ New Booking</div>
+    <div class="modal-grid">
+      <div><label class="s-lbl">Available Unit</label><select class="s-input" id="bUnitId"></select></div>
+      <div>
+        <label class="s-lbl">Lead</label>
+        <input class="s-input" id="bLeadSearch" placeholder="🔍 Search leads…" oninput="renderBookingLeadPicker()">
+        <select class="s-input" id="bLeadId" style="margin-top:6px" onchange="prefillBuyerFromLead()"><option value="">— None —</option></select>
+      </div>
+      <div><label class="s-lbl">Buyer Name</label><input class="s-input" id="bBuyerName"></div>
+      <div><label class="s-lbl">Buyer Phone</label><input class="s-input" id="bBuyerPhone"></div>
+      <div><label class="s-lbl">Channel Partner</label><select class="s-input" id="bCpId"><option value="">— None —</option></select></div>
+      <div><label class="s-lbl">Token Amount</label><input class="s-input" id="bToken" type="number"></div>
+      <div><label class="s-lbl">Total Price</label><input class="s-input" id="bTotal" type="number"></div>
+      <div><label class="s-lbl">Payment Plan</label>
+        <select class="s-input" id="bPlan"><option value="construction_linked">Construction-linked</option><option value="down_payment">Down payment</option><option value="flexi">Flexi</option><option value="possession_linked">Possession-linked</option></select>
+      </div>
+      <div><label class="s-lbl">Investor Purchase?</label><select class="s-input" id="bIsInvestor"><option value="">No</option><option value="1">Yes</option></select></div>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('bookingModal')">Cancel</button>
+      <button class="save-btn" onclick="saveBooking()">Book Unit</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── BOOKING DETAIL / MILESTONES MODAL ── -->
+<div class="modal-overlay" id="bookingDetailModal">
+  <div class="modal-card" style="max-width:760px">
+    <div class="modal-title">Booking Detail</div>
+    <input type="hidden" id="bdBookingId">
+    <div class="modal-grid">
+      <div><label class="s-lbl">Status</label>
+        <select class="s-input" id="bdStatus"><option value="booked">Booked</option><option value="agreement_sent">Agreement Sent</option><option value="agreement_signed">Agreement Signed</option><option value="possession">Possession Handed Over</option><option value="cancelled">Cancelled</option></select>
+      </div>
+      <div><label class="s-lbl">Loan / Mortgage Status</label>
+        <select class="s-input" id="bdLoanStatus"><option value="">— Not applicable —</option><option value="not_applied">Not Applied</option><option value="applied">Applied</option><option value="pre_approved">Pre-Approved</option><option value="sanctioned">Sanctioned</option><option value="disbursed">Disbursed</option><option value="rejected">Rejected</option></select>
+        <div class="s-hint">Manual entry — no live bank/lender integration; update it as your loan partner reports status.</div>
+      </div>
+      <div><label class="s-lbl">Agreement Link (e-sign / doc URL)</label><input class="s-input" id="bdAgreementUrl"></div>
+      <div><label class="s-lbl">Possession Date</label><input class="s-input" id="bdPossessionDate" type="date"></div>
+    </div>
+    <label class="s-lbl">Notes</label>
+    <textarea class="s-input" id="bdNotes" rows="2"></textarea>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="save-btn sec sm" onclick="markResale()">🔁 List Unit for Resale</button>
+      <button class="save-btn sec sm" onclick="generateInvoice()">🧾 Generate Invoice in Accounting</button>
+    </div>
+    <div class="s-hint" id="bdInvoiceMsg"></div>
+    <div class="modal-actions" style="justify-content:space-between">
+      <button class="save-btn sec" onclick="closeModal('bookingDetailModal');openMilestonesModal(document.getElementById('bdBookingId').value)">💵 Payment Schedule</button>
+      <div style="display:flex;gap:10px">
+        <button class="save-btn sec" onclick="closeModal('bookingDetailModal')">Close</button>
+        <button class="save-btn" onclick="saveBookingDetail()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── PAYMENT MILESTONES MODAL ── -->
+<div class="modal-overlay" id="milestonesModal">
+  <div class="modal-card" style="max-width:760px">
+    <div class="modal-title">💵 Payment Schedule</div>
+    <input type="hidden" id="msBookingId">
+    <div class="tbl-wrap"><table><thead><tr><th>Milestone</th><th>Due</th><th>Amount</th><th>Status</th><th>Demand Note</th><th>Actions</th></tr></thead><tbody id="milestonesTbody"></tbody></table></div>
+    <div class="modal-grid" style="margin-top:14px">
+      <div><label class="s-lbl">Milestone Name</label><input class="s-input" id="msName" placeholder="e.g. On Slab Completion"></div>
+      <div><label class="s-lbl">Due Date</label><input class="s-input" id="msDueDate" type="date"></div>
+      <div><label class="s-lbl">Amount</label><input class="s-input" id="msAmount" type="number"></div>
+    </div>
+    <button class="save-btn sec" onclick="addMilestone()">+ Add Milestone</button>
+    <div class="modal-actions"><button class="save-btn" onclick="closeModal('milestonesModal')">Done</button></div>
+  </div>
+</div>
+
+<!-- ── TICKET MODAL ── -->
+<div class="modal-overlay" id="ticketModal">
+  <div class="modal-card">
+    <div class="modal-title">+ New Ticket</div>
+    <div class="modal-grid">
+      <div><label class="s-lbl">Booking</label><select class="s-input" id="tBookingId"></select></div>
+      <div><label class="s-lbl">Priority</label><select class="s-input" id="tPriority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
+    </div>
+    <label class="s-lbl">Subject</label><input class="s-input" id="tSubject" style="margin-bottom:12px">
+    <label class="s-lbl">Description</label><textarea class="s-input" id="tDescription" rows="3"></textarea>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('ticketModal')">Cancel</button>
+      <button class="save-btn" onclick="saveTicket()">Create Ticket</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── CHANNEL PARTNER MODAL ── -->
+<div class="modal-overlay" id="cpModal">
+  <div class="modal-card">
+    <div class="modal-title">+ New Channel Partner</div>
+    <div class="modal-grid">
+      <div><label class="s-lbl">Name</label><input class="s-input" id="cpName"></div>
+      <div><label class="s-lbl">Company</label><input class="s-input" id="cpCompany"></div>
+      <div><label class="s-lbl">Phone</label><input class="s-input" id="cpPhone"></div>
+      <div><label class="s-lbl">Email</label><input class="s-input" id="cpEmail"></div>
+      <div><label class="s-lbl">KYC Status</label><select class="s-input" id="cpKyc"><option value="pending">Pending</option><option value="verified">Verified</option><option value="rejected">Rejected</option></select></div>
+      <div><label class="s-lbl">Commission Slab %</label><input class="s-input" id="cpSlab" type="number" step="0.1"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('cpModal')">Cancel</button>
+      <button class="save-btn" onclick="saveCp()">Save Partner</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── SEGMENT MODAL ── -->
+<div class="modal-overlay" id="segmentModal">
+  <div class="modal-card">
+    <div class="modal-title" id="segmentModalTitle">New Smart List</div>
+    <input type="hidden" id="segId">
+    <div style="margin-bottom:14px"><label class="s-lbl">Name</label><input class="s-input" id="segName" placeholder="e.g. Hot NRI Buyers — Marina Heights"></div>
+    <label class="s-lbl">Match leads where <i>all</i> of these are true</label>
+    <div id="segRules"></div>
+    <button class="save-btn sec" type="button" onclick="addSegRuleRow()" style="margin-top:6px">+ Add Rule</button>
+    <div class="s-hint" id="segPreviewCount" style="margin-top:10px"></div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('segmentModal')">Cancel</button>
+      <button class="save-btn" onclick="saveSegment()">Save Smart List</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── DOCUMENT MODAL ── -->
+<div class="modal-overlay" id="docModal">
+  <div class="modal-card">
+    <div class="modal-title">+ Add Document</div>
+    <div class="modal-grid">
+      <div><label class="s-lbl">Title</label><input class="s-input" id="dTitle"></div>
+      <div><label class="s-lbl">Type</label><select class="s-input" id="dType"><option value="rera_disclosure">RERA Disclosure</option><option value="brochure">Brochure</option><option value="floor_plan">Floor Plan</option><option value="agreement_template">Agreement Template</option><option value="other">Other</option></select></div>
+      <div><label class="s-lbl">Project</label><select class="s-input" id="dProjectId"><option value="">— None —</option></select></div>
+      <div><label class="s-lbl">Unit (optional)</label><select class="s-input" id="dUnitId"><option value="">— None —</option></select></div>
+      <div><label class="s-lbl">URL</label><input class="s-input" id="dUrl" placeholder="https://…"></div>
+      <div><label class="s-lbl">RERA Document?</label><select class="s-input" id="dIsRera"><option value="">No</option><option value="1">Yes</option></select></div>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('docModal')">Cancel</button>
+      <button class="save-btn" onclick="saveDoc()">Save Document</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const CONFIG = {
+  NOCODB_BASE: WORKER_BASE+'/nocodb',
+  CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj',
+  LEADS_TABLE_ID: 'mvg6rcw0ia5qqrx',
+  WORKER_BASE
+};
+
+const params = new URLSearchParams(location.search);
+const cpToken = params.get('cp') || '';
+let clientId = params.get('client') || '';
+let sessionToken = params.get('token') || '';
+const isEmbedded = params.get('embed') === '1';
+let clientRecord = null;
+let allLeads = [], allProjects = [], allUnits = [], allSiteVisits = [], allBookings = [];
+let allTickets = [], allChannelPartners = [], allCommissions = [], allDocuments = [];
+let segments = [], routingRules = [];
+let selectedProjectId = null;
+
+function $id(id){ return document.getElementById(id); }
+function esc(str){ return String(str==null?'':str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(str){ return esc(str).replace(/"/g,'&quot;'); }
+function fmtMoney(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); }
+function showMsg(id,msg,duration){ const el=$id(id); if(!el)return; el.textContent=msg; setTimeout(()=>{el.textContent='';},duration||3000); }
+function openModal(id){ $id(id).classList.add('active'); }
+function closeModal(id){ $id(id).classList.remove('active'); }
+
+/* ═══════════════ PUBLIC CP PORTAL ═══════════════ */
+async function initCpPortal(){
+  $id('cpPortalView').style.display='block';
+  try{
+    const r=await fetch(`${WORKER_BASE}/re/cp-portal/${encodeURIComponent(cpToken)}`);
+    const data=await r.json();
+    if(!r.ok||data.error){ renderCpPortalError(data.error||'This link could not be found.'); return; }
+    renderCpPortal(data);
+  }catch(e){ renderCpPortalError('Something went wrong loading this portal.'); }
+}
+function renderCpPortalError(msg){ $id('cpCard').innerHTML=`<div class="empty-state"><div class="empty-icon">⚠️</div>${esc(msg)}</div>`; }
+function renderCpPortal(data){
+  const p=data.partner;
+  $id('cpCard').innerHTML=`
+    <div class="card-title">Welcome, ${esc(p.name)}</div>
+    <div class="s-hint">${esc(p.company||'')} · KYC: <b>${esc(p.kyc_status)}</b> · Commission slab: <b>${esc(p.commission_slab_pct)}%</b></div>
+    <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+    <div class="card-title">Submit a Lead</div>
+    <div class="modal-grid">
+      <div><label class="s-lbl">Buyer Name</label><input class="s-input" id="cpLeadName"></div>
+      <div><label class="s-lbl">Phone</label><input class="s-input" id="cpLeadPhone"></div>
+      <div><label class="s-lbl">Project</label><input class="s-input" id="cpLeadProject"></div>
+      <div><label class="s-lbl">Budget</label><input class="s-input" id="cpLeadBudget" type="number"></div>
+    </div>
+    <button class="save-btn" onclick="submitCpLead()">Submit Lead</button>
+    <span class="save-msg" id="cpLeadMsg"></span>
+    <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+    <div class="card-title">Your Bookings</div>
+    <div class="tbl-wrap"><table><thead><tr><th>Buyer</th><th>Status</th><th>Total</th><th>Date</th></tr></thead><tbody>
+      ${(data.bookings||[]).map(b=>`<tr><td>${esc(b.buyer_name)}</td><td>${esc(b.status)}</td><td>${fmtMoney(b.total_price)}</td><td>${esc(b.booking_date||'')}</td></tr>`).join('')||'<tr><td colspan="4" class="empty-state">No bookings yet.</td></tr>'}
+    </tbody></table></div>
+    <div class="card-title" style="margin-top:16px">Your Commissions</div>
+    <div class="tbl-wrap"><table><thead><tr><th>Milestone</th><th>Amount</th><th>Status</th><th>Payout Date</th></tr></thead><tbody>
+      ${(data.commissions||[]).map(c=>`<tr><td>${esc(c.milestone)}</td><td>${fmtMoney(c.amount)}</td><td>${esc(c.status)}</td><td>${esc(c.payout_date||'—')}</td></tr>`).join('')||'<tr><td colspan="4" class="empty-state">No commissions yet.</td></tr>'}
+    </tbody></table></div>`;
+}
+async function submitCpLead(){
+  const body={name:$id('cpLeadName').value.trim(), phone:$id('cpLeadPhone').value.trim(), project:$id('cpLeadProject').value.trim(), budget:$id('cpLeadBudget').value};
+  if(!body.phone){ showMsg('cpLeadMsg','Phone is required'); return; }
+  try{
+    const r=await fetch(`${WORKER_BASE}/re/cp-portal/${encodeURIComponent(cpToken)}/leads`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const data=await r.json();
+    if(!r.ok||data.error) throw new Error(data.error||'Failed');
+    showMsg('cpLeadMsg', data.duplicate?'Matched an existing lead — thanks!':'Submitted — thanks!');
+    $id('cpLeadName').value=''; $id('cpLeadPhone').value=''; $id('cpLeadProject').value=''; $id('cpLeadBudget').value='';
+  }catch(e){ showMsg('cpLeadMsg','Failed: '+e.message); }
+}
+
+/* ═══════════════ AUTHENTICATED APP ═══════════════ */
+function ncAuthHeaders(extra){ return {'Authorization':'Bearer '+sessionToken, ...extra}; }
+async function ncGet(url){ const r=await fetch(url,{headers:ncAuthHeaders()}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+async function ncPatch(url,body){ const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+async function reFetch(path,opts){
+  const r=await fetch(`${WORKER_BASE}${path}`,{...opts,headers:ncAuthHeaders({'Content-Type':'application/json',...(opts&&opts.headers)})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||data.error) throw new Error(data.error||('HTTP '+r.status));
+  return data;
+}
+async function patchClient(fields){
+  const MAX=3; let lastErr=null;
+  for(let attempt=1; attempt<=MAX; attempt++){
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId),...fields});
+    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${Number(clientId)}`);
+    const stuck=Object.keys(fields).filter(k=>String(fresh[k]??'')!==String(fields[k]??''));
+    if(!stuck.length){ Object.assign(clientRecord,fresh); return; }
+    lastErr=new Error('Save did not take effect for: '+stuck.join(', '));
+    if(attempt<MAX) await new Promise(r=>setTimeout(r,900*attempt));
+  }
+  throw lastErr;
+}
+async function patchLead(leadId,fields){ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:Number(leadId),...fields}); }
+
+async function init(){
+  if(cpToken){ initCpPortal(); return; }
+  if(isEmbedded){ const hdr=document.querySelector('header'); if(hdr) hdr.style.display='none'; }
+  if(!clientId){ clientId=prompt('Enter your Client ID:')||''; }
+  if(!clientId||!sessionToken){ document.body.innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>Missing client/session — open this page from the Real Estate tab inside your dashboard.</div>'; return; }
+  $id('app').style.display='flex';
+  try{
+    await reFetch(`/re/init?client_id=${encodeURIComponent(clientId)}`,{method:'GET'});
+    clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
+    try{ segments=JSON.parse(clientRecord.re_segments_json||'[]'); }catch(e){ segments=[]; }
+    try{ routingRules=JSON.parse(clientRecord.re_agent_routing_json||'[]'); }catch(e){ routingRules=[]; }
+    await Promise.all([loadLeads(), loadProjects(), loadSiteVisits(), loadBookings(), loadTickets(), loadChannelPartners(), loadCommissions(), loadDocuments()]);
+    renderAll();
+  }catch(e){
+    $id('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+function renderAll(){
+  renderOverview(); renderLeadsTable(); renderProjectsList(); renderUnitsTable(); renderVisitsTable();
+  renderBookingsTable(); renderTicketsTable(); renderResaleTable(); renderCpTable(); renderCommissionsTable();
+  renderSegments(); renderAnalytics(); renderDocsTable(); renderInvestorDashboard();
+}
+async function loadLeads(){
+  const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=2000&sort=-Date`);
+  allLeads=data.list||[];
+}
+async function loadProjects(){ const data=await reFetch('/re/projects',{method:'GET'}); allProjects=data.list||[]; }
+async function loadUnits(projectId){ const data=await reFetch(`/re/units?project_id=${projectId}`,{method:'GET'}); allUnits=data.list||[]; }
+async function loadSiteVisits(){ const data=await reFetch('/re/site-visits',{method:'GET'}); allSiteVisits=data.list||[]; }
+async function loadBookings(){ const data=await reFetch('/re/bookings',{method:'GET'}); allBookings=data.list||[]; }
+async function loadTickets(){ const data=await reFetch('/re/tickets',{method:'GET'}); allTickets=data.list||[]; }
+async function loadChannelPartners(){ const data=await reFetch('/re/channel-partners',{method:'GET'}); allChannelPartners=data.list||[]; }
+async function loadCommissions(){ const data=await reFetch('/re/cp-commissions',{method:'GET'}); allCommissions=data.list||[]; }
+async function loadDocuments(){ const data=await reFetch('/re/documents',{method:'GET'}); allDocuments=data.list||[]; }
+
+function showTab(name){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  $id('tab'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
+  document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+}
+
+/* ── SCORING (mirrors worker.js computeLeadScore so client-side rescoring after a site visit
+   stays consistent with what the capture webhook computes at creation) ── */
+function computeLeadScoreClient(lead, hasSiteVisit){
+  let score=0;
+  if(Number(lead.re_budget)>0) score+=20;
+  const u=String(lead.re_urgency||'').toLowerCase();
+  if(u==='high') score+=40; else if(u==='medium') score+=20; else if(u==='low') score+=5;
+  if(hasSiteVisit) score+=25;
+  if(lead.re_project) score+=15;
+  return Math.min(100, score);
+}
+function scoreBadgeClass(score){ return score>=70?'green':score>=40?'yellow':'gray'; }
+
+/* ── OVERVIEW ── */
+function renderOverview(){
+  const closedStages=new Set(['booked','won','closed','converted']);
+  $id('ovLeads').textContent=allLeads.filter(l=>!closedStages.has((l.Stage||'').toLowerCase())&&l.Stage!=='lost').length.toLocaleString();
+  $id('ovUnitsAvailable').textContent=allUnitsAll().filter(u=>u.status==='available').length.toLocaleString();
+  $id('ovUnitsHold').textContent=allUnitsAll().filter(u=>u.status==='hold').length.toLocaleString();
+  $id('ovUnitsBooked').textContent=allUnitsAll().filter(u=>u.status==='booked'||u.status==='sold').length.toLocaleString();
+  const now=Date.now();
+  $id('ovVisitsUpcoming').textContent=allSiteVisits.filter(v=>v.status==='scheduled'&&new Date(v.scheduled_at).getTime()>=now).length.toLocaleString();
+  $id('ovOpenTickets').textContent=allTickets.filter(t=>t.status==='open'||t.status==='in_progress').length.toLocaleString();
+}
+// Overview/Analytics need every unit across every project, but the Units tab loads lazily
+// per-project (loadUnits) to keep that table fast for clients with thousands of units — so those
+// two views keep their own full-portfolio cache, refreshed whenever a project is created/booked.
+let _allUnitsCache=null;
+function allUnitsAll(){ return _allUnitsCache||[]; }
+async function refreshAllUnitsCache(){
+  const results=await Promise.all(allProjects.map(p=>reFetch(`/re/units?project_id=${p.id}`,{method:'GET'}).then(d=>d.list||[]).catch(()=>[])));
+  _allUnitsCache=results.flat();
+}
+
+/* ── LEADS ── */
+function leadHasVisit(leadId){ return allSiteVisits.some(v=>String(v.lead_id)===String(leadId)); }
+function renderLeadsTable(){
+  const q=($id('leadSearch').value||'').toLowerCase();
+  const tbody=$id('leadsTbody');
+  const rows=allLeads.filter(l=>!q||(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)||(l.re_project||'').toLowerCase().includes(q));
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="13" class="empty-state">No leads yet — add one or configure Lead Capture.</td></tr>'; return; }
+  tbody.innerHTML=rows.slice(0,500).map(l=>{
+    const score=Number(l.re_score)||computeLeadScoreClient(l, leadHasVisit(l.Id));
+    return `<tr>
+      <td>${esc(l.Name||'Unknown')}</td><td>${esc(l.Phone||'')}</td><td>${esc(l.re_source||'')}</td><td>${esc(l.re_project||'')}</td>
+      <td>${l.re_budget?fmtMoney(l.re_budget):'—'}</td><td>${esc(l.re_urgency||'—')}</td>
+      <td><span class="badge ${scoreBadgeClass(score)} score-pill">${score}</span></td>
+      <td>${esc(l.re_zone||'—')}</td><td>${esc(l.re_language||'—')}</td><td>${l.re_investor==='Yes'?'💎':'—'}</td>
+      <td>${esc(l.Owner||'—')}</td><td>${esc(l.Stage||'new')}</td>
+      <td class="row-actions"><button class="icon-btn" title="Auto-assign" onclick="assignLead(${l.Id})">🎯</button></td>
+    </tr>`;
+  }).join('');
+}
+function openAddLeadModal(){
+  ['lName','lPhone','lProject','lBudget','lZone','lLanguage'].forEach(id=>$id(id).value='');
+  $id('lSource').value='Walk-in'; $id('lUrgency').value=''; $id('lInvestor').value='';
+  $id('leadModalMsg').textContent='';
+  openModal('leadModal');
+}
+async function saveLead(){
+  const phone=$id('lPhone').value.trim();
+  if(!phone){ showMsg('leadModalMsg','Phone is required'); return; }
+  try{
+    const result=await reFetch('/re/leads',{method:'POST', body:JSON.stringify({
+      Name:$id('lName').value.trim(), Phone:phone, re_source:$id('lSource').value, re_project:$id('lProject').value.trim(),
+      re_budget:$id('lBudget').value, re_urgency:$id('lUrgency').value, re_zone:$id('lZone').value.trim(),
+      re_language:$id('lLanguage').value.trim(), re_investor:$id('lInvestor').value
+    })});
+    closeModal('leadModal');
+    await loadLeads(); renderLeadsTable(); renderOverview(); renderAnalytics();
+    alert(result.duplicate?'Matched an existing lead by phone — sources merged.':'Lead added — score '+result.score+(result.assigned_agent?`, assigned to ${result.assigned_agent}`:''));
+  }catch(e){ showMsg('leadModalMsg','Failed: '+e.message); }
+}
+async function assignLead(leadId){
+  const lead=allLeads.find(l=>String(l.Id)===String(leadId));
+  try{
+    const r=await reFetch('/re/leads/assign',{method:'POST', body:JSON.stringify({lead_id:leadId, zone:lead?.re_zone||'', project:lead?.re_project||'', language:lead?.re_language||''})});
+    await loadLeads(); renderLeadsTable();
+    alert('Assigned to '+r.assigned_agent);
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function openDuplicatesModal(){
+  openModal('duplicatesModal');
+  $id('dupList').innerHTML='<div class="empty-state"><span class="spinner"></span>Checking…</div>';
+  try{
+    const data=await reFetch('/re/leads/duplicates',{method:'GET'});
+    if(!data.groups.length){ $id('dupList').innerHTML='<div class="empty-state">✅ No duplicate phone numbers found.</div>'; return; }
+    $id('dupList').innerHTML=data.groups.map(g=>`<div class="dup-group"><b>${esc(g[0].Phone)}</b> — ${g.length} leads<br>${g.map(l=>`${esc(l.Name||'Unknown')} · ${esc(l.re_source||'')} · ${esc(l.Stage||'new')} · Owner: ${esc(l.Owner||'—')}`).join('<br>')}</div>`).join('');
+  }catch(e){ $id('dupList').innerHTML=`<div class="empty-state">⚠️ ${esc(e.message)}</div>`; }
+}
+function openRoutingModal(){
+  $id('routingRows').innerHTML='';
+  (routingRules.length?routingRules:[{}]).forEach(r=>addRoutingRow(r));
+  openModal('routingModal');
+}
+function addRoutingRow(rule){
+  rule=rule||{};
+  const row=document.createElement('div'); row.className='rr-row';
+  row.innerHTML=`
+    <input class="rr-agent" placeholder="Agent name" value="${escAttr(rule.agent||'')}">
+    <input class="rr-zones" placeholder="zones, csv" value="${escAttr((rule.zones||[]).join(', '))}">
+    <input class="rr-projects" placeholder="projects, csv" value="${escAttr((rule.projects||[]).join(', '))}">
+    <input class="rr-langs" placeholder="languages, csv" value="${escAttr((rule.languages||[]).join(', '))}">
+    <button class="icon-btn danger" type="button" onclick="this.parentElement.remove()">✕</button>`;
+  $id('routingRows').appendChild(row);
+}
+async function saveRouting(){
+  routingRules=[...document.querySelectorAll('#routingRows .rr-row')].map(row=>({
+    agent:row.querySelector('.rr-agent').value.trim(),
+    zones:row.querySelector('.rr-zones').value.split(',').map(s=>s.trim()).filter(Boolean),
+    projects:row.querySelector('.rr-projects').value.split(',').map(s=>s.trim()).filter(Boolean),
+    languages:row.querySelector('.rr-langs').value.split(',').map(s=>s.trim()).filter(Boolean)
+  })).filter(r=>r.agent);
+  try{ await patchClient({re_agent_routing_json:JSON.stringify(routingRules)}); closeModal('routingModal'); }
+  catch(e){ showMsg('routingModalMsg','Failed: '+e.message); }
+}
+function openLeadCaptureModal(){
+  $id('captureUrl').value=`${WORKER_BASE}/re/webhook/lead?client_id=${clientId}&secret=${clientRecord.re_webhook_secret||''}`;
+  openModal('captureModal');
+}
+
+/* ── INVENTORY ── */
+function renderProjectsList(){
+  const wrap=$id('projectsList');
+  if(!allProjects.length){ wrap.innerHTML='<div class="empty-state"><div class="empty-icon">🏢</div>No projects yet.</div>'; return; }
+  wrap.innerHTML=allProjects.map(p=>`<div class="proj-card ${selectedProjectId===p.id?'active':''}" onclick="selectProject(${p.id})">
+    <div class="proj-name">${esc(p.name)}</div>
+    <div class="proj-meta">${esc(p.location||'')}${p.rera_number?' · RERA '+esc(p.rera_number):''}</div>
+  </div>`).join('');
+}
+async function selectProject(id){
+  selectedProjectId=id;
+  renderProjectsList();
+  const p=allProjects.find(x=>x.id===id);
+  $id('unitsCardTitle').textContent='Units — '+(p?p.name:'');
+  $id('addUnitBtn').disabled=false;
+  $id('unitsTbody').innerHTML='<tr class="loading-row"><td colspan="9"><span class="spinner"></span>Loading…</td></tr>';
+  await loadUnits(id);
+  renderUnitsTable();
+}
+function renderUnitsTable(){
+  const tbody=$id('unitsTbody');
+  if(!selectedProjectId){ tbody.innerHTML='<tr><td colspan="9" class="empty-state">Select a project to see its units.</td></tr>'; return; }
+  const q=($id('unitSearch').value||'').toLowerCase();
+  const rows=allUnits.filter(u=>!q||(u.unit_no||'').toLowerCase().includes(q)||(u.tower||'').toLowerCase().includes(q));
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="9" class="empty-state">No units yet — add one.</td></tr>'; return; }
+  const statusClass={available:'green', hold:'yellow', blocked:'gray', booked:'blue', sold:'purple', resale_listed:'red'};
+  tbody.innerHTML=rows.map(u=>{
+    const total=Number(u.base_price||0)+Number(u.plc_charges||0)+Number(u.floor_rise_charges||0);
+    return `<tr>
+      <td>${esc(u.tower||'—')}</td><td>${esc(u.floor)}</td><td>${esc(u.unit_no)}</td><td>${esc(u.unit_type||'—')}</td><td>${esc(u.area_sqft||0)}</td>
+      <td>${fmtMoney(total)}</td>
+      <td><span class="badge ${statusClass[u.status]||'gray'}">${esc((u.status||'').replace('_',' '))}</span></td>
+      <td>${u.hold_expires_at?esc(new Date(u.hold_expires_at).toLocaleString()):'—'}</td>
+      <td class="row-actions">
+        ${u.status==='available'?`<button class="icon-btn" title="Hold" onclick="holdUnit(${u.id})">⏳</button>`:''}
+        ${(u.status==='hold'||u.status==='blocked')?`<button class="icon-btn" title="Release" onclick="releaseUnit(${u.id})">↩️</button>`:''}
+        ${(u.status==='available'||u.status==='hold')?`<button class="icon-btn" title="Book" onclick="openBookingModal(${u.id})">🧾</button>`:''}
+        ${u.virtual_tour_url?`<a class="icon-btn" href="${escAttr(u.virtual_tour_url)}" target="_blank" title="Virtual tour">🕶️</a>`:''}
+        <button class="icon-btn" title="Edit" onclick="openUnitModal(${u.id})">✎</button>
+        <button class="icon-btn danger" title="Delete" onclick="deleteUnit(${u.id})">🗑</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+function openProjectModal(){
+  ['pName','pLocation','pRera','pBasePrice','pTourUrl','pDescription'].forEach(id=>$id(id).value='');
+  $id('pTowers').value=1; $id('pPriceVersion').value='v1';
+  openModal('projectModal');
+}
+async function saveProject(){
+  const name=$id('pName').value.trim();
+  if(!name){ alert('Project name is required'); return; }
+  try{
+    await reFetch('/re/projects',{method:'POST', body:JSON.stringify({
+      name, location:$id('pLocation').value.trim(), rera_number:$id('pRera').value.trim(), total_towers:$id('pTowers').value,
+      base_price_per_sqft:$id('pBasePrice').value, price_list_version:$id('pPriceVersion').value.trim(), virtual_tour_url:$id('pTourUrl').value.trim(),
+      description:$id('pDescription').value.trim(), status:'active'
+    })});
+    closeModal('projectModal');
+    await loadProjects(); renderProjectsList(); populateProjectSelects(); await refreshAllUnitsCache(); renderOverview();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+function openUnitModal(id){
+  const u=id?allUnits.find(x=>x.id===id):null;
+  $id('unitModalTitle').textContent=u?'Edit Unit':'+ Add Unit';
+  $id('uId').value=u?u.id:'';
+  $id('uTower').value=u?u.tower:''; $id('uFloor').value=u?u.floor:''; $id('uUnitNo').value=u?u.unit_no:'';
+  $id('uType').value=u?u.unit_type:''; $id('uArea').value=u?u.area_sqft:''; $id('uBasePrice').value=u?u.base_price:'';
+  $id('uPlc').value=u?u.plc_charges:''; $id('uFloorRise').value=u?u.floor_rise_charges:''; $id('uTourUrl').value=u?u.virtual_tour_url:'';
+  $id('uPriceReasonWrap').style.display=u?'block':'none'; $id('uPriceReason').value='';
+  openModal('unitModal');
+}
+async function saveUnit(){
+  const id=$id('uId').value;
+  const body={
+    tower:$id('uTower').value.trim(), floor:$id('uFloor').value, unit_no:$id('uUnitNo').value.trim(), unit_type:$id('uType').value.trim(),
+    area_sqft:$id('uArea').value, base_price:$id('uBasePrice').value, plc_charges:$id('uPlc').value, floor_rise_charges:$id('uFloorRise').value,
+    virtual_tour_url:$id('uTourUrl').value.trim()
+  };
+  try{
+    if(id){
+      body.id=id; body.changed_by='Dashboard user'; body.reason=$id('uPriceReason').value.trim();
+      await reFetch('/re/units',{method:'PATCH', body:JSON.stringify(body)});
+    }else{
+      if(!body.unit_no){ alert('Unit No. is required'); return; }
+      body.project_id=selectedProjectId;
+      await reFetch('/re/units',{method:'POST', body:JSON.stringify(body)});
+    }
+    closeModal('unitModal');
+    await loadUnits(selectedProjectId); renderUnitsTable(); await refreshAllUnitsCache(); renderOverview();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function holdUnit(id){
+  const hours=prompt('Hold for how many hours?','24'); if(hours===null) return;
+  try{ await reFetch('/re/units',{method:'PATCH', body:JSON.stringify({id, status:'hold', hold_hours:hours})}); await loadUnits(selectedProjectId); renderUnitsTable(); await refreshAllUnitsCache(); renderOverview(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+async function releaseUnit(id){
+  try{ await reFetch('/re/units',{method:'PATCH', body:JSON.stringify({id, status:'available'})}); await loadUnits(selectedProjectId); renderUnitsTable(); await refreshAllUnitsCache(); renderOverview(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteUnit(id){
+  if(!confirm('Delete this unit?')) return;
+  try{ await reFetch('/re/units',{method:'DELETE', body:JSON.stringify({id})}); await loadUnits(selectedProjectId); renderUnitsTable(); await refreshAllUnitsCache(); renderOverview(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+async function openPriceAuditModal(){
+  openModal('priceAuditModal');
+  $id('auditTbody').innerHTML='<tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>';
+  try{
+    const data=await reFetch('/re/price-audit',{method:'GET'});
+    if(!data.list.length){ $id('auditTbody').innerHTML='<tr><td colspan="7" class="empty-state">No price changes logged yet.</td></tr>'; return; }
+    $id('auditTbody').innerHTML=data.list.map(a=>`<tr><td>#${esc(a.unit_id)}</td><td>${esc(a.field)}</td><td>${esc(a.old_value)}</td><td>${esc(a.new_value)}</td><td>${esc(a.changed_by||'—')}</td><td>${esc(a.reason||'—')}</td><td>${esc(new Date(a.created_at).toLocaleString())}</td></tr>`).join('');
+  }catch(e){ $id('auditTbody').innerHTML=`<tr><td colspan="7" class="empty-state">⚠️ ${esc(e.message)}</td></tr>`; }
+}
+function populateProjectSelects(){
+  const opts='<option value="">— None —</option>'+allProjects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  ['vProjectId','dProjectId'].forEach(id=>{ if($id(id)) $id(id).innerHTML=opts; });
+}
+
+/* ── SITE VISITS ── */
+function renderVisitsTable(){
+  const tbody=$id('visitsTbody');
+  if(!allSiteVisits.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No site visits scheduled yet.</td></tr>'; return; }
+  const statusClass={scheduled:'blue', completed:'green', no_show:'red', cancelled:'gray'};
+  tbody.innerHTML=[...allSiteVisits].sort((a,b)=>new Date(b.scheduled_at)-new Date(a.scheduled_at)).map(v=>{
+    const lead=allLeads.find(l=>String(l.Id)===String(v.lead_id));
+    const proj=allProjects.find(p=>p.id===v.project_id);
+    return `<tr>
+      <td>${lead?esc(lead.Name||lead.Phone):'—'}</td><td>${proj?esc(proj.name):'—'}${v.unit_id?' #'+esc(v.unit_id):''}</td>
+      <td>${esc(new Date(v.scheduled_at).toLocaleString())}</td>
+      <td><select class="s-input" style="padding:5px 8px;font-size:12px" onchange="updateVisitStatus(${v.id},this.value)">
+        ${['scheduled','completed','no_show','cancelled'].map(s=>`<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
+      </select></td>
+      <td>${esc(v.transport_notes||'—')}</td>
+      <td><input class="s-input" style="padding:5px 8px;font-size:12px" value="${escAttr(v.feedback||'')}" onchange="updateVisitFeedback(${v.id},this.value)"></td>
+      <td class="row-actions"><button class="icon-btn danger" onclick="deleteVisit(${v.id})">🗑</button></td>
+    </tr>`;
+  }).join('');
+}
+function openVisitModal(){
+  $id('vLeadSearch').value=''; $id('vScheduledAt').value=''; $id('vTransport').value='';
+  populateProjectSelects(); renderVisitLeadPicker(); renderVisitUnitOptions();
+  openModal('visitModal');
+}
+function renderVisitLeadPicker(){
+  const q=($id('vLeadSearch').value||'').toLowerCase();
+  const sel=$id('vLeadId'); const current=sel.value;
+  const matches=q?allLeads.filter(l=>(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)):allLeads.slice(0,200);
+  sel.innerHTML='<option value="">— None —</option>'+matches.map(l=>`<option value="${l.Id}">${esc(l.Name||'Unknown')} — ${esc(l.Phone||'')}</option>`).join('');
+  if([...sel.options].some(o=>o.value===current)) sel.value=current;
+}
+function renderVisitUnitOptions(){
+  const projectId=$id('vProjectId').value;
+  const sel=$id('vUnitId');
+  const units=projectId?allUnits.filter(u=>String(u.project_id)===String(projectId)):[];
+  sel.innerHTML='<option value="">— Any —</option>'+units.map(u=>`<option value="${u.id}">${esc(u.tower||'')} ${esc(u.unit_no)}</option>`).join('');
+}
+async function saveVisit(){
+  const scheduledAt=$id('vScheduledAt').value;
+  if(!scheduledAt){ alert('Scheduled date/time is required'); return; }
+  try{
+    await reFetch('/re/site-visits',{method:'POST', body:JSON.stringify({
+      lead_id:$id('vLeadId').value||null, project_id:$id('vProjectId').value||null, unit_id:$id('vUnitId').value||null,
+      scheduled_at:new Date(scheduledAt).toISOString(), transport_notes:$id('vTransport').value.trim(), status:'scheduled'
+    })});
+    closeModal('visitModal');
+    await loadSiteVisits(); renderVisitsTable(); renderOverview(); renderAnalytics();
+    const leadId=$id('vLeadId').value;
+    if(leadId) await afterSiteVisitSave(leadId);
+  }catch(e){ alert('Failed: '+e.message); }
+}
+// Bumps re_score now that this lead has a booked site visit — see computeLeadScoreClient's
+// comment for why this mirrors the webhook's own scoring instead of drifting from it.
+async function afterSiteVisitSave(leadId){
+  const lead=allLeads.find(l=>String(l.Id)===String(leadId));
+  if(!lead) return;
+  const score=computeLeadScoreClient(lead, true);
+  if(Number(lead.re_score)!==score){ lead.re_score=score; try{ await patchLead(leadId,{re_score:score}); renderLeadsTable(); }catch(e){} }
+}
+async function updateVisitStatus(id,status){
+  try{ await reFetch('/re/site-visits',{method:'PATCH', body:JSON.stringify({id,status})}); const v=allSiteVisits.find(x=>x.id===id); if(v)v.status=status; renderOverview(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+async function updateVisitFeedback(id,feedback){
+  try{ await reFetch('/re/site-visits',{method:'PATCH', body:JSON.stringify({id,feedback})}); }catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteVisit(id){
+  if(!confirm('Delete this site visit?')) return;
+  try{ await reFetch('/re/site-visits',{method:'DELETE', body:JSON.stringify({id})}); await loadSiteVisits(); renderVisitsTable(); renderOverview(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── BOOKINGS & PAYMENTS ── */
+function renderBookingsTable(){
+  const tbody=$id('bookingsTbody');
+  if(!allBookings.length){ tbody.innerHTML='<tr><td colspan="10" class="empty-state">No bookings yet.</td></tr>'; return; }
+  const statusClass={booked:'blue', agreement_sent:'yellow', agreement_signed:'purple', possession:'green', cancelled:'red'};
+  tbody.innerHTML=allBookings.map(b=>{
+    const unit=allUnitsAll().find(u=>u.id===b.unit_id)||allUnits.find(u=>u.id===b.unit_id);
+    const cp=allChannelPartners.find(c=>c.id===b.cp_id);
+    return `<tr>
+      <td>${unit?esc((unit.tower||'')+' '+unit.unit_no):'#'+esc(b.unit_id)}</td><td>${esc(b.buyer_name||'—')}</td><td>${cp?esc(cp.name):'—'}</td>
+      <td>${fmtMoney(b.token_amount)}</td><td>${fmtMoney(b.total_price)}</td><td>${esc((b.payment_plan||'').replace('_',' '))}</td>
+      <td><span class="badge ${statusClass[b.status]||'gray'}">${esc((b.status||'').replace('_',' '))}</span></td>
+      <td>${esc(b.loan_status||'—')}</td><td>${esc(b.possession_date||'—')}</td>
+      <td class="row-actions"><button class="icon-btn" onclick="openBookingDetailModal(${b.id})">✎</button><button class="icon-btn danger" onclick="deleteBooking(${b.id})">🗑</button></td>
+    </tr>`;
+  }).join('');
+}
+async function openBookingModal(preselectUnitId){
+  populateBookingUnitOptions(preselectUnitId);
+  populateBookingCpOptions();
+  $id('bLeadSearch').value=''; renderBookingLeadPicker();
+  ['bBuyerName','bBuyerPhone','bToken','bTotal'].forEach(id=>$id(id).value='');
+  $id('bPlan').value='construction_linked'; $id('bIsInvestor').value='';
+  openModal('bookingModal');
+}
+function populateBookingUnitOptions(preselect){
+  const available=allUnitsAll().filter(u=>u.status==='available'||u.status==='hold');
+  const list=available.length?available:allUnits.filter(u=>u.status==='available'||u.status==='hold');
+  $id('bUnitId').innerHTML=list.map(u=>`<option value="${u.id}" ${String(preselect)===String(u.id)?'selected':''}>${esc((u.tower||''))} ${esc(u.unit_no)} — ${fmtMoney(Number(u.base_price||0)+Number(u.plc_charges||0)+Number(u.floor_rise_charges||0))}</option>`).join('')||'<option value="">No available units</option>';
+}
+function populateBookingCpOptions(){
+  $id('bCpId').innerHTML='<option value="">— None —</option>'+allChannelPartners.filter(c=>c.active).map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+}
+function renderBookingLeadPicker(){
+  const q=($id('bLeadSearch').value||'').toLowerCase();
+  const sel=$id('bLeadId'); const current=sel.value;
+  const matches=q?allLeads.filter(l=>(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)):allLeads.slice(0,200);
+  sel.innerHTML='<option value="">— None —</option>'+matches.map(l=>`<option value="${l.Id}">${esc(l.Name||'Unknown')} — ${esc(l.Phone||'')}</option>`).join('');
+  if([...sel.options].some(o=>o.value===current)) sel.value=current;
+}
+function prefillBuyerFromLead(){
+  const lead=allLeads.find(l=>String(l.Id)===String($id('bLeadId').value));
+  if(lead){ $id('bBuyerName').value=lead.Name||''; $id('bBuyerPhone').value=lead.Phone||''; if(lead.re_investor==='Yes') $id('bIsInvestor').value='1'; }
+}
+async function saveBooking(){
+  const unitId=$id('bUnitId').value;
+  if(!unitId){ alert('Select a unit'); return; }
+  try{
+    await reFetch('/re/bookings',{method:'POST', body:JSON.stringify({
+      unit_id:unitId, lead_id:$id('bLeadId').value||null, cp_id:$id('bCpId').value||null,
+      buyer_name:$id('bBuyerName').value.trim(), buyer_phone:$id('bBuyerPhone').value.trim(), is_investor:$id('bIsInvestor').value,
+      token_amount:$id('bToken').value, total_price:$id('bTotal').value, payment_plan:$id('bPlan').value
+    })});
+    closeModal('bookingModal');
+    await Promise.all([loadBookings(), loadUnits(selectedProjectId), loadCommissions(), refreshAllUnitsCache()]);
+    renderBookingsTable(); renderUnitsTable(); renderCommissionsTable(); renderOverview(); renderAnalytics();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+function openBookingDetailModal(id){
+  const b=allBookings.find(x=>x.id===id);
+  if(!b) return;
+  $id('bdBookingId').value=id;
+  $id('bdStatus').value=b.status; $id('bdLoanStatus').value=b.loan_status||''; $id('bdAgreementUrl').value=b.agreement_url||'';
+  $id('bdPossessionDate').value=b.possession_date||''; $id('bdNotes').value=b.notes||'';
+  openModal('bookingDetailModal');
+}
+async function saveBookingDetail(){
+  const id=$id('bdBookingId').value;
+  try{
+    await reFetch('/re/bookings',{method:'PATCH', body:JSON.stringify({
+      id, status:$id('bdStatus').value, loan_status:$id('bdLoanStatus').value, agreement_url:$id('bdAgreementUrl').value.trim(),
+      possession_date:$id('bdPossessionDate').value||null, notes:$id('bdNotes').value.trim()
+    })});
+    closeModal('bookingDetailModal');
+    await Promise.all([loadBookings(), loadUnits(selectedProjectId), refreshAllUnitsCache()]);
+    renderBookingsTable(); renderUnitsTable(); renderOverview(); renderResaleTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function markResale(){
+  const id=$id('bdBookingId').value;
+  if(!confirm('List this unit for resale?')) return;
+  try{
+    await reFetch('/re/bookings',{method:'PATCH', body:JSON.stringify({id, mark_resale:true})});
+    await Promise.all([loadUnits(selectedProjectId), refreshAllUnitsCache()]);
+    renderUnitsTable(); renderResaleTable();
+    alert('Unit marked for resale.');
+  }catch(e){ alert('Failed: '+e.message); }
+}
+// Real Accounting-module integration, not a lookalike — POSTs straight to the same
+// /accounting/documents route accounting.html itself uses (same bearer session token this page
+// already carries), so the resulting invoice shows up in the Accounting tab like any other
+// invoice, fully editable/ERPNext-syncable there.
+async function generateInvoice(){
+  const id=$id('bdBookingId').value;
+  const booking=allBookings.find(b=>String(b.id)===String(id));
+  if(!booking){ showMsg('bdInvoiceMsg','Booking not found'); return; }
+  const unit=allUnitsAll().find(u=>u.id===booking.unit_id)||allUnits.find(u=>u.id===booking.unit_id);
+  const proj=unit?allProjects.find(p=>p.id===unit.project_id):null;
+  const unitLabel=unit?`${unit.tower||''} ${unit.unit_no}`.trim():`Unit #${booking.unit_id}`;
+  showMsg('bdInvoiceMsg','Generating…',60000);
+  try{
+    // reFetch is a plain WORKER_BASE+path fetch — works for accounting.html's own /accounting/*
+    // routes just as well as this module's /re/*, since both share the one bearer session token
+    // this page already holds.
+    const doc=await reFetch('/accounting/documents',{method:'POST', body:JSON.stringify({
+      type:'invoice', title:`${proj?proj.name+' — ':''}${unitLabel} — ${booking.buyer_name||'Buyer'}`,
+      lead_id:booking.lead_id||null, currency:clientRecord?.deal_currency||'AED',
+      line_items:[{name:`${proj?proj.name+' — ':''}${unitLabel}`, qty:1, price:Number(booking.total_price)||0}],
+      notes:`Real Estate booking #${booking.id}.${booking.token_amount?` Token/advance already received: ${fmtMoney(booking.token_amount)}.`:''}`
+    })});
+    showMsg('bdInvoiceMsg','✓ Invoice #'+doc.Id+' created — open it in the Accounting tab.',6000);
+  }catch(e){ showMsg('bdInvoiceMsg','Failed: '+e.message,6000); }
+}
+async function deleteBooking(id){
+  if(!confirm('Delete this booking record?')) return;
+  try{ await reFetch('/re/bookings',{method:'DELETE', body:JSON.stringify({id})}); await loadBookings(); renderBookingsTable(); renderOverview(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+async function openMilestonesModal(bookingId){
+  $id('msBookingId').value=bookingId;
+  $id('msName').value=''; $id('msDueDate').value=''; $id('msAmount').value='';
+  openModal('milestonesModal');
+  await renderMilestonesTable();
+}
+async function renderMilestonesTable(){
+  const bookingId=$id('msBookingId').value;
+  const tbody=$id('milestonesTbody');
+  tbody.innerHTML='<tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>';
+  try{
+    const data=await reFetch(`/re/payment-milestones?booking_id=${bookingId}`,{method:'GET'});
+    if(!data.list.length){ tbody.innerHTML='<tr><td colspan="6" class="empty-state">No milestones yet.</td></tr>'; return; }
+    tbody.innerHTML=data.list.map(m=>`<tr>
+      <td>${esc(m.name)}</td><td>${esc(m.due_date||'—')}</td><td>${fmtMoney(m.amount)}</td>
+      <td><select class="s-input" style="padding:5px 8px;font-size:12px" onchange="updateMilestoneStatus(${m.id},this.value)">
+        ${['pending','due','paid','overdue'].map(s=>`<option value="${s}" ${m.status===s?'selected':''}>${s}</option>`).join('')}
+      </select></td>
+      <td>${m.demand_note_sent_at?'✅ '+esc(new Date(m.demand_note_sent_at).toLocaleDateString()):`<button class="icon-btn sm" onclick="sendDemandNote(${m.id})">📨 Send</button>`}</td>
+      <td><button class="icon-btn danger" onclick="deleteMilestone(${m.id})">🗑</button></td>
+    </tr>`).join('');
+  }catch(e){ tbody.innerHTML=`<tr><td colspan="6" class="empty-state">⚠️ ${esc(e.message)}</td></tr>`; }
+}
+async function addMilestone(){
+  const name=$id('msName').value.trim();
+  if(!name){ alert('Milestone name required'); return; }
+  try{
+    await reFetch('/re/payment-milestones',{method:'POST', body:JSON.stringify({booking_id:$id('msBookingId').value, name, due_date:$id('msDueDate').value||null, amount:$id('msAmount').value})});
+    $id('msName').value=''; $id('msDueDate').value=''; $id('msAmount').value='';
+    await renderMilestonesTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function updateMilestoneStatus(id,status){
+  try{
+    const body={id,status}; if(status==='paid') body.paid_date=new Date().toISOString().slice(0,10);
+    await reFetch('/re/payment-milestones',{method:'PATCH', body:JSON.stringify(body)});
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function sendDemandNote(id){
+  try{ await reFetch('/re/payment-milestones',{method:'PATCH', body:JSON.stringify({id, demand_note_sent_at:new Date().toISOString()})}); await renderMilestonesTable(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteMilestone(id){
+  if(!confirm('Delete this milestone?')) return;
+  try{ await reFetch('/re/payment-milestones',{method:'DELETE', body:JSON.stringify({id})}); await renderMilestonesTable(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── POST-SALES ── */
+function renderTicketsTable(){
+  const tbody=$id('ticketsTbody');
+  if(!allTickets.length){ tbody.innerHTML='<tr><td colspan="6" class="empty-state">No tickets yet.</td></tr>'; return; }
+  const statusClass={open:'red', in_progress:'yellow', resolved:'green', closed:'gray'};
+  tbody.innerHTML=allTickets.map(t=>`<tr>
+    <td>#${esc(t.booking_id||'—')}</td><td>${esc(t.subject)}</td><td>${esc(t.priority)}</td>
+    <td><select class="s-input" style="padding:5px 8px;font-size:12px" onchange="updateTicketStatus(${t.id},this.value)">
+      ${['open','in_progress','resolved','closed'].map(s=>`<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
+    </select></td>
+    <td>${esc(new Date(t.created_at).toLocaleDateString())}</td>
+    <td class="row-actions"><button class="icon-btn danger" onclick="deleteTicket(${t.id})">🗑</button></td>
+  </tr>`).join('');
+}
+function openTicketModal(){
+  $id('tBookingId').innerHTML='<option value="">— None —</option>'+allBookings.map(b=>`<option value="${b.id}">#${b.id} — ${esc(b.buyer_name||'')}</option>`).join('');
+  $id('tSubject').value=''; $id('tDescription').value=''; $id('tPriority').value='normal';
+  openModal('ticketModal');
+}
+async function saveTicket(){
+  const subject=$id('tSubject').value.trim();
+  if(!subject){ alert('Subject is required'); return; }
+  try{
+    await reFetch('/re/tickets',{method:'POST', body:JSON.stringify({booking_id:$id('tBookingId').value||null, subject, description:$id('tDescription').value.trim(), priority:$id('tPriority').value})});
+    closeModal('ticketModal');
+    await loadTickets(); renderTicketsTable(); renderOverview();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function updateTicketStatus(id,status){
+  try{
+    const body={id,status}; if(status==='resolved'||status==='closed') body.resolved_at=new Date().toISOString();
+    await reFetch('/re/tickets',{method:'PATCH', body:JSON.stringify(body)});
+    const t=allTickets.find(x=>x.id===id); if(t)t.status=status;
+    renderOverview();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteTicket(id){
+  if(!confirm('Delete this ticket?')) return;
+  try{ await reFetch('/re/tickets',{method:'DELETE', body:JSON.stringify({id})}); await loadTickets(); renderTicketsTable(); renderOverview(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+function renderResaleTable(){
+  const tbody=$id('resaleTbody');
+  const resaleUnits=allUnitsAll().filter(u=>u.status==='resale_listed');
+  if(!resaleUnits.length){ tbody.innerHTML='<tr><td colspan="4" class="empty-state">No units listed for resale.</td></tr>'; return; }
+  tbody.innerHTML=resaleUnits.map(u=>{
+    const proj=allProjects.find(p=>p.id===u.project_id);
+    const booking=allBookings.find(b=>b.unit_id===u.id);
+    return `<tr><td>${esc((u.tower||''))} ${esc(u.unit_no)}</td><td>${proj?esc(proj.name):'—'}</td><td>${booking?esc(booking.buyer_name):'—'}</td><td>${fmtMoney(u.base_price)}</td></tr>`;
+  }).join('');
+}
+
+/* ── CHANNEL PARTNERS ── */
+function renderCpTable(){
+  const tbody=$id('cpTbody');
+  if(!allChannelPartners.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No channel partners yet.</td></tr>'; return; }
+  const kycClass={pending:'yellow', verified:'green', rejected:'red'};
+  tbody.innerHTML=allChannelPartners.map(c=>{
+    const link=`${location.origin}${location.pathname.replace(/[^/]*$/,'')}real-estate.html?cp=${c.portal_token}`;
+    return `<tr>
+      <td>${esc(c.name)}</td><td>${esc(c.company||'—')}</td><td>${esc(c.phone||'—')}</td>
+      <td><span class="badge ${kycClass[c.kyc_status]||'gray'}">${esc(c.kyc_status)}</span></td><td>${esc(c.commission_slab_pct)}%</td>
+      <td><button class="icon-btn" onclick="navigator.clipboard&&navigator.clipboard.writeText('${escAttr(link)}');alert('Portal link copied!')">🔗 Copy</button></td>
+      <td class="row-actions"><button class="icon-btn" onclick="toggleCpActive(${c.id},${c.active?0:1})">${c.active?'⏸':'▶️'}</button><button class="icon-btn danger" onclick="deleteCp(${c.id})">🗑</button></td>
+    </tr>`;
+  }).join('');
+}
+function openCpModal(){
+  ['cpName','cpCompany','cpPhone','cpEmail','cpSlab'].forEach(id=>$id(id).value='');
+  $id('cpKyc').value='pending';
+  openModal('cpModal');
+}
+async function saveCp(){
+  const name=$id('cpName').value.trim();
+  if(!name){ alert('Name is required'); return; }
+  try{
+    await reFetch('/re/channel-partners',{method:'POST', body:JSON.stringify({
+      name, company:$id('cpCompany').value.trim(), phone:$id('cpPhone').value.trim(), email:$id('cpEmail').value.trim(),
+      kyc_status:$id('cpKyc').value, commission_slab_pct:$id('cpSlab').value
+    })});
+    closeModal('cpModal');
+    await loadChannelPartners(); renderCpTable(); populateBookingCpOptions();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function toggleCpActive(id,active){
+  try{ await reFetch('/re/channel-partners',{method:'PATCH', body:JSON.stringify({id,active})}); await loadChannelPartners(); renderCpTable(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteCp(id){
+  if(!confirm('Delete this channel partner?')) return;
+  try{ await reFetch('/re/channel-partners',{method:'DELETE', body:JSON.stringify({id})}); await loadChannelPartners(); renderCpTable(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+function renderCommissionsTable(){
+  const tbody=$id('commTbody');
+  if(!allCommissions.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No commissions yet.</td></tr>'; return; }
+  const statusClass={pending:'yellow', approved:'blue', paid:'green'};
+  tbody.innerHTML=allCommissions.map(c=>{
+    const cp=allChannelPartners.find(x=>x.id===c.cp_id);
+    return `<tr>
+      <td>${cp?esc(cp.name):'#'+esc(c.cp_id)}</td><td>#${esc(c.booking_id)}</td><td>${esc(c.milestone)}</td><td>${fmtMoney(c.amount)}</td>
+      <td><select class="s-input" style="padding:5px 8px;font-size:12px" onchange="updateCommissionStatus(${c.id},this.value)">
+        ${['pending','approved','paid'].map(s=>`<option value="${s}" ${c.status===s?'selected':''}>${s}</option>`).join('')}
+      </select></td>
+      <td>${esc(c.payout_date||'—')}</td>
+      <td class="row-actions"><button class="icon-btn danger" onclick="deleteCommission(${c.id})">🗑</button></td>
+    </tr>`;
+  }).join('');
+}
+async function updateCommissionStatus(id,status){
+  try{
+    const body={id,status}; if(status==='paid') body.payout_date=new Date().toISOString().slice(0,10);
+    await reFetch('/re/cp-commissions',{method:'PATCH', body:JSON.stringify(body)});
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteCommission(id){
+  if(!confirm('Delete this commission row?')) return;
+  try{ await reFetch('/re/cp-commissions',{method:'DELETE', body:JSON.stringify({id})}); await loadCommissions(); renderCommissionsTable(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── MARKETING (SMART LISTS) — same rule-engine pattern as B2B's Smart Lists ── */
+const SEG_RULE_FIELDS=[
+  {key:'re_project', label:'Project'}, {key:'re_zone', label:'Zone'}, {key:'re_urgency', label:'Urgency'},
+  {key:'re_investor', label:'Investor (Yes/No)'}, {key:'Stage', label:'Stage'}, {key:'re_source', label:'Source'}
+];
+function matchesSegRules(lead,rules){
+  return (rules||[]).every(rule=>{
+    const v=String(lead[rule.field]||'');
+    return rule.op==='contains'?v.toLowerCase().includes(String(rule.value||'').toLowerCase()):v.toLowerCase()===String(rule.value||'').toLowerCase();
+  });
+}
+function segMatchCount(rules){ return allLeads.filter(l=>matchesSegRules(l,rules)).length; }
+function renderSegments(){
+  const wrap=$id('segmentsList');
+  if(!segments.length){ wrap.innerHTML='<div class="empty-state"><div class="empty-icon">🎯</div>No Smart Lists yet.</div>'; return; }
+  wrap.innerHTML=segments.map(seg=>{
+    const count=segMatchCount(seg.rules);
+    const summary=(seg.rules||[]).map(r=>`${r.field} ${r.op==='contains'?'contains':'='} "${r.value}"`).join(' · ');
+    const bcParams=new URLSearchParams();
+    (seg.rules||[]).forEach(r=>bcParams.set(r.field,r.value));
+    return `<div class="dup-group" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px"><b>${esc(seg.name)}</b><div class="s-hint">${esc(summary)||'No rules'} — <b>${count}</b> matching</div></div>
+      <button class="save-btn sec sm" onclick="window.open('broadcast.html?${bcParams.toString()}','_blank')">📢 Broadcast</button>
+      <button class="icon-btn" onclick="openSegmentModal('${seg.id}')">✎</button>
+      <button class="icon-btn danger" onclick="deleteSegment('${seg.id}')">🗑</button>
+    </div>`;
+  }).join('');
+}
+function openSegmentModal(id){
+  const seg=id?segments.find(s=>s.id===id):null;
+  $id('segmentModalTitle').textContent=seg?'Edit Smart List':'New Smart List';
+  $id('segId').value=seg?seg.id:''; $id('segName').value=seg?seg.name:'';
+  $id('segRules').innerHTML='';
+  (seg?seg.rules:[{field:'re_project',op:'equals',value:''}]).forEach(r=>addSegRuleRow(r));
+  openModal('segmentModal');
+}
+function addSegRuleRow(rule){
+  rule=rule||{field:'re_project',op:'equals',value:''};
+  const row=document.createElement('div'); row.className='rule-row'; row.style.cssText='display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap';
+  row.innerHTML=`
+    <select class="s-input seg-field" style="width:auto">${SEG_RULE_FIELDS.map(f=>`<option value="${f.key}" ${rule.field===f.key?'selected':''}>${f.label}</option>`).join('')}</select>
+    <select class="s-input seg-op" style="width:auto"><option value="equals" ${rule.op==='equals'?'selected':''}>equals</option><option value="contains" ${rule.op==='contains'?'selected':''}>contains</option></select>
+    <input class="s-input seg-value" style="width:auto" placeholder="value" value="${escAttr(rule.value||'')}">
+    <button class="icon-btn danger" type="button" onclick="this.parentElement.remove()">✕</button>`;
+  $id('segRules').appendChild(row);
+}
+async function saveSegment(){
+  const name=$id('segName').value.trim();
+  if(!name){ alert('Name this Smart List'); return; }
+  const id=$id('segId').value;
+  const rules=[...document.querySelectorAll('#segRules .rule-row')].map(row=>({field:row.querySelector('.seg-field').value, op:row.querySelector('.seg-op').value, value:row.querySelector('.seg-value').value}));
+  if(id){ const seg=segments.find(s=>s.id===id); seg.name=name; seg.rules=rules; }
+  else{ segments.push({id:'seg_'+Date.now().toString(36), name, rules}); }
+  try{ await patchClient({re_segments_json:JSON.stringify(segments)}); closeModal('segmentModal'); renderSegments(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteSegment(id){
+  if(!confirm('Delete this Smart List?')) return;
+  segments=segments.filter(s=>s.id!==id);
+  try{ await patchClient({re_segments_json:JSON.stringify(segments)}); renderSegments(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── ANALYTICS ── */
+async function renderAnalytics(){
+  await refreshAllUnitsCache();
+  const units=allUnitsAll();
+  const byStatus={}; units.forEach(u=>{ byStatus[u.status]=(byStatus[u.status]||0)+1; });
+  $id('anInventoryStats').innerHTML=Object.entries(byStatus).map(([status,n])=>`<div class="stat"><div class="stat-val">${n}</div><div class="stat-lbl">${esc(status.replace('_',' '))}</div></div>`).join('')||'<div class="empty-state">No units yet.</div>';
+
+  const bookedLeadIds=new Set(allBookings.map(b=>String(b.lead_id)).filter(Boolean));
+  const visitLeadIds=new Set(allSiteVisits.map(v=>String(v.lead_id)).filter(Boolean));
+  const groupBy=(keyFn)=>{
+    const map=new Map();
+    allLeads.forEach(l=>{
+      const key=keyFn(l)||'Unclassified';
+      if(!map.has(key)) map.set(key,{leads:0,visits:0,booked:0,scoreSum:0});
+      const g=map.get(key); g.leads++; g.scoreSum+=Number(l.re_score)||0;
+      if(visitLeadIds.has(String(l.Id))) g.visits++;
+      if(bookedLeadIds.has(String(l.Id))) g.booked++;
+    });
+    return map;
+  };
+  const bySource=groupBy(l=>l.re_source);
+  $id('anSourceTbody').innerHTML=[...bySource.entries()].sort((a,b)=>b[1].leads-a[1].leads).map(([src,g])=>
+    `<tr><td>${esc(src)}</td><td>${g.leads}</td><td>${g.visits}</td><td>${g.booked}</td><td>${g.leads?Math.round(g.booked/g.leads*100):0}%</td></tr>`
+  ).join('')||'<tr><td colspan="5" class="empty-state">No data yet.</td></tr>';
+
+  const byProject=groupBy(l=>l.re_project);
+  $id('anProjectTbody').innerHTML=[...byProject.entries()].sort((a,b)=>b[1].leads-a[1].leads).map(([proj,g])=>
+    `<tr><td>${esc(proj)}</td><td>${g.leads}</td><td>${g.visits}</td><td>${g.booked}</td></tr>`
+  ).join('')||'<tr><td colspan="4" class="empty-state">No data yet.</td></tr>';
+
+  const byAgent=groupBy(l=>l.Owner);
+  $id('anAgentTbody').innerHTML=[...byAgent.entries()].sort((a,b)=>b[1].leads-a[1].leads).map(([agent,g])=>
+    `<tr><td>${esc(agent)}</td><td>${g.leads}</td><td>${g.booked}</td><td>${g.leads?Math.round(g.scoreSum/g.leads):0}</td></tr>`
+  ).join('')||'<tr><td colspan="4" class="empty-state">No data yet.</td></tr>';
+
+  $id('anRoiTbody').innerHTML=[...bySource.entries()].map(([src,g])=>{
+    const bookedValue=allBookings.filter(b=>{ const l=allLeads.find(x=>String(x.Id)===String(b.lead_id)); return l&&l.re_source===src; }).reduce((s,b)=>s+Number(b.total_price||0),0);
+    const roiId=src.replace(/[^a-zA-Z0-9]/g,'_');
+    return `<tr><td>${esc(src)}</td><td>${g.leads}</td><td>${fmtMoney(bookedValue)}</td>
+      <td><input class="s-input" style="padding:5px 8px;font-size:12px;width:100px" placeholder="spend" data-roi-id="${escAttr(roiId)}" data-booked-value="${bookedValue}" onchange="updateRoiSpend(this)"></td>
+      <td id="roi-${escAttr(roiId)}">—</td></tr>`;
+  }).join('')||'<tr><td colspan="5" class="empty-state">No data yet.</td></tr>';
+}
+function updateRoiSpend(inputEl){
+  const el=$id('roi-'+inputEl.dataset.roiId);
+  const bookedValue=Number(inputEl.dataset.bookedValue)||0;
+  const s=Number(inputEl.value)||0;
+  el.textContent=s>0?Math.round(((bookedValue-s)/s)*100)+'%':'—';
+}
+
+/* ── DOCUMENTS & COMPLIANCE ── */
+function renderDocsTable(){
+  const tbody=$id('docsTbody');
+  if(!allDocuments.length){ tbody.innerHTML='<tr><td colspan="6" class="empty-state">No documents yet.</td></tr>'; return; }
+  tbody.innerHTML=allDocuments.map(d=>{
+    const proj=allProjects.find(p=>p.id===d.project_id);
+    return `<tr><td>${esc(d.title)}</td><td>${esc((d.doc_type||'').replace('_',' '))}</td><td>${proj?esc(proj.name):'—'}</td>
+      <td>${d.is_rera?'✅':'—'}</td><td><a href="${escAttr(d.url)}" target="_blank">🔗 Open</a></td>
+      <td class="row-actions"><button class="icon-btn danger" onclick="deleteDoc(${d.id})">🗑</button></td></tr>`;
+  }).join('');
+}
+function openDocModal(){
+  ['dTitle','dUrl'].forEach(id=>$id(id).value='');
+  $id('dType').value='rera_disclosure'; $id('dIsRera').value='';
+  populateProjectSelects();
+  $id('dUnitId').innerHTML='<option value="">— None —</option>'+allUnits.map(u=>`<option value="${u.id}">${esc(u.tower||'')} ${esc(u.unit_no)}</option>`).join('');
+  openModal('docModal');
+}
+async function saveDoc(){
+  const title=$id('dTitle').value.trim(), url=$id('dUrl').value.trim();
+  if(!title||!url){ alert('Title and URL are required'); return; }
+  try{
+    await reFetch('/re/documents',{method:'POST', body:JSON.stringify({title, url, doc_type:$id('dType').value, project_id:$id('dProjectId').value||null, unit_id:$id('dUnitId').value||null, is_rera:$id('dIsRera').value})});
+    closeModal('docModal');
+    await loadDocuments(); renderDocsTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+async function deleteDoc(id){
+  if(!confirm('Delete this document?')) return;
+  try{ await reFetch('/re/documents',{method:'DELETE', body:JSON.stringify({id})}); await loadDocuments(); renderDocsTable(); }
+  catch(e){ alert('Failed: '+e.message); }
+}
+function renderInvestorDashboard(){
+  const tbody=$id('investorTbody');
+  const investorBookings=allBookings.filter(b=>b.is_investor);
+  if(!investorBookings.length){ tbody.innerHTML='<tr><td colspan="4" class="empty-state">No investor purchases yet.</td></tr>'; return; }
+  const byBuyer=new Map();
+  investorBookings.forEach(b=>{
+    const key=b.buyer_name||b.buyer_phone||'Unknown';
+    if(!byBuyer.has(key)) byBuyer.set(key, {units:0, total:0, loan:new Set()});
+    const g=byBuyer.get(key); g.units++; g.total+=Number(b.total_price||0); if(b.loan_status) g.loan.add(b.loan_status);
+  });
+  tbody.innerHTML=[...byBuyer.entries()].map(([buyer,g])=>`<tr><td>${esc(buyer)}</td><td>${g.units}</td><td>${fmtMoney(g.total)}</td><td>${esc([...g.loan].join(', ')||'—')}</td></tr>`).join('');
+}
+
+init();
+</script>
+</body>
+</html>
