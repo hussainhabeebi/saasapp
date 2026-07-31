@@ -55,6 +55,55 @@ function json(data, status, extraHeaders){
   return new Response(JSON.stringify(data), {status:status||200, headers:{'Content-Type':'application/json', ...extraHeaders}});
 }
 
+/* ── Rate limiting (SETUP.md "DDoS protection") ──────────────────────────────────────────────
+   Per-IP fixed-window counters in D1 (migrations/0030_rate_limit_counters.sql), applied ONLY to
+   the handful of routes an attacker can hammer without a valid session token: login/session
+   exchange, the admin passcode, and the public storefront/booking writes+reads. Deliberately NOT
+   applied to:
+     - Any route behind requireSession()/verifySession() — reaching app logic there already costs
+       an attacker a valid signed token, so the cheap win is elsewhere.
+     - External webhooks (Shopify/Stripe/Chargebee/Paddle/Razorpay/WhatsApp engine/Instagram/
+       Cal.com/Chatwoot/render-pipeline) — these already verify their own HMAC/signature before
+       doing real work, and a legitimate burst (e.g. a broadcast send fanning out replies, or a
+       Shopify flash sale) must never be mistaken for an attack and dropped.
+   Fail-open throughout: any D1 error (unavailable, slow, unbound) lets the request through rather
+   than blocking it — a rate-limiter bug must never be able to take down login/checkout/booking
+   for real users, which is the whole point of adding this without changing existing behavior. */
+const RATE_LIMIT_RULES = [
+  {test:(p,m)=>p==='/session/exchange'&&m==='POST', bucket:'session-exchange', limit:30, windowSec:300},
+  {test:(p,m)=>p==='/admin/login'&&m==='POST', bucket:'admin-login', limit:20, windowSec:300},
+  {test:(p,m)=>p==='/ecom/public/order'&&m==='POST', bucket:'ecom-order', limit:20, windowSec:600},
+  {test:(p,m)=>p==='/appt/public/book'&&m==='POST', bucket:'appt-book', limit:20, windowSec:600},
+  {test:(p,m)=>p.startsWith('/b2b/doc/')&&p.endsWith('/accept')&&m==='POST', bucket:'b2b-doc-accept', limit:20, windowSec:600},
+  {test:(p,m)=>m==='GET'&&(p==='/ecom/public/products'||p==='/ecom/public/client'||p==='/ecom/public/stores'), bucket:'ecom-public-read', limit:120, windowSec:60},
+  {test:(p,m)=>m==='GET'&&(p==='/appt/public/client'||p==='/appt/public/services'), bucket:'appt-public-read', limit:120, windowSec:60},
+];
+function clientIp(request){
+  return request.headers.get('CF-Connecting-IP')||request.headers.get('X-Forwarded-For')||'unknown';
+}
+async function checkRateLimit(env, bucket, ip, limit, windowSec){
+  if(!env.DB) return true;
+  try{
+    const windowStart=Math.floor(Date.now()/1000/windowSec)*windowSec;
+    const key=`${bucket}:${ip}:${windowStart}`;
+    await env.DB.prepare(
+      `INSERT INTO rate_limit_counters (rl_key, count, expires_at) VALUES (?, 1, ?)
+       ON CONFLICT(rl_key) DO UPDATE SET count = count + 1`
+    ).bind(key, windowStart+windowSec).run();
+    const row=await env.DB.prepare(`SELECT count FROM rate_limit_counters WHERE rl_key=?`).bind(key).first();
+    return !row||row.count<=limit;
+  }catch(e){
+    return true;
+  }
+}
+// Piggybacked on the existing 2am daily cron (see scheduled() below) rather than a 5th cron
+// string, same reasoning as every other daily-granularity sweep in this file. Best-effort —
+// stale rows just sit unused until the next sweep if this ever throws.
+async function cleanupRateLimitCounters(env){
+  if(!env.DB) return;
+  try{ await env.DB.prepare(`DELETE FROM rate_limit_counters WHERE expires_at < ?`).bind(Math.floor(Date.now()/1000)).run(); }catch(e){}
+}
+
 /* ── Platform-level error monitoring — deliberately NOT client-facing (see clients' own
    slack_webhook_url, used by n8n/notifications.json for hot-lead/handover business alerts; this
    is a separate, operator-facing channel for "the platform itself is broken"). Both destinations
@@ -13227,6 +13276,17 @@ export default {
 
     if(request.method==='OPTIONS') return new Response(null, {status:204, headers:cors});
 
+    const rlRule=RATE_LIMIT_RULES.find(r=>r.test(url.pathname, request.method));
+    if(rlRule){
+      const allowed=await checkRateLimit(env, rlRule.bucket, clientIp(request), rlRule.limit, rlRule.windowSec);
+      if(!allowed){
+        return new Response(JSON.stringify({error:'Too many requests — please slow down and try again shortly.'}), {
+          status:429,
+          headers:{...cors, 'Content-Type':'application/json', 'Retry-After':String(rlRule.windowSec)}
+        });
+      }
+    }
+
     let res;
     try{
       if(url.pathname==='/health'){ res=json({ok:true, marketing_build:MARKETING_BUILD_TAG}); }
@@ -13549,6 +13609,9 @@ export default {
       // Instagram DM — long-lived tokens expire in 60 days and need refreshing before then; see
       // runInstagramTokenRefreshForAllClients's own comment for why daily is fine.
       ctx.waitUntil(runInstagramTokenRefreshForAllClients(env));
+      // Rate limiting (SETUP.md "DDoS protection") — sweep expired per-IP counters so the table
+      // doesn't grow unbounded; daily is plenty since rows expire on their own within minutes.
+      ctx.waitUntil(cleanupRateLimitCounters(env));
     }
     else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env)); }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
