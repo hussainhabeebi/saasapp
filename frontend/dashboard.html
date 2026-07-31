@@ -1225,6 +1225,20 @@ const TODAY = new Date().toISOString().slice(0,10);
               <div id="homeAgents"><div style="color:var(--muted);font-size:13px;padding:8px 0">Loading…</div></div>
             </div>
 
+            <!-- Real Estate Snapshot — only shown when the module is enabled (see
+                 loadHomeRealEstateSnapshot); pulls straight from the module's own /re/* Worker
+                 routes rather than duplicating any of its D1 data into NocoDB. -->
+            <div class="section-card" id="homeRealEstateCard" style="display:none">
+              <div class="section-title">🏘️ Real Estate
+                <button class="btn-ghost" onclick="navigate('realestate')" style="font-size:12px;font-weight:500">Open →</button>
+              </div>
+              <div id="homeRealEstateStats" style="display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;justify-content:space-between;font-size:13px"><span>Units Available</span><b id="homeReUnitsAvailable">—</b></div>
+                <div style="display:flex;justify-content:space-between;font-size:13px"><span>Upcoming Site Visits</span><b id="homeReVisits">—</b></div>
+                <div style="display:flex;justify-content:space-between;font-size:13px"><span>Open Tickets</span><b id="homeReTickets">—</b></div>
+              </div>
+            </div>
+
             <!-- Quick Actions -->
             <div class="section-card">
               <div class="section-title">⚡ Quick Actions</div>
@@ -4662,6 +4676,7 @@ function renderHome(){
   try{renderPredictive();}catch(e){}
   try{renderBenchmark();}catch(e){}
   try{renderTasks();}catch(e){}
+  try{loadHomeRealEstateSnapshot();}catch(e){}
 }
 
 /* ── TRUST SIGNALS (Home hero) ── */
@@ -4994,6 +5009,32 @@ function renderAccounting(){
 function renderRealEstate(){
   const frame=$id('realEstateFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`real-estate.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+}
+
+// Home tab widget for the Real Estate module — hits its /re/* Worker routes directly (same
+// bearer-token session dashboard.html already holds) rather than going through the iframe, so the
+// snapshot is visible without ever opening the Real Estate tab. Best-effort: the card just stays
+// hidden if the module isn't enabled or a fetch fails, same as every other try/catch'd renderHome
+// widget.
+async function loadHomeRealEstateSnapshot(){
+  const card=$id('homeRealEstateCard');
+  if(!card) return;
+  if(clientRecord?.real_estate_enabled!=='Yes'){ card.style.display='none'; return; }
+  card.style.display='block';
+  try{
+    const headers={'Authorization':'Bearer '+sessionToken};
+    const [analytics, visits]=await Promise.all([
+      fetch(`${WORKER_BASE}/re/analytics`,{headers}).then(r=>r.json()),
+      fetch(`${WORKER_BASE}/re/site-visits`,{headers}).then(r=>r.json())
+    ]);
+    const unitsAvailable=(analytics.units_by_status||[]).find(u=>u.status==='available')?.n||0;
+    const openTickets=(analytics.tickets_by_status||[]).filter(t=>t.status==='open'||t.status==='in_progress').reduce((s,t)=>s+t.n,0);
+    const now=Date.now();
+    const upcomingVisits=(visits.list||[]).filter(v=>v.status==='scheduled'&&new Date(v.scheduled_at).getTime()>=now).length;
+    $id('homeReUnitsAvailable').textContent=unitsAvailable.toLocaleString();
+    $id('homeReVisits').textContent=upcomingVisits.toLocaleString();
+    $id('homeReTickets').textContent=openTickets.toLocaleString();
+  }catch(e){ card.style.display='none'; }
 }
 
 /* ── HUMAN DEALS ── */
@@ -11480,10 +11521,12 @@ function renderLeadProfile(lead){
   const qaKeys=Object.keys(qa);
   const isTravelClient=clientRecord?.industry==='travel';
   const hasTravelData=isTravelClient&&(lead.Destination||lead.TravelDates||lead.TripType||lead.Budget);
-  if(!qaKeys.length&&!lead.QualScore&&lead.HotMoment!=='Yes'&&!hasTravelData){card.style.display='none';return;}
+  const isRealEstateClient=clientRecord?.industry==='real_estate';
+  const hasReData=isRealEstateClient&&(lead.re_source||lead.re_project||lead.re_budget||lead.re_urgency||lead.re_score||lead.re_zone||lead.re_language||lead.re_investor);
+  if(!qaKeys.length&&!lead.QualScore&&lead.HotMoment!=='Yes'&&!hasTravelData&&!hasReData){card.style.display='none';return;}
   card.style.display='block';
   card.innerHTML=`<div class="profile-card">
-    <div class="pc-title">${isTravelClient?'✈️ Travel Profile':'🧬 Lead Profile'}</div>
+    <div class="pc-title">${isTravelClient?'✈️ Travel Profile':isRealEstateClient?'🏘️ Buyer Profile':'🧬 Lead Profile'}</div>
     ${hasTravelData?`
       ${lead.Destination?`<div class="pc-row"><div class="pc-key">Destination</div><div class="pc-val">🌍 ${esc(lead.Destination)}</div></div>`:''}
       ${lead.TravelDates?`<div class="pc-row"><div class="pc-key">Travel Dates</div><div class="pc-val">📅 ${esc(lead.TravelDates)}</div></div>`:''}
@@ -11491,6 +11534,17 @@ function renderLeadProfile(lead){
       ${lead.PaxCount?`<div class="pc-row"><div class="pc-key">Passengers</div><div class="pc-val">👥 ${esc(lead.PaxCount)}</div></div>`:''}
       ${lead.Budget?`<div class="pc-row"><div class="pc-key">Budget</div><div class="pc-val">💰 USD ${Number(lead.Budget).toLocaleString()}</div></div>`:''}
       ${lead.SpecialRequests?`<div class="pc-row"><div class="pc-key">Special Req.</div><div class="pc-val">${esc(lead.SpecialRequests)}</div></div>`:''}
+    `:''}
+    ${hasReData?`
+      ${lead.re_source?`<div class="pc-row"><div class="pc-key">Source</div><div class="pc-val">📥 ${esc(lead.re_source)}</div></div>`:''}
+      ${lead.re_project?`<div class="pc-row"><div class="pc-key">Project</div><div class="pc-val">🏢 ${esc(lead.re_project)}</div></div>`:''}
+      ${lead.re_budget?`<div class="pc-row"><div class="pc-key">Budget</div><div class="pc-val">💰 ${Number(lead.re_budget).toLocaleString()}</div></div>`:''}
+      ${lead.re_urgency?`<div class="pc-row"><div class="pc-key">Urgency</div><div class="pc-val">${esc(lead.re_urgency)}</div></div>`:''}
+      ${lead.re_zone?`<div class="pc-row"><div class="pc-key">Zone</div><div class="pc-val">📍 ${esc(lead.re_zone)}</div></div>`:''}
+      ${lead.re_language?`<div class="pc-row"><div class="pc-key">Language</div><div class="pc-val">${esc(lead.re_language)}</div></div>`:''}
+      ${lead.re_investor==='Yes'?`<div class="pc-row"><div class="pc-key">Investor</div><div class="pc-val">💎 Yes</div></div>`:''}
+      ${lead.re_score?`<div class="pc-row"><div class="pc-key">Lead Score</div><div class="pc-val">${qsPill(Math.round(Number(lead.re_score)/10))} ${lead.re_score}/100</div></div>`:''}
+      <div class="pc-row"><div class="pc-key"></div><div class="pc-val"><a href="#" onclick="window.open('real-estate.html?client='+clientId+'&token='+encodeURIComponent(sessionToken)+'&embed=1','_blank');return false" style="font-size:12px">Open in Real Estate module →</a></div></div>
     `:''}
     ${lead.QualScore?`<div class="pc-row"><div class="pc-key">Qual Score</div><div class="pc-val">${qsPill(parseInt(lead.QualScore))} ${lead.QualScore}/10</div></div>`:''}
     ${lead.HotMoment==='Yes'?`<div class="pc-row"><div class="pc-key">Hot Moment</div><div class="pc-val">🔥 ${esc(lead.HotMomentText||'Buying signal')}</div></div>`:''}

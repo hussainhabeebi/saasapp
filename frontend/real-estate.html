@@ -547,7 +547,11 @@ tbody tr:hover{background:var(--bg)}
     </div>
     <label class="s-lbl">Notes</label>
     <textarea class="s-input" id="bdNotes" rows="2"></textarea>
-    <div style="margin-top:10px"><button class="save-btn sec sm" onclick="markResale()">🔁 List Unit for Resale</button></div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="save-btn sec sm" onclick="markResale()">🔁 List Unit for Resale</button>
+      <button class="save-btn sec sm" onclick="generateInvoice()">🧾 Generate Invoice in Accounting</button>
+    </div>
+    <div class="s-hint" id="bdInvoiceMsg"></div>
     <div class="modal-actions" style="justify-content:space-between">
       <button class="save-btn sec" onclick="closeModal('bookingDetailModal');openMilestonesModal(document.getElementById('bdBookingId').value)">💵 Payment Schedule</button>
       <div style="display:flex;gap:10px">
@@ -1189,6 +1193,31 @@ async function markResale(){
     renderUnitsTable(); renderResaleTable();
     alert('Unit marked for resale.');
   }catch(e){ alert('Failed: '+e.message); }
+}
+// Real Accounting-module integration, not a lookalike — POSTs straight to the same
+// /accounting/documents route accounting.html itself uses (same bearer session token this page
+// already carries), so the resulting invoice shows up in the Accounting tab like any other
+// invoice, fully editable/ERPNext-syncable there.
+async function generateInvoice(){
+  const id=$id('bdBookingId').value;
+  const booking=allBookings.find(b=>String(b.id)===String(id));
+  if(!booking){ showMsg('bdInvoiceMsg','Booking not found'); return; }
+  const unit=allUnitsAll().find(u=>u.id===booking.unit_id)||allUnits.find(u=>u.id===booking.unit_id);
+  const proj=unit?allProjects.find(p=>p.id===unit.project_id):null;
+  const unitLabel=unit?`${unit.tower||''} ${unit.unit_no}`.trim():`Unit #${booking.unit_id}`;
+  showMsg('bdInvoiceMsg','Generating…',60000);
+  try{
+    // reFetch is a plain WORKER_BASE+path fetch — works for accounting.html's own /accounting/*
+    // routes just as well as this module's /re/*, since both share the one bearer session token
+    // this page already holds.
+    const doc=await reFetch('/accounting/documents',{method:'POST', body:JSON.stringify({
+      type:'invoice', title:`${proj?proj.name+' — ':''}${unitLabel} — ${booking.buyer_name||'Buyer'}`,
+      lead_id:booking.lead_id||null, currency:clientRecord?.deal_currency||'AED',
+      line_items:[{name:`${proj?proj.name+' — ':''}${unitLabel}`, qty:1, price:Number(booking.total_price)||0}],
+      notes:`Real Estate booking #${booking.id}.${booking.token_amount?` Token/advance already received: ${fmtMoney(booking.token_amount)}.`:''}`
+    })});
+    showMsg('bdInvoiceMsg','✓ Invoice #'+doc.Id+' created — open it in the Accounting tab.',6000);
+  }catch(e){ showMsg('bdInvoiceMsg','Failed: '+e.message,6000); }
 }
 async function deleteBooking(id){
   if(!confirm('Delete this booking record?')) return;

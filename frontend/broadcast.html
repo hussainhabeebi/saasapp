@@ -355,6 +355,13 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <select id="dmCountryFilter" onchange="filterDmLeads()">
           <option value="">All countries</option>
         </select>
+        <span id="dmReFilters" class="re-filters" style="display:none">
+          <select id="dmReProjectFilter" onchange="filterDmLeads()"><option value="">All projects</option></select>
+          <select id="dmReZoneFilter" onchange="filterDmLeads()"><option value="">All zones</option></select>
+          <select id="dmReUrgencyFilter" onchange="filterDmLeads()"><option value="">All urgency</option></select>
+          <select id="dmReSourceFilter" onchange="filterDmLeads()"><option value="">All sources</option></select>
+          <select id="dmReInvestorFilter" onchange="filterDmLeads()"><option value="">Investor: any</option><option value="Yes">Investor: Yes</option></select>
+        </span>
         <select id="dmWindowFilter" onchange="filterDmLeads()">
           <option value="24h">Within 24h only</option>
           <option value="all">Show all leads</option>
@@ -457,6 +464,13 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <select id="metaCountryFilter" onchange="filterMetaLeads()">
           <option value="">All countries</option>
         </select>
+        <span id="metaReFilters" class="re-filters" style="display:none">
+          <select id="metaReProjectFilter" onchange="filterMetaLeads()"><option value="">All projects</option></select>
+          <select id="metaReZoneFilter" onchange="filterMetaLeads()"><option value="">All zones</option></select>
+          <select id="metaReUrgencyFilter" onchange="filterMetaLeads()"><option value="">All urgency</option></select>
+          <select id="metaReSourceFilter" onchange="filterMetaLeads()"><option value="">All sources</option></select>
+          <select id="metaReInvestorFilter" onchange="filterMetaLeads()"><option value="">Investor: any</option><option value="Yes">Investor: Yes</option></select>
+        </span>
         <select id="metaScoreFilter" onchange="filterMetaLeads()">
           <option value="">All scores</option>
           <option value="Hot">Hot</option>
@@ -852,6 +866,12 @@ async function initApp(){
   const logoUrl=clientRecord.quote_logo_url||'';
   const topLogo=$id('topLogo'),topBrandText=$id('topBrandText');
   if(logoUrl){topLogo.src=logoUrl;topLogo.style.display='inline-block';topBrandText.style.display='none';}
+  // Real Estate module deep-link filters (re_project/re_zone/re_urgency/re_source/re_investor —
+  // see applyFilterPresetsFromUrl) only make sense for real_estate clients; hidden for everyone
+  // else so the toolbar doesn't grow five extra selects nobody else's leads populate.
+  if(clientRecord.industry==='real_estate'){
+    [$id('dmReFilters'),$id('metaReFilters')].forEach(el=>{ if(el) el.style.display='contents'; });
+  }
   await Promise.all([loadLeads(), loadTemplates()]);
 }
 
@@ -892,6 +912,16 @@ async function loadLeads(){
     populate('dmBrandFilter',brands); populate('metaBrandFilter',brands);
     populate('dmCountryFilter',countries); populate('metaCountryFilter',countries);
 
+    // Real Estate module fields (only populated/visible for real_estate clients — see initApp).
+    const reProjects=[...new Set(allLeads.map(l=>l.re_project).filter(Boolean))].sort();
+    const reZones=[...new Set(allLeads.map(l=>l.re_zone).filter(Boolean))].sort();
+    const reUrgencies=[...new Set(allLeads.map(l=>l.re_urgency).filter(Boolean))].sort();
+    const reSources=[...new Set(allLeads.map(l=>l.re_source).filter(Boolean))].sort();
+    populate('dmReProjectFilter',reProjects); populate('metaReProjectFilter',reProjects);
+    populate('dmReZoneFilter',reZones); populate('metaReZoneFilter',reZones);
+    populate('dmReUrgencyFilter',reUrgencies); populate('metaReUrgencyFilter',reUrgencies);
+    populate('dmReSourceFilter',reSources); populate('metaReSourceFilter',reSources);
+
     applyFilterPresetsFromUrl();
     filterDmLeads();
     filterMetaLeads();
@@ -900,11 +930,22 @@ async function loadLeads(){
 
 // B2B module deep-link: broadcast.html?stage=X&brand=Y&country=Z (from Smart Lists / Analytics
 // "📢 Broadcast" buttons in b2b.html) — preset both the DM and Meta Template tabs' filters so
-// sending to that slice is a one-click follow-on from wherever it was surfaced.
+// sending to that slice is a one-click follow-on from wherever it was surfaced. Real Estate's own
+// Smart Lists (real-estate.html) deep-link the same way with re_project/re_zone/re_urgency/
+// re_source/re_investor — same param-name-is-the-Leads-field-name contract, just a different
+// module's fields.
 function applyFilterPresetsFromUrl(){
   const qp=new URLSearchParams(location.search);
   const stage=qp.get('stage')||'', brand=qp.get('brand')||'', country=qp.get('country')||'';
-  [['dmStageFilter',stage],['metaStageFilter',stage],['dmBrandFilter',brand],['metaBrandFilter',brand],['dmCountryFilter',country],['metaCountryFilter',country]].forEach(([id,val])=>{
+  const reProject=qp.get('re_project')||'', reZone=qp.get('re_zone')||'', reUrgency=qp.get('re_urgency')||'';
+  const reSource=qp.get('re_source')||'', reInvestor=qp.get('re_investor')||'';
+  [
+    ['dmStageFilter',stage],['metaStageFilter',stage],['dmBrandFilter',brand],['metaBrandFilter',brand],
+    ['dmCountryFilter',country],['metaCountryFilter',country],
+    ['dmReProjectFilter',reProject],['metaReProjectFilter',reProject],['dmReZoneFilter',reZone],['metaReZoneFilter',reZone],
+    ['dmReUrgencyFilter',reUrgency],['metaReUrgencyFilter',reUrgency],['dmReSourceFilter',reSource],['metaReSourceFilter',reSource],
+    ['dmReInvestorFilter',reInvestor],['metaReInvestorFilter',reInvestor]
+  ].forEach(([id,val])=>{
     const el=$id(id);
     if(el && val && [...el.options].some(o=>o.value===val)) el.value=val;
   });
@@ -917,11 +958,21 @@ function filterDmLeads(){
   const brand=$id('dmBrandFilter').value;
   const country=$id('dmCountryFilter').value;
   const window=$id('dmWindowFilter').value;
+  const reProject=$id('dmReProjectFilter')?.value||'';
+  const reZone=$id('dmReZoneFilter')?.value||'';
+  const reUrgency=$id('dmReUrgencyFilter')?.value||'';
+  const reSource=$id('dmReSourceFilter')?.value||'';
+  const reInvestor=$id('dmReInvestorFilter')?.value||'';
 
   let leads=allLeads.filter(l=>{
     if(stage&&l.Stage!==stage) return false;
     if(brand&&l.Brand!==brand) return false;
     if(country&&l.Country!==country) return false;
+    if(reProject&&l.re_project!==reProject) return false;
+    if(reZone&&l.re_zone!==reZone) return false;
+    if(reUrgency&&l.re_urgency!==reUrgency) return false;
+    if(reSource&&l.re_source!==reSource) return false;
+    if(reInvestor&&l.re_investor!==reInvestor) return false;
     if(window==='24h'&&!within24h(l.LastMsgAt)) return false;
     if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
     return true;
@@ -967,11 +1018,21 @@ function filterMetaLeads(){
   const brand=$id('metaBrandFilter').value;
   const country=$id('metaCountryFilter').value;
   const score=$id('metaScoreFilter').value;
+  const reProject=$id('metaReProjectFilter')?.value||'';
+  const reZone=$id('metaReZoneFilter')?.value||'';
+  const reUrgency=$id('metaReUrgencyFilter')?.value||'';
+  const reSource=$id('metaReSourceFilter')?.value||'';
+  const reInvestor=$id('metaReInvestorFilter')?.value||'';
   metaFilteredLeads=allLeads.filter(l=>{
     if(stage&&l.Stage!==stage) return false;
     if(brand&&l.Brand!==brand) return false;
     if(country&&l.Country!==country) return false;
     if(score&&l.Score!==score) return false;
+    if(reProject&&l.re_project!==reProject) return false;
+    if(reZone&&l.re_zone!==reZone) return false;
+    if(reUrgency&&l.re_urgency!==reUrgency) return false;
+    if(reSource&&l.re_source!==reSource) return false;
+    if(reInvestor&&l.re_investor!==reInvestor) return false;
     if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
     return true;
   });
