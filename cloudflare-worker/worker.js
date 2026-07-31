@@ -8128,15 +8128,19 @@ async function handleInstagramWebhookVerify(request, env){
 async function handleInstagramWebhook(request, env){
   if(env.ENGINE_ENABLED==='false') return json({ok:true, skipped:'engine-disabled-global'});
   const body=await request.json().catch(()=>({}));
+  console.log('[instagram-webhook] received', JSON.stringify(body).slice(0,500));
   if(body.object!=='instagram') return json({ok:true, skipped:'not-instagram'});
 
   for(const entry of (body.entry||[])){
     try{
       const parsed=engineParseInstagramPayload(entry);
-      if(!parsed) continue;
+      if(!parsed){ console.log('[instagram-webhook] entry not actionable (no parsed payload — echo, missing text, or missing sender)', JSON.stringify(entry).slice(0,300)); continue; }
       const recipientId=entry.messaging?.[0]?.recipient?.id||entry.id;
       const c=await findClientByField(env, 'ig_id', recipientId);
-      if(!c || c.active==='No' || c.engine_disabled==='Yes' || !c.openrouter_key) continue;
+      if(!c){ console.log('[instagram-webhook] no client found for ig_id', recipientId); continue; }
+      if(c.active==='No'){ console.log('[instagram-webhook] skipped: client inactive', c.Id); continue; }
+      if(c.engine_disabled==='Yes'){ console.log('[instagram-webhook] skipped: engine_disabled for client', c.Id); continue; }
+      if(!c.openrouter_key){ console.log('[instagram-webhook] skipped: no openrouter_key set for client', c.Id); continue; }
       const clientId=String(c.Id);
 
       // Same fast D1 dedup gate handleEngineWebhook uses for WhatsApp redeliveries, reusing the
