@@ -4548,6 +4548,18 @@ as the Shopify module's connect flow) rather than the Meta JS SDK's `FB.login` p
 6. Nothing else to create by hand — connecting (below) auto-provisions every NocoDB column it
    needs.
 
+**Before submitting for App Review** (only needed once you want *other clients'* Instagram
+accounts to connect — any account you've added as a tester works right now without review):
+under that use case's **Business login settings**, set:
+- **Deauthorize Callback URL**: `{WORKER_BASE_URL}/ig/deauthorize` — `handleInstagramDeauthorize`
+  in `worker.js` verifies Meta's signed request and clears that client's `ig_*` fields the moment
+  they revoke access from their own Instagram/Meta settings, instead of the stored token just
+  silently failing on every send afterward.
+- **Data Deletion Request URL**: point this at wherever your actual data-deletion process is
+  documented (`privacy.html`'s "Your Rights" section touches on it, but tighten the wording with a
+  concrete method — email address, self-serve link — before relying on it for review; this is a
+  business decision, not something to leave generic).
+
 **Connect flow:** Settings → Integrations → "📷 Instagram DM" → Connect → `POST /ig/oauth/start`
 returns `https://www.instagram.com/oauth/authorize?...` (client id + scope + a signed `state`
 carrying the client id, same `signOauthState`/`verifyOauthState` helper Shopify/Google Search

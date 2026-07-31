@@ -2839,7 +2839,10 @@ async function handleChannelsWhatsappConnect(request, env){
    popup — so this is a plain browser-redirect OAuth, same shape as the Shopify module's
    handleShopifyOauthStart/Callback above (signOauthState carries the client id through the
    round trip), not an Embedded-Signup-style flow. See SETUP.md "Instagram DM module". ── */
-const META_IG_OAUTH_SCOPE='instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments';
+// Deliberately NOT instagram_business_manage_comments — nothing in this module reads or manages
+// comments (DMs only), and Meta's App Review rejects/flags permissions requested but not
+// demonstrably used, so asking for it would just be unearned review risk for no functionality.
+const META_IG_OAUTH_SCOPE='instagram_business_basic,instagram_business_manage_messages';
 
 async function handleInstagramOauthStart(request, env){
   const payload=await requireSession(request, env);
@@ -2902,6 +2905,41 @@ async function handleInstagramDisconnect(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   await patchClientFields(env, payload.cid, {ig_id:'', ig_access_token:'', ig_username:'', ig_connected_at:''});
+  return json({ok:true});
+}
+
+// Meta's `signed_request` format (used for both the Deauthorize callback below and, historically,
+// canvas/tab apps): `{base64url(HMAC-SHA256(payload, secret))}.{base64url(JSON payload)}`. Same
+// base64url alphabet as hmacSignB64 above, but HMAC'd with the given secret directly rather than
+// SESSION_SIGNING_KEY (this verifies a payload Meta itself signed, not one this Worker issued).
+async function verifyMetaSignedRequest(secret, signedRequest){
+  const [encodedSig, payload]=String(signedRequest||'').split('.');
+  if(!encodedSig||!payload) return null;
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
+  const expected=btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  if(expected!==encodedSig) return null;
+  const b64=payload.replace(/-/g,'+').replace(/_/g,'/');
+  const padded=b64+'='.repeat((4-b64.length%4)%4);
+  try{ return JSON.parse(atob(padded)); }catch(e){ return null; }
+}
+
+// Instagram Business Login's "Deauthorize Callback URL" (Business login settings, required before
+// submitting for App Review) — Meta POSTs here when a user revokes the app's access from their
+// own Instagram/Meta settings, so the stored (now-invalid) token doesn't just sit there silently
+// failing on every send. `user_id` in the verified payload is the same Instagram-scoped id stored
+// as `ig_id`.
+async function handleInstagramDeauthorize(request, env){
+  if(!env.META_IG_APP_SECRET) return json({error:'Instagram app credentials are not configured on the server.'}, 500);
+  const bodyText=await request.text();
+  const signedRequest=new URLSearchParams(bodyText).get('signed_request');
+  const payload=await verifyMetaSignedRequest(env.META_IG_APP_SECRET, signedRequest);
+  // Always 200 — an unverifiable/missing signed_request isn't something Meta can act on a retry
+  // for, and there's nothing sensitive to leak either way (the response body carries no lookup
+  // result), so there's no reason to give it a different status than the normal case.
+  if(!payload?.user_id) return json({ok:true});
+  const c=await findClientByField(env, 'ig_id', String(payload.user_id));
+  if(c) await patchClientFields(env, c.Id, {ig_id:'', ig_access_token:'', ig_username:'', ig_connected_at:''});
   return json({ok:true});
 }
 
@@ -13245,6 +13283,7 @@ export default {
       else if(url.pathname==='/ig/oauth/start' && request.method==='POST'){ res=await handleInstagramOauthStart(request, env); }
       else if(url.pathname==='/ig/oauth/callback' && request.method==='GET'){ res=await handleInstagramOauthCallback(request, env); }
       else if(url.pathname==='/channels/instagram/disconnect' && request.method==='POST'){ res=await handleInstagramDisconnect(request, env); }
+      else if(url.pathname==='/ig/deauthorize' && request.method==='POST'){ res=await handleInstagramDeauthorize(request, env); }
       else if(url.pathname==='/ig/webhook' && request.method==='GET'){ res=await handleInstagramWebhookVerify(request, env); }
       else if(url.pathname==='/ig/webhook' && request.method==='POST'){ res=await handleInstagramWebhook(request, env); }
       else if(url.pathname==='/instagram/send' && request.method==='POST'){ res=await handleInstagramSend(request, env); }
