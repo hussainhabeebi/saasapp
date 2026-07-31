@@ -8137,6 +8137,27 @@ async function handleInstagramWebhook(request, env){
   const body=await request.json().catch(()=>({}));
   if(body.object!=='instagram') return json({ok:true, skipped:'not-instagram'});
 
+  // TEMPORARY debug aid — neither wrangler tail nor a direct curl test has been reachable while
+  // diagnosing why real DMs weren't showing up in Chats, so this writes the exact raw payload Meta
+  // sends into NocoDB (ig_webhook_debug on CLIENTS), readable directly with no log tooling
+  // involved at all. Best-effort, every ig-connected client (there's only one right now) — remove
+  // once the underlying issue is found; not meant to ship long-term.
+  try{
+    await ensureClientColumns(env, ['ig_webhook_debug']);
+    let page=1;
+    while(true){
+      const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+      const data=await r.json().catch(()=>({}));
+      const rows=data?.list||[];
+      if(!rows.length) break;
+      for(const row of rows){
+        if(row.ig_access_token) await patchClientFields(env, row.Id, {ig_webhook_debug: new Date().toISOString()+' :: '+JSON.stringify(body).slice(0,2000)}).catch(()=>{});
+      }
+      if(rows.length<200) break;
+      page++;
+    }
+  }catch(e){}
+
   for(const entry of (body.entry||[])){
     try{
       const parsed=engineParseInstagramPayload(entry);
