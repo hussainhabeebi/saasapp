@@ -107,7 +107,18 @@ async function ncTableMeta(env, tableId){
 }
 async function ncEnsureField(env, tableId, existingNames, name, uidt='SingleLineText'){
   if(existingNames.includes(name)) return;
-  await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{column_name:name, title:name, uidt}}).catch(()=>{});
+  try{
+    const r=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{column_name:name, title:name, uidt}});
+    if(!r.ok){
+      const data=await r.json().catch(()=>({}));
+      // Was previously a silent .catch(()=>{}) — a real failure here (most likely NOCODB_TOKEN
+      // lacking schema-edit rights on this base, e.g. an Editor/Commenter role instead of
+      // Creator/Owner) looked identical to success right up until the write it exists for failed
+      // downstream with no clue why. Logged via console.error so it shows up in the Worker's
+      // Observability tab (already enabled — see wrangler.toml).
+      console.error('[ncEnsureField] failed to create column', name, 'on table', tableId, ':', r.status, JSON.stringify(data));
+    }
+  }catch(e){ console.error('[ncEnsureField] failed to create column', name, 'on table', tableId, ':', e.message); }
 }
 async function ensureClientColumns(env, names){
   const {names:existing}=await ncTableMeta(env, CLIENTS_TABLE);
