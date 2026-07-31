@@ -4521,26 +4521,57 @@ booking-signal auto-send that WhatsApp also gets are **not** replicated here —
 text-only, core-conversation channel for now, not full parity with every WhatsApp
 business-vertical feature.
 
-**One-time Meta setup:**
-1. On the same Meta app used for WhatsApp Embedded Signup (`META_APP_ID`/`META_APP_SECRET`,
-   already set), add the **Instagram** product → **Business Login for Instagram** → create a
-   config, copy its config id into `frontend/dashboard.html`'s `CONFIG.META_INSTAGRAM_CONFIG_ID`.
-2. Add a webhook subscription for the **Instagram** product pointing at
-   `{WORKER_BASE_URL}/ig/webhook`, subscribed to the `messages` field. Meta will call this URL with
-   a `GET` verification challenge first — set a `META_IG_VERIFY_TOKEN` Worker secret
-   (`wrangler secret put META_IG_VERIFY_TOKEN`, any random string) and enter the same value as the
-   "Verify Token" in Meta's webhook subscription dialog.
-3. Nothing else to create by hand — connecting (below) both discovers the Instagram Business
-   Account and auto-provisions every column it needs.
+**Uses "Instagram API with Instagram Login"**, not the Facebook-Login-for-Business/Page-linked
+variant — a deliberately separate app credential pair from `META_APP_ID`/`META_APP_SECRET`
+(WhatsApp's), authenticating directly against the Instagram professional account with no Facebook
+Page involved, and its own OAuth host (`instagram.com`/`graph.instagram.com`, not
+`graph.facebook.com`). This means the connect flow is a plain browser-redirect OAuth (same shape
+as the Shopify module's connect flow) rather than the Meta JS SDK's `FB.login` popup WhatsApp uses.
 
-**Connect flow:** Settings → Integrations → "📷 Instagram DM" → Connect → same Embedded-Signup
-`FB.login` pattern as WhatsApp (`connectInstagram()`), but returns `code` directly in the login
-callback (no `WA_EMBEDDED_SIGNUP`-style postMessage event to wait on) → `POST
-/channels/instagram/connect` exchanges it for a user token, walks `GET /me/accounts` for the first
-Facebook Page with a linked Instagram Business Account, and stores that Page's own access token
-(Instagram messaging authenticates as the Page, not the raw user) — `ig_id`, `ig_access_token`,
-`ig_username`, `ig_connected_at` on the CLIENTS row. These are auto-created via NocoDB's Meta API
-the moment you connect (`ensureClientColumns()` in `worker.js`) — nothing to add by hand.
+**One-time Meta setup:**
+1. In [developers.facebook.com](https://developers.facebook.com) → your app (can be the same app
+   as WhatsApp's, or a separate one — see the note on that in the PR discussion; nothing about
+   this flow depends on which) → **Add use case** → check **"Manage messaging & content on
+   Instagram"** → Save.
+2. Under that use case → **1. Add required messaging permissions** → **Add all required
+   permissions** (`instagram_business_basic`, `instagram_business_manage_messages`,
+   `instagram_business_manage_comments`).
+3. **2. Generate access tokens** → **Add account** → log in with the Instagram professional
+   account you want connected (also adds you as a tester, needed before the app is published).
+4. **3. Configure webhooks** → Callback URL: `{WORKER_BASE_URL}/ig/webhook` (this Worker's
+   production URL is `https://leadvyne-api-proxy.leadvyne.workers.dev/ig/webhook`) → Verify Token:
+   any string you choose. Set that same string as a Worker secret: `wrangler secret put
+   META_IG_VERIFY_TOKEN`.
+5. Copy that use case's **Instagram app ID** / **Instagram app secret** (shown at the top of its
+   setup page — distinct from the main app's own ID/secret) → Worker secrets `META_IG_APP_ID` /
+   `META_IG_APP_SECRET`.
+6. Nothing else to create by hand — connecting (below) auto-provisions every NocoDB column it
+   needs.
+
+**Before submitting for App Review** (only needed once you want *other clients'* Instagram
+accounts to connect — any account you've added as a tester works right now without review):
+under that use case's **Business login settings**, set:
+- **Deauthorize Callback URL**: `{WORKER_BASE_URL}/ig/deauthorize` — `handleInstagramDeauthorize`
+  in `worker.js` verifies Meta's signed request and clears that client's `ig_*` fields the moment
+  they revoke access from their own Instagram/Meta settings, instead of the stored token just
+  silently failing on every send afterward.
+- **Data Deletion Request URL**: point this at wherever your actual data-deletion process is
+  documented (`privacy.html`'s "Your Rights" section touches on it, but tighten the wording with a
+  concrete method — email address, self-serve link — before relying on it for review; this is a
+  business decision, not something to leave generic).
+
+**Connect flow:** Settings → Integrations → "📷 Instagram DM" → Connect → `POST /ig/oauth/start`
+returns `https://www.instagram.com/oauth/authorize?...` (client id + scope + a signed `state`
+carrying the client id, same `signOauthState`/`verifyOauthState` helper Shopify/Google Search
+Console use) and the browser navigates there directly (full-page redirect). `GET
+/ig/oauth/callback` verifies `state`, exchanges `code` for a short-lived (1h) token via
+`api.instagram.com`, swaps that for a long-lived (60-day) token via `graph.instagram.com`, and
+stores `ig_id` (the `user_id` Instagram returns — an Instagram-scoped id, not a phone number),
+`ig_access_token`, `ig_username`, `ig_connected_at` on the CLIENTS row — auto-created via
+NocoDB's Meta API the moment you connect (`ensureClientColumns()` in `worker.js`). The long-lived
+token is refreshed daily by `runInstagramTokenRefreshForAllClients` (piggybacked on the existing
+2am cron tick) — Meta's tokens expire 60 days after issue if never refreshed, so this has to run
+on an ongoing basis, not just at connect time.
 
 **Data model** — Instagram leads live in the *same* Leads table as WhatsApp, not a separate one
 (one unified pipeline/dashboard): a new `IgId` column (Instagram has no phone number, only an

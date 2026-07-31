@@ -1274,6 +1274,38 @@ async function runDailyHealthCheckForAllClients(env){
   }
 }
 
+// Instagram's long-lived token (handleInstagramOauthCallback) expires 60 days after issue and
+// must be refreshed before then, or Instagram DM silently stops working with no user-visible
+// warning. Piggybacked on the same daily 2am tick as the health check above — refreshing daily is
+// wasteful (Meta docs say don't refresh more than once every 24h anyway) but harmless, and far
+// simpler than tracking each client's exact expiry date. ig_connected_at is used only as a cheap
+// "don't bother for a brand-new connection" guard, not an exact refresh schedule.
+async function runInstagramTokenRefreshForAllClients(env){
+  // No where-filter on ig_access_token (unlike the targeted queries elsewhere in this file) —
+  // this runs once a day across every client regardless, same full-table walk
+  // runDailyHealthCheckForAllClients uses, and the per-row skip below is cheap enough not to
+  // need a narrower NocoDB query.
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!c.ig_access_token) continue;
+      try{
+        const rr=await fetch(`https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(c.ig_access_token)}`);
+        const rd=await rr.json().catch(()=>({}));
+        if(rr.ok && rd.access_token) await patchClientFields(env, c.Id, {ig_access_token:rd.access_token});
+        else console.error('[instagram] token refresh failed for client', c.Id, rd?.error?.message||rr.status);
+      }catch(e){ console.error('[instagram] token refresh error for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+
 // One-off/rerunnable admin action — walks every CLIENTS row and calls engineSyncChatwootWebhook
 // for any client with Chatwoot already connected, so engine_webhook_secret gets generated and the
 // /engine/webhook registration happens without each client needing to individually re-save a
@@ -2798,51 +2830,116 @@ async function handleChannelsWhatsappConnect(request, env){
    Deliberately separate from the WhatsApp connect flow above: WhatsApp's inbound webhook,
    normalization and outbound send all go through Chatwoot; Instagram's don't touch Chatwoot at
    all — this Worker owns the whole path itself (see /ig/webhook and engineSendInstagramReply
-   further down). Same Embedded-Signup FB.login pattern as WhatsApp, just a different config_id
-   (an Instagram Business Login config on the same Meta app) and no Chatwoot inbox step.
-   Requires META_APP_ID/META_APP_SECRET (already used above) and a Meta app with the Instagram
-   Business Login product added — see SETUP.md "Instagram DM module". ── */
-async function handleInstagramConnect(request, env){
+   further down). Uses "Instagram API with Instagram Login" (Meta's newer, simpler product —
+   authenticates directly against the Instagram professional account, no Facebook Page involved),
+   NOT the WhatsApp connect flow's Facebook-Login-for-Business shape above — it has its own
+   Instagram app ID/secret (META_IG_APP_ID/META_IG_APP_SECRET, distinct from META_APP_ID/
+   META_APP_SECRET), its own OAuth host (instagram.com/graph.instagram.com, not
+   graph.facebook.com), and its authorize dialog doesn't render inside the Meta JS SDK's FB.login
+   popup — so this is a plain browser-redirect OAuth, same shape as the Shopify module's
+   handleShopifyOauthStart/Callback above (signOauthState carries the client id through the
+   round trip), not an Embedded-Signup-style flow. See SETUP.md "Instagram DM module". ── */
+// Deliberately NOT instagram_business_manage_comments — nothing in this module reads or manages
+// comments (DMs only), and Meta's App Review rejects/flags permissions requested but not
+// demonstrably used, so asking for it would just be unearned review risk for no functionality.
+const META_IG_OAUTH_SCOPE='instagram_business_basic,instagram_business_manage_messages';
+
+async function handleInstagramOauthStart(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.META_APP_ID||!env.META_APP_SECRET) return json({error:'Meta app credentials are not configured on the server.'}, 500);
-  const {code}=await request.json().catch(()=>({}));
-  if(!code) return json({error:'code is required'}, 400);
+  if(!env.META_IG_APP_ID||!env.META_IG_APP_SECRET) return json({error:'Instagram app credentials are not configured on the server.'}, 500);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   if(c.ig_id && c.ig_access_token) return json({error:'Instagram is already connected for this client.'}, 400);
 
-  const tokenR=await fetch(`https://graph.facebook.com/v18.0/oauth/access_token?client_id=${env.META_APP_ID}&client_secret=${env.META_APP_SECRET}&code=${encodeURIComponent(code)}`);
-  const tokenData=await tokenR.json().catch(()=>({}));
-  if(!tokenR.ok||!tokenData.access_token) return json({error:'Meta token exchange failed: '+(tokenData?.error?.message||('HTTP '+tokenR.status))}, 502);
+  const state=await signOauthState(env, payload.cid);
+  const redirectUri=`${env.WORKER_BASE_URL}/ig/oauth/callback`;
+  const url=`https://www.instagram.com/oauth/authorize?client_id=${env.META_IG_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(META_IG_OAUTH_SCOPE)}&state=${encodeURIComponent(state)}`;
+  return json({ok:true, url});
+}
 
-  // Instagram messaging (send/receive) authenticates as the Facebook Page the IG Business
-  // Account is linked to, not the raw user token — walk the pages this login granted access to
-  // and use the first one with a connected Instagram Business Account. Good enough for the
-  // common case (one Page, one linked Instagram account); a client managing several Pages picks
-  // whichever was granted first, same one-shot behavior as the WhatsApp connect flow above.
-  const pagesR=await fetch(`https://graph.facebook.com/v18.0/me/accounts?fields=access_token,instagram_business_account&access_token=${encodeURIComponent(tokenData.access_token)}`);
-  const pagesData=await pagesR.json().catch(()=>({}));
-  const page=(pagesData?.data||[]).find(p=>p.instagram_business_account?.id);
-  if(!page) return json({error:'No Instagram Business Account is linked to any Facebook Page this login has access to. Link one in Meta Business Suite, then reconnect.'}, 400);
-  const ig_id=page.instagram_business_account.id;
-  const ig_access_token=page.access_token;
+// Browser redirect target, not an XHR call — same "no frontend JS listens on this response"
+// shape as handleShopifyOauthCallback above. Two token exchanges, per Meta's Instagram-Login
+// docs: api.instagram.com first for a short-lived (1h) token, then graph.instagram.com to swap
+// it for a long-lived (60-day) one — sending never uses the short-lived token.
+async function handleInstagramOauthCallback(request, env){
+  const url=new URL(request.url);
+  const appBase=env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html';
+  const fail=(msg)=>Response.redirect(`${appBase}?instagram=error&msg=${encodeURIComponent(msg)}`, 302);
+  if(!env.META_IG_APP_ID||!env.META_IG_APP_SECRET) return fail('Instagram app credentials are not configured on the server.');
+  const err=url.searchParams.get('error');
+  if(err) return fail(err==='access_denied'?'Access was denied':err);
+  const code=url.searchParams.get('code');
+  const state=url.searchParams.get('state');
+  if(!code) return fail('Invalid callback from Instagram');
+  const statePayload=await verifyOauthState(env, state);
+  if(!statePayload) return fail('This connection link expired — try connecting again from Integrations');
 
-  const collision=await findOtherClientByField(env, 'ig_id', ig_id, payload.cid);
-  if(collision) return json({error:'This Instagram account is already connected to a different client.'}, 409);
+  const redirectUri=`${env.WORKER_BASE_URL}/ig/oauth/callback`;
+  const shortTokenR=await fetch('https://api.instagram.com/oauth/access_token', {
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({client_id:env.META_IG_APP_ID, client_secret:env.META_IG_APP_SECRET, grant_type:'authorization_code', redirect_uri:redirectUri, code})
+  });
+  const shortTokenData=await shortTokenR.json().catch(()=>({}));
+  if(!shortTokenR.ok||!shortTokenData.access_token) return fail('Instagram token exchange failed: '+(shortTokenData?.error_message||('HTTP '+shortTokenR.status)));
+  const ig_id=String(shortTokenData.user_id||'');
+  if(!ig_id) return fail('Instagram did not return an account id');
 
-  const profileR=await fetch(`https://graph.facebook.com/v18.0/${ig_id}?fields=username&access_token=${encodeURIComponent(ig_access_token)}`);
+  const collision=await findOtherClientByField(env, 'ig_id', ig_id, statePayload.cid);
+  if(collision) return fail('This Instagram account is already connected to a different client');
+
+  const longTokenR=await fetch(`https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${env.META_IG_APP_SECRET}&access_token=${encodeURIComponent(shortTokenData.access_token)}`);
+  const longTokenData=await longTokenR.json().catch(()=>({}));
+  if(!longTokenR.ok||!longTokenData.access_token) return fail('Failed to obtain a long-lived Instagram token: '+(longTokenData?.error?.message||('HTTP '+longTokenR.status)));
+  const ig_access_token=longTokenData.access_token;
+
+  const profileR=await fetch(`https://graph.instagram.com/v21.0/${ig_id}?fields=username&access_token=${encodeURIComponent(ig_access_token)}`);
   const profileData=await profileR.json().catch(()=>({}));
 
   await ensureClientColumns(env, ['ig_id','ig_access_token','ig_username','ig_connected_at']);
-  await patchClientFields(env, payload.cid, {ig_id, ig_access_token, ig_username:profileData?.username||'', ig_connected_at:new Date().toISOString()});
-  return json({ok:true, ig_id, ig_username:profileData?.username||''});
+  await patchClientFields(env, statePayload.cid, {ig_id, ig_access_token, ig_username:profileData?.username||'', ig_connected_at:new Date().toISOString()});
+  return Response.redirect(`${appBase}?client=${statePayload.cid}&instagram=connected`, 302);
 }
 
 async function handleInstagramDisconnect(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   await patchClientFields(env, payload.cid, {ig_id:'', ig_access_token:'', ig_username:'', ig_connected_at:''});
+  return json({ok:true});
+}
+
+// Meta's `signed_request` format (used for both the Deauthorize callback below and, historically,
+// canvas/tab apps): `{base64url(HMAC-SHA256(payload, secret))}.{base64url(JSON payload)}`. Same
+// base64url alphabet as hmacSignB64 above, but HMAC'd with the given secret directly rather than
+// SESSION_SIGNING_KEY (this verifies a payload Meta itself signed, not one this Worker issued).
+async function verifyMetaSignedRequest(secret, signedRequest){
+  const [encodedSig, payload]=String(signedRequest||'').split('.');
+  if(!encodedSig||!payload) return null;
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
+  const expected=btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  if(expected!==encodedSig) return null;
+  const b64=payload.replace(/-/g,'+').replace(/_/g,'/');
+  const padded=b64+'='.repeat((4-b64.length%4)%4);
+  try{ return JSON.parse(atob(padded)); }catch(e){ return null; }
+}
+
+// Instagram Business Login's "Deauthorize Callback URL" (Business login settings, required before
+// submitting for App Review) — Meta POSTs here when a user revokes the app's access from their
+// own Instagram/Meta settings, so the stored (now-invalid) token doesn't just sit there silently
+// failing on every send. `user_id` in the verified payload is the same Instagram-scoped id stored
+// as `ig_id`.
+async function handleInstagramDeauthorize(request, env){
+  if(!env.META_IG_APP_SECRET) return json({error:'Instagram app credentials are not configured on the server.'}, 500);
+  const bodyText=await request.text();
+  const signedRequest=new URLSearchParams(bodyText).get('signed_request');
+  const payload=await verifyMetaSignedRequest(env.META_IG_APP_SECRET, signedRequest);
+  // Always 200 — an unverifiable/missing signed_request isn't something Meta can act on a retry
+  // for, and there's nothing sensitive to leak either way (the response body carries no lookup
+  // result), so there's no reason to give it a different status than the normal case.
+  if(!payload?.user_id) return json({ok:true});
+  const c=await findClientByField(env, 'ig_id', String(payload.user_id));
+  if(c) await patchClientFields(env, c.Id, {ig_id:'', ig_access_token:'', ig_username:'', ig_connected_at:''});
   return json({ok:true});
 }
 
@@ -7287,13 +7384,15 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   return engineSendChatwootReply(env, c, clientId, convId, trimmed);
 }
 
-// Instagram's equivalent of handleWaSend (WhatsApp Cloud API) — sends straight through the Graph
-// API using the connected Page's access token (see handleInstagramConnect), not a WhatsApp send at
-// all. Used both by engineDeliverReply (bot replies) and /instagram/send (a human agent's manual
-// reply from the Chats page).
+// Instagram's equivalent of handleWaSend (WhatsApp Cloud API) — sends through the Instagram
+// Graph API using the account's own long-lived token (see handleInstagramOauthCallback), not a
+// WhatsApp send at all. Used both by engineDeliverReply (bot replies) and /instagram/send (a
+// human agent's manual reply from the Chats page).
 async function engineSendInstagramReply(env, c, igRecipientId, text){
   if(!c.ig_id||!c.ig_access_token||!igRecipientId) return;
-  await fetch(`https://graph.facebook.com/v21.0/${c.ig_id}/messages`, {
+  // graph.instagram.com, not graph.facebook.com — "Instagram API with Instagram Login" sends
+  // through its own API host, matching the account-scoped token from handleInstagramOauthCallback.
+  await fetch(`https://graph.instagram.com/v21.0/${c.ig_id}/messages`, {
     method:'POST', headers:{Authorization:`Bearer ${c.ig_access_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({recipient:{id:igRecipientId}, message:{text}})
   }).catch(()=>{});
@@ -13181,8 +13280,10 @@ export default {
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
       else if(url.pathname==='/channels/status' && request.method==='GET'){ res=await handleChannelsStatus(request, env); }
       else if(url.pathname==='/channels/chatwoot-sso' && request.method==='GET'){ res=await handleChannelsChatwootSso(request, env); }
-      else if(url.pathname==='/channels/instagram/connect' && request.method==='POST'){ res=await handleInstagramConnect(request, env); }
+      else if(url.pathname==='/ig/oauth/start' && request.method==='POST'){ res=await handleInstagramOauthStart(request, env); }
+      else if(url.pathname==='/ig/oauth/callback' && request.method==='GET'){ res=await handleInstagramOauthCallback(request, env); }
       else if(url.pathname==='/channels/instagram/disconnect' && request.method==='POST'){ res=await handleInstagramDisconnect(request, env); }
+      else if(url.pathname==='/ig/deauthorize' && request.method==='POST'){ res=await handleInstagramDeauthorize(request, env); }
       else if(url.pathname==='/ig/webhook' && request.method==='GET'){ res=await handleInstagramWebhookVerify(request, env); }
       else if(url.pathname==='/ig/webhook' && request.method==='POST'){ res=await handleInstagramWebhook(request, env); }
       else if(url.pathname==='/instagram/send' && request.method==='POST'){ res=await handleInstagramSend(request, env); }
@@ -13379,6 +13480,9 @@ export default {
       // daily-granularity, piggybacked here rather than a 5th cron string, same reasoning as
       // Financial Planning's own comment above.
       ctx.waitUntil(runSaasHealthScoresForAllClients(env)); ctx.waitUntil(runSaasRemindersForAllClients(env)); ctx.waitUntil(runSaasSupportPullForAllClients(env));
+      // Instagram DM — long-lived tokens expire in 60 days and need refreshing before then; see
+      // runInstagramTokenRefreshForAllClients's own comment for why daily is fine.
+      ctx.waitUntil(runInstagramTokenRefreshForAllClients(env));
     }
     else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env)); }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
