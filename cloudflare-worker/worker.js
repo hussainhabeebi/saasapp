@@ -2897,7 +2897,13 @@ async function handleInstagramOauthCallback(request, env){
   const profileData=await profileR.json().catch(()=>({}));
 
   await ensureClientColumns(env, ['ig_id','ig_access_token','ig_username','ig_connected_at']);
-  await patchClientFields(env, statePayload.cid, {ig_id, ig_access_token, ig_username:profileData?.username||'', ig_connected_at:new Date().toISOString()});
+  // Verified, not the plain patchClientFields — this writes to columns ensureClientColumns may
+  // have JUST created a moment ago in this same request, which is exactly the NocoDB
+  // schema-cache-lag race ncPatchVerified exists for (see its own comment): a client's very first
+  // Instagram connect ever on a given NocoDB base would otherwise show a false "connected ✓"
+  // toast while ig_id silently never actually saved.
+  const saveResult=await ncPatchVerified(env, statePayload.cid, {ig_id, ig_access_token, ig_username:profileData?.username||'', ig_connected_at:new Date().toISOString()});
+  if(!saveResult.ok) return fail(saveResult.data?.error||'Failed to save the Instagram connection — try reconnecting.');
   return Response.redirect(`${appBase}?client=${statePayload.cid}&instagram=connected`, 302);
 }
 
@@ -8178,7 +8184,23 @@ async function handleInstagramWebhook(request, env){
       }
 
       const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
-      await engineUpsertLead(env, method, leadId, leadBody);
+      const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+      // Same NocoDB schema-cache-lag race ncPatchVerified guards against on the CLIENTS table
+      // (see handleInstagramOauthCallback) — IgId/Channel may have been auto-created by
+      // ensureLeadsColumns moments ago in this same request. Only relevant for the very first
+      // Instagram lead ever created on a given NocoDB base (every later message reuses columns
+      // that already exist), so this is scoped to isNewLead rather than paid on every message.
+      if(isNewLead && resolvedLeadId){
+        for(let attempt=1; attempt<=3; attempt++){
+          const checkR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${resolvedLeadId}`);
+          const checkD=await checkR.json().catch(()=>({}));
+          if(String(checkD?.IgId||'')===String(leadBody.IgId||'') && String(checkD?.Channel||'')===String(leadBody.Channel||'')) break;
+          if(attempt<3){
+            await new Promise(res=>setTimeout(res, 900*attempt));
+            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:resolvedLeadId, IgId:leadBody.IgId, Channel:leadBody.Channel}});
+          }
+        }
+      }
       await engineLogAnalytics(env, {
         ClientId:clientId, ClientName:c.client_name||'', Phone:'', Intent:routing.intent||'', Route:routing.route||'',
         Stage:state.stage||'', NextStage:leadBody.Stage||'', ResponseMs:0, IsError:false, ErrorMsg:'',
