@@ -234,53 +234,16 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 </div>
 
-<!-- SHOPIFY TAB (order/fulfillment/abandoned-cart WhatsApp notifications) -->
+<!-- SHOPIFY TAB — connecting and configuring notifications now both live on one page,
+     Settings → Integrations in the main dashboard. This tab just points there. -->
 <div id="tabShopify" class="page">
-  <div class="card" style="margin-bottom:14px">
-    <div class="card-title">Shopify Connection</div>
+  <div class="card">
+    <div class="card-title">Shopify</div>
     <div id="shopifyNotConnected" style="display:none">
-      <div class="s-hint">No Shopify store connected yet. Connect it once from the main dashboard — <a href="https://app.leadvyne.com/dashboard.html?client=" id="shopifyConnectLink" style="color:var(--accent-ink);font-weight:600">open Settings → Integrations</a> — then come back here to set up notifications.</div>
+      <div class="s-hint">No Shopify store connected yet. Connect it — and set up which WhatsApp template sends for each event — all on one page now: <a href="https://app.leadvyne.com/dashboard.html?client=" id="shopifyConnectLink" style="color:var(--accent-ink);font-weight:600">open Settings → Integrations</a>.</div>
     </div>
     <div id="shopifyConnected" style="display:none">
-      <div class="s-note">✅ Connected — <b id="shopifyDomainDisplay"></b></div>
-    </div>
-  </div>
-
-  <div class="card" style="margin-bottom:14px">
-    <div class="card-title">Notifications</div>
-    <div class="s-hint" style="margin-bottom:10px">Sent via your connected WhatsApp Business number straight through Meta's Graph API — no Chatwoot or n8n dependency. Connect WhatsApp under Settings → Channels first.</div>
-    <div class="s-row" style="margin-top:0">
-      <button class="save-btn sec" onclick="loadShopifyTemplates()">🔍 Load My WhatsApp Templates</button>
-      <span class="save-msg" id="shopifyTemplatesMsg"></span>
-    </div>
-    <div id="shopifyTemplateReceived" style="margin-top:14px"></div>
-    <div id="shopifyTemplatePaid" style="margin-top:14px"></div>
-    <div id="shopifyTemplateShipped" style="margin-top:14px"></div>
-    <div id="shopifyTemplateDelivered" style="margin-top:14px"></div>
-    <div id="shopifyTemplateAbandoned" style="margin-top:14px"></div>
-    <div class="s-row">
-      <button class="save-btn" onclick="saveShopifyTemplates()">Save Templates</button>
-      <span class="save-msg" id="shopifyTemplatesSaveMsg"></span>
-    </div>
-
-    <div style="background:var(--accent-soft);border-radius:10px;padding:14px;font-size:13px;color:var(--accent-ink);margin-top:14px">
-      <strong>How it works:</strong><br>
-      • Shopify order created → sends the <em>Order Received</em> template<br>
-      • Order marked paid → sends the <em>Payment Received</em> template<br>
-      • Fulfillment created (shipping label/tracking added) → sends the <em>Order Shipped</em> template<br>
-      • Carrier reports delivered → sends the <em>Order Delivered</em> template (best-effort — only carriers Shopify tracks natively report this)<br>
-      • Checkout abandoned for 60+ minutes with no order → sends the <em>Abandoned Cart</em> template (checked every 20 min)<br><br>
-      Don't have a template yet for one of these? Order Received, Payment Received and Order Shipped each have a <em>⚡ Use Meta Library Template</em> button — creates one of Meta's own pre-approved templates, no review wait, but you'll need to map its variables below afterward. Every event also has a <em>✨ Create Suggested Template</em> button that submits custom wording instead — usually approved within a few hours, and its variables are already mapped for you.
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Notification Log</div>
-    <div class="tbl-wrap">
-      <table>
-        <thead><tr><th>Time</th><th>Event</th><th>Order/Checkout</th><th>Phone</th><th>Status</th><th>Detail</th></tr></thead>
-        <tbody id="shopifyLogTbody"><tr class="loading-row"><td colspan="6">No notifications sent yet.</td></tr></tbody>
-      </table>
+      <div class="s-note">✅ Connected — <b id="shopifyDomainDisplay"></b>. Notification templates and the send log now live in <a href="https://app.leadvyne.com/dashboard.html?client=" id="shopifyManageLink" style="color:var(--accent-ink);font-weight:600">Settings → Integrations</a>.</div>
     </div>
   </div>
 </div>
@@ -587,27 +550,8 @@ const WA_VARS = [
 let waTemplates = [];
 let waTemplateConfig = { received: null, shipped: null, delivered: null };
 
-// ── SHOPIFY NOTIFICATIONS ─────────────────────────
-const SHOPIFY_TEMPLATE_KINDS = [
-  { key:'received',  label:'Order Received Template' },
-  { key:'paid',      label:'Payment Received Template' },
-  { key:'shipped',   label:'Order Shipped Template' },
-  { key:'delivered', label:'Order Delivered Template' },
-  { key:'abandoned', label:'Abandoned Cart Template' }
-];
-const SHOPIFY_WA_VARS = [
-  { key:'customer_name',   label:'Customer Name' },
-  { key:'order_number',    label:'Order Number' },
-  { key:'total',           label:'Order/Cart Total' },
-  { key:'items',           label:'Items' },
-  { key:'tracking_number', label:'Tracking Number' },
-  { key:'tracking_url',    label:'Tracking URL' },
-  { key:'checkout_url',    label:'Cart Recovery URL' },
-  { key:'review_link',     label:'Review Link' },
-  { key:'store_name',      label:'Store Name' }
-];
-let shopifyTemplates = [];
-let shopifyNotifyConfig = { received: null, paid: null, shipped: null, delivered: null, abandoned: null };
+// Shopify notification-template setup + send log moved to dashboard.html (Settings →
+// Integrations) — see the comment on the Shopify tab markup above.
 
 // ── INIT ──────────────────────────────────────────
 async function init() {
@@ -654,13 +598,6 @@ async function init() {
   if (waTemplates.length) WA_TEMPLATE_KINDS.forEach(k => renderWaTemplateBlock(k.key, k.label));
 
   renderShopifyConnection();
-  try {
-    const st = JSON.parse(clientRecord.shopify_notify_config || '{}');
-    shopifyNotifyConfig = st.config || { received: null, shipped: null, delivered: null, abandoned: null };
-    shopifyTemplates = st.templates || [];
-  } catch(e) {}
-  if (shopifyTemplates.length) SHOPIFY_TEMPLATE_KINDS.forEach(k => renderShopifyTemplateBlock(k.key, k.label));
-  renderShopifyLog();
 
   loadProducts();
   loadCategories();
@@ -671,8 +608,13 @@ function renderShopifyConnection() {
   const connected = !!clientRecord.shopify_shop_domain;
   document.getElementById('shopifyNotConnected').style.display = connected ? 'none' : 'block';
   document.getElementById('shopifyConnected').style.display = connected ? 'block' : 'none';
-  if (connected) document.getElementById('shopifyDomainDisplay').textContent = clientRecord.shopify_shop_domain;
-  else document.getElementById('shopifyConnectLink').href = `https://app.leadvyne.com/dashboard.html?client=${encodeURIComponent(clientId)}&integrations`;
+  const integrationsUrl = `https://app.leadvyne.com/dashboard.html?client=${encodeURIComponent(clientId)}&integrations`;
+  if (connected) {
+    document.getElementById('shopifyDomainDisplay').textContent = clientRecord.shopify_shop_domain;
+    document.getElementById('shopifyManageLink').href = integrationsUrl;
+  } else {
+    document.getElementById('shopifyConnectLink').href = integrationsUrl;
+  }
   // Per-product Shopify link only makes sense once Shopify is actually connected — hidden
   // otherwise so it doesn't imply a feature that isn't wired up yet.
   document.getElementById('pmShopifyUrlWrap').style.display = connected ? '' : 'none';
@@ -684,22 +626,6 @@ function onProductStyleChange() {
     const groups = el.getAttribute('data-style-group').split(',');
     el.style.display = groups.includes(style) ? '' : 'none';
   });
-}
-
-function renderShopifyLog() {
-  const tbody = document.getElementById('shopifyLogTbody');
-  let log = [];
-  try { log = JSON.parse(clientRecord.shopify_notify_log || '[]'); } catch(e) {}
-  if (!log.length) { tbody.innerHTML = '<tr><td colspan="6" class="loading-row">No notifications sent yet.</td></tr>'; return; }
-  const statusBadge = s => s === 'sent' ? '✅ sent' : s === 'failed' ? '❌ failed' : '⏭ skipped';
-  tbody.innerHTML = log.slice().reverse().map(e => `<tr>
-    <td>${esc(new Date(e.ts).toLocaleString())}</td>
-    <td>${esc(e.event)}</td>
-    <td>${esc(e.order || '—')}</td>
-    <td>${esc(e.phone || '—')}</td>
-    <td>${statusBadge(e.status)}</td>
-    <td>${esc(e.detail || '')}</td>
-  </tr>`).join('');
 }
 
 // ── TAB NAV ──────────────────────────────────────
@@ -1619,138 +1545,6 @@ async function saveWaTemplates() {
     await patchClient({ ecom_wa_templates: JSON.stringify({ config: waTemplateConfig, templates: waTemplates }) });
     showMsg('waTemplatesSaveMsg', 'Saved ✓');
   } catch (e) { showMsg('waTemplatesSaveMsg', 'Error: ' + e.message, 6000); }
-}
-
-// ── SHOPIFY NOTIFICATION TEMPLATES ────────────────
-// Same picker UX as the WhatsApp Templates block above, but backed by the Worker's own
-// /ecom/wa-templates (client_id-based, no session needed here) instead of the n8n webhook —
-// the Shopify module's webhook handler sends straight through Meta's Graph API, no n8n involved.
-async function loadShopifyTemplates() {
-  showMsg('shopifyTemplatesMsg', 'Loading…', 10000);
-  try {
-    const r = await fetch(`${WORKER_BASE}/ecom/wa-templates?client_id=${encodeURIComponent(clientId)}`);
-    const data = await r.json();
-    if (data.error) { showMsg('shopifyTemplatesMsg', data.error, 6000); return; }
-    shopifyTemplates = data.data || data.templates || [];
-    // Render even with zero templates — that's exactly when "Create Suggested Template" (below)
-    // matters most, for a client who hasn't set any WhatsApp templates up yet.
-    SHOPIFY_TEMPLATE_KINDS.forEach(k => renderShopifyTemplateBlock(k.key, k.label));
-    showMsg('shopifyTemplatesMsg', shopifyTemplates.length ? `Found ${shopifyTemplates.length} templates ✓` : 'No templates found yet — create one below.');
-  } catch(e) {
-    showMsg('shopifyTemplatesMsg', 'Error: ' + e.message, 6000);
-  }
-}
-
-// Events with a confirmed Meta Template Library entry (see SHOPIFY_LIBRARY_TEMPLATES in
-// worker.js) — these get the faster "⚡ Use Meta Library Template" option too, alongside the
-// always-available from-scratch "✨ Create Suggested Template".
-const SHOPIFY_LIBRARY_KINDS = ['received', 'paid', 'shipped'];
-
-function renderShopifyTemplateBlock(kind, label) {
-  const container = document.getElementById('shopifyTemplate' + kind.charAt(0).toUpperCase() + kind.slice(1));
-  const cfg = shopifyNotifyConfig[kind] || {};
-  const options = ['<option value="">— None —</option>']
-    .concat(shopifyTemplates.map(t => `<option value="${escAttr(t.name+'|'+t.language)}" ${cfg.name===t.name && cfg.lang===t.language ? 'selected':''}>${esc(t.name)} (${esc(t.language)}) — ${esc(t.status||'')}</option>`));
-  const libraryBtn = SHOPIFY_LIBRARY_KINDS.includes(kind)
-    ? `<button class="save-btn sec" onclick="createShopifyLibraryTemplate('${kind}')" id="shopifyLibrary_${kind}_btn">⚡ Use Meta Library Template</button>`
-    : '';
-  container.innerHTML = `
-    <span class="s-lbl">${esc(label)}</span>
-    <div class="s-row" style="margin-bottom:8px">
-      <select class="s-input" style="margin-bottom:0" onchange="onShopifyTemplateSelect('${kind}', this.value)">${options.join('')}</select>
-      ${libraryBtn}
-      <button class="save-btn sec" onclick="createShopifyPresetTemplate('${kind}')" id="shopifyPreset_${kind}_btn">✨ Create Suggested Template</button>
-    </div>
-    <div class="colmap-grid" id="shopifyParams_${kind}"></div>`;
-  const selected = shopifyTemplates.find(t => t.name === cfg.name && t.language === cfg.lang);
-  if (selected) renderShopifyParamMap(kind, selected, cfg.params || []);
-}
-
-// Submits a ready-made Meta Utility template (see SHOPIFY_TEMPLATE_PRESETS in worker.js — the
-// preset text/variable order is authored server-side, this just triggers it and reflects the
-// result) for this event straight to the client's WABA for review, then pre-selects it so the
-// param mapping is already correct once Meta approves it — nothing left to configure by hand.
-async function createShopifyPresetTemplate(kind) {
-  const btn = document.getElementById(`shopifyPreset_${kind}_btn`);
-  const original = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Submitting…';
-  try {
-    const r = await fetch(`${WORKER_BASE}/ecom/wa-templates/create-preset`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ client_id: clientId, kind })
-    });
-    const data = await r.json();
-    if (data.error) { showMsg('shopifyTemplatesMsg', data.error, 8000); return; }
-    shopifyNotifyConfig[kind] = { name: data.name, lang: data.language, params: data.params };
-    await saveShopifyTemplates();
-    await loadShopifyTemplates(); // pulls the new (PENDING) template in — may need one more manual refresh if Meta hasn't indexed it yet
-    showMsg('shopifyTemplatesMsg', `Submitted "${data.name}" to Meta for review — usually approved within a few hours. It'll start sending automatically once approved.`, 10000);
-  } catch(e) {
-    showMsg('shopifyTemplatesMsg', 'Error: ' + e.message, 6000);
-  } finally {
-    btn.disabled = false; btn.textContent = original;
-  }
-}
-
-// Creates a template from Meta's own Template Library (see SHOPIFY_LIBRARY_TEMPLATES in
-// worker.js) — pre-vetted wording, no review wait per Meta's docs. Unlike the from-scratch
-// button above, this deliberately does NOT pre-fill the variable mapping (the library wording has
-// several same-typed placeholders and there's no confirmed way yet to know which slot means what
-// without live-testing against a real WABA) — map each {{}} below once it shows up.
-async function createShopifyLibraryTemplate(kind) {
-  const btn = document.getElementById(`shopifyLibrary_${kind}_btn`);
-  const original = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Creating…';
-  try {
-    const r = await fetch(`${WORKER_BASE}/ecom/wa-templates/create-from-library`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ client_id: clientId, kind })
-    });
-    const data = await r.json();
-    if (data.error) { showMsg('shopifyTemplatesMsg', data.error, 8000); return; }
-    shopifyNotifyConfig[kind] = { name: data.name, lang: data.language, params: [] };
-    await saveShopifyTemplates();
-    await loadShopifyTemplates(); // may need one more manual refresh if Meta hasn't indexed it yet
-    showMsg('shopifyTemplatesMsg', `Created "${data.name}" from Meta's template library (${data.status}). Map each {{}} below to finish setup.`, 10000);
-  } catch(e) {
-    showMsg('shopifyTemplatesMsg', 'Error: ' + e.message, 6000);
-  } finally {
-    btn.disabled = false; btn.textContent = original;
-  }
-}
-
-function onShopifyTemplateSelect(kind, value) {
-  if (!value) { shopifyNotifyConfig[kind] = null; document.getElementById(`shopifyParams_${kind}`).innerHTML = ''; return; }
-  const [name, language] = value.split('|');
-  const t = shopifyTemplates.find(tt => tt.name === name && tt.language === language);
-  shopifyNotifyConfig[kind] = { name, lang: language, params: [] };
-  renderShopifyParamMap(kind, t, []);
-}
-
-function renderShopifyParamMap(kind, template, savedParams) {
-  const el = document.getElementById(`shopifyParams_${kind}`);
-  const varCount = template.var_count || (template.components||[]).find(c=>c.type==='BODY')?.text?.match(/\{\{\d+\}\}/g)?.length || 0;
-  if (!varCount) { el.innerHTML = '<div class="s-hint">This template has no variables.</div>'; return; }
-  const rows = [];
-  for (let i = 0; i < varCount; i++) {
-    const val = savedParams[i] || '';
-    const options = ['<option value="">— Skip —</option>'].concat(SHOPIFY_WA_VARS.map(v => `<option value="${v.key}" ${v.key===val?'selected':''}>${v.label}</option>`));
-    rows.push(`<div class="colmap-field"><label>Variable {{${i+1}}}</label><select onchange="updateShopifyParam('${kind}',${i},this.value)">${options.join('')}</select></div>`);
-  }
-  el.innerHTML = rows.join('');
-  shopifyNotifyConfig[kind].params = savedParams.length ? savedParams : new Array(varCount).fill('');
-}
-
-function updateShopifyParam(kind, idx, value) {
-  if (!shopifyNotifyConfig[kind]) return;
-  shopifyNotifyConfig[kind].params[idx] = value;
-}
-
-async function saveShopifyTemplates() {
-  try {
-    await patchClient({ shopify_notify_config: JSON.stringify({ config: shopifyNotifyConfig, templates: shopifyTemplates }) });
-    showMsg('shopifyTemplatesSaveMsg', 'Saved ✓');
-  } catch (e) { showMsg('shopifyTemplatesSaveMsg', 'Error: ' + e.message, 6000); }
 }
 
 // ── SETTINGS SAVE ─────────────────────────────────
