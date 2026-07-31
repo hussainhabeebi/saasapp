@@ -8126,21 +8126,27 @@ async function handleInstagramWebhookVerify(request, env){
 }
 
 async function handleInstagramWebhook(request, env){
+  // Diagnostic detail (results array below) returned directly in the HTTP response rather than
+  // relying on console.log — wrangler tail in at least one real deployment wasn't surfacing
+  // console.log output at all (logs:[] on every event, including pre-existing routes known to be
+  // working), so this makes the endpoint self-diagnosing over curl/the Test button regardless of
+  // whether log capture is working. Meta itself ignores the response body, so this is free to be
+  // as detailed as useful.
+  const results=[];
   if(env.ENGINE_ENABLED==='false') return json({ok:true, skipped:'engine-disabled-global'});
   const body=await request.json().catch(()=>({}));
-  console.log('[instagram-webhook] received', JSON.stringify(body).slice(0,500));
   if(body.object!=='instagram') return json({ok:true, skipped:'not-instagram'});
 
   for(const entry of (body.entry||[])){
     try{
       const parsed=engineParseInstagramPayload(entry);
-      if(!parsed){ console.log('[instagram-webhook] entry not actionable (no parsed payload — echo, missing text, or missing sender)', JSON.stringify(entry).slice(0,300)); continue; }
+      if(!parsed){ results.push({skipped:'not-actionable (echo, missing text, or missing sender)', entry}); continue; }
       const recipientId=entry.messaging?.[0]?.recipient?.id||entry.id;
       const c=await findClientByField(env, 'ig_id', recipientId);
-      if(!c){ console.log('[instagram-webhook] no client found for ig_id', recipientId); continue; }
-      if(c.active==='No'){ console.log('[instagram-webhook] skipped: client inactive', c.Id); continue; }
-      if(c.engine_disabled==='Yes'){ console.log('[instagram-webhook] skipped: engine_disabled for client', c.Id); continue; }
-      if(!c.openrouter_key){ console.log('[instagram-webhook] skipped: no openrouter_key set for client', c.Id); continue; }
+      if(!c){ results.push({skipped:'no client found for ig_id', recipientId}); continue; }
+      if(c.active==='No'){ results.push({skipped:'client inactive', clientId:c.Id}); continue; }
+      if(c.engine_disabled==='Yes'){ results.push({skipped:'engine_disabled for client', clientId:c.Id}); continue; }
+      if(!c.openrouter_key){ results.push({skipped:'no openrouter_key set for client', clientId:c.Id}); continue; }
       const clientId=String(c.Id);
 
       // Same fast D1 dedup gate handleEngineWebhook uses for WhatsApp redeliveries, reusing the
@@ -8150,14 +8156,14 @@ async function handleInstagramWebhook(request, env){
         try{
           const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`)
             .bind(Number(clientId), mid, new Date().toISOString()).run();
-          if(!dedupR.meta.changes) continue;
+          if(!dedupR.meta.changes){ results.push({skipped:'duplicate-delivery', clientId, mid}); continue; }
         }catch(e){}
       }
 
       await ensureLeadsColumns(env, ['IgId','Channel']);
       const state=await engineGetLeadState(env, clientId, parsed.igId, 'IgId');
       state.phone=''; state.igId=parsed.igId; state.channel='instagram'; state.name=parsed.name; state.convId=null;
-      if(state.leadOptOut==='Yes') continue;
+      if(state.leadOptOut==='Yes'){ results.push({skipped:'opted-out', clientId}); continue; }
 
       const userText=parsed.text;
       const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
@@ -8221,11 +8227,13 @@ async function handleInstagramWebhook(request, env){
         Stage:state.stage||'', NextStage:leadBody.Stage||'', ResponseMs:0, IsError:false, ErrorMsg:'',
         Timestamp:new Date().toISOString()
       });
+      results.push({ok:true, clientId, leadId:resolvedLeadId, route:routing.route, sent:!!sentText});
     }catch(e){
       await reportOpsError(env, 'handleInstagramWebhook', e);
+      results.push({error:e.message});
     }
   }
-  return json({ok:true});
+  return json({ok:true, results});
 }
 
 // 192 bits of randomness, hex-encoded — the actual security boundary for /engine/webhook (see the
