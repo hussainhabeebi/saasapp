@@ -972,11 +972,9 @@ const CONFIG = {
   // these from Meta Developer Portal → your Tech Provider app → WhatsApp → Embedded Signup.
   META_APP_ID:              '958889290317772',
   META_WHATSAPP_CONFIG_ID:  '1628996898332605',
-  // Instagram Business Login config on the same Meta app (Meta Developer Portal → this app →
-  // Instagram → Business Login for Instagram → create a config) — see SETUP.md "Instagram DM
-  // module". Placeholder until that config is created; connectInstagram() below just fails with
-  // a clear error until this is set, same as any other unset CONFIG value in this file.
-  META_INSTAGRAM_CONFIG_ID: 'REPLACE_META_INSTAGRAM_CONFIG_ID',
+  // Instagram DM ("Instagram API with Instagram Login") needs no browser-side config at all — the
+  // app id only appears server-side, when the Worker builds the authorize URL
+  // (POST /ig/oauth/start). See SETUP.md "Instagram DM module".
   // Billing (Stripe). Plans are rendered here from /billing/plans (reads STRIPE_PLAN_PRICE_IDS
   // from the Worker's own Stripe account, no publishable key or Stripe.js needed in the browser)
   // and subscribing posts to /billing/checkout-subscription — the Worker creates the Checkout
@@ -4537,15 +4535,21 @@ function showApp(){
   // redirect) always wins over that default when present, same as before this changed.
   const params=new URLSearchParams(location.search);
   const shopifyParam=params.get('shopify');
+  const instagramParam=params.get('instagram');
   const gscParam=params.get('gsc');
   const gcalParam=params.get('gcal');
   let landingPage='home';
   if(params.has('billing')) landingPage='billing';
   else if(params.has('channels')) landingPage='channels';
-  else if(params.has('integrations')||shopifyParam) landingPage='integrations';
+  else if(params.has('integrations')||shopifyParam||instagramParam) landingPage='integrations';
   else if(gscParam) landingPage='reports';
   else if(gcalParam) landingPage='tasks';
   navigate(landingPage);
+  if(instagramParam){
+    if(instagramParam==='connected'){ showToast('Instagram connected ✓'); refreshClientRecord().then(renderInstagramStatus); }
+    else showToast(params.get('msg')||'Instagram connection failed', 'error');
+    history.replaceState(null, '', location.pathname+(clientId?`?client=${clientId}`:''));
+  }
   if(shopifyParam){
     if(shopifyParam==='connected'){
       showToast('Shopify connected ✓');
@@ -9338,9 +9342,10 @@ async function completeWaConnect(code, waba_id, phone_number_id){
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
-// ── Instagram DM (native — no Chatwoot) ── Same FB.login pattern as connectWhatsApp above, a
-// different Meta config (Instagram Business Login, not WhatsApp Embedded Signup) — this one
-// returns `code` straight in the login callback, no separate postMessage/FINISH event to wait on.
+// ── Instagram DM (native — no Chatwoot) ── "Instagram API with Instagram Login" authenticates
+// against instagram.com directly, not through the Meta JS SDK's FB.login popup (that's a
+// Facebook-Login-for-Business thing, a different product) — so this is a plain full-page OAuth
+// redirect, same shape as connectShopifyOAuth above, not connectWhatsApp's Embedded-Signup flow.
 function renderInstagramStatus(){
   const connected=!!clientRecord?.ig_id;
   $id('intInstagramConnectForm').style.display=connected?'none':'block';
@@ -9350,27 +9355,15 @@ function renderInstagramStatus(){
     : 'Not connected.';
 }
 
-function connectInstagram(){
+async function connectInstagram(){
   const msg=$id('intInstagramMsg');
   if(clientRecord?.ig_id){ msg.textContent='Instagram is already connected for this client.'; return; }
-  if(!window.FB){ msg.textContent='Facebook SDK still loading — try again in a moment.'; return; }
   msg.textContent='Connecting…';
-  FB.login((response)=>{
-    if(response.authResponse && response.authResponse.code) completeInstagramConnect(response.authResponse.code);
-    else msg.textContent='Instagram connection was cancelled or did not complete.';
-  }, {config_id:CONFIG.META_INSTAGRAM_CONFIG_ID, response_type:'code', override_default_response_type:true});
-}
-
-async function completeInstagramConnect(code){
-  const msg=$id('intInstagramMsg');
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/instagram/connect`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({code})});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/ig/oauth/start`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
     const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    Object.assign(clientRecord,{ig_id:data.ig_id, ig_username:data.ig_username});
-    msg.textContent='';
-    renderInstagramStatus();
-    showToast('Instagram connected ✓');
+    if(!r.ok||!data.url){ msg.textContent=data.error||'Failed to start Instagram connection'; return; }
+    window.location.href=data.url;
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
