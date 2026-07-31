@@ -6565,3 +6565,60 @@ Drive file as a second message via `sendDriveMediaToChatwoot`. `handleFollowupVa
 CTA/incentive/social-proof ones, and the variant-editor grid in `broadcast.html` gained matching
 "Media (optional)" + "Media caption" inputs per variant cell (`fuv_${step}_${variant}_media_url`/
 `_media_caption`, same `fuEngineFieldId` convention as every other field on that grid).
+
+## DDoS protection
+
+Two layers, matched to what each piece of the stack can actually do. Neither layer touches any
+authenticated route or any external webhook (Shopify/Stripe/Chargebee/Paddle/Razorpay/WhatsApp
+engine/Instagram/Cal.com/Chatwoot/render-pipeline) — those already pay for their own
+signature/HMAC verification, and a legitimate burst on any of them (a broadcast send fanning out
+replies, a flash-sale spike of Shopify orders) must never be mistaken for an attack.
+
+**1. App-level rate limiting (shipped in code, live on next deploy — no dashboard step needed).**
+`cloudflare-worker/worker.js`'s `RATE_LIMIT_RULES` (+ `checkRateLimit`/`clientIp`, right after
+`json()`) puts a per-IP fixed-window counter, backed by D1 (`migrations/0030_rate_limit_counters.sql`,
+`env.DB` — same binding every other D1-backed module already uses), in front of the only routes an
+attacker can hit *without* a valid session token: `POST /session/exchange`, `POST /admin/login`,
+`POST /ecom/public/order`, `POST /appt/public/book`, `POST /b2b/doc/:id/accept`, and the public
+storefront/booking GET reads (`/ecom/public/*`, `/appt/public/*`). Limits are deliberately generous
+(30–120 requests per window depending on the route) so no real customer placing an order or booking
+a slot ever notices; a `429` with `Retry-After` is returned only once a single IP blows well past
+normal usage. The check **fails open** — any D1 error lets the request through rather than blocking
+it, so a rate-limiter bug can never itself take down login/checkout/booking. Expired counters are
+swept daily, piggybacked on the existing 2am cron (`cleanupRateLimitCounters`, same "share a tick"
+convention as every other daily sweep in `scheduled()`) rather than a new cron string.
+
+**2. Origin-level rate limiting (shipped in code).** `frontend/nginx.conf` gained
+`limit_req_zone`/`limit_req` (20r/s per IP, burst 40, `nodelay` so the burst is served immediately
+rather than queued — invisible to a normal page load) across all three vhosts, as a backstop behind
+Cloudflare for the static site itself. This only takes effect because `frontend/Dockerfile` was also
+fixed to `COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf` — previously the file existed in
+the repo but nothing copied it into the image, so nginx was silently running on the bare
+`nginx:alpine` default vhost (no multi-domain routing, no rate limiting either). Worth confirming
+after the next deploy that `app.leadvyne.com` etc. still route correctly, since this is the first
+time that vhost config has actually been active.
+
+**3. Cloudflare account/dashboard steps (NOT shippable from this repo — no Cloudflare API
+credentials are available in this environment; do these once, by hand, in the Cloudflare
+dashboard):**
+- Confirm `leadvyne.com`, `app.leadvyne.com`, and `onshope.com` are proxied (orange cloud), not
+  "DNS only" — `app.leadvyne.com`'s API already benefits from this via the Worker, but the static
+  site's own DNS records need the proxy on too for Cloudflare's network-layer DDoS protection and
+  WAF to apply to it at all.
+- If `whizz.aiingo.com` (NocoDB), `secure.leadvyne.com` (Authentik), or `app.aiingo.com` (Chatwoot)
+  are on Cloudflare DNS, proxy those too — they're self-hosted origins with no protection of their
+  own today. Better still, put them behind **Cloudflare Tunnel** (`cloudflared`) so their origin IPs
+  are never publicly routable at all — a firewall rule allowing only Cloudflare's published IP
+  ranges is the fallback if Tunnel isn't practical short-term.
+- Turn on **Bot Fight Mode** and the **WAF managed ruleset** (Security tab) for every proxied zone.
+- Add **Rate Limiting Rules** (Security → WAF → Rate limiting rules) for extra coverage on
+  `app.leadvyne.com` — the Worker's own limiter above covers the specific abuse-prone routes, but a
+  dashboard rule adds edge-level coverage before a request even reaches the Worker.
+- Keep **"I'm Under Attack" mode** in mind as the emergency toggle during an active incident — it
+  adds a JS challenge in front of every request, so only flip it on for the affected zone and only
+  for the duration of the attack (it will interrupt normal users while enabled).
+- Set spending alerts/caps on Stripe, Gemini, Resend, Sarvam, and any other pay-per-call provider
+  this Worker fans out to — Cloudflare's edge can absorb a volumetric flood for free, but every
+  request that *does* reach the Worker still spends real money on whichever paid API it calls
+  (`STRIPE_SECRET_KEY`, `GEMINI_API_KEY`, `RESEND_API_KEY`, `SARVAM_API_KEY`, …), so a "cost DoS"
+  is a separate risk from downtime and isn't mitigated by anything above.
