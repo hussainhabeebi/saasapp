@@ -1279,6 +1279,109 @@ developer app + OAuth), Apify-based lead scraping (needs the specific Apify Acto
 into Leads), Google-Sheet stock sync via an n8n webhook, and chat-content-based B2B client
 classification.
 
+## Real Estate module (`frontend/real-estate.html` — 🏘️ Real Estate tab; lead scoring, tower/floor/
+unit inventory, site visits, bookings & payment schedules, channel partners, RERA compliance)
+Same pattern as B2B above: **Settings → Modules → 🏘️ Real Estate** turns on a `🏘️ Real Estate` nav
+tab (auto-enabled when Industry is set to "Real Estate", same as Hospitality/Travel/Consultancy —
+see `applyIndustryChange()`), which embeds `frontend/real-estate.html` in an iframe, passed both
+`client=` and `token=` (it reads/writes Leads through `/nocodb/*` and its own `/re/*` Worker
+routes, both bearer-token gated).
+
+**Storage split**: Lead fields (source portal, project interest, budget, urgency, zone, language,
+auto-score, investor flag, channel-partner attribution) are plain LEADS columns — self-migrating
+via `ensureRealEstateLeadFields()`, same pattern as B2B's Brand/Country: `re_source`, `re_project`,
+`re_budget` (Number), `re_urgency`, `re_zone`, `re_language`, `re_score` (Number), `re_investor`,
+`re_cp_id` (Number). Every existing lead view (kanban, lead list, Team Performance, exports)
+already reads leads out of NocoDB and gains these for free. New CLIENTS columns (self-migrating,
+`ensureRealEstateClientFields()`): `real_estate_enabled`, `re_segments_json` (Smart Lists, same
+shape as B2B's), `re_agent_routing_json` (round-robin rules, `[{agent, zones:[], projects:[],
+languages:[]}]`), `re_rr_state_json` (round-robin pointer per matching rule set), and
+`re_webhook_secret` (issued on first `/re/init`).
+
+Everything with a genuinely new shape is Cloudflare D1 (`env.DB`, `migrations/0031_real_estate.sql`
+— apply once with `wrangler d1 migrations apply leadvyne-d1 --remote`, same as every other D1
+module here), same "sidecar data with no other NocoDB reader" reasoning as Hospitality:
+`re_projects`, `re_units` (tower/floor/unit, `status` available/hold/blocked/booked/sold/
+resale_listed, `hold_expires_at` — swept back to `available` on every `GET /re/units`),
+`re_site_visits`, `re_bookings`, `re_payment_milestones`, `re_tickets` (post-possession
+complaints), `re_channel_partners` (KYC + commission slab + a unique `portal_token`),
+`re_cp_commissions`, `re_documents` (RERA/brochure/floor-plan links), `re_price_audit` (one row
+per changed `base_price`/`plc_charges`/`floor_rise_charges`, written by `handleReUnitUpdate`).
+
+**Lead Management & Scoring**: `reProcessNewLead()` in `worker.js` is the single entry point for
+every capture path — the public multi-source webhook (`POST /re/webhook/lead?client_id=&secret=`,
+gated by the per-client `re_webhook_secret` shown in real-estate.html's "🔌 Lead Capture" tab, for
+portal/Zapier/Make.com/website-form integrations), the module's own "+ Add Lead" (walk-ins/
+referrals, `POST /re/leads`, session-gated), and the Channel Partner portal (below). It always:
+(1) **dedups** by the last-10-digit normalized phone number — a match merges the new source into
+the existing lead's `re_source` (comma-separated) instead of creating a second row, so "the same
+lead from 3 portals" shows as one record with three sources; (2) **auto-scores** with a simple,
+explainable heuristic (`computeLeadScore` — budget present +20, urgency High/Medium/Low +40/20/5,
+has a project interest +15, has a booked site visit +25, capped at 100) — deliberately not a
+trained model, mirrored client-side as `computeLeadScoreClient()` so `real-estate.html` can rescore
+after a site visit is booked without another round-trip; (3) **auto-assigns** via round-robin
+(`pickRoundRobinAgent()`) against `re_agent_routing_json`, cycling through whichever agents' zone/
+project/language rules match. `GET /re/leads/duplicates` additionally re-scans every existing lead
+by phone for the "🧬 Find Duplicates" button, covering leads entered before this module existed.
+
+**Inventory**: tower → floor → unit (`re_units`), each with `base_price`/`plc_charges` (Preferential
+Location Charges)/`floor_rise_charges` and a project-level `base_price_per_sqft`/
+`price_list_version` (`re_projects`) for price-list versioning. "Hold" (`PATCH /re/units` with
+`status:'hold', hold_hours`) sets `hold_expires_at`; the next `GET /re/units` sweeps any expired
+hold back to `available`. Any price-field change on `PATCH /re/units` writes a `re_price_audit` row
+(old/new value, `changed_by`, `reason`) — RERA-style audit trail for price/discount changes,
+readable in the "📜 Price Audit" modal.
+
+**Site Visits → Bookings → Payments**: `re_site_visits` schedules a viewing (lead + unit/project +
+transport/driver notes — reminders/calendar sync are out of scope, see below); `POST /re/bookings`
+books a unit (flips it to `status='booked'`, clears any hold) with a `token_amount`, `total_price`
+and `payment_plan` (construction-linked/down-payment/flexi/possession-linked); if a channel partner
+is attached, it auto-creates the first `re_cp_commissions` row (`amount = total_price ×
+commission_slab_pct`) — further tiered/milestone payouts are just more rows added later against the
+same `booking_id`+`cp_id`. `re_payment_milestones` is the demand-note schedule per booking (name,
+due date, amount, `status` pending/due/paid/overdue, `demand_note_sent_at` — "sending" a demand
+note is a manual "mark as sent" flag here, not a real notification send; wire it into Campaigns'
+broadcast if you want an actual WhatsApp/email demand note). Cancelling a booking
+(`status:'cancelled'`) re-opens its unit to `available`; "List for Resale" flips it to
+`resale_listed` for the Post-Sales tab's resale/renewal tracking.
+
+**Post-Sales**: `re_tickets` for post-possession complaints (booking-linked, priority, status).
+Possession/handover is just the booking's own `status='possession'` + `possession_date` — no
+separate table, since it's one more state on the same record everything else already tracks.
+
+**Channel Partners**: `re_channel_partners` (name/company/KYC status/commission slab), each issued
+a unique `portal_token` at creation. The **partner portal** (`real-estate.html?cp=<portal_token>`,
+no login) is a public page — `GET /re/cp-portal/:token` returns the partner's own bookings/
+commissions, `POST /re/cp-portal/:token/leads` lets them submit a lead through the exact same
+`reProcessNewLead()` path as every other source (rate-limited, see `RATE_LIMIT_RULES`).
+
+**Marketing**: Smart Lists (`re_segments_json`) — identical rule-engine to B2B's, matched against
+Project/Zone/Urgency/Investor/Stage/Source — each with a "📢 Broadcast" button deep-linking into
+`broadcast.html`; actual template approval and sending stay entirely in Campaigns, unchanged.
+
+**Analytics**: funnel by source/project (leads → site visits → bookings, computed client-side from
+the leads/visits/bookings the page already loaded, same approach as B2B's Analytics tab), agent
+leaderboard (`Owner`, existing LEADS column), inventory velocity (`GET /re/analytics`, a live
+`GROUP BY status` over `re_units`/`re_bookings`/`re_site_visits`/`re_tickets`), and a per-source ROI
+table where spend is a manual client-side input (no ad-platform spend API wired in).
+
+**Investor dashboard**: bookings flagged `is_investor` are grouped by buyer in the Documents tab,
+showing units held, total value, and loan status across every project — built from data this
+module already has, not a separate table.
+
+**Deliberately manual / out of scope** (needs external credentials/APIs the deployer must supply):
+portal-specific webhook formats for 99acres/MagicBricks/Bayut/Property Finder (the generic
+`/re/webhook/lead` JSON contract covers all of them via Zapier/Make.com — there's no public,
+standardized webhook spec across these portals to integrate against directly); e-signature capture
+(`agreement_url` is a link field to wherever you generate/host the signed agreement, same
+"trackable link, not embedded signing" scope B2B's Documents accept as a deliberate limit); loan/
+mortgage pre-approval status (`loan_status` on a booking is a manual dropdown a rep updates — no
+lender has a public status-pull API this app can integrate against); virtual tour / 3D walkthrough
+(a URL field on the project/unit, opened in a new tab — genuinely embeds whatever tour tool you
+already use, just not iframed inline); predictive pricing/demand forecasting (the ROI table's
+"spend" column and the funnel/velocity numbers are the forecasting surface for now — a real
+model needs historical pricing data this module doesn't yet accumulate enough of).
+
 ## Accounting module (Quotation → Invoice → Receipt, ERPNext push)
 A `💰 Accounting` nav tab, **always visible — not gated behind any industry flag or Settings →
 Modules toggle** the way B2B/Agency/Ecommerce/Recruit/Appointments are, since quoting/invoicing an
@@ -2050,8 +2153,15 @@ NocoDB's "add this field/table by hand in the UI" process:
   holds that URL string, same as everywhere else in this list holds text/JSON. Cloudflare R2
   (`HOSPITALITY_MEDIA` binding) is still there and still readable, kept only for units that already
   had a file uploaded before the switch to Drive links.
+- **Real Estate module** (projects, tower/floor/unit inventory with hold-expiry, site visits,
+  bookings, payment milestones, post-sales tickets, channel partners, commissions, the RERA
+  document repository, and the price-change audit trail — again a whole new module's data, though
+  leads/bookings can still link back to a NocoDB lead via `lead_id`) —
+  `migrations/0031_real_estate.sql`. Lead-side fields (source, project interest, budget, urgency,
+  zone, language, score, investor flag) stay plain NocoDB LEADS columns instead, same reasoning as
+  B2B's Brand/Country above.
 
-All eight still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
+All nine still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
 need it — D1 only holds what's genuinely new, and every route that moved keeps its exact pre-D1
 request/response shape, so no frontend page needed to change for this migration.
 

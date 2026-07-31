@@ -1086,6 +1086,7 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="dnTab" data-page="recruit" id="dnRecruitTab" style="display:none">💼 Recruit</button>
     <button class="dnTab" data-page="appointments" id="dnApptTab" style="display:none">📅 Appointments</button>
     <button class="dnTab" data-page="hospitality" id="dnHospitalityTab" style="display:none">🏨 Hospitality</button>
+    <button class="dnTab" data-page="realestate" id="dnRealestateTab" style="display:none">🏘️ Real Estate</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
@@ -1589,6 +1590,15 @@ const TODAY = new Date().toISOString().slice(0,10);
          is always visible. -->
     <div class="page hidden" id="pageAccounting">
       <iframe id="accountingFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- REAL ESTATE MODULE (same iframe-embed pattern/rationale as B2B above — real-estate.html is
+         its own self-contained page, industry-gated for real_estate. Passed the session token for
+         the same reason as B2B: it reads/writes Leads fields (source/budget/urgency/zone/
+         language/score/investor) through the same /nocodb/* passthrough dashboard.html itself
+         uses, plus dedicated /re/* Worker routes for inventory/bookings/channel partners. -->
+    <div class="page hidden" id="pageRealestate">
+      <iframe id="realEstateFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- TRAVEL AGENCY MODULE (the standalone "Travel" tab was merged into this module's
@@ -2745,6 +2755,14 @@ const TODAY = new Date().toISOString().slice(0,10);
               <span id="hospitalityModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>🏘️ Real Estate</b><div class="s-note" style="margin:2px 0 0">Multi-source lead capture &amp; scoring, tower/floor/unit inventory, site visits, bookings &amp; payment schedules, channel partners, and RERA document compliance.</div></div>
+              <select class="form-input" id="cfgRealEstateEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveRealEstateEnabled">Save</button>
+              <span class="save-msg" id="saveRealEstateEnabledMsg"></span>
+              <span id="realEstateModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
             <!-- Marketing Studio (SETUP.md "Marketing Studio module") — a standalone page
                  (marketing-studio.html), not a dashboard tab, so this toggle shows/hides the
                  quick-action buttons that open it (updateMarketingStudioVisibility below) rather
@@ -2936,6 +2954,7 @@ const TODAY = new Date().toISOString().slice(0,10);
       <button class="more-item" data-page="recruit" id="moreRecruitTab" style="display:none"><span class="bnIcon">💼</span><span class="bnLabel">Recruit</span></button>
       <button class="more-item" data-page="appointments" id="moreApptTab" style="display:none"><span class="bnIcon">📅</span><span class="bnLabel">Appointments</span></button>
       <button class="more-item" data-page="hospitality" id="moreHospitalityTab" style="display:none"><span class="bnIcon">🏨</span><span class="bnLabel">Hospitality</span></button>
+      <button class="more-item" data-page="realestate" id="moreRealestateTab" style="display:none"><span class="bnIcon">🏘️</span><span class="bnLabel">Real Estate</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
     </div>
   </div>
@@ -4438,7 +4457,7 @@ const SETTINGS_GROUP=['settings','channels','integrations','voice','modules']; /
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','settings','channels','integrations','voice','modules','billing'];
+const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','settings','channels','integrations','voice','modules','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -4474,6 +4493,7 @@ function navigate(page){
   if(page==='recruit') renderRecruit();
   if(page==='appointments') renderAppointments();
   if(page==='hospitality') renderHospitality();
+  if(page==='realestate') renderRealEstate();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
   if(page==='chats') openChatsTab();
@@ -4519,6 +4539,7 @@ function showApp(){
   updateRecruitTabVisibility();
   updateApptTabVisibility();
   updateHospitalityTabVisibility();
+  updateRealEstateTabVisibility();
   updateB2bTabVisibility();
   updateFeatureTabVisibility();
   updateMarketingStudioVisibility();
@@ -4965,6 +4986,14 @@ function renderB2b(){
 function renderAccounting(){
   const frame=$id('accountingFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`accounting.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+}
+
+// Same pattern as renderB2b above — real-estate.html needs the session token too, for the same
+// reason (reads/writes Leads and its own /re/* Worker routes through the bearer-token-gated
+// passthrough).
+function renderRealEstate(){
+  const frame=$id('realEstateFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`real-estate.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
 }
 
 /* ── HUMAN DEALS ── */
@@ -7818,12 +7847,16 @@ async function applyIndustryChange(ind, extraPatch){
   else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
   if(ind==='hospitality'){patch.hospitality_enabled='Yes';clientRecord.hospitality_enabled='Yes';}
   else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
+  if(ind==='real_estate'){patch.real_estate_enabled='Yes';clientRecord.real_estate_enabled='Yes';}
+  else{patch.real_estate_enabled='No';clientRecord.real_estate_enabled='No';}
   await ensureHospitalityEnabledColumn();
+  await ensureRealEstateEnabledColumn();
   await patchClient(patch);
   clientRecord.industry=ind;
   applyTheme(ind);
   updateRecruitTabVisibility();
   updateHospitalityTabVisibility();
+  updateRealEstateTabVisibility();
   _renderModuleBadge('taModuleStatusBadge',ind==='travel');
   _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
 }
@@ -7899,12 +7932,16 @@ $id('saveGeneral').addEventListener('click',async()=>{
     else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
     if(ind==='hospitality'){patch.hospitality_enabled='Yes';clientRecord.hospitality_enabled='Yes';}
     else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
+    if(ind==='real_estate'){patch.real_estate_enabled='Yes';clientRecord.real_estate_enabled='Yes';}
+    else{patch.real_estate_enabled='No';clientRecord.real_estate_enabled='No';}
     await ensureHospitalityEnabledColumn();
+    await ensureRealEstateEnabledColumn();
     await patchClient(patch);
     clientRecord.industry=ind;
     applyTheme(ind);
     updateRecruitTabVisibility();
     updateHospitalityTabVisibility();
+    updateRealEstateTabVisibility();
     _renderModuleBadge('taModuleStatusBadge',ind==='travel');
     _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
     msg.textContent='✓ Saved — theme applied';
@@ -15650,6 +15687,7 @@ function populateModulesPage(){
   initApptSettings();
   initB2bSettings();
   initHospitalitySettings();
+  initRealEstateSettings();
   initMarketingStudioSettings();
   updateFeatureTabVisibility();
 }
@@ -16573,6 +16611,11 @@ function updateHospitalityTabVisibility(){
   [$id('dnHospitalityTab'),$id('moreHospitalityTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
 }
 
+function updateRealEstateTabVisibility(){
+  const enabled=(clientRecord.real_estate_enabled==='Yes');
+  [$id('dnRealestateTab'),$id('moreRealestateTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+}
+
 // Marketing Studio has no dashboard tab of its own (it's a standalone page, marketing-studio.html
 // — see SETUP.md "Marketing Studio module") — this shows/hides the quick-action buttons that
 // open it instead of a dnXTab/moreXTab pair.
@@ -16616,6 +16659,36 @@ $id('saveHospitalityEnabled').addEventListener('click',async()=>{
     await patchClient({hospitality_enabled:val});
     updateHospitalityTabVisibility();
     _renderModuleBadge('hospitalityModuleStatusBadge',val==='Yes');
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+// real_estate_enabled is a brand-new CLIENTS column, same "create it on first save" reasoning as
+// ensureHospitalityEnabledColumn above.
+async function ensureRealEstateEnabledColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('real_estate_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'real_estate_enabled',title:'real_estate_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+function initRealEstateSettings(){
+  const sel=$id('cfgRealEstateEnabled'); if(sel) sel.value=(clientRecord.real_estate_enabled==='Yes')?'Yes':'No';
+  _renderModuleBadge('realEstateModuleStatusBadge',clientRecord.real_estate_enabled==='Yes');
+  updateRealEstateTabVisibility();
+}
+
+$id('saveRealEstateEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveRealEstateEnabled'),msg=$id('saveRealEstateEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgRealEstateEnabled').value;
+  try{
+    await ensureRealEstateEnabledColumn();
+    await patchClient({real_estate_enabled:val});
+    updateRealEstateTabVisibility();
+    _renderModuleBadge('realEstateModuleStatusBadge',val==='Yes');
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
