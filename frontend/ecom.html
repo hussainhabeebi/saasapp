@@ -363,9 +363,9 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     <div class="modal-title" id="productModalTitle">Add Product</div>
     <input type="hidden" id="pmId">
     <div class="modal-grid">
-      <div class="s-sec"><span class="s-lbl">Name *</span><input class="s-input" id="pmName" type="text"></div>
+      <div class="s-sec"><span class="s-lbl">Name *</span><input class="s-input" id="pmName" type="text" oninput="renderPmCrossSell()"></div>
       <div class="s-sec"><span class="s-lbl">SKU</span><input class="s-input" id="pmSku" type="text"></div>
-      <div class="s-sec"><span class="s-lbl">Category</span><select class="s-input" id="pmCategory" onchange="onCategorySelectChange(this)"></select></div>
+      <div class="s-sec"><span class="s-lbl">Category</span><select class="s-input" id="pmCategory" onchange="onCategorySelectChange(this);renderPmCrossSell()"></select></div>
       <div class="s-sec">
         <span class="s-lbl">Style</span>
         <select class="s-input" id="pmStyle" onchange="onProductStyleChange()">
@@ -399,7 +399,15 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     </div>
     <div class="s-sec">
       <span class="s-lbl">Description</span>
-      <textarea class="s-input" id="pmDescription" rows="3"></textarea>
+      <textarea class="s-input" id="pmDescription" rows="3" oninput="renderPmCrossSell()"></textarea>
+    </div>
+    <!-- Frequently bought together — read-only preview of dashboard.html Settings → Cross-Sell &
+         Upsell rules that match this product's name/category/description. The rule list itself is
+         edited there, not here — this is just a hint so a merchant sees which of their own rules
+         will fire for this product before saving it. -->
+    <div class="s-sec" id="pmCrossSellWrap" style="display:none">
+      <span class="s-lbl">🔄 Frequently bought together (from Cross-Sell & Upsell rules)</span>
+      <div id="pmCrossSellList" style="font-size:12px;color:var(--muted, #666)"></div>
     </div>
     <div class="s-row" style="justify-content:flex-end">
       <button class="save-btn sec" onclick="closeProductModal()">Cancel</button>
@@ -770,6 +778,7 @@ function openAddProductModal() {
   document.getElementById('productModalMsg').textContent = '';
   document.getElementById('productModalOverlay').classList.add('active');
   document.getElementById('pmName').focus();
+  renderPmCrossSell();
 }
 
 function openEditProductModal(id) {
@@ -806,10 +815,36 @@ function openEditProductModal(id) {
   document.getElementById('productModalMsg').textContent = '';
   document.getElementById('productModalOverlay').classList.add('active');
   document.getElementById('pmName').focus();
+  renderPmCrossSell();
 }
 
 function closeProductModal() {
   document.getElementById('productModalOverlay').classList.remove('active');
+}
+
+// See pmCrossSellWrap's comment above — read-only, matches this product's name/category/
+// description against clientRecord.cross_sell_rules the same way dashboard.html and
+// accounting.html do (comma-separated trigger keywords, substring match).
+function renderPmCrossSell() {
+  const wrap = document.getElementById('pmCrossSellWrap');
+  const list = document.getElementById('pmCrossSellList');
+  if (!wrap || !list) return;
+  let rules = [];
+  try { rules = JSON.parse(clientRecord?.cross_sell_rules || '[]'); } catch (e) {}
+  if (!rules.length) { wrap.style.display = 'none'; return; }
+  const text = [
+    document.getElementById('pmName').value,
+    document.getElementById('pmCategory').value,
+    document.getElementById('pmDescription').value
+  ].join(' ').toLowerCase();
+  if (!text.trim()) { wrap.style.display = 'none'; return; }
+  const matches = rules
+    .filter(r => r.trigger && r.suggestion)
+    .filter(r => r.trigger.split(',').map(k => k.trim().toLowerCase()).filter(Boolean).some(k => text.includes(k)))
+    .slice(0, 4);
+  if (!matches.length) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  list.innerHTML = matches.map(r => `• ${esc(r.suggestion)}`).join('<br>');
 }
 
 async function submitProductForm() {

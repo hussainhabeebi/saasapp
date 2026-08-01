@@ -443,6 +443,12 @@ async function handleSessionExchange(request, env){
     return json({error:'no_account', email, access_token:body.code?access_token:undefined}, 403);
   }
   const session_token=await signSession(env, rec.Id, email);
+  // Cross-Sell module (dashboard.html Settings → "🔄 Cross-Sell & Upsell", the lead panel's
+  // suggestions card, and accounting.html's line-item suggestions) stores its rule list as a
+  // single JSON CLIENTS field, same convention as `services`. Ensured here — login, not every
+  // /session/me resume — so it's provisioned the moment an existing client next signs in, same
+  // "runs the moment a client connects" reasoning as the ig_* fields above.
+  await ensureClientColumns(env, ['cross_sell_rules']);
   // Individual verified email of whoever just logged in — distinct from the account's own
   // authentik_email when a teammate (added via team_emails) signs in to a shared client account.
   // The frontend keeps this for "assigned to me" task filtering; the Worker also keeps it (signed
@@ -4731,7 +4737,11 @@ async function handleBillingWebhook(request, env){
    doesn't have today. ── */
 // shopify_shop_domain/connected_at are read-only here — only the OAuth callback sets them.
 // shopify_access_token is deliberately excluded (never reaches the browser).
-const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone'];
+// cross_sell_rules read-only here (not in ECOM_CLIENT_WRITE_FIELDS below) — ecom.html only
+// displays "Frequently bought together" hints from it; the rule list itself is edited in one
+// place, dashboard.html Settings → "🔄 Cross-Sell & Upsell", same as every other CLIENTS-JSON
+// catalog (services etc.) having a single owning editor.
+const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules'];
 const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone'];
 
 // Shared default tables used until a client explicitly saves their own table

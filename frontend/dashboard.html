@@ -1029,6 +1029,74 @@ const INDUSTRIES = {
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
 
+// Cross-Sell & Upsell — starter rule packs per industry (see INDUSTRIES above for the same key
+// set). Loaded on demand by "Load starter rules for my industry" in Settings, then owned/edited
+// by the client from there — this map is only ever a one-time seed, never read at match time
+// (renderCrossSellSuggestions below matches against whatever the client actually saved in
+// clientRecord.cross_sell_rules). `general` doubles as the fallback pack for any industry not
+// listed here. Each rule: trigger (comma-separated keywords matched against the conversation),
+// suggestion (short label for the rules list), message (WhatsApp-ready text, inserted as-is).
+const CROSS_SELL_DEFAULTS = {
+  general: [
+    {trigger:'thanks, thank you, deal, confirmed, agreed', suggestion:'Referral ask', message:'Glad this works for you! If you know anyone else who could use this, I\'d really appreciate an introduction — happy to look after them too.'},
+  ],
+  insurance: [
+    {trigger:'health insurance, health policy, medical cover', suggestion:'Life cover add-on', message:'Since you\'re covering your health, would you also like a quick quote for life cover? Many of our health customers bundle both for a better combined rate.'},
+    {trigger:'car insurance, auto insurance, vehicle policy', suggestion:'Home insurance bundle', message:'Would you like me to also quote your home insurance? Bundling auto + home usually brings the premium down.'},
+    {trigger:'policy, renewal, renew', suggestion:'Family member add-on', message:'While we\'re at it — would you like to add a spouse or family member to this policy? It\'s a quick add and often cheaper than a separate policy.'},
+  ],
+  real_estate: [
+    {trigger:'viewing, site visit, booked a unit, shortlisted', suggestion:'Home loan / mortgage partner', message:'Once you\'re ready, I can connect you with our mortgage partner for a pre-approval — it usually speeds up the booking process. Want me to set that up?'},
+    {trigger:'booking, booked, token, agreement', suggestion:'Interior/fit-out referral', message:'Congrats on the booking! Would you like an introduction to our interior design/fit-out partner for when you take possession?'},
+    {trigger:'investor, rental, resale', suggestion:'Property management service', message:'Since you\'re investing, would you be interested in our property management service for renting this out once it\'s ready?'},
+  ],
+  healthcare: [
+    {trigger:'appointment, consultation, checkup, check-up', suggestion:'Follow-up package', message:'Would you like to book your follow-up visit now? Booking it alongside today\'s appointment usually gets you the earliest slot.'},
+    {trigger:'diagnosis, test, scan, lab', suggestion:'Related diagnostic package', message:'Based on today\'s visit, would you like more information on our related diagnostic package? Happy to have the team explain what it covers.'},
+    {trigger:'treatment, procedure, surgery', suggestion:'Wellness / follow-up plan', message:'We also offer a post-treatment wellness plan that many patients find helpful for recovery — want details?'},
+  ],
+  education: [
+    {trigger:'enrolled, enrollment, admission, joined', suggestion:'Next-level course', message:'Congratulations on enrolling! Once you finish this course, we also offer a next-level program — want me to send details so you can plan ahead?'},
+    {trigger:'exam, test prep, entrance', suggestion:'Study material bundle', message:'Would you like our exam-prep study material bundle to go along with this? It\'s designed to complement the course.'},
+    {trigger:'enrolled, admission, sibling, friend', suggestion:'Referral discount', message:'If you have a sibling or friend interested, we offer a referral discount for both of you — want the details?'},
+  ],
+  automotive: [
+    {trigger:'test drive, purchased, bought the car, booked a car', suggestion:'Extended warranty', message:'Would you like to add an extended warranty to your purchase? It covers you well beyond the standard warranty period.'},
+    {trigger:'purchased, delivery, new car', suggestion:'Accessories package', message:'We have an accessories package (mats, cover, dash cam) that\'s popular with your model — want me to send pricing?'},
+    {trigger:'service, servicing, maintenance', suggestion:'Service + insurance bundle', message:'Would you like a quote for auto insurance renewal along with this service? We can bundle both.'},
+  ],
+  travel: [
+    {trigger:'flight, ticket, booked a trip', suggestion:'Hotel / stay add-on', message:'Would you like me to also check hotel options for your dates? I can send a few choices near your destination.'},
+    {trigger:'hotel, stay, package', suggestion:'Travel insurance', message:'Would you like to add travel insurance for this trip? It\'s a small add-on that covers cancellations and medical emergencies.'},
+    {trigger:'destination, trip, holiday, package', suggestion:'Excursions / car rental', message:'Would you like me to add any excursions or a car rental for your dates? I can put together a quick add-on quote.'},
+  ],
+  ecommerce: [
+    {trigger:'order, purchased, bought, checkout', suggestion:'Frequently bought together', message:'Customers who bought this also picked up a few related items — want me to share what pairs well with your order?'},
+    {trigger:'delivered, shipped, received', suggestion:'Replenishment reminder', message:'Just checking in — when you\'re ready to reorder, I can set a reminder so you never run out. Want me to set that up?'},
+    {trigger:'cart, checking out, still deciding', suggestion:'Bundle discount', message:'If you add one more item to your cart, you\'ll qualify for our bundle discount — want me to show what qualifies?'},
+  ],
+  consultancy: [
+    {trigger:'audit, assessment, review completed', suggestion:'Implementation phase', message:'Now that the audit is done, would you like to discuss the implementation phase? It\'s the natural next step to act on the findings.'},
+    {trigger:'engagement, project, completed', suggestion:'Ongoing retainer', message:'Would you be interested in an ongoing retainer so we can keep supporting you after this project wraps up?'},
+    {trigger:'hired, placed, candidate joined', suggestion:'Repeat hiring package', message:'Glad the placement worked out! If you\'re hiring again soon, we offer a repeat-client rate — want me to send details?'},
+  ],
+  b2b: [
+    {trigger:'purchase order, po, ordered, bulk order', suggestion:'Complementary SKU', message:'Along with this order, several of our B2B clients also stock [complementary product] — want me to send a quote for that too?'},
+    {trigger:'quarterly, contract, repeat order', suggestion:'Volume discount tier', message:'At your current order volume you may qualify for our next pricing tier — want me to check and send updated terms?'},
+    {trigger:'sample, sample requested', suggestion:'Bulk pricing', message:'Once you\'ve reviewed the sample, I can send you our bulk pricing sheet — want that now or after you\'ve had a chance to review?'},
+  ],
+  hospitality: [
+    {trigger:'booking, booked, reservation, dates confirmed', suggestion:'Room upgrade', message:'Would you like to upgrade your room/stay for a bit more? I can check availability and send the difference in price.'},
+    {trigger:'stay, dates confirmed, arriving', suggestion:'Spa / dining add-on', message:'Would you like to add a spa session or dinner reservation to your stay? I can pre-book it so it\'s ready when you arrive.'},
+    {trigger:'checkout, check-out, departure', suggestion:'Late checkout', message:'Would you like a late checkout for your departure day? I can add it now for a small fee.'},
+  ],
+  saas_digital_marketing: [
+    {trigger:'trial, demo, signed up, started using', suggestion:'Plan upgrade', message:'Based on your usage, upgrading to our next plan would unlock more value — want me to walk you through what changes?'},
+    {trigger:'subscribed, deal closed, onboarded', suggestion:'Add-on service', message:'Many of our customers on your plan also add [add-on service, e.g. SEO/ad management] — want a quick overview of how it works?'},
+    {trigger:'renewal, renewing, contract ending', suggestion:'Annual plan discount', message:'Since your renewal is coming up, would you like to switch to an annual plan? It comes with a meaningful discount over monthly billing.'},
+  ],
+};
+
 // Travel leads are separated into these service-line categories (a *what are they buying*
 // classification, distinct from TripType which is a *trip style*). Used by the lead form's
 // Service Category field, the Leads page category filter, the Travel Agency Home page's
@@ -2001,6 +2069,30 @@ const MODULE_PERMISSIONS = [
             <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
               <button class="save-btn" id="saveSvc">Save Services</button>
               <span class="save-msg" id="saveSvcMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <!-- CROSS-SELL & UPSELL — a rule list ("if a customer's conversation mentions X, suggest
+               Y") saved as one CLIENTS JSON field (cross_sell_rules), same convention as Services
+               above. Matched client-side against each lead's conversation in the lead detail
+               panel's "🔄 Cross-Sell" card (renderCrossSellSuggestions) and against quote/invoice
+               line items in accounting.html — both read this same field, so there's exactly one
+               place rules are authored. "Load starter rules" seeds CROSS_SELL_DEFAULTS for the
+               account's current industry (defined above, near INDUSTRIES) without overwriting
+               anything already saved. -->
+          <div class="settings-section">
+            <div class="s-head">🔄 Cross-Sell &amp; Upsell</div>
+            <div class="s-note">Suggest a related product/service whenever a lead's conversation mentions a trigger keyword. Suggestions show up as one-click inserts in the lead's reply box, and as add-on prompts when building a quote/invoice.</div>
+            <div id="crossSellList" style="margin-bottom:12px"></div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              <button type="button" onclick="addCrossSellRule()" style="flex:1;min-width:200px;padding:10px;border:2px dashed var(--ls);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px">+ Add Rule</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="loadCrossSellDefaultsForIndustry()">✨ Load starter rules for my industry</button>
+            </div>
+            <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveCrossSell">Save Cross-Sell Rules</button>
+              <span class="save-msg" id="saveCrossSellMsg"></span>
             </div>
           </div>
 
@@ -3727,6 +3819,12 @@ const MODULE_PERMISSIONS = [
     <div style="margin-top:12px">
       <button class="btn btn-secondary btn-sm" onclick="toggleTrustSignals()">📣 Trust Signals</button>
       <div id="trustSignalsCard" class="coach-card" style="display:none;margin-top:10px"></div>
+    </div>
+    <!-- Cross-Sell Suggestions — matches this lead's conversation against the rules saved in
+         Settings → Cross-Sell & Upsell, same "insert into reply box" pattern as Trust Signals. -->
+    <div style="margin-top:12px">
+      <button class="btn btn-secondary btn-sm" onclick="toggleCrossSell()">🔄 Cross-Sell</button>
+      <div id="crossSellCard" class="coach-card" style="display:none;margin-top:10px"></div>
     </div>
   </div>
 </div>
@@ -7099,6 +7197,7 @@ function openDetail(id){
   $id('detailSummary').style.display='none';
   $id('dealCoachCard').style.display='none';
   $id('trustSignalsCard').style.display='none';
+  $id('crossSellCard').style.display='none';
   renderNbaChip(lead);
   renderRecoveryChip(lead);
   renderLeadProfile(lead);
@@ -8082,6 +8181,7 @@ function populateSettings(){
   $id('cfgCalcomSecret').value=clientRecord.calcom_webhook_secret||'';
   // services
   loadServices();
+  loadCrossSellRules();
   // stages
   let stages=[];
   try{stages=flowJsonToStages(JSON.parse(clientRecord.flow_json||'{}'));}catch(e){}
@@ -8143,6 +8243,69 @@ $id('saveSvc').addEventListener('click',async()=>{
     await patchClient({services:JSON.stringify(_services)});
     msg.textContent='✓ Saved';msg.className='save-msg';
     if(clientRecord?.kb_text?.trim())triggerKbRefresh();
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+/* ── CROSS-SELL & UPSELL RULES ── same list-editor shape as Services above, saved to the
+   CLIENTS JSON field cross_sell_rules. Read by renderCrossSellSuggestions (lead detail panel)
+   and by accounting.html's suggested-add-ons row — both match rule.trigger keywords against
+   whatever text they have (conversation history, or the quote's line-item names). */
+let _crossSellRules=[];
+
+function loadCrossSellRules(){
+  try{_crossSellRules=JSON.parse(clientRecord.cross_sell_rules||'[]');}catch(e){_crossSellRules=[];}
+  renderCrossSellRules();
+}
+
+function renderCrossSellRules(){
+  const list=$id('crossSellList');
+  if(!list) return;
+  if(!_crossSellRules.length){list.innerHTML='<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No cross-sell rules yet — add one, or load starter rules for your industry below.</div>';return;}
+  list.innerHTML=_crossSellRules.map((r,i)=>`
+    <div class="svc-card">
+      <div>
+        <label class="form-label">Trigger keywords (comma-separated)</label>
+        <input class="form-input" value="${esc(r.trigger||'')}" oninput="_crossSellRules[${i}].trigger=this.value" placeholder="e.g. booked a car, purchased" />
+        <label class="form-label" style="margin-top:8px">Suggestion label</label>
+        <input class="form-input" value="${esc(r.suggestion||'')}" oninput="_crossSellRules[${i}].suggestion=this.value" placeholder="e.g. Extended warranty" />
+      </div>
+      <div>
+        <label class="form-label">Message to send</label>
+        <textarea class="form-input" rows="3" oninput="_crossSellRules[${i}].message=this.value" placeholder="What to say to the customer…">${esc(r.message||'')}</textarea>
+      </div>
+      <button class="svc-del" onclick="removeCrossSellRule(${i})">✕</button>
+    </div>`).join('');
+}
+
+function addCrossSellRule(){
+  _crossSellRules.push({trigger:'',suggestion:'',message:''});
+  renderCrossSellRules();
+  $id('crossSellList').lastElementChild?.querySelector('input')?.focus();
+}
+
+function removeCrossSellRule(i){_crossSellRules.splice(i,1);renderCrossSellRules();}
+
+// Appends the current industry's starter pack, skipping any suggestion label already present
+// (by name) so clicking this more than once — or after switching industries — never duplicates
+// rules the client already has or has edited.
+function loadCrossSellDefaultsForIndustry(){
+  const ind=clientRecord?.industry||'general';
+  const pack=CROSS_SELL_DEFAULTS[ind]||CROSS_SELL_DEFAULTS.general;
+  const existing=new Set(_crossSellRules.map(r=>(r.suggestion||'').toLowerCase()));
+  const added=pack.filter(r=>!existing.has((r.suggestion||'').toLowerCase()));
+  _crossSellRules.push(...added.map(r=>({...r})));
+  renderCrossSellRules();
+  const msg=$id('saveCrossSellMsg');
+  if(msg){msg.className='save-msg';msg.textContent=added.length?`Added ${added.length} starter rule(s) — click Save to keep them.`:'Starter rules for your industry are already in this list.';setTimeout(()=>msg.textContent='',4000);}
+}
+
+$id('saveCrossSell').addEventListener('click',async()=>{
+  const btn=$id('saveCrossSell'),msg=$id('saveCrossSellMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    await patchClient({cross_sell_rules:JSON.stringify(_crossSellRules)});
+    msg.textContent='✓ Saved';msg.className='save-msg';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
@@ -11933,6 +12096,53 @@ function insertTrustSignal(i){
   const text=_trustSignalsList[i]; if(!text) return;
   const box=$id('waReplyText'); if(!box) return;
   box.value=(box.value?box.value+'\n\n':'')+text;
+  box.focus();
+}
+
+/* ── CROSS-SELL SUGGESTIONS ── pure client-side keyword match (same convLower approach as
+   renderSmartMatch above) against the rules saved in Settings → Cross-Sell & Upsell — no AI
+   call, since a rule's message is exact text the client wrote, not something to generate. */
+let _crossSellMatches=[];
+function toggleCrossSell(){
+  const card=$id('crossSellCard');
+  const opening=card.style.display==='none';
+  card.style.display=opening?'block':'none';
+  if(opening) renderCrossSellSuggestions(currentLead);
+}
+function renderCrossSellSuggestions(lead){
+  const card=$id('crossSellCard');
+  if(!card) return;
+  if(!lead){card.innerHTML='<div style="color:var(--muted);font-size:13px">No lead selected.</div>';return;}
+  let rules=[];try{rules=JSON.parse(clientRecord?.cross_sell_rules||'[]');}catch(e){}
+  if(!rules.length){
+    card.innerHTML='<div style="color:var(--muted);font-size:13px">No cross-sell rules set up yet — add some in Settings → Cross-Sell &amp; Upsell.</div>';
+    return;
+  }
+  const conv=(lead.ConvHistory||'')+' '+(lead.HotMomentText||'')+' '+(lead.QualAnswers||'');
+  const convLower=conv.toLowerCase();
+  _crossSellMatches=rules
+    .filter(r=>r.trigger&&r.message)
+    .map(r=>{
+      const keywords=r.trigger.split(',').map(k=>k.trim().toLowerCase()).filter(Boolean);
+      const score=keywords.filter(k=>k&&convLower.includes(k)).length;
+      return {...r, score};
+    })
+    .filter(r=>r.score>0)
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,4);
+  if(!_crossSellMatches.length){
+    card.innerHTML='<div style="color:var(--muted);font-size:13px">No cross-sell match for this conversation yet.</div>';
+    return;
+  }
+  card.innerHTML=`<div class="cc-head">🔄 Cross-Sell Suggestions</div>`+_crossSellMatches.map((r,i)=>`<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)">
+    <div style="flex:1;font-size:13px;line-height:1.5"><b>${esc(r.suggestion||'Suggestion')}</b><br>${esc(r.message)}</div>
+    <button class="btn btn-secondary btn-sm" style="flex-shrink:0" onclick="insertCrossSellSuggestion(${i})">Insert</button>
+  </div>`).join('');
+}
+function insertCrossSellSuggestion(i){
+  const rule=_crossSellMatches[i]; if(!rule) return;
+  const box=$id('waReplyText'); if(!box) return;
+  box.value=(box.value?box.value+'\n\n':'')+rule.message;
   box.focus();
 }
 

@@ -445,6 +445,10 @@ tbody tr:hover{background:var(--bg)}
     <datalist id="erpItemsDatalist"></datalist>
     <div id="docLineItems"></div>
     <button class="save-btn sec" type="button" onclick="addLineItemRow()" style="margin-top:6px">+ Add Line Item</button>
+    <!-- Suggested add-ons — matches current line-item names against dashboard.html's Settings →
+         Cross-Sell & Upsell rules (clientRecord.cross_sell_rules, same field, read-only here).
+         Click adds the suggestion as its own line item. -->
+    <div id="docCrossSell" style="margin-top:10px"></div>
     <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docTotalPreview">Total: —</div>
     <div style="margin-top:14px">
       <label class="s-lbl">Notes</label>
@@ -1444,6 +1448,38 @@ function addLineItemRow(li){
   row.querySelectorAll('input').forEach(el=>el.addEventListener('input',updateDocTotalPreview));
   updateDocTotalPreview();
 }
+
+// Suggested add-ons — keyword-matches current line-item names against clientRecord.cross_sell_rules
+// (edited in dashboard.html Settings → Cross-Sell & Upsell). Same trigger-keyword matching as
+// dashboard.html's renderCrossSellSuggestions, just matched against line-item text instead of a
+// lead's conversation. Matches are kept in _docCrossSellMatches and referenced by index from the
+// button (rather than inlining the suggestion text into the onclick attribute) so a suggestion
+// containing a quote character can't break the handler.
+let _docCrossSellMatches=[];
+function renderDocCrossSell(){
+  const wrap=document.getElementById('docCrossSell');
+  if(!wrap) return;
+  let rules=[]; try{ rules=JSON.parse(clientRecord?.cross_sell_rules||'[]'); }catch(e){}
+  if(!rules.length){ wrap.innerHTML=''; _docCrossSellMatches=[]; return; }
+  const itemNames=[...document.querySelectorAll('#docLineItems .li-name')].map(el=>el.value.toLowerCase()).filter(Boolean);
+  if(!itemNames.length){ wrap.innerHTML=''; _docCrossSellMatches=[]; return; }
+  const already=new Set(itemNames);
+  _docCrossSellMatches=rules
+    .filter(r=>r.trigger&&r.suggestion)
+    .filter(r=>!already.has((r.suggestion||'').toLowerCase()))
+    .filter(r=>r.trigger.split(',').map(k=>k.trim().toLowerCase()).filter(Boolean).some(k=>itemNames.some(n=>n.includes(k))))
+    .slice(0,4);
+  if(!_docCrossSellMatches.length){ wrap.innerHTML=''; return; }
+  wrap.innerHTML='<div class="s-hint" style="margin-bottom:6px">🔄 Suggested add-ons:</div>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+    _docCrossSellMatches.map((r,i)=>`<button type="button" class="save-btn sec" style="padding:6px 10px;font-size:12px" onclick="addDocCrossSellItem(${i})">+ ${esc(r.suggestion)}</button>`).join('')+
+    '</div>';
+}
+function addDocCrossSellItem(i){
+  const r=_docCrossSellMatches[i]; if(!r) return;
+  addLineItemRow({name:r.suggestion,qty:1,price:0});
+  renderDocCrossSell();
+}
 function collectLineItems(){
   return [...document.querySelectorAll('#docLineItems .li-row')].map(row=>({
     name:row.querySelector('.li-name').value.trim(),
@@ -1464,6 +1500,7 @@ function updateDocTotalPreview(){
   });
   const cur=document.getElementById('docCurrency').value||'';
   document.getElementById('docTotalPreview').textContent=`Total: ${fmtMoney(subtotal,cur)}`;
+  renderDocCrossSell();
 }
 
 async function saveDocument(){
