@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>About &amp; Contact · Leadvyne</title>
 <link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
+<link rel="manifest" href="site-manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#0D9C93">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -95,5 +98,6 @@ footer a{color:rgba(255,255,255,.6);text-decoration:none;margin:0 8px}
   <p>© 2026 Leadvyne · Powered by <a href="https://aiingo.com" target="_blank" rel="noopener">Aiingo</a></p>
 </footer>
 
+<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
 </html>

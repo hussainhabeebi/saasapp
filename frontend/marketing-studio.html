@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Marketing Studio · Leadvyne</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#0D9C93">
 <style>
 :root{
   /* "Midnight Indigo" — a cooler, flatter modern SaaS look (Linear/Vercel-style) in place of the
@@ -1819,5 +1822,6 @@ async function generateBatch() {
 
 tryAutoLogin();
 </script>
+<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
 </html>

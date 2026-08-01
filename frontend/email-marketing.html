@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Email Marketing · Leadvyne</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#0D9C93">
 <style>
 :root{
   --bg:#F4F6FB;--card:#FFFFFF;--ink:#101322;--muted:#5B6178;
@@ -318,5 +321,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 tryAutoLogin();
 </script>
+<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
 </html>
