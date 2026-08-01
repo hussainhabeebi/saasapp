@@ -1013,7 +1013,7 @@ const INDUSTRIES = {
     theme:{accent:'#DC2626',accentInk:'#B91C1C',accentSoft:'#FEE2E2',bg:'#FFF5F5',line:'#FECACA'} },
   travel:      { label:'Travel & Tourism', booked:'Bookings Made', active:'Active Inquiries', tags:['Hot Lead','Quote Sent','No Answer','Price Query','Not Interested','Group Tour','Honeymoon','Corporate'],
     theme:{accent:'#0369A1',accentInk:'#075985',accentSoft:'#E0F2FE',bg:'#F0F9FF',line:'#BAE6FD'},
-    extraFields:['Destination','TravelDates','PaxCount','Budget','TripType'] },
+    extraFields:['ServiceCategory','Destination','TravelDates','PaxCount','Budget','TripType'] },
   ecommerce:   { label:'Ecommerce', booked:'Orders Closed', active:'Active Inquiries', tags:['Hot Buyer','Cart Abandoned','No Answer','Price Query','Shipped','Returned','Not Interested'],
     theme:{accent:'#7C3AED',accentInk:'#6D28D9',accentSoft:'#EDE9FE',bg:'#F5F3FF',line:'#DDD6FE'} },
   consultancy: { label:'Consultancy / Recruitment', booked:'Placements', active:'Active Candidates', tags:['Qualified','Interview Scheduled','Offer Sent','On Hold','Not Interested'],
@@ -1028,6 +1028,43 @@ const INDUSTRIES = {
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
+
+// Travel leads are separated into these service-line categories (a *what are they buying*
+// classification, distinct from TripType which is a *trip style*). Used by the lead form's
+// Service Category field, the Leads page category filter, the Travel Agency Home page's
+// categorized-leads widget, and the per-user "lead categories" access restriction below.
+const LEAD_CATEGORIES = ['Ticket','Package','Hotel','Other Services'];
+function serviceCategoryIcon(cat){
+  return {Ticket:'✈️',Package:'📦',Hotel:'🏨','Other Services':'🧳'}[cat]||'🗂️';
+}
+
+// Per-user module access (User Management → profile → "Module Access"). Every nav tab a teammate
+// could see, keyed by its data-page value. A teammate with no team_permissions entry (the default
+// for everyone added before this existed, and for anyone the owner hasn't restricted) keeps full
+// access — this only ever narrows what a specific person sees, never what the tenant's own
+// module flags (ta_enabled etc.) already decided. The account owner is always unrestricted.
+const MODULE_PERMISSIONS = [
+  {key:'home', label:'🏠 Home'},
+  {key:'humandeals', label:'🤝 Human Deals'},
+  {key:'chats', label:'💬 Chats'},
+  {key:'leads', label:'👥 Leads'},
+  {key:'tasks', label:'✅ Tasks'},
+  {key:'team', label:'📊 Team'},
+  {key:'reports', label:'📈 Reports'},
+  {key:'knowledgebase', label:'📚 Knowledge Base'},
+  {key:'accounting', label:'💰 Accounting'},
+  {key:'billing', label:'💳 Billing'},
+  {key:'ecommerce', label:'🛒 Ecommerce'},
+  {key:'saasops', label:'🚀 SaaS Ops'},
+  {key:'b2b', label:'🤝 B2B'},
+  {key:'agency', label:'🏢 Agency / Travel'},
+  {key:'recruit', label:'💼 Recruit'},
+  {key:'appointments', label:'📅 Appointments'},
+  {key:'hospitality', label:'🏨 Hospitality'},
+  {key:'realestate', label:'🏘️ Real Estate'},
+  {key:'broadcast', label:'📢 Campaigns'},
+  {key:'settings', label:'⚙️ Settings'},
+];
 </script>
 
 <!-- GATE -->
@@ -1438,6 +1475,11 @@ const TODAY = new Date().toISOString().slice(0,10);
               <option value="Hot">🔥 Hot</option>
               <option value="Warm">Warm</option>
               <option value="Cold">Cold</option>
+            </select>
+            <!-- Travel leads separation — Ticket/Package/Hotel/Other Services. Only shown for the
+                 travel industry (toggled in applyTheme()); see LEAD_CATEGORIES. -->
+            <select class="form-input" id="leadCategoryFilter" onchange="onLeadsFilterChange()" style="display:none;flex:0 0 140px;padding:9px 10px">
+              <option value="">All categories</option>
             </select>
             <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
             <button class="btn btn-secondary btn-sm" onclick="toggleLeadsAdvFilters()" title="Filter by stage or tag">🔎 Stage/Tag</button>
@@ -1885,7 +1927,7 @@ const TODAY = new Date().toISOString().slice(0,10);
         <div class="card" style="margin-bottom:14px" id="userMgmtCard">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">👥 User Management</div>
-            <div class="s-note">Everyone below can sign in with their own Authentik account and gets full access to this dashboard — same as you.</div>
+            <div class="s-note">Everyone below (including you, the account owner) can sign in with their own Authentik account. Click the 👤 on anyone to view their profile — Chatwoot login, and, for teammates, which modules and (for travel clients) which lead categories they can see.</div>
             <div id="teamMembersList" style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px"></div>
 
             <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
@@ -3501,6 +3543,15 @@ const TODAY = new Date().toISOString().slice(0,10);
     <!-- Travel fields (shown when travel industry) -->
     <div id="travelFields" style="display:none;border-top:1px solid var(--line);padding-top:14px;margin-top:4px">
       <div style="font-size:11px;font-weight:600;color:var(--accent-ink);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">✈️ Travel Details</div>
+      <div class="form-group"><label class="form-label">Service Category</label>
+        <select class="form-input" id="fServiceCategory">
+          <option value="">Select category…</option>
+          <option value="Ticket">✈️ Ticket</option>
+          <option value="Package">📦 Package</option>
+          <option value="Hotel">🏨 Hotel</option>
+          <option value="Other Services">🧳 Other Services</option>
+        </select>
+      </div>
       <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="fDestination" type="text" placeholder="Dubai, Bali, Paris…" /></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <div class="form-group"><label class="form-label">Travel Date (From)</label><input class="form-input" id="fTravelFrom" type="date" /></div>
@@ -3530,6 +3581,19 @@ const TODAY = new Date().toISOString().slice(0,10);
     <button class="btn btn-primary" style="flex:1" onclick="saveLead()">Save Lead</button>
     <button class="btn btn-secondary" onclick="closeModal('modalLead')">Cancel</button>
   </div>
+</div>
+
+<!-- MODAL: User Profile — User Management → per-teammate profile. Shows their Chatwoot login
+     (when one exists) and, for the account owner, lets them set per-module and (for travel
+     clients) per-lead-category access for that teammate. See renderUserProfileModal(). -->
+<div class="modal" id="modalUserProfile" style="max-width:560px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd">
+    <span class="modal-title" id="userProfileTitle">User Profile</span>
+    <button class="icon-btn" onclick="closeModal('modalUserProfile')">✕</button>
+  </div>
+  <div class="modal-body" id="userProfileBody"></div>
+  <div class="modal-footer" id="userProfileFooter"></div>
 </div>
 
 <!-- MODAL: Lead Detail -->
@@ -4557,6 +4621,7 @@ function showApp(){
   updateB2bTabVisibility();
   updateFeatureTabVisibility();
   updateMarketingStudioVisibility();
+  applyUserModulePermissions();
   loadAll();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
@@ -5446,6 +5511,8 @@ function applyLeadsViewFilter(leads){
   else if(of) out=out.filter(l=>(l.Owner||'')===of);
   const sf=$id('leadScoreFilter')?.value||'';
   if(sf) out=out.filter(l=>l.Score===sf);
+  const cf=$id('leadCategoryFilter')?.value||'';
+  if(cf) out=out.filter(l=>(l.ServiceCategory||'')===cf);
   if(_leadsFilter.stages.length) out=out.filter(l=>_leadsFilter.stages.includes(l.Stage));
   if(_leadsFilter.tag) out=out.filter(l=>parseTags(l.Tags).some(t=>t.toLowerCase()===_leadsFilter.tag.toLowerCase()));
   return out;
@@ -6800,7 +6867,7 @@ function openAddLead(){
   $id('modalLeadTitle').textContent=clientRecord?.industry==='travel'?'Add Inquiry':'Add Lead';
   $id('fLeadId').value='';
   $id('fName').value=''; $id('fPhone').value=''; $id('fEmail').value=''; $id('fNotes').value=''; $id('fTags').value=''; $id('fReminder').value='';
-  if(clientRecord?.industry==='travel'){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';}
+  if(clientRecord?.industry==='travel'){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';$id('fServiceCategory').value='';}
   populateFormSelects('');
   $id('fStage').value='new'; $id('fScore').value='Cold';
   openModal('modalLead');
@@ -6814,6 +6881,7 @@ function openEditLead(lead){
   // Travel fields
   if(clientRecord?.industry==='travel'){
     const dates=(lead.TravelDates||'').split('→');
+    $id('fServiceCategory').value=lead.ServiceCategory||'';
     $id('fDestination').value=lead.Destination||'';
     $id('fTravelFrom').value=(dates[0]||'').trim();
     $id('fTravelTo').value=(dates[1]||'').trim();
@@ -6909,6 +6977,13 @@ async function saveLead(){
     if($id('fBudget').value)body.Budget=parseInt($id('fBudget').value)||0;
     if($id('fTripType').value)body.TripType=$id('fTripType').value;
     if($id('fSpecialReq').value)body.SpecialRequests=$id('fSpecialReq').value.trim();
+    // Service Category (Ticket/Package/Hotel/Other Services) — the leads-separation classification
+    // used by the Leads page category filter, the Travel Agency Home page widget, and the
+    // per-user lead-category access restriction (User Management → profile).
+    if($id('fServiceCategory').value){
+      body.ServiceCategory=$id('fServiceCategory').value;
+      await ensureLeadsField('ServiceCategory');
+    }
   }
   if(!body.Phone){alert('Phone is required.');return;}
   if(id){
@@ -7665,11 +7740,172 @@ function timeAgo(iso){
 // needed — it's just another field on the existing per-client record, saved via patchClient()
 // the same way every other Settings field is. The Worker's getClientByAuthentikEmail is what
 // actually makes a listed email log into this same account (see cloudflare-worker/worker.js).
+//
+// The account owner (whoever's email is on authentik_email — the first person who ever signed
+// up for this account) used to be invisible here: only the teammates added afterward showed up
+// in this list, even though the owner is a "user" of the dashboard too. Listing them first (with
+// a crown and no remove button — the owner can't remove themselves) makes this an actual roster
+// of everyone who can sign in, not just the people added after the fact.
 function renderTeamMembers(){
+  const owner=String(clientRecord.authentik_email||'').trim();
   const emails=(clientRecord.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
-  $id('teamMembersList').innerHTML=emails.length
-    ? emails.map(e=>`<span style="background:var(--accent-soft);border-radius:99px;padding:6px 10px;font-size:12px;display:inline-flex;align-items:center;gap:6px">${esc(e)}<a href="#" onclick="removeTeamMember('${esc(e)}');return false" style="color:var(--muted);text-decoration:none;font-weight:700">✕</a></span>`).join('')
-    : '<div style="color:var(--muted);font-size:13px">No teammates added yet.</div>';
+  const ownerChip=owner?`<span style="background:var(--accent-soft);border-radius:99px;padding:6px 10px;font-size:12px;display:inline-flex;align-items:center;gap:6px;font-weight:700">👑 ${esc(owner)}<span style="font-weight:400;color:var(--muted)">Owner</span><a href="#" onclick="openUserProfile('${esc(owner)}');return false" style="color:var(--accent-ink);text-decoration:none;font-weight:700" title="View profile">👤</a></span>`:'';
+  const teamChips=emails.map(e=>`<span style="background:var(--accent-soft);border-radius:99px;padding:6px 10px;font-size:12px;display:inline-flex;align-items:center;gap:6px">${esc(e)}<a href="#" onclick="openUserProfile('${esc(e)}');return false" style="color:var(--accent-ink);text-decoration:none;font-weight:700" title="View profile">👤</a><a href="#" onclick="removeTeamMember('${esc(e)}');return false" style="color:var(--muted);text-decoration:none;font-weight:700" title="Remove">✕</a></span>`).join('');
+  $id('teamMembersList').innerHTML=(ownerChip+teamChips)||'<div style="color:var(--muted);font-size:13px">No teammates added yet.</div>';
+}
+
+/* ── PER-USER ACCESS (User Management → profile) ──
+   team_permissions is a JSON-on-CLIENTS field, same lightweight convention as team_emails/
+   team_names/ta_enabled: {"teammate@x.com": {"modules":["home","leads",...], "leadCategories":["Ticket",...]}}.
+   No entry (or an entry missing a key) means "no restriction" for that key — this only ever
+   narrows access below the default of "same full access as the owner", so a teammate added
+   before this feature existed keeps working exactly as before until the owner deliberately
+   restricts them. The owner themselves is always unrestricted (enforced both here and, for the
+   part that actually matters security-wise — which leads a travel teammate's queries can return —
+   server-side in the Worker's /nocodb passthrough). */
+function isAccountOwner(email){
+  const e=(email===undefined?myEmail:email)||'';
+  return !!e && e.toLowerCase()===String(clientRecord?.authentik_email||'').toLowerCase();
+}
+function getTeamPermissions(){
+  try{ return JSON.parse(clientRecord.team_permissions||'{}'); }catch(e){ return {}; }
+}
+// Same "check the meta API, create the column if missing" convention saveTaEnabled() already
+// uses for ta_enabled/ta_table_ids — no migration step, the field just appears the first time
+// it's actually needed.
+async function ensureClientField(name, uidt='SingleLineText'){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes(name)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:name,title:name,uidt}).catch(()=>{});
+  }catch(e){}
+}
+async function ensureLeadsField(name, uidt='SingleLineText'){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes(name)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}/fields`,{column_name:name,title:name,uidt}).catch(()=>{});
+  }catch(e){}
+}
+// Hides nav tabs a restricted teammate isn't allowed into. Only ever additionally hides — never
+// re-shows a tab a tenant-level module flag (ta_enabled, updateRecruitTabVisibility, etc.)
+// already decided should be hidden — so it has to run *after* those, not instead of them.
+function applyUserModulePermissions(){
+  if(!clientRecord||!myEmail||isAccountOwner()) return;
+  const mine=getTeamPermissions()[myEmail];
+  if(!mine||!Array.isArray(mine.modules)) return; // no restriction saved = full access
+  const allowed=new Set(mine.modules);
+  MODULE_PERMISSIONS.forEach(m=>{
+    if(allowed.has(m.key)) return;
+    document.querySelectorAll(`[data-page="${m.key}"]`).forEach(el=>{ el.style.display='none'; });
+  });
+}
+function closeUserProfile(){ closeModal('modalUserProfile'); }
+function openUserProfile(email){
+  renderUserProfileModal((email||'').trim().toLowerCase());
+  openModal('modalUserProfile');
+}
+function renderUserProfileModal(email){
+  const owner=isAccountOwner(email);
+  const canEdit=isAccountOwner() && !owner; // only the account owner edits, and never their own access
+  const perms=getTeamPermissions()[email]||{};
+  const modules=Array.isArray(perms.modules)?perms.modules:null; // null = unrestricted
+  const categories=Array.isArray(perms.leadCategories)?perms.leadCategories:null; // null = unrestricted, [] = sees none, [subset] = sees only those
+  const isTravel=clientRecord?.industry==='travel';
+
+  $id('userProfileTitle').textContent=email+(owner?' (Owner)':'');
+
+  // Credentials are only ever shown to their own owner, or to the account owner looking at
+  // someone else's — a regular teammate opening a colleague's profile (everyone can see everyone
+  // in this list) must not be able to read that colleague's Chatwoot password.
+  const canViewCredentials=isAccountOwner()||myEmail===email;
+  let chatwootHtml='';
+  if(!canViewCredentials){
+    chatwootHtml='<div class="s-note">Only the account owner (or this person themselves) can view login details here.</div>';
+  }else if(owner){
+    const pw=clientRecord.chatwoot_owner_password;
+    chatwootHtml=clientRecord.chatwoot_account_id
+      ? `<div class="pc-row"><div class="pc-key">Chatwoot Email</div><div class="pc-val">${esc(email)}</div></div>
+         <div class="pc-row"><div class="pc-key">Chatwoot Password</div><div class="pc-val">${pw?maskedReveal(pw):'<span style="color:var(--muted)">Not on file — created before this was stored, or connected manually.</span>'}</div></div>
+         <div class="pc-row"><div class="pc-key"></div><div class="pc-val"><a href="#" onclick="openChatwootSso();return false" style="font-size:12px">Log in to Chatwoot →</a></div></div>`
+      : '<div class="s-note">Chatwoot isn\'t connected for this account yet (Integrations → Data Sync).</div>';
+  }else{
+    let teamPw={}; try{ teamPw=JSON.parse(clientRecord.team_chatwoot_passwords||'{}'); }catch(e){}
+    let teamUsers={}; try{ teamUsers=JSON.parse(clientRecord.team_chatwoot_users||'{}'); }catch(e){}
+    const pw=teamPw[email];
+    chatwootHtml=teamUsers[email]
+      ? `<div class="pc-row"><div class="pc-key">Chatwoot Email</div><div class="pc-val">${esc(email)}</div></div>
+         <div class="pc-row"><div class="pc-key">Chatwoot Password</div><div class="pc-val">${pw?maskedReveal(pw):'<span style="color:var(--muted)">Not on file.</span>'}</div></div>`
+      : '<div class="s-note">No Chatwoot agent on file for this teammate (Chatwoot may not have been connected when they were created).</div>';
+  }
+
+  const moduleRows=MODULE_PERMISSIONS.map(m=>{
+    const checked=owner || modules===null || modules.includes(m.key);
+    return `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;${canEdit?'':'opacity:.75'}">
+      <input type="checkbox" class="upModuleChk" value="${m.key}" ${checked?'checked':''} ${canEdit?'':'disabled'}> ${m.label}
+    </label>`;
+  }).join('');
+
+  const categoryRows=LEAD_CATEGORIES.map(c=>{
+    const checked=owner || categories===null || categories.includes(c);
+    return `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;${canEdit?'':'opacity:.75'}">
+      <input type="checkbox" class="upCategoryChk" value="${esc(c)}" ${checked?'checked':''} ${canEdit?'':'disabled'}> ${esc(c)}
+    </label>`;
+  }).join('');
+
+  $id('userProfileBody').innerHTML=`
+    <div class="profile-card" style="margin-bottom:14px">
+      <div class="pc-title">💬 Chatwoot Login</div>
+      ${chatwootHtml}
+    </div>
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px">Module Access</div>
+    <div class="s-note" style="margin-bottom:8px">${owner?'The account owner always has full access.':canEdit?'Uncheck a module to hide it from this teammate. Leave everything checked for full access.':'Only the account owner can change this.'}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px" id="upModuleList">${moduleRows}</div>
+    ${isTravel?`
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px">✈️ Travel Lead Categories</div>
+    <div class="s-note" style="margin-bottom:8px">${owner?'The account owner always sees every lead.':canEdit?'Uncheck a category to hide those leads from this teammate entirely (they won’t appear anywhere, including the Travel Agency Home page). Leave everything checked to see all leads.':'Only the account owner can change this.'}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px" id="upCategoryList">${categoryRows}</div>
+    `:''}
+  `;
+
+  $id('userProfileFooter').innerHTML=canEdit
+    ? `<button class="btn btn-primary" style="flex:1" onclick="saveUserProfilePermissions('${esc(email)}')">Save Access</button>
+       <span class="save-msg" id="userProfileMsg"></span>
+       <button class="btn btn-secondary" onclick="closeUserProfile()">Close</button>`
+    : `<button class="btn btn-secondary" style="flex:1" onclick="closeUserProfile()">Close</button>`;
+}
+// Passwords sit in plain sight in the DOM either way (this app has no client-side crypto to hide
+// them behind) — masking-by-default here is just to stop a shoulder-surf/screen-share leak, not a
+// real secrecy boundary. Click to reveal, matching how the one-time creation card already shows
+// passwords in the clear.
+function maskedReveal(value){
+  const id='pw'+Math.random().toString(36).slice(2);
+  return `<span id="${id}" style="font-family:var(--mono);cursor:pointer" data-shown="0" data-val="${esc(value)}" onclick="const el=this;el.dataset.shown=el.dataset.shown==='1'?'0':'1';el.textContent=el.dataset.shown==='1'?el.dataset.val:'••••••••';" title="Click to reveal">••••••••</span>`;
+}
+async function saveUserProfilePermissions(email){
+  const msg=$id('userProfileMsg'); msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    const modules=[...document.querySelectorAll('#upModuleList .upModuleChk:checked')].map(el=>el.value);
+    const perms=getTeamPermissions();
+    const next={ modules: modules.length===MODULE_PERMISSIONS.length ? null : modules }; // all checked = no restriction
+    // The category checkboxes only exist in the DOM for travel clients (renderUserProfileModal
+    // skips that section otherwise) — querySelectorAll would silently return [] on a non-travel
+    // client, which without this guard would get saved as leadCategories:[] ("sees no leads") and
+    // then wrongly lock the teammate out entirely if the client later switches to travel. Leave
+    // whatever's already stored untouched when the section wasn't actually shown.
+    if(clientRecord?.industry==='travel'){
+      const categories=[...document.querySelectorAll('#upCategoryList .upCategoryChk:checked')].map(el=>el.value);
+      next.leadCategories = categories.length===LEAD_CATEGORIES.length ? null : categories; // [] (none checked) = sees no leads
+    }else if(perms[email] && 'leadCategories' in perms[email]){
+      next.leadCategories = perms[email].leadCategories;
+    }
+    perms[email]=next;
+    await ensureClientField('team_permissions','LongText');
+    await patchClient({team_permissions:JSON.stringify(perms)});
+    clientRecord.team_permissions=JSON.stringify(perms);
+    msg.textContent='✓ Saved'; msg.className='save-msg ok';
+    setTimeout(()=>{ msg.textContent=''; },2500);
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
 async function addTeamMember(){
@@ -11520,7 +11756,7 @@ function renderLeadProfile(lead){
   let qa={};try{qa=JSON.parse(lead.QualAnswers||'{}');}catch(e){}
   const qaKeys=Object.keys(qa);
   const isTravelClient=clientRecord?.industry==='travel';
-  const hasTravelData=isTravelClient&&(lead.Destination||lead.TravelDates||lead.TripType||lead.Budget);
+  const hasTravelData=isTravelClient&&(lead.Destination||lead.TravelDates||lead.TripType||lead.Budget||lead.ServiceCategory);
   const isRealEstateClient=clientRecord?.industry==='real_estate';
   const hasReData=isRealEstateClient&&(lead.re_source||lead.re_project||lead.re_budget||lead.re_urgency||lead.re_score||lead.re_zone||lead.re_language||lead.re_investor);
   if(!qaKeys.length&&!lead.QualScore&&lead.HotMoment!=='Yes'&&!hasTravelData&&!hasReData){card.style.display='none';return;}
@@ -11528,6 +11764,7 @@ function renderLeadProfile(lead){
   card.innerHTML=`<div class="profile-card">
     <div class="pc-title">${isTravelClient?'✈️ Travel Profile':isRealEstateClient?'🏘️ Buyer Profile':'🧬 Lead Profile'}</div>
     ${hasTravelData?`
+      ${lead.ServiceCategory?`<div class="pc-row"><div class="pc-key">Category</div><div class="pc-val">${serviceCategoryIcon(lead.ServiceCategory)} ${esc(lead.ServiceCategory)}</div></div>`:''}
       ${lead.Destination?`<div class="pc-row"><div class="pc-key">Destination</div><div class="pc-val">🌍 ${esc(lead.Destination)}</div></div>`:''}
       ${lead.TravelDates?`<div class="pc-row"><div class="pc-key">Travel Dates</div><div class="pc-val">📅 ${esc(lead.TravelDates)}</div></div>`:''}
       ${lead.TripType?`<div class="pc-row"><div class="pc-key">Trip Type</div><div class="pc-val">${esc(lead.TripType)}</div></div>`:''}
@@ -11682,6 +11919,15 @@ function applyTheme(industryKey){
   });
   // Show/hide travel fields in lead form
   const tf=$id('travelFields');if(tf)tf.style.display=industryKey==='travel'?'block':'none';
+  // Show/hide the Leads page's Ticket/Package/Hotel/Other Services category filter
+  const cf=$id('leadCategoryFilter');
+  if(cf){
+    cf.style.display=industryKey==='travel'?'':'none';
+    if(industryKey==='travel'&&!cf.dataset.populated){
+      cf.innerHTML='<option value="">All categories</option>'+LEAD_CATEGORIES.map(c=>`<option value="${esc(c)}">${serviceCategoryIcon(c)} ${esc(c)}</option>`).join('');
+      cf.dataset.populated='1';
+    }
+  }
   // Recruit tab visibility synced from clientRecord (already set before applyTheme is called)
   if(typeof updateRecruitTabVisibility==='function') updateRecruitTabVisibility();
 }
@@ -13598,12 +13844,49 @@ function renderTaDashboard() {
         </div>`).join('') || '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No groups created</div>'}
     </div>
   </div>
+  ${clientRecord?.industry==='travel' ? renderTaLeadsByCategory() : ''}
   ${clientRecord?.industry==='travel' ? renderTravelAnalyticsSection() : ''}`;
 }
 
 function caseIcon(type) {
   const m = { visa:'🛂', attestation:'📜', ticketing:'✈️', insurance:'🛡️', recruitment:'👷', forex:'💱', passport:'📘', emigration:'🚢', umrah:'🕌' };
   return m[type] || '🗂️';
+}
+
+// Travel leads separation — Ticket / Package / Hotel / Other Services (LEAD_CATEGORIES). This
+// reads allLeads directly rather than a _ta* entity array: for a travel teammate restricted to
+// specific categories (User Management → profile), allLeads itself only ever contains the leads
+// the server-side /nocodb passthrough allowed through, so this widget — and every other view that
+// reads allLeads — automatically only ever shows what that person is allowed to see.
+function renderTaLeadsByCategory(){
+  const byCat={};
+  LEAD_CATEGORIES.forEach(c=>{ byCat[c]=allLeads.filter(l=>l.ServiceCategory===c); });
+  const uncategorized=allLeads.filter(l=>!LEAD_CATEGORIES.includes(l.ServiceCategory));
+  return `
+  <div class="ta-card" style="margin-bottom:14px">
+    <div class="ta-card-title">🗂️ Leads by Category</div>
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(${LEAD_CATEGORIES.length},1fr);margin-bottom:14px">
+      ${LEAD_CATEGORIES.map(c=>`
+        <div class="stat" style="cursor:pointer" onclick="taOpenLeadCategory('${esc(c)}')" title="View ${esc(c)} leads">
+          <div class="stat-lbl">${serviceCategoryIcon(c)} ${esc(c)}</div>
+          <div class="stat-val">${byCat[c].length}</div>
+        </div>`).join('')}
+    </div>
+    ${LEAD_CATEGORIES.filter(c=>byCat[c].length).map(c=>`
+      <div style="margin-bottom:10px">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">${serviceCategoryIcon(c)} ${esc(c)} (${byCat[c].length})</div>
+        ${[...byCat[c]].sort((a,b)=>new Date(b.Date||0)-new Date(a.Date||0)).slice(0,3).map(l=>`
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px">
+            <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.Name||l.Phone||'—')}</div>
+            <span class="stage-pill">${esc(l.Stage||'new')}</span>
+          </div>`).join('')}
+      </div>`).join('') || '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No categorized leads yet — set a Service Category when adding or editing a lead.</div>'}
+    ${uncategorized.length?`<div class="s-note" style="margin-top:6px">${uncategorized.length} lead(s) have no Service Category set.</div>`:''}
+  </div>`;
+}
+function taOpenLeadCategory(cat){
+  navigate('leads');
+  setTimeout(()=>{ const f=$id('leadCategoryFilter'); if(f){ f.value=cat; onLeadsFilterChange(); } },50);
 }
 
 /* ── TA: PACKAGES ── */

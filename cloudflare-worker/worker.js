@@ -299,9 +299,14 @@ function safeClient(rec){
 
 /* ── Session token: HMAC-signed, not a full JWT — just enough to avoid a
    database round-trip on every request and to avoid depending on Authentik's
-   short-lived access tokens for the rest of the session. ── */
-async function signSession(env, clientId){
-  const payload={cid:String(clientId), exp:Math.floor(Date.now()/1000)+SESSION_TTL_SECONDS};
+   short-lived access tokens for the rest of the session. `email` is the
+   individual verified Authentik email of whoever is actually behind this
+   session — distinct from the account's own authentik_email when a teammate
+   (added via team_emails) is signed in to a shared client account. It's what
+   lets the /nocodb passthrough enforce per-user restrictions (e.g. travel
+   lead-category access) server-side instead of only in the browser. ── */
+async function signSession(env, clientId, email=''){
+  const payload={cid:String(clientId), email:String(email||'').toLowerCase(), exp:Math.floor(Date.now()/1000)+SESSION_TTL_SECONDS};
   const body=btoa(JSON.stringify(payload));
   const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(env.SESSION_SIGNING_KEY), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
   const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
@@ -437,11 +442,12 @@ async function handleSessionExchange(request, env){
     // to finish provisioning this account instead of just showing a dead-end error.
     return json({error:'no_account', email, access_token:body.code?access_token:undefined}, 403);
   }
-  const session_token=await signSession(env, rec.Id);
+  const session_token=await signSession(env, rec.Id, email);
   // Individual verified email of whoever just logged in — distinct from the account's own
   // authentik_email when a teammate (added via team_emails) signs in to a shared client account.
-  // The frontend keeps this for "assigned to me" task filtering, since the session token itself
-  // only ever carries the shared account's cid, not which specific person is behind it.
+  // The frontend keeps this for "assigned to me" task filtering; the Worker also keeps it (signed
+  // into the session token itself, see signSession) so the /nocodb passthrough can tell which
+  // specific teammate is behind a request, not just which shared account.
   return json({session_token, client_id:String(rec.Id), client:safeClient(rec), email});
 }
 
@@ -452,8 +458,11 @@ async function handleSessionMe(request, env){
   if(!rec||!rec.Id) return json({error:'Client not found'}, 404);
   // Sliding-window refresh — this route is called on every app load/resume (dashboard.html's
   // resumeSession()), so reissuing a fresh full-length token here means an account opened at
-  // least once every SESSION_TTL_SECONDS never actually hits the expiry ceiling.
-  const session_token=await signSession(env, rec.Id);
+  // least once every SESSION_TTL_SECONDS never actually hits the expiry ceiling. Carries the
+  // per-user email forward from the token being refreshed (verifySession already validated it),
+  // so a sliding refresh never silently drops a teammate back to "unknown user" and loses their
+  // per-user restrictions.
+  const session_token=await signSession(env, rec.Id, payload.email||'');
   return json({client_id:String(rec.Id), client:safeClient(rec), session_token});
 }
 
@@ -533,10 +542,18 @@ async function handleTeamCreateUser(request, env){
     chatwoot=await createChatwootAgent(env, c, {name:String(name||username).trim(), email:emailNorm, password});
     if(chatwoot.ok && chatwoot.user_id){
       // Persists which Chatwoot user belongs to this email so handleChannelsChatwootSso can mint
-      // this specific teammate their own SSO link later, not just at creation time.
+      // this specific teammate their own SSO link later, not just at creation time. Also persists
+      // the Chatwoot password itself (normally only ever shown once, right after creation) so the
+      // User Management profile view can surface it again later — see renderUserProfileModal in
+      // dashboard.html. Deliberately not folded into safeClient()'s strip list: unlike
+      // dashboard_password (the Authentik login), this is scoped to Chatwoot only and is exactly
+      // what was asked to be visible on a teammate's profile.
       let teamUsers={}; try{ teamUsers=JSON.parse(c.team_chatwoot_users||'{}'); }catch(e){}
+      let teamPasswords={}; try{ teamPasswords=JSON.parse(c.team_chatwoot_passwords||'{}'); }catch(e){}
       teamUsers[emailNorm]=chatwoot.user_id;
-      await patchClientFields(env, payload.cid, {team_chatwoot_users:JSON.stringify(teamUsers)}).catch(()=>{});
+      teamPasswords[emailNorm]=password;
+      await ensureClientColumns(env, ['team_chatwoot_passwords']);
+      await patchClientFields(env, payload.cid, {team_chatwoot_users:JSON.stringify(teamUsers), team_chatwoot_passwords:JSON.stringify(teamPasswords)}).catch(()=>{});
     }
   }
   return json({ok:true, email:emailNorm, chatwoot});
@@ -547,7 +564,7 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
 
   const url=new URL(request.url);
-  const qs=url.search.slice(1);
+  let qs=url.search.slice(1);
 
   if(qs){
     const m=decodeURIComponent(qs).match(/ClientId,eq,([^)&]+)/);
@@ -559,6 +576,47 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   const method=request.method;
   const hasBody=!['GET','HEAD'].includes(method);
   const body=hasBody?await request.text():undefined;
+
+  // Per-user access control (User Management → module/lead-category permissions — see
+  // renderUserProfileModal in dashboard.html). Every teammate sharing a client account writes
+  // straight to the same CLIENTS row through this one generic passthrough, so these are the two
+  // spots that actually need a server-side per-user check instead of trusting the browser:
+  // (1) only the account owner may change anyone's permissions or stored Chatwoot credentials,
+  // (2) a travel-industry teammate restricted to specific lead categories gets that enforced on
+  // the underlying NocoDB query itself, not just hidden client-side.
+  const PROTECTED_CLIENT_FIELDS=['team_permissions','team_chatwoot_passwords','chatwoot_owner_password'];
+  const isClientPatch=method==='PATCH' && upstreamPath.startsWith(`api/v2/tables/${CLIENTS_TABLE}/records`) && !!body;
+  let parsedBody=null;
+  if(isClientPatch){ try{ parsedBody=JSON.parse(body); }catch(e){} }
+  const touchesProtectedField=!!parsedBody && PROTECTED_CLIENT_FIELDS.some(k=>k in parsedBody);
+  const isLeadsList=method==='GET' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`;
+
+  if(touchesProtectedField || (isLeadsList && payload.email)){
+    const c=await getClientById(env, payload.cid);
+    const ownerEmail=(c?.authentik_email||'').toLowerCase();
+    const isOwner=!!payload.email && payload.email===ownerEmail;
+
+    if(touchesProtectedField && !isOwner){
+      return json({error:'Only the account owner can change user permissions.'}, 403);
+    }
+
+    if(isLeadsList && !isOwner && c?.industry==='travel'){
+      let perms={}; try{ perms=JSON.parse(c.team_permissions||'{}'); }catch(e){}
+      const mine=perms[payload.email];
+      // Array (even empty) means restricted; anything else (missing/null) means unrestricted —
+      // matching dashboard.html's saveUserProfilePermissions. An empty array is a deliberate
+      // "sees no leads at all" (every box unchecked in the profile modal), not "no restriction",
+      // so it has to produce a clause that matches nothing rather than being skipped.
+      if(Array.isArray(mine?.leadCategories)){
+        const categories=mine.leadCategories.filter(Boolean);
+        const clause=categories.length
+          ? '('+categories.map(cat=>`(ServiceCategory,eq,${encodeURIComponent(cat)})`).join('~or')+')'
+          : '(Id,eq,-1)';
+        qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and${clause}`) : (qs?qs+'&':'')+'where='+clause;
+      }
+    }
+  }
+
   const r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
     method,
     headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'},
@@ -2827,7 +2885,7 @@ async function handleChannelsCreateAccount(request, env){
   if(!acctR.ok||!acct?.id) return json({error:'Chatwoot account creation failed: '+(acct?.message||('HTTP '+acctR.status))}, 502);
 
   const email=c.authentik_email||`client-${c.Id}@leadvyne.local`;
-  const password=crypto.randomUUID()+'Aa1!'; // random — never shown to the client, only the returned access_token is used
+  const password=crypto.randomUUID()+'Aa1!'; // account owner logs in via the one-click SSO link/access_token below, not this password directly — but it's stored (see chatwoot_owner_password below) so the User Management profile page can still surface it on request.
   const userR=await chatwootPlatformFetch(env, '/platform/api/v1/users', {method:'POST', body:{name:c.client_name||`Client ${c.Id}`, email, password}});
   const user=await userR.json().catch(()=>({}));
   if(!userR.ok||!user?.id||!user?.access_token) return json({error:'Chatwoot user creation failed: '+(user?.message||('HTTP '+userR.status))}, 502);
@@ -2835,7 +2893,8 @@ async function handleChannelsCreateAccount(request, env){
   const linkR=await chatwootPlatformFetch(env, `/platform/api/v1/accounts/${acct.id}/account_users`, {method:'POST', body:{user_id:user.id, role:'administrator'}});
   if(!linkR.ok) return json({error:'Failed to link the Chatwoot user to the account: HTTP '+linkR.status}, 502);
 
-  await patchClientFields(env, payload.cid, {chatwoot_base:env.CHATWOOT_INSTANCE_BASE, chatwoot_account_id:String(acct.id), chatwoot_token:user.access_token, chatwoot_user_id:String(user.id)});
+  await ensureClientColumns(env, ['chatwoot_owner_password']);
+  await patchClientFields(env, payload.cid, {chatwoot_base:env.CHATWOOT_INSTANCE_BASE, chatwoot_account_id:String(acct.id), chatwoot_token:user.access_token, chatwoot_user_id:String(user.id), chatwoot_owner_password:password});
   return json({ok:true, chatwoot_base:env.CHATWOOT_INSTANCE_BASE, chatwoot_account_id:String(acct.id)});
 }
 
