@@ -1885,6 +1885,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
           </div>
         </div>
 
@@ -1921,39 +1922,13 @@ const MODULE_PERMISSIONS = [
           </div>
         </div>
 
-        <!-- USER MANAGEMENT — id="userMgmtCard" is targeted by the onboarding checklist's
-             pulse-highlight (see renderOnboardingChecklist/highlightCard), same pattern as
-             bizSetupCard above. -->
+        <!-- User Management moved to its own "👥 User Management" settings sub-page — see
+             pageUsermanagement below — same reasoning as Modules: who can sign in, what they can
+             see, and their Chatwoot login are a big enough decision to deserve their own page. -->
         <div class="card" style="margin-bottom:14px" id="userMgmtCard">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">👥 User Management</div>
-            <div class="s-note">Everyone below (including you, the account owner) can sign in with their own Authentik account. Click the 👤 on anyone to view their profile — Chatwoot login, and, for teammates, which modules and (for travel clients) which lead categories they can see.</div>
-            <div id="teamMembersList" style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px"></div>
-
-            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
-              <div style="font-weight:700;font-size:13px;margin-bottom:6px">Create New User</div>
-              <div class="s-note" style="margin-bottom:8px">Creates a real Authentik login for them, plus a matching Chatwoot agent (same email/password) if Chatwoot is connected — they can sign in to both immediately.</div>
-              <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
-                <input class="form-input" id="teamNewName" type="text" placeholder="Full Name">
-                <input class="form-input" id="teamNewUsername" type="text" placeholder="Username">
-                <input class="form-input" id="teamNewUserEmail" type="email" placeholder="Email">
-                <input class="form-input" id="teamNewUserPassword" type="password" placeholder="Password (min 8 chars)">
-              </div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
-                <button class="save-btn" onclick="createTeamUser()">Create User</button>
-                <span class="save-msg" id="teamCreateUserMsg"></span>
-              </div>
-              <div id="teamCreateUserResult"></div>
-            </div>
-
-            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
-              <div style="font-weight:700;font-size:13px;margin-bottom:6px">Add Existing Authentik User</div>
-              <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <input class="form-input" id="teamNewEmail" type="email" placeholder="teammate@company.com" style="max-width:260px">
-                <button class="save-btn" onclick="addTeamMember()">Add</button>
-              </div>
-              <span class="save-msg" id="teamMembersMsg"></span>
-            </div>
+            <div class="s-note">Invite teammates, view anyone's profile (Chatwoot login, module access, travel lead categories) — lives on its own <a href="#" onclick="navigate('usermanagement');return false">👥 User Management</a> page.</div>
           </div>
         </div>
         <!-- Chatwoot Webhook + Additional Chatwoot Accounts moved to the 🧩 Integrations page
@@ -2212,6 +2187,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🔌 Channels</div>
@@ -2329,6 +2305,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🧩 Integrations</div>
@@ -2666,6 +2643,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🎙️ Voice</div>
@@ -2763,6 +2741,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
           </div>
         </div>
 
@@ -2883,6 +2862,59 @@ const MODULE_PERMISSIONS = [
       </div>
     </div>
 
+    <!-- USER MANAGEMENT -->
+    <div class="page hidden" id="pageUsermanagement">
+      <div class="page-pad">
+        <!-- SETTINGS SUB-NAV -->
+        <div class="card" style="margin-bottom:14px;padding:10px 14px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
+          </div>
+        </div>
+
+        <!-- id="userMgmtCard2" mirrors the pulse-highlight target used to be userMgmtCard on the
+             General page (see renderOnboardingChecklist/highlightCard) — that pointer now lands
+             here instead. -->
+        <div class="card" style="margin-bottom:14px" id="userMgmtCard2">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">👥 User Management</div>
+            <div class="s-note">Everyone below (including you, the account owner) can sign in with their own Authentik account. Click the 👤 on anyone to view their profile — Chatwoot login, and, for teammates, which modules and (for travel clients) which lead categories they can see.</div>
+            <div id="teamMembersList" style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px"></div>
+
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <div style="font-weight:700;font-size:13px;margin-bottom:6px">Create New User</div>
+              <div class="s-note" style="margin-bottom:8px">Creates a real Authentik login for them, plus a matching Chatwoot agent (same email/password) if Chatwoot is connected — they can sign in to both immediately.</div>
+              <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
+                <input class="form-input" id="teamNewName" type="text" placeholder="Full Name">
+                <input class="form-input" id="teamNewUsername" type="text" placeholder="Username">
+                <input class="form-input" id="teamNewUserEmail" type="email" placeholder="Email">
+                <input class="form-input" id="teamNewUserPassword" type="password" placeholder="Password (min 8 chars)">
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+                <button class="save-btn" onclick="createTeamUser()">Create User</button>
+                <span class="save-msg" id="teamCreateUserMsg"></span>
+              </div>
+              <div id="teamCreateUserResult"></div>
+            </div>
+
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <div style="font-weight:700;font-size:13px;margin-bottom:6px">Add Existing Authentik User</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <input class="form-input" id="teamNewEmail" type="email" placeholder="teammate@company.com" style="max-width:260px">
+                <button class="save-btn" onclick="addTeamMember()">Add</button>
+              </div>
+              <span class="save-msg" id="teamMembersMsg"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- BILLING -->
     <div class="page hidden" id="pageBilling">
       <div class="page-pad">
@@ -2893,6 +2925,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">💳 Billing</div>
@@ -4529,13 +4562,13 @@ $id('hLogout').addEventListener('click',()=>{
 $id('hRefresh').addEventListener('click',()=>loadAll());
 
 /* ── NAVIGATION ── */
-const SETTINGS_GROUP=['settings','channels','integrations','voice','modules']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
+const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
 // Quotation no longer has its own nav entry — it's opened from a specific lead on the Human
 // Deals page (openQuoteFor()) instead, so it highlights that tab rather than nothing at all.
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','settings','channels','integrations','voice','modules','billing'];
+const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','settings','channels','integrations','voice','modules','usermanagement','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -4574,6 +4607,7 @@ function navigate(page){
   if(page==='realestate') renderRealEstate();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
+  if(page==='usermanagement') populateUserManagementPage();
   if(page==='chats') openChatsTab();
   if(page==='channels') channelsInit();
   if(page==='integrations') integrationsInit();
@@ -4842,7 +4876,7 @@ function renderOnboardingChecklist(){
     {label:"Set up your bot's prompt", done:!!(c.main_prompt&&c.main_prompt.trim()), go:()=>navigate('settings')},
     {label:'Activate your plan', done:!!c.stripe_subscription_id, go:()=>navigate('billing')},
     {label:'Get your first lead', done:allLeads.length>0, go:()=>navigate('leads')},
-    {label:'Invite your team', done:(c.team_emails||'').split(',').map(s=>s.trim()).filter(Boolean).length>0, go:()=>{ navigate('settings'); setTimeout(()=>highlightCard('userMgmtCard'),80); }},
+    {label:'Invite your team', done:(c.team_emails||'').split(',').map(s=>s.trim()).filter(Boolean).length>0, go:()=>{ navigate('usermanagement'); setTimeout(()=>highlightCard('userMgmtCard2'),80); }},
   ];
   _onbSteps=steps;
   const doneCount=steps.filter(s=>s.done).length;
@@ -7993,7 +8027,7 @@ async function removeTeamMember(email){
 
 function populateSettings(){
   if(!clientRecord)return;
-  renderTeamMembers();
+  // Team member roster/creation now lives on its own page — see populateUserManagementPage().
   // Chatwoot Webhook/Additional Accounts/Google Sheets Sync population moved to
   // integrationsInit() below — that markup now lives on the Integrations page (Data Sync).
   // industry
@@ -16027,6 +16061,11 @@ function populateModulesPage(){
   initRealEstateSettings();
   initMarketingStudioSettings();
   updateFeatureTabVisibility();
+}
+
+function populateUserManagementPage(){
+  if(!clientRecord)return;
+  renderTeamMembers();
 }
 
 /* ── NOTIFICATIONS ── */
