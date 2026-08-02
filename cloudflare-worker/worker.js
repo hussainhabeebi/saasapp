@@ -6800,6 +6800,12 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   const objectionCategory=(aiResult && VALID_OBJECTION.has(aiResult.objection))?aiResult.objection:'none';
   const wpRaw=Number(aiResult?.win_probability);
   const aiWinProbability=Number.isFinite(wpRaw)?Math.max(0,Math.min(100,Math.round(wpRaw))):null;
+  // Surfaced (not just used internally above to gate whether the AI's own intent is trusted) so
+  // engineRouteFlow can offer a proactive handover when the classifier itself is unsure AND the
+  // customer's sentiment is already negative — a combination the existing WANTS_HUMAN/Frustrated
+  // triggers don't catch, since both require a much clearer signal than "unsure + not going well."
+  const confRaw=Number(aiResult?.confidence);
+  const confidence=Number.isFinite(confRaw)?Math.max(0,Math.min(1,confRaw)):null;
   // Per-message detected language, not the client's fixed CLIENTS.language setting — a client
   // configures one default language for their own scripted content (flow_json, qual_questions),
   // but an actual customer can write in any language, and both the AI-generated replies and (via
@@ -6810,7 +6816,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   const customerLanguage=/^[a-z]{2}$/.test(rawLang)?rawLang:null;
   const rawStage=typeof aiResult?.next_stage==='string'?aiResult.next_stage.trim():'';
   const nextStage=stageIds.includes(rawStage)?rawStage:null;
-  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage};
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence};
 }
 
 // Mirrors "Code · Intent + flow" — decides where this turn goes (human handover / qualify / FAQ /
@@ -6824,7 +6830,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
 // trade-off as intent/sentiment/language already are), and stage content only ever reaches the
 // customer as guidance inside the same FAQ/objection reply — see engineBuildFaqSystemPrompt.
 function engineRouteFlow(c, state, userText, cls){
-  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage}=cls;
+  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence}=cls;
   const lowText=userText.toLowerCase().trim();
   const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
   const isResub=lowText==='start' && state.leadOptOut==='Yes';
@@ -6918,6 +6924,17 @@ function engineRouteFlow(c, state, userText, cls){
   if(sentiment==='Frustrated' && route!=='human' && botConfig.handover_enabled!==false){
     route='human'; humanReason='explicit';
     reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
+  }
+  // Proactive escalation for a turn where sentiment is already negative AND the classifier itself
+  // wasn't confident about its own read of it — a weaker, noisier signal than 'Frustrated' (an
+  // explicit read) or WANTS_HUMAN (an explicit ask), so this stays opt-in (default on, but a client
+  // uneasy about false positives can turn it off) and humanReason is 'low_confidence' rather than
+  // 'explicit' — same heuristic-not-request treatment engineRouteFlow already gives
+  // 'final_stage_positive' (see handleEngineWebhook's humanBlocksOrderCheck), so an unambiguous
+  // product/order signal can still override it.
+  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && botConfig.handover_enabled!==false && botConfig.proactive_handover_enabled!==false){
+    route='human'; humanReason='low_confidence';
+    reply=botConfig.callback_msg_lowconf||botConfig.callback_msg_frustrated||botConfig.callback_msg||"I want to make sure you get the right answer — connecting you with a member of our team now.";
   } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
     route='objection';
   }
