@@ -6,3 +6,16 @@
 ALTER TABLE fp_config ADD COLUMN ai_snapshot_text TEXT;
 ALTER TABLE fp_config ADD COLUMN ai_snapshot_period TEXT;
 ALTER TABLE fp_config ADD COLUMN ai_snapshot_generated_at TEXT;
+
+-- Admin-number WhatsApp bookkeeping shortcut (worker.js handleEngineWebhook/fpIsAdminPhone) — the
+-- same WhatsApp number/inbox this client uses for its customer-facing lead-gen bot can double as a
+-- private "text your bookkeeper" line for the owner's own phone(s), diverted out of the lead
+-- pipeline entirely before any lead-gen logic runs. JSON array of phone strings (any format — only
+-- the last 10 digits are ever compared), same "plain JSON blob, no separate table" convention as
+-- other free-form per-client lists in this app (e.g. CLIENTS.services). Empty/absent = feature off.
+ALTER TABLE fp_config ADD COLUMN admin_phone_numbers TEXT;
+
+-- Tax set-aside estimate (Dashboard) — a simple `net_position_this_month * pct` nudge, clearly
+-- labeled as an estimate rather than filing advice; 0/NULL means the stat is hidden entirely rather
+-- than showing a misleading 0.
+ALTER TABLE fp_config ADD COLUMN tax_reserve_pct REAL;
