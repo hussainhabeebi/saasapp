@@ -2292,6 +2292,18 @@ const MODULE_PERMISSIONS = [
           <hr class="div">
 
           <div class="settings-section">
+            <div class="s-head">⏱️ Bot Reply Delay</div>
+            <div class="s-note">Minimum gap the bot waits between replies to the same conversation, so a customer sending several messages in a row (or a redelivered webhook) doesn't get answered mid-burst. Raise this if 4 seconds feels too aggressive for how your customers message; lower it if replies feel sluggish. Any message that arrives before the gap has elapsed is silently skipped, not queued — it's answered by whichever later message the customer sends once the gap has passed.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div style="flex:1;min-width:160px"><label class="form-label">Reply delay (milliseconds)</label><input class="form-input" type="number" min="0" step="500" id="cfgRateLimitMs" placeholder="4000"></div>
+              <button class="save-btn" id="saveRateLimitMs">Save</button>
+              <span class="save-msg" id="saveRateLimitMsMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
             <div class="s-head">Conversation Stages</div>
             <div class="s-note">Exact messages the bot sends at each stage — sent only when the customer gives a genuine reply that moves the conversation forward (e.g. "yes", a booking time), never mixed into an answer to a question. Keep these generic ("Would you like to see pricing?") rather than naming a specific product or service — if you sell multiple, the bot already pulls in live details for whichever one the customer is actually asking about when they ask, from your Products/Services data. A stage message naming one specific product will read oddly to a customer asking about a different one.</div>
             <div id="stageList" style="margin-bottom:12px"></div>
@@ -8248,6 +8260,11 @@ function populateSettings(){
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
   $id('cfgHandoverSilence').value=clientRecord.handover_silence_enabled||'No';
   $id('cfgBotReplyDisabled').value=clientRecord.bot_reply_disabled||'No';
+  // rate_limit_ms lives inside bot_config (a JSON blob, engineParseJsonField's own default {} on
+  // the worker side) rather than as its own CLIENTS column — matches worker.js:8085's own default
+  // of 4000 when the key isn't set at all yet.
+  try{ $id('cfgRateLimitMs').value=(JSON.parse(clientRecord.bot_config||'{}').rate_limit_ms)||4000; }
+  catch(e){ $id('cfgRateLimitMs').value=4000; }
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -9125,6 +9142,20 @@ $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmai
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
 $id('saveHandoverSilence').addEventListener('click',async()=>saveField('saveHandoverSilence','saveHandoverSilenceMsg',{handover_silence_enabled:$id('cfgHandoverSilence').value}));
 $id('saveBotReplyDisabled').addEventListener('click',async()=>saveField('saveBotReplyDisabled','saveBotReplyDisabledMsg',{bot_reply_disabled:$id('cfgBotReplyDisabled').value}));
+// bot_config is one shared JSON blob (also holds handover_enabled/objection_handling_enabled/etc,
+// none of which have their own dashboard control yet) — merge into whatever's already there rather
+// than stringifying just {rate_limit_ms}, so saving this field can never silently wipe those out.
+$id('saveRateLimitMs').addEventListener('click',async()=>{
+  const ms=Math.max(0, parseInt($id('cfgRateLimitMs').value)||0);
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  botConfig.rate_limit_ms=ms;
+  // saveField swallows patchClient's own error internally (just shows it in the .save-msg span),
+  // so it never rejects here — clientRecord itself is only ever updated by patchClient's own
+  // Object.assign(clientRecord, fresh) on an actual confirmed save, never unconditionally here,
+  // so a failed save can't leave clientRecord showing a value NocoDB doesn't actually have.
+  await saveField('saveRateLimitMs','saveRateLimitMsMsg',{bot_config:JSON.stringify(botConfig)});
+});
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
 
