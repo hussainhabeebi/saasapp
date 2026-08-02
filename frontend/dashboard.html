@@ -35,6 +35,30 @@
   --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
   --nav:72px;--hdr:58px;
 }
+/* Dark mode — only the neutral "chrome" vars (surface/text/border/shadow), never --accent/
+   --accent-ink/--accent-soft/--warn/--red/--yellow, so an industry theme's own brand color
+   (.theme-travel etc., set further down) still shows through untouched. `html.dark` (element+class,
+   specificity 0-1-1) beats a bare `.theme-xxx` class (0-1-0) regardless of source order, so this
+   always wins for the vars it does set even when an industry theme class is present on the same
+   <html> element — see toggleDarkMode()/initDarkMode() for how the class gets applied.
+   The prefers-color-scheme block covers a user who never touched the toggle (no explicit choice
+   stored yet); `html.light` is the explicit opt-out back to the light palette on a dark-preferring
+   system. Once toggleDarkMode() runs once, the stored 'dark'/'light' class is what actually decides
+   it from then on, matching the light default the plain :root values above already are. */
+@media(prefers-color-scheme:dark){
+  html:not(.light):not(.dark){
+    --bg:#0B1613;--card:#141F1B;--ink:#E9F1EC;--muted:#8CA298;
+    --line:#233029;--ls:#31423A;--warn-soft:#3A2A12;
+    --shadow:0 1px 3px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.35);
+    --shadow-md:0 4px 16px rgba(0,0,0,.45);
+  }
+}
+html.dark{
+  --bg:#0B1613;--card:#141F1B;--ink:#E9F1EC;--muted:#8CA298;
+  --line:#233029;--ls:#31423A;--warn-soft:#3A2A12;
+  --shadow:0 1px 3px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.35);
+  --shadow-md:0 4px 16px rgba(0,0,0,.45);
+}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
 body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15px;-webkit-font-smoothing:antialiased}
@@ -1183,6 +1207,7 @@ const MODULE_PERMISSIONS = [
     </div>
     <div class="hright">
       <span id="hUpdated"></span>
+      <button class="icon-btn" id="hDarkToggle" title="Toggle dark mode" onclick="toggleDarkMode()">🌙</button>
       <button class="icon-btn" title="PDF Report" onclick="generateReport()">📄</button>
       <button class="icon-btn" id="hRefresh" title="Refresh">↻</button>
       <button class="icon-btn" id="hLogout" title="Sign out">⏻</button>
@@ -4718,6 +4743,28 @@ $id('hLogout').addEventListener('click',()=>{
 });
 
 $id('hRefresh').addEventListener('click',()=>loadAll());
+
+/* ── DARK MODE ──
+   Explicit choice lives in localStorage as 'dark'/'light'; no stored choice at all means "follow
+   the system", handled purely in CSS by the prefers-color-scheme block (see :root's own comment).
+   Both classes are mutually exclusive on <html> — toggleDarkMode always removes the other before
+   adding its own, so a user flips their pick without ever landing in a state with both/neither. */
+function isDarkModeOn(){ return document.documentElement.classList.contains('dark')||(!document.documentElement.classList.contains('light')&&matchMedia('(prefers-color-scheme: dark)').matches); }
+function setDarkModeBtnIcon(){ const b=$id('hDarkToggle'); if(b) b.textContent=isDarkModeOn()?'☀️':'🌙'; }
+function initDarkMode(){
+  const stored=localStorage.getItem('lv_theme_mode');
+  if(stored==='dark') document.documentElement.classList.add('dark');
+  else if(stored==='light') document.documentElement.classList.add('light');
+  setDarkModeBtnIcon();
+}
+function toggleDarkMode(){
+  const goingDark=!isDarkModeOn();
+  document.documentElement.classList.remove('dark','light');
+  document.documentElement.classList.add(goingDark?'dark':'light');
+  localStorage.setItem('lv_theme_mode', goingDark?'dark':'light');
+  setDarkModeBtnIcon();
+}
+initDarkMode();
 
 /* ── NAVIGATION ── */
 const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
