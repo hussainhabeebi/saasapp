@@ -4009,10 +4009,12 @@ async function handleReportsProducts(request, env){
 // Reuses the Advanced Pipeline follow-up cadence's own D1 table (migrations/0013_pipeline_followups.sql,
 // stage_entered_at reset on every real Stage change) rather than adding new instrumentation — it
 // already tracks exactly what's needed. This is a *snapshot* of how long leads currently sitting
-// in each stage have been there, not a historical "average time to pass through stage X" (that
-// would need a stage-transition history log this table doesn't keep, since it overwrites
-// stage/stage_entered_at on every transition) — still a genuinely useful bottleneck signal ("12
-// leads have been stuck in Qualified for an average of 9 days") even with that honest caveat.
+// in each stage have been there, not a historical "average time to pass through stage X" — this
+// endpoint still doesn't compute that (stage/stage_entered_at here is overwritten on every
+// transition, by design, for the cadence's own reset logic) — still a genuinely useful bottleneck
+// signal ("12 leads have been stuck in Qualified for an average of 9 days") even with that honest
+// caveat. A real historical answer (bot-driven transitions only) is now derivable from
+// migrations/0033_stage_history.sql/engineJournalStageChange, just not wired into this endpoint yet.
 async function handleAiStageDurations(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -7957,6 +7959,19 @@ async function engineUpsertLead(env, method, leadId, body){
   return created?.Id||null;
 }
 
+// migrations/0033_stage_history.sql — best-effort/fail-open exactly like logEngineSkip above,
+// since this is a sidecar analytics log, not something a real Stage change should ever be blocked
+// by. Called only when engineBuildLeadUpsertBody's own body.Stage actually differs from the lead's
+// prior state.stage — a no-op turn (same stage as before) writes nothing, so this table only ever
+// holds genuine transitions.
+async function engineJournalStageChange(env, clientId, leadId, fromStage, toStage){
+  if(!env.DB||!leadId) return;
+  try{
+    await env.DB.prepare(`INSERT INTO stage_history (client_id, lead_id, from_stage, to_stage, at) VALUES (?,?,?,?,?)`)
+      .bind(Number(clientId)||0, leadId, fromStage||null, toStage, new Date().toISOString()).run();
+  }catch(e){}
+}
+
 // Called by handleEngineWebhook right before the slow classify/LLM work — see that call site's
 // comment for why. Best-effort: if this write fails for any reason, falls back to the original
 // leadId (or null) so the turn proceeds exactly as it would have before this existed, rather than
@@ -8313,6 +8328,9 @@ async function handleEngineWebhook(request, env, secret){
 
     const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
+      await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
+    }
     // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
     // this function) because a brand-new lead has no real id until this exact upsert assigns one.
     // INSERT OR IGNORE: referred_lead_id is UNIQUE (migrations/0001_reviews_referrals.sql), so a
@@ -8528,6 +8546,9 @@ async function handleInstagramWebhook(request, env){
 
       const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
       const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+      if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
+        await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
+      }
       // Same NocoDB schema-cache-lag race ncPatchVerified guards against on the CLIENTS table
       // (see handleInstagramOauthCallback) — IgId/Channel may have been auto-created by
       // ensureLeadsColumns moments ago in this same request. Only relevant for the very first
