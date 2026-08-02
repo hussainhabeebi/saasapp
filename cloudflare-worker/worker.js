@@ -6482,6 +6482,24 @@ function engineParseChatwootPayload(body){
   if(mediaType==='text' && !text) return null;
   return {convId:conv?.id||null, phone, name:sender.name||'', text, mediaType, mediaUrl};
 }
+// Diagnostic-only twin of the null branches above — recomputes just enough to say *which* check
+// dropped a payload, without touching engineParseChatwootPayload's return contract or behavior at
+// all (purely additive, called only for the 'not-actionable' log line below). Added because
+// "not-actionable" on its own was a black box — a genuine customer "hello" turning up skipped had
+// no way to tell whether Chatwoot sent a non-incoming event, a private note, no phone, or empty
+// text, short of re-inspecting a raw webhook body no one had captured.
+function engineChatwootPayloadSkipReason(body){
+  if(body.message_type && body.message_type!=='incoming') return `message_type=${JSON.stringify(body.message_type)}`;
+  if(body.private) return 'private=true';
+  const conv=body.conversation||{};
+  const sender=conv?.meta?.sender||body.sender||{};
+  const phone=(sender.phone_number||sender.identifier||'').replace(/[^0-9+]/g,'').replace(/^\+/,'');
+  if(!phone) return `no-phone (sender keys: ${Object.keys(sender).join(',')||'none'})`;
+  const atts=body.attachments||body.message?.attachments||[];
+  const text=(body.content||body.message?.content||'').trim();
+  if(!atts.length && !text) return 'empty-text-no-attachment';
+  return 'unknown';
+}
 
 // Meta's Instagram Messaging webhook (`{object:'instagram', entry:[{messaging:[...]}]}` — same
 // Messenger Platform shape used by Page/Instagram messaging generally). Deliberately returns the
@@ -7960,7 +7978,7 @@ async function handleEngineWebhook(request, env, secret){
   let phone=null;
   try{
     const parsed=engineParseChatwootPayload(body);
-    if(!parsed){ await logEngineSkip(env, clientId, null, null, 'not-actionable'); return json({ok:true, skipped:'not-actionable'}); }
+    if(!parsed){ await logEngineSkip(env, clientId, null, null, 'not-actionable', engineChatwootPayloadSkipReason(body)); return json({ok:true, skipped:'not-actionable'}); }
     const {convId, name, mediaType, mediaUrl}=parsed;
     let text=parsed.text;
     phone=parsed.phone;
