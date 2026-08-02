@@ -35,6 +35,30 @@
   --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
   --nav:72px;--hdr:58px;
 }
+/* Dark mode — only the neutral "chrome" vars (surface/text/border/shadow), never --accent/
+   --accent-ink/--accent-soft/--warn/--red/--yellow, so an industry theme's own brand color
+   (.theme-travel etc., set further down) still shows through untouched. `html.dark` (element+class,
+   specificity 0-1-1) beats a bare `.theme-xxx` class (0-1-0) regardless of source order, so this
+   always wins for the vars it does set even when an industry theme class is present on the same
+   <html> element — see toggleDarkMode()/initDarkMode() for how the class gets applied.
+   The prefers-color-scheme block covers a user who never touched the toggle (no explicit choice
+   stored yet); `html.light` is the explicit opt-out back to the light palette on a dark-preferring
+   system. Once toggleDarkMode() runs once, the stored 'dark'/'light' class is what actually decides
+   it from then on, matching the light default the plain :root values above already are. */
+@media(prefers-color-scheme:dark){
+  html:not(.light):not(.dark){
+    --bg:#0B1613;--card:#141F1B;--ink:#E9F1EC;--muted:#8CA298;
+    --line:#233029;--ls:#31423A;--warn-soft:#3A2A12;
+    --shadow:0 1px 3px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.35);
+    --shadow-md:0 4px 16px rgba(0,0,0,.45);
+  }
+}
+html.dark{
+  --bg:#0B1613;--card:#141F1B;--ink:#E9F1EC;--muted:#8CA298;
+  --line:#233029;--ls:#31423A;--warn-soft:#3A2A12;
+  --shadow:0 1px 3px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.35);
+  --shadow-md:0 4px 16px rgba(0,0,0,.45);
+}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
 body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15px;-webkit-font-smoothing:antialiased}
@@ -256,7 +280,24 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .chat-send-btn:hover{opacity:.88}
 .chat-send-status{font-size:11.5px;color:#667781;padding:2px 16px 0}
 .chat-send-status.err{color:#c0392b}
-@media(max-width:767px){.chat-sidebar{width:100%;border-right:none;border-bottom:1px solid #e9edef;max-height:40vh}.chats-layout{flex-direction:column}}
+/* Mobile Chats: full-screen contact list by default (not the old 40vh-then-squeezed-thread split,
+   which left barely any room for an actual conversation) — .chat-open (toggled by chatSelectLead/
+   chatBackToList in JS) swaps to a full-screen thread with a back button instead, matching how
+   every real chat app handles a phone-width screen: one screen at a time, not both squeezed in. */
+@media(max-width:767px){
+  .chat-sidebar{width:100%;border-right:none;border-bottom:1px solid #e9edef;flex:1}
+  .chats-layout{flex-direction:column}
+  .chats-layout .chat-main{display:none}
+  .chats-layout.chat-open .chat-sidebar{display:none}
+  .chats-layout.chat-open .chat-main{display:flex;flex:1}
+}
+@media(min-width:768px){.chat-back-btn{display:none}}
+/* Own tiny style rather than reusing the app shell's .icon-btn — that one's hover uses
+   var(--bg), which shifts with the industry theme/dark-mode, breaking this WhatsApp-styled
+   subtree's deliberate isolation from the rest of the app's theming (see this block's own
+   opening comment above). */
+.chat-back-btn{width:32px;height:32px;border:none;background:none;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;color:#54656f;flex-shrink:0}
+.chat-back-btn:hover{background:#e9edef}
 
 /* ── APP SHELL ── */
 #app{position:fixed;inset:0;display:none;flex-direction:column}
@@ -1166,6 +1207,7 @@ const MODULE_PERMISSIONS = [
     </div>
     <div class="hright">
       <span id="hUpdated"></span>
+      <button class="icon-btn" id="hDarkToggle" title="Toggle dark mode" onclick="toggleDarkMode()">🌙</button>
       <button class="icon-btn" title="PDF Report" onclick="generateReport()">📄</button>
       <button class="icon-btn" id="hRefresh" title="Refresh">↻</button>
       <button class="icon-btn" id="hLogout" title="Sign out">⏻</button>
@@ -2244,6 +2286,18 @@ const MODULE_PERMISSIONS = [
               <div><label class="form-label">Bot auto-reply</label><select class="form-input" id="cfgBotReplyDisabled"><option value="No">On — bot replies normally</option><option value="Yes">Off — bot stays silent</option></select></div>
               <button class="save-btn" id="saveBotReplyDisabled">Save</button>
               <span class="save-msg" id="saveBotReplyDisabledMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
+            <div class="s-head">⏱️ Bot Reply Delay</div>
+            <div class="s-note">Minimum gap the bot waits between replies to the same conversation, so a customer sending several messages in a row (or a redelivered webhook) doesn't get answered mid-burst. Raise this if 4 seconds feels too aggressive for how your customers message; lower it if replies feel sluggish. Any message that arrives before the gap has elapsed is silently skipped, not queued — it's answered by whichever later message the customer sends once the gap has passed.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div style="flex:1;min-width:160px"><label class="form-label">Reply delay (milliseconds)</label><input class="form-input" type="number" min="0" step="500" id="cfgRateLimitMs" placeholder="4000"></div>
+              <button class="save-btn" id="saveRateLimitMs">Save</button>
+              <span class="save-msg" id="saveRateLimitMsMsg"></span>
             </div>
           </div>
 
@@ -4429,6 +4483,7 @@ const MODULE_PERMISSIONS = [
 
 /* ── STATE ── */
 let clientId = null, clientRecord = null, refreshTimer = null;
+let _liveSocket = null, _liveReconnectTimer = null;
 // lv_cid/lv_session/lv_me_email deliberately live in localStorage, not sessionStorage — closing a
 // tab/browser used to wipe sessionStorage entirely, forcing a fresh Authentik login far more often
 // than the session token's own TTL ever would (the real cause of "have to log in again constantly"
@@ -4693,6 +4748,7 @@ $id('hLogout').addEventListener('click',()=>{
   clearInterval(refreshTimer);
   clearInterval(_notifTimer);
   clearInterval(_reminderTimer);
+  disconnectLiveUpdates();
   if(leadsChart){leadsChart.destroy();leadsChart=null;}
   const notifBell=$id('notifBell');if(notifBell)notifBell.style.display='none';
   $id('app').classList.remove('show');
@@ -4701,6 +4757,28 @@ $id('hLogout').addEventListener('click',()=>{
 });
 
 $id('hRefresh').addEventListener('click',()=>loadAll());
+
+/* ── DARK MODE ──
+   Explicit choice lives in localStorage as 'dark'/'light'; no stored choice at all means "follow
+   the system", handled purely in CSS by the prefers-color-scheme block (see :root's own comment).
+   Both classes are mutually exclusive on <html> — toggleDarkMode always removes the other before
+   adding its own, so a user flips their pick without ever landing in a state with both/neither. */
+function isDarkModeOn(){ return document.documentElement.classList.contains('dark')||(!document.documentElement.classList.contains('light')&&matchMedia('(prefers-color-scheme: dark)').matches); }
+function setDarkModeBtnIcon(){ const b=$id('hDarkToggle'); if(b) b.textContent=isDarkModeOn()?'☀️':'🌙'; }
+function initDarkMode(){
+  const stored=localStorage.getItem('lv_theme_mode');
+  if(stored==='dark') document.documentElement.classList.add('dark');
+  else if(stored==='light') document.documentElement.classList.add('light');
+  setDarkModeBtnIcon();
+}
+function toggleDarkMode(){
+  const goingDark=!isDarkModeOn();
+  document.documentElement.classList.remove('dark','light');
+  document.documentElement.classList.add(goingDark?'dark':'light');
+  localStorage.setItem('lv_theme_mode', goingDark?'dark':'light');
+  setDarkModeBtnIcon();
+}
+initDarkMode();
 
 /* ── NAVIGATION ── */
 const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
@@ -4798,6 +4876,7 @@ function showApp(){
   updateMarketingStudioVisibility();
   applyUserModulePermissions();
   loadAll();
+  connectLiveUpdates();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
   setTimeout(pollNotifications,3000);
@@ -4855,7 +4934,7 @@ function showApp(){
 const _CACHE_KEY=()=>`lv_leads_${clientId}`;
 const _CACHE_TTL=300000; // 5 min
 
-async function loadAll(silent=false){
+async function loadAll(silent=false, force=false){
   // 1. Render from cache instantly if available
   try{
     const cached=sessionStorage.getItem(_CACHE_KEY());
@@ -4865,8 +4944,10 @@ async function loadAll(silent=false){
         allLeads=list;
         renderHome();
         if(!silent) $id('hUpdated').textContent='Cached · '+new Date(ts).toLocaleTimeString();
-        // If cache is fresh enough, skip network fetch
-        if(Date.now()-ts < _CACHE_TTL){ return; }
+        // If cache is fresh enough, skip network fetch — unless force is set (a live-update event
+        // just told us something genuinely changed, so a 5-minute-old cache isn't good enough here
+        // even though it normally would be for the plain 60s poll).
+        if(!force && Date.now()-ts < _CACHE_TTL){ return; }
       }
     }
   }catch(e){}
@@ -4879,6 +4960,51 @@ async function loadAll(silent=false){
     renderHome();
     $id('hUpdated').textContent='Updated '+new Date().toLocaleTimeString();
   }catch(e){console.error(e);}
+}
+
+/* ── REAL-TIME UPDATES ──
+   Cloudflare Worker-side: cloudflare-worker/worker.js's ClientUpdatesHub Durable Object +
+   engineBroadcastUpdate, fired the moment handleEngineWebhook finishes processing a real inbound
+   WhatsApp/Instagram message. Without this, a new message only ever reached this tab via the 60s
+   loadAll() poll above — up to a minute of dead air on something that just happened. This is
+   additive, not a replacement: the 60s poll and the 5-minute sessionStorage cache both stay
+   exactly as they were as the fallback if the socket is closed/reconnecting for any reason. */
+function connectLiveUpdates(){
+  if(!clientId||!sessionToken) return;
+  clearTimeout(_liveReconnectTimer);
+  try{ _liveSocket?.close(); }catch(e){}
+  const wsBase=CONFIG.WORKER_BASE.replace(/^http/,'ws');
+  _liveSocket=new WebSocket(`${wsBase}/engine/live?token=${encodeURIComponent(sessionToken)}`);
+  _liveSocket.onmessage=(ev)=>{
+    let msg=null;
+    try{ msg=JSON.parse(ev.data); }catch(e){ return; }
+    if(msg?.type==='message') onLiveMessageEvent(msg);
+  };
+  // Reconnects on any close (server restart, idle Worker recycle, network blip) as long as the
+  // app is still actually open — checked at fire time, not just at schedule time, so a logout in
+  // the meantime doesn't spawn a socket back into a signed-out session.
+  _liveSocket.onclose=()=>{
+    _liveReconnectTimer=setTimeout(()=>{ if($id('app').classList.contains('show')) connectLiveUpdates(); }, 5000);
+  };
+  _liveSocket.onerror=()=>{ try{ _liveSocket.close(); }catch(e){} };
+}
+function disconnectLiveUpdates(){
+  clearTimeout(_liveReconnectTimer);
+  try{ _liveSocket?.close(); }catch(e){}
+  _liveSocket=null;
+}
+async function onLiveMessageEvent(msg){
+  // Awaited (not fire-and-forget) — renderChatContacts()/chatSelectLead() below read straight
+  // from the allLeads global loadAll refreshes, so they'd otherwise run against the stale copy
+  // from before this event.
+  await loadAll(true, true);
+  // Chats tab has no other live-refresh path at all (unlike Home, its contact list/open thread
+  // are never touched by the 60s poll either) — only worth the extra render work while it's
+  // actually the visible page.
+  if(!$id('pageChats').classList.contains('hidden')){
+    renderChatContacts();
+    if(_chatLeadId && _chatLeadId===msg.lead_id) chatSelectLead(_chatLeadId);
+  }
 }
 
 /* ── HOME ── */
@@ -8184,6 +8310,11 @@ function populateSettings(){
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
   $id('cfgHandoverSilence').value=clientRecord.handover_silence_enabled||'No';
   $id('cfgBotReplyDisabled').value=clientRecord.bot_reply_disabled||'No';
+  // rate_limit_ms lives inside bot_config (a JSON blob, engineParseJsonField's own default {} on
+  // the worker side) rather than as its own CLIENTS column — matches worker.js:8085's own default
+  // of 4000 when the key isn't set at all yet.
+  try{ $id('cfgRateLimitMs').value=(JSON.parse(clientRecord.bot_config||'{}').rate_limit_ms)||4000; }
+  catch(e){ $id('cfgRateLimitMs').value=4000; }
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -9061,6 +9192,20 @@ $id('saveNotifEmail').addEventListener('click',async()=>saveField('saveNotifEmai
 $id('saveTestMode').addEventListener('click',async()=>saveField('saveTestMode','saveTestModeMsg',{test_mode:$id('cfgTestMode').value,test_phone:$id('cfgTestPhone').value.replace(/[^0-9]/g,'')}));
 $id('saveHandoverSilence').addEventListener('click',async()=>saveField('saveHandoverSilence','saveHandoverSilenceMsg',{handover_silence_enabled:$id('cfgHandoverSilence').value}));
 $id('saveBotReplyDisabled').addEventListener('click',async()=>saveField('saveBotReplyDisabled','saveBotReplyDisabledMsg',{bot_reply_disabled:$id('cfgBotReplyDisabled').value}));
+// bot_config is one shared JSON blob (also holds handover_enabled/objection_handling_enabled/etc,
+// none of which have their own dashboard control yet) — merge into whatever's already there rather
+// than stringifying just {rate_limit_ms}, so saving this field can never silently wipe those out.
+$id('saveRateLimitMs').addEventListener('click',async()=>{
+  const ms=Math.max(0, parseInt($id('cfgRateLimitMs').value)||0);
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  botConfig.rate_limit_ms=ms;
+  // saveField swallows patchClient's own error internally (just shows it in the .save-msg span),
+  // so it never rejects here — clientRecord itself is only ever updated by patchClient's own
+  // Object.assign(clientRecord, fresh) on an actual confirmed save, never unconditionally here,
+  // so a failed save can't leave clientRecord showing a value NocoDB doesn't actually have.
+  await saveField('saveRateLimitMs','saveRateLimitMsMsg',{bot_config:JSON.stringify(botConfig)});
+});
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
 
@@ -18259,9 +18404,11 @@ function chatSelectLead(leadId){
   let history=[];
   try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
 
+  document.querySelector('.chats-layout')?.classList.add('chat-open');
   const main=$id('chatMain');
   main.innerHTML=`
     <div class="chat-main-hd">
+      <button class="chat-back-btn" onclick="chatBackToList()" title="Back to chats" style="margin-right:2px">←</button>
       <div class="cc-avatar lg">${(lead.Name||'?')[0].toUpperCase()}</div>
       <div style="flex:1;min-width:0">
         <div class="chat-main-name">${esc(lead.Name||'Unknown')}</div>
@@ -18342,10 +18489,19 @@ async function chatSendFromTab(leadId){
 }
 
 function renderChatEmpty(){
+  document.querySelector('.chats-layout')?.classList.remove('chat-open');
   $id('chatMain').innerHTML=`<div class="chat-empty" style="flex:1;display:flex">
     <div class="chat-empty-icon">💬</div>
     <div>Select a contact to view their conversation</div>
   </div>`;
+}
+
+// Mobile-only "back to contact list" — the chat-open class flip is invisible on desktop (both
+// panes are always shown there, see the max-width:767px rule), so this is purely a phone-width
+// affordance. Leaves _chatLeadId/the rendered thread alone so reopening the same contact doesn't
+// need a re-fetch.
+function chatBackToList(){
+  document.querySelector('.chats-layout')?.classList.remove('chat-open');
 }
 
 /* ── PWA install prompt ──

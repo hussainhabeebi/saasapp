@@ -4009,10 +4009,12 @@ async function handleReportsProducts(request, env){
 // Reuses the Advanced Pipeline follow-up cadence's own D1 table (migrations/0013_pipeline_followups.sql,
 // stage_entered_at reset on every real Stage change) rather than adding new instrumentation — it
 // already tracks exactly what's needed. This is a *snapshot* of how long leads currently sitting
-// in each stage have been there, not a historical "average time to pass through stage X" (that
-// would need a stage-transition history log this table doesn't keep, since it overwrites
-// stage/stage_entered_at on every transition) — still a genuinely useful bottleneck signal ("12
-// leads have been stuck in Qualified for an average of 9 days") even with that honest caveat.
+// in each stage have been there, not a historical "average time to pass through stage X" — this
+// endpoint still doesn't compute that (stage/stage_entered_at here is overwritten on every
+// transition, by design, for the cadence's own reset logic) — still a genuinely useful bottleneck
+// signal ("12 leads have been stuck in Qualified for an average of 9 days") even with that honest
+// caveat. A real historical answer (bot-driven transitions only) is now derivable from
+// migrations/0033_stage_history.sql/engineJournalStageChange, just not wired into this endpoint yet.
 async function handleAiStageDurations(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -6800,6 +6802,12 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   const objectionCategory=(aiResult && VALID_OBJECTION.has(aiResult.objection))?aiResult.objection:'none';
   const wpRaw=Number(aiResult?.win_probability);
   const aiWinProbability=Number.isFinite(wpRaw)?Math.max(0,Math.min(100,Math.round(wpRaw))):null;
+  // Surfaced (not just used internally above to gate whether the AI's own intent is trusted) so
+  // engineRouteFlow can offer a proactive handover when the classifier itself is unsure AND the
+  // customer's sentiment is already negative — a combination the existing WANTS_HUMAN/Frustrated
+  // triggers don't catch, since both require a much clearer signal than "unsure + not going well."
+  const confRaw=Number(aiResult?.confidence);
+  const confidence=Number.isFinite(confRaw)?Math.max(0,Math.min(1,confRaw)):null;
   // Per-message detected language, not the client's fixed CLIENTS.language setting — a client
   // configures one default language for their own scripted content (flow_json, qual_questions),
   // but an actual customer can write in any language, and both the AI-generated replies and (via
@@ -6810,7 +6818,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   const customerLanguage=/^[a-z]{2}$/.test(rawLang)?rawLang:null;
   const rawStage=typeof aiResult?.next_stage==='string'?aiResult.next_stage.trim():'';
   const nextStage=stageIds.includes(rawStage)?rawStage:null;
-  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage};
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence};
 }
 
 // Mirrors "Code · Intent + flow" — decides where this turn goes (human handover / qualify / FAQ /
@@ -6824,7 +6832,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
 // trade-off as intent/sentiment/language already are), and stage content only ever reaches the
 // customer as guidance inside the same FAQ/objection reply — see engineBuildFaqSystemPrompt.
 function engineRouteFlow(c, state, userText, cls){
-  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage}=cls;
+  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence}=cls;
   const lowText=userText.toLowerCase().trim();
   const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
   const isResub=lowText==='start' && state.leadOptOut==='Yes';
@@ -6918,6 +6926,17 @@ function engineRouteFlow(c, state, userText, cls){
   if(sentiment==='Frustrated' && route!=='human' && botConfig.handover_enabled!==false){
     route='human'; humanReason='explicit';
     reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
+  }
+  // Proactive escalation for a turn where sentiment is already negative AND the classifier itself
+  // wasn't confident about its own read of it — a weaker, noisier signal than 'Frustrated' (an
+  // explicit read) or WANTS_HUMAN (an explicit ask), so this stays opt-in (default on, but a client
+  // uneasy about false positives can turn it off) and humanReason is 'low_confidence' rather than
+  // 'explicit' — same heuristic-not-request treatment engineRouteFlow already gives
+  // 'final_stage_positive' (see handleEngineWebhook's humanBlocksOrderCheck), so an unambiguous
+  // product/order signal can still override it.
+  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && botConfig.handover_enabled!==false && botConfig.proactive_handover_enabled!==false){
+    route='human'; humanReason='low_confidence';
+    reply=botConfig.callback_msg_lowconf||botConfig.callback_msg_frustrated||botConfig.callback_msg||"I want to make sure you get the right answer — connecting you with a member of our team now.";
   } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
     route='objection';
   }
@@ -7345,6 +7364,21 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
   }
 }
 
+// Best-effort Chatwoot "customer sees {agent} typing…" indicator — pure UX polish covering the
+// 2-4s LLM latency window between the inbound webhook and the actual reply. Unlike
+// engineSendChatwootReply this never calls reportOpsError on failure: a missed typing toggle costs
+// nothing but polish, the customer still gets their real reply either way.
+async function engineSendChatwootTyping(env, c, convId, isTyping){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
+  try{
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/toggle_typing_status`, {
+      method:'POST',
+      headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+      body:JSON.stringify({typing_status:isTyping?'on':'off'})
+    });
+  }catch(e){}
+}
+
 // Mirrors store.html's own toImageUrl() — a Google Drive "share" link
 // (drive.google.com/file/d/<id>/view or ?id=<id>) isn't directly fetchable as raw image bytes;
 // this resolves it to Drive's thumbnail endpoint, which is. Any non-Drive URL (Shopify CDN,
@@ -7597,6 +7631,10 @@ function engineExtractLinkPriceCaption(replyText){
 // Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
 // out of scope for now, this only covers live conversational replies.
 async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId}={}){
+  // Clears the typing indicator turned on right after engineClaimMessage, regardless of which
+  // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
+  // No-ops for Instagram (convId is null there) since that channel never goes through Chatwoot.
+  engineSendChatwootTyping(env, c, convId, false);
   // CLIENTS.bot_reply_disabled ('Yes'/'No', Settings → Bot Auto-Reply) — unlike engine_disabled
   // above, this is the ONLY choke point gated by this flag: classification, routing, lead
   // upsert/CRM fields, analytics logging, last_seen, and order/booking-signal detection in
@@ -7921,6 +7959,19 @@ async function engineUpsertLead(env, method, leadId, body){
   return created?.Id||null;
 }
 
+// migrations/0033_stage_history.sql — best-effort/fail-open exactly like logEngineSkip above,
+// since this is a sidecar analytics log, not something a real Stage change should ever be blocked
+// by. Called only when engineBuildLeadUpsertBody's own body.Stage actually differs from the lead's
+// prior state.stage — a no-op turn (same stage as before) writes nothing, so this table only ever
+// holds genuine transitions.
+async function engineJournalStageChange(env, clientId, leadId, fromStage, toStage){
+  if(!env.DB||!leadId) return;
+  try{
+    await env.DB.prepare(`INSERT INTO stage_history (client_id, lead_id, from_stage, to_stage, at) VALUES (?,?,?,?,?)`)
+      .bind(Number(clientId)||0, leadId, fromStage||null, toStage, new Date().toISOString()).run();
+  }catch(e){}
+}
+
 // Called by handleEngineWebhook right before the slow classify/LLM work — see that call site's
 // comment for why. Best-effort: if this write fails for any reason, falls back to the original
 // leadId (or null) so the turn proceeds exactly as it would have before this existed, rather than
@@ -8112,6 +8163,8 @@ async function handleEngineWebhook(request, env, secret){
       }catch(e){}
     }
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
+    // Fire-and-forget: covers the slow classify/routing/LLM work below, not worth blocking on.
+    engineSendChatwootTyping(env, c, convId, true);
 
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
@@ -8275,6 +8328,12 @@ async function handleEngineWebhook(request, env, secret){
 
     const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
+      await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
+    }
+    if(resolvedLeadId){
+      await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'whatsapp', at:new Date().toISOString()});
+    }
     // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
     // this function) because a brand-new lead has no real id until this exact upsert assigns one.
     // INSERT OR IGNORE: referred_lead_id is UNIQUE (migrations/0001_reviews_referrals.sql), so a
@@ -8490,6 +8549,12 @@ async function handleInstagramWebhook(request, env){
 
       const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
       const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+      if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
+        await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
+      }
+      if(resolvedLeadId){
+        await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'instagram', at:new Date().toISOString()});
+      }
       // Same NocoDB schema-cache-lag race ncPatchVerified guards against on the CLIENTS table
       // (see handleInstagramOauthCallback) — IgId/Channel may have been auto-created by
       // ensureLeadsColumns moments ago in this same request. Only relevant for the very first
@@ -14190,6 +14255,64 @@ async function handleReAnalytics(request, env){
   });
 }
 
+/* ── Real-time dashboard updates (SETUP.md "Real-time dashboard updates") ──
+   Before this, a new inbound WhatsApp/Instagram message only ever reached an open dashboard tab
+   via dashboard.html's 60s loadAll() poll — up to a minute of dead air on something that just
+   happened. One Durable Object instance per client (idFromName(clientId), see
+   handleEngineLiveSocket/engineBroadcastUpdate below) holds that client's currently-connected
+   dashboard WebSockets and fans a small JSON event out to all of them the moment
+   handleEngineWebhook finishes processing a real inbound message — dashboard.html's own
+   connectLiveUpdates() reacts by force-refreshing leads and, if the Chats tab is open, the
+   contact list/open thread. Uses the Hibernatable WebSockets API (state.acceptWebSocket/
+   getWebSockets) rather than holding sockets in a plain in-memory field, so an idle DO with open
+   connections isn't billed as continuously active. Push-only — the dashboard never sends
+   anything meaningful back, so webSocketMessage is a no-op. */
+export class ClientUpdatesHub{
+  constructor(state, env){ this.state=state; this.env=env; }
+  async fetch(request){
+    const url=new URL(request.url);
+    if(request.method==='POST' && url.pathname==='/broadcast'){
+      const body=await request.text();
+      for(const ws of this.state.getWebSockets()){
+        try{ ws.send(body); }catch(e){}
+      }
+      return new Response('ok');
+    }
+    if(request.headers.get('Upgrade')==='websocket'){
+      const pair=new WebSocketPair();
+      const [client, server]=Object.values(pair);
+      this.state.acceptWebSocket(server);
+      return new Response(null, {status:101, webSocket:client});
+    }
+    return new Response('Not found', {status:404});
+  }
+  async webSocketMessage(ws, message){}
+  async webSocketClose(ws, code, reason, wasClean){ try{ ws.close(code, reason); }catch(e){} }
+  async webSocketError(ws, error){}
+}
+// Query-param token (not an Authorization header — browsers can't set custom headers on a
+// WebSocket handshake) verified with the exact same verifySession used everywhere else; this is
+// just a different transport for the same session token, not a separate auth scheme.
+async function handleEngineLiveSocket(request, env){
+  if(!env.CLIENT_UPDATES) return new Response('Real-time updates are not configured on this Worker', {status:501});
+  const url=new URL(request.url);
+  const payload=await verifySession(env, url.searchParams.get('token')||'');
+  if(!payload) return new Response('Invalid or expired session', {status:401});
+  if(request.headers.get('Upgrade')!=='websocket') return new Response('Expected websocket', {status:426});
+  const id=env.CLIENT_UPDATES.idFromName(String(payload.cid));
+  return env.CLIENT_UPDATES.get(id).fetch(request);
+}
+// Best-effort/fail-open, same reasoning as engineSendChatwootTyping — this is a UX nicety on top
+// of the 60s poll dashboard.html still falls back to, never something a real reply should be
+// blocked by.
+async function engineBroadcastUpdate(env, clientId, eventObj){
+  if(!env.CLIENT_UPDATES) return;
+  try{
+    const id=env.CLIENT_UPDATES.idFromName(String(clientId));
+    await env.CLIENT_UPDATES.get(id).fetch('https://internal/broadcast', {method:'POST', body:JSON.stringify(eventObj)});
+  }catch(e){}
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -14197,6 +14320,11 @@ export default {
     const cors=corsHeaders(origin, env);
 
     if(request.method==='OPTIONS') return new Response(null, {status:204, headers:cors});
+
+    // Returned as-is, not through the generic res.body/headers reconstruction at the bottom of
+    // this function — that rebuild drops the special `webSocket` pairing a 101 response carries,
+    // which would silently break the upgrade instead of erroring.
+    if(url.pathname==='/engine/live') return handleEngineLiveSocket(request, env);
 
     const rlRule=RATE_LIMIT_RULES.find(r=>r.test(url.pathname, request.method));
     if(rlRule){

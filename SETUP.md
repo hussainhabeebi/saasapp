@@ -6764,6 +6764,40 @@ in the dashboard.
   plus a table of When/Phone/Result/Reason/Detail, `logsInit()` calling the endpoint above. Result
   is color-coded: ✓ Replied / ⏭ Skipped / ✗ Error.
 
+## Real-time dashboard updates (`cloudflare-worker/worker.js`, `frontend/dashboard.html`)
+
+Before this, a new inbound WhatsApp/Instagram message only ever reached an open dashboard tab via
+the 60s `loadAll()` poll — up to a minute of dead air on something that just happened, and the
+Chats tab specifically had no live-refresh path at all (its contact list/open thread were never
+touched by that poll either, only Home's widgets were).
+
+- **`ClientUpdatesHub`** (worker.js) — a Durable Object, one instance per client
+  (`env.CLIENT_UPDATES.idFromName(clientId)`), holding that client's currently-connected dashboard
+  WebSockets. Uses the Hibernatable WebSockets API (`state.acceptWebSocket`/`getWebSockets`) rather
+  than holding sockets in a plain in-memory field, so an idle DO with open connections isn't billed
+  as continuously active. Requires the new `[[durable_objects.bindings]]`/`[[migrations]]` blocks in
+  `wrangler.toml` — picked up automatically on the next `wrangler deploy`, no separate manual
+  create/paste-id step.
+- **`GET /engine/live`** (`handleEngineLiveSocket`) — the WebSocket upgrade endpoint. Auth is the
+  same signed session token used everywhere else, just passed as a `?token=` query param instead of
+  an `Authorization` header (browsers can't set custom headers on a WebSocket handshake) — not a
+  separate auth scheme. Routed early in the Worker's `fetch()`, bypassing the generic CORS-header
+  response rebuild at the bottom of that function (which would silently drop a 101 response's
+  `webSocket` pairing).
+- **`engineBroadcastUpdate(env, clientId, eventObj)`** — best-effort/fail-open, called from
+  `handleEngineWebhook`'s WhatsApp and Instagram paths the moment a real inbound message finishes
+  processing (right after the lead upsert resolves an id), posting a small `{type:'message',
+  lead_id, channel, at}` event to that client's `ClientUpdatesHub`, fanned out to every connected
+  socket. Skip conditions (rate-limited, duplicate, etc.) do NOT broadcast — only genuine processed
+  messages do.
+- **`connectLiveUpdates()`/`onLiveMessageEvent()`** (dashboard.html) — opens the socket right after
+  login (alongside the first `loadAll()`), reconnects with a 5s delay on any close as long as the
+  app is still open, and on a `message` event force-refreshes leads (`loadAll(true, true)` — the
+  new `force` param bypasses the 5-minute sessionStorage cache TTL) plus, only while the Chats tab
+  is actually visible, re-renders the contact list and the open thread if it's the lead that just
+  got the message. Purely additive — the 60s poll and 5-minute cache are both untouched as the
+  fallback if the socket is ever closed/reconnecting.
+
 ## Recruitment & Consultancy module (`frontend/dashboard.html` — 💼 Recruit tab) — rebuilt on D1
 
 Previously the odd one out among the multi-entity modules: Jobs/Candidates/Placements each lived
