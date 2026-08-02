@@ -1384,6 +1384,19 @@ already use, just not iframed inline); predictive pricing/demand forecasting (th
 model needs historical pricing data this module doesn't yet accumulate enough of).
 
 ## Accounting module (Quotation → Invoice → Receipt, ERPNext push)
+> **Standalone update (migration `0035_accounting_standalone.sql`):** the module no longer
+> depends on ERPNext for anything — the "⚙️ ERPNext Connection" and "👤 Customers" tabs described
+> below have been removed from `accounting.html`, along with the ERPNext pickers in the Document/
+> Expense/Vendor Bill modals and the "Sync/Publish to ERPNext" actions. Documents now carry a
+> plain `customer_name` column for a walk-in/non-lead customer, status is changed via a local
+> dropdown (`draft`/`sent`/`paid`/`void`), and Vendor Bills get a local "Mark Paid" action
+> (`handleVendorBillMarkPaid`, `accounting_vendor_bills.paid_at`). The `erpnext_*` columns, push
+> functions (`erpnextPushSalesDoc` etc.), and `/erpnext/*` lookup routes described in the rest of
+> this section are all still in the codebase and functional — they're just no longer wired to any
+> UI — so the ERPNext-specific documentation below still explains what those backend pieces do,
+> just not how a client reaches them today. See "AI-Supported Bookkeeping" further down for what
+> replaced the "book this to an external system" workflow.
+
 A `💰 Accounting` nav tab, **always visible — not gated behind any industry flag or Settings →
 Modules toggle** the way B2B/Agency/Ecommerce/Recruit/Appointments are, since quoting/invoicing an
 existing lead is a fit for every client regardless of what they sell. Embeds `frontend/accounting.html`
@@ -6324,6 +6337,56 @@ previously-saved Razorpay Key Secret back to the browser (`GET /financial/config
 write-only) — the frontend only includes a secret field in its `PATCH` body when the user actually
 typed something into it, so re-saving the enabled/reminders toggles alone can never accidentally
 wipe out a previously-configured secret.
+
+### AI-Supported Bookkeeping (migration `0034_fp_ai_snapshot.sql`)
+Layman-friendly, AI-powered features built entirely on the shared `env.GEMINI_API_KEY` the
+WhatsApp engine already uses (`engineGeminiGenerate`/`engineGeminiTranscribeVoice` — no new
+provider/credential to configure). All five routes live under `/financial/ai/*` in `worker.js`,
+right after `fpGenerateForClient`:
+
+- **Snap & Save / Type-it-in** (`POST /financial/ai/parse-expense`) — a photo of a receipt
+  (`imageBase64`+`mimeType`) or a plain sentence (`text`) is parsed into a structured draft
+  (`fpAiParseExpenseImage`/`fpAiParseExpenseText`, both normalized by
+  `fpAiNormalizeParsedExpense` against a fixed `FP_EXPENSE_CATEGORIES` list). Never auto-saved —
+  the frontend's `aiQuickAddFromPhoto`/`aiQuickAddFromText` (Expenses sub-tab) hand the parsed
+  draft straight into the existing One-time Expense modal for the owner to review and save
+  themselves.
+- **Ask Your Books** (`POST /financial/ai/ask`) — `fpAiComputeSnapshotData` computes this
+  client's real numbers (expected/collected this month, outstanding total, top expense
+  categories, active customer count) server-side; the model is told to answer *only* from that
+  JSON and never invent a number. The Dashboard sub-tab's "💬 Ask Your Books" card is a thin
+  wrapper over this.
+- **Monthly AI Snapshot** (`GET /financial/ai/snapshot`, `POST …/regenerate`) — a one-paragraph
+  plain-English narrative (`fpAiGenerateSnapshotNarrative`), cached on
+  `fp_config.ai_snapshot_text`/`ai_snapshot_period` per calendar month so it isn't regenerated on
+  every dashboard load; the Regenerate button forces a fresh call.
+- **Cash Flow Outlook** (`GET /financial/ai/forecast`) — `fpAiComputeForecastData` looks at open
+  `fp_expected_dues` due before month end and active `fp_expense_templates` not yet booked this
+  period, then narrates the outlook. Computed fresh every call (cheap dataset, no caching needed).
+- **AI-drafted reminders** (`fpAiDraftReminder`) — replaces the fixed-template WhatsApp message
+  `fpSendRemindersForClient`'s automatic overdue sweep sends, falling back to the old exact
+  template (`fpDefaultReminderText`) if Gemini is unavailable. `POST /financial/ai/draft-reminder`
+  exposes the same drafting for the Dashboard's "✨ Draft reminder" button (an on-demand preview
+  the owner copies and sends themselves, not an automatic send).
+- **Unusual-expense nudge** (`fpAiFlagUnusualExpenses`) — a plain average-vs-latest comparison per
+  category, not an AI call (instant, free); wired into `handleFpExpensesList`'s response as
+  `is_unusual`/`category_avg` on each row, needs 3+ prior one-time expenses in a category before it
+  flags anything.
+- **Tax set-aside estimate** — `fp_config.tax_reserve_pct` (Settings), a simple
+  `net_position_this_month * pct` shown on the Dashboard only when positive; explicitly labeled an
+  estimate, not tax/filing advice.
+
+### Admin-number WhatsApp bookkeeping shortcut
+`fp_config.admin_phone_numbers` (JSON array, Settings tab) lets the owner text their own books on
+the exact same WhatsApp number/inbox the customer-facing lead-gen bot runs on, without the two ever
+colliding: `handleEngineWebhook` checks `fpIsAdminPhone` (last-10-digits match, so
+`+971501234567`/`00971501234567`/`0501234567` all resolve the same) immediately after resolving the
+sender's phone — before any state load, intent classification, or `LEADS` upsert — and diverts a
+match straight to `fpHandleAdminWhatsappMessage` instead. That handler supports text, a voice note
+(transcribed via `engineGeminiTranscribeVoice`), or a receipt photo; a message that reads as a
+question goes through the same Ask-Your-Books path, everything else is parsed and booked as an
+expense immediately (being on the allow-list *is* the confirmation here — unlike the in-app Snap &
+Save, there's no draft-review step) and confirmed back over WhatsApp via `engineSendChatwootReply`.
 
 ## SaaS Ops module (`frontend/saas-ops.html` — own top-level tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0025_saas_ops.sql` + `0027_saas_nocodb_accounts.sql`)
 
