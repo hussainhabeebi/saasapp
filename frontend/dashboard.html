@@ -10472,6 +10472,7 @@ function renderVelocity(){
 
 /* ── BEST TIME TO MESSAGE ── */
 function renderBestTime(){
+  if(!$id('bestTimeChart'))return;
   const counts=new Array(24).fill(0);
   allLeads.forEach(l=>{
     const d=l.LastMsgAt||l.Date;
@@ -10487,6 +10488,7 @@ function renderBestTime(){
 
 /* ── CROSS-CLIENT BENCHMARK ── */
 async function renderBenchmark(){
+  if(!$id('benchmarkChart'))return;
   try{
     const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/m2in19v8n7phitr/records?limit=2000`);
     const rows=data.list||[];
@@ -16354,8 +16356,8 @@ async function pollNotifications(){
   const now=new Date();
   const cutoff=new Date(now-24*3600*1000).toISOString().slice(0,19).replace('T',' ');
   try{
-    const d=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(client_id,eq,${clientId})~and(CreatedAt,gte,${encodeURIComponent(cutoff)})&limit=20&sort=-CreatedAt`);
-    (d.list||[]).forEach(l=>items.push({id:'lead_'+l.Id,icon:'👤',text:'New lead: '+(l.Name||l.Phone||'Unknown'),time:l.CreatedAt}));
+    const d=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${clientId})~and(Date,gte,${encodeURIComponent(cutoff)})&limit=20&sort=-Date`);
+    (d.list||[]).forEach(l=>items.push({id:'lead_'+l.Id,icon:'👤',text:'New lead: '+(l.Name||l.Phone||'Unknown'),time:l.Date}));
   }catch(e){}
   if(_taLoaded){
     const td=now.toISOString().slice(0,10);
