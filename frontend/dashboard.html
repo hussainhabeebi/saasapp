@@ -256,7 +256,24 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .chat-send-btn:hover{opacity:.88}
 .chat-send-status{font-size:11.5px;color:#667781;padding:2px 16px 0}
 .chat-send-status.err{color:#c0392b}
-@media(max-width:767px){.chat-sidebar{width:100%;border-right:none;border-bottom:1px solid #e9edef;max-height:40vh}.chats-layout{flex-direction:column}}
+/* Mobile Chats: full-screen contact list by default (not the old 40vh-then-squeezed-thread split,
+   which left barely any room for an actual conversation) — .chat-open (toggled by chatSelectLead/
+   chatBackToList in JS) swaps to a full-screen thread with a back button instead, matching how
+   every real chat app handles a phone-width screen: one screen at a time, not both squeezed in. */
+@media(max-width:767px){
+  .chat-sidebar{width:100%;border-right:none;border-bottom:1px solid #e9edef;flex:1}
+  .chats-layout{flex-direction:column}
+  .chats-layout .chat-main{display:none}
+  .chats-layout.chat-open .chat-sidebar{display:none}
+  .chats-layout.chat-open .chat-main{display:flex;flex:1}
+}
+@media(min-width:768px){.chat-back-btn{display:none}}
+/* Own tiny style rather than reusing the app shell's .icon-btn — that one's hover uses
+   var(--bg), which shifts with the industry theme/dark-mode, breaking this WhatsApp-styled
+   subtree's deliberate isolation from the rest of the app's theming (see this block's own
+   opening comment above). */
+.chat-back-btn{width:32px;height:32px;border:none;background:none;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;color:#54656f;flex-shrink:0}
+.chat-back-btn:hover{background:#e9edef}
 
 /* ── APP SHELL ── */
 #app{position:fixed;inset:0;display:none;flex-direction:column}
@@ -18259,9 +18276,11 @@ function chatSelectLead(leadId){
   let history=[];
   try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
 
+  document.querySelector('.chats-layout')?.classList.add('chat-open');
   const main=$id('chatMain');
   main.innerHTML=`
     <div class="chat-main-hd">
+      <button class="chat-back-btn" onclick="chatBackToList()" title="Back to chats" style="margin-right:2px">←</button>
       <div class="cc-avatar lg">${(lead.Name||'?')[0].toUpperCase()}</div>
       <div style="flex:1;min-width:0">
         <div class="chat-main-name">${esc(lead.Name||'Unknown')}</div>
@@ -18342,10 +18361,19 @@ async function chatSendFromTab(leadId){
 }
 
 function renderChatEmpty(){
+  document.querySelector('.chats-layout')?.classList.remove('chat-open');
   $id('chatMain').innerHTML=`<div class="chat-empty" style="flex:1;display:flex">
     <div class="chat-empty-icon">💬</div>
     <div>Select a contact to view their conversation</div>
   </div>`;
+}
+
+// Mobile-only "back to contact list" — the chat-open class flip is invisible on desktop (both
+// panes are always shown there, see the max-width:767px rule), so this is purely a phone-width
+// affordance. Leaves _chatLeadId/the rendered thread alone so reopening the same contact doesn't
+// need a re-fetch.
+function chatBackToList(){
+  document.querySelector('.chats-layout')?.classList.remove('chat-open');
 }
 
 /* ── PWA install prompt ──
