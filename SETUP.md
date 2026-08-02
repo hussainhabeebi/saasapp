@@ -6799,3 +6799,35 @@ changed, this is a storage-layer swap.
   migration. If a client had already used this module before the rebuild, their old rows need a
   one-time manual export/import into the new D1 tables (or a bespoke migration script) before they
   see continuity; the module tables themselves are safe to leave alone in NocoDB or delete later.
+
+## `POST /engine/track` — tracking sync for clients whose replies come from an external n8n flow
+
+For a client with `engine_disabled='Yes'` (so `/engine/webhook` stays silent for them) whose actual
+WhatsApp replies are sent entirely by their own n8n workflow: this repo and that workflow have no
+API between them, they only ever share one NocoDB `LEADS` table. Every other Leadvyne feature
+(Pipeline, Reports, Home, Automations) reads `Stage`/`ConvHistory`/`LastMsgAt` off that table — the
+built-in engine writes those as a side effect of replying, but an external n8n flow replying on its
+own has no reason to know that contract, so those fields would just go stale for that client.
+
+`handleEngineTrack` (`worker.js`) is the fix: client_id-based, no session (n8n has none), same
+shape as `handleLeadBookingLink`/`handleAiObjectionReply`. Body: `{client_id, phone, name?,
+incoming_text?, reply_text?, stage?}` (at least one of `incoming_text`/`reply_text` required).
+Finds-or-creates the lead by phone, appends both turns to `ConvHistory` (same `{role, content}`
+shape/40-message trim the engine itself uses), bumps `LastMsgAt`, and writes `Stage` only if the
+caller passes one *and* it's a real stage id in that client's own `flow_json` (never invents a
+stage the client hasn't defined — same guard `advanceLeadBookingAndTask` uses). Also logs a row to
+`ENGINE_ANALYTICS_TABLE` with `Route:'n8n'` so Settings → Logs and Reports show this activity too,
+distinguishable from the built-in engine's own turns.
+
+Deliberately does **not** attempt to reproduce `engineBuildLeadUpsertBody`'s intent/win-probability/
+qual-score scoring — n8n has no classifier output to feed that with, so those fields are simply left
+as whatever they last were for a lead tracked this way. Call it from n8n right after sending a
+reply, once per turn.
+
+**Also fixed while in this area**: `advanceLeadBookingAndTask` and the two lead-lookups in
+`handleChatwootMessageHook`'s booking/order auto-tracking were filtering the LEADS table with
+`where=(client_id,eq,...)` — the actual column is `ClientId` (PascalCase, confirmed by every other
+LEADS read/write in this file). That mismatched filter meant these three lookups always came back
+empty, so `/leads/booking-link`'s stage-advance step silently never found the lead it was supposed
+to advance, and the auto-tracking webhook's own "already booked" dedupe check never fired either
+(risking duplicate booking tasks). Fixed to match every other LEADS query in the file.

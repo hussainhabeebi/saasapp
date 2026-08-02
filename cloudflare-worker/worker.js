@@ -5821,7 +5821,7 @@ function apptResolveTable(c, kind){
 // dedupe), and the task is worded as "review", not "confirm the link landed". Returns
 // {lead_id, stage_advanced} for the caller to report back.
 async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service, explicitWhen){
-  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
   const leadD=await leadR.json().catch(()=>({}));
   const lead=leadD?.list?.[0]||null;
 
@@ -5952,6 +5952,71 @@ async function handleLeadBookingLink(request, env){
   return json(result);
 }
 
+// "Track only" endpoint for a client whose replies are sent entirely by an external n8n flow
+// instead of this Worker's own Conversation Engine (engine_disabled='Yes' for that client, so
+// /engine/webhook stays silent for them — see SETUP.md "Conversation Engine"). n8n owns deciding
+// AND sending the reply; the one thing it can't do on its own is write the same LEADS fields the
+// built-in engine writes as a side effect of replying (ConvHistory/LastMsgAt/Stage), which is what
+// Pipeline/Reports/Home/Automations actually read — there's no other sync surface between this
+// repo and an external bot, they share one NocoDB table. Client_id-based, no session, same
+// n8n-calls-Cloudflare shape as handleLeadBookingLink/handleAiObjectionReply above.
+//
+// Deliberately NOT trying to reproduce engineBuildLeadUpsertBody's intent/win-probability/qual-
+// score scoring — n8n has no classifier output to feed that with. `stage`, if sent, is validated
+// against the client's own flow_json (never writes a stage the client hasn't defined — same guard
+// advanceLeadBookingAndTask uses above); anything else is left for a human to set manually, same
+// as it would be for a channel this repo doesn't track at all.
+async function handleEngineTrack(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!clientId||!phone) return json({error:'client_id and phone required'}, 400);
+  const incomingText=String(body.incoming_text||'').trim().slice(0,4000);
+  const replyText=String(body.reply_text||'').trim().slice(0,4000);
+  if(!incomingText && !replyText) return json({error:'incoming_text and/or reply_text required'}, 400);
+
+  const c=await getClientById(env, clientId);
+  if(!c||!c.Id) return json({error:'Client not found'}, 404);
+
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+  const leadD=await leadR.json().catch(()=>({}));
+  const lead=leadD?.list?.[0]||null;
+
+  let history=[];
+  try{ history=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+  if(incomingText) history.push({role:'user', content:incomingText});
+  if(replyText) history.push({role:'assistant', content:replyText});
+
+  const now=new Date().toISOString();
+  const upsertBody={ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:now, Date:lead?.Date||now};
+  if(body.name && !lead?.Name) upsertBody.Name=String(body.name).trim().slice(0,140);
+
+  let stageWritten=lead?.Stage||'new';
+  if(body.stage){
+    const flow=engineParseJsonField(c.flow_json, {});
+    const stageKeys=Object.keys(flow.stages||{});
+    if(stageKeys.includes(String(body.stage))){ upsertBody.Stage=String(body.stage); stageWritten=upsertBody.Stage; }
+  }
+
+  let leadId=lead?.Id||null;
+  if(leadId){
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, ...upsertBody}});
+  }else{
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:{
+      ClientId:clientId, Phone:phone, Name:body.name||'', Stage:upsertBody.Stage||'new', Channel:'whatsapp', ...upsertBody
+    }});
+    const d=await r.json().catch(()=>null);
+    leadId=d?.Id||null;
+  }
+
+  await engineLogAnalytics(env, {
+    ClientId:clientId, ClientName:c.client_name||'', Phone:phone, Intent:'n8n-relay', Route:'n8n',
+    Stage:lead?.Stage||'new', NextStage:stageWritten, ResponseMs:0, IsError:false, ErrorMsg:'', Timestamp:now
+  });
+
+  return json({ok:true, lead_id:leadId, stage:stageWritten});
+}
+
 // Cal.com's HMAC is hex-encoded (X-Cal-Signature-256), unlike Shopify's base64
 // (verifyShopifyWebhookHmac above) — and the secret is per-client, not one app-wide secret, since
 // each client creates their own webhook in their own Cal.com account (Settings -> Developer ->
@@ -6073,7 +6138,7 @@ async function handleChatwootIncomingBookingSignal(env, c, clientId, content, bo
   ).replace(/[^0-9+]/g,'');
   if(!phone) return json({ok:true, skipped:'no-phone'});
 
-  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
   const leadD=await leadR.json().catch(()=>({}));
   const lead=leadD?.list?.[0]||null;
   if(lead && BOOKING_TERMINAL_STAGES.includes(lead.Stage)) return json({ok:true, skipped:'already-booked'});
@@ -6176,7 +6241,7 @@ async function handleChatwootMessageHook(request, env){
   // explicit n8n call. Dedupe here is "lead already at a booking-terminal stage" rather than a
   // pending-order check, since there's no orders table to check against.
   if(!ordersTable){
-    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(client_id,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
     const leadD=await leadR.json().catch(()=>({}));
     const lead=leadD?.list?.[0]||null;
     if(lead && BOOKING_TERMINAL_STAGES.includes(lead.Stage)) return json({ok:true, skipped:'already-booked'});
@@ -14212,6 +14277,7 @@ export default {
       else if(url.pathname==='/pipeline/followups/video-send' && request.method==='POST'){ res=await handlePipelineVideoSend(request, env); }
       else if(url.pathname==='/ecom/order-link' && request.method==='POST'){ res=await handleEcomOrderLink(request, env); }
       else if(url.pathname==='/leads/booking-link' && request.method==='POST'){ res=await handleLeadBookingLink(request, env); }
+      else if(url.pathname==='/engine/track' && request.method==='POST'){ res=await handleEngineTrack(request, env); }
       else if(url.pathname.startsWith('/calcom/webhook/') && request.method==='POST'){ res=await handleCalcomWebhook(request, env, url.pathname.slice('/calcom/webhook/'.length)); }
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
