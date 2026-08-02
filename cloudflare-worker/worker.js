@@ -10436,6 +10436,182 @@ async function fpGenerateForClient(env, clientId, periodKey){
   }
 }
 
+// ── AI-Supported Bookkeeping (Financial Planning) — layman-friendly SMB features built on the
+// same shared Gemini integration the WhatsApp engine already uses (env.GEMINI_API_KEY,
+// engineGeminiGenerate above) — no new provider/credential to configure. Three capabilities:
+// (1) turn a plain-English sentence or a photo of a receipt into a structured fp_expenses draft
+// the owner still reviews and saves themselves (never auto-saved — a misread amount silently
+// posted would be worse than no AI at all); (2) "Ask Your Books", natural-language Q&A answered
+// ONLY from real numbers computed here server-side, never left to the model to recall/estimate;
+// (3) a cached one-paragraph monthly narrative snapshot (fp_config.ai_snapshot_period, migration
+// 0034), computed once per calendar month rather than on every dashboard load.
+const FP_EXPENSE_CATEGORIES=['Rent','Utilities','Salaries & Wages','Software & Subscriptions','Marketing & Ads','Travel','Office Supplies','Professional Fees','Bank Charges','Repairs & Maintenance','Inventory & Supplies','Taxes','Insurance','Miscellaneous'];
+
+function fpAiNormalizeParsedExpense(parsed, defaultCurrency){
+  if(!parsed || typeof parsed!=='object') return null;
+  return {
+    name:String(parsed.name||'').trim().slice(0,140)||'Expense',
+    category:FP_EXPENSE_CATEGORIES.includes(parsed.category)?parsed.category:'Miscellaneous',
+    vendor:String(parsed.vendor||'').trim().slice(0,140),
+    amount:Number(parsed.amount)||0,
+    currency:String(parsed.currency||defaultCurrency||'INR').trim().slice(0,10).toUpperCase(),
+    expense_date:/^\d{4}-\d{2}-\d{2}$/.test(parsed.expense_date||'')?parsed.expense_date:new Date().toISOString().slice(0,10),
+    notes:String(parsed.notes||'').trim().slice(0,500),
+  };
+}
+async function fpAiParseExpenseText(env, text, defaultCurrency){
+  if(!env.GEMINI_API_KEY || !text) return null;
+  const today=new Date().toISOString().slice(0,10);
+  const system=`You convert a small business owner's plain description of a purchase or expense into one structured bookkeeping record. They are not an accountant — never use accounting jargon back at them. Today's date is ${today}. Default currency is ${defaultCurrency} unless the text clearly states another. Respond with ONLY compact JSON, no commentary, in exactly this shape: {"name":"short title, 3-6 words","category":"one of: ${FP_EXPENSE_CATEGORIES.join(', ')}","vendor":"who was paid, or empty string","amount":number,"currency":"3-letter code","expense_date":"YYYY-MM-DD","notes":"anything extra worth keeping, or empty string"}. Resolve relative dates ("yesterday", "last Friday") against today's date. If you cannot tell the amount at all, set amount to 0.`;
+  const raw=await engineGeminiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, json:true});
+  if(!raw) return null;
+  try{ return fpAiNormalizeParsedExpense(JSON.parse(raw), defaultCurrency); }catch(e){ return null; }
+}
+async function fpAiParseExpenseImage(env, base64, mimeType, defaultCurrency){
+  if(!env.GEMINI_API_KEY || !base64) return null;
+  const today=new Date().toISOString().slice(0,10);
+  const prompt=`This image is a photo of a receipt or bill for a small business expense. Today's date is ${today}. Read the vendor/merchant name, the total amount actually paid, and the date printed on it (if no date is visible, use today). Default currency is ${defaultCurrency} unless the receipt clearly shows another. Respond with ONLY compact JSON, no commentary, in exactly this shape: {"name":"short title, 3-6 words","category":"one of: ${FP_EXPENSE_CATEGORIES.join(', ')}","vendor":"merchant name, or empty string","amount":number,"currency":"3-letter code","expense_date":"YYYY-MM-DD","notes":"anything extra worth keeping, or empty string"}. If the total amount isn't legible, set amount to 0.`;
+  try{
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{role:'user', parts:[
+        {text:prompt},
+        {inline_data:{mime_type:mimeType||'image/jpeg', data:base64}}
+      ]}], generationConfig:{temperature:0.1, maxOutputTokens:250, responseMimeType:'application/json'}})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const outText=parts.map(p=>p.text||'').join('').trim();
+    if(!outText) return null;
+    return fpAiNormalizeParsedExpense(JSON.parse(outText), defaultCurrency);
+  }catch(e){ return null; }
+}
+async function handleFpAiParseExpense(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.GEMINI_API_KEY) return json({error:'AI features are not configured for this deployment yet.'}, 503);
+  const body=await request.json().catch(()=>({}));
+  const clientId=Number(payload.cid);
+  const cust=await env.DB.prepare(`SELECT currency FROM fp_customers WHERE client_id=? ORDER BY id DESC LIMIT 1`).bind(clientId).first();
+  const defaultCurrency=cust?.currency||'INR';
+  let parsed=null;
+  if(body.imageBase64){
+    if(String(body.imageBase64).length>20*1024*1024) return json({error:'Image is too large.'}, 400);
+    parsed=await fpAiParseExpenseImage(env, body.imageBase64, body.mimeType, defaultCurrency);
+  }else if(body.text){
+    parsed=await fpAiParseExpenseText(env, String(body.text).slice(0,500), defaultCurrency);
+  }else{
+    return json({error:'text or imageBase64 required'}, 400);
+  }
+  if(!parsed) return json({error:"Couldn't make sense of that — try adding the amount and what it was for, or enter it manually below."}, 422);
+  return json({parsed});
+}
+
+// Real numbers only — the same aggregates a human would read off the Dashboard, just compact
+// enough to hand to the model as its entire universe of facts. Both "Ask Your Books" and the
+// monthly narrative snapshot below build their prompt around this one function so the two features
+// can never disagree with each other or with the Dashboard itself.
+async function fpAiComputeSnapshotData(env, clientId){
+  const now=new Date();
+  const currentPeriod=now.toISOString().slice(0,7);
+  const todayStr=now.toISOString().slice(0,10);
+  const {results:dues}=await env.DB.prepare(`SELECT d.* FROM fp_expected_dues d WHERE d.client_id=?`).bind(clientId).all();
+  const allDues=dues||[];
+  const thisMonthDues=allDues.filter(d=>d.period_key===currentPeriod);
+  const expected=thisMonthDues.reduce((s,d)=>s+d.amount,0);
+  const collected=thisMonthDues.reduce((s,d)=>s+d.collected_amount,0);
+  const outstanding=allDues.filter(d=>d.status==='open'||d.status==='partial');
+  const outstandingTotal=outstanding.reduce((s,d)=>s+(d.amount-d.collected_amount),0);
+  const overdueCount=outstanding.filter(d=>d.due_date<todayStr).length;
+
+  const since=new Date(now.getFullYear(), now.getMonth()-2, 1).toISOString().slice(0,10);
+  const {results:expenses}=await env.DB.prepare(`SELECT * FROM fp_expenses WHERE client_id=? AND expense_date>=?`).bind(clientId, since).all();
+  const thisMonthExpenses=(expenses||[]).filter(e=>e.expense_date.slice(0,7)===currentPeriod);
+  const totalExpensesThisMonth=thisMonthExpenses.reduce((s,e)=>s+e.amount,0);
+  const byCategory={};
+  for(const e of thisMonthExpenses){ byCategory[e.category]=(byCategory[e.category]||0)+e.amount; }
+  const topCategories=Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([category,amount])=>({category, amount:Math.round(amount*100)/100}));
+
+  const activeCustomers=await env.DB.prepare(`SELECT COUNT(*) as n FROM fp_customers WHERE client_id=? AND status='active'`).bind(clientId).first();
+  const currency=thisMonthDues[0]?.currency||allDues[0]?.currency||thisMonthExpenses[0]?.currency||'INR';
+  return {
+    current_period:currentPeriod, currency,
+    expected_this_month:Math.round(expected*100)/100, collected_this_month:Math.round(collected*100)/100,
+    total_expenses_this_month:Math.round(totalExpensesThisMonth*100)/100,
+    net_position_this_month:Math.round((collected-totalExpensesThisMonth)*100)/100,
+    outstanding_total:Math.round(outstandingTotal*100)/100, overdue_customer_count:overdueCount,
+    top_expense_categories_this_month:topCategories,
+    active_customer_count:activeCustomers?.n||0,
+  };
+}
+async function handleFpAiAsk(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.GEMINI_API_KEY) return json({error:'AI features are not configured for this deployment yet.'}, 503);
+  const body=await request.json().catch(()=>({}));
+  const question=String(body.question||'').trim().slice(0,300);
+  if(!question) return json({error:'question required'}, 400);
+  const data=await fpAiComputeSnapshotData(env, Number(payload.cid));
+  const system=`You are a friendly bookkeeping assistant for a small business owner who has no accounting background. Answer their question using ONLY the JSON data below — never invent or estimate a number that isn't in it. If the data doesn't cover what they're asking, say so plainly and suggest what to check instead. Keep the answer to 2-4 short sentences, warm and jargon-free (say "money customers owe you" not "receivables", "profit" not "net position"). All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
+  const answer=await engineGeminiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220});
+  if(!answer) return json({error:"Couldn't reach the AI assistant just now — try again in a moment."}, 502);
+  return json({answer, data});
+}
+
+async function fpAiGenerateSnapshotNarrative(env, clientId){
+  const data=await fpAiComputeSnapshotData(env, clientId);
+  const system=`You are a friendly bookkeeping assistant writing a one-paragraph monthly business snapshot for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, encouraging but honest tone; 3-5 short sentences; no jargon (say "money customers owe you" not "receivables", "profit" not "net position"). Mention: how much came in, how much went out, whether they're up or down, and the single biggest expense category if there is one. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
+  const text=await engineGeminiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220});
+  return {text, data};
+}
+async function fpAiGetOrRefreshSnapshot(env, clientId, force){
+  const currentPeriod=new Date().toISOString().slice(0,7);
+  const row=await env.DB.prepare(`SELECT ai_snapshot_text, ai_snapshot_period, ai_snapshot_generated_at FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  if(!force && row?.ai_snapshot_text && row.ai_snapshot_period===currentPeriod){
+    return {snapshot:row.ai_snapshot_text, period:row.ai_snapshot_period, generated_at:row.ai_snapshot_generated_at, cached:true};
+  }
+  if(!env.GEMINI_API_KEY) return {snapshot:row?.ai_snapshot_text||null, period:row?.ai_snapshot_period||null, error:'AI features are not configured for this deployment yet.'};
+  const {text}=await fpAiGenerateSnapshotNarrative(env, clientId);
+  if(!text) return {snapshot:row?.ai_snapshot_text||null, period:row?.ai_snapshot_period||null, generated_at:row?.ai_snapshot_generated_at||null, error:"Couldn't generate a fresh snapshot just now — showing the last one.", cached:!!row?.ai_snapshot_text};
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO fp_config (client_id, enabled, reminders_enabled, ai_snapshot_text, ai_snapshot_period, ai_snapshot_generated_at, updated_at) VALUES (?,1,1,?,?,?,?)
+    ON CONFLICT(client_id) DO UPDATE SET ai_snapshot_text=excluded.ai_snapshot_text, ai_snapshot_period=excluded.ai_snapshot_period, ai_snapshot_generated_at=excluded.ai_snapshot_generated_at, updated_at=excluded.updated_at`)
+    .bind(clientId, text, currentPeriod, now, now).run();
+  return {snapshot:text, period:currentPeriod, generated_at:now, cached:false};
+}
+async function handleFpAiSnapshotGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json(await fpAiGetOrRefreshSnapshot(env, Number(payload.cid), false));
+}
+async function handleFpAiSnapshotRegenerate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json(await fpAiGetOrRefreshSnapshot(env, Number(payload.cid), true));
+}
+
+// Lightweight, non-AI "this looks unusual" nudge — a plain average-vs-latest comparison per
+// category, not a model call, so it's instant and costs nothing on every list load. Needs at least
+// 3 onetime expenses already in the same category to have a baseline at all; flags anything more
+// than 2.5x that baseline. Deliberately skips 'fixed' rows (auto-booked from a template every month
+// at the same amount by design — never "unusual").
+function fpAiFlagUnusualExpenses(rows){
+  const byCategory={};
+  for(const r of rows){ if(r.type!=='onetime') continue; (byCategory[r.category]=byCategory[r.category]||[]).push(r); }
+  const avgByCategory={};
+  for(const [cat, list] of Object.entries(byCategory)){
+    if(list.length<3) continue;
+    avgByCategory[cat]=list.reduce((s,r)=>s+r.amount,0)/list.length;
+  }
+  return rows.map(r=>{
+    if(r.type!=='onetime') return r;
+    const avg=avgByCategory[r.category];
+    const isUnusual=!!(avg && r.amount>avg*2.5);
+    return {...r, is_unusual:isUnusual, category_avg:avg?Math.round(avg*100)/100:null};
+  });
+}
+
 // ── Overdue-payment reminder sweep — runs on the same daily tick (see scheduled() below), unlike
 // the monthly generation above. Re-notifies at most once every 3 days per due (reminder_sent_at
 // flag-and-check, same "flag-flip idempotency" idiom as sweepAbandonedShopifyCheckouts) rather
