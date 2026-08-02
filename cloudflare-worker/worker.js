@@ -106,6 +106,26 @@ async function cleanupRateLimitCounters(env){
   try{ await env.DB.prepare(`DELETE FROM rate_limit_counters WHERE expires_at < ?`).bind(Math.floor(Date.now()/1000)).run(); }catch(e){}
 }
 
+/* ── Engine event log (SETUP.md "Engine event log — Settings → Logs") ───────────────────────────
+   Records every point handleEngineWebhook goes silent instead of replying (migrations/
+   0031_engine_event_log.sql), so Settings → Logs can show a client *why* a given message got no
+   reply without anyone needing raw Cloudflare Worker log access. Best-effort/fail-open like the
+   rate limiter above — logging must never be able to affect whether a real reply goes out, so
+   every call site awaits this but a failure here is silently swallowed. */
+async function logEngineSkip(env, clientId, phone, convId, reason, detail){
+  if(!env.DB) return;
+  try{
+    await env.DB.prepare(`INSERT INTO engine_event_log (client_id, phone, conv_id, reason, detail, created_at) VALUES (?,?,?,?,?,?)`)
+      .bind(Number(clientId)||0, phone||null, convId||null, reason, (detail==null?null:String(detail).slice(0,300)), new Date().toISOString()).run();
+  }catch(e){}
+}
+// Same daily-cron piggyback as cleanupRateLimitCounters — 30 days is plenty of history for
+// "what happened on this conversation recently" without the table growing unbounded.
+async function cleanupEngineEventLog(env){
+  if(!env.DB) return;
+  try{ await env.DB.prepare(`DELETE FROM engine_event_log WHERE created_at < ?`).bind(new Date(Date.now()-30*86400000).toISOString()).run(); }catch(e){}
+}
+
 /* ── Platform-level error monitoring — deliberately NOT client-facing (see clients' own
    slack_webhook_url, used by n8n/notifications.json for hot-lead/handover business alerts; this
    is a separate, operator-facing channel for "the platform itself is broken"). Both destinations
@@ -7838,6 +7858,45 @@ async function engineLogAnalytics(env, entry){
   try{ await ncFetch(env, `api/v2/tables/${ENGINE_ANALYTICS_TABLE}/records`, {method:'POST', body:entry}); }catch(e){}
 }
 
+// Settings → Logs (SETUP.md "Engine event log") — merges two sources into one per-conversation
+// timeline: skip/error rows from engine_event_log (D1, logEngineSkip above — the turns the bot
+// stayed silent on and why) and successful-turn rows already in ENGINE_ANALYTICS_TABLE (NocoDB,
+// engineLogAnalytics above — unchanged, this just reads what it already writes). No new writer
+// needed for the "replied" half; this is purely additive on the read side.
+async function handleEngineLogsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const phone=(url.searchParams.get('phone')||'').replace(/[^0-9]/g,'');
+  const limit=Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit'))||100));
+
+  let skipRows=[];
+  try{
+    const q=phone
+      ? env.DB.prepare(`SELECT phone, conv_id, reason, detail, created_at FROM engine_event_log WHERE client_id=? AND phone=? ORDER BY created_at DESC LIMIT ?`).bind(Number(payload.cid), phone, limit)
+      : env.DB.prepare(`SELECT phone, conv_id, reason, detail, created_at FROM engine_event_log WHERE client_id=? ORDER BY created_at DESC LIMIT ?`).bind(Number(payload.cid), limit);
+    const r=await q.all();
+    skipRows=(r.results||[]).map(row=>({type:row.reason==='internal-error'?'error':'skipped', phone:row.phone, convId:row.conv_id, reason:row.reason, detail:row.detail, at:row.created_at}));
+  }catch(e){}
+
+  let repliedRows=[];
+  try{
+    let where=`(ClientId,eq,${payload.cid})`;
+    if(phone) where+=`~and(Phone,eq,${phone})`;
+    const r=await ncFetch(env, `api/v2/tables/${ENGINE_ANALYTICS_TABLE}/records?where=${encodeURIComponent(where)}&limit=${limit}&sort=-Timestamp&fields=Phone,Intent,Route,Stage,NextStage,ResponseMs,IsError,ErrorMsg,Timestamp`);
+    const d=await r.json().catch(()=>({}));
+    repliedRows=(d?.list||[]).map(row=>({
+      type:row.IsError?'error':'replied', phone:row.Phone, convId:null,
+      reason:row.IsError?(row.ErrorMsg||'error'):(row.Route||row.Intent||''),
+      detail:`intent=${row.Intent||'—'} stage=${row.Stage||'—'}→${row.NextStage||'—'} (${row.ResponseMs||0}ms)`,
+      at:row.Timestamp
+    }));
+  }catch(e){}
+
+  const merged=[...skipRows, ...repliedRows].sort((a,b)=>new Date(b.at)-new Date(a.at)).slice(0, limit);
+  return json({ok:true, logs:merged});
+}
+
 // Chatwoot has no built-in webhook signing (unlike Shopify/Cal.com, both verified elsewhere in
 // this file via verifyShopifyWebhookHmac/verifyCalcomWebhookHmac against a secret the client
 // configures on their side) — its webhook feature just POSTs JSON to whatever URL you give it, no
@@ -7860,20 +7919,20 @@ async function handleEngineWebhook(request, env, secret){
   const c=await findClientByField(env, 'engine_webhook_secret', secret);
   if(!c) return json({ok:true, skipped:'invalid-secret'});
   const clientId=String(c.Id);
-  if(c.active==='No') return json({ok:true, skipped:'client-inactive'});
+  if(c.active==='No'){ await logEngineSkip(env, clientId, null, null, 'client-inactive'); return json({ok:true, skipped:'client-inactive'}); }
   // Per-client kill switch (CLIENTS.engine_disabled, 'Yes'/'No') — same "go silent" reasoning as
   // the global one, scoped to one client whose flow_json/data is causing a problem, without
   // taking down every other client. engineSyncChatwootWebhook also respects this flag (leaves
   // that client's webhooks alone entirely) so an admin can manually restore their old n8n webhook
   // in Chatwoot without the next Settings-save sync immediately undoing it.
-  if(c.engine_disabled==='Yes') return json({ok:true, skipped:'engine-disabled-client'});
+  if(c.engine_disabled==='Yes'){ await logEngineSkip(env, clientId, null, null, 'engine-disabled-client'); return json({ok:true, skipped:'engine-disabled-client'}); }
 
   const body=await request.json().catch(()=>({}));
   // Defense in depth, not the actual security boundary (the secret already is): if the payload's
   // own account id disagrees with this client's on-record chatwoot_account_id, something is
   // wrong (a misconfigured/reused webhook, most likely) — safer to drop it than guess.
   const accountId=String(body.account?.id||body.conversation?.account_id||'');
-  if(accountId && c.chatwoot_account_id && accountId!==String(c.chatwoot_account_id)) return json({ok:true, skipped:'account-mismatch'});
+  if(accountId && c.chatwoot_account_id && accountId!==String(c.chatwoot_account_id)){ await logEngineSkip(env, clientId, null, null, 'account-mismatch', `payload account ${accountId}`); return json({ok:true, skipped:'account-mismatch'}); }
 
   // Fast, near-atomic dedup gate — checked before any NocoDB round trip (state fetch, lead
   // lookup, etc), to close the race window the LastProcessedMessageId/engineClaimMessage
@@ -7894,20 +7953,20 @@ async function handleEngineWebhook(request, env, secret){
     try{
       const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`)
         .bind(Number(clientId), earlyMessageId, new Date().toISOString()).run();
-      if(!dedupR.meta.changes) return json({ok:true, skipped:'duplicate-delivery-fast'});
+      if(!dedupR.meta.changes){ await logEngineSkip(env, clientId, null, null, 'duplicate-delivery-fast', `message ${earlyMessageId}`); return json({ok:true, skipped:'duplicate-delivery-fast'}); }
     }catch(e){ /* best-effort — a D1 hiccup should never block a real customer message */ }
   }
 
   let phone=null;
   try{
     const parsed=engineParseChatwootPayload(body);
-    if(!parsed) return json({ok:true, skipped:'not-actionable'});
+    if(!parsed){ await logEngineSkip(env, clientId, null, null, 'not-actionable'); return json({ok:true, skipped:'not-actionable'}); }
     const {convId, name, mediaType, mediaUrl}=parsed;
     let text=parsed.text;
     phone=parsed.phone;
 
-    if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')) return json({ok:true, skipped:'test-mode'});
-    if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
+    if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')){ await logEngineSkip(env, clientId, phone, convId, 'test-mode'); return json({ok:true, skipped:'test-mode'}); }
+    if(!c.openrouter_key){ await logEngineSkip(env, clientId, phone, convId, 'no-openrouter-key'); return json({ok:true, skipped:'no-openrouter-key'}); }
 
     const state=await engineGetLeadState(env, clientId, phone);
     state.phone=phone; state.name=name; state.convId=convId;
@@ -7925,7 +7984,7 @@ async function handleEngineWebhook(request, env, secret){
     // before work starts) risks silently dropping a real message if processing then fails, which
     // is worse for a sales/support bot than an occasional duplicate reply.
     const messageId=String(body.id||body.message?.id||'');
-    if(messageId && state.lead?.LastProcessedMessageId===messageId) return json({ok:true, skipped:'duplicate-delivery'});
+    if(messageId && state.lead?.LastProcessedMessageId===messageId){ await logEngineSkip(env, clientId, phone, convId, 'duplicate-delivery', `message ${messageId}`); return json({ok:true, skipped:'duplicate-delivery'}); }
 
     // engine.json's own Code·State hard-stop ("the bot stops writing to the lead entirely once
     // handed over ... so it can never talk over a live agent") is now opt-in, not the default — set
@@ -7935,13 +7994,13 @@ async function handleEngineWebhook(request, env, secret){
     // gate, since this check alone isn't enough) even after handover; the lead still shows
     // Handover='Yes'/Stage='human_handover' in the CRM either way — only whether the bot keeps
     // replying changes.
-    if(state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover') && c.handover_silence_enabled==='Yes') return json({ok:true, skipped:'handed-over'});
-    if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start') return json({ok:true, skipped:'opted-out'});
+    if(state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover') && c.handover_silence_enabled==='Yes'){ await logEngineSkip(env, clientId, phone, convId, 'handed-over', `stage ${state.stage||''}`); return json({ok:true, skipped:'handed-over'}); }
+    if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start'){ await logEngineSkip(env, clientId, phone, convId, 'opted-out'); return json({ok:true, skipped:'opted-out'}); }
 
     const botConfig=engineParseJsonField(c.bot_config, {});
     const rateLimitMs=parseInt(botConfig.rate_limit_ms)||4000;
     const lastMsgAt=state.lastMsgAt?new Date(state.lastMsgAt).getTime():0;
-    if(Date.now()-lastMsgAt<rateLimitMs) return json({ok:true, skipped:'rate-limited'});
+    if(Date.now()-lastMsgAt<rateLimitMs){ await logEngineSkip(env, clientId, phone, convId, 'rate-limited', `${Date.now()-lastMsgAt}ms since last, limit ${rateLimitMs}ms`); return json({ok:true, skipped:'rate-limited'}); }
 
     // Claim this message id now, before the slow classify/LLM/context work below — observed in
     // production as a genuine duplicate reply (identical product-lookup message sent twice, ~1
@@ -8218,6 +8277,7 @@ async function handleEngineWebhook(request, env, secret){
     // interacting with the idempotency check above in ways worth avoiding on top of an already-
     // failing turn).
     await reportOpsError(env, 'handleEngineWebhook', e, {clientId, phone});
+    await logEngineSkip(env, clientId, phone, null, 'internal-error', e?.message||String(e));
     return json({ok:true, skipped:'internal-error'});
   }
 }
@@ -14004,6 +14064,7 @@ export default {
       else if(url.pathname==='/gcal/status' && request.method==='GET'){ res=await handleGcalStatus(request, env); }
       else if(url.pathname==='/gcal/disconnect' && request.method==='POST'){ res=await handleGcalDisconnect(request, env); }
       else if(url.pathname==='/gcal/sync-task' && request.method==='POST'){ res=await handleGcalSyncTask(request, env); }
+      else if(url.pathname==='/engine/logs' && request.method==='GET'){ res=await handleEngineLogsList(request, env); }
       else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }
@@ -14327,6 +14388,8 @@ export default {
       // Rate limiting (SETUP.md "DDoS protection") — sweep expired per-IP counters so the table
       // doesn't grow unbounded; daily is plenty since rows expire on their own within minutes.
       ctx.waitUntil(cleanupRateLimitCounters(env));
+      // Engine event log (SETUP.md "Engine event log") — sweep rows older than 30 days.
+      ctx.waitUntil(cleanupEngineEventLog(env));
     }
     else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env)); }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }

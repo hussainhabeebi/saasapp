@@ -1954,6 +1954,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
           </div>
         </div>
 
@@ -2280,6 +2281,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🔌 Channels</div>
@@ -2398,6 +2400,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🧩 Integrations</div>
@@ -2736,6 +2739,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🎙️ Voice</div>
@@ -2834,6 +2838,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
           </div>
         </div>
 
@@ -2966,6 +2971,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
           </div>
         </div>
 
@@ -3007,6 +3013,42 @@ const MODULE_PERMISSIONS = [
       </div>
     </div>
 
+    <!-- ENGINE LOGS — per-conversation view of skipped/replied/errored WhatsApp turns
+         (handleEngineWebhook, worker.js; SETUP.md "Engine event log"). Skip/error rows come from
+         GET /engine/logs (engine_event_log, D1); successful-turn rows are the existing
+         ENGINE_ANALYTICS_TABLE data the Reports → WhatsApp tab already reads — merged server-side
+         into one timeline so this needed no second data source of its own. -->
+    <div class="page hidden" id="pageLogs">
+      <div class="page-pad">
+        <!-- SETTINGS SUB-NAV -->
+        <div class="card" style="margin-bottom:14px;padding:10px 14px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
+          </div>
+        </div>
+        <div class="card-title" style="margin-bottom:14px">🪵 Conversation Logs</div>
+        <div class="s-note" style="margin-bottom:14px">Every WhatsApp turn the bot handled or stayed silent on, most recent first — including the exact reason whenever it didn't reply (rate-limited, duplicate delivery, handed over to a human, etc). Filter by phone number to see one conversation's full history.</div>
+
+        <div class="card" style="margin-bottom:14px">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="text" class="form-input" id="logsPhoneFilter" placeholder="Filter by phone, e.g. 918086222218" style="max-width:280px">
+            <button class="save-btn" onclick="logsInit()">Search</button>
+            <button class="save-btn" onclick="$id('logsPhoneFilter').value='';logsInit()">Clear</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div id="logsContent"><div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div></div>
+        </div>
+      </div>
+    </div>
+
     <!-- BILLING -->
     <div class="page hidden" id="pageBilling">
       <div class="page-pad">
@@ -3018,6 +3060,7 @@ const MODULE_PERMISSIONS = [
             <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">💳 Billing</div>
@@ -4660,13 +4703,13 @@ $id('hLogout').addEventListener('click',()=>{
 $id('hRefresh').addEventListener('click',()=>loadAll());
 
 /* ── NAVIGATION ── */
-const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
+const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
 // Quotation no longer has its own nav entry — it's opened from a specific lead on the Human
 // Deals page (openQuoteFor()) instead, so it highlights that tab rather than nothing at all.
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','settings','channels','integrations','voice','modules','usermanagement','billing'];
+const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','settings','channels','integrations','voice','modules','usermanagement','logs','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -4706,6 +4749,7 @@ function navigate(page){
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
   if(page==='usermanagement') populateUserManagementPage();
+  if(page==='logs') logsInit();
   if(page==='chats') openChatsTab();
   if(page==='channels') channelsInit();
   if(page==='integrations') integrationsInit();
@@ -9336,6 +9380,32 @@ function voiceInit(){
   renderVoiceTtsProviderCard();
   renderVoiceFollowupCard();
   renderPipelineFollowupCard();
+}
+
+// Settings → Logs — merged skipped/replied/errored WhatsApp-turn timeline, see GET /engine/logs
+// (worker.js) for how the two source tables (D1 engine_event_log + NocoDB ENGINE_ANALYTICS_TABLE)
+// get combined server-side.
+async function logsInit(){
+  const el=$id('logsContent');
+  if(!el) return;
+  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
+  const phone=($id('logsPhoneFilter')?.value||'').replace(/[^0-9]/g,'');
+  let d={logs:[]};
+  try{ d=await (await fetch(`${CONFIG.WORKER_BASE}/engine/logs${phone?`?phone=${encodeURIComponent(phone)}`:''}`,{headers:ncAuthHeaders()})).json(); }catch(e){}
+  const logs=d.logs||[];
+  if(!logs.length){ el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">No activity yet'+(phone?' for that number':'')+'.</div>'; return; }
+  const typeStyle={replied:'color:var(--accent);font-weight:700', skipped:'color:var(--muted)', error:'color:var(--red);font-weight:700'};
+  const typeLabel={replied:'✓ Replied', skipped:'⏭ Skipped', error:'✗ Error'};
+  el.innerHTML=`<div style="overflow-x:auto"><table class="leads-tbl" style="width:100%">
+    <thead><tr><th>When</th><th>Phone</th><th>Result</th><th>Reason</th><th>Detail</th></tr></thead>
+    <tbody>${logs.map(l=>`<tr>
+      <td style="white-space:nowrap;font-size:11px">${esc(new Date(l.at).toLocaleString())}</td>
+      <td>${esc(l.phone||'—')}</td>
+      <td style="${typeStyle[l.type]||''}">${typeLabel[l.type]||esc(l.type)}</td>
+      <td>${esc(l.reason||'—')}</td>
+      <td style="font-size:11px;color:var(--muted)">${esc(l.detail||'')}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
 }
 
 // Voice-to-Voice Reply toggle. Deliberately the ONLY gate on this feature — not tied to
