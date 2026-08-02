@@ -9126,6 +9126,11 @@ async function handleAccountingDocumentCreate(request, env){
     status:ACCOUNTING_VALID_STATUS.has(body.status)?body.status:'draft',
     linked_doc_id:body.linked_doc_id?Number(body.linked_doc_id):null,
     notes:String(body.notes||'').trim().slice(0,1000),
+    // customer_name (migration 0035) — a plain label for a walk-in/one-off customer not tied to a
+    // CRM lead, replacing the old ERPNext-only customer picker; erpnext_customer/company/
+    // erpnext_debtors_account stay writable too (still read by the optional ERPNext push) but are
+    // no longer set by the standalone Document modal.
+    customer_name:body.customer_name?String(body.customer_name).trim().slice(0,200):null,
     erpnext_customer:body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null,
     company:body.company?String(body.company).trim().slice(0,140):null,
     erpnext_debtors_account:body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null,
@@ -9133,9 +9138,9 @@ async function handleAccountingDocumentCreate(request, env){
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -9152,6 +9157,7 @@ async function handleAccountingDocumentUpdate(request, env){
   if(body.status!==undefined){ sets.push('status=?'); vals.push(String(body.status)); }
   if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
   if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10)); }
+  if(body.customer_name!==undefined){ sets.push('customer_name=?'); vals.push(body.customer_name?String(body.customer_name).trim().slice(0,200):null); }
   if(body.erpnext_customer!==undefined){ sets.push('erpnext_customer=?'); vals.push(body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null); }
   if(body.company!==undefined){ sets.push('company=?'); vals.push(body.company?String(body.company).trim().slice(0,140):null); }
   if(body.erpnext_debtors_account!==undefined){ sets.push('erpnext_debtors_account=?'); vals.push(body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null); }
@@ -9197,14 +9203,15 @@ async function handleAccountingDocumentConvert(request, env){
     type:toType, title:src.title||'', line_items_json:src.line_items_json||'[]',
     currency:src.currency||'', subtotal:src.subtotal||0, tax_pct:src.tax_pct||0, tax_amount:src.tax_amount||0, total:src.total||0,
     status:'draft', linked_doc_id:src.id, notes:src.notes||'',
+    customer_name:src.customer_name||null,
     erpnext_customer:src.erpnext_customer||null, company:src.company||null, erpnext_debtors_account:src.erpnext_debtors_account||null,
     erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -9733,6 +9740,21 @@ async function handleVendorBillRecordPayment(request, env){
     await reportOpsError(env, 'handleVendorBillRecordPayment — ERPNext payment push failed', e, {clientId:payload.cid, billId:bill.id});
     return json({error:'ERPNext payment failed: '+msg}, 502);
   }
+}
+// Standalone equivalent of handleVendorBillRecordPayment above (migration 0035's paid_at column) —
+// no ERPNext connection required, just marks the bill paid directly. This is the mark-paid action
+// the Vendor Bills tab actually uses now; the ERPNext-pushed version stays available for anyone who
+// still wants a real Payment Entry posted to a connected site.
+async function handleVendorBillMarkPaid(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const now=new Date().toISOString();
+  await env.DB.prepare(`UPDATE accounting_vendor_bills SET status='paid', paid_at=? WHERE id=?`).bind(now, bill.id).run();
+  return json({ok:true, paid_at:now});
 }
 
 /* ── RECRUITMENT MODULE (frontend/dashboard.html — 💼 Recruit tab, migrations/0032_recruitment.sql)
@@ -14872,6 +14894,7 @@ export default {
       else if(url.pathname==='/accounting/vendor-bills/sync-erpnext' && request.method==='POST'){ res=await handleVendorBillSyncErpnext(request, env); }
       else if(url.pathname==='/accounting/vendor-bills/submit-erpnext' && request.method==='POST'){ res=await handleVendorBillSubmitErpnext(request, env); }
       else if(url.pathname==='/accounting/vendor-bills/record-payment' && request.method==='POST'){ res=await handleVendorBillRecordPayment(request, env); }
+      else if(url.pathname==='/accounting/vendor-bills/mark-paid' && request.method==='POST'){ res=await handleVendorBillMarkPaid(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='GET'){ res=await handleFpCustomersList(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='POST'){ res=await handleFpCustomerCreate(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='PATCH'){ res=await handleFpCustomerUpdate(request, env); }
