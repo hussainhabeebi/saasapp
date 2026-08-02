@@ -180,17 +180,46 @@ tbody tr:hover{background:var(--bg)}
       <div id="fpSubDashboard" class="fp-sub active">
         <div class="card" id="fpDashLoading"><span class="spinner"></span>Loading dashboard…</div>
         <div id="fpDashContent" style="display:none">
+          <!-- AI BUSINESS SNAPSHOT — one auto-written plain-English paragraph, cached per calendar
+               month (worker.js fpAiGetOrRefreshSnapshot) so it doesn't re-call the AI on every
+               dashboard load. -->
+          <div class="card">
+            <div class="card-title-row">
+              <div class="card-title">🤖 Your Business, in Plain English</div>
+              <div class="card-actions"><button class="save-btn sec" id="fpAiSnapshotRegenBtn" onclick="regenerateAiSnapshot()" style="padding:6px 12px;font-size:12px">🔄 Regenerate</button></div>
+            </div>
+            <div id="fpAiSnapshotText" style="font-size:14px;line-height:1.6;color:var(--ink)">Loading…</div>
+          </div>
+          <!-- ASK YOUR BOOKS — natural-language Q&A answered only from this account's own real
+               numbers (worker.js handleFpAiAsk computes the data server-side and hands it to the
+               model as its entire universe of facts, so it can't invent an answer). -->
+          <div class="card">
+            <div class="card-title">💬 Ask Your Books</div>
+            <div class="s-hint" style="margin-bottom:10px">Ask in plain English — e.g. "How much do I owe in bills?" or "Am I making money this month?"</div>
+            <div style="display:flex;gap:8px">
+              <input class="s-input" id="fpAskInput" placeholder="Ask a question about your business…" onkeydown="if(event.key==='Enter')askYourBooks()">
+              <button class="save-btn" onclick="askYourBooks()" style="flex-shrink:0">Ask</button>
+            </div>
+            <div id="fpAskAnswer" style="margin-top:12px;font-size:14px;line-height:1.6"></div>
+          </div>
           <div class="card">
             <div class="card-title" id="fpDashPeriodLabel">This Month</div>
             <div class="stat-grid">
               <div class="stat-card"><div class="stat-lbl">Expected</div><div class="stat-val" id="fpStatExpected">—</div></div>
               <div class="stat-card"><div class="stat-lbl">Collected</div><div class="stat-val" id="fpStatCollected">—</div><div class="stat-sub" id="fpStatPct"></div></div>
               <div class="stat-card"><div class="stat-lbl">Total Expenses</div><div class="stat-val" id="fpStatExpenses">—</div><div class="stat-sub" id="fpStatExpensesSplit"></div></div>
-              <div class="stat-card"><div class="stat-lbl">Net Position</div><div class="stat-val" id="fpStatNet">—</div><div class="stat-sub">Collected − Expenses</div></div>
+              <div class="stat-card"><div class="stat-lbl">Profit</div><div class="stat-val" id="fpStatNet">—</div><div class="stat-sub">Collected − Expenses</div></div>
+              <div class="stat-card" id="fpStatTaxCard" style="display:none"><div class="stat-lbl">Consider Setting Aside for Tax</div><div class="stat-val" id="fpStatTax">—</div><div class="stat-sub">Estimate only — not filing advice</div></div>
             </div>
           </div>
+          <!-- CASH FLOW FORECAST — plain-English outlook built from open Expected Funds due before
+               month end + still-unbooked fixed expenses (worker.js fpAiComputeForecastData). -->
           <div class="card">
-            <div class="card-title">Aging — Outstanding Receivables by Days Overdue</div>
+            <div class="card-title">📈 Cash Flow Outlook (Rest of This Month)</div>
+            <div id="fpForecastText" style="font-size:14px;line-height:1.6;color:var(--ink)">Loading…</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Money Owed to You — How Overdue</div>
             <div class="aging-grid" id="fpAgingGrid"></div>
           </div>
           <div class="card">
@@ -199,7 +228,7 @@ tbody tr:hover{background:var(--bg)}
           </div>
           <div class="card">
             <div class="card-title-row">
-              <div class="card-title">Outstanding Receivables</div>
+              <div class="card-title">Money Owed to You</div>
               <div class="card-actions">
                 <select class="s-input" id="fpOutstandingSort" style="width:auto" onchange="renderFpOutstanding()">
                   <option value="overdue_days">Sort: Most overdue first</option>
@@ -210,7 +239,7 @@ tbody tr:hover{background:var(--bg)}
             </div>
             <div class="tbl-wrap">
               <table>
-                <thead><tr><th>Customer</th><th>Period</th><th>Due Date</th><th>Amount</th><th>Collected</th><th>Balance</th><th>Overdue</th><th>Aging</th></tr></thead>
+                <thead><tr><th>Customer</th><th>Period</th><th>Due Date</th><th>Amount</th><th>Collected</th><th>Balance</th><th>Overdue</th><th>How Overdue</th><th>Actions</th></tr></thead>
                 <tbody id="fpOutstandingTbody"></tbody>
               </table>
             </div>
@@ -265,6 +294,20 @@ tbody tr:hover{background:var(--bg)}
 
       <!-- EXPENSES -->
       <div id="fpSubExpenses" class="fp-sub">
+        <!-- AI QUICK ADD — Snap & Save (photo of a receipt) and Type-it-in (a plain sentence),
+             both parsed by worker.js's /financial/ai/parse-expense and handed to the One-time
+             Expense modal as a draft for the owner to review and save — never auto-saved from
+             here, so a misread amount can't slip straight into the books. -->
+        <div class="card">
+          <div class="card-title">🤖 AI Quick Add</div>
+          <div class="s-hint" style="margin-bottom:10px">Describe an expense in plain English, or snap a photo of a receipt — either way it'll pre-fill the form below for you to check and save.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input class="s-input" id="fpAiQuickAddText" placeholder="e.g. paid 3500 for electricity yesterday" style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')aiQuickAddFromText()">
+            <button class="save-btn" onclick="aiQuickAddFromText()">✨ Add with AI</button>
+            <label class="save-btn sec" style="cursor:pointer;margin:0">📸 Snap a Receipt<input type="file" accept="image/*" capture="environment" id="fpAiQuickAddPhoto" style="display:none" onchange="aiQuickAddFromPhoto(this)"></label>
+          </div>
+          <div class="save-msg" id="fpAiQuickAddMsg" style="margin-top:8px"></div>
+        </div>
         <div class="card">
           <div class="card-title-row">
             <div class="card-title">Fixed Recurring Expenses</div>
@@ -305,7 +348,13 @@ tbody tr:hover{background:var(--bg)}
           <div class="card-title">⚙️ Financial Planning Settings</div>
           <div class="toggle-row"><input type="checkbox" id="fpCfgEnabled"><label class="s-lbl" style="margin:0">Enabled — generate Expected Funds &amp; fixed expenses automatically on the 1st of each month</label></div>
           <div class="toggle-row"><input type="checkbox" id="fpCfgRemindersEnabled"><label class="s-lbl" style="margin:0">Send WhatsApp reminders for overdue Expected Funds (via Chatwoot)</label></div>
-          <div class="card-title" style="margin-top:10px">Razorpay (optional)</div>
+          <div class="card-title" style="margin-top:10px">🤖 AI Bookkeeping via WhatsApp (optional)</div>
+          <div class="s-hint" style="margin-bottom:10px">Add your own phone number(s) here to text your books directly — e.g. "spent 2000 on fuel", a voice note, or a photo of a receipt, sent to this same WhatsApp number. Messages from these numbers are handled as bookkeeping, not as customer leads. One per line or comma-separated.</div>
+          <textarea class="s-input" id="fpCfgAdminPhones" rows="2" placeholder="e.g. +971501234567" style="resize:vertical"></textarea>
+          <div class="card-title" style="margin-top:14px">Tax Set-Aside Estimate (optional)</div>
+          <div class="s-hint" style="margin-bottom:10px">Shows a rough "set aside ~X" nudge on the Dashboard whenever you're in profit for the month — a simple estimate, not tax or filing advice.</div>
+          <div style="max-width:220px"><label class="s-lbl">Set aside this % of profit</label><input class="s-input" id="fpCfgTaxReservePct" type="number" min="0" max="100" placeholder="e.g. 15"></div>
+          <div class="card-title" style="margin-top:14px">Razorpay (optional)</div>
           <div class="s-hint" style="margin-bottom:14px">Connect Razorpay to auto-record collections from webhook events (payment.captured / payment_link.paid). Pass <code>fp_customer_id</code> (and optionally <code>fp_expected_due_id</code>) in the payment's Notes so the webhook knows which customer to credit.</div>
           <div class="modal-grid" style="margin-bottom:0">
             <div><label class="s-lbl">Key ID</label><input class="s-input" id="fpCfgRzpKeyId" placeholder="rzp_live_…"></div>
@@ -447,7 +496,7 @@ tbody tr:hover{background:var(--bg)}
     <div class="modal-grid">
       <div><label class="s-lbl">Supplier</label><input class="s-input" id="vbSupplier" placeholder="e.g. AWS, Landlord"></div>
       <div><label class="s-lbl">Vendor's Invoice/Ref #</label><input class="s-input" id="vbVendorInvoiceNo" placeholder="Their own bill number"></div>
-      <div><label class="s-lbl">Payable Account (optional)</label><input class="s-input" id="vbPayableAccount" placeholder="e.g. Accounts Payable"></div>
+      <div><label class="s-lbl">Account (optional)</label><input class="s-input" id="vbPayableAccount" placeholder="e.g. Accounts Payable"></div>
       <div><label class="s-lbl">Currency</label><input class="s-input" id="vbCurrency" placeholder="e.g. AED" value="AED"></div>
       <div><label class="s-lbl">Bill Date</label><input class="s-input" id="vbBillDate" type="date"></div>
       <div><label class="s-lbl">Due Date (optional)</label><input class="s-input" id="vbDueDate" type="date"></div>
@@ -774,6 +823,60 @@ function renderFinancialPlanning(){
   renderFpExpenseTemplatesTable();
   renderFpExpensesTable();
   renderFpConfigForm();
+  loadAiSnapshot();
+  loadAiForecast();
+}
+
+/* ── AI Business Snapshot ── */
+async function loadAiSnapshot(){
+  const el=document.getElementById('fpAiSnapshotText');
+  try{
+    const data=await acctFetch('/financial/ai/snapshot',{method:'GET'});
+    el.textContent=data.snapshot||data.error||'Not enough data yet to summarize.';
+  }catch(e){ el.textContent="Couldn't load your snapshot: "+e.message; }
+}
+async function regenerateAiSnapshot(){
+  const el=document.getElementById('fpAiSnapshotText');
+  const btn=document.getElementById('fpAiSnapshotRegenBtn');
+  el.textContent='Thinking…'; btn.disabled=true;
+  try{
+    const data=await acctFetch('/financial/ai/snapshot/regenerate',{method:'POST'});
+    el.textContent=data.snapshot||data.error||'Not enough data yet to summarize.';
+  }catch(e){ el.textContent="Couldn't regenerate: "+e.message; }
+  finally{ btn.disabled=false; }
+}
+
+/* ── Ask Your Books ── */
+async function askYourBooks(){
+  const input=document.getElementById('fpAskInput');
+  const question=input.value.trim();
+  if(!question) return;
+  const answerEl=document.getElementById('fpAskAnswer');
+  answerEl.textContent='Thinking…';
+  try{
+    const data=await acctFetch('/financial/ai/ask',{method:'POST',body:JSON.stringify({question})});
+    answerEl.textContent=data.answer||data.error||"Couldn't find an answer.";
+  }catch(e){ answerEl.textContent='Error: '+e.message; }
+}
+
+/* ── Cash Flow Forecast ── */
+async function loadAiForecast(){
+  const el=document.getElementById('fpForecastText');
+  try{
+    const data=await acctFetch('/financial/ai/forecast',{method:'GET'});
+    el.textContent=data.forecast||data.error||'Not enough data yet to forecast.';
+  }catch(e){ el.textContent="Couldn't load forecast: "+e.message; }
+}
+
+/* ── AI-drafted reminder for one overdue customer — a preview to copy/send yourself; the
+   automatic overdue sweep (fpSendRemindersForClient) already sends this same kind of
+   AI-drafted message via WhatsApp on its own schedule, so this button is for chasing one
+   customer right now rather than waiting for that sweep. ── */
+async function draftReminderForDue(dueId){
+  try{
+    const {draft}=await acctFetch('/financial/ai/draft-reminder',{method:'POST',body:JSON.stringify({due_id:dueId})});
+    prompt('AI-drafted reminder — copy and send it however you\'d like (WhatsApp, SMS, email):', draft||'');
+  }catch(e){ alert('Failed to draft reminder: '+e.message); }
 }
 
 /* ── Dashboard ── */
@@ -797,6 +900,10 @@ function renderFpDashboard(){
   netEl.textContent=fmtMoney(d.net_position,d.currency);
   netEl.style.color=d.net_position<0?'#DC2626':'var(--ink)';
 
+  const taxCard=document.getElementById('fpStatTaxCard');
+  if(d.estimated_tax_set_aside!=null){ taxCard.style.display='block'; document.getElementById('fpStatTax').textContent=fmtMoney(d.estimated_tax_set_aside,d.currency); }
+  else{ taxCard.style.display='none'; }
+
   document.getElementById('fpAgingGrid').innerHTML=(d.aging_buckets||[]).map(b=>`
     <div class="aging-cell"><div class="k">${esc(b.key)} days</div><div class="c">${b.count}</div><div class="a">${fmtMoney(b.amount,d.currency)}</div></div>
   `).join('');
@@ -812,7 +919,7 @@ function renderFpOutstanding(){
   else if(sortBy==='balance') rows.sort((a,b)=>b.balance-a.balance);
   else rows.sort((a,b)=>b.overdue_days-a.overdue_days);
   const tbody=document.getElementById('fpOutstandingTbody');
-  if(!rows.length){ tbody.innerHTML='<tr><td colspan="8" class="empty-state">No outstanding receivables — everything is collected.</td></tr>'; return; }
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="9" class="empty-state">Nothing owed to you right now — everything is collected.</td></tr>'; return; }
   tbody.innerHTML=rows.map(r=>`<tr>
     <td>${esc(r.customer_name)}</td>
     <td>${esc(r.period_key)}</td>
@@ -822,6 +929,7 @@ function renderFpOutstanding(){
     <td>${fmtMoney(r.balance,r.currency)}</td>
     <td>${r.overdue_days>0?r.overdue_days+'d':'—'}</td>
     <td>${r.aging_bucket?`<span class="badge">${esc(r.aging_bucket)}</span>`:'—'}</td>
+    <td><button class="icon-btn" title="AI-draft a reminder" onclick="draftReminderForDue(${r.Id})">✨ Draft reminder</button></td>
   </tr>`).join('');
 }
 function renderFpTrendChart(){
@@ -1086,23 +1194,54 @@ function renderFpExpensesTable(){
   tbody.innerHTML=rows.map(e=>`<tr>
     <td>${esc(e.expense_date)}</td>
     <td>${esc(e.name)}</td>
-    <td>${esc(e.category)}</td>
+    <td>${esc(e.category)}${e.is_unusual?` <span class="badge failed" title="Well above your usual ${fmtMoney(e.category_avg,e.currency)} for this category">⚠ unusual</span>`:''}</td>
     <td>${esc(e.type)}</td>
     <td>${fmtMoney(e.amount,e.currency)}</td>
     <td class="row-actions">${e.type==='onetime'?`<button class="icon-btn danger" title="Delete" onclick="deleteFpExpense(${e.Id})">🗑</button>`:''}</td>
   </tr>`).join('');
 }
-function openFpOnetimeExpenseModal(){
-  document.getElementById('fpOtName').value='';
-  document.getElementById('fpOtCategory').value='';
-  document.getElementById('fpOtAmount').value='';
-  document.getElementById('fpOtCurrency').value='INR';
-  document.getElementById('fpOtDate').value=new Date().toISOString().slice(0,10);
-  document.getElementById('fpOtNotes').value='';
+function openFpOnetimeExpenseModal(prefill){
+  document.getElementById('fpOtName').value=prefill?.name||'';
+  document.getElementById('fpOtCategory').value=prefill?.category||'';
+  document.getElementById('fpOtAmount').value=prefill?.amount||'';
+  document.getElementById('fpOtCurrency').value=prefill?.currency||'INR';
+  document.getElementById('fpOtDate').value=prefill?.expense_date||new Date().toISOString().slice(0,10);
+  document.getElementById('fpOtNotes').value=prefill?.vendor?`Vendor: ${prefill.vendor}`:'';
   document.getElementById('fpOtSaveMsg').textContent='';
   document.getElementById('fpOnetimeExpenseModal').classList.add('active');
 }
 function closeFpOnetimeExpenseModal(){ document.getElementById('fpOnetimeExpenseModal').classList.remove('active'); }
+
+/* ── AI Quick Add — Snap & Save / Type-it-in, both feed openFpOnetimeExpenseModal's prefill ── */
+async function aiQuickAddFromText(){
+  const input=document.getElementById('fpAiQuickAddText');
+  const text=input.value.trim();
+  const msg=document.getElementById('fpAiQuickAddMsg');
+  if(!text) return;
+  msg.textContent='✨ Reading that…'; msg.className='save-msg';
+  try{
+    const {parsed}=await acctFetch('/financial/ai/parse-expense',{method:'POST',body:JSON.stringify({text})});
+    input.value=''; msg.textContent='';
+    openFpOnetimeExpenseModal(parsed);
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function aiQuickAddFromPhoto(fileInput){
+  const file=fileInput.files?.[0];
+  if(!file) return;
+  const msg=document.getElementById('fpAiQuickAddMsg');
+  msg.textContent='✨ Reading the receipt…'; msg.className='save-msg';
+  try{
+    const imageBase64=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(String(reader.result).split(',')[1]||'');
+      reader.onerror=reject;
+      reader.readAsDataURL(file);
+    });
+    const {parsed}=await acctFetch('/financial/ai/parse-expense',{method:'POST',body:JSON.stringify({imageBase64, mimeType:file.type})});
+    fileInput.value=''; msg.textContent='';
+    openFpOnetimeExpenseModal(parsed);
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
 async function saveFpOnetimeExpense(){
   const msg=document.getElementById('fpOtSaveMsg');
   const name=document.getElementById('fpOtName').value.trim();
@@ -1135,6 +1274,8 @@ function renderFpConfigForm(){
   if(!fpConfig) return;
   document.getElementById('fpCfgEnabled').checked=!!fpConfig.enabled;
   document.getElementById('fpCfgRemindersEnabled').checked=!!fpConfig.reminders_enabled;
+  document.getElementById('fpCfgAdminPhones').value=(fpConfig.admin_phone_numbers||[]).join('\n');
+  document.getElementById('fpCfgTaxReservePct').value=fpConfig.tax_reserve_pct??'';
   document.getElementById('fpCfgRzpKeyId').value=fpConfig.razorpay_key_id||'';
   document.getElementById('fpCfgRzpKeySecret').value=fpConfig.razorpay_key_secret||'';
   document.getElementById('fpCfgRzpWebhookSecret').value=fpConfig.razorpay_webhook_secret||'';
@@ -1146,9 +1287,12 @@ async function saveFpConfig(){
   // per-client secrets) — so an untouched, blank field here means "leave it as-is", not "clear it".
   // Only include it (and the webhook secret, for the same reason) in the PATCH when the field
   // actually has something typed into it, so re-saving the toggles above can never wipe it out.
+  const taxPct=document.getElementById('fpCfgTaxReservePct').value.trim();
   const body={
     enabled:document.getElementById('fpCfgEnabled').checked,
     reminders_enabled:document.getElementById('fpCfgRemindersEnabled').checked,
+    admin_phone_numbers:document.getElementById('fpCfgAdminPhones').value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean),
+    tax_reserve_pct:taxPct===''?null:Number(taxPct),
     razorpay_key_id:document.getElementById('fpCfgRzpKeyId').value.trim(),
   };
   const keySecret=document.getElementById('fpCfgRzpKeySecret').value.trim();
@@ -1157,6 +1301,7 @@ async function saveFpConfig(){
   if(webhookSecret) body.razorpay_webhook_secret=webhookSecret;
   try{
     fpConfig=await acctFetch('/financial/config',{method:'PATCH',body:JSON.stringify(body)});
+    renderFpConfigForm();
     msg.textContent='✓ Saved'; msg.className='save-msg';
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
   setTimeout(()=>msg.textContent='',3000);
