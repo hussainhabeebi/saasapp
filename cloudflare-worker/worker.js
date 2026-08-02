@@ -8331,6 +8331,9 @@ async function handleEngineWebhook(request, env, secret){
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
     }
+    if(resolvedLeadId){
+      await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'whatsapp', at:new Date().toISOString()});
+    }
     // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
     // this function) because a brand-new lead has no real id until this exact upsert assigns one.
     // INSERT OR IGNORE: referred_lead_id is UNIQUE (migrations/0001_reviews_referrals.sql), so a
@@ -8548,6 +8551,9 @@ async function handleInstagramWebhook(request, env){
       const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
       if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
         await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
+      }
+      if(resolvedLeadId){
+        await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'instagram', at:new Date().toISOString()});
       }
       // Same NocoDB schema-cache-lag race ncPatchVerified guards against on the CLIENTS table
       // (see handleInstagramOauthCallback) — IgId/Channel may have been auto-created by
@@ -14249,6 +14255,64 @@ async function handleReAnalytics(request, env){
   });
 }
 
+/* ── Real-time dashboard updates (SETUP.md "Real-time dashboard updates") ──
+   Before this, a new inbound WhatsApp/Instagram message only ever reached an open dashboard tab
+   via dashboard.html's 60s loadAll() poll — up to a minute of dead air on something that just
+   happened. One Durable Object instance per client (idFromName(clientId), see
+   handleEngineLiveSocket/engineBroadcastUpdate below) holds that client's currently-connected
+   dashboard WebSockets and fans a small JSON event out to all of them the moment
+   handleEngineWebhook finishes processing a real inbound message — dashboard.html's own
+   connectLiveUpdates() reacts by force-refreshing leads and, if the Chats tab is open, the
+   contact list/open thread. Uses the Hibernatable WebSockets API (state.acceptWebSocket/
+   getWebSockets) rather than holding sockets in a plain in-memory field, so an idle DO with open
+   connections isn't billed as continuously active. Push-only — the dashboard never sends
+   anything meaningful back, so webSocketMessage is a no-op. */
+export class ClientUpdatesHub{
+  constructor(state, env){ this.state=state; this.env=env; }
+  async fetch(request){
+    const url=new URL(request.url);
+    if(request.method==='POST' && url.pathname==='/broadcast'){
+      const body=await request.text();
+      for(const ws of this.state.getWebSockets()){
+        try{ ws.send(body); }catch(e){}
+      }
+      return new Response('ok');
+    }
+    if(request.headers.get('Upgrade')==='websocket'){
+      const pair=new WebSocketPair();
+      const [client, server]=Object.values(pair);
+      this.state.acceptWebSocket(server);
+      return new Response(null, {status:101, webSocket:client});
+    }
+    return new Response('Not found', {status:404});
+  }
+  async webSocketMessage(ws, message){}
+  async webSocketClose(ws, code, reason, wasClean){ try{ ws.close(code, reason); }catch(e){} }
+  async webSocketError(ws, error){}
+}
+// Query-param token (not an Authorization header — browsers can't set custom headers on a
+// WebSocket handshake) verified with the exact same verifySession used everywhere else; this is
+// just a different transport for the same session token, not a separate auth scheme.
+async function handleEngineLiveSocket(request, env){
+  if(!env.CLIENT_UPDATES) return new Response('Real-time updates are not configured on this Worker', {status:501});
+  const url=new URL(request.url);
+  const payload=await verifySession(env, url.searchParams.get('token')||'');
+  if(!payload) return new Response('Invalid or expired session', {status:401});
+  if(request.headers.get('Upgrade')!=='websocket') return new Response('Expected websocket', {status:426});
+  const id=env.CLIENT_UPDATES.idFromName(String(payload.cid));
+  return env.CLIENT_UPDATES.get(id).fetch(request);
+}
+// Best-effort/fail-open, same reasoning as engineSendChatwootTyping — this is a UX nicety on top
+// of the 60s poll dashboard.html still falls back to, never something a real reply should be
+// blocked by.
+async function engineBroadcastUpdate(env, clientId, eventObj){
+  if(!env.CLIENT_UPDATES) return;
+  try{
+    const id=env.CLIENT_UPDATES.idFromName(String(clientId));
+    await env.CLIENT_UPDATES.get(id).fetch('https://internal/broadcast', {method:'POST', body:JSON.stringify(eventObj)});
+  }catch(e){}
+}
+
 export default {
   async fetch(request, env){
     const url=new URL(request.url);
@@ -14256,6 +14320,11 @@ export default {
     const cors=corsHeaders(origin, env);
 
     if(request.method==='OPTIONS') return new Response(null, {status:204, headers:cors});
+
+    // Returned as-is, not through the generic res.body/headers reconstruction at the bottom of
+    // this function — that rebuild drops the special `webSocket` pairing a 101 response carries,
+    // which would silently break the upgrade instead of erroring.
+    if(url.pathname==='/engine/live') return handleEngineLiveSocket(request, env);
 
     const rlRule=RATE_LIMIT_RULES.find(r=>r.test(url.pathname, request.method));
     if(rlRule){

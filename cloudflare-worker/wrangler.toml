@@ -74,6 +74,20 @@ bucket_name = "leadvyne-ecom-category-media"
 binding = "MARKETING_MEDIA"
 bucket_name = "leadvyne-marketing-media"
 
+# Durable Object — one instance per client (idFromName(clientId) in worker.js), holding that
+# client's currently-connected dashboard WebSockets so a new inbound message can push straight to
+# an open tab instead of waiting for the next 60s poll (SETUP.md "Real-time dashboard updates").
+# See ClientUpdatesHub/handleEngineLiveSocket/engineBroadcastUpdate in worker.js. One-time setup:
+# just `wrangler deploy` — Durable Object migrations (below) apply automatically, no separate
+# `wrangler d1`-style create/paste-id step like the bindings above.
+[[durable_objects.bindings]]
+name = "CLIENT_UPDATES"
+class_name = "ClientUpdatesHub"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ClientUpdatesHub"]
+
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
 [vars]

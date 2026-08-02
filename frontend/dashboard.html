@@ -4483,6 +4483,7 @@ const MODULE_PERMISSIONS = [
 
 /* ── STATE ── */
 let clientId = null, clientRecord = null, refreshTimer = null;
+let _liveSocket = null, _liveReconnectTimer = null;
 // lv_cid/lv_session/lv_me_email deliberately live in localStorage, not sessionStorage — closing a
 // tab/browser used to wipe sessionStorage entirely, forcing a fresh Authentik login far more often
 // than the session token's own TTL ever would (the real cause of "have to log in again constantly"
@@ -4747,6 +4748,7 @@ $id('hLogout').addEventListener('click',()=>{
   clearInterval(refreshTimer);
   clearInterval(_notifTimer);
   clearInterval(_reminderTimer);
+  disconnectLiveUpdates();
   if(leadsChart){leadsChart.destroy();leadsChart=null;}
   const notifBell=$id('notifBell');if(notifBell)notifBell.style.display='none';
   $id('app').classList.remove('show');
@@ -4874,6 +4876,7 @@ function showApp(){
   updateMarketingStudioVisibility();
   applyUserModulePermissions();
   loadAll();
+  connectLiveUpdates();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(loadAll,60000);
   setTimeout(pollNotifications,3000);
@@ -4931,7 +4934,7 @@ function showApp(){
 const _CACHE_KEY=()=>`lv_leads_${clientId}`;
 const _CACHE_TTL=300000; // 5 min
 
-async function loadAll(silent=false){
+async function loadAll(silent=false, force=false){
   // 1. Render from cache instantly if available
   try{
     const cached=sessionStorage.getItem(_CACHE_KEY());
@@ -4941,8 +4944,10 @@ async function loadAll(silent=false){
         allLeads=list;
         renderHome();
         if(!silent) $id('hUpdated').textContent='Cached · '+new Date(ts).toLocaleTimeString();
-        // If cache is fresh enough, skip network fetch
-        if(Date.now()-ts < _CACHE_TTL){ return; }
+        // If cache is fresh enough, skip network fetch — unless force is set (a live-update event
+        // just told us something genuinely changed, so a 5-minute-old cache isn't good enough here
+        // even though it normally would be for the plain 60s poll).
+        if(!force && Date.now()-ts < _CACHE_TTL){ return; }
       }
     }
   }catch(e){}
@@ -4955,6 +4960,51 @@ async function loadAll(silent=false){
     renderHome();
     $id('hUpdated').textContent='Updated '+new Date().toLocaleTimeString();
   }catch(e){console.error(e);}
+}
+
+/* ── REAL-TIME UPDATES ──
+   Cloudflare Worker-side: cloudflare-worker/worker.js's ClientUpdatesHub Durable Object +
+   engineBroadcastUpdate, fired the moment handleEngineWebhook finishes processing a real inbound
+   WhatsApp/Instagram message. Without this, a new message only ever reached this tab via the 60s
+   loadAll() poll above — up to a minute of dead air on something that just happened. This is
+   additive, not a replacement: the 60s poll and the 5-minute sessionStorage cache both stay
+   exactly as they were as the fallback if the socket is closed/reconnecting for any reason. */
+function connectLiveUpdates(){
+  if(!clientId||!sessionToken) return;
+  clearTimeout(_liveReconnectTimer);
+  try{ _liveSocket?.close(); }catch(e){}
+  const wsBase=CONFIG.WORKER_BASE.replace(/^http/,'ws');
+  _liveSocket=new WebSocket(`${wsBase}/engine/live?token=${encodeURIComponent(sessionToken)}`);
+  _liveSocket.onmessage=(ev)=>{
+    let msg=null;
+    try{ msg=JSON.parse(ev.data); }catch(e){ return; }
+    if(msg?.type==='message') onLiveMessageEvent(msg);
+  };
+  // Reconnects on any close (server restart, idle Worker recycle, network blip) as long as the
+  // app is still actually open — checked at fire time, not just at schedule time, so a logout in
+  // the meantime doesn't spawn a socket back into a signed-out session.
+  _liveSocket.onclose=()=>{
+    _liveReconnectTimer=setTimeout(()=>{ if($id('app').classList.contains('show')) connectLiveUpdates(); }, 5000);
+  };
+  _liveSocket.onerror=()=>{ try{ _liveSocket.close(); }catch(e){} };
+}
+function disconnectLiveUpdates(){
+  clearTimeout(_liveReconnectTimer);
+  try{ _liveSocket?.close(); }catch(e){}
+  _liveSocket=null;
+}
+async function onLiveMessageEvent(msg){
+  // Awaited (not fire-and-forget) — renderChatContacts()/chatSelectLead() below read straight
+  // from the allLeads global loadAll refreshes, so they'd otherwise run against the stale copy
+  // from before this event.
+  await loadAll(true, true);
+  // Chats tab has no other live-refresh path at all (unlike Home, its contact list/open thread
+  // are never touched by the 60s poll either) — only worth the extra render work while it's
+  // actually the visible page.
+  if(!$id('pageChats').classList.contains('hidden')){
+    renderChatContacts();
+    if(_chatLeadId && _chatLeadId===msg.lead_id) chatSelectLead(_chatLeadId);
+  }
 }
 
 /* ── HOME ── */
