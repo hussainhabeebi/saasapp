@@ -86,7 +86,13 @@ class_name = "ClientUpdatesHub"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["ClientUpdatesHub"]
+# SQLite-backed storage (not the classic `new_classes`) — required to create a Durable Object
+# namespace at all on a Workers free/paid-non-Enterprise plan (confirmed live: `wrangler deploy`
+# fails with error code 10097, "you must create a namespace using a `new_sqlite_classes`
+# migration", otherwise). ClientUpdatesHub never actually touches `this.state.storage` itself
+# (webSocketMessage/webSocketClose are no-ops, see worker.js) — the Hibernatable WebSockets API
+# still needs SOME storage backend attached to the namespace, so this is required regardless.
+new_sqlite_classes = ["ClientUpdatesHub"]
 
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
