@@ -6733,3 +6733,33 @@ dashboard):**
   request that *does* reach the Worker still spends real money on whichever paid API it calls
   (`STRIPE_SECRET_KEY`, `GEMINI_API_KEY`, `RESEND_API_KEY`, `SARVAM_API_KEY`, …), so a "cost DoS"
   is a separate risk from downtime and isn't mitigated by anything above.
+
+## Engine event log (`frontend/dashboard.html` — Settings → 🪵 Logs, `cloudflare-worker/worker.js`)
+
+`handleEngineWebhook` has always had ~12 silent "skip" conditions (rate-limited, duplicate
+delivery, handed over to a human, opted out, missing OpenRouter key, etc) that return `{ok:true,
+skipped:'<reason>'}` and go no further — correct behavior, but previously invisible outside raw
+Cloudflare Worker logs (account-level access only, not scoped per client, and easy to mistake for
+"the bot is broken" when it's actually working as designed). This surfaces that reasoning directly
+in the dashboard.
+
+- **`migrations/0031_engine_event_log.sql`** — new D1 table `engine_event_log` (client_id, phone,
+  conv_id, reason, detail, created_at). Sidecar data with no other reader, same rationale as every
+  other D1 table in this repo.
+- **`logEngineSkip(env, clientId, phone, convId, reason, detail)`** (worker.js, next to the DDoS
+  rate-limit helpers) — best-effort, fail-open insert, called right before each of
+  `handleEngineWebhook`'s existing skip `return`s (client-inactive, engine-disabled-client,
+  account-mismatch, duplicate-delivery-fast, not-actionable, test-mode, no-openrouter-key,
+  duplicate-delivery, handed-over, opted-out, rate-limited) and once more from the catch block for
+  `internal-error`. Purely additive — none of the actual skip logic, return values, or control flow
+  changed; logging can never affect whether or how the bot replies. Swept daily (30-day retention),
+  piggybacked on the existing 2am cron like every other daily sweep in `scheduled()`.
+- **`GET /engine/logs`** (session-gated, optional `?phone=` filter) — merges `engine_event_log`
+  with the *successful*-turn rows already sitting in `ENGINE_ANALYTICS_TABLE` (NocoDB,
+  `engineLogAnalytics`, pre-existing — the same data the Reports → 💬 WhatsApp tab reads) into one
+  timeline sorted newest-first. No new writer needed for the "replied" half; this is additive on
+  the read side only.
+- **Settings → 🪵 Logs** — new sub-tab alongside General/Channels/Integrations/Voice/Modules (same
+  `settings-subnav-btn` pattern, added to `SETTINGS_GROUP`/`MORE_GROUP`). A phone-number filter box
+  plus a table of When/Phone/Result/Reason/Detail, `logsInit()` calling the endpoint above. Result
+  is color-coded: ✓ Replied / ⏭ Skipped / ✗ Error.
