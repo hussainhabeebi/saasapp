@@ -1,4 +1,4 @@
-const CACHE = 'lv-v4';
+const CACHE = 'lv-v5';
 const OFFLINE_URL = '/offline.html';
 // Shared across every page on every domain this file is served from (app.leadvyne.com,
 // leadvyne.com, onshope.com — same physical file, isolated per-origin by the browser).
@@ -29,9 +29,6 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return; // form submits/API writes always go straight to network
-  const url = new URL(e.request.url);
-  // Never cache NocoDB/API calls — always go network
-  if (url.hostname.includes('aiingo.com') || url.hostname.includes('nocodb')) return;
 
   if (e.request.mode === 'navigate') {
     // Network-first so a page always reflects the latest deploy when online; caches the response
@@ -49,9 +46,15 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Cache-first for everything else (scripts, styles, fonts, icons) — caches on first fetch so
-  // later offline visits to a page have its dependencies already saved, no per-page asset list
-  // to maintain by hand.
+  // Only cache actual static resources (scripts, styles, fonts, images) — never data calls.
+  // Every API call in this app (leads, messages, conversations — all through
+  // leadvyne-api-proxy.leadvyne.workers.dev and similar) is a JS fetch()/XHR, which reports an
+  // empty `destination`, so it falls straight through to the network here instead of ever being
+  // cached. Caching those was what made messages show stale/delayed while online and diverge
+  // between devices — each device would freeze on whatever response it happened to cache first.
+  if (!['script', 'style', 'font', 'image'].includes(e.request.destination)) return;
+
+  // Cache-first, caching on first fetch — no per-page asset list to maintain by hand.
   e.respondWith(
     caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
       const copy = res.clone();
