@@ -6763,3 +6763,39 @@ in the dashboard.
   `settings-subnav-btn` pattern, added to `SETTINGS_GROUP`/`MORE_GROUP`). A phone-number filter box
   plus a table of When/Phone/Result/Reason/Detail, `logsInit()` calling the endpoint above. Result
   is color-coded: ✓ Replied / ⏭ Skipped / ✗ Error.
+
+## Recruitment & Consultancy module (`frontend/dashboard.html` — 💼 Recruit tab) — rebuilt on D1
+
+Previously the odd one out among the multi-entity modules: Jobs/Candidates/Placements each lived
+in a **per-client dynamic NocoDB table** (`RC_Jobs_<clientId>`/`RC_Candidates_<clientId>`/
+`RC_Placements_<clientId>`), provisioned by the browser itself calling NocoDB's Meta API directly
+on first use ("🚀 Create Tables Now"), with a `CLIENTS.recruit_table_ids` JSON column tracking
+which table-id belongs to which client — the same shape Travel Agency/Appointments still use, but
+inconsistent with Hospitality/Financial Planning/B2B/Accounting/SaaS Ops, which all use one shared
+D1 table keyed by `client_id`. Rebuilt to match that second pattern — no other module behavior
+changed, this is a storage-layer swap.
+
+- **`migrations/0032_recruitment.sql`** — three new D1 tables, `recruit_jobs`/`recruit_candidates`/
+  `recruit_placements`, each `client_id`-scoped with an index on it (`recruit_candidates` also
+  indexes `(client_id, job_id)` for the job→candidates lookups the Qualification Report and AI
+  Screen use). Field names match the old NocoDB columns exactly, so no data-shape changes ripple
+  into the render functions.
+- **`worker.js` — `RECRUIT_TABLES` + `handleRecruitList/Create/Update/Delete`** — one generic
+  CRUD implementation shared by all three entity kinds (a config object per kind: table name,
+  required field, field list with type coercion) instead of three near-duplicate sets of handlers.
+  Every SELECT aliases `id AS Id` so the JSON shape matches exactly what the existing `_rcJobs`/
+  `_rcCandidates`/`_rcPlacements` render functions already expect (`c.Id`/`j.Id`/`p.Id` throughout)
+  — only the fetch layer needed to change, not every render function reading the records.
+  Session-gated (`requireSession`), routes: `GET/POST/PATCH/DELETE /recruit/jobs`,
+  `/recruit/candidates`, `/recruit/placements`.
+- **Frontend** — `rcLoad()`/`rcCreate()`/`rcUpdate()`/`rcDelete()` now call those routes instead of
+  the NocoDB passthrough. `rcTablesReady()`, `renderRcSetupNeeded()`, `rcSetupTables()` ("Create
+  Tables Now"), `rcEnsureColumns()`, and the local-cache fallback trio (`rcSaveLocal`/
+  `rcLoadLocal`/`rcMergeLocal` — a workaround for a NocoDB schema-just-created write race that
+  can't happen against a table that already exists for every client) are all gone; `recruit_enabled`
+  is now the only gate, saved with a plain `patchClient()` like every other simple toggle.
+- **Not migrated**: any existing data sitting in the old per-client `RC_Jobs_*`/`RC_Candidates_*`/
+  `RC_Placements_*` NocoDB tables is untouched and orphaned — this was a fresh rebuild, not a data
+  migration. If a client had already used this module before the rebuild, their old rows need a
+  one-time manual export/import into the new D1 tables (or a bespoke migration script) before they
+  see continuity; the module tables themselves are safe to leave alone in NocoDB or delete later.
