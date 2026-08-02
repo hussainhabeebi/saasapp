@@ -7345,6 +7345,21 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
   }
 }
 
+// Best-effort Chatwoot "customer sees {agent} typing…" indicator — pure UX polish covering the
+// 2-4s LLM latency window between the inbound webhook and the actual reply. Unlike
+// engineSendChatwootReply this never calls reportOpsError on failure: a missed typing toggle costs
+// nothing but polish, the customer still gets their real reply either way.
+async function engineSendChatwootTyping(env, c, convId, isTyping){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
+  try{
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/toggle_typing_status`, {
+      method:'POST',
+      headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+      body:JSON.stringify({typing_status:isTyping?'on':'off'})
+    });
+  }catch(e){}
+}
+
 // Mirrors store.html's own toImageUrl() — a Google Drive "share" link
 // (drive.google.com/file/d/<id>/view or ?id=<id>) isn't directly fetchable as raw image bytes;
 // this resolves it to Drive's thumbnail endpoint, which is. Any non-Drive URL (Shopify CDN,
@@ -7597,6 +7612,10 @@ function engineExtractLinkPriceCaption(replyText){
 // Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
 // out of scope for now, this only covers live conversational replies.
 async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId}={}){
+  // Clears the typing indicator turned on right after engineClaimMessage, regardless of which
+  // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
+  // No-ops for Instagram (convId is null there) since that channel never goes through Chatwoot.
+  engineSendChatwootTyping(env, c, convId, false);
   // CLIENTS.bot_reply_disabled ('Yes'/'No', Settings → Bot Auto-Reply) — unlike engine_disabled
   // above, this is the ONLY choke point gated by this flag: classification, routing, lead
   // upsert/CRM fields, analytics logging, last_seen, and order/booking-signal detection in
@@ -8112,6 +8131,8 @@ async function handleEngineWebhook(request, env, secret){
       }catch(e){}
     }
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
+    // Fire-and-forget: covers the slow classify/routing/LLM work below, not worth blocking on.
+    engineSendChatwootTyping(env, c, convId, true);
 
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
