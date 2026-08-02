@@ -4786,7 +4786,6 @@ function showApp(){
   $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
   applyHeaderLogo();
   taMergeLocal();
-  rcMergeLocal();
   apptMergeLocal();
   applyTheme(clientRecord.industry||'general');
   updateAgencyTabVisibility();
@@ -8361,8 +8360,8 @@ async function applyIndustryChange(ind, extraPatch){
   const patch={industry:ind, ...(extraPatch||{})};
   if(ind==='travel'){patch.ta_enabled='Yes';clientRecord.ta_enabled='Yes';taSaveLocal('ta_enabled','Yes');}
   else{patch.ta_enabled='No';clientRecord.ta_enabled='No';taSaveLocal('ta_enabled','No');}
-  if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';rcSaveLocal('recruit_enabled','Yes');}
-  else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
+  if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';}
+  else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';}
   if(ind==='hospitality'){patch.hospitality_enabled='Yes';clientRecord.hospitality_enabled='Yes';}
   else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
   if(ind==='real_estate'){patch.real_estate_enabled='Yes';clientRecord.real_estate_enabled='Yes';}
@@ -8446,8 +8445,8 @@ $id('saveGeneral').addEventListener('click',async()=>{
     // Auto-enable matching module based on industry
     if(ind==='travel'){patch.ta_enabled='Yes';clientRecord.ta_enabled='Yes';taSaveLocal('ta_enabled','Yes');}
     else{patch.ta_enabled='No';clientRecord.ta_enabled='No';taSaveLocal('ta_enabled','No');}
-    if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';rcSaveLocal('recruit_enabled','Yes');}
-    else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';rcSaveLocal('recruit_enabled','No');}
+    if(ind==='consultancy'){patch.recruit_enabled='Yes';clientRecord.recruit_enabled='Yes';}
+    else{patch.recruit_enabled='No';clientRecord.recruit_enabled='No';}
     if(ind==='hospitality'){patch.hospitality_enabled='Yes';clientRecord.hospitality_enabled='Yes';}
     else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
     if(ind==='real_estate'){patch.real_estate_enabled='Yes';clientRecord.real_estate_enabled='Yes';}
@@ -16501,34 +16500,16 @@ async function sendItinViaWa(id){
   }catch(e){alert('Error: '+e.message);}
 }
 
-/* ── RECRUITMENT & CONSULTANCY MODULE ── */
+/* ── RECRUITMENT & CONSULTANCY MODULE ── D1-backed (migrations/0032_recruitment.sql,
+     GET/POST/PATCH/DELETE /recruit/jobs|candidates|placements, worker.js) — one shared table per
+     entity, client_id-scoped, same shape as Hospitality/Financial Planning. No more per-client
+     NocoDB table provisioning (the old rcSetupTables()/"Create Tables Now" onboarding step) or the
+     local-cache fallback that existed only to paper over a table-just-created write race that
+     can't happen with a table that already exists for every client from the start. */
 let _rcPage='dashboard';
 let _rcJobs=[],_rcCandidates=[],_rcPlacements=[];
 let _rcLoaded=false;
 let _editJobId=null,_editCandId=null,_editPlacementId=null;
-
-function rcTablesReady(){try{const ids=JSON.parse(clientRecord?.recruit_table_ids||'{}');return !!(ids.jobs&&ids.candidates&&ids.placements);}catch(e){return false;}}
-
-async function rcEnsureColumns(){
-  if(!rcTablesReady())return;
-  const extraJob=[{column_name:'min_age',title:'min_age',uidt:'Number'},{column_name:'max_age',title:'max_age',uidt:'Number'},
-    {column_name:'min_experience',title:'min_experience',uidt:'Number'},{column_name:'required_qualifications',title:'required_qualifications',uidt:'LongText'}];
-  const extraCand=[{column_name:'age',title:'age',uidt:'Number'},{column_name:'job_id',title:'job_id',uidt:'SingleLineText'},
-    {column_name:'qualification_status',title:'qualification_status',uidt:'SingleLineText'},{column_name:'screening_notes',title:'screening_notes',uidt:'LongText'}];
-  const tryAdd=async(tableId,cols)=>{
-    try{
-      const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${tableId}`);
-      const existing=(info.columns||[]).map(c=>c.title);
-      for(const f of cols){if(!existing.includes(f.title))await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${tableId}/fields`,f).catch(()=>{});}
-    }catch(e){}
-  };
-  await Promise.all([tryAdd(rcTableId('jobs'),extraJob),tryAdd(rcTableId('candidates'),extraCand)]);
-}
-function rcTableId(key){try{return JSON.parse(clientRecord?.recruit_table_ids||'{}')[key]||null;}catch(e){return null;}}
-
-function rcSaveLocal(key,val){try{const k='lv_rc_'+clientId;const c=JSON.parse(localStorage.getItem(k)||'{}');c[key]=val;localStorage.setItem(k,JSON.stringify(c));}catch(e){}}
-function rcLoadLocal(){try{return JSON.parse(localStorage.getItem('lv_rc_'+clientId)||'{}');}catch(e){return{};}}
-function rcMergeLocal(){const loc=rcLoadLocal();if(loc.recruit_enabled&&!clientRecord.recruit_enabled)clientRecord.recruit_enabled=loc.recruit_enabled;if(loc.recruit_table_ids&&!clientRecord.recruit_table_ids)clientRecord.recruit_table_ids=loc.recruit_table_ids;}
 
 function updateRecruitTabVisibility(){
   const enabled=(clientRecord.recruit_enabled==='Yes');
@@ -16537,17 +16518,15 @@ function updateRecruitTabVisibility(){
 
 async function renderRecruit(){
   const el=$id('recruitContent');
-  if(!rcTablesReady()){el.innerHTML=renderRcSetupNeeded();document.querySelectorAll('.rc-tab').forEach(t=>t.classList.remove('active'));return;}
   if(!_rcLoaded){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';await rcLoad();}
   renderRcSubPage(_rcPage);
 }
 
 async function rcLoad(){
-  rcEnsureColumns();
   const [jobs,candidates,placements]=await Promise.all([
-    ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId('jobs')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
-    ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId('candidates')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
-    ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId('placements')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
+    ncGet(`${CONFIG.WORKER_BASE}/recruit/jobs`).catch(()=>({list:[]})),
+    ncGet(`${CONFIG.WORKER_BASE}/recruit/candidates`).catch(()=>({list:[]})),
+    ncGet(`${CONFIG.WORKER_BASE}/recruit/placements`).catch(()=>({list:[]})),
   ]);
   _rcJobs=jobs.list||[];
   _rcCandidates=candidates.list||[];
@@ -16555,10 +16534,10 @@ async function rcLoad(){
   _rcLoaded=true;
 }
 
-async function rcCreate(key,body){return ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId(key)}/records`,body);}
-async function rcUpdate(key,id,body){return ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId(key)}/records`,{Id:id,...body});}
+async function rcCreate(key,body){return ncPost(`${CONFIG.WORKER_BASE}/recruit/${key}`,body);}
+async function rcUpdate(key,id,body){return ncPatch(`${CONFIG.WORKER_BASE}/recruit/${key}`,{Id:id,...body});}
 async function rcDelete(key,id){
-  await ncDelete(`${CONFIG.NOCODB_BASE}/api/v2/tables/${rcTableId(key)}/records`,{Id:id});
+  await ncDelete(`${CONFIG.WORKER_BASE}/recruit/${key}`,{Id:id});
 }
 
 function renderRcSubPage(page){
@@ -16578,91 +16557,6 @@ document.addEventListener('click',e=>{
   if(t&&t.dataset.rc)renderRcSubPage(t.dataset.rc);
 });
 
-function renderRcSetupNeeded(){
-  return`<div style="text-align:center;padding:60px 24px;max-width:480px;margin:0 auto">
-    <div style="font-size:52px;margin-bottom:16px">💼</div>
-    <div style="font-family:var(--disp);font-size:20px;font-weight:700;margin-bottom:8px">Set Up Recruitment Tables</div>
-    <div style="font-size:13px;color:var(--muted);margin-bottom:24px;line-height:1.7">Create the NocoDB tables for Jobs, Candidates, and Placements. This only takes a few seconds.</div>
-    <button class="btn btn-primary" id="rcSetupBtn" onclick="rcSetupTables()" style="padding:12px 28px;font-size:14px">🚀 Create Tables Now</button>
-    <span class="save-msg" id="rcSetupMsg" style="display:block;margin-top:12px;min-height:18px"></span>
-  </div>`;
-}
-
-async function rcSetupTables(){
-  const btn=$id('rcSetupBtn'),msg=$id('rcSetupMsg');
-  if(!btn)return;
-  btn.disabled=true;msg.textContent='Creating tables…';msg.className='save-msg';
-  try{
-    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
-    const baseId=info.base_id;
-    if(!baseId)throw new Error('Could not determine base_id');
-
-    const existingCols=(info.columns||[]).map(c=>c.title);
-    for(const f of [{column_name:'recruit_table_ids',title:'recruit_table_ids',uidt:'LongText'},{column_name:'recruit_enabled',title:'recruit_enabled',uidt:'SingleLineText'}]){
-      if(!existingCols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
-    }
-
-    const tableDefs=[
-      {key:'jobs',title:`RC_Jobs_${clientId}`,columns:[
-        {column_name:'title',title:'title',uidt:'SingleLineText'},{column_name:'company',title:'company',uidt:'SingleLineText'},
-        {column_name:'location',title:'location',uidt:'SingleLineText'},{column_name:'job_type',title:'job_type',uidt:'SingleLineText'},
-        {column_name:'category',title:'category',uidt:'SingleLineText'},{column_name:'min_salary',title:'min_salary',uidt:'Number'},
-        {column_name:'max_salary',title:'max_salary',uidt:'Number'},{column_name:'currency',title:'currency',uidt:'SingleLineText'},
-        {column_name:'status',title:'status',uidt:'SingleLineText'},{column_name:'min_age',title:'min_age',uidt:'Number'},
-        {column_name:'max_age',title:'max_age',uidt:'Number'},{column_name:'min_experience',title:'min_experience',uidt:'Number'},
-        {column_name:'required_qualifications',title:'required_qualifications',uidt:'LongText'},
-        {column_name:'requirements',title:'requirements',uidt:'LongText'},
-        {column_name:'description',title:'description',uidt:'LongText'},{column_name:'notes',title:'notes',uidt:'LongText'},
-        {column_name:'created_at',title:'created_at',uidt:'SingleLineText'},
-      ]},
-      {key:'candidates',title:`RC_Candidates_${clientId}`,columns:[
-        {column_name:'name',title:'name',uidt:'SingleLineText'},{column_name:'phone',title:'phone',uidt:'SingleLineText'},
-        {column_name:'email',title:'email',uidt:'SingleLineText'},{column_name:'role_applied',title:'role_applied',uidt:'SingleLineText'},
-        {column_name:'years_experience',title:'years_experience',uidt:'Number'},{column_name:'skills',title:'skills',uidt:'LongText'},
-        {column_name:'current_salary',title:'current_salary',uidt:'Number'},{column_name:'expected_salary',title:'expected_salary',uidt:'Number'},
-        {column_name:'age',title:'age',uidt:'Number'},{column_name:'job_id',title:'job_id',uidt:'SingleLineText'},
-        {column_name:'currency',title:'currency',uidt:'SingleLineText'},{column_name:'status',title:'status',uidt:'SingleLineText'},
-        {column_name:'source',title:'source',uidt:'SingleLineText'},{column_name:'owner',title:'owner',uidt:'SingleLineText'},
-        {column_name:'qualification_status',title:'qualification_status',uidt:'SingleLineText'},
-        {column_name:'screening_notes',title:'screening_notes',uidt:'LongText'},
-        {column_name:'notes',title:'notes',uidt:'LongText'},{column_name:'resume_notes',title:'resume_notes',uidt:'LongText'},
-        {column_name:'interview_date',title:'interview_date',uidt:'SingleLineText'},{column_name:'created_at',title:'created_at',uidt:'SingleLineText'},
-      ]},
-      {key:'placements',title:`RC_Placements_${clientId}`,columns:[
-        {column_name:'candidate_name',title:'candidate_name',uidt:'SingleLineText'},{column_name:'candidate_phone',title:'candidate_phone',uidt:'SingleLineText'},
-        {column_name:'job_title',title:'job_title',uidt:'SingleLineText'},{column_name:'client_company',title:'client_company',uidt:'SingleLineText'},
-        {column_name:'placement_date',title:'placement_date',uidt:'SingleLineText'},{column_name:'fee_amount',title:'fee_amount',uidt:'Number'},
-        {column_name:'currency',title:'currency',uidt:'SingleLineText'},{column_name:'fee_type',title:'fee_type',uidt:'SingleLineText'},
-        {column_name:'percentage',title:'percentage',uidt:'Number'},{column_name:'status',title:'status',uidt:'SingleLineText'},
-        {column_name:'notes',title:'notes',uidt:'LongText'},{column_name:'created_at',title:'created_at',uidt:'SingleLineText'},
-      ]},
-    ];
-
-    const tableIds={};
-    let existingTables=[];
-    try{const tablesRes=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`);existingTables=tablesRes.list||[];}catch(e){}
-
-    for(const def of tableDefs){
-      msg.textContent=`Creating ${def.key} table…`;
-      const existing=existingTables.find(t=>t.title===def.title);
-      if(existing){tableIds[def.key]=existing.id;continue;}
-      const r=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`,{title:def.title,columns:def.columns});
-      if(!r.id)throw new Error(`Failed to create ${def.title}`);
-      tableIds[def.key]=r.id;
-    }
-
-    const tableIdsJson=JSON.stringify(tableIds);
-    // Same bug class already found and fixed for Appointments and Travel Agency (see their own
-    // comments) — third and last instance of it across the three module-setup flows that share
-    // this exact pattern. Only cache locally after a confirmed-successful server write.
-    await patchClient({recruit_table_ids:tableIdsJson});
-    rcSaveLocal('recruit_table_ids',tableIdsJson);
-    clientRecord.recruit_table_ids=tableIdsJson;
-    msg.textContent='✓ Tables created! Loading…';
-    await rcLoad();
-    renderRcSubPage(_rcPage);
-  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';btn.disabled=false;}
-}
 
 /* ── RC: DASHBOARD ── */
 function renderRcDashboard(){
@@ -17219,17 +17113,9 @@ $id('saveRecruitEnabled').addEventListener('click',async()=>{
   const btn=$id('saveRecruitEnabled'),msg=$id('saveRecruitEnabledMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   try{
-    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
-    const cols=(info.columns||[]).map(c=>c.title);
-    for(const f of [{column_name:'recruit_enabled',title:'recruit_enabled',uidt:'SingleLineText'},{column_name:'recruit_table_ids',title:'recruit_table_ids',uidt:'LongText'}]){
-      if(!cols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
-    }
     const val=$id('cfgRecruitEnabled').value;
-    // Same bug class as recruit_table_ids above (and Appointments' already-fixed equivalent) —
-    // only cache/apply locally after a confirmed-successful server write.
     await patchClient({recruit_enabled:val});
     clientRecord.recruit_enabled=val;
-    rcSaveLocal('recruit_enabled',val);
     updateRecruitTabVisibility();
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
@@ -17250,8 +17136,8 @@ function apptTableId(key){try{return JSON.parse(clientRecord?.appt_table_ids||'{
 function apptTablesReady(){return !!(apptTableId('services')&&apptTableId('bookings'));}
 function apptSaveLocal(key,val){try{const k='lv_appt_'+clientId;const c=JSON.parse(localStorage.getItem(k)||'{}');c[key]=val;localStorage.setItem(k,JSON.stringify(c));}catch(e){}}
 function apptLoadLocal(){try{return JSON.parse(localStorage.getItem('lv_appt_'+clientId)||'{}');}catch(e){return{};}}
-// Same fallback showApp() already leans on for ta_enabled/recruit_table_ids (taMergeLocal/
-// rcMergeLocal) — if a save's server-side patch silently failed (patchClient's own errors are
+// Same fallback showApp() already leans on for ta_enabled (taMergeLocal) — if a save's
+// server-side patch silently failed (patchClient's own errors are
 // swallowed by saveApptEnabled/apptSetupTables so the button doesn't hard-fail the whole page),
 // the locally-cached value still lets this session see the module as enabled without waiting on
 // the next successful server write.

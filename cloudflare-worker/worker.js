@@ -9577,6 +9577,114 @@ async function handleVendorBillRecordPayment(request, env){
   }
 }
 
+/* ── RECRUITMENT MODULE (frontend/dashboard.html — 💼 Recruit tab, migrations/0032_recruitment.sql)
+   Jobs/Candidates/Placements, one shared D1 table each (client_id-scoped), replacing the old
+   per-client dynamic NocoDB tables the browser used to provision for itself on first use — same
+   "one shared table, not one table per client" shape as Hospitality/Financial Planning/SaaS Ops.
+   One generic list/create/update/delete per entity kind instead of 12 near-identical handlers,
+   driven by RECRUIT_TABLES below; `id AS Id` in every SELECT keeps the JSON shape identical to
+   what dashboard.html's existing rc* render functions already expect (c.Id/j.Id/p.Id throughout),
+   so only the fetch layer (rcLoad/rcCreate/rcUpdate/rcDelete) needed to change, not every render
+   function reading the records. ── */
+const RECRUIT_TABLES={
+  jobs:{
+    table:'recruit_jobs', requiredField:'title', orderBy:'created_at DESC',
+    fields:{
+      title:{type:'str', max:200}, company:{type:'str', max:200}, location:{type:'str', max:200},
+      job_type:{type:'str', max:40, def:'fulltime'}, category:{type:'str', max:80},
+      min_salary:{type:'num'}, max_salary:{type:'num'}, currency:{type:'str', max:10, def:'AED'},
+      status:{type:'str', max:20, def:'open'}, min_age:{type:'int'}, max_age:{type:'int'},
+      min_experience:{type:'int'}, required_qualifications:{type:'text'}, requirements:{type:'text'},
+      description:{type:'text'}, notes:{type:'text'},
+    }
+  },
+  candidates:{
+    table:'recruit_candidates', requiredField:'name', orderBy:'created_at DESC',
+    fields:{
+      name:{type:'str', max:200}, phone:{type:'str', max:40}, email:{type:'str', max:140},
+      role_applied:{type:'str', max:200}, years_experience:{type:'num'}, skills:{type:'text'},
+      current_salary:{type:'num'}, expected_salary:{type:'num'}, age:{type:'int'},
+      job_id:{type:'int'}, currency:{type:'str', max:10, def:'AED'}, status:{type:'str', max:30, def:'new'},
+      source:{type:'str', max:40, def:'whatsapp'}, owner:{type:'str', max:140},
+      qualification_status:{type:'str', max:20}, screening_notes:{type:'text'}, notes:{type:'text'},
+      resume_notes:{type:'text'}, interview_date:{type:'str', max:10},
+    }
+  },
+  placements:{
+    table:'recruit_placements', requiredField:'candidate_name', orderBy:'created_at DESC',
+    fields:{
+      candidate_name:{type:'str', max:200}, candidate_phone:{type:'str', max:40},
+      job_title:{type:'str', max:200}, client_company:{type:'str', max:200},
+      placement_date:{type:'str', max:10}, fee_amount:{type:'num'}, currency:{type:'str', max:10, def:'AED'},
+      fee_type:{type:'str', max:20, def:'fixed'}, percentage:{type:'num'}, status:{type:'str', max:20, def:'pending'},
+      notes:{type:'text'},
+    }
+  },
+};
+function recruitCoerce(spec, raw){
+  if(raw===undefined||raw===null||raw===''){
+    if(spec.type==='num'||spec.type==='int') return null;
+    return spec.def!==undefined?spec.def:null;
+  }
+  if(spec.type==='num') return Number(raw)||0;
+  if(spec.type==='int') return parseInt(raw,10)||null;
+  if(spec.type==='text') return String(raw);
+  return String(raw).trim().slice(0, spec.max||255);
+}
+async function handleRecruitList(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=RECRUIT_TABLES[kind];
+  const {results}=await env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE client_id=? ORDER BY ${cfg.orderBy}`).bind(Number(payload.cid)).all();
+  return json({list:results||[]});
+}
+async function handleRecruitCreate(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=RECRUIT_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  if(!String(body[cfg.requiredField]||'').trim()) return json({error:`${cfg.requiredField} required`}, 400);
+  const cols=Object.keys(cfg.fields);
+  const vals=cols.map(k=>recruitCoerce(cfg.fields[k], body[k]));
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO ${cfg.table} (client_id, ${cols.join(', ')}, created_at) VALUES (?, ${cols.map(()=>'?').join(', ')}, ?)`
+  ).bind(Number(payload.cid), ...vals, now).run();
+  const row=await env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE id=?`).bind(r.meta.last_row_id).first();
+  return json(row);
+}
+async function handleRecruitUpdate(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=RECRUIT_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  for(const k of Object.keys(cfg.fields)){
+    if(body[k]===undefined) continue;
+    sets.push(`${k}=?`); vals.push(recruitCoerce(cfg.fields[k], body[k]));
+  }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE ${cfg.table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleRecruitDelete(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=RECRUIT_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM ${cfg.table} WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
 // ── ERPNext Customers / Items — live lookups for the accounting.html Customers tab and the
 // Document modal's customer/item pickers. Always fetched live, no local cache/mirror table — same
 // "no persisted local mapping" choice as erpnextResolveCustomer/erpnextResolveItem above, just
@@ -14294,6 +14402,18 @@ export default {
       else if(url.pathname==='/re/documents' && request.method==='POST'){ res=await reDocumentsCrud.create(request, env); }
       else if(url.pathname==='/re/documents' && request.method==='DELETE'){ res=await reDocumentsCrud.del(request, env); }
       else if(url.pathname==='/re/analytics' && request.method==='GET'){ res=await handleReAnalytics(request, env); }
+      else if(url.pathname==='/recruit/jobs' && request.method==='GET'){ res=await handleRecruitList(request, env, 'jobs'); }
+      else if(url.pathname==='/recruit/jobs' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'jobs'); }
+      else if(url.pathname==='/recruit/jobs' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'jobs'); }
+      else if(url.pathname==='/recruit/jobs' && request.method==='DELETE'){ res=await handleRecruitDelete(request, env, 'jobs'); }
+      else if(url.pathname==='/recruit/candidates' && request.method==='GET'){ res=await handleRecruitList(request, env, 'candidates'); }
+      else if(url.pathname==='/recruit/candidates' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'candidates'); }
+      else if(url.pathname==='/recruit/candidates' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'candidates'); }
+      else if(url.pathname==='/recruit/candidates' && request.method==='DELETE'){ res=await handleRecruitDelete(request, env, 'candidates'); }
+      else if(url.pathname==='/recruit/placements' && request.method==='GET'){ res=await handleRecruitList(request, env, 'placements'); }
+      else if(url.pathname==='/recruit/placements' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'placements'); }
+      else if(url.pathname==='/recruit/placements' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'placements'); }
+      else if(url.pathname==='/recruit/placements' && request.method==='DELETE'){ res=await handleRecruitDelete(request, env, 'placements'); }
       else if(url.pathname==='/erpnext/suppliers' && request.method==='GET'){ res=await handleErpnextSuppliersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }
