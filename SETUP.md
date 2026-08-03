@@ -6422,6 +6422,34 @@ had, adds standard SMB reports, and a single account-wide currency default:
   (`handleFpReportSalesSummary`, Documents by type/status + quotation→accepted conversion rate).
   All computed on demand from existing tables — no separate ledger, no double-entry.
 
+### Separate Quotation/Invoice windows, and paying an Invoice records income + a collection (migration `0037_accounting_doc_dates_and_paid.sql`)
+Quotation and Invoice are two real windows in `accounting.html`, not one modal relabeled by
+type — `DOC_TYPE_CFG` maps each type to its own DOM prefix (`docQuotation*`/`docInvoice*`) and the
+shared line-item/lead-picker/cross-sell logic (`addDocLineItemRow`, `collectDocLineItems`,
+`renderDocTypeCrossSell`, etc.) is parameterized by type rather than duplicated. A Quotation gets
+an optional Valid Until date (`accounting_documents.valid_until`); an Invoice gets an optional Due
+Date (`due_date`). Financial Planning → Customers rows get "🧾"/"📄" quick actions
+(`newDocForFpCustomer`) that jump to the Documents tab and open the right window pre-filled for
+that customer. `buildDocumentPdf` renders each type's PDF differently now too: the type-specific
+date, a PAID/VOID stamp, "Amount Due"/"Amount Paid" vs. "Total" on the summary bar, and a
+quotation-only "this is not a tax invoice" disclaimer.
+
+Setting an Invoice's status to `paid` (the status dropdown on the Documents table) triggers
+`fpRecordInvoicePaidSideEffects` from `handleAccountingDocumentUpdate`, which records the two
+things "money actually came in" means elsewhere in this app:
+- **Income** — an auto-created Receipt linked back via `linked_doc_id` (skipped if one already
+  exists, e.g. from a manual Convert), the same shape `handleAccountingDocumentConvert` builds, so
+  it's counted by P&L/Sales Summary exactly like any other Receipt.
+- **Collection** — an `fp_collections` row (ad-hoc, no `expected_due_id`), so it shows in
+  Financial Planning → Collections and counts toward the Dashboard's Collected total. Needs an
+  `fp_customers` link: uses the invoice's own `customer_id` if set, else resolves one from its
+  linked lead's Name/Phone or its plain `customer_name` via `fpEnsureCustomerByName` (the same
+  core search-or-create both `handleFpCustomerEnsureByName` and the lead-`ensure` route share).
+
+`accounting_documents.paid_recorded_at` guards this from running twice — flipping status away
+from and back to `paid` (e.g. a correction) won't double-book either the Receipt or the
+collection.
+
 ## SaaS Ops module (`frontend/saas-ops.html` — own top-level tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0025_saas_ops.sql` + `0027_saas_nocodb_accounts.sql`)
 
 Subscription/lifecycle tracking, activation, product usage/PQL signals, account health scoring,
