@@ -20,6 +20,7 @@ const { transcribe } = require('./lib/transcribe');
 const { detectScenes, generateSceneThumbnails } = require('./lib/sceneDetect');
 const { downloadToFile } = require('./lib/download');
 const { generateAiBroll } = require('./lib/falBroll');
+const { watermarkLogo, compositeOnColor, textOverlay } = require('./lib/imageCompose');
 const { synthesizeVoiceover } = require('./lib/tts');
 const { synthesizeWithAi4Bharat, supportsLanguage: ai4bharatTtsSupportsLanguage } = require('./lib/ai4bharatTts');
 const { uploadOutput } = require('./lib/storage');
@@ -178,6 +179,57 @@ app.post('/detect-scenes', async (req, res) => {
     res.json({ ok: true, scenes });
   } catch (err) {
     console.error('detect-scenes failed:', err.stderr || err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+// Also synchronous, same reasoning as /detect-scenes above — a single bounded ffmpeg still-image
+// pass (well under a second), not the multi-step video render. Three related, deterministic
+// (no-AI) Image Studio operations sharing one route, distinguished by `mode` — see
+// lib/imageCompose.js's own comment for why these are plain ffmpeg filters instead of a paid
+// fal.ai call. `image_url`/`logo_url`/`cutout_url` are the Worker's own public
+// GET /marketing/media/:key URLs (same trust model as every other source_url this pipeline
+// downloads elsewhere in this file).
+app.post('/image-compose', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { mode, client_id } = req.body || {};
+  if (!client_id) return res.status(400).json({ error: 'client_id required' });
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mkt-imgcompose-'));
+  try {
+    const outPath = path.join(workDir, 'output.png');
+    if (mode === 'watermark') {
+      const { image_url, logo_url, position } = req.body;
+      if (!image_url || !logo_url) return res.status(400).json({ error: 'image_url and logo_url required' });
+      const basePath = path.join(workDir, 'base.png'), logoPath = path.join(workDir, 'logo.png');
+      await downloadToFile(image_url, basePath);
+      await downloadToFile(logo_url, logoPath);
+      await watermarkLogo({ basePath, logoPath, outPath, position });
+    } else if (mode === 'composite-background') {
+      const { cutout_url, color } = req.body;
+      if (!cutout_url) return res.status(400).json({ error: 'cutout_url required' });
+      const cutoutPath = path.join(workDir, 'cutout.png');
+      await downloadToFile(cutout_url, cutoutPath);
+      await compositeOnColor({ cutoutPath, outPath, colorHex: color });
+    } else if (mode === 'text-overlay') {
+      const { image_url, headline, subtext, text_color, box_color, position } = req.body;
+      if (!image_url) return res.status(400).json({ error: 'image_url required' });
+      if (!headline && !subtext) return res.status(400).json({ error: 'headline or subtext required' });
+      const basePath = path.join(workDir, 'base.png');
+      await downloadToFile(image_url, basePath);
+      await textOverlay({ basePath, outPath, headline, subtext, textColor: text_color, boxColor: box_color, position });
+    } else {
+      return res.status(400).json({ error: `Unknown mode: ${mode}` });
+    }
+    const key = `marketing/${client_id}/images/${Date.now()}-${mode}.png`;
+    const result = await uploadOutput(env, outPath, key, 'image/png');
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('image-compose failed:', err.stderr || err.message || err);
     res.status(502).json({ error: String(err.message || err).slice(0, 500) });
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
