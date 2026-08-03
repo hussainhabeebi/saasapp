@@ -10531,23 +10531,50 @@ async function handleFpDashboard(request, env){
     amount:Math.round(outstanding.filter(o=>o.aging_bucket===b.key).reduce((s,o)=>s+o.balance,0)*100)/100,
   }));
 
+  // Expenses — Financial Planning's own fp_expenses (fixed + one-time) AND the separate Expense
+  // Entry tab's accounting_expenses, folded into one Total Expenses figure: two entry points into
+  // the same "money going out" total, same interconnection as the receivables/payables below.
   const {results:expenses}=await env.DB.prepare(`SELECT * FROM fp_expenses WHERE client_id=? AND expense_date>=?`).bind(clientId, currentPeriod+'-01').all();
   const thisMonthExpenses=(expenses||[]).filter(e=>e.expense_date.slice(0,7)===currentPeriod);
   const fixedExpenseTotal=thisMonthExpenses.filter(e=>e.type==='fixed').reduce((s,e)=>s+e.amount,0);
   const onetimeExpenseTotal=thisMonthExpenses.filter(e=>e.type==='onetime').reduce((s,e)=>s+e.amount,0);
-  const totalExpenses=fixedExpenseTotal+onetimeExpenseTotal;
+  const {results:acctExpenses}=await env.DB.prepare(`SELECT expense_date, amount FROM accounting_expenses WHERE client_id=? AND expense_date>=?`).bind(clientId, currentPeriod+'-01').all();
+  const acctExpenseTotal=(acctExpenses||[]).filter(e=>e.expense_date.slice(0,7)===currentPeriod).reduce((s,e)=>s+e.amount,0);
+  const totalExpenses=fixedExpenseTotal+onetimeExpenseTotal+acctExpenseTotal;
   const netPosition=Math.round((collectedThisMonth-totalExpenses)*100)/100;
 
-  // 6-month trend — expected/collected from fp_expected_dues, expenses from fp_expenses, keyed by
-  // the same 'YYYY-MM' period_key/expense_date-prefix convention used throughout this module.
+  // Documents' unpaid invoices — ad-hoc/one-off billing (as opposed to fp_expected_dues' recurring
+  // billing) folded into the same "Money Owed to You" the Dashboard already tracks, so Documents
+  // and Financial Planning read as one business, not two separate receivables pictures.
+  const {results:unpaidInvoices}=await env.DB.prepare(`SELECT * FROM accounting_documents WHERE client_id=? AND type='invoice' AND status IN ('draft','sent')`).bind(clientId).all();
+  const invoiceReceivablesTotal=(unpaidInvoices||[]).reduce((s,d)=>s+(d.total||0),0);
+
+  // Vendor Bills not yet paid — the accounts-payable counterpart, "Money You Owe". Aged the same
+  // way outstanding receivables are (FP_AGING_BUCKETS against due_date vs. today).
+  const {results:unpaidBillsRaw}=await env.DB.prepare(`SELECT * FROM accounting_vendor_bills WHERE client_id=? AND status!='paid'`).bind(clientId).all();
+  const payables=(unpaidBillsRaw||[]).map(b=>{
+    const isOverdue=!!(b.due_date && b.due_date<todayStr);
+    const overdueDays=isOverdue?Math.max(0, Math.floor((now.getTime()-new Date(b.due_date).getTime())/86400000)):0;
+    const bucket=isOverdue?(FP_AGING_BUCKETS.find(x=>overdueDays>=x.min&&overdueDays<=x.max)||FP_AGING_BUCKETS[FP_AGING_BUCKETS.length-1]).key:null;
+    return {Id:b.id, supplier:b.supplier, bill_date:b.bill_date, due_date:b.due_date, total:b.total, currency:b.currency, overdue_days:overdueDays, aging_bucket:bucket};
+  }).sort((a,b)=>b.overdue_days-a.overdue_days);
+  const payablesTotal=Math.round(payables.reduce((s,p)=>s+p.total,0)*100)/100;
+
+  // 6-month trend — expected/collected from fp_expected_dues, expenses from both fp_expenses and
+  // accounting_expenses, keyed by the same 'YYYY-MM' period_key/expense_date-prefix convention
+  // used throughout this module.
   const {results:allExpensesForTrend}=await env.DB.prepare(`SELECT expense_date, amount FROM fp_expenses WHERE client_id=?`).bind(clientId).all();
+  const {results:allAcctExpensesForTrend}=await env.DB.prepare(`SELECT expense_date, amount FROM accounting_expenses WHERE client_id=?`).bind(clientId).all();
   const months=[];
   for(let i=5;i>=0;i--){ const d=new Date(now.getFullYear(), now.getMonth()-i, 1); months.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')); }
   const trend=months.map(m=>({
     period:m,
     expected:Math.round(allDues.filter(d=>d.period_key===m).reduce((s,d)=>s+d.amount,0)*100)/100,
     collected:Math.round(allDues.filter(d=>d.period_key===m).reduce((s,d)=>s+d.collected_amount,0)*100)/100,
-    expenses:Math.round((allExpensesForTrend||[]).filter(e=>e.expense_date.slice(0,7)===m).reduce((s,e)=>s+e.amount,0)*100)/100,
+    expenses:Math.round(
+      ((allExpensesForTrend||[]).filter(e=>e.expense_date.slice(0,7)===m).reduce((s,e)=>s+e.amount,0)
+      +(allAcctExpensesForTrend||[]).filter(e=>e.expense_date.slice(0,7)===m).reduce((s,e)=>s+e.amount,0))*100
+    )/100,
   }));
 
   // Tax set-aside estimate — a plain `profit * tax_reserve_pct` nudge, nothing more (no bracket
@@ -10558,14 +10585,154 @@ async function handleFpDashboard(request, env){
   const taxReservePct=cfg?.tax_reserve_pct;
   const estimatedTaxSetAside=(taxReservePct&&netPosition>0)?Math.round(netPosition*(taxReservePct/100)*100)/100:null;
 
-  const currency=thisMonthDues[0]?.currency||allDues[0]?.currency||'INR';
+  const currency=thisMonthDues[0]?.currency||allDues[0]?.currency||unpaidInvoices?.[0]?.currency||payables[0]?.currency||'INR';
   return json({
     currency, current_period:currentPeriod,
     expected_this_month:Math.round(expectedThisMonth*100)/100, collected_this_month:Math.round(collectedThisMonth*100)/100, collection_pct:collectionPct,
-    fixed_expense_total:Math.round(fixedExpenseTotal*100)/100, onetime_expense_total:Math.round(onetimeExpenseTotal*100)/100, total_expenses:Math.round(totalExpenses*100)/100,
+    fixed_expense_total:Math.round(fixedExpenseTotal*100)/100, onetime_expense_total:Math.round(onetimeExpenseTotal*100)/100,
+    acct_expense_total:Math.round(acctExpenseTotal*100)/100, total_expenses:Math.round(totalExpenses*100)/100,
     net_position:netPosition, aging_buckets:agingBuckets, outstanding, trend,
     tax_reserve_pct:taxReservePct||null, estimated_tax_set_aside:estimatedTaxSetAside,
+    // Unified receivables/payables — Documents' unpaid invoices folded into "Money Owed to You",
+    // Vendor Bills' unpaid ones as "Money You Owe" (see the query comments above).
+    invoice_receivables_total:Math.round(invoiceReceivablesTotal*100)/100, unpaid_invoice_count:(unpaidInvoices||[]).length,
+    money_owed_to_you_total:Math.round((outstanding.reduce((s,o)=>s+o.balance,0)+invoiceReceivablesTotal)*100)/100,
+    payables, payables_total:payablesTotal, unpaid_bill_count:payables.length,
   });
+}
+
+// ── Standard Accounting Reports (frontend/accounting.html "📊 Reports" tab) — computed on demand
+// from the same tables the rest of the module already writes to (fp_expected_dues/fp_collections/
+// fp_expenses, accounting_documents/accounting_expenses/accounting_vendor_bills). No new ledger,
+// no double-entry — these are aggregate SQL reads over existing data, the same "compute
+// everything server-side, one response" shape as handleFpDashboard.
+function fpReportsDateRange(url){
+  const now=new Date();
+  const defaultFrom=new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
+  const defaultTo=now.toISOString().slice(0,10);
+  return {
+    from:(url.searchParams.get('from')||defaultFrom).slice(0,10),
+    to:(url.searchParams.get('to')||defaultTo).slice(0,10),
+  };
+}
+// Profit & Loss — Income is actual money received (fp_collections + Documents' Receipts, both
+// within range), not merely invoiced/expected, since a P&L should reflect cash actually earned;
+// Expenses are fp_expenses + accounting_expenses within the same range.
+async function handleFpReportPL(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const url=new URL(request.url);
+  const {from, to}=fpReportsDateRange(url);
+  const toExclusive=to+' 23:59:59';
+
+  const {results:collections}=await env.DB.prepare(`SELECT amount, currency FROM fp_collections WHERE client_id=? AND collected_at>=? AND collected_at<=?`).bind(clientId, from, to).all();
+  const {results:receipts}=await env.DB.prepare(`SELECT total, currency FROM accounting_documents WHERE client_id=? AND type='receipt' AND doc_created_at>=? AND doc_created_at<=?`).bind(clientId, from, toExclusive).all();
+  const recurringIncome=(collections||[]).reduce((s,c)=>s+c.amount,0);
+  const oneOffIncome=(receipts||[]).reduce((s,r)=>s+(r.total||0),0);
+  const totalIncome=recurringIncome+oneOffIncome;
+
+  const {results:fpExp}=await env.DB.prepare(`SELECT category, amount FROM fp_expenses WHERE client_id=? AND expense_date>=? AND expense_date<=?`).bind(clientId, from, to).all();
+  const {results:acctExp}=await env.DB.prepare(`SELECT category, amount FROM accounting_expenses WHERE client_id=? AND expense_date>=? AND expense_date<=?`).bind(clientId, from, to).all();
+  const allExpenseRows=[...(fpExp||[]), ...(acctExp||[])];
+  const totalExpenses=allExpenseRows.reduce((s,e)=>s+e.amount,0);
+  const byCategory={};
+  for(const e of allExpenseRows){ const cat=e.category||'Uncategorized'; byCategory[cat]=(byCategory[cat]||0)+e.amount; }
+  const expenseByCategory=Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([category,amount])=>({category, amount:Math.round(amount*100)/100}));
+
+  const currency=collections?.[0]?.currency||receipts?.[0]?.currency||'INR';
+  return json({
+    from, to, currency,
+    recurring_income:Math.round(recurringIncome*100)/100, one_off_income:Math.round(oneOffIncome*100)/100, total_income:Math.round(totalIncome*100)/100,
+    total_expenses:Math.round(totalExpenses*100)/100, expense_by_category:expenseByCategory,
+    net_profit:Math.round((totalIncome-totalExpenses)*100)/100,
+  });
+}
+// Accounts Receivable Aging — Financial Planning's recurring Expected Funds (still open/partial)
+// AND Documents' unpaid one-off invoices, in one aged list — the same unification
+// handleFpDashboard's "Money Owed to You" uses, presented here as its own report with a
+// per-bucket breakdown.
+async function handleFpReportArAging(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const now=new Date(); const todayStr=now.toISOString().slice(0,10);
+  const {results:dues}=await env.DB.prepare(`SELECT d.*, c.name as customer_name FROM fp_expected_dues d JOIN fp_customers c ON c.id=d.customer_id WHERE d.client_id=? AND d.status IN ('open','partial')`).bind(clientId).all();
+  const {results:invoices}=await env.DB.prepare(`SELECT * FROM accounting_documents WHERE client_id=? AND type='invoice' AND status IN ('draft','sent')`).bind(clientId).all();
+  const items=[
+    ...(dues||[]).map(d=>({source:'recurring', name:d.customer_name, reference:d.period_key, date:d.due_date, balance:Math.round((d.amount-d.collected_amount)*100)/100, currency:d.currency})),
+    ...(invoices||[]).map(d=>({source:'invoice', name:d.customer_name||'—', reference:'Invoice #'+d.id, date:d.doc_created_at?.slice(0,10)||todayStr, balance:d.total, currency:d.currency})),
+  ].map(item=>{
+    const overdueDays=Math.max(0, Math.floor((now.getTime()-new Date(item.date).getTime())/86400000));
+    const isOverdue=item.date<todayStr;
+    const bucket=isOverdue?(FP_AGING_BUCKETS.find(b=>overdueDays>=b.min&&overdueDays<=b.max)||FP_AGING_BUCKETS[FP_AGING_BUCKETS.length-1]).key:'not yet due';
+    return {...item, overdue_days:isOverdue?overdueDays:0, aging_bucket:bucket};
+  }).sort((a,b)=>b.overdue_days-a.overdue_days);
+  const buckets=[...FP_AGING_BUCKETS.map(b=>b.key), 'not yet due'].map(key=>({
+    key, count:items.filter(i=>i.aging_bucket===key).length,
+    amount:Math.round(items.filter(i=>i.aging_bucket===key).reduce((s,i)=>s+i.balance,0)*100)/100,
+  }));
+  return json({items, buckets, total:Math.round(items.reduce((s,i)=>s+i.balance,0)*100)/100, currency:items[0]?.currency||'INR'});
+}
+// Accounts Payable Aging — Vendor Bills not yet paid, same bucket shape as AR aging above.
+async function handleFpReportApAging(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const now=new Date(); const todayStr=now.toISOString().slice(0,10);
+  const {results:bills}=await env.DB.prepare(`SELECT * FROM accounting_vendor_bills WHERE client_id=? AND status!='paid'`).bind(clientId).all();
+  const items=(bills||[]).map(b=>{
+    const dueDate=b.due_date||b.bill_date;
+    const isOverdue=dueDate<todayStr;
+    const overdueDays=Math.max(0, Math.floor((now.getTime()-new Date(dueDate).getTime())/86400000));
+    const bucket=isOverdue?(FP_AGING_BUCKETS.find(x=>overdueDays>=x.min&&overdueDays<=x.max)||FP_AGING_BUCKETS[FP_AGING_BUCKETS.length-1]).key:'not yet due';
+    return {Id:b.id, name:b.supplier, reference:b.vendor_invoice_no||('Bill #'+b.id), date:dueDate, balance:b.total, currency:b.currency, overdue_days:isOverdue?overdueDays:0, aging_bucket:bucket};
+  }).sort((a,b)=>b.overdue_days-a.overdue_days);
+  const buckets=[...FP_AGING_BUCKETS.map(b=>b.key), 'not yet due'].map(key=>({
+    key, count:items.filter(i=>i.aging_bucket===key).length,
+    amount:Math.round(items.filter(i=>i.aging_bucket===key).reduce((s,i)=>s+i.balance,0)*100)/100,
+  }));
+  return json({items, buckets, total:Math.round(items.reduce((s,i)=>s+i.balance,0)*100)/100, currency:items[0]?.currency||'INR'});
+}
+// Expense Breakdown — category totals across both expense sources over a trailing window
+// (default 6 months), plus a month-by-month series per category's top contributors.
+async function handleFpReportExpenseBreakdown(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const url=new URL(request.url);
+  const months=Math.min(24, parseInt(url.searchParams.get('months'))||6);
+  const since=new Date(); since.setMonth(since.getMonth()-(months-1)); since.setDate(1);
+  const sinceStr=since.toISOString().slice(0,10);
+  const {results:fpExp}=await env.DB.prepare(`SELECT category, amount, expense_date FROM fp_expenses WHERE client_id=? AND expense_date>=?`).bind(clientId, sinceStr).all();
+  const {results:acctExp}=await env.DB.prepare(`SELECT category, amount, expense_date FROM accounting_expenses WHERE client_id=? AND expense_date>=?`).bind(clientId, sinceStr).all();
+  const rows=[...(fpExp||[]), ...(acctExp||[])];
+  const byCategory={};
+  for(const e of rows){ const cat=e.category||'Uncategorized'; byCategory[cat]=(byCategory[cat]||0)+e.amount; }
+  const categories=Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([category,amount])=>({category, amount:Math.round(amount*100)/100}));
+  const total=rows.reduce((s,e)=>s+e.amount,0);
+  return json({months, since:sinceStr, categories, total:Math.round(total*100)/100});
+}
+// Sales Summary — Documents (Quotation/Invoice/Receipt) counts and totals by type/status within a
+// date range, plus a simple quotation→invoice conversion rate.
+async function handleFpReportSalesSummary(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const url=new URL(request.url);
+  const {from, to}=fpReportsDateRange(url);
+  const toExclusive=to+' 23:59:59';
+  const {results:docs}=await env.DB.prepare(`SELECT * FROM accounting_documents WHERE client_id=? AND doc_created_at>=? AND doc_created_at<=?`).bind(clientId, from, toExclusive).all();
+  const rows=docs||[];
+  const byType=['quotation','invoice','receipt'].map(type=>{
+    const typeRows=rows.filter(d=>d.type===type);
+    return {type, count:typeRows.length, total:Math.round(typeRows.reduce((s,d)=>s+(d.total||0),0)*100)/100};
+  });
+  const quotations=rows.filter(d=>d.type==='quotation');
+  const acceptedQuotations=quotations.filter(d=>d.status==='accepted'||d.status==='paid');
+  const conversionPct=quotations.length?Math.round(acceptedQuotations.length/quotations.length*1000)/10:null;
+  const currency=rows[0]?.currency||'INR';
+  return json({from, to, currency, by_type:byType, quotation_count:quotations.length, quotation_conversion_pct:conversionPct, total_documents:rows.length});
 }
 
 // ── Monthly generation cron — Expected Funds + fixed-recurring expenses ──
@@ -10701,11 +10868,21 @@ async function fpAiComputeSnapshotData(env, clientId){
 
   const since=new Date(now.getFullYear(), now.getMonth()-2, 1).toISOString().slice(0,10);
   const {results:expenses}=await env.DB.prepare(`SELECT * FROM fp_expenses WHERE client_id=? AND expense_date>=?`).bind(clientId, since).all();
+  const {results:acctExpenses}=await env.DB.prepare(`SELECT * FROM accounting_expenses WHERE client_id=? AND expense_date>=?`).bind(clientId, since).all();
   const thisMonthExpenses=(expenses||[]).filter(e=>e.expense_date.slice(0,7)===currentPeriod);
-  const totalExpensesThisMonth=thisMonthExpenses.reduce((s,e)=>s+e.amount,0);
+  const thisMonthAcctExpenses=(acctExpenses||[]).filter(e=>e.expense_date.slice(0,7)===currentPeriod);
+  const totalExpensesThisMonth=thisMonthExpenses.reduce((s,e)=>s+e.amount,0)+thisMonthAcctExpenses.reduce((s,e)=>s+e.amount,0);
   const byCategory={};
-  for(const e of thisMonthExpenses){ byCategory[e.category]=(byCategory[e.category]||0)+e.amount; }
+  for(const e of [...thisMonthExpenses, ...thisMonthAcctExpenses]){ const cat=e.category||'Uncategorized'; byCategory[cat]=(byCategory[cat]||0)+e.amount; }
   const topCategories=Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([category,amount])=>({category, amount:Math.round(amount*100)/100}));
+
+  // Documents' unpaid invoices (Money Owed to You) + Vendor Bills unpaid (Money You Owe) — same
+  // unified receivables/payables handleFpDashboard computes, so Ask Your Books and the monthly
+  // snapshot narrative describe the whole business, not just recurring billing.
+  const {results:unpaidInvoices}=await env.DB.prepare(`SELECT total FROM accounting_documents WHERE client_id=? AND type='invoice' AND status IN ('draft','sent')`).bind(clientId).all();
+  const invoiceReceivablesTotal=(unpaidInvoices||[]).reduce((s,d)=>s+(d.total||0),0);
+  const {results:unpaidBills}=await env.DB.prepare(`SELECT total FROM accounting_vendor_bills WHERE client_id=? AND status!='paid'`).bind(clientId).all();
+  const payablesTotal=(unpaidBills||[]).reduce((s,b)=>s+(b.total||0),0);
 
   const activeCustomers=await env.DB.prepare(`SELECT COUNT(*) as n FROM fp_customers WHERE client_id=? AND status='active'`).bind(clientId).first();
   const currency=thisMonthDues[0]?.currency||allDues[0]?.currency||thisMonthExpenses[0]?.currency||'INR';
@@ -10715,6 +10892,9 @@ async function fpAiComputeSnapshotData(env, clientId){
     total_expenses_this_month:Math.round(totalExpensesThisMonth*100)/100,
     net_position_this_month:Math.round((collected-totalExpensesThisMonth)*100)/100,
     outstanding_total:Math.round(outstandingTotal*100)/100, overdue_customer_count:overdueCount,
+    money_owed_to_you_total:Math.round((outstandingTotal+invoiceReceivablesTotal)*100)/100,
+    unpaid_invoice_count:(unpaidInvoices||[]).length,
+    money_you_owe_total:Math.round(payablesTotal*100)/100, unpaid_bill_count:(unpaidBills||[]).length,
     top_expense_categories_this_month:topCategories,
     active_customer_count:activeCustomers?.n||0,
   };
@@ -15031,6 +15211,11 @@ export default {
       else if(url.pathname==='/financial/config' && request.method==='GET'){ res=await handleFpConfigGet(request, env); }
       else if(url.pathname==='/financial/config' && request.method==='PATCH'){ res=await handleFpConfigUpdate(request, env); }
       else if(url.pathname==='/financial/dashboard' && request.method==='GET'){ res=await handleFpDashboard(request, env); }
+      else if(url.pathname==='/financial/reports/pl' && request.method==='GET'){ res=await handleFpReportPL(request, env); }
+      else if(url.pathname==='/financial/reports/ar-aging' && request.method==='GET'){ res=await handleFpReportArAging(request, env); }
+      else if(url.pathname==='/financial/reports/ap-aging' && request.method==='GET'){ res=await handleFpReportApAging(request, env); }
+      else if(url.pathname==='/financial/reports/expense-breakdown' && request.method==='GET'){ res=await handleFpReportExpenseBreakdown(request, env); }
+      else if(url.pathname==='/financial/reports/sales-summary' && request.method==='GET'){ res=await handleFpReportSalesSummary(request, env); }
       else if(url.pathname==='/financial/ai/parse-expense' && request.method==='POST'){ res=await handleFpAiParseExpense(request, env); }
       else if(url.pathname==='/financial/ai/ask' && request.method==='POST'){ res=await handleFpAiAsk(request, env); }
       else if(url.pathname==='/financial/ai/snapshot' && request.method==='GET'){ res=await handleFpAiSnapshotGet(request, env); }
