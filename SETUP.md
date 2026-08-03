@@ -6251,6 +6251,58 @@ actually ends up in a render — cues were never excluded by default, only *surf
 - **Inline, click-to-edit captions** replace a blocking `prompt()` dialog — click a word, type the
   fix in place (a real `contenteditable` span, not a modal), Enter or click-away commits it.
 
+## Marketing Studio module — Content Calendar & Instagram Auto-Posting (`frontend/marketing-studio.html` — "🗓️ Content Calendar" tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0038_marketing_content_studio.sql`)
+Plan Instagram posts (title + caption, scheduled to a date) ahead of time, on the same D1-not-
+NocoDB `marketing_content_posts` table the rest of this module uses. This is the **planning layer
+only** — the table already has `image_key`/`approved_at`/`ig_media_id` columns reserved for two
+later increments that build on top of it without a schema change: AI image generation/editing via
+fal.ai (Image Studio), and the actual approval-gated auto-publish to Instagram (reusing the
+Instagram DM module's `ig_id`/`ig_access_token` connection, whose OAuth scope already requests
+`instagram_business_content_publish` — see that module's own comment for the reconnect caveat on
+accounts connected before this scope existed).
+
+### CRUD (`handleContentPost{List,Create,Update,Delete}` in worker.js)
+Standard per-client CRUD on `marketing_content_posts`. A post with `scheduled_at` set gets
+`status='scheduled'`; without it, `status='draft'`. Editing/deleting a `status='posted'` post is
+rejected — once a post has actually gone out, this module treats it as immutable history.
+
+### Google Calendar sync (`marketingContentSyncGcal`)
+Reuses the **existing** Google Calendar connection (`gcal_refresh_token`/`gcal_calendar_id` on the
+Clients table — see "Google Calendar Sync" above) rather than a second OAuth flow: scheduling a
+post upserts an event titled `📲 <title>` on the same "Leadvyne Tasks & Events" calendar a rep
+already has, and clearing/deleting the post's schedule removes it. Best-effort and silent if the
+client never connected Google Calendar (same as every other caller of `gcalUpsertEvent`). Like
+that sync itself, this is **one-way** (Leadvyne → Google) — editing the event's date directly in
+Google Calendar does not reschedule the post here.
+
+### "Generate a week" (`handleContentGenerateWeek`, `POST /marketing/content/generate-week`)
+One topic fans out into N (1-14, default 7) daily draft post ideas in a single call — a cheap way
+to fill the calendar before spending anything on images. Reuses the **same shared-key, JSON-mode
+Gemini call** `handleMarketingSuggestCaption` already uses for video captions (`engineGeminiGenerate`,
+`env.GEMINI_API_KEY` — no client-supplied key, unlike fal.ai), asking for `{"posts":[{title,
+caption, hashtags}, ...]}` with exactly N items. Falls back to a plain templated caption per day if
+`GEMINI_API_KEY` isn't configured or the model doesn't return valid JSON — same
+graceful-degrade-not-hard-fail shape as the caption suggester. Every generated post lands as a
+**draft with no image** (`image_key` stays NULL) — deliberately so a week of ideas costs one text
+call, not N fal.ai image generations up front; an image only gets generated once a specific post is
+individually approved (the later Image Studio/auto-post increment).
+
+### "Turn a customer into a post" (`handleContentFromCustomer`, `GET /marketing/content/customers` + `POST /marketing/content/from-customer`)
+Sources a testimonial/case-study draft straight from a closed deal instead of a free-text topic —
+the picker (`GET /marketing/content/customers`) lists Leads rows whose `Stage` is `won` or
+`converted`, the same literal values Human Deals' one-click "✅ Won" button writes
+(`HD_OUTCOME_STAGE` in `dashboard.html`), filtered to this client and sorted by `ClosedAt` desc.
+Picking one calls the same `engineGeminiGenerate` shared-key path as "Generate a week" with the
+deal's own facts (`InterestedProduct`, `DealValue`, `ClosedAt`) as input, and lands as a **draft
+with no image**, same as every other generator in this module.
+- **Anonymized by default**: the prompt explicitly forbids the model from including the customer's
+  real name, phone, or any other identifying detail in the generated caption — it refers to them
+  generically ("a local business", "one of our clients"). The lead's real name is only ever used in
+  the draft's internal `title` (never shown to followers, purely so a marketer can tell drafts
+  apart in the calendar list) — this endpoint has no way to know a customer consented to being
+  named publicly, so it never assumes it. A marketer who *does* have consent can still type the
+  name into the caption by hand afterward via the normal Edit flow.
+
 ## Financial Planning module (`frontend/accounting.html` — "💰 Financial Planning" tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0015_financial_planning.sql`)
 
 Recurring-revenue and expense tracking for a client's own downstream customers — genuinely new to

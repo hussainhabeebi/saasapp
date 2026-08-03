@@ -2989,7 +2989,13 @@ async function handleChannelsWhatsappConnect(request, env){
 // Deliberately NOT instagram_business_manage_comments — nothing in this module reads or manages
 // comments (DMs only), and Meta's App Review rejects/flags permissions requested but not
 // demonstrably used, so asking for it would just be unearned review risk for no functionality.
-const META_IG_OAUTH_SCOPE='instagram_business_basic,instagram_business_manage_messages';
+// instagram_business_content_publish WAS added (Content Calendar / Auto-Posting module, see
+// marketingPublishContentPost below) — it reuses this same connection's ig_id/ig_access_token
+// rather than a second OAuth flow, since Instagram Login tokens carry whatever scopes were
+// granted at connect time. A client who connected Instagram *before* this scope existed is
+// missing it on their existing token; auto-posting for them fails with Instagram's own
+// "permission denied" until they disconnect and reconnect once from Settings → Integrations.
+const META_IG_OAUTH_SCOPE='instagram_business_basic,instagram_business_manage_messages,instagram_business_content_publish';
 
 async function handleInstagramOauthStart(request, env){
   const payload=await requireSession(request, env);
@@ -13249,6 +13255,226 @@ async function marketingGetClientKeys(env, clientId){
   return out;
 }
 
+/* ── CONTENT CALENDAR (SETUP.md "Marketing Studio module — Content Calendar") — plan social posts
+   (title/caption/schedule date) ahead of time. Image generation/editing and Instagram
+   auto-posting are separate, later increments (see marketing_content_posts' image_key/
+   approved_at/ig_media_id columns, already in the schema for them) — this slice is just the
+   planning layer: create/list/edit/delete a post, and the "Generate a week" button below that
+   fans one topic out into a week of draft ideas in a single call. Scheduling a post (setting
+   scheduled_at) best-effort pushes it onto the client's EXISTING Google Calendar connection
+   (gcal_refresh_token/gcal_calendar_id, "Google Calendar Sync" module above) — no second OAuth
+   flow — so a planned post shows up on a rep's phone the same way a Task or Calendar Event
+   already does. That connection is one-way (Leadvyne → Google); editing the event directly in
+   Google Calendar does not reschedule the post here. */
+function marketingSerializeContentPost(row){
+  if(!row) return null;
+  return {
+    id:row.id, title:row.title, caption:row.caption, image_key:row.image_key||null,
+    platform:row.platform, status:row.status, scheduled_at:row.scheduled_at,
+    approved:!!row.approved_at, gcal_event_id:row.gcal_event_id||null, ig_media_id:row.ig_media_id||null,
+    error:row.error||null, created_at:row.created_at, updated_at:row.updated_at,
+  };
+}
+
+async function handleContentPostsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE client_id=? ORDER BY (scheduled_at IS NULL), scheduled_at ASC, created_at DESC LIMIT 500`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(marketingSerializeContentPost)});
+}
+
+async function handleContentPostCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const title=(body.title||'').trim().slice(0,120)||null;
+  const caption=(body.caption||'').trim().slice(0,2200)||null;
+  const scheduledAt=body.scheduled_at||null;
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_content_posts (client_id, title, caption, platform, status, scheduled_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), title, caption, 'instagram', scheduledAt?'scheduled':'draft', scheduledAt, now, now).run();
+  const id=result.meta.last_row_id;
+  if(scheduledAt) await marketingContentSyncGcal(env, payload.cid, id);
+  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(id).first();
+  return json({ok:true, post:marketingSerializeContentPost(row)});
+}
+
+async function handleContentPostUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.id);
+  if(!id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!existing) return json({error:'Not found'}, 404);
+  if(existing.status==='posted') return json({error:'This post has already gone out — it cannot be edited.'}, 400);
+  const sets=[], vals=[];
+  if(body.title!==undefined){ sets.push('title=?'); vals.push((body.title||'').trim().slice(0,120)||null); }
+  if(body.caption!==undefined){ sets.push('caption=?'); vals.push((body.caption||'').trim().slice(0,2200)||null); }
+  let scheduleChanged=false;
+  if(body.scheduled_at!==undefined){
+    sets.push('scheduled_at=?'); vals.push(body.scheduled_at||null);
+    sets.push('status=?'); vals.push(body.scheduled_at?'scheduled':'draft');
+    scheduleChanged=true;
+  }
+  if(!sets.length) return json({error:'Nothing to update'}, 400);
+  sets.push('updated_at=?'); vals.push(new Date().toISOString());
+  vals.push(id);
+  await env.DB.prepare(`UPDATE marketing_content_posts SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  if(scheduleChanged) await marketingContentSyncGcal(env, payload.cid, id);
+  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(id).first();
+  return json({ok:true, post:marketingSerializeContentPost(row)});
+}
+
+async function handleContentPostDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=Number(body.id);
+  if(!id) return json({error:'id required'}, 400);
+  const post=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
+  if(!post) return json({error:'Not found'}, 404);
+  if(post.gcal_event_id){
+    const c=await getClientById(env, payload.cid);
+    if(c) await gcalDeleteEvent(env, c, post.gcal_event_id);
+  }
+  await env.DB.prepare(`DELETE FROM marketing_content_posts WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+// Best-effort — silently no-ops if this client never connected Google Calendar (gcalUpsertEvent/
+// gcalDeleteEvent already do the same), same as every other caller of that module.
+async function marketingContentSyncGcal(env, clientId, postId){
+  const c=await getClientById(env, clientId);
+  if(!c?.gcal_refresh_token||!c?.gcal_calendar_id) return;
+  const post=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(postId).first();
+  if(!post) return;
+  if(!post.scheduled_at){
+    if(post.gcal_event_id){ await gcalDeleteEvent(env, c, post.gcal_event_id); await env.DB.prepare(`UPDATE marketing_content_posts SET gcal_event_id=NULL WHERE id=?`).bind(postId).run(); }
+    return;
+  }
+  const [date, time]=String(post.scheduled_at).split('T');
+  const gcalEventId=await gcalUpsertEvent(env, c, {gcalEventId:post.gcal_event_id||null, title:`📲 ${post.title||'Instagram post'}`, notes:post.caption||'', date, time:time?time.slice(0,5):null, allDay:!time});
+  if(gcalEventId) await env.DB.prepare(`UPDATE marketing_content_posts SET gcal_event_id=? WHERE id=?`).bind(gcalEventId, postId).run();
+}
+
+// "Generate a week" — one topic fans out into a week of DRAFT post ideas (title + caption +
+// hashtags, one per day), scheduled but with no image yet. Deliberately drafts only: no fal.ai
+// image cost is spent until each idea is individually approved later (a separate increment), so
+// generating a whole week costs one shared Gemini call, not N paid image generations up front.
+// Same shared-key, heuristic-fallback pattern as handleMarketingSuggestCaption above — no
+// client-supplied key needed (this is text, not the paid fal.ai image path).
+async function handleContentGenerateWeek(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const topic=(body.topic||'').trim().slice(0,300);
+  if(!topic) return json({error:'topic required'}, 400);
+  const days=Math.min(14, Math.max(1, Number(body.days)||7));
+  const startDate=body.start_date&&/^\d{4}-\d{2}-\d{2}$/.test(body.start_date) ? body.start_date : new Date(Date.now()+86400000).toISOString().slice(0,10);
+
+  const raw=await engineGeminiGenerate(env,
+    `You are a social media content planner. Given a topic/theme, propose exactly ${days} distinct Instagram post ideas spread across ${days} consecutive days (one per day, in order). Reply with ONLY compact JSON: {"posts":[{"title":"...", "caption":"...", "hashtags":["...","..."]}, ...]} with exactly ${days} items in that array, in day order. title: a short internal label (not shown to followers), max 60 chars. caption: 1-3 sentences, no hashtags inside it, matching the topic's tone. hashtags: 4-6 relevant lowercase hashtags WITHOUT the # symbol.`,
+    topic, {json:true, maxOutputTokens:200*days});
+  let ideas=null;
+  if(raw){
+    try{
+      const parsed=JSON.parse(raw);
+      if(Array.isArray(parsed?.posts) && parsed.posts.length) ideas=parsed.posts;
+    }catch(e){ /* fall through to heuristic */ }
+  }
+  if(!ideas){
+    // Heuristic fallback — no GEMINI_API_KEY configured, or the model didn't return valid JSON.
+    ideas=Array.from({length:days}, (_,i)=>({title:`${topic} — day ${i+1}`, caption:`${topic} (day ${i+1} of ${days}).`, hashtags:['smallbusiness','instagram']}));
+  }
+  ideas=ideas.slice(0,days);
+
+  const c=await getClientById(env, payload.cid);
+  const now=new Date().toISOString();
+  const created=[];
+  for(let i=0;i<ideas.length;i++){
+    const idea=ideas[i]||{};
+    const date=new Date(new Date(startDate+'T00:00:00Z').getTime()+i*86400000).toISOString().slice(0,10);
+    const title=String(idea.title||`${topic} — day ${i+1}`).trim().slice(0,120);
+    const hashtags=(Array.isArray(idea.hashtags)?idea.hashtags:[]).map(h=>String(h).replace(/^#/,'').trim()).filter(Boolean).slice(0,8);
+    const caption=[String(idea.caption||'').trim(), hashtags.length?hashtags.map(h=>'#'+h).join(' '):''].filter(Boolean).join('\n\n').slice(0,2200);
+    const scheduledAt=`${date}T10:00`;
+    const result=await env.DB.prepare(`INSERT INTO marketing_content_posts (client_id, title, caption, platform, status, scheduled_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
+      .bind(Number(payload.cid), title, caption, 'instagram', 'scheduled', scheduledAt, now, now).run();
+    const id=result.meta.last_row_id;
+    if(c?.gcal_refresh_token&&c?.gcal_calendar_id) await marketingContentSyncGcal(env, payload.cid, id);
+    const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(id).first();
+    created.push(marketingSerializeContentPost(row));
+  }
+  return json({ok:true, source:raw?'ai':'heuristic', list:created});
+}
+
+// "Turn a customer into a post" — source a testimonial/case-study draft straight from a closed
+// deal record (a Leads row whose Stage is 'won'/'converted', same literal values Human Deals'
+// one-click "✅ Won" button writes — see dashboard.html's isWonLead/HD_OUTCOME_STAGE) instead of a
+// free-text topic. Same lazy-image-later shape as "Generate a week" above: lands as a text-only
+// draft, no fal.ai cost until an image is added and the post is approved.
+// Deliberately anonymized by default — the generated CAPTION never includes the customer's real
+// name/phone (only the internal `title`, never shown to followers, may reference them, purely so
+// the marketer can tell drafts apart) — this endpoint has no way to know consent was given to name
+// a real customer publicly, so it doesn't assume it. A marketer with actual consent can still type
+// the name into the caption by hand afterward from the Edit form.
+async function handleContentCustomersList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const where=`(ClientId,eq,${Number(payload.cid)})~and((Stage,eq,won)~or(Stage,eq,converted))`;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=100&sort=-ClosedAt`);
+  if(!r.ok) return json({list:[]});
+  const data=await r.json().catch(()=>({}));
+  const list=(data?.list||[]).map(l=>({id:l.Id, name:l.Name||'(unnamed)', interested_product:l.InterestedProduct||'', deal_value:l.DealValue||null, closed_at:l.ClosedAt||null}));
+  return json({list});
+}
+
+async function handleContentFromCustomer(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const leadId=Number(body.lead_id);
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  if(!leadR.ok) return json({error:'Customer record not found'}, 404);
+  const lead=await leadR.json().catch(()=>({}));
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Customer record not found'}, 404);
+  if(!(lead.Stage==='won'||lead.Stage==='converted')) return json({error:'This lead is not a closed/won deal.'}, 400);
+
+  const facts=[
+    lead.InterestedProduct?`Interested in / bought: ${lead.InterestedProduct}`:null,
+    lead.DealValue?`Deal value: ${lead.DealValue}`:null,
+    lead.ClosedAt?`Closed: ${new Date(lead.ClosedAt).toLocaleDateString()}`:null,
+  ].filter(Boolean).join('\n');
+  const userText=facts||'A customer recently closed a deal with us.';
+
+  const raw=await engineGeminiGenerate(env,
+    'You write a short Instagram case-study/social-proof caption celebrating a real customer win, given a few internal facts about the deal. NEVER include the customer\'s real name, phone, or any other identifying detail — refer to them generically ("a local business", "one of our clients", "a customer looking for [product]"). Reply with ONLY compact JSON: {"title":"...", "caption":"...", "hashtags":["...","..."]}. title: a short internal label (not shown to followers), max 60 chars. caption: 2-4 sentences, upbeat, no hashtags inside it. hashtags: 4-6 relevant lowercase hashtags WITHOUT the # symbol.',
+    userText, {json:true, maxOutputTokens:250});
+  let title=null, caption=null, hashtags=[];
+  if(raw){
+    try{
+      const parsed=JSON.parse(raw);
+      if(parsed && typeof parsed.caption==='string'){ title=parsed.title; caption=parsed.caption; hashtags=Array.isArray(parsed.hashtags)?parsed.hashtags:[]; }
+    }catch(e){ /* fall through to heuristic */ }
+  }
+  if(!caption){
+    // Heuristic fallback — no GEMINI_API_KEY configured, or the model didn't return valid JSON.
+    caption=`Another happy customer! ${lead.InterestedProduct?`Proud to have helped with ${lead.InterestedProduct}.`:'Thank you for trusting us.'}`;
+    hashtags=['customerstory','testimonial','smallbusiness'];
+  }
+  title=(title||`Customer story — ${lead.Name||('lead #'+leadId)}`).toString().slice(0,120);
+  const hashtagLine=hashtags.map(h=>'#'+String(h).replace(/^#/,'').trim()).filter(h=>h.length>1).join(' ');
+  const fullCaption=[String(caption).trim(), hashtagLine].filter(Boolean).join('\n\n').slice(0,2200);
+
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_content_posts (client_id, title, caption, platform, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), title, fullCaption, 'instagram', 'draft', now, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(result.meta.last_row_id).first();
+  return json({ok:true, source:raw?'ai':'heuristic', post:marketingSerializeContentPost(row)});
+}
+
 async function handleMarketingStylePresets(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -15505,6 +15731,13 @@ export default {
       else if(url.pathname==='/marketing/brand-styles' && request.method==='GET'){ res=await handleMarketingBrandStylesList(request, env); }
       else if(url.pathname==='/marketing/brand-styles' && request.method==='POST'){ res=await handleMarketingBrandStyleCreate(request, env); }
       else if(url.pathname==='/marketing/brand-styles' && request.method==='DELETE'){ res=await handleMarketingBrandStyleDelete(request, env); }
+      else if(url.pathname==='/marketing/content/posts' && request.method==='GET'){ res=await handleContentPostsList(request, env); }
+      else if(url.pathname==='/marketing/content/posts' && request.method==='POST'){ res=await handleContentPostCreate(request, env); }
+      else if(url.pathname==='/marketing/content/posts' && request.method==='PATCH'){ res=await handleContentPostUpdate(request, env); }
+      else if(url.pathname==='/marketing/content/posts' && request.method==='DELETE'){ res=await handleContentPostDelete(request, env); }
+      else if(url.pathname==='/marketing/content/generate-week' && request.method==='POST'){ res=await handleContentGenerateWeek(request, env); }
+      else if(url.pathname==='/marketing/content/customers' && request.method==='GET'){ res=await handleContentCustomersList(request, env); }
+      else if(url.pathname==='/marketing/content/from-customer' && request.method==='POST'){ res=await handleContentFromCustomer(request, env); }
       else if(url.pathname==='/marketing/projects' && request.method==='GET'){ res=await handleMarketingProjectsList(request, env); }
       else if(url.pathname==='/marketing/projects' && request.method==='POST'){ res=await handleMarketingProjectCreate(request, env); }
       else if(url.pathname==='/marketing/projects' && request.method==='PATCH'){ res=await handleMarketingProjectUpdate(request, env); }
