@@ -18279,6 +18279,14 @@ async function deleteHospBooking(id){
 /* ── CHATS TAB ── */
 /* ── CHATS TAB (uses local allLeads + ConvHistory) ── */
 let _chatSearchTimer=null, _chatLeadId=null, CHAT_FILTER='all', CHAT_CHANNEL='whatsapp';
+// All leads are already in memory (loadAll fetches up to 2000 in one shot — every other page
+// depends on allLeads being the complete set, so that fetch itself isn't paginated here). This is
+// DOM-level pagination instead: chatConvoLeads on a busy account can still be a few hundred rows,
+// re-rendered into the DOM on every keystroke in search — capping how many contact rows actually
+// render at once is the real, cheap-to-fix cost. Reset to CHAT_PAGE_SIZE at each "fresh view"
+// entry point (search/filter/channel/tab-open); chatLoadMore() is the only thing that grows it.
+const CHAT_PAGE_SIZE=40;
+let _chatRenderLimit=CHAT_PAGE_SIZE;
 
 /* ── Unread tracking ──
    No backend concept of "read" exists (ConvHistory/LastMsgAt are the only per-lead signals this
@@ -18318,13 +18326,14 @@ function openChatsTab(){
   $id('chatSearch').value='';
   CHAT_FILTER='all';
   CHAT_CHANNEL='whatsapp';
+  _chatRenderLimit=CHAT_PAGE_SIZE;
   $id('chatChannelWa').classList.add('active');
   $id('chatChannelIg').classList.remove('active');
   renderChatEmpty();
   renderChatContacts();
 }
 
-function setChatFilter(f){ CHAT_FILTER=f; renderChatContacts(); }
+function setChatFilter(f){ CHAT_FILTER=f; _chatRenderLimit=CHAT_PAGE_SIZE; renderChatContacts(); }
 
 // Switches which Channel chatConvoLeads() filters for — Instagram DM leads live in this exact
 // same table/ConvHistory shape (see SETUP.md "Instagram DM module"), so this is the only change
@@ -18334,6 +18343,7 @@ function setChatChannel(ch){
   $id('chatChannelWa').classList.toggle('active', ch==='whatsapp');
   $id('chatChannelIg').classList.toggle('active', ch==='instagram');
   _chatLeadId=null;
+  _chatRenderLimit=CHAT_PAGE_SIZE;
   renderChatEmpty();
   renderChatContacts();
 }
@@ -18380,6 +18390,12 @@ function renderChatContacts(){
     return;
   }
 
+  const totalMatched=leads.length;
+  leads=leads.slice(0, _chatRenderLimit);
+  // Reassigning innerHTML resets scroll to the top — fine for a fresh search/filter, but jarring
+  // right after clicking "Load more" at the bottom, so that specific case restores it.
+  const prevScrollTop=list.scrollTop;
+
   list.innerHTML=leads.map(l=>{
     let lastMsg='', lastFromUs=false;
     try{
@@ -18413,7 +18429,15 @@ function renderChatContacts(){
       </div>
     </div>`;
   }).join('');
-  $id('chatLoadMore').style.display='none';
+  list.scrollTop=prevScrollTop;
+  const loadMoreBtn=$id('chatLoadMore');
+  const remaining=totalMatched-leads.length;
+  if(remaining>0){
+    loadMoreBtn.style.display='block';
+    loadMoreBtn.textContent=`Load more contacts ↓ (${remaining} more)`;
+  }else{
+    loadMoreBtn.style.display='none';
+  }
   updateChatBadge();
 }
 
@@ -18426,10 +18450,14 @@ function renderChatFilterRow(counts){
 
 function chatSearchDebounce(){
   clearTimeout(_chatSearchTimer);
+  _chatRenderLimit=CHAT_PAGE_SIZE;
   _chatSearchTimer=setTimeout(()=>renderChatContacts(),300);
 }
 
-function chatLoadMore(){} // no-op, all loaded from memory
+function chatLoadMore(){
+  _chatRenderLimit+=CHAT_PAGE_SIZE;
+  renderChatContacts();
+}
 
 function chatSelectLead(leadId){
   document.querySelectorAll('.chat-contact-row').forEach(r=>r.classList.remove('active'));
