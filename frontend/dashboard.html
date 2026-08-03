@@ -1101,6 +1101,23 @@ const MODULE_PERMISSIONS = [
   {key:'broadcast', label:'📢 Campaigns'},
   {key:'settings', label:'⚙️ Settings'},
 ];
+
+// Named role presets (User Management → profile → "Role") — applies to every industry, not just
+// travel. A role is just a convenience layer on top of the same team_permissions.modules array
+// applyUserModulePermissions() already enforces: picking a role fills in the module checkboxes
+// with a sensible starting point (still editable before saving), and separately drives which Home
+// page sections show (see applyRoleHomeView()) and whether the Leads page defaults to "Mine".
+// modules:null means unrestricted, same convention as a fully-checked custom selection.
+const ROLES = {
+  admin:              { label:'👑 Admin',              modules:null, homeHide:[], leadsDefaultMine:false },
+  general_manager:    { label:'📈 General Manager',    modules:null, homeHide:[], leadsDefaultMine:false },
+  sales_manager:      { label:'💼 Sales Manager',      modules:['home','humandeals','chats','leads','tasks','team','reports','agency','b2b','recruit','appointments','realestate','hospitality','broadcast'],
+                         homeHide:[], leadsDefaultMine:false },
+  marketing_manager:  { label:'📢 Marketing Manager',  modules:['home','chats','leads','tasks','reports','knowledgebase','broadcast'],
+                         homeHide:['homeAgentCard'], leadsDefaultMine:false },
+  telecaller:         { label:'📞 Tele Caller',        modules:['home','chats','leads','tasks'],
+                         homeHide:['homeAgentCard','homeChartCard','homeFunnelCard'], leadsDefaultMine:true },
+};
 </script>
 
 <!-- GATE -->
@@ -1252,7 +1269,7 @@ const MODULE_PERMISSIONS = [
           <!-- LEFT: main content -->
           <div class="home-col-main">
             <!-- Recent Activity -->
-            <div class="section-card">
+            <div class="section-card" id="homeActivityCard">
               <div class="section-title">🕐 Recent Activity
                 <button class="btn-ghost" onclick="navigate('leads')" style="font-size:12px;font-weight:500">View all →</button>
               </div>
@@ -1260,7 +1277,7 @@ const MODULE_PERMISSIONS = [
             </div>
 
             <!-- Leads Over Time Chart -->
-            <div class="section-card">
+            <div class="section-card" id="homeChartCard">
               <div class="section-title">📈 Leads Over Time
                 <span style="display:flex;gap:6px">
                   <button class="btn-ghost" id="chartWeek" onclick="setChartMode('week')">Weekly</button>
@@ -1271,7 +1288,7 @@ const MODULE_PERMISSIONS = [
             </div>
 
             <!-- Pipeline Funnel -->
-            <div class="section-card">
+            <div class="section-card" id="homeFunnelCard">
               <div class="section-title">📊 Pipeline Funnel</div>
               <div id="funnelChart"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
             </div>
@@ -1280,7 +1297,7 @@ const MODULE_PERMISSIONS = [
           <!-- RIGHT: sidebar -->
           <div class="home-col-side">
             <!-- Follow-ups Due -->
-            <div class="section-card">
+            <div class="section-card" id="homeFollowUpsCard">
               <div class="section-title">⏰ Follow-ups Due
                 <button class="btn-ghost" onclick="navigate('leads')" style="font-size:12px;font-weight:500">All →</button>
               </div>
@@ -1288,7 +1305,7 @@ const MODULE_PERMISSIONS = [
             </div>
 
             <!-- Hot Moments -->
-            <div class="section-card">
+            <div class="section-card" id="homeHotLeadsCard">
               <div class="section-title">🔥 Hot Moments</div>
               <div id="homeHotLeads"><div style="color:var(--muted);font-size:13px;padding:8px 0">Loading…</div></div>
             </div>
@@ -1314,7 +1331,7 @@ const MODULE_PERMISSIONS = [
             </div>
 
             <!-- Quick Actions -->
-            <div class="section-card">
+            <div class="section-card" id="homeQuickActionsCard">
               <div class="section-title">⚡ Quick Actions</div>
               <div style="display:flex;flex-direction:column;gap:8px">
                 <button class="qact-btn" onclick="goToPipeline()">📋 View Pipeline</button>
@@ -4802,6 +4819,8 @@ function showApp(){
   updateFeatureTabVisibility();
   updateMarketingStudioVisibility();
   applyUserModulePermissions();
+  applyRoleHomeView();
+  applyRoleLeadsDefault();
   loadAll();
   connectLiveUpdates();
   clearInterval(refreshTimer);
@@ -8033,6 +8052,24 @@ function applyUserModulePermissions(){
     document.querySelectorAll(`[data-page="${m.key}"]`).forEach(el=>{ el.style.display='none'; });
   });
 }
+// Role-driven view differences (Home page sections, Leads page default filter) — separate from
+// module access (applyUserModulePermissions above): a role doesn't hide/show nav tabs, it changes
+// what's on the page a person *can* already reach. Same for every industry — nothing here is
+// gated on clientRecord.industry. The owner always gets the unrestricted default view.
+function myRole(){
+  if(!clientRecord||!myEmail||isAccountOwner()) return null;
+  return getTeamPermissions()[myEmail]?.role||null;
+}
+function applyRoleHomeView(){
+  const role=ROLES[myRole()];
+  if(!role) return; // no role set, or owner — full default Home view
+  role.homeHide.forEach(id=>{ const el=$id(id); if(el) el.style.display='none'; });
+}
+function applyRoleLeadsDefault(){
+  const role=ROLES[myRole()];
+  const chk=$id('leadMineOnly');
+  if(chk && role?.leadsDefaultMine) chk.checked=true;
+}
 function closeUserProfile(){ closeModal('modalUserProfile'); }
 function openUserProfile(email){
   renderUserProfileModal((email||'').trim().toLowerCase());
@@ -8078,6 +8115,8 @@ function renderUserProfileModal(email){
       <input type="checkbox" class="upModuleChk" value="${m.key}" ${checked?'checked':''} ${canEdit?'':'disabled'}> ${m.label}
     </label>`;
   }).join('');
+  const roleOptions=Object.entries(ROLES).map(([k,r])=>`<option value="${k}"${perms.role===k?' selected':''}>${r.label}</option>`).join('')
+    +`<option value="custom"${!perms.role?' selected':''}>🛠️ Custom</option>`;
 
   const categoryRows=LEAD_CATEGORIES.map(c=>{
     const checked=owner || categories===null || categories.includes(c);
@@ -8091,6 +8130,11 @@ function renderUserProfileModal(email){
       <div class="pc-title">💬 Chatwoot Login</div>
       ${chatwootHtml}
     </div>
+    ${!owner?`
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px">Role</div>
+    <div class="s-note" style="margin-bottom:8px">${canEdit?'Picking a role fills in Module Access below with a sensible starting point (still editable), and shapes what the Home and Leads pages show for this person. Works the same for every industry.':'Only the account owner can change this.'}</div>
+    <select class="form-input" id="upRoleSelect" style="max-width:260px;margin-bottom:16px" ${canEdit?'onchange="applyRolePreset(this.value)"':'disabled'}>${roleOptions}</select>
+    `:''}
     <div style="font-weight:700;font-size:13px;margin-bottom:6px">Module Access</div>
     <div class="s-note" style="margin-bottom:8px">${owner?'The account owner always has full access.':canEdit?'Uncheck a module to hide it from this teammate. Leave everything checked for full access.':'Only the account owner can change this.'}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px" id="upModuleList">${moduleRows}</div>
@@ -8107,6 +8151,17 @@ function renderUserProfileModal(email){
        <button class="btn btn-secondary" onclick="closeUserProfile()">Close</button>`
     : `<button class="btn btn-secondary" style="flex:1" onclick="closeUserProfile()">Close</button>`;
 }
+// Ticks/unticks the Module Access checkboxes to match a role preset — purely a DOM convenience,
+// nothing is saved until "Save Access" is clicked, so picking the wrong role by accident costs
+// nothing. "Custom" leaves whatever's currently checked alone (it's the fallback state, not a
+// preset of its own).
+function applyRolePreset(roleKey){
+  const role=ROLES[roleKey];
+  if(!role) return; // "custom"
+  document.querySelectorAll('#upModuleList .upModuleChk').forEach(el=>{
+    el.checked = role.modules===null || role.modules.includes(el.value);
+  });
+}
 // Passwords sit in plain sight in the DOM either way (this app has no client-side crypto to hide
 // them behind) — masking-by-default here is just to stop a shoulder-surf/screen-share leak, not a
 // real secrecy boundary. Click to reveal, matching how the one-time creation card already shows
@@ -8119,8 +8174,10 @@ async function saveUserProfilePermissions(email){
   const msg=$id('userProfileMsg'); msg.textContent='Saving…'; msg.className='save-msg';
   try{
     const modules=[...document.querySelectorAll('#upModuleList .upModuleChk:checked')].map(el=>el.value);
+    const roleSel=$id('upRoleSelect')?.value||'';
     const perms=getTeamPermissions();
     const next={ modules: modules.length===MODULE_PERMISSIONS.length ? null : modules }; // all checked = no restriction
+    if(roleSel && roleSel!=='custom') next.role=roleSel; // drives Home/Leads page views — see applyRoleHomeView()
     // The category checkboxes only exist in the DOM for travel clients (renderUserProfileModal
     // skips that section otherwise) — querySelectorAll would silently return [] on a non-travel
     // client, which without this guard would get saved as leadCategories:[] ("sees no leads") and
