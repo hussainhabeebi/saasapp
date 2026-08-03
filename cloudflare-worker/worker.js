@@ -6608,7 +6608,12 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   return {
     lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping,
     qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
-    winProbabilityManual:lead?.WinProbabilityManual||'No', lastMsgAt:lead?.LastMsgAt||null
+    winProbabilityManual:lead?.WinProbabilityManual||'No', lastMsgAt:lead?.LastMsgAt||null,
+    // See engineMaybeSummarizeHistory — a rolling summary of everything ConvHistory's 40-turn cap
+    // has already dropped, so a long-running lead doesn't lose all memory of anything discussed
+    // before that cap. Empty for the vast majority of leads (most conversations never cross 40
+    // turns at all), so this stays a no-op read for them.
+    summary:lead?.ConvSummary||''
   };
 }
 
@@ -7151,6 +7156,7 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // ("order M size") needs the assistant's own prior product-listing message to still be in view
   // to resolve against (see the instruction below), and a returning customer's earlier stated
   // preferences should still be visible several turns later, not just the last couple of messages.
+  sys+=engineSummaryBlock(state);
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
 
   // Observed real failure: with no concrete data to answer from (e.g. an unconfigured product/
@@ -7240,6 +7246,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
       ? ` Create gentle urgency: mention that this pricing is confirmed for the next ${c.quote_validity_days} day(s) and encourage a decision within that window.`
       : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
   }
+  sys+=engineSummaryBlock(state);
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // See engineBuildFaqSystemPrompt's matching comment.
@@ -7297,6 +7304,41 @@ async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
     await reportOpsError(env, 'engineCallLlm — Gemini failed and the OpenRouter fallback threw', e, {clientId:c?.Id});
   }
   return 'One moment 🙏';
+}
+
+// Shared by both FAQ/objection prompt builders (engineBuildFaqSystemPrompt/
+// engineBuildObjectionSystemPrompt) — see engineMaybeSummarizeHistory for how state.summary gets
+// generated/updated. Placed before "## Recent Conversation" in both callers so a returning
+// customer's earlier context (otherwise entirely invisible past the 20-turn activeHistory window)
+// reads in actual chronological order: summary of what came before, then the recent turns.
+function engineSummaryBlock(state){
+  return state.summary?`\n\n## Earlier in This Conversation (summary)\n${state.summary}`:'';
+}
+
+// Rolling summary of everything ConvHistory's 40-turn cap (engineBuildLeadUpsertBody) has already
+// dropped — without this, a lead whose conversation runs past that cap loses all memory of
+// anything discussed before it, even though the conversation is still ongoing. Regenerates every
+// ENGINE_SUMMARY_EVERY_N_TURNS turns once history first crosses the cap, folding the prior summary
+// together with a BOUNDED slice of the older messages into one short updated summary via a single
+// cheap LLM call — bounding that input (not how often this runs) is what keeps cost flat as a
+// conversation runs arbitrarily long, since it's always summarizing one fixed-size window, never
+// the whole history from scratch. Returns null on a no-op turn (nothing to persist) or on total
+// LLM failure (engineCallLlm's own hard-failure placeholder is never persisted as if it were real).
+const ENGINE_SUMMARY_EVERY_N_TURNS=10;
+async function engineMaybeSummarizeHistory(env, c, fullHistory, priorSummary){
+  if(fullHistory.length<=40 || fullHistory.length%ENGINE_SUMMARY_EVERY_N_TURNS!==0) return null;
+  const olderSlice=fullHistory.slice(0,-20).slice(-30);
+  if(!olderSlice.length) return null;
+  const transcript=olderSlice.map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+  const system=`Summarize the following older portion of a WhatsApp sales conversation in 2-4 short sentences — key facts about the customer (their need, preferences, objections raised, anything they committed to), not a turn-by-turn recap.${priorSummary?` Fold in this existing summary of everything even earlier, keeping it concise rather than just appending: "${priorSummary}"`:''} Respond with ONLY the updated summary text, no preamble, no markdown.`;
+  const summary=await engineCallLlm(env, c, system, transcript, 200);
+  if(!summary || summary==='One moment 🙏') return null;
+  // Not scoped to "only the very first time this ever happens for this lead" — an extra NocoDB
+  // meta round-trip on every regeneration tick (once every 10 turns, only for conversations already
+  // long enough to need this at all) is an accepted cost, same trade-off ncEnsureField itself
+  // already makes internally.
+  await ensureLeadsColumns(env, ['ConvSummary']);
+  return summary;
 }
 
 // flow_json stage messages, qual_questions, and callback_msg/callback_msg_frustrated are static
@@ -7361,6 +7403,40 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
     }
   }catch(e){
     await reportOpsError(env, 'engineSendChatwootReply — send threw', e, {clientId, convId});
+  }
+}
+
+// Same message-create endpoint as engineSendChatwootReply, plus the content_type/content_attributes
+// pair Chatwoot's own WhatsApp Cloud provider turns into a real WhatsApp interactive button message
+// (confirmed against Chatwoot's own source: MessageBuilder reads content_type/content_attributes —
+// content_attributes accepted as a JSON string over multipart form-data, same as this file already
+// sends content/message_type/private that way — and WhatsappCloudService#create_payload_based_on_items
+// builds a button-type payload for <=3 items). items is [{title, value}]; WhatsApp's Cloud API caps
+// button titles at 20 characters and allows at most 3 buttons, so both are enforced defensively here
+// rather than trusting a caller and getting a silent downstream Meta rejection (see
+// engineSendChatwootReply's own comment on that exact class of failure). List-type payloads (>3
+// items) are a real Chatwoot capability too but aren't used by any caller yet, so this only ever
+// sends the button shape — extra items are dropped, not upgraded to a list, until a caller actually
+// needs more than 3.
+async function engineSendChatwootQuickReply(env, c, clientId, convId, text, items){
+  const trimmedItems=(items||[]).slice(0,3).map(it=>({title:String(it?.title||'').slice(0,20), value:String(it?.value||it?.title||'')})).filter(it=>it.title);
+  if(!trimmedItems.length) return engineSendChatwootReply(env, c, clientId, convId, text);
+  const trimmed=(typeof text==='string'?text:'').trim();
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return;
+  try{
+    const fd=new FormData();
+    fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('content_type','input_select');
+    fd.append('content_attributes', JSON.stringify({items:trimmedItems}));
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendChatwootQuickReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+      return engineSendChatwootReply(env, c, clientId, convId, trimmed);
+    }
+  }catch(e){
+    await reportOpsError(env, 'engineSendChatwootQuickReply — send threw', e, {clientId, convId});
+    return engineSendChatwootReply(env, c, clientId, convId, trimmed);
   }
 }
 
@@ -7630,7 +7706,7 @@ function engineExtractLinkPriceCaption(replyText){
 // play, or the TTS call itself fails) so a voice hiccup never costs the customer a reply outright.
 // Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
 // out of scope for now, this only covers live conversational replies.
-async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId}={}){
+async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId, quickReplies}={}){
   // Clears the typing indicator turned on right after engineClaimMessage, regardless of which
   // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
   // No-ops for Instagram (convId is null there) since that channel never goes through Chatwoot.
@@ -7659,6 +7735,7 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
     if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
   }
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
+  if(quickReplies && quickReplies.length) return engineSendChatwootQuickReply(env, c, clientId, convId, trimmed, quickReplies);
   return engineSendChatwootReply(env, c, clientId, convId, trimmed);
 }
 
@@ -7945,7 +8022,10 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   if(objectionCategory && objectionCategory!=='none') body.LastObjectionCategory=objectionCategory;
   if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
 
-  return {body, method:state.leadId?'PATCH':'POST', leadId:state.leadId};
+  // fullHistory (untrimmed — body.ConvHistory above is already capped to the last 40) is exposed
+  // purely for engineMaybeSummarizeHistory's call site, which needs to know the true turn count to
+  // decide whether/when to regenerate the rolling summary.
+  return {body, method:state.leadId?'PATCH':'POST', leadId:state.leadId, fullHistory:history};
 }
 
 // Returns the resolved lead id (the given leadId for a PATCH, or the id NocoDB assigns on a
@@ -8333,10 +8413,21 @@ async function handleEngineWebhook(request, env, secret){
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      // The one deterministic, low-risk spot this ships to for now: a customer who just raised an
+      // objection is exactly who benefits from an explicit, one-tap human escalation offered
+      // alongside the LLM's own answer, rather than only ever reachable by typing something the
+      // WANTS_HUMAN classifier happens to catch. Tapping it sends its title back as a normal
+      // incoming text message (Chatwoot's own webhook behavior for a button reply — no special
+      // receive-side handling needed), which the existing WANTS_HUMAN keyword match already
+      // recognizes ("talk to a human" contains "talk to"). Opt-out via the same bot_config a client
+      // already uses for the other handover/objection toggles.
+      const quickReplies=botConfig.quick_reply_buttons_enabled!==false?[{title:'🙋 Talk to a human', value:'Talk to a human'}]:null;
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies});
     }
 
-    const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
+    const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
+    const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
+    if(newSummary) leadBody.ConvSummary=newSummary;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
@@ -8557,7 +8648,9 @@ async function handleInstagramWebhook(request, env){
         await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
       }
 
-      const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
+      const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
+      const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
+      if(newSummary) leadBody.ConvSummary=newSummary;
       const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
       if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
         await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);

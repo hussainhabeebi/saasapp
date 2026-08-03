@@ -6895,6 +6895,54 @@ touched by that poll either, only Home's widgets were).
   got the message. Purely additive — the 60s poll and 5-minute cache are both untouched as the
   fallback if the socket is ever closed/reconnecting.
 
+## Conversation history summarization (`cloudflare-worker/worker.js`)
+
+`ConvHistory` is capped at the last 40 turns (`engineBuildLeadUpsertBody`), and only the last 20 of
+those (`activeHistory`) actually reach the FAQ/objection prompts — a lead whose conversation runs
+past that cap previously lost all memory of anything discussed before it, even though the
+conversation was still ongoing.
+
+- **`ConvSummary`** (Leads table, auto-created via `ensureLeadsColumns` the first time it's
+  actually needed — no manual NocoDB setup step) — a short rolling summary of everything the
+  40-turn cap has already dropped.
+- **`engineMaybeSummarizeHistory(env, c, fullHistory, priorSummary)`** — regenerates the summary
+  every `ENGINE_SUMMARY_EVERY_N_TURNS` (10) turns once history first crosses the cap, folding the
+  prior summary together with a bounded slice (last 30) of the older messages into one short
+  updated summary via a single `engineCallLlm` call. Bounding that input, not how often this runs,
+  is what keeps cost flat as a conversation runs arbitrarily long — it's always summarizing one
+  fixed-size window, never the whole history from scratch. Called from both
+  `handleEngineWebhook`'s WhatsApp and Instagram paths right after `engineBuildLeadUpsertBody`
+  resolves the turn's `ConvHistory`, before the lead upsert.
+- **`engineSummaryBlock(state)`** — shared by `engineBuildFaqSystemPrompt`/
+  `engineBuildObjectionSystemPrompt`, injecting `state.summary` as a "## Earlier in This
+  Conversation" section before "## Recent Conversation" so the two read in actual chronological
+  order. Empty (a no-op) for the vast majority of leads, which never cross 40 turns at all.
+
+## WhatsApp interactive quick-reply buttons (`cloudflare-worker/worker.js`)
+
+Chatwoot's own message-create endpoint accepts an optional `content_type`/`content_attributes`
+pair (confirmed against Chatwoot's own source — `Messages::MessageBuilder` reads
+`content_attributes` either as a nested hash or a JSON string over multipart form-data, and
+`Whatsapp::Providers::WhatsappCloudService#create_payload_based_on_items` turns `content_type:
+'input_select'` + `content_attributes: {items:[...]}}` into a real WhatsApp Cloud API interactive
+button message for ≤3 items) that this Worker previously never used, sending plain text only.
+
+- **`engineSendChatwootQuickReply(env, c, clientId, convId, text, items)`** — same endpoint/auth as
+  `engineSendChatwootReply`, plus those two extra form fields. `items` is `[{title, value}]`,
+  defensively capped at 3 items / 20-character titles (WhatsApp Cloud API's own real limits) so a
+  caller can't produce a payload that gets silently rejected downstream by Meta. Falls back to a
+  plain `engineSendChatwootReply` on no valid items, a missing convId/creds, or any send failure —
+  same "customer gets the plain-text reply they'd have gotten before this existed" fallback
+  reasoning as the image/audio reply functions.
+- **`engineDeliverReply`**'s options gained an optional `quickReplies` array, routed to the function
+  above when present (checked after the image/voice branches, same precedence order).
+- **Wired into exactly one flow so far**: the `objection` route's LLM-generated reply now carries a
+  single "🙋 Talk to a human" button alongside the text. Tapping it sends its title back as an
+  ordinary incoming WhatsApp text message (Chatwoot's own behavior for a button reply) — no new
+  receive-side parsing needed, since `engineClassifyIntent`'s existing WANTS_HUMAN keyword match
+  already recognizes "talk to a human". Opt out via `bot_config.quick_reply_buttons_enabled`
+  (default on). Not wired into FAQ or any other route yet.
+
 ## Recruitment & Consultancy module (`frontend/dashboard.html` — 💼 Recruit tab) — rebuilt on D1
 
 Previously the odd one out among the multi-entity modules: Jobs/Candidates/Placements each lived
