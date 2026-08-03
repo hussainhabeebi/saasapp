@@ -2989,7 +2989,13 @@ async function handleChannelsWhatsappConnect(request, env){
 // Deliberately NOT instagram_business_manage_comments — nothing in this module reads or manages
 // comments (DMs only), and Meta's App Review rejects/flags permissions requested but not
 // demonstrably used, so asking for it would just be unearned review risk for no functionality.
-const META_IG_OAUTH_SCOPE='instagram_business_basic,instagram_business_manage_messages';
+// instagram_business_content_publish WAS added (Content Calendar / Auto-Posting module, see
+// marketingPublishContentPost below) — it reuses this same connection's ig_id/ig_access_token
+// rather than a second OAuth flow, since Instagram Login tokens carry whatever scopes were
+// granted at connect time. A client who connected Instagram *before* this scope existed is
+// missing it on their existing token; auto-posting for them fails with Instagram's own
+// "permission denied" until they disconnect and reconnect once from Settings → Integrations.
+const META_IG_OAUTH_SCOPE='instagram_business_basic,instagram_business_manage_messages,instagram_business_content_publish';
 
 async function handleInstagramOauthStart(request, env){
   const payload=await requireSession(request, env);
