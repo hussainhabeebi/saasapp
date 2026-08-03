@@ -6884,6 +6884,31 @@ conversation was still ongoing.
   Conversation" section before "## Recent Conversation" so the two read in actual chronological
   order. Empty (a no-op) for the vast majority of leads, which never cross 40 turns at all.
 
+## WhatsApp interactive quick-reply buttons (`cloudflare-worker/worker.js`)
+
+Chatwoot's own message-create endpoint accepts an optional `content_type`/`content_attributes`
+pair (confirmed against Chatwoot's own source — `Messages::MessageBuilder` reads
+`content_attributes` either as a nested hash or a JSON string over multipart form-data, and
+`Whatsapp::Providers::WhatsappCloudService#create_payload_based_on_items` turns `content_type:
+'input_select'` + `content_attributes: {items:[...]}}` into a real WhatsApp Cloud API interactive
+button message for ≤3 items) that this Worker previously never used, sending plain text only.
+
+- **`engineSendChatwootQuickReply(env, c, clientId, convId, text, items)`** — same endpoint/auth as
+  `engineSendChatwootReply`, plus those two extra form fields. `items` is `[{title, value}]`,
+  defensively capped at 3 items / 20-character titles (WhatsApp Cloud API's own real limits) so a
+  caller can't produce a payload that gets silently rejected downstream by Meta. Falls back to a
+  plain `engineSendChatwootReply` on no valid items, a missing convId/creds, or any send failure —
+  same "customer gets the plain-text reply they'd have gotten before this existed" fallback
+  reasoning as the image/audio reply functions.
+- **`engineDeliverReply`**'s options gained an optional `quickReplies` array, routed to the function
+  above when present (checked after the image/voice branches, same precedence order).
+- **Wired into exactly one flow so far**: the `objection` route's LLM-generated reply now carries a
+  single "🙋 Talk to a human" button alongside the text. Tapping it sends its title back as an
+  ordinary incoming WhatsApp text message (Chatwoot's own behavior for a button reply) — no new
+  receive-side parsing needed, since `engineClassifyIntent`'s existing WANTS_HUMAN keyword match
+  already recognizes "talk to a human". Opt out via `bot_config.quick_reply_buttons_enabled`
+  (default on). Not wired into FAQ or any other route yet.
+
 ## Recruitment & Consultancy module (`frontend/dashboard.html` — 💼 Recruit tab) — rebuilt on D1
 
 Previously the odd one out among the multi-entity modules: Jobs/Candidates/Placements each lived
