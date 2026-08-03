@@ -6608,7 +6608,12 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   return {
     lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping,
     qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
-    winProbabilityManual:lead?.WinProbabilityManual||'No', lastMsgAt:lead?.LastMsgAt||null
+    winProbabilityManual:lead?.WinProbabilityManual||'No', lastMsgAt:lead?.LastMsgAt||null,
+    // See engineMaybeSummarizeHistory — a rolling summary of everything ConvHistory's 40-turn cap
+    // has already dropped, so a long-running lead doesn't lose all memory of anything discussed
+    // before that cap. Empty for the vast majority of leads (most conversations never cross 40
+    // turns at all), so this stays a no-op read for them.
+    summary:lead?.ConvSummary||''
   };
 }
 
@@ -7151,6 +7156,7 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // ("order M size") needs the assistant's own prior product-listing message to still be in view
   // to resolve against (see the instruction below), and a returning customer's earlier stated
   // preferences should still be visible several turns later, not just the last couple of messages.
+  sys+=engineSummaryBlock(state);
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
 
   // Observed real failure: with no concrete data to answer from (e.g. an unconfigured product/
@@ -7240,6 +7246,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
       ? ` Create gentle urgency: mention that this pricing is confirmed for the next ${c.quote_validity_days} day(s) and encourage a decision within that window.`
       : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
   }
+  sys+=engineSummaryBlock(state);
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // See engineBuildFaqSystemPrompt's matching comment.
@@ -7297,6 +7304,41 @@ async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
     await reportOpsError(env, 'engineCallLlm — Gemini failed and the OpenRouter fallback threw', e, {clientId:c?.Id});
   }
   return 'One moment 🙏';
+}
+
+// Shared by both FAQ/objection prompt builders (engineBuildFaqSystemPrompt/
+// engineBuildObjectionSystemPrompt) — see engineMaybeSummarizeHistory for how state.summary gets
+// generated/updated. Placed before "## Recent Conversation" in both callers so a returning
+// customer's earlier context (otherwise entirely invisible past the 20-turn activeHistory window)
+// reads in actual chronological order: summary of what came before, then the recent turns.
+function engineSummaryBlock(state){
+  return state.summary?`\n\n## Earlier in This Conversation (summary)\n${state.summary}`:'';
+}
+
+// Rolling summary of everything ConvHistory's 40-turn cap (engineBuildLeadUpsertBody) has already
+// dropped — without this, a lead whose conversation runs past that cap loses all memory of
+// anything discussed before it, even though the conversation is still ongoing. Regenerates every
+// ENGINE_SUMMARY_EVERY_N_TURNS turns once history first crosses the cap, folding the prior summary
+// together with a BOUNDED slice of the older messages into one short updated summary via a single
+// cheap LLM call — bounding that input (not how often this runs) is what keeps cost flat as a
+// conversation runs arbitrarily long, since it's always summarizing one fixed-size window, never
+// the whole history from scratch. Returns null on a no-op turn (nothing to persist) or on total
+// LLM failure (engineCallLlm's own hard-failure placeholder is never persisted as if it were real).
+const ENGINE_SUMMARY_EVERY_N_TURNS=10;
+async function engineMaybeSummarizeHistory(env, c, fullHistory, priorSummary){
+  if(fullHistory.length<=40 || fullHistory.length%ENGINE_SUMMARY_EVERY_N_TURNS!==0) return null;
+  const olderSlice=fullHistory.slice(0,-20).slice(-30);
+  if(!olderSlice.length) return null;
+  const transcript=olderSlice.map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+  const system=`Summarize the following older portion of a WhatsApp sales conversation in 2-4 short sentences — key facts about the customer (their need, preferences, objections raised, anything they committed to), not a turn-by-turn recap.${priorSummary?` Fold in this existing summary of everything even earlier, keeping it concise rather than just appending: "${priorSummary}"`:''} Respond with ONLY the updated summary text, no preamble, no markdown.`;
+  const summary=await engineCallLlm(env, c, system, transcript, 200);
+  if(!summary || summary==='One moment 🙏') return null;
+  // Not scoped to "only the very first time this ever happens for this lead" — an extra NocoDB
+  // meta round-trip on every regeneration tick (once every 10 turns, only for conversations already
+  // long enough to need this at all) is an accepted cost, same trade-off ncEnsureField itself
+  // already makes internally.
+  await ensureLeadsColumns(env, ['ConvSummary']);
+  return summary;
 }
 
 // flow_json stage messages, qual_questions, and callback_msg/callback_msg_frustrated are static
@@ -7945,7 +7987,10 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   if(objectionCategory && objectionCategory!=='none') body.LastObjectionCategory=objectionCategory;
   if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
 
-  return {body, method:state.leadId?'PATCH':'POST', leadId:state.leadId};
+  // fullHistory (untrimmed — body.ConvHistory above is already capped to the last 40) is exposed
+  // purely for engineMaybeSummarizeHistory's call site, which needs to know the true turn count to
+  // decide whether/when to regenerate the rolling summary.
+  return {body, method:state.leadId?'PATCH':'POST', leadId:state.leadId, fullHistory:history};
 }
 
 // Returns the resolved lead id (the given leadId for a PATCH, or the id NocoDB assigns on a
@@ -8336,7 +8381,9 @@ async function handleEngineWebhook(request, env, secret){
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
     }
 
-    const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
+    const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
+    const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
+    if(newSummary) leadBody.ConvSummary=newSummary;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
@@ -8557,7 +8604,9 @@ async function handleInstagramWebhook(request, env){
         await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
       }
 
-      const {body:leadBody, method, leadId}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
+      const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
+      const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
+      if(newSummary) leadBody.ConvSummary=newSummary;
       const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
       if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
         await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);

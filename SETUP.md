@@ -6861,6 +6861,29 @@ touched by that poll either, only Home's widgets were).
   got the message. Purely additive — the 60s poll and 5-minute cache are both untouched as the
   fallback if the socket is ever closed/reconnecting.
 
+## Conversation history summarization (`cloudflare-worker/worker.js`)
+
+`ConvHistory` is capped at the last 40 turns (`engineBuildLeadUpsertBody`), and only the last 20 of
+those (`activeHistory`) actually reach the FAQ/objection prompts — a lead whose conversation runs
+past that cap previously lost all memory of anything discussed before it, even though the
+conversation was still ongoing.
+
+- **`ConvSummary`** (Leads table, auto-created via `ensureLeadsColumns` the first time it's
+  actually needed — no manual NocoDB setup step) — a short rolling summary of everything the
+  40-turn cap has already dropped.
+- **`engineMaybeSummarizeHistory(env, c, fullHistory, priorSummary)`** — regenerates the summary
+  every `ENGINE_SUMMARY_EVERY_N_TURNS` (10) turns once history first crosses the cap, folding the
+  prior summary together with a bounded slice (last 30) of the older messages into one short
+  updated summary via a single `engineCallLlm` call. Bounding that input, not how often this runs,
+  is what keeps cost flat as a conversation runs arbitrarily long — it's always summarizing one
+  fixed-size window, never the whole history from scratch. Called from both
+  `handleEngineWebhook`'s WhatsApp and Instagram paths right after `engineBuildLeadUpsertBody`
+  resolves the turn's `ConvHistory`, before the lead upsert.
+- **`engineSummaryBlock(state)`** — shared by `engineBuildFaqSystemPrompt`/
+  `engineBuildObjectionSystemPrompt`, injecting `state.summary` as a "## Earlier in This
+  Conversation" section before "## Recent Conversation" so the two read in actual chronological
+  order. Empty (a no-op) for the vast majority of leads, which never cross 40 turns at all.
+
 ## Recruitment & Consultancy module (`frontend/dashboard.html` — 💼 Recruit tab) — rebuilt on D1
 
 Previously the odd one out among the multi-entity modules: Jobs/Candidates/Placements each lived
