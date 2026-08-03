@@ -177,7 +177,8 @@ tbody tr:hover{background:var(--bg)}
               <option value="invoice">Invoices</option>
               <option value="receipt">Receipts</option>
             </select>
-            <button class="save-btn" onclick="openDocumentModal('quotation')">+ New Quotation</button>
+            <button class="save-btn sec" onclick="openDocTypeModal('quotation')">+ New Quotation</button>
+            <button class="save-btn" onclick="openDocTypeModal('invoice')">+ New Invoice</button>
           </div>
         </div>
         <div class="tbl-wrap">
@@ -576,39 +577,76 @@ tbody tr:hover{background:var(--bg)}
   </main>
 </div>
 
-<!-- ── DOCUMENT MODAL ── -->
-<div class="modal-overlay" id="documentModal">
+<datalist id="fpCustomersDatalist"></datalist>
+
+<!-- ── QUOTATION MODAL — its own window, separate from the Invoice modal below: a quotation is a
+     price offer that expires (Valid Until), not a payment demand. ── -->
+<div class="modal-overlay" id="quotationModal">
   <div class="modal-card">
-    <div class="modal-title" id="documentModalTitle">New Quotation</div>
-    <input type="hidden" id="docId">
-    <input type="hidden" id="docType" value="quotation">
+    <div class="modal-title">🧾 New Quotation</div>
+    <input type="hidden" id="docQuotationId">
     <div class="modal-grid">
-      <div><label class="s-lbl">Title</label><input class="s-input" id="docTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
+      <div><label class="s-lbl">Title</label><input class="s-input" id="docQuotationTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
       <div><label class="s-lbl">Lead (CRM, optional)</label>
-        <input class="s-input" id="docLeadSearch" placeholder="🔍 Search leads…" oninput="renderLeadPicker()">
-        <select class="s-input" id="docLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+        <input class="s-input" id="docQuotationLeadSearch" placeholder="🔍 Search leads…" oninput="renderDocTypeLeadPicker('quotation')">
+        <select class="s-input" id="docQuotationLeadId" style="margin-top:6px"><option value="">— None —</option></select>
       </div>
-      <div><label class="s-lbl">Customer Name (if no lead)</label><input class="s-input" id="docCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
-      <div><label class="s-lbl">Currency</label><input class="s-input" id="docCurrency" placeholder="e.g. AED" value="AED"></div>
+      <div><label class="s-lbl">Customer Name (if no lead)</label><input class="s-input" id="docQuotationCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="docQuotationCurrency" placeholder="e.g. AED" value="AED"></div>
+      <div><label class="s-lbl">Valid Until (optional)</label><input class="s-input" id="docQuotationValidUntil" type="date"></div>
     </div>
-    <datalist id="fpCustomersDatalist"></datalist>
     <label class="s-lbl">Line Items</label>
     <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price — no separate catalog to set up first.</div>
-    <div id="docLineItems"></div>
-    <button class="save-btn sec" type="button" onclick="addLineItemRow()" style="margin-top:6px">+ Add Line Item</button>
+    <div id="docQuotationLineItems"></div>
+    <button class="save-btn sec" type="button" onclick="addDocLineItemRow('quotation')" style="margin-top:6px">+ Add Line Item</button>
     <!-- Suggested add-ons — matches current line-item names against dashboard.html's Settings →
          Cross-Sell & Upsell rules (clientRecord.cross_sell_rules, same field, read-only here).
          Click adds the suggestion as its own line item. -->
-    <div id="docCrossSell" style="margin-top:10px"></div>
-    <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docTotalPreview">Total: —</div>
+    <div id="docQuotationCrossSell" style="margin-top:10px"></div>
+    <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docQuotationTotalPreview">Total: —</div>
     <div style="margin-top:14px">
       <label class="s-lbl">Notes</label>
-      <textarea class="s-input" id="docNotes" rows="2" style="resize:vertical"></textarea>
+      <textarea class="s-input" id="docQuotationNotes" rows="2" style="resize:vertical"></textarea>
     </div>
     <div class="s-hint" style="margin-top:10px">Logo, Terms &amp; Conditions, Payment Method, Footer Address and Accent Color on the generated PDF are shared with the Quotation feature — edit them from a lead's <b>Quote</b>/<b>Invoice</b> page (Human Deals) and every document here picks them up too.</div>
     <div class="modal-actions">
-      <button class="save-btn sec" onclick="closeDocumentModal()">Cancel</button>
-      <button class="save-btn" onclick="saveDocument()">Save</button>
+      <button class="save-btn sec" onclick="closeDocTypeModal('quotation')">Cancel</button>
+      <button class="save-btn" onclick="saveDocType('quotation')">Save Quotation</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── INVOICE MODAL — its own window: a payment demand with a Due Date, not an expiring offer.
+     Marking it Paid (status dropdown on the Documents table) automatically records the income
+     (a linked Receipt) and the collection — see worker.js fpRecordInvoicePaidSideEffects. ── -->
+<div class="modal-overlay" id="invoiceModal">
+  <div class="modal-card">
+    <div class="modal-title">📄 New Invoice</div>
+    <input type="hidden" id="docInvoiceId">
+    <div class="modal-grid">
+      <div><label class="s-lbl">Title</label><input class="s-input" id="docInvoiceTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
+      <div><label class="s-lbl">Lead (CRM, optional)</label>
+        <input class="s-input" id="docInvoiceLeadSearch" placeholder="🔍 Search leads…" oninput="renderDocTypeLeadPicker('invoice')">
+        <select class="s-input" id="docInvoiceLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+      </div>
+      <div><label class="s-lbl">Customer Name (if no lead)</label><input class="s-input" id="docInvoiceCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="docInvoiceCurrency" placeholder="e.g. AED" value="AED"></div>
+      <div><label class="s-lbl">Due Date (optional)</label><input class="s-input" id="docInvoiceDueDate" type="date"></div>
+    </div>
+    <label class="s-lbl">Line Items</label>
+    <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price — no separate catalog to set up first.</div>
+    <div id="docInvoiceLineItems"></div>
+    <button class="save-btn sec" type="button" onclick="addDocLineItemRow('invoice')" style="margin-top:6px">+ Add Line Item</button>
+    <div id="docInvoiceCrossSell" style="margin-top:10px"></div>
+    <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docInvoiceTotalPreview">Total: —</div>
+    <div style="margin-top:14px">
+      <label class="s-lbl">Notes</label>
+      <textarea class="s-input" id="docInvoiceNotes" rows="2" style="resize:vertical"></textarea>
+    </div>
+    <div class="s-hint" style="margin-top:10px">Logo, Terms &amp; Conditions, Payment Method, Footer Address and Accent Color on the generated PDF are shared with the Quotation feature — edit them from a lead's <b>Quote</b>/<b>Invoice</b> page (Human Deals) and every document here picks them up too.</div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeDocTypeModal('invoice')">Cancel</button>
+      <button class="save-btn" onclick="saveDocType('invoice')">Save Invoice</button>
     </div>
   </div>
 </div>
@@ -1184,11 +1222,23 @@ function renderFpCustomersTable(){
     <td>${esc(c.renewal_date||'—')}</td>
     <td><span class="badge ${c.status==='active'?'paid':c.status==='paused'?'pending':'void'}">${esc((c.status||'').toUpperCase())}</span></td>
     <td class="row-actions">
+      <button class="icon-btn" title="New Quotation for this customer" onclick="newDocForFpCustomer('quotation',${c.Id})">🧾</button>
+      <button class="icon-btn" title="New Invoice for this customer" onclick="newDocForFpCustomer('invoice',${c.Id})">📄</button>
       <button class="icon-btn" title="Edit" onclick="openFpCustomerModal(${c.Id})">✏️</button>
       <button class="icon-btn" title="Record Collection" onclick="openFpCollectionModal(null,${c.Id})">💵</button>
       <button class="icon-btn danger" title="Delete" onclick="deleteFpCustomer(${c.Id})">🗑</button>
     </td>
   </tr>`).join('');
+}
+// Opens the Quotation or Invoice window pre-filled for a Financial Planning customer — the
+// interconnection point between Customers and Documents, same "own quick action per row" pattern
+// as "Record Collection" above. Switches to the Documents tab first so the modal opens somewhere
+// visible instead of behind the still-active Financial Planning tab.
+function newDocForFpCustomer(type, customerId){
+  const c=fpCustomers.find(x=>x.Id===customerId);
+  if(!c) return;
+  showTab('documents');
+  openDocTypeModal(type,{title:`${c.name} — ${type==='quotation'?'Quotation':'Invoice'}`, customer_name:c.name, currency:c.currency||getDefaultCurrency()});
 }
 function openFpCustomerModal(id){
   const c=id?fpCustomers.find(x=>x.Id===id):null;
@@ -1703,35 +1753,48 @@ function initReportDateDefaults(){
 
 /* ── DOCUMENTS (Quotation / Invoice / Receipt) ── */
 const DOC_TYPE_LABEL={quotation:'🧾 Quotation', invoice:'📄 Invoice', receipt:'🧾 Receipt'};
-const DOC_TYPE_TITLE={quotation:'New Quotation', invoice:'New Invoice', receipt:'New Receipt'};
 
-function openDocumentModal(type, prefill){
-  document.getElementById('documentModalTitle').textContent=DOC_TYPE_TITLE[type]||'New Document';
-  document.getElementById('docId').value='';
-  document.getElementById('docType').value=type;
-  document.getElementById('docTitle').value=prefill?.title||'';
-  document.getElementById('docLeadSearch').value='';
-  document.getElementById('docCurrency').value=prefill?.currency||getDefaultCurrency();
-  document.getElementById('docNotes').value=prefill?.notes||'';
-  document.getElementById('docLineItems').innerHTML='';
+// Quotation and Invoice are separate windows (their own modal-overlay, own field ids —
+// docQuotation*/docInvoice*), not one generic modal relabeled by type: a quotation is a price
+// offer that expires (Valid Until), an invoice is a payment demand with a Due Date, and treating
+// them as genuinely different documents keeps that distinction visible instead of hidden behind a
+// dropdown. The line-item/lead-picker/cross-sell logic below is still shared (same behavior,
+// just parameterized by which modal it's operating on) rather than duplicated twice.
+const DOC_TYPE_CFG={
+  quotation:{prefix:'docQuotation', dateField:'docQuotationValidUntil', dateKey:'valid_until'},
+  invoice:{prefix:'docInvoice', dateField:'docInvoiceDueDate', dateKey:'due_date'},
+};
+function openDocTypeModal(type, prefill){
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
+  const p=cfg.prefix;
+  document.getElementById(p+'Id').value='';
+  document.getElementById(p+'Title').value=prefill?.title||'';
+  document.getElementById(p+'LeadSearch').value='';
+  document.getElementById(p+'Currency').value=prefill?.currency||getDefaultCurrency();
+  document.getElementById(p+'Notes').value=prefill?.notes||'';
+  document.getElementById(cfg.dateField).value=prefill?.[cfg.dateKey]||'';
+  document.getElementById(p+'LineItems').innerHTML='';
   const items=prefill?.line_items?.length?prefill.line_items:[{name:'',qty:1,price:0}];
-  items.forEach(li=>addLineItemRow(li));
-  renderLeadPicker();
-  if(prefill?.lead_id) document.getElementById('docLeadId').value=prefill.lead_id;
-  document.getElementById('docCustomerName').value=prefill?.customer_name||'';
-  document.getElementById('documentModal').classList.add('active');
-  updateDocTotalPreview();
+  items.forEach(li=>addDocLineItemRow(type,li));
+  renderDocTypeLeadPicker(type);
+  if(prefill?.lead_id) document.getElementById(p+'LeadId').value=prefill.lead_id;
+  document.getElementById(p+'CustomerName').value=prefill?.customer_name||'';
+  document.getElementById(type+'Modal').classList.add('active');
+  updateDocTypeTotalPreview(type);
 }
-function closeDocumentModal(){ document.getElementById('documentModal').classList.remove('active'); }
-function renderLeadPicker(){
-  const q=(document.getElementById('docLeadSearch').value||'').toLowerCase();
-  const sel=document.getElementById('docLeadId');
+function closeDocTypeModal(type){ document.getElementById(type+'Modal').classList.remove('active'); }
+function renderDocTypeLeadPicker(type){
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
+  const p=cfg.prefix;
+  const q=(document.getElementById(p+'LeadSearch').value||'').toLowerCase();
+  const sel=document.getElementById(p+'LeadId');
   const current=sel.value;
   const matches=q?allLeads.filter(l=>(l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)):allLeads.slice(0,200);
   sel.innerHTML='<option value="">— None —</option>'+matches.map(l=>`<option value="${l.Id}">${esc(l.Name||'Unknown')} — ${esc(l.Phone||'')}</option>`).join('');
   if([...sel.options].some(o=>o.value===current)) sel.value=current;
 }
-function addLineItemRow(li){
+function addDocLineItemRow(type, li){
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
   li=li||{name:'',qty:1,price:0};
   const row=document.createElement('div'); row.className='li-row';
   row.innerHTML=`
@@ -1739,53 +1802,57 @@ function addLineItemRow(li){
     <input class="li-qty" type="number" placeholder="Qty" value="${esc(li.qty)}">
     <input class="li-price" type="number" placeholder="Price" value="${esc(li.price)}">
     <span class="li-total" style="font-family:var(--mono);font-size:13px;text-align:right"></span>
-    <button class="icon-btn danger" type="button" onclick="this.parentElement.remove();updateDocTotalPreview()">✕</button>`;
-  document.getElementById('docLineItems').appendChild(row);
-  row.querySelectorAll('input').forEach(el=>el.addEventListener('input',updateDocTotalPreview));
-  updateDocTotalPreview();
+    <button class="icon-btn danger" type="button" onclick="this.parentElement.remove();updateDocTypeTotalPreview('${type}')">✕</button>`;
+  document.getElementById(cfg.prefix+'LineItems').appendChild(row);
+  row.querySelectorAll('input').forEach(el=>el.addEventListener('input',()=>updateDocTypeTotalPreview(type)));
+  updateDocTypeTotalPreview(type);
 }
 
 // Suggested add-ons — keyword-matches current line-item names against clientRecord.cross_sell_rules
 // (edited in dashboard.html Settings → Cross-Sell & Upsell). Same trigger-keyword matching as
 // dashboard.html's renderCrossSellSuggestions, just matched against line-item text instead of a
-// lead's conversation. Matches are kept in _docCrossSellMatches and referenced by index from the
-// button (rather than inlining the suggestion text into the onclick attribute) so a suggestion
-// containing a quote character can't break the handler.
-let _docCrossSellMatches=[];
-function renderDocCrossSell(){
-  const wrap=document.getElementById('docCrossSell');
+// lead's conversation. Matches are kept per-type (keyed by type, not a single shared array) and
+// referenced by index from the button (rather than inlining the suggestion text into the onclick
+// attribute) so a suggestion containing a quote character can't break the handler.
+const _docCrossSellMatches={quotation:[], invoice:[]};
+function renderDocTypeCrossSell(type){
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
+  const wrap=document.getElementById(cfg.prefix+'CrossSell');
   if(!wrap) return;
   let rules=[]; try{ rules=JSON.parse(clientRecord?.cross_sell_rules||'[]'); }catch(e){}
-  if(!rules.length){ wrap.innerHTML=''; _docCrossSellMatches=[]; return; }
-  const itemNames=[...document.querySelectorAll('#docLineItems .li-name')].map(el=>el.value.toLowerCase()).filter(Boolean);
-  if(!itemNames.length){ wrap.innerHTML=''; _docCrossSellMatches=[]; return; }
+  if(!rules.length){ wrap.innerHTML=''; _docCrossSellMatches[type]=[]; return; }
+  const itemNames=[...document.querySelectorAll(`#${cfg.prefix}LineItems .li-name`)].map(el=>el.value.toLowerCase()).filter(Boolean);
+  if(!itemNames.length){ wrap.innerHTML=''; _docCrossSellMatches[type]=[]; return; }
   const already=new Set(itemNames);
-  _docCrossSellMatches=rules
+  const matches=rules
     .filter(r=>r.trigger&&r.suggestion)
     .filter(r=>!already.has((r.suggestion||'').toLowerCase()))
     .filter(r=>r.trigger.split(',').map(k=>k.trim().toLowerCase()).filter(Boolean).some(k=>itemNames.some(n=>n.includes(k))))
     .slice(0,4);
-  if(!_docCrossSellMatches.length){ wrap.innerHTML=''; return; }
+  _docCrossSellMatches[type]=matches;
+  if(!matches.length){ wrap.innerHTML=''; return; }
   wrap.innerHTML='<div class="s-hint" style="margin-bottom:6px">🔄 Suggested add-ons:</div>'+
     '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
-    _docCrossSellMatches.map((r,i)=>`<button type="button" class="save-btn sec" style="padding:6px 10px;font-size:12px" onclick="addDocCrossSellItem(${i})">+ ${esc(r.suggestion)}</button>`).join('')+
+    matches.map((r,i)=>`<button type="button" class="save-btn sec" style="padding:6px 10px;font-size:12px" onclick="addDocCrossSellItem('${type}',${i})">+ ${esc(r.suggestion)}</button>`).join('')+
     '</div>';
 }
-function addDocCrossSellItem(i){
-  const r=_docCrossSellMatches[i]; if(!r) return;
-  addLineItemRow({name:r.suggestion,qty:1,price:0});
-  renderDocCrossSell();
+function addDocCrossSellItem(type, i){
+  const r=_docCrossSellMatches[type]?.[i]; if(!r) return;
+  addDocLineItemRow(type,{name:r.suggestion,qty:1,price:0});
+  renderDocTypeCrossSell(type);
 }
-function collectLineItems(){
-  return [...document.querySelectorAll('#docLineItems .li-row')].map(row=>({
+function collectDocLineItems(type){
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return [];
+  return [...document.querySelectorAll(`#${cfg.prefix}LineItems .li-row`)].map(row=>({
     name:row.querySelector('.li-name').value.trim(),
     qty:Number(row.querySelector('.li-qty').value)||0,
     price:Number(row.querySelector('.li-price').value)||0
   })).filter(li=>li.name);
 }
 // No GST — this module never charges tax, so the total is always just the line items' subtotal.
-function updateDocTotalPreview(){
-  const items=[...document.querySelectorAll('#docLineItems .li-row')];
+function updateDocTypeTotalPreview(type){
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
+  const items=[...document.querySelectorAll(`#${cfg.prefix}LineItems .li-row`)];
   let subtotal=0;
   items.forEach(row=>{
     const qty=Number(row.querySelector('.li-qty').value)||0;
@@ -1794,33 +1861,35 @@ function updateDocTotalPreview(){
     subtotal+=total;
     row.querySelector('.li-total').textContent=total.toLocaleString();
   });
-  const cur=document.getElementById('docCurrency').value||'';
-  document.getElementById('docTotalPreview').textContent=`Total: ${fmtMoney(subtotal,cur)}`;
-  renderDocCrossSell();
+  const cur=document.getElementById(cfg.prefix+'Currency').value||'';
+  document.getElementById(cfg.prefix+'TotalPreview').textContent=`Total: ${fmtMoney(subtotal,cur)}`;
+  renderDocTypeCrossSell(type);
 }
 
-async function saveDocument(){
-  const title=document.getElementById('docTitle').value.trim();
+async function saveDocType(type){
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
+  const p=cfg.prefix;
+  const title=document.getElementById(p+'Title').value.trim();
   if(!title){ alert('Please give this document a title.'); return; }
-  const lineItems=collectLineItems();
+  const lineItems=collectDocLineItems(type);
   if(!lineItems.length){ alert('Add at least one line item.'); return; }
-  const leadId=document.getElementById('docLeadId').value||null;
-  const customerName=document.getElementById('docCustomerName').value.trim()||null;
+  const leadId=document.getElementById(p+'LeadId').value||null;
+  const customerName=document.getElementById(p+'CustomerName').value.trim()||null;
   const body={
-    type:document.getElementById('docType').value,
-    title, lead_id:leadId,
+    type, title, lead_id:leadId,
     customer_name:customerName,
     // Links this document's typed customer to fp_customers (Financial Planning), so it shows up
     // there too — only when there's no CRM lead already doing that job.
     customer_id:(!leadId && customerName)?await ensureFpCustomerByName(customerName):null,
-    currency:document.getElementById('docCurrency').value.trim(),
-    notes:document.getElementById('docNotes').value.trim(),
+    currency:document.getElementById(p+'Currency').value.trim(),
+    notes:document.getElementById(p+'Notes').value.trim(),
+    [cfg.dateKey]:document.getElementById(cfg.dateField).value||null,
     line_items:lineItems
   };
   try{
     const created=await acctFetch('/accounting/documents',{method:'POST',body:JSON.stringify(body)});
     allDocuments.unshift(created);
-    closeDocumentModal();
+    closeDocTypeModal(type);
     renderDocumentsTable();
   }catch(e){ alert('Failed to save: '+e.message); }
 }
@@ -1830,8 +1899,15 @@ async function setDocumentStatus(id, status){
   try{
     await acctFetch('/accounting/documents',{method:'PATCH',body:JSON.stringify({id, status})});
     const doc=allDocuments.find(d=>d.Id===id);
+    const wasUnpaid=doc&&doc.status!=='paid';
     if(doc) doc.status=status;
     renderDocumentsTable();
+    // Marking an Invoice paid auto-records income (a Receipt) and a collection server-side (see
+    // worker.js fpRecordInvoicePaidSideEffects) — silently refresh Financial Planning so the
+    // Dashboard/Collections reflect it immediately instead of only after a page reload.
+    if(doc?.type==='invoice' && status==='paid' && wasUnpaid){
+      try{ await loadFinancialPlanning(); renderFinancialPlanning(); }catch(e){}
+    }
   }catch(e){ alert('Failed to update status: '+e.message); }
 }
 
@@ -2149,6 +2225,32 @@ function buildDocumentPdf(id){
   const dateStr=d.doc_created_at?new Date(d.doc_created_at).toLocaleDateString(undefined,{day:'2-digit',month:'long',year:'numeric'}):new Date().toLocaleDateString();
   doc.text(`${typeLabel} No. ${docNumber}`,pageW-marginX,y,{align:'right'});
   doc.text(dateStr,pageW-marginX,y+15,{align:'right'});
+  // Type-specific date: a Quotation is an offer that expires (Valid Until); an Invoice is a
+  // payment demand with a Due Date — genuinely different documents, not the same layout with the
+  // header text swapped.
+  let rightMetaY=y+15;
+  const typeDate=d.type==='quotation'?d.valid_until:(d.type==='invoice'?d.due_date:null);
+  if(typeDate){
+    rightMetaY+=15;
+    doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(80);
+    doc.text(`${d.type==='quotation'?'Valid until':'Due date'}: ${new Date(typeDate).toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'})}`,pageW-marginX,rightMetaY,{align:'right'});
+    doc.setTextColor(0);
+  }
+  // PAID / VOID stamp — an Invoice or Receipt actually settled, or a document voided, is visually
+  // unmistakable rather than only shown as a status badge back in the app.
+  if(d.status==='paid'||d.status==='void'){
+    const stampText=d.status==='paid'?'PAID':'VOID';
+    const stampRgb=d.status==='paid'?[5,150,105]:[220,38,38];
+    doc.setFont('helvetica','bold');doc.setFontSize(11);
+    doc.setTextColor(...stampRgb);
+    doc.setDrawColor(...stampRgb);
+    doc.setLineWidth(1.4);
+    const stampY=rightMetaY+22;
+    const stampW=doc.getTextWidth(stampText)+16;
+    doc.roundedRect(pageW-marginX-stampW,stampY-12,stampW,20,4,4,'S');
+    doc.text(stampText,pageW-marginX-stampW/2,stampY+2,{align:'center'});
+    doc.setTextColor(0);doc.setDrawColor(0);
+  }
 
   y+=15+billLines.length*13+28;
 
@@ -2192,7 +2294,10 @@ function buildDocumentPdf(id){
   doc.setFillColor(...accentRgb);
   doc.rect(summaryX-16,y-barH+9,pageW-marginX-(summaryX-16),barH,'F');
   doc.setTextColor(255);doc.setFont('helvetica','bold');doc.setFontSize(12);
-  doc.text('Total',summaryX,y+9);
+  // Total bar label — an unpaid Invoice reads "Amount Due" (a payment demand), everything else
+  // (Quotation, Receipt, a paid Invoice) reads "Total"/"Amount Paid".
+  const totalLabel=d.type==='invoice'?(d.status==='paid'?'Amount Paid':'Amount Due'):(d.type==='receipt'?'Amount Paid':'Total');
+  doc.text(totalLabel,summaryX,y+9);
   doc.text(fmtMoney(d.total,d.currency),pageW-marginX,y+9,{align:'right'});
   doc.setTextColor(0);
   y+=barH+34;
@@ -2204,6 +2309,14 @@ function buildDocumentPdf(id){
   doc.setFont('times','italic');doc.setFontSize(24);doc.setTextColor(0);
   doc.text('Thank you!',marginX,y);
   y+=32;
+  // Quotation-only disclaimer — a price offer, not a demand for payment; keeps the two documents
+  // from reading identically apart from the header wordmark.
+  if(d.type==='quotation'){
+    doc.setFont('helvetica','italic');doc.setFontSize(8.5);doc.setTextColor(120);
+    doc.text('This is a price quotation, not a tax invoice — no payment is due until you accept it and receive a formal invoice.',marginX,y);
+    doc.setTextColor(0);
+    y+=18;
+  }
 
   // ── Payment Information (left, from the shared Payment Information field — can be as simple as
   // "Bank Transfer, Cash" or full bank details, one per line) / signature block (right) ──
