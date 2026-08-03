@@ -64,8 +64,18 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .badge.uploading,.badge.uploaded{background:var(--warn-soft);color:var(--warn)}
 .badge.transcribing,.badge.rendering{background:var(--accent-soft);color:var(--accent-ink)}
 .badge.ready{background:var(--accent-soft);color:var(--accent-ink)}
-.badge.done{background:var(--good-soft);color:var(--good)}
+.badge.done,.badge.posted{background:var(--good-soft);color:var(--good)}
 .badge.failed{background:var(--bad-soft);color:var(--bad)}
+.badge.draft{background:var(--card2);color:var(--muted)}
+.badge.scheduled{background:var(--accent-soft);color:var(--accent-ink)}
+
+/* Content calendar */
+.cal-day-header{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);margin:18px 0 8px}
+.cal-day-header:first-child{margin-top:0}
+.cal-post-card{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:12px 14px;background:var(--card2);border-radius:10px;margin-bottom:8px}
+.cal-post-title{font-weight:700;font-size:13.5px;margin-bottom:4px}
+.cal-post-caption{font-size:12.5px;color:var(--muted);white-space:pre-wrap;max-width:520px}
+.cal-post-actions{display:flex;gap:6px;flex-shrink:0}
 .empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:13.5px}
 #gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px}
 
@@ -190,6 +200,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
   <div class="tabs" id="mainTabs">
     <button class="tab active" id="tab-projects" onclick="showTab('projects')">🎞️ Projects</button>
     <button class="tab" id="tab-templates" onclick="showTab('templates')">🧩 Video Templates</button>
+    <button class="tab" id="tab-calendar" onclick="showTab('calendar')">🗓️ Content Calendar</button>
     <button class="tab" id="tab-styles" onclick="showTab('styles')">🎨 Brand Styles</button>
     <button class="tab" id="tab-apikeys" onclick="showTab('apikeys')">🔑 API Keys</button>
   </div>
@@ -292,6 +303,56 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
         <div class="note" style="margin-top:6px">Max 100 rows per batch. Each row costs roughly the template's estimated duration in usage minutes — checked against your remaining minutes before generating. Generated videos land in the Projects tab.</div>
         <button class="btn btn-primary" id="generateBtn" onclick="generateBatch()" style="margin-top:10px">🚀 Generate videos</button>
         <div id="generateResults" style="margin-top:14px"></div>
+      </div>
+    </div>
+
+    <!-- CONTENT CALENDAR -->
+    <div id="page-calendar" class="hidden">
+      <div class="card">
+        <div class="card-head">
+          <div><h2>Content Calendar</h2><div class="sub">Plan Instagram posts ahead of time. Scheduled posts sync to your connected Google Calendar automatically.</div></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-sec" onclick="openNewPostForm()">+ New draft</button>
+            <button class="btn btn-primary" onclick="openGenerateWeekForm()">✨ Generate a week</button>
+          </div>
+        </div>
+        <div class="note hidden" id="calGcalNote" style="margin-bottom:12px"></div>
+
+        <div class="hidden" id="generateWeekForm" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
+          <label class="form-label">Topic / theme</label>
+          <input class="form-input" id="gwTopic" placeholder="e.g. Our new autumn menu">
+          <div class="row">
+            <div>
+              <label class="form-label">Number of days</label>
+              <input class="form-input" id="gwDays" type="number" min="1" max="14" value="7">
+            </div>
+            <div>
+              <label class="form-label">Start date</label>
+              <input class="form-input" id="gwStartDate" type="date">
+            </div>
+          </div>
+          <div class="note" style="margin-top:8px">Drafts a caption + hashtags for each day — no images are generated yet, so this costs nothing extra until you approve individual posts later.</div>
+          <div style="margin-top:12px;display:flex;gap:10px">
+            <button class="btn btn-primary" id="gwSubmitBtn" onclick="submitGenerateWeek()">Generate</button>
+            <button class="btn btn-ghost" onclick="closeGenerateWeekForm()">Cancel</button>
+          </div>
+        </div>
+
+        <div class="hidden" id="newPostForm" style="margin-bottom:16px;padding:14px;background:var(--card2);border-radius:10px">
+          <label class="form-label">Title (internal label)</label>
+          <input class="form-input" id="npTitleC" placeholder="e.g. Product teaser">
+          <label class="form-label">Caption</label>
+          <textarea class="form-textarea" id="npCaptionC" rows="3" placeholder="Post caption + hashtags"></textarea>
+          <label class="form-label">Schedule date (optional — leave blank to keep as an unscheduled draft)</label>
+          <input class="form-input" id="npScheduledDate" type="date">
+          <div style="margin-top:12px;display:flex;gap:10px">
+            <button class="btn btn-primary" onclick="createContentPost()">Save draft</button>
+            <button class="btn btn-ghost" onclick="closeNewPostForm()">Cancel</button>
+          </div>
+        </div>
+
+        <div id="calendarGroups"></div>
+        <div class="empty hidden" id="calendarEmpty">No posts yet — try "✨ Generate a week" or add a draft manually.</div>
       </div>
     </div>
 
@@ -556,6 +617,8 @@ let currentProject = null;
 let selectedStyleId = 'bold-pop';
 let generatingForTemplate = null;
 let jobPollTimer = null;
+let contentPosts = [];
+let editingPostId = null;
 
 const $id = id => document.getElementById(id);
 function ncAuthHeaders(extra) { return { 'Authorization': 'Bearer ' + sessionToken, ...(extra || {}) }; }
@@ -617,12 +680,130 @@ function applyAutoeditPreset() {
 }
 
 function showTab(tab) {
-  ['projects', 'templates', 'styles', 'apikeys'].forEach(t => {
+  ['projects', 'templates', 'calendar', 'styles', 'apikeys'].forEach(t => {
     $id('tab-' + t).classList.toggle('active', t === tab);
     $id('page-' + t).classList.toggle('hidden', t !== tab);
   });
   $id('page-editor').classList.add('hidden');
   if (tab === 'apikeys') loadApiKeys();
+  if (tab === 'calendar') loadContentPosts();
+}
+
+// ── CONTENT CALENDAR ────────────────────────────────────────────────────────────────────────
+function renderGcalNote() {
+  const note = $id('calGcalNote');
+  if (clientRecord && clientRecord.gcal_refresh_token && clientRecord.gcal_calendar_id) {
+    note.classList.add('hidden'); // connected — nothing to say
+    return;
+  }
+  note.classList.remove('hidden');
+  note.innerHTML = '🗓️ Not synced to Google Calendar — <a href="dashboard.html" style="color:var(--accent-ink);font-weight:600">connect it from CRM Settings</a> to see scheduled posts on your own calendar.';
+}
+
+async function loadContentPosts() {
+  renderGcalNote();
+  const r = await fetch(`${WORKER_BASE}/marketing/content/posts`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ list: [] }));
+  contentPosts = d.list || [];
+  renderContentPosts();
+}
+
+function renderContentPosts() {
+  const container = $id('calendarGroups');
+  $id('calendarEmpty').classList.toggle('hidden', contentPosts.length > 0);
+  if (!contentPosts.length) { container.innerHTML = ''; return; }
+  const groups = {};
+  contentPosts.forEach(p => {
+    const key = p.scheduled_at ? p.scheduled_at.slice(0, 10) : 'unscheduled';
+    (groups[key] = groups[key] || []).push(p);
+  });
+  const keys = Object.keys(groups).sort((a, b) => a === 'unscheduled' ? 1 : b === 'unscheduled' ? -1 : a.localeCompare(b));
+  container.innerHTML = keys.map(key => {
+    const label = key === 'unscheduled' ? 'Unscheduled drafts' : new Date(key + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+    const cards = groups[key].map(p => `
+      <div class="cal-post-card">
+        <div>
+          <div class="cal-post-title">${esc(p.title || '(untitled)')} <span class="badge ${esc(p.status)}">${esc(p.status)}</span></div>
+          <div class="cal-post-caption">${esc(p.caption || '')}</div>
+        </div>
+        <div class="cal-post-actions">
+          <button class="btn btn-ghost btn-sm" onclick="editContentPost(${p.id})">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteContentPost(${p.id})">✕</button>
+        </div>
+      </div>`).join('');
+    return `<div class="cal-day-header">${esc(label)}</div>${cards}`;
+  }).join('');
+}
+
+function openNewPostForm() {
+  editingPostId = null;
+  $id('npTitleC').value = ''; $id('npCaptionC').value = ''; $id('npScheduledDate').value = '';
+  $id('newPostForm').classList.remove('hidden');
+  $id('generateWeekForm').classList.add('hidden');
+}
+function closeNewPostForm() { $id('newPostForm').classList.add('hidden'); editingPostId = null; }
+
+function editContentPost(id) {
+  const p = contentPosts.find(x => x.id === id);
+  if (!p) return;
+  if (p.status === 'posted') { toastError('This post has already gone out — it cannot be edited.'); return; }
+  editingPostId = id;
+  $id('npTitleC').value = p.title || '';
+  $id('npCaptionC').value = p.caption || '';
+  $id('npScheduledDate').value = p.scheduled_at ? p.scheduled_at.slice(0, 10) : '';
+  $id('newPostForm').classList.remove('hidden');
+  $id('generateWeekForm').classList.add('hidden');
+}
+
+async function createContentPost() {
+  const title = $id('npTitleC').value.trim();
+  const caption = $id('npCaptionC').value.trim();
+  const dateVal = $id('npScheduledDate').value;
+  const scheduled_at = dateVal ? `${dateVal}T10:00` : null;
+  const body = { title, caption, scheduled_at };
+  const url = `${WORKER_BASE}/marketing/content/posts`;
+  const r = editingPostId
+    ? await fetch(url, { method: 'PATCH', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id: editingPostId, ...body }) })
+    : await fetch(url, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toastError(d.error || 'Could not save the post.'); return; }
+  toastSuccess(editingPostId ? 'Post updated.' : 'Draft saved.');
+  closeNewPostForm();
+  await loadContentPosts();
+}
+
+async function deleteContentPost(id) {
+  if (!confirm('Delete this post?')) return;
+  const r = await fetch(`${WORKER_BASE}/marketing/content/posts`, { method: 'DELETE', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ id }) });
+  if (!r.ok) { toastError('Could not delete the post.'); return; }
+  await loadContentPosts();
+}
+
+function openGenerateWeekForm() {
+  $id('gwTopic').value = ''; $id('gwDays').value = '7';
+  $id('gwStartDate').value = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  $id('generateWeekForm').classList.remove('hidden');
+  $id('newPostForm').classList.add('hidden');
+}
+function closeGenerateWeekForm() { $id('generateWeekForm').classList.add('hidden'); }
+
+async function submitGenerateWeek() {
+  const topic = $id('gwTopic').value.trim();
+  if (!topic) { toastError('Enter a topic first.'); return; }
+  const days = Math.min(14, Math.max(1, Number($id('gwDays').value) || 7));
+  const start_date = $id('gwStartDate').value || undefined;
+  const btn = $id('gwSubmitBtn');
+  btn.disabled = true; btn.textContent = 'Generating…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/content/generate-week`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ topic, days, start_date }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toastError(d.error || 'Could not generate posts.'); return; }
+    toastSuccess(`${d.list.length} draft${d.list.length === 1 ? '' : 's'} created${d.source === 'heuristic' ? ' (basic template — add a Gemini key server-side for AI drafts)' : ''}.`);
+    closeGenerateWeekForm();
+    await loadContentPosts();
+  } finally {
+    btn.disabled = false; btn.textContent = 'Generate';
+  }
 }
 
 // ── CLIENT API KEYS — bring-your-own Pexels/Pixabay/Freesound/fal.ai, optional (falls back to
