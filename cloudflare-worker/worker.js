@@ -6737,7 +6737,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // reliability trade-off the rest of this classifier already lives with: a judgment call, not a
   // deterministic lookup, validated against the real configured stage ids below before use.
   const stageInstruction=stageIds.length?', next_stage (see Sales stages below — whichever listed stage id best reflects where this conversation stands after the latest message; usually unchanged unless it has clearly progressed toward or past the next one; must be exactly one of the listed ids, quoted exactly as given)':'';
-  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
+  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead), product_interest (the specific brand, product, or category this customer has mentioned or clearly implied interest in so far across the conversation, in a few words — e.g. "Nike Air Max", "kids' shoes", "2BHK apartment", "iPhone 15" — empty string "" if nothing specific has come up yet)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
   const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
 
   // Both attempts below used to swallow every failure via a bare `catch(e){}` — with aiResult left
@@ -6823,7 +6823,15 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   const customerLanguage=/^[a-z]{2}$/.test(rawLang)?rawLang:null;
   const rawStage=typeof aiResult?.next_stage==='string'?aiResult.next_stage.trim():'';
   const nextStage=stageIds.includes(rawStage)?rawStage:null;
-  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence};
+  // Brand/category/product this lead has shown interest in, per the Leads table's new
+  // InterestedProduct column (SETUP.md) — a free-text judgment call like sentiment/objection, not
+  // a lookup against the Ecommerce module's own product/category catalog, so it works the same way
+  // for every industry (a "2BHK apartment" or "consultation package" is just as valid an answer as
+  // a specific SKU). Empty string when the model found nothing specific to point to yet — callers
+  // only write it onto the lead when non-blank (see engineBuildLeadUpsertBody), same "sparse
+  // signal, never overwrite with blank" treatment as LastObjectionCategory.
+  const productInterest=typeof aiResult?.product_interest==='string'?aiResult.product_interest.trim().slice(0,120):'';
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest};
 }
 
 // Mirrors "Code · Intent + flow" — decides where this turn goes (human handover / qualify / FAQ /
@@ -6837,12 +6845,12 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
 // trade-off as intent/sentiment/language already are), and stage content only ever reaches the
 // customer as guidance inside the same FAQ/objection reply — see engineBuildFaqSystemPrompt.
 function engineRouteFlow(c, state, userText, cls){
-  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence}=cls;
+  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest}=cls;
   const lowText=userText.toLowerCase().trim();
   const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
   const isResub=lowText==='start' && state.leadOptOut==='Yes';
-  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, isOptOut:true, isResub:false};
-  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, isOptOut:false, isResub:true};
+  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:true, isResub:false};
+  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:false, isResub:true};
 
   const botConfig=engineParseJsonField(c.bot_config, {});
   const qualQuestions=engineParseJsonField(c.qual_questions, []);
@@ -6975,7 +6983,7 @@ function engineRouteFlow(c, state, userText, cls){
     reply=(reply||'Great! You can book your slot here 📅')+'\n\n👉 '+c.cal_link;
   }
 
-  return {route, next, reply, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, isOptOut:false, isResub:false, humanReason};
+  return {route, next, reply, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:false, isResub:false, humanReason};
 }
 
 // From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
@@ -7942,7 +7950,7 @@ async function handleReferralsReward(request, env){
 // engineClaimMessage ran (state.leadId itself is no longer reliable for that by this point — a
 // brand-new lead may already have a stub row and leadId from the claim).
 function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead){
-  const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, isOptOut, isResub}=routing;
+  const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, productInterest, isOptOut, isResub}=routing;
   const reply=routing.reply;
   let next=routeNext;
   const isHuman=routing.route==='human';
@@ -8020,6 +8028,10 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
 
   if(sentiment) body.Sentiment=sentiment;
   if(objectionCategory && objectionCategory!=='none') body.LastObjectionCategory=objectionCategory;
+  // Sparse signal like LastObjectionCategory above — only overwrite when this message actually
+  // pointed to something specific, so a lead's last-known brand/category/product interest survives
+  // in-between messages ("yes", "ok") that have nothing new to add.
+  if(productInterest) body.InterestedProduct=productInterest;
   if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
 
   // fullHistory (untrimmed — body.ConvHistory above is already capped to the last 40) is exposed

@@ -7637,6 +7637,9 @@ function renderDetailSignals(lead){
   if(lead.LastObjectionCategory){
     chips.push(`<span class="tag" style="background:#FEF3C7;color:#92400E">⚠️ ${esc(lead.LastObjectionCategory)} objection</span>`);
   }
+  if(lead.InterestedProduct){
+    chips.push(`<span class="tag" style="background:#E0E7FF;color:#3730A3">🏷️ ${esc(lead.InterestedProduct)}</span>`);
+  }
   const wait=handoverWaitInfo(lead);
   if(wait){
     chips.push(`<span class="tag" style="background:${wait.overdue?'#FEE2E2':'#F1F5F9'};color:${wait.overdue?'#991B1B':'var(--muted)'}">⏱ waiting ${wait.mins}m${wait.overdue?' — SLA breached':''}</span>`);

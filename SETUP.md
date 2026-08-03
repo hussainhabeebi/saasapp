@@ -102,6 +102,7 @@ More columns on the **LEADS** table, written by `engine.json` and read/edited by
 |---|---|
 | Sentiment | Single line (`Positive`/`Neutral`/`Negative`/`Frustrated` — set from the engine's AI intent+sentiment classification on every inbound message; a `Frustrated` reading force-escalates to human handover regardless of stage) |
 | LastObjectionCategory | Single line (`price`/`competitor`/`timing`/`trust` — set whenever the AI classifier detects an objection; drives the objection-handling response, see `objection_playbook` above) |
+| InterestedProduct | Single line (free text — the specific brand, product, or category the AI classifier judges this lead has shown interest in, e.g. "Nike Air Max", "2BHK apartment"; same per-message classification call as Sentiment/LastObjectionCategory above, not a lookup against the Ecommerce module's own product/category catalog, so it works identically for every industry. Only overwritten when a message actually points to something specific — a generic "yes"/"ok" reply leaves whatever was last detected in place rather than clearing it) |
 | DealValue | Number (manual — the dashboard's only input into deal size; the engine never sets this, since it has no way to know it) |
 | DealCurrency | Single line (defaults from the client's `deal_currency` on lead creation; editable per lead) |
 | WinProbability | Number, 0-100 (auto-suggested by the engine from stage progress + lead score on every turn; stops auto-updating once `WinProbabilityManual` is set to "Yes" so a rep's manual call is never silently overwritten) |
@@ -4716,6 +4717,27 @@ the Chats page's existing "Needs You" filter exactly like a WhatsApp handover do
 list/thread UI as WhatsApp (`chatConvoLeads`/`chatSelectLead`, filtered by `Channel`); sending
 posts to `POST /instagram/send` (`{lead_id, text}`) instead of `/chat/send`, since there's no
 Chatwoot conversation id to send through.
+
+### `InterestedProduct` — brand/category/product interest, detected from the conversation
+A new LEADS column (see the LEADS field table near the top of this file) capturing whichever
+brand, product, or category a lead has shown interest in, judged straight from the chat rather than
+matched against a fixed catalog — same reasoning as the `language` field above: `engineClassifyIntent`
+already runs on every inbound message, so this is one more key (`product_interest`) on that same
+classifier call rather than a second LLM round-trip. Flows through exactly the same path
+`customerLanguage` does: `engineClassifyIntent` → `engineRouteFlow` (forwarded through all three of
+its return statements, including the opt-out/resub short-circuits) → `engineBuildLeadUpsertBody`.
+
+Deliberately **not** wired to the Ecommerce module's own `ecom_categories`/product catalog — a
+Hospitality client's lead asking about a "2BHK apartment" or a services client's "consultation
+package" is just as valid an answer as a specific SKU, so this stays a free-text judgment call that
+works identically across every industry, the same trade-off `Sentiment`/`LastObjectionCategory`
+already accept for the same reason.
+
+**Only written when non-blank.** Most messages ("yes", "ok", "thanks") have nothing new to add —
+`engineBuildLeadUpsertBody` only sets `body.InterestedProduct` when this turn's classification
+returned something specific, so a lead's last-known interest survives in between messages instead
+of getting clobbered with an empty string on every reply that isn't about a product at all (the
+same "sparse signal, never overwrite with blank" treatment `LastObjectionCategory` already gets).
 
 ## Dashboard reorganization (`frontend/dashboard.html`, `frontend/broadcast.html`, `frontend/ecom.html`)
 A single information-architecture pass: two new pages, one page promoted out of Settings, two
