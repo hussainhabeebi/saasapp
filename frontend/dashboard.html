@@ -254,6 +254,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
    .chat-contact-row:hover/.active rule further down (var(--accent-soft)) wins the cascade over
    the plain #f5f6f6/#f0f2f5 declared just above, so the badge ring must match that one instead. */
 .chat-contact-row:hover .cc-needs-you,.chat-contact-row.active .cc-needs-you{border-color:var(--accent-soft)}
+.cc-unread-dot{width:8px;height:8px;border-radius:50%;background:#00a884;flex-shrink:0;margin-left:4px}
 .chat-load-more{padding:12px 16px;text-align:center;border:none;background:none;font-size:12.5px;color:#00a884;font-weight:600;cursor:pointer;width:100%}
 .chat-load-more:hover{background:#f5f6f6}
 .chat-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;background:#efeae2 url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><g fill="none" stroke="%23000" stroke-opacity="0.028" stroke-width="1.2"><circle cx="20" cy="20" r="9"/><path d="M55 10 L70 30 L45 35 Z"/><circle cx="80" cy="70" r="12"/><path d="M15 70 q10 -15 25 0 q10 15 -5 20 q-15 5 -20 -20"/></g></svg>')}
@@ -1218,7 +1219,7 @@ const MODULE_PERMISSIONS = [
   <div id="desktopNav">
     <button class="dnTab active" data-page="home">🏠 Home</button>
     <button class="dnTab" data-page="humandeals">🤝 Human Deals<span id="dnHdBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
-    <button class="dnTab" data-page="chats">💬 Chats</button>
+    <button class="dnTab" data-page="chats">💬 Chats<span id="dnChatBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab" data-page="leads">👥 Leads</button>
     <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab" data-page="team" id="dnTeamTab">📊 Team</button>
@@ -3206,7 +3207,7 @@ const MODULE_PERMISSIONS = [
   <!-- Bottom nav -->
   <div id="bottomNav">
     <button class="bnItem active" data-page="home"><span class="bnIcon">🏠</span><span class="bnLabel">Home</span></button>
-    <button class="bnItem" data-page="chats"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span></button>
+    <button class="bnItem" data-page="chats" style="position:relative"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span><span id="bnChatBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
     <button class="bnItem" data-page="humandeals" style="position:relative"><span class="bnIcon">🤝</span><span class="bnLabel">Deals</span><span id="bnHdBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span><span id="bnTaskBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
     <button class="bnItem" id="bnMore" onclick="openMoreSheet()"><span class="bnIcon">⋯</span><span class="bnLabel">More</span></button>
@@ -5018,6 +5019,7 @@ function renderHome(){
   try{updateTasksBadge();}catch(e){}
   try{updateBillingBadge();}catch(e){}
   try{updateHdBadge();}catch(e){}
+  try{updateChatBadge();}catch(e){}
 
   const ind=getIndustry();
   const booked=allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
@@ -18278,6 +18280,39 @@ async function deleteHospBooking(id){
 /* ── CHATS TAB (uses local allLeads + ConvHistory) ── */
 let _chatSearchTimer=null, _chatLeadId=null, CHAT_FILTER='all', CHAT_CHANNEL='whatsapp';
 
+/* ── Unread tracking ──
+   No backend concept of "read" exists (ConvHistory/LastMsgAt are the only per-lead signals this
+   CRM has) — a localStorage map of leadId → ISO timestamp last opened is enough to answer "has
+   this lead had any new activity since I looked", the same thing LastMsgAt vs that stored time
+   already reduces to. Scoped per clientId, same as every other lv_* localStorage key (see
+   _CACHE_KEY), so switching accounts on one browser can't leak/misattribute another client's
+   read state. */
+function _chatReadKey(){ return `lv_chat_read_${clientId}`; }
+function chatGetReadMap(){
+  try{ return JSON.parse(localStorage.getItem(_chatReadKey())||'{}'); }catch(e){ return {}; }
+}
+function chatMarkRead(leadId){
+  const map=chatGetReadMap();
+  map[leadId]=new Date().toISOString();
+  try{ localStorage.setItem(_chatReadKey(), JSON.stringify(map)); }catch(e){}
+}
+function chatIsUnread(lead){
+  if(!lead.LastMsgAt) return false;
+  const readAt=chatGetReadMap()[lead.Id];
+  return !readAt || new Date(lead.LastMsgAt)>new Date(readAt);
+}
+// Both channels, regardless of which one CHAT_CHANNEL currently has selected — this feeds the
+// nav badges (visible from any tab), not the Chats tab's own contact list.
+function chatAllConvoLeads(){
+  return allLeads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]');
+}
+function updateChatBadge(){
+  const count=chatAllConvoLeads().filter(chatIsUnread).length;
+  const dnBadge=$id('dnChatBadge'), bnBadge=$id('bnChatBadge');
+  if(dnBadge){ dnBadge.style.display=count?'inline-block':'none'; dnBadge.textContent=count>99?'99+':count; }
+  if(bnBadge){ bnBadge.style.display=count?'block':'none'; }
+}
+
 function openChatsTab(){
   _chatLeadId=null;
   $id('chatSearch').value='';
@@ -18362,21 +18397,24 @@ function renderChatContacts(){
     // field), so a chat that needs you stands out even while browsing the "All" tab, not just
     // inside the "Needs You" filter.
     const needsYou=l.Handover==='Yes'?'<span class="cc-needs-you" title="Waiting on a human"></span>':'';
+    const unread=chatIsUnread(l);
     return `<div class="chat-contact-row${_chatLeadId===l.Id?' active':''}" id="ccRow${l.Id}" onclick="chatSelectLead(${l.Id})">
       <div class="cc-avatar">${initial}${needsYou}</div>
       <div class="cc-info">
         <div class="cc-row-top">
-          <div class="cc-name">${scoreDot}${esc(l.Name||'Unknown')}</div>
+          <div class="cc-name"${unread?' style="font-weight:700"':''}>${scoreDot}${esc(l.Name||'Unknown')}</div>
           <div class="cc-time">${esc(when)}</div>
         </div>
         <div class="cc-row-bottom">
           ${lastFromUs?'<span class="cc-check">✓✓</span>':''}
-          <div class="cc-preview">${esc(preview)}</div>
+          <div class="cc-preview"${unread?' style="color:#111b21;font-weight:600"':''}>${esc(preview)}</div>
+          ${unread?'<span class="cc-unread-dot" title="Unread"></span>':''}
         </div>
       </div>
     </div>`;
   }).join('');
   $id('chatLoadMore').style.display='none';
+  updateChatBadge();
 }
 
 function renderChatFilterRow(counts){
@@ -18400,6 +18438,13 @@ function chatSelectLead(leadId){
   _chatLeadId=leadId;
   const lead=allLeads.find(l=>l.Id===leadId);
   if(!lead) return;
+  // Marks read on open, not on send/close — matches every real chat app (opening the thread is
+  // what clears the badge, whether or not the rep actually replies).
+  if(chatIsUnread(lead)){
+    chatMarkRead(leadId);
+    if(row) row.querySelector('.cc-unread-dot')?.remove();
+    updateChatBadge();
+  }
 
   let history=[];
   try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
