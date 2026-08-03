@@ -9131,6 +9131,11 @@ async function handleAccountingDocumentCreate(request, env){
     // erpnext_debtors_account stay writable too (still read by the optional ERPNext push) but are
     // no longer set by the standalone Document modal.
     customer_name:body.customer_name?String(body.customer_name).trim().slice(0,200):null,
+    // customer_id (migration 0036) — links to fp_customers, the interconnection point with
+    // Financial Planning; resolved server-side via handleFpCustomerEnsureByName from
+    // customer_name before this insert, so the frontend only ever sends a name and this column is
+    // populated automatically.
+    customer_id:body.customer_id?Number(body.customer_id):null,
     erpnext_customer:body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null,
     company:body.company?String(body.company).trim().slice(0,140):null,
     erpnext_debtors_account:body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null,
@@ -9138,9 +9143,9 @@ async function handleAccountingDocumentCreate(request, env){
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -9158,6 +9163,7 @@ async function handleAccountingDocumentUpdate(request, env){
   if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
   if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10)); }
   if(body.customer_name!==undefined){ sets.push('customer_name=?'); vals.push(body.customer_name?String(body.customer_name).trim().slice(0,200):null); }
+  if(body.customer_id!==undefined){ sets.push('customer_id=?'); vals.push(body.customer_id?Number(body.customer_id):null); }
   if(body.erpnext_customer!==undefined){ sets.push('erpnext_customer=?'); vals.push(body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null); }
   if(body.company!==undefined){ sets.push('company=?'); vals.push(body.company?String(body.company).trim().slice(0,140):null); }
   if(body.erpnext_debtors_account!==undefined){ sets.push('erpnext_debtors_account=?'); vals.push(body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null); }
@@ -9203,15 +9209,15 @@ async function handleAccountingDocumentConvert(request, env){
     type:toType, title:src.title||'', line_items_json:src.line_items_json||'[]',
     currency:src.currency||'', subtotal:src.subtotal||0, tax_pct:src.tax_pct||0, tax_amount:src.tax_amount||0, total:src.total||0,
     status:'draft', linked_doc_id:src.id, notes:src.notes||'',
-    customer_name:src.customer_name||null,
+    customer_name:src.customer_name||null, customer_id:src.customer_id||null,
     erpnext_customer:src.erpnext_customer||null, company:src.company||null, erpnext_debtors_account:src.erpnext_debtors_account||null,
     erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -9538,10 +9544,10 @@ async function handleAccountingExpenseCreate(request, env){
   const body=await request.json().catch(()=>({}));
   if(!body.expense_account || !body.amount || !body.expense_date) return json({error:'expense_account, amount and expense_date required'}, 400);
   const now=new Date().toISOString();
-  const r=await env.DB.prepare(`INSERT INTO accounting_expenses (client_id, company, expense_account, expense_account_name, paid_from_account, paid_from_account_name, amount, currency, expense_date, category, vendor, description, cost_center, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+  const r=await env.DB.prepare(`INSERT INTO accounting_expenses (client_id, company, expense_account, expense_account_name, paid_from_account, paid_from_account_name, amount, currency, expense_date, category, vendor, supplier_id, description, cost_center, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .bind(Number(payload.cid), String(body.company||'').slice(0,140), String(body.expense_account).slice(0,140), String(body.expense_account_name||'').slice(0,140),
       String(body.paid_from_account||'').slice(0,140), String(body.paid_from_account_name||'').slice(0,140), Number(body.amount)||0, String(body.currency||'USD').slice(0,10).toUpperCase(),
-      String(body.expense_date).slice(0,10), String(body.category||'').slice(0,100), String(body.vendor||'').slice(0,140), String(body.description||'').slice(0,1000), String(body.cost_center||'').slice(0,140),
+      String(body.expense_date).slice(0,10), String(body.category||'').slice(0,100), String(body.vendor||'').slice(0,140), body.supplier_id?Number(body.supplier_id):null, String(body.description||'').slice(0,1000), String(body.cost_center||'').slice(0,140),
       'unsynced', now).run();
   return json({Id:r.meta.last_row_id});
 }
@@ -9558,6 +9564,7 @@ async function handleAccountingExpenseUpdate(request, env){
     if(body[f]!==undefined){ sets.push(`${f}=?`); vals.push(String(body[f]).slice(0,1000)); }
   }
   if(body.amount!==undefined){ sets.push('amount=?'); vals.push(Number(body.amount)||0); }
+  if(body.supplier_id!==undefined){ sets.push('supplier_id=?'); vals.push(body.supplier_id?Number(body.supplier_id):null); }
   if(!sets.length) return json({ok:true});
   vals.push(Number(body.id), Number(payload.cid));
   await env.DB.prepare(`UPDATE accounting_expenses SET ${sets.join(', ')} WHERE id=? AND client_id=?`).bind(...vals).run();
@@ -9638,8 +9645,8 @@ async function handleVendorBillCreate(request, env){
   if(!lineItems.length) return json({error:'At least one line item required'}, 400);
   const subtotal=lineItems.reduce((s,li)=>s+((Number(li.qty)||0)*(Number(li.price)||0)),0);
   const now=new Date().toISOString();
-  const r=await env.DB.prepare(`INSERT INTO accounting_vendor_bills (client_id, company, supplier, vendor_invoice_no, bill_date, due_date, line_items_json, currency, subtotal, total, notes, erpnext_payable_account, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), String(body.company||'').slice(0,140), String(body.supplier).slice(0,140), String(body.vendor_invoice_no||'').slice(0,140),
+  const r=await env.DB.prepare(`INSERT INTO accounting_vendor_bills (client_id, company, supplier, supplier_id, vendor_invoice_no, bill_date, due_date, line_items_json, currency, subtotal, total, notes, erpnext_payable_account, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), String(body.company||'').slice(0,140), String(body.supplier).slice(0,140), body.supplier_id?Number(body.supplier_id):null, String(body.vendor_invoice_no||'').slice(0,140),
       String(body.bill_date).slice(0,10), body.due_date?String(body.due_date).slice(0,10):null, JSON.stringify(lineItems), String(body.currency||'USD').slice(0,10).toUpperCase(),
       subtotal, subtotal, String(body.notes||'').slice(0,1000), String(body.erpnext_payable_account||'').slice(0,140), 'unpaid', now).run();
   return json({Id:r.meta.last_row_id});
@@ -9656,6 +9663,7 @@ async function handleVendorBillUpdate(request, env){
   for(const f of ['company','supplier','vendor_invoice_no','bill_date','due_date','currency','notes','erpnext_payable_account']){
     if(body[f]!==undefined){ sets.push(`${f}=?`); vals.push(String(body[f]).slice(0,1000)); }
   }
+  if(body.supplier_id!==undefined){ sets.push('supplier_id=?'); vals.push(body.supplier_id?Number(body.supplier_id):null); }
   if(body.line_items!==undefined){
     const lineItems=Array.isArray(body.line_items)?body.line_items:[];
     const subtotal=lineItems.reduce((s,li)=>s+((Number(li.qty)||0)*(Number(li.price)||0)),0);
@@ -10185,6 +10193,106 @@ async function handleFpCustomerEnsure(request, env){
   await fpEnsureConfigRow(env, payload.cid);
   return json({...fpCustomerOut({...fields, id:r.meta.last_row_id}), created:true});
 }
+// Search-or-create by NAME (case-insensitive exact match) — the interconnection point for
+// Documents (accounting_documents.customer_id, migration 0036): typing a customer name in the
+// Document modal resolves to an existing fp_customers row or creates a bare placeholder one, the
+// same way a lead's "✅ Won" click does via handleFpCustomerEnsure above, just keyed on name
+// instead of lead_id since a walk-in Document customer has no lead at all.
+async function handleFpCustomerEnsureByName(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const name=String(body.name||'').trim().slice(0,140);
+  if(!name) return json({error:'name required'}, 400);
+  const clientId=Number(payload.cid);
+  const existing=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=? AND LOWER(name)=LOWER(?)`).bind(clientId, name).first();
+  if(existing) return json({...fpCustomerOut(existing), created:false});
+  const now=new Date().toISOString();
+  const fields={
+    client_id:clientId, lead_id:null, name, phone:'', email:'', plan_name:'', monthly_value:0,
+    currency:String(body.currency||'INR').trim().slice(0,10).toUpperCase(), billing_cycle:'monthly', billing_day:1,
+    start_date:now.slice(0,10), status:'active', notes:'', created_at:now,
+  };
+  const r=await env.DB.prepare(`INSERT INTO fp_customers
+    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at)
+    .run();
+  await fpEnsureConfigRow(env, clientId);
+  return json({...fpCustomerOut({...fields, id:r.meta.last_row_id}), created:true});
+}
+
+// ── Suppliers master (migration 0036) — the accounts-payable mirror of fp_customers above, so
+// Vendor Bills and Expense Entry's "vendor paid" can reference the same supplier record instead
+// of each retyping a name with no shared identity between them. Deliberately minimal (no billing
+// fields — a supplier isn't billed on a cycle the way a customer is).
+function fpSupplierOut(r){ return {...r, Id:r.id}; }
+async function findFpSupplier(env, id){ return await env.DB.prepare(`SELECT * FROM fp_suppliers WHERE id=?`).bind(Number(id)).first(); }
+async function handleFpSuppliersList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM fp_suppliers WHERE client_id=? ORDER BY name ASC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(fpSupplierOut)});
+}
+async function handleFpSupplierCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name) return json({error:'name required'}, 400);
+  const now=new Date().toISOString();
+  const fields={
+    client_id:Number(payload.cid), name:String(body.name).trim().slice(0,140),
+    phone:String(body.phone||'').trim().slice(0,40), email:String(body.email||'').trim().slice(0,140),
+    notes:String(body.notes||'').trim().slice(0,1000), created_at:now,
+  };
+  const r=await env.DB.prepare(`INSERT INTO fp_suppliers (client_id, name, phone, email, notes, created_at) VALUES (?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.name, fields.phone, fields.email, fields.notes, fields.created_at).run();
+  return json(fpSupplierOut({...fields, id:r.meta.last_row_id}));
+}
+async function handleFpSupplierUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findFpSupplier(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).trim().slice(0,140)); }
+  if(body.phone!==undefined){ sets.push('phone=?'); vals.push(String(body.phone).trim().slice(0,40)); }
+  if(body.email!==undefined){ sets.push('email=?'); vals.push(String(body.email).trim().slice(0,140)); }
+  if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE fp_suppliers SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleFpSupplierDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findFpSupplier(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM fp_suppliers WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+// Search-or-create by name — same shape as handleFpCustomerEnsureByName, the interconnection
+// point for Vendor Bills (accounting_vendor_bills.supplier_id) and Expense Entry
+// (accounting_expenses.supplier_id).
+async function handleFpSupplierEnsure(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const name=String(body.name||'').trim().slice(0,140);
+  if(!name) return json({error:'name required'}, 400);
+  const clientId=Number(payload.cid);
+  const existing=await env.DB.prepare(`SELECT * FROM fp_suppliers WHERE client_id=? AND LOWER(name)=LOWER(?)`).bind(clientId, name).first();
+  if(existing) return json({...fpSupplierOut(existing), created:false});
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO fp_suppliers (client_id, name, phone, email, notes, created_at) VALUES (?,?,?,?,?,?)`)
+    .bind(clientId, name, '', '', '', now).run();
+  return json({...fpSupplierOut({id:r.meta.last_row_id, client_id:clientId, name, phone:'', email:'', notes:'', created_at:now}), created:true});
+}
 
 async function handleFpExpectedDuesList(request, env){
   const payload=await requireSession(request, env);
@@ -10339,12 +10447,12 @@ async function handleFpExpenseDelete(request, env){
   return json({ok:true});
 }
 
-const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct';
+const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct, default_currency';
 // Shared by GET and PATCH (the latter now returns the fresh row instead of a bare {ok:true} — the
 // Settings tab's saveFpConfig assigns the response straight into fpConfig, so an {ok:true}-only
 // reply was quietly wiping every other field client-side until the next full page load).
 function fpConfigResponseShape(row, cid){
-  if(!row) return {client_id:Number(cid), enabled:1, reminders_enabled:1, razorpay_connected:false, admin_phone_numbers:[], tax_reserve_pct:null};
+  if(!row) return {client_id:Number(cid), enabled:1, reminders_enabled:1, razorpay_connected:false, admin_phone_numbers:[], tax_reserve_pct:null, default_currency:null};
   return {...row, razorpay_connected:!!(row.razorpay_key_id&&row.razorpay_webhook_secret), admin_phone_numbers:engineParseJsonField(row.admin_phone_numbers, [])};
 }
 async function handleFpConfigGet(request, env){
@@ -10381,6 +10489,10 @@ async function handleFpConfigUpdate(request, env){
     sets.push('tax_reserve_pct=?');
     vals.push(body.tax_reserve_pct===null||body.tax_reserve_pct===''?null:Math.max(0,Math.min(100,Number(body.tax_reserve_pct)||0)));
   }
+  // Single account-wide default currency (migration 0036) — read by the frontend as the shared
+  // default for every currency field across Documents/Expense Entry/Vendor Bills/Financial
+  // Planning, instead of each modal hardcoding its own fallback.
+  if(body.default_currency!==undefined){ sets.push('default_currency=?'); vals.push(String(body.default_currency||'').trim().slice(0,10).toUpperCase()||null); }
   vals.push(Number(payload.cid));
   await env.DB.prepare(`UPDATE fp_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
   const row=await env.DB.prepare(`SELECT ${FP_CONFIG_SELECT_COLS} FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
@@ -14900,6 +15012,12 @@ export default {
       else if(url.pathname==='/financial/customers' && request.method==='PATCH'){ res=await handleFpCustomerUpdate(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='DELETE'){ res=await handleFpCustomerDelete(request, env); }
       else if(url.pathname==='/financial/customers/ensure' && request.method==='POST'){ res=await handleFpCustomerEnsure(request, env); }
+      else if(url.pathname==='/financial/customers/ensure-by-name' && request.method==='POST'){ res=await handleFpCustomerEnsureByName(request, env); }
+      else if(url.pathname==='/financial/suppliers' && request.method==='GET'){ res=await handleFpSuppliersList(request, env); }
+      else if(url.pathname==='/financial/suppliers' && request.method==='POST'){ res=await handleFpSupplierCreate(request, env); }
+      else if(url.pathname==='/financial/suppliers' && request.method==='PATCH'){ res=await handleFpSupplierUpdate(request, env); }
+      else if(url.pathname==='/financial/suppliers' && request.method==='DELETE'){ res=await handleFpSupplierDelete(request, env); }
+      else if(url.pathname==='/financial/suppliers/ensure' && request.method==='POST'){ res=await handleFpSupplierEnsure(request, env); }
       else if(url.pathname==='/financial/expected-dues' && request.method==='GET'){ res=await handleFpExpectedDuesList(request, env); }
       else if(url.pathname==='/financial/collections' && request.method==='POST'){ res=await handleFpCollectionCreate(request, env); }
       else if(url.pathname==='/financial/collections' && request.method==='DELETE'){ res=await handleFpCollectionDelete(request, env); }
