@@ -13409,6 +13409,72 @@ async function handleContentGenerateWeek(request, env){
   return json({ok:true, source:raw?'ai':'heuristic', list:created});
 }
 
+// "Turn a customer into a post" — source a testimonial/case-study draft straight from a closed
+// deal record (a Leads row whose Stage is 'won'/'converted', same literal values Human Deals'
+// one-click "✅ Won" button writes — see dashboard.html's isWonLead/HD_OUTCOME_STAGE) instead of a
+// free-text topic. Same lazy-image-later shape as "Generate a week" above: lands as a text-only
+// draft, no fal.ai cost until an image is added and the post is approved.
+// Deliberately anonymized by default — the generated CAPTION never includes the customer's real
+// name/phone (only the internal `title`, never shown to followers, may reference them, purely so
+// the marketer can tell drafts apart) — this endpoint has no way to know consent was given to name
+// a real customer publicly, so it doesn't assume it. A marketer with actual consent can still type
+// the name into the caption by hand afterward from the Edit form.
+async function handleContentCustomersList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const where=`(ClientId,eq,${Number(payload.cid)})~and((Stage,eq,won)~or(Stage,eq,converted))`;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=100&sort=-ClosedAt`);
+  if(!r.ok) return json({list:[]});
+  const data=await r.json().catch(()=>({}));
+  const list=(data?.list||[]).map(l=>({id:l.Id, name:l.Name||'(unnamed)', interested_product:l.InterestedProduct||'', deal_value:l.DealValue||null, closed_at:l.ClosedAt||null}));
+  return json({list});
+}
+
+async function handleContentFromCustomer(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const leadId=Number(body.lead_id);
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  if(!leadR.ok) return json({error:'Customer record not found'}, 404);
+  const lead=await leadR.json().catch(()=>({}));
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Customer record not found'}, 404);
+  if(!(lead.Stage==='won'||lead.Stage==='converted')) return json({error:'This lead is not a closed/won deal.'}, 400);
+
+  const facts=[
+    lead.InterestedProduct?`Interested in / bought: ${lead.InterestedProduct}`:null,
+    lead.DealValue?`Deal value: ${lead.DealValue}`:null,
+    lead.ClosedAt?`Closed: ${new Date(lead.ClosedAt).toLocaleDateString()}`:null,
+  ].filter(Boolean).join('\n');
+  const userText=facts||'A customer recently closed a deal with us.';
+
+  const raw=await engineGeminiGenerate(env,
+    'You write a short Instagram case-study/social-proof caption celebrating a real customer win, given a few internal facts about the deal. NEVER include the customer\'s real name, phone, or any other identifying detail — refer to them generically ("a local business", "one of our clients", "a customer looking for [product]"). Reply with ONLY compact JSON: {"title":"...", "caption":"...", "hashtags":["...","..."]}. title: a short internal label (not shown to followers), max 60 chars. caption: 2-4 sentences, upbeat, no hashtags inside it. hashtags: 4-6 relevant lowercase hashtags WITHOUT the # symbol.',
+    userText, {json:true, maxOutputTokens:250});
+  let title=null, caption=null, hashtags=[];
+  if(raw){
+    try{
+      const parsed=JSON.parse(raw);
+      if(parsed && typeof parsed.caption==='string'){ title=parsed.title; caption=parsed.caption; hashtags=Array.isArray(parsed.hashtags)?parsed.hashtags:[]; }
+    }catch(e){ /* fall through to heuristic */ }
+  }
+  if(!caption){
+    // Heuristic fallback — no GEMINI_API_KEY configured, or the model didn't return valid JSON.
+    caption=`Another happy customer! ${lead.InterestedProduct?`Proud to have helped with ${lead.InterestedProduct}.`:'Thank you for trusting us.'}`;
+    hashtags=['customerstory','testimonial','smallbusiness'];
+  }
+  title=(title||`Customer story — ${lead.Name||('lead #'+leadId)}`).toString().slice(0,120);
+  const hashtagLine=hashtags.map(h=>'#'+String(h).replace(/^#/,'').trim()).filter(h=>h.length>1).join(' ');
+  const fullCaption=[String(caption).trim(), hashtagLine].filter(Boolean).join('\n\n').slice(0,2200);
+
+  const now=new Date().toISOString();
+  const result=await env.DB.prepare(`INSERT INTO marketing_content_posts (client_id, title, caption, platform, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), title, fullCaption, 'instagram', 'draft', now, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(result.meta.last_row_id).first();
+  return json({ok:true, source:raw?'ai':'heuristic', post:marketingSerializeContentPost(row)});
+}
+
 async function handleMarketingStylePresets(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -15670,6 +15736,8 @@ export default {
       else if(url.pathname==='/marketing/content/posts' && request.method==='PATCH'){ res=await handleContentPostUpdate(request, env); }
       else if(url.pathname==='/marketing/content/posts' && request.method==='DELETE'){ res=await handleContentPostDelete(request, env); }
       else if(url.pathname==='/marketing/content/generate-week' && request.method==='POST'){ res=await handleContentGenerateWeek(request, env); }
+      else if(url.pathname==='/marketing/content/customers' && request.method==='GET'){ res=await handleContentCustomersList(request, env); }
+      else if(url.pathname==='/marketing/content/from-customer' && request.method==='POST'){ res=await handleContentFromCustomer(request, env); }
       else if(url.pathname==='/marketing/projects' && request.method==='GET'){ res=await handleMarketingProjectsList(request, env); }
       else if(url.pathname==='/marketing/projects' && request.method==='POST'){ res=await handleMarketingProjectCreate(request, env); }
       else if(url.pathname==='/marketing/projects' && request.method==='PATCH'){ res=await handleMarketingProjectUpdate(request, env); }

@@ -6287,6 +6287,22 @@ graceful-degrade-not-hard-fail shape as the caption suggester. Every generated p
 call, not N fal.ai image generations up front; an image only gets generated once a specific post is
 individually approved (the later Image Studio/auto-post increment).
 
+### "Turn a customer into a post" (`handleContentFromCustomer`, `GET /marketing/content/customers` + `POST /marketing/content/from-customer`)
+Sources a testimonial/case-study draft straight from a closed deal instead of a free-text topic —
+the picker (`GET /marketing/content/customers`) lists Leads rows whose `Stage` is `won` or
+`converted`, the same literal values Human Deals' one-click "✅ Won" button writes
+(`HD_OUTCOME_STAGE` in `dashboard.html`), filtered to this client and sorted by `ClosedAt` desc.
+Picking one calls the same `engineGeminiGenerate` shared-key path as "Generate a week" with the
+deal's own facts (`InterestedProduct`, `DealValue`, `ClosedAt`) as input, and lands as a **draft
+with no image**, same as every other generator in this module.
+- **Anonymized by default**: the prompt explicitly forbids the model from including the customer's
+  real name, phone, or any other identifying detail in the generated caption — it refers to them
+  generically ("a local business", "one of our clients"). The lead's real name is only ever used in
+  the draft's internal `title` (never shown to followers, purely so a marketer can tell drafts
+  apart in the calendar list) — this endpoint has no way to know a customer consented to being
+  named publicly, so it never assumes it. A marketer who *does* have consent can still type the
+  name into the caption by hand afterward via the normal Edit flow.
+
 ## Financial Planning module (`frontend/accounting.html` — "💰 Financial Planning" tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0015_financial_planning.sql`)
 
 Recurring-revenue and expense tracking for a client's own downstream customers — genuinely new to
