@@ -6388,6 +6388,40 @@ question goes through the same Ask-Your-Books path, everything else is parsed an
 expense immediately (being on the allow-list *is* the confirmation here — unlike the in-app Snap &
 Save, there's no draft-review step) and confirmed back over WhatsApp via `engineSendChatwootReply`.
 
+### Interconnection, Reports, and a single default currency (migration `0036_accounting_interconnect.sql`)
+Ties Documents/Expense Entry/Vendor Bills into the same master data Financial Planning already
+had, adds standard SMB reports, and a single account-wide currency default:
+
+- **`fp_suppliers`** — the accounts-payable mirror of `fp_customers`, its own "🏭 Suppliers"
+  sub-tab. `accounting_vendor_bills.supplier_id` and `accounting_expenses.supplier_id` are
+  optional links to it; the Vendor Bill and Expense Entry modals resolve/create a supplier by
+  typed name on save (`handleFpSupplierEnsure`/frontend `ensureFpSupplierByName`, same
+  search-or-create idempotency as every other "ensure" route in this app), so a name typed once
+  in either place exists in both.
+- **`accounting_documents.customer_id`** — same idea for the sales side: the Document modal's
+  Customer Name field (used when there's no CRM lead) resolves/creates an `fp_customers` record
+  via `handleFpCustomerEnsureByName`/`ensureFpCustomerByName`, so a walk-in customer billed
+  through Documents shows up in Financial Planning → Customers automatically.
+- **`fp_config.default_currency`** — set once in Financial Planning → Settings, read by the
+  frontend's `getDefaultCurrency()` as the shared starting value for every currency field across
+  the whole module (Documents, Expense Entry, Vendor Bills, Financial Planning's own modals),
+  replacing what used to be a different hardcoded fallback per modal (`'AED'` here, `'INR'`
+  there). Every field stays freely editable — this only changes the default.
+- **Unified Dashboard** — `handleFpDashboard` now folds Documents' unpaid invoices into "Money
+  Owed to You" alongside recurring `fp_expected_dues`, adds a "Money You Owe" stat + table from
+  unpaid `accounting_vendor_bills` (aged with the same `FP_AGING_BUCKETS` buckets as receivables),
+  and combines `fp_expenses` with `accounting_expenses` into one Total Expenses figure and 6-month
+  trend. `fpAiComputeSnapshotData` (Ask Your Books / the monthly AI snapshot) gets the same
+  unification so the AI narrative describes the whole business.
+- **Reports tab** (`frontend/accounting.html` "📊 Reports", `/financial/reports/*` in worker.js) —
+  Profit & Loss (`handleFpReportPL`, income from actual `fp_collections`/Documents' Receipts
+  within a date range vs. combined expenses), Accounts Receivable Aging
+  (`handleFpReportArAging`, recurring dues + unpaid invoices in one aged list), Accounts Payable
+  Aging (`handleFpReportApAging`, unpaid Vendor Bills), Expense Breakdown by category
+  (`handleFpReportExpenseBreakdown`, trailing N months), and a Sales Summary
+  (`handleFpReportSalesSummary`, Documents by type/status + quotation→accepted conversion rate).
+  All computed on demand from existing tables — no separate ledger, no double-entry.
+
 ## SaaS Ops module (`frontend/saas-ops.html` — own top-level tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0025_saas_ops.sql` + `0027_saas_nocodb_accounts.sql`)
 
 Subscription/lifecycle tracking, activation, product usage/PQL signals, account health scoring,
