@@ -18,31 +18,41 @@
   --bg:#FFF7ED;--card:#FFFFFF;--ink:#241A0C;--muted:#8A6D4B;
   --accent:#C2410C;--accent-ink:#9A3412;--accent-soft:#FFEDD5;
   --line:#FDE8CE;--ls:#FBCFA0;
-  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
-  --r:16px;--r-sm:10px;
+  --green:#059669;--green-soft:#D1FAE5;--red:#DC2626;--red-soft:#FEE2E2;
+  --shadow:0 1px 2px rgba(36,26,12,.04),0 2px 8px rgba(36,26,12,.05);
+  --shadow-md:0 4px 16px rgba(36,26,12,.08),0 1px 3px rgba(36,26,12,.06);
+  --shadow-lg:0 20px 48px rgba(36,26,12,.18),0 4px 16px rgba(36,26,12,.08);
+  --r:16px;--r-sm:10px;--ease:cubic-bezier(.4,0,.2,1);
   --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
 body{display:flex;flex-direction:column}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--ls);border-radius:20px;border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:var(--accent)}
 
 header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:56px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 1px 0 var(--line)}
 .brand{font-family:var(--disp);font-size:16px;font-weight:700;display:inline-flex;align-items:center;gap:6px}
 .brand span{color:var(--accent)}
 .chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
-.hback{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body)}
-.hback:hover{background:var(--bg)}
+.chip.currency-chip{background:var(--ink);color:#fff;font-family:var(--mono);letter-spacing:.03em}
+.hback{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body);transition:background .15s var(--ease),border-color .15s var(--ease)}
+.hback:hover{background:var(--bg);border-color:var(--ls)}
 
 #tabs{background:var(--card);border-bottom:1px solid var(--line);display:flex;padding:0 20px;flex-shrink:0;overflow-x:auto}
-.tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap}
-.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s var(--ease),border-color .15s var(--ease),background .15s var(--ease);white-space:nowrap;border-radius:8px 8px 0 0}
+.tab:hover{color:var(--accent-ink);background:var(--bg)}
+.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent);background:var(--accent-soft)}
 
 main{flex:1;overflow-y:auto;overflow-x:hidden;padding:20px;min-height:0}
 .inner{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
 .page{display:none}
-.page.active{display:block}
+.page.active{display:block;animation:fadein .2s var(--ease)}
+@keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
-.card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:20px;box-shadow:var(--shadow)}
+.card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:20px;box-shadow:var(--shadow);transition:box-shadow .2s var(--ease)}
 .card-title{font-family:var(--disp);font-size:14px;font-weight:700;color:var(--muted);margin-bottom:14px;text-transform:uppercase;letter-spacing:.04em}
 .card-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
 .card-title-row .card-title{margin-bottom:0}
@@ -50,46 +60,53 @@ main{flex:1;overflow-y:auto;overflow-x:hidden;padding:20px;min-height:0}
 
 .tbl-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line)}
+th{padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1.5px solid var(--line);position:sticky;top:0;background:var(--card);z-index:1}
 td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
 tr:last-child td{border-bottom:none}
+tbody tr{transition:background .12s var(--ease)}
 tbody tr:hover{background:var(--bg)}
 .badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;background:var(--accent-soft);color:var(--accent-ink)}
 .badge.draft{background:#F1F5F9;color:#475569}
 .badge.sent{background:#DBEAFE;color:#1E3A8A}
-.badge.paid,.badge.accepted{background:#D1FAE5;color:#065F46}
-.badge.void{background:#FEE2E2;color:#991B1B}
-.badge.synced{background:#D1FAE5;color:#065F46}
-.badge.failed{background:#FEE2E2;color:#991B1B;cursor:help}
+.badge.paid,.badge.accepted{background:var(--green-soft);color:#065F46}
+.badge.void{background:var(--red-soft);color:#991B1B}
+.badge.synced{background:var(--green-soft);color:#065F46}
+.badge.failed{background:var(--red-soft);color:#991B1B;cursor:help}
 .badge.pending,.badge.notsynced{background:#F1F5F9;color:#475569}
 
-.search-input{border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:200px}
+.search-input{border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:200px;transition:border-color .15s var(--ease),background .15s var(--ease)}
 .search-input:focus{outline:none;border-color:var(--accent);background:#fff}
-.save-btn{background:linear-gradient(135deg,#C2410C,#F97316);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
-.save-btn:hover{opacity:.9}
-.save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)}
-.save-btn:disabled{opacity:.5;cursor:default}
+.save-btn{background:linear-gradient(135deg,#C2410C,#F97316);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s var(--ease),transform .1s var(--ease),box-shadow .15s var(--ease);box-shadow:0 1px 2px rgba(194,65,12,.15)}
+.save-btn:hover{opacity:.92;box-shadow:0 4px 12px rgba(194,65,12,.25)}
+.save-btn:active{transform:scale(.97)}
+.save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent);box-shadow:none}
+.save-btn.sec:hover{box-shadow:none;background:#FFE0BD}
+.save-btn:disabled{opacity:.5;cursor:default;transform:none;box-shadow:none}
 .save-msg{font-size:12px;color:var(--accent);align-self:center}
-.save-msg.err{color:#DC2626}
-.icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
-.icon-btn:hover{background:var(--bg)}
-.icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
+.save-msg.err{color:var(--red)}
+.icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1;transition:background .12s var(--ease),border-color .12s var(--ease),transform .1s var(--ease)}
+.icon-btn:hover{background:var(--bg);border-color:var(--ls)}
+.icon-btn:active{transform:scale(.94)}
+.icon-btn.danger:hover{background:var(--red-soft);color:#991B1B;border-color:#FCA5A5}
 .row-actions{display:flex;gap:6px;flex-wrap:wrap}
 
 .s-lbl{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;display:block;text-transform:uppercase;letter-spacing:.04em}
-.s-input,select.s-input{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg)}
+.s-input,select.s-input{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg);transition:border-color .15s var(--ease),background .15s var(--ease)}
 .s-input:focus{outline:none;border-color:var(--accent);background:#fff}
 .s-hint{font-size:12px;color:var(--muted);margin-top:5px}
 
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(36,26,12,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
-.modal-overlay.active{display:flex}
-.modal-card{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(36,26,12,.5);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex;animation:overlayin .15s var(--ease)}
+@keyframes overlayin{from{opacity:0}to{opacity:1}}
+.modal-card{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);animation:modalin .18s var(--ease)}
+@keyframes modalin{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
 .modal-title{font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:18px}
 .modal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
 
 .li-row{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
-.li-row input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;background:var(--bg)}
+.li-row input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;background:var(--bg);transition:border-color .15s var(--ease)}
+.li-row input:focus{outline:none;border-color:var(--accent);background:#fff}
 
 .spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -99,19 +116,24 @@ tbody tr:hover{background:var(--bg)}
 
 /* ── Financial Planning — internal sub-nav (this module's own view switcher, nested inside the
    flat top-level tab row above; the module has enough distinct views — dashboard, customers,
-   collections, expenses, settings — that a second-level nav reads clearer than one long page) ── */
+   collections, expenses, settings — that a second-level nav reads clearer than one long page).
+   Reports (its own top-level tab) reuses these same classes for its own sub-nav — see
+   showReportSub's own comment for why the JS scopes its queries per-tab. ── */
 .fp-subnav{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-.fp-pill{font-family:var(--disp);font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;border:1.5px solid var(--line);background:var(--card);cursor:pointer;color:var(--muted)}
-.fp-pill.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.fp-pill{font-family:var(--disp);font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;border:1.5px solid var(--line);background:var(--card);cursor:pointer;color:var(--muted);transition:background .15s var(--ease),border-color .15s var(--ease),color .15s var(--ease),box-shadow .15s var(--ease)}
+.fp-pill:hover{border-color:var(--ls);color:var(--accent-ink)}
+.fp-pill.active{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 2px 8px rgba(194,65,12,.3)}
 .fp-sub{display:none}
-.fp-sub.active{display:block}
+.fp-sub.active{display:block;animation:fadein .18s var(--ease)}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
-.stat-card{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);padding:14px 16px}
+.stat-card{background:var(--bg);border:1px solid var(--line);border-left:3px solid var(--ls);border-radius:var(--r-sm);padding:14px 16px;transition:transform .15s var(--ease),box-shadow .15s var(--ease)}
+.stat-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md)}
 .stat-card .stat-lbl{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
-.stat-card .stat-val{font-family:var(--disp);font-size:22px;font-weight:700;color:var(--ink)}
+.stat-card .stat-val{font-family:var(--disp);font-size:24px;font-weight:700;color:var(--ink);letter-spacing:-.01em}
 .stat-card .stat-sub{font-size:12px;color:var(--muted);margin-top:2px}
 .aging-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
-.aging-cell{border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;text-align:center}
+.aging-cell{border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;text-align:center;transition:box-shadow .15s var(--ease)}
+.aging-cell:hover{box-shadow:var(--shadow)}
 .aging-cell .k{font-size:11px;color:var(--muted);font-weight:600}
 .aging-cell .c{font-family:var(--disp);font-weight:700;font-size:18px;margin:2px 0}
 .aging-cell .a{font-size:12px;color:var(--muted)}
@@ -127,6 +149,7 @@ tbody tr:hover{background:var(--bg)}
   <header>
     <span class="brand">Leadvyne<span>.</span></span>
     <span class="chip">💰 Accounting</span>
+    <span class="chip currency-chip" id="headerCurrencyChip" style="display:none"></span>
     <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
   </header>
 
@@ -135,6 +158,7 @@ tbody tr:hover{background:var(--bg)}
     <button class="tab" data-tab="financial" onclick="showTab('financial')">💰 Financial Planning</button>
     <button class="tab" data-tab="expenses" onclick="showTab('expenses')">💸 Expense Entry</button>
     <button class="tab" data-tab="vendorbills" onclick="showTab('vendorbills')">📥 Vendor Bills</button>
+    <button class="tab" data-tab="reports" onclick="showTab('reports')">📊 Reports</button>
   </div>
 
   <main>
@@ -171,6 +195,7 @@ tbody tr:hover{background:var(--bg)}
       <div class="fp-subnav">
         <button class="fp-pill active" data-fpsub="dashboard" onclick="showFpSub('dashboard')">📊 Dashboard</button>
         <button class="fp-pill" data-fpsub="customers" onclick="showFpSub('customers')">👥 Customers</button>
+        <button class="fp-pill" data-fpsub="suppliers" onclick="showFpSub('suppliers')">🏭 Suppliers</button>
         <button class="fp-pill" data-fpsub="dues" onclick="showFpSub('dues')">💵 Collections</button>
         <button class="fp-pill" data-fpsub="expenses" onclick="showFpSub('expenses')">🧾 Expenses</button>
         <button class="fp-pill" data-fpsub="settings" onclick="showFpSub('settings')">⚙️ Settings</button>
@@ -205,10 +230,12 @@ tbody tr:hover{background:var(--bg)}
           <div class="card">
             <div class="card-title" id="fpDashPeriodLabel">This Month</div>
             <div class="stat-grid">
-              <div class="stat-card"><div class="stat-lbl">Expected</div><div class="stat-val" id="fpStatExpected">—</div></div>
-              <div class="stat-card"><div class="stat-lbl">Collected</div><div class="stat-val" id="fpStatCollected">—</div><div class="stat-sub" id="fpStatPct"></div></div>
+              <div class="stat-card"><div class="stat-lbl">Expected (Recurring)</div><div class="stat-val" id="fpStatExpected">—</div></div>
+              <div class="stat-card"><div class="stat-lbl">Collected (Recurring)</div><div class="stat-val" id="fpStatCollected">—</div><div class="stat-sub" id="fpStatPct"></div></div>
               <div class="stat-card"><div class="stat-lbl">Total Expenses</div><div class="stat-val" id="fpStatExpenses">—</div><div class="stat-sub" id="fpStatExpensesSplit"></div></div>
               <div class="stat-card"><div class="stat-lbl">Profit</div><div class="stat-val" id="fpStatNet">—</div><div class="stat-sub">Collected − Expenses</div></div>
+              <div class="stat-card"><div class="stat-lbl">Money Owed to You</div><div class="stat-val" id="fpStatMoneyOwedToYou">—</div><div class="stat-sub" id="fpStatMoneyOwedToYouSub"></div></div>
+              <div class="stat-card"><div class="stat-lbl">Money You Owe</div><div class="stat-val" id="fpStatMoneyYouOwe">—</div><div class="stat-sub" id="fpStatMoneyYouOweSub"></div></div>
               <div class="stat-card" id="fpStatTaxCard" style="display:none"><div class="stat-lbl">Consider Setting Aside for Tax</div><div class="stat-val" id="fpStatTax">—</div><div class="stat-sub">Estimate only — not filing advice</div></div>
             </div>
           </div>
@@ -243,6 +270,16 @@ tbody tr:hover{background:var(--bg)}
                 <tbody id="fpOutstandingTbody"></tbody>
               </table>
             </div>
+            <div class="s-hint" style="margin-top:10px">Recurring dues only — unpaid one-off Documents invoices are counted in the "Money Owed to You" stat above but listed on the Documents tab, not repeated here.</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Money You Owe — Unpaid Vendor Bills</div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>Supplier</th><th>Bill Date</th><th>Due Date</th><th>Amount</th><th>Overdue</th></tr></thead>
+                <tbody id="fpPayablesTbody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -262,6 +299,27 @@ tbody tr:hover{background:var(--bg)}
             <table>
               <thead><tr><th>Name</th><th>Plan</th><th>Value</th><th>Cycle</th><th>Billing Day</th><th>Lifecycle</th><th>Health</th><th>Renewal</th><th>Status</th><th>Actions</th></tr></thead>
               <tbody id="fpCustomersTbody"><tr class="loading-row"><td colspan="10"><span class="spinner"></span>Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUPPLIERS — the accounts-payable mirror of Customers above (migration 0036,
+           fp_suppliers), shared by Vendor Bills and Expense Entry's "vendor paid" picker. -->
+      <div id="fpSubSuppliers" class="fp-sub">
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">Suppliers</div>
+            <div class="card-actions">
+              <input class="search-input" id="fpSupplierSearch" type="text" placeholder="🔍 Search…" oninput="renderFpSuppliersTable()">
+              <button class="save-btn" onclick="openFpSupplierModal()">+ Add Supplier</button>
+            </div>
+          </div>
+          <div class="s-hint" style="margin-bottom:14px">Shared by Vendor Bills and Expense Entry — typing a name in either automatically adds it here too, so you never have to set them up twice.</div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Actions</th></tr></thead>
+              <tbody id="fpSuppliersTbody"><tr class="loading-row"><td colspan="4"><span class="spinner"></span>Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -348,6 +406,9 @@ tbody tr:hover{background:var(--bg)}
           <div class="card-title">⚙️ Financial Planning Settings</div>
           <div class="toggle-row"><input type="checkbox" id="fpCfgEnabled"><label class="s-lbl" style="margin:0">Enabled — generate Expected Funds &amp; fixed expenses automatically on the 1st of each month</label></div>
           <div class="toggle-row"><input type="checkbox" id="fpCfgRemindersEnabled"><label class="s-lbl" style="margin:0">Send WhatsApp reminders for overdue Expected Funds (via Chatwoot)</label></div>
+          <div class="card-title" style="margin-top:10px">Default Currency</div>
+          <div class="s-hint" style="margin-bottom:10px">Used as the starting currency everywhere in this module — Documents, Expense Entry, Vendor Bills, and Financial Planning — so you don't have to re-type it each time. Every currency field stays editable, this is just the shared default.</div>
+          <div style="max-width:160px"><input class="s-input" id="fpCfgDefaultCurrency" placeholder="e.g. USD" maxlength="10"></div>
           <div class="card-title" style="margin-top:10px">🤖 AI Bookkeeping via WhatsApp (optional)</div>
           <div class="s-hint" style="margin-bottom:10px">Add your own phone number(s) here to text your books directly — e.g. "spent 2000 on fuel", a voice note, or a photo of a receipt, sent to this same WhatsApp number. Messages from these numbers are handled as bookkeeping, not as customer leads. One per line or comma-separated.</div>
           <textarea class="s-input" id="fpCfgAdminPhones" rows="2" placeholder="e.g. +971501234567" style="resize:vertical"></textarea>
@@ -416,6 +477,97 @@ tbody tr:hover{background:var(--bg)}
       </div>
     </div>
 
+    <!-- REPORTS — standard SMB accounting reports computed on demand from the same tables the
+         rest of this module already writes to (no separate ledger). -->
+    <div id="tabReports" class="page">
+      <div class="fp-subnav">
+        <button class="fp-pill active" data-repsub="pl" onclick="showReportSub('pl')">📈 Profit &amp; Loss</button>
+        <button class="fp-pill" data-repsub="ar" onclick="showReportSub('ar')">📥 Receivables Aging</button>
+        <button class="fp-pill" data-repsub="ap" onclick="showReportSub('ap')">📤 Payables Aging</button>
+        <button class="fp-pill" data-repsub="expbreak" onclick="showReportSub('expbreak')">🧾 Expense Breakdown</button>
+        <button class="fp-pill" data-repsub="sales" onclick="showReportSub('sales')">🧮 Sales Summary</button>
+      </div>
+
+      <!-- PROFIT & LOSS -->
+      <div id="repSubPl" class="fp-sub active">
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">Profit &amp; Loss</div>
+            <div class="card-actions">
+              <input class="s-input" id="repPlFrom" type="date" style="width:auto">
+              <span style="color:var(--muted);font-size:13px">to</span>
+              <input class="s-input" id="repPlTo" type="date" style="width:auto">
+              <button class="save-btn sec" onclick="loadReportPL()">Run</button>
+            </div>
+          </div>
+          <div id="repPlContent"><div class="empty-state">Pick a date range and click Run.</div></div>
+        </div>
+      </div>
+
+      <!-- ACCOUNTS RECEIVABLE AGING -->
+      <div id="repSubAr" class="fp-sub">
+        <div class="card">
+          <div class="card-title">Money Owed to You — Aging</div>
+          <div class="s-hint" style="margin-bottom:14px">Every open recurring due plus every unpaid one-off invoice, in one aged list.</div>
+          <div class="aging-grid" id="repArBuckets"></div>
+          <div class="tbl-wrap" style="margin-top:14px">
+            <table>
+              <thead><tr><th>Customer</th><th>Reference</th><th>Date</th><th>Balance</th><th>Overdue</th><th>Bucket</th></tr></thead>
+              <tbody id="repArTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ACCOUNTS PAYABLE AGING -->
+      <div id="repSubAp" class="fp-sub">
+        <div class="card">
+          <div class="card-title">Money You Owe — Aging</div>
+          <div class="s-hint" style="margin-bottom:14px">Every Vendor Bill that isn't marked paid yet.</div>
+          <div class="aging-grid" id="repApBuckets"></div>
+          <div class="tbl-wrap" style="margin-top:14px">
+            <table>
+              <thead><tr><th>Supplier</th><th>Reference</th><th>Due Date</th><th>Balance</th><th>Overdue</th><th>Bucket</th></tr></thead>
+              <tbody id="repApTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- EXPENSE BREAKDOWN -->
+      <div id="repSubExpbreak" class="fp-sub">
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">Expense Breakdown by Category</div>
+            <div class="card-actions">
+              <select class="s-input" id="repExpMonths" style="width:auto" onchange="loadReportExpenseBreakdown()">
+                <option value="3">Last 3 months</option>
+                <option value="6" selected>Last 6 months</option>
+                <option value="12">Last 12 months</option>
+              </select>
+            </div>
+          </div>
+          <div id="repExpbreakContent"><tr class="loading-row"><span class="spinner"></span>Loading…</tr></div>
+        </div>
+      </div>
+
+      <!-- SALES SUMMARY -->
+      <div id="repSubSales" class="fp-sub">
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">Sales Summary</div>
+            <div class="card-actions">
+              <input class="s-input" id="repSalesFrom" type="date" style="width:auto">
+              <span style="color:var(--muted);font-size:13px">to</span>
+              <input class="s-input" id="repSalesTo" type="date" style="width:auto">
+              <button class="save-btn sec" onclick="loadReportSalesSummary()">Run</button>
+            </div>
+          </div>
+          <div id="repSalesContent"><div class="empty-state">Pick a date range and click Run.</div></div>
+        </div>
+      </div>
+    </div>
+
     <!-- SaaS Ops moved — the "🚀 SaaS Ops" module now lives in its own standalone top-level tab
          (frontend/saas-ops.html, iframe-embedded from dashboard.html), backed directly by the
          client's own live NocoDB customers table instead of fp_customers below. -->
@@ -436,9 +588,10 @@ tbody tr:hover{background:var(--bg)}
         <input class="s-input" id="docLeadSearch" placeholder="🔍 Search leads…" oninput="renderLeadPicker()">
         <select class="s-input" id="docLeadId" style="margin-top:6px"><option value="">— None —</option></select>
       </div>
-      <div><label class="s-lbl">Customer Name (if no lead)</label><input class="s-input" id="docCustomerName" placeholder="e.g. Acme Corp / walk-in customer"></div>
+      <div><label class="s-lbl">Customer Name (if no lead)</label><input class="s-input" id="docCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
       <div><label class="s-lbl">Currency</label><input class="s-input" id="docCurrency" placeholder="e.g. AED" value="AED"></div>
     </div>
+    <datalist id="fpCustomersDatalist"></datalist>
     <label class="s-lbl">Line Items</label>
     <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price — no separate catalog to set up first.</div>
     <div id="docLineItems"></div>
@@ -474,7 +627,7 @@ tbody tr:hover{background:var(--bg)}
       <div><label class="s-lbl">Currency</label><input class="s-input" id="expCurrency" placeholder="e.g. AED" value="AED"></div>
       <div><label class="s-lbl">Date</label><input class="s-input" id="expDate" type="date"></div>
       <div><label class="s-lbl">Category</label><input class="s-input" id="expCategory" placeholder="e.g. Rent, Software, Travel"></div>
-      <div><label class="s-lbl">Vendor / Paid To</label><input class="s-input" id="expVendor" placeholder="e.g. AWS, Landlord"></div>
+      <div><label class="s-lbl">Vendor / Paid To</label><input class="s-input" id="expVendor" list="fpSuppliersDatalist" placeholder="e.g. AWS, Landlord"></div>
       <div><label class="s-lbl">Cost Center (optional)</label><input class="s-input" id="expCostCenter" placeholder="Optional label"></div>
     </div>
     <label class="s-lbl">Description / Remarks</label>
@@ -494,13 +647,14 @@ tbody tr:hover{background:var(--bg)}
     <div class="modal-title">New Vendor Bill</div>
     <input type="hidden" id="vbId">
     <div class="modal-grid">
-      <div><label class="s-lbl">Supplier</label><input class="s-input" id="vbSupplier" placeholder="e.g. AWS, Landlord"></div>
+      <div><label class="s-lbl">Supplier</label><input class="s-input" id="vbSupplier" list="fpSuppliersDatalist" placeholder="e.g. AWS, Landlord"></div>
       <div><label class="s-lbl">Vendor's Invoice/Ref #</label><input class="s-input" id="vbVendorInvoiceNo" placeholder="Their own bill number"></div>
       <div><label class="s-lbl">Account (optional)</label><input class="s-input" id="vbPayableAccount" placeholder="e.g. Accounts Payable"></div>
       <div><label class="s-lbl">Currency</label><input class="s-input" id="vbCurrency" placeholder="e.g. AED" value="AED"></div>
       <div><label class="s-lbl">Bill Date</label><input class="s-input" id="vbBillDate" type="date"></div>
       <div><label class="s-lbl">Due Date (optional)</label><input class="s-input" id="vbDueDate" type="date"></div>
     </div>
+    <datalist id="fpSuppliersDatalist"></datalist>
     <label class="s-lbl">Line Items</label>
     <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price.</div>
     <div id="vbLineItems"></div>
@@ -515,6 +669,25 @@ tbody tr:hover{background:var(--bg)}
       <button class="save-btn" onclick="saveVendorBill()">Save</button>
     </div>
     <div class="save-msg" id="vbSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ── FINANCIAL PLANNING: SUPPLIER MODAL ── -->
+<div class="modal-overlay" id="fpSupplierModal">
+  <div class="modal-card" style="max-width:440px">
+    <div class="modal-title" id="fpSupplierModalTitle">Add Supplier</div>
+    <input type="hidden" id="fpSupId">
+    <div class="modal-grid" style="grid-template-columns:1fr">
+      <div><label class="s-lbl">Name</label><input class="s-input" id="fpSupName" placeholder="e.g. AWS, Landlord"></div>
+      <div><label class="s-lbl">Phone</label><input class="s-input" id="fpSupPhone"></div>
+      <div><label class="s-lbl">Email</label><input class="s-input" id="fpSupEmail" type="email"></div>
+      <div><label class="s-lbl">Notes</label><textarea class="s-input" id="fpSupNotes" rows="2" style="resize:vertical"></textarea></div>
+    </div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeFpSupplierModal()">Cancel</button>
+      <button class="save-btn" onclick="saveFpSupplier()">Save</button>
+    </div>
+    <div class="save-msg" id="fpSupSaveMsg" style="margin-top:8px"></div>
   </div>
 </div>
 
@@ -685,8 +858,13 @@ let vendorBillsLoadError = '';
 
 /* ── Financial Planning state (migrations/0015_financial_planning.sql) ── */
 let fpCustomers=[], fpDues=[], fpExpenseTemplates=[], fpExpenses=[], fpConfig=null, fpDashboardData=null;
+let fpSuppliers=[]; // migration 0036 — shared by Vendor Bills and Expense Entry pickers
 let fpLoadError='';
 let fpTrendChart=null;
+// Single account-wide currency default (Settings → Default Currency), falling back to the
+// CLIENTS-level deal_currency, then a hard 'USD' — read by every currency field's default across
+// Documents/Expense Entry/Vendor Bills/Financial Planning instead of each modal hardcoding its own.
+function getDefaultCurrency(){ return (fpConfig?.default_currency||clientRecord?.deal_currency||'USD').toUpperCase(); }
 
 // Branding for the generated PDF (buildDocumentPdf) is shared with dashboard.html's Quotation
 // feature — quote_logo_url/quote_accent_color/quote_footer_address/quote_header_title/
@@ -761,6 +939,9 @@ async function init(){
     // "own try/catch" reasoning as loadDocuments above.
     try{ await loadFinancialPlanning(); }catch(e){ fpLoadError=e.message; }
     renderFinancialPlanning();
+    populateFpCustomerDatalist();
+    populateFpSupplierDatalist();
+    initReportDateDefaults();
     // SaaS Ops now lives in its own standalone top-level tab (frontend/saas-ops.html) — nothing
     // to load here anymore.
   }catch(e){
@@ -791,18 +972,35 @@ function showTab(name){
   document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
 }
 
+// Scoped to #tabFinancial — Reports (below) reuses the same .fp-sub/.fp-pill classes for its own
+// sub-nav, so an unscoped querySelectorAll here would also toggle Reports' sub-tabs (and vice
+// versa) since both tabs can be in the DOM's "last active sub" state at once.
 function showFpSub(name){
-  document.querySelectorAll('.fp-sub').forEach(p=>p.classList.remove('active'));
-  document.querySelectorAll('.fp-pill').forEach(t=>t.classList.remove('active'));
+  const root=document.getElementById('tabFinancial');
+  root.querySelectorAll('.fp-sub').forEach(p=>p.classList.remove('active'));
+  root.querySelectorAll('.fp-pill').forEach(t=>t.classList.remove('active'));
   document.getElementById('fpSub'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
-  document.querySelector(`.fp-pill[data-fpsub="${name}"]`).classList.add('active');
+  root.querySelector(`.fp-pill[data-fpsub="${name}"]`).classList.add('active');
   if(name==='dashboard' && fpDashboardData) try{renderFpTrendChart();}catch(e){}
+}
+
+let _repArLoaded=false, _repApLoaded=false, _repExpbreakLoaded=false;
+function showReportSub(name){
+  const root=document.getElementById('tabReports');
+  root.querySelectorAll('.fp-sub').forEach(p=>p.classList.remove('active'));
+  root.querySelectorAll('.fp-pill').forEach(t=>t.classList.remove('active'));
+  document.getElementById('repSub'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
+  root.querySelector(`.fp-pill[data-repsub="${name}"]`).classList.add('active');
+  if(name==='ar' && !_repArLoaded){ _repArLoaded=true; loadReportArAging(); }
+  if(name==='ap' && !_repApLoaded){ _repApLoaded=true; loadReportApAging(); }
+  if(name==='expbreak' && !_repExpbreakLoaded){ _repExpbreakLoaded=true; loadReportExpenseBreakdown(); }
 }
 
 /* ══════════════════ FINANCIAL PLANNING ══════════════════ */
 async function loadFinancialPlanning(){
-  const [custRes, duesRes, tplRes, expRes, cfgRes, dashRes]=await Promise.all([
+  const [custRes, supRes, duesRes, tplRes, expRes, cfgRes, dashRes]=await Promise.all([
     acctFetch('/financial/customers',{method:'GET'}),
+    acctFetch('/financial/suppliers',{method:'GET'}),
     acctFetch('/financial/expected-dues',{method:'GET'}),
     acctFetch('/financial/expense-templates',{method:'GET'}),
     acctFetch('/financial/expenses?months=6',{method:'GET'}),
@@ -810,6 +1008,7 @@ async function loadFinancialPlanning(){
     acctFetch('/financial/dashboard',{method:'GET'}),
   ]);
   fpCustomers=custRes.list||[];
+  fpSuppliers=supRes.list||[];
   fpDues=duesRes.list||[];
   fpExpenseTemplates=tplRes.list||[];
   fpExpenses=expRes.list||[];
@@ -819,6 +1018,7 @@ async function loadFinancialPlanning(){
 function renderFinancialPlanning(){
   renderFpDashboard();
   renderFpCustomersTable();
+  renderFpSuppliersTable();
   renderFpDuesTable();
   renderFpExpenseTemplatesTable();
   renderFpExpensesTable();
@@ -895,10 +1095,18 @@ function renderFpDashboard(){
   document.getElementById('fpStatCollected').textContent=fmtMoney(d.collected_this_month,d.currency);
   document.getElementById('fpStatPct').textContent=`${d.collection_pct}% collected`;
   document.getElementById('fpStatExpenses').textContent=fmtMoney(d.total_expenses,d.currency);
-  document.getElementById('fpStatExpensesSplit').textContent=`Fixed ${fmtMoney(d.fixed_expense_total,d.currency)} · One-time ${fmtMoney(d.onetime_expense_total,d.currency)}`;
+  document.getElementById('fpStatExpensesSplit').textContent=`Fixed ${fmtMoney(d.fixed_expense_total,d.currency)} · One-time ${fmtMoney(d.onetime_expense_total,d.currency)} · Expense Entry ${fmtMoney(d.acct_expense_total,d.currency)}`;
   const netEl=document.getElementById('fpStatNet');
   netEl.textContent=fmtMoney(d.net_position,d.currency);
   netEl.style.color=d.net_position<0?'#DC2626':'var(--ink)';
+
+  // Unified receivables/payables — Documents' unpaid invoices folded into "Money Owed to You"
+  // alongside recurring dues, Vendor Bills' unpaid ones as "Money You Owe" (worker.js
+  // handleFpDashboard's own comment has the full computation).
+  document.getElementById('fpStatMoneyOwedToYou').textContent=fmtMoney(d.money_owed_to_you_total,d.currency);
+  document.getElementById('fpStatMoneyOwedToYouSub').textContent=d.unpaid_invoice_count?`incl. ${d.unpaid_invoice_count} unpaid invoice(s)`:'recurring dues only';
+  document.getElementById('fpStatMoneyYouOwe').textContent=fmtMoney(d.payables_total,d.currency);
+  document.getElementById('fpStatMoneyYouOweSub').textContent=d.unpaid_bill_count?`${d.unpaid_bill_count} unpaid bill(s)`:'nothing outstanding';
 
   const taxCard=document.getElementById('fpStatTaxCard');
   if(d.estimated_tax_set_aside!=null){ taxCard.style.display='block'; document.getElementById('fpStatTax').textContent=fmtMoney(d.estimated_tax_set_aside,d.currency); }
@@ -907,6 +1115,12 @@ function renderFpDashboard(){
   document.getElementById('fpAgingGrid').innerHTML=(d.aging_buckets||[]).map(b=>`
     <div class="aging-cell"><div class="k">${esc(b.key)} days</div><div class="c">${b.count}</div><div class="a">${fmtMoney(b.amount,d.currency)}</div></div>
   `).join('');
+
+  const payTbody=document.getElementById('fpPayablesTbody');
+  payTbody.innerHTML=(d.payables||[]).length?d.payables.map(p=>`<tr>
+    <td>${esc(p.supplier)}</td><td>${esc(p.bill_date)}</td><td>${esc(p.due_date||'—')}</td>
+    <td>${fmtMoney(p.total,p.currency)}</td><td>${p.overdue_days>0?p.overdue_days+'d':'—'}</td>
+  </tr>`).join(''):'<tr><td colspan="5" class="empty-state">Nothing owed to suppliers right now.</td></tr>';
 
   renderFpOutstanding();
   if(document.getElementById('fpSubDashboard').classList.contains('active')) try{renderFpTrendChart();}catch(e){}
@@ -985,7 +1199,7 @@ function openFpCustomerModal(id){
   document.getElementById('fpCustPhone').value=c?.phone||'';
   document.getElementById('fpCustEmail').value=c?.email||'';
   document.getElementById('fpCustValue').value=c?.monthly_value??'';
-  document.getElementById('fpCustCurrency').value=c?.currency||'INR';
+  document.getElementById('fpCustCurrency').value=c?.currency||getDefaultCurrency();
   document.getElementById('fpCustCycle').value=c?.billing_cycle||'monthly';
   document.getElementById('fpCustBillingDay').value=c?.billing_day||1;
   document.getElementById('fpCustStartDate').value=(c?.start_date||new Date().toISOString().slice(0,10)).slice(0,10);
@@ -1049,6 +1263,96 @@ async function deleteFpCustomer(id){
     fpCustomers=fpCustomers.filter(c=>c.Id!==id);
     fpDues=fpDues.filter(d=>d.customer_id!==id);
     renderFpCustomersTable(); renderFpDuesTable();
+  }catch(e){ alert('Failed: '+e.message); }
+}
+function populateFpCustomerDatalist(){
+  const dl=document.getElementById('fpCustomersDatalist');
+  if(dl) dl.innerHTML=fpCustomers.map(c=>`<option value="${escAttr(c.name)}">`).join('');
+}
+// Resolves a typed customer name to (or creates) an fp_customers record — the interconnection
+// point Documents use so a customer typed here shows up in Financial Planning → Customers too.
+// Returns null for a blank name (nothing to link).
+async function ensureFpCustomerByName(name){
+  const trimmed=(name||'').trim();
+  if(!trimmed) return null;
+  try{
+    const result=await acctFetch('/financial/customers/ensure-by-name',{method:'POST',body:JSON.stringify({name:trimmed, currency:getDefaultCurrency()})});
+    if(result.created){ fpCustomers.push(result); populateFpCustomerDatalist(); }
+    return result.Id;
+  }catch(e){ return null; }
+}
+
+/* ── Suppliers (migration 0036 — shared by Vendor Bills and Expense Entry) ── */
+function populateFpSupplierDatalist(){
+  const dl=document.getElementById('fpSuppliersDatalist');
+  if(dl) dl.innerHTML=fpSuppliers.map(s=>`<option value="${escAttr(s.name)}">`).join('');
+}
+// Same search-or-create shape as ensureFpCustomerByName, for Vendor Bills/Expense Entry.
+async function ensureFpSupplierByName(name){
+  const trimmed=(name||'').trim();
+  if(!trimmed) return null;
+  try{
+    const result=await acctFetch('/financial/suppliers/ensure',{method:'POST',body:JSON.stringify({name:trimmed})});
+    if(result.created){ fpSuppliers.push(result); populateFpSupplierDatalist(); }
+    return result.Id;
+  }catch(e){ return null; }
+}
+function renderFpSuppliersTable(){
+  const tbody=document.getElementById('fpSuppliersTbody');
+  if(fpLoadError){ tbody.innerHTML=`<tr><td colspan="4" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load (${esc(fpLoadError)}).</td></tr>`; return; }
+  const q=(document.getElementById('fpSupplierSearch').value||'').toLowerCase();
+  const rows=fpSuppliers.filter(s=>!q||(s.name||'').toLowerCase().includes(q));
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="4" class="empty-state">No suppliers yet — add one, or type a name in a Vendor Bill / Expense and it\'ll appear here automatically.</td></tr>'; return; }
+  tbody.innerHTML=rows.map(s=>`<tr>
+    <td>${esc(s.name)}</td>
+    <td>${esc(s.phone||'—')}</td>
+    <td>${esc(s.email||'—')}</td>
+    <td class="row-actions">
+      <button class="icon-btn" title="Edit" onclick="openFpSupplierModal(${s.Id})">✏️</button>
+      <button class="icon-btn danger" title="Delete" onclick="deleteFpSupplier(${s.Id})">🗑</button>
+    </td>
+  </tr>`).join('');
+}
+function openFpSupplierModal(id){
+  const s=id?fpSuppliers.find(x=>x.Id===id):null;
+  document.getElementById('fpSupplierModalTitle').textContent=s?'Edit Supplier':'Add Supplier';
+  document.getElementById('fpSupId').value=id||'';
+  document.getElementById('fpSupName').value=s?.name||'';
+  document.getElementById('fpSupPhone').value=s?.phone||'';
+  document.getElementById('fpSupEmail').value=s?.email||'';
+  document.getElementById('fpSupNotes').value=s?.notes||'';
+  document.getElementById('fpSupSaveMsg').textContent='';
+  document.getElementById('fpSupplierModal').classList.add('active');
+}
+function closeFpSupplierModal(){ document.getElementById('fpSupplierModal').classList.remove('active'); }
+async function saveFpSupplier(){
+  const id=document.getElementById('fpSupId').value;
+  const name=document.getElementById('fpSupName').value.trim();
+  const msg=document.getElementById('fpSupSaveMsg');
+  if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
+  const body={name, phone:document.getElementById('fpSupPhone').value.trim(), email:document.getElementById('fpSupEmail').value.trim(), notes:document.getElementById('fpSupNotes').value.trim()};
+  msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    if(id){
+      await acctFetch('/financial/suppliers',{method:'PATCH',body:JSON.stringify({id:Number(id), ...body})});
+      const idx=fpSuppliers.findIndex(x=>x.Id===Number(id));
+      if(idx>=0) fpSuppliers[idx]={...fpSuppliers[idx], ...body};
+    }else{
+      const created=await acctFetch('/financial/suppliers',{method:'POST',body:JSON.stringify(body)});
+      fpSuppliers.push(created);
+    }
+    populateFpSupplierDatalist();
+    closeFpSupplierModal();
+    renderFpSuppliersTable();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function deleteFpSupplier(id){
+  if(!confirm('Delete this supplier?')) return;
+  try{
+    await acctFetch('/financial/suppliers',{method:'DELETE',body:JSON.stringify({id})});
+    fpSuppliers=fpSuppliers.filter(s=>s.Id!==id);
+    populateFpSupplierDatalist();
+    renderFpSuppliersTable();
   }catch(e){ alert('Failed: '+e.message); }
 }
 
@@ -1141,7 +1445,7 @@ function openFpExpenseTemplateModal(){
   document.getElementById('fpTplName').value='';
   document.getElementById('fpTplCategory').value='';
   document.getElementById('fpTplAmount').value='';
-  document.getElementById('fpTplCurrency').value='INR';
+  document.getElementById('fpTplCurrency').value=getDefaultCurrency();
   document.getElementById('fpTplSaveMsg').textContent='';
   document.getElementById('fpExpenseTemplateModal').classList.add('active');
 }
@@ -1204,7 +1508,7 @@ function openFpOnetimeExpenseModal(prefill){
   document.getElementById('fpOtName').value=prefill?.name||'';
   document.getElementById('fpOtCategory').value=prefill?.category||'';
   document.getElementById('fpOtAmount').value=prefill?.amount||'';
-  document.getElementById('fpOtCurrency').value=prefill?.currency||'INR';
+  document.getElementById('fpOtCurrency').value=prefill?.currency||getDefaultCurrency();
   document.getElementById('fpOtDate').value=prefill?.expense_date||new Date().toISOString().slice(0,10);
   document.getElementById('fpOtNotes').value=prefill?.vendor?`Vendor: ${prefill.vendor}`:'';
   document.getElementById('fpOtSaveMsg').textContent='';
@@ -1271,9 +1575,13 @@ async function deleteFpExpense(id){
 /* ── Settings (fp_config) ── */
 function renderFpConfigForm(){
   document.getElementById('fpWebhookUrlHint').textContent=`${WORKER_BASE}/financial/razorpay-webhook/${clientId}`;
+  const currencyChip=document.getElementById('headerCurrencyChip');
+  currencyChip.textContent=getDefaultCurrency();
+  currencyChip.style.display='inline-block';
   if(!fpConfig) return;
   document.getElementById('fpCfgEnabled').checked=!!fpConfig.enabled;
   document.getElementById('fpCfgRemindersEnabled').checked=!!fpConfig.reminders_enabled;
+  document.getElementById('fpCfgDefaultCurrency').value=fpConfig.default_currency||'';
   document.getElementById('fpCfgAdminPhones').value=(fpConfig.admin_phone_numbers||[]).join('\n');
   document.getElementById('fpCfgTaxReservePct').value=fpConfig.tax_reserve_pct??'';
   document.getElementById('fpCfgRzpKeyId').value=fpConfig.razorpay_key_id||'';
@@ -1291,6 +1599,7 @@ async function saveFpConfig(){
   const body={
     enabled:document.getElementById('fpCfgEnabled').checked,
     reminders_enabled:document.getElementById('fpCfgRemindersEnabled').checked,
+    default_currency:document.getElementById('fpCfgDefaultCurrency').value.trim(),
     admin_phone_numbers:document.getElementById('fpCfgAdminPhones').value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean),
     tax_reserve_pct:taxPct===''?null:Number(taxPct),
     razorpay_key_id:document.getElementById('fpCfgRzpKeyId').value.trim(),
@@ -1307,6 +1616,91 @@ async function saveFpConfig(){
   setTimeout(()=>msg.textContent='',3000);
 }
 
+/* ══════════════════ REPORTS ══════════════════ */
+function fmtPct(n){ return n==null?'—':n+'%'; }
+async function loadReportPL(){
+  const el=document.getElementById('repPlContent');
+  const from=document.getElementById('repPlFrom').value, to=document.getElementById('repPlTo').value;
+  el.innerHTML='<span class="spinner"></span>Loading…';
+  try{
+    const qs=new URLSearchParams(); if(from) qs.set('from',from); if(to) qs.set('to',to);
+    const d=await acctFetch(`/financial/reports/pl?${qs}`,{method:'GET'});
+    el.innerHTML=`
+      <div class="stat-grid" style="margin-bottom:16px">
+        <div class="stat-card"><div class="stat-lbl">Total Income</div><div class="stat-val">${fmtMoney(d.total_income,d.currency)}</div><div class="stat-sub">Recurring ${fmtMoney(d.recurring_income,d.currency)} · One-off ${fmtMoney(d.one_off_income,d.currency)}</div></div>
+        <div class="stat-card"><div class="stat-lbl">Total Expenses</div><div class="stat-val">${fmtMoney(d.total_expenses,d.currency)}</div></div>
+        <div class="stat-card"><div class="stat-lbl">Net Profit</div><div class="stat-val" style="color:${d.net_profit<0?'#DC2626':'var(--ink)'}">${fmtMoney(d.net_profit,d.currency)}</div><div class="stat-sub">${d.from} → ${d.to}</div></div>
+      </div>
+      <div class="card-title">Expenses by Category</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Category</th><th>Amount</th></tr></thead><tbody>
+        ${d.expense_by_category.length?d.expense_by_category.map(c=>`<tr><td>${esc(c.category)}</td><td>${fmtMoney(c.amount,d.currency)}</td></tr>`).join(''):'<tr><td colspan="2" class="empty-state">No expenses in this range.</td></tr>'}
+      </tbody></table></div>`;
+  }catch(e){ el.innerHTML=`<div class="empty-state">⚠️ ${esc(e.message)}</div>`; }
+}
+function renderAgingBucketsGrid(elId, buckets, currency){
+  document.getElementById(elId).innerHTML=buckets.map(b=>`
+    <div class="aging-cell"><div class="k">${esc(b.key)}${b.key!=='not yet due'?' days':''}</div><div class="c">${b.count}</div><div class="a">${fmtMoney(b.amount,currency)}</div></div>
+  `).join('');
+}
+async function loadReportArAging(){
+  const tbody=document.getElementById('repArTbody');
+  tbody.innerHTML='<tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>';
+  try{
+    const d=await acctFetch('/financial/reports/ar-aging',{method:'GET'});
+    renderAgingBucketsGrid('repArBuckets', d.buckets, d.currency);
+    tbody.innerHTML=d.items.length?d.items.map(i=>`<tr>
+      <td>${esc(i.name)}</td><td>${esc(i.reference)}</td><td>${esc(i.date)}</td><td>${fmtMoney(i.balance,i.currency)}</td>
+      <td>${i.overdue_days>0?i.overdue_days+'d':'—'}</td><td><span class="badge">${esc(i.aging_bucket)}</span></td>
+    </tr>`).join(''):'<tr><td colspan="6" class="empty-state">Nothing owed to you right now.</td></tr>';
+  }catch(e){ tbody.innerHTML=`<tr><td colspan="6" class="empty-state">⚠️ ${esc(e.message)}</td></tr>`; }
+}
+async function loadReportApAging(){
+  const tbody=document.getElementById('repApTbody');
+  tbody.innerHTML='<tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>';
+  try{
+    const d=await acctFetch('/financial/reports/ap-aging',{method:'GET'});
+    renderAgingBucketsGrid('repApBuckets', d.buckets, d.currency);
+    tbody.innerHTML=d.items.length?d.items.map(i=>`<tr>
+      <td>${esc(i.name)}</td><td>${esc(i.reference)}</td><td>${esc(i.date)}</td><td>${fmtMoney(i.balance,i.currency)}</td>
+      <td>${i.overdue_days>0?i.overdue_days+'d':'—'}</td><td><span class="badge">${esc(i.aging_bucket)}</span></td>
+    </tr>`).join(''):'<tr><td colspan="6" class="empty-state">Nothing owed to suppliers right now.</td></tr>';
+  }catch(e){ tbody.innerHTML=`<tr><td colspan="6" class="empty-state">⚠️ ${esc(e.message)}</td></tr>`; }
+}
+async function loadReportExpenseBreakdown(){
+  const el=document.getElementById('repExpbreakContent');
+  const months=document.getElementById('repExpMonths').value;
+  el.innerHTML='<span class="spinner"></span>Loading…';
+  try{
+    const d=await acctFetch(`/financial/reports/expense-breakdown?months=${months}`,{method:'GET'});
+    el.innerHTML=`
+      <div class="s-hint" style="margin-bottom:12px">Since ${esc(d.since)} — total ${fmtMoney(d.total,'')}</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Category</th><th>Amount</th><th>Share</th></tr></thead><tbody>
+        ${d.categories.length?d.categories.map(c=>`<tr><td>${esc(c.category)}</td><td>${fmtMoney(c.amount,'')}</td><td>${d.total>0?Math.round(c.amount/d.total*1000)/10+'%':'—'}</td></tr>`).join(''):'<tr><td colspan="3" class="empty-state">No expenses in this range.</td></tr>'}
+      </tbody></table></div>`;
+  }catch(e){ el.innerHTML=`<div class="empty-state">⚠️ ${esc(e.message)}</div>`; }
+}
+async function loadReportSalesSummary(){
+  const el=document.getElementById('repSalesContent');
+  const from=document.getElementById('repSalesFrom').value, to=document.getElementById('repSalesTo').value;
+  el.innerHTML='<span class="spinner"></span>Loading…';
+  try{
+    const qs=new URLSearchParams(); if(from) qs.set('from',from); if(to) qs.set('to',to);
+    const d=await acctFetch(`/financial/reports/sales-summary?${qs}`,{method:'GET'});
+    el.innerHTML=`
+      <div class="s-hint" style="margin-bottom:12px">${d.from} → ${d.to} · ${d.total_documents} document(s) · Quotation → accepted conversion: ${fmtPct(d.quotation_conversion_pct)}</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Type</th><th>Count</th><th>Total</th></tr></thead><tbody>
+        ${d.by_type.map(t=>`<tr><td>${DOC_TYPE_LABEL[t.type]||esc(t.type)}</td><td>${t.count}</td><td>${fmtMoney(t.total,d.currency)}</td></tr>`).join('')}
+      </tbody></table></div>`;
+  }catch(e){ el.innerHTML=`<div class="empty-state">⚠️ ${esc(e.message)}</div>`; }
+}
+function initReportDateDefaults(){
+  const now=new Date();
+  const firstOfMonth=new Date(now.getFullYear(),now.getMonth(),1).toISOString().slice(0,10);
+  const today=now.toISOString().slice(0,10);
+  for(const id of ['repPlFrom','repSalesFrom']) document.getElementById(id).value=firstOfMonth;
+  for(const id of ['repPlTo','repSalesTo']) document.getElementById(id).value=today;
+}
+
 /* ── DOCUMENTS (Quotation / Invoice / Receipt) ── */
 const DOC_TYPE_LABEL={quotation:'🧾 Quotation', invoice:'📄 Invoice', receipt:'🧾 Receipt'};
 const DOC_TYPE_TITLE={quotation:'New Quotation', invoice:'New Invoice', receipt:'New Receipt'};
@@ -1317,7 +1711,7 @@ function openDocumentModal(type, prefill){
   document.getElementById('docType').value=type;
   document.getElementById('docTitle').value=prefill?.title||'';
   document.getElementById('docLeadSearch').value='';
-  document.getElementById('docCurrency').value=prefill?.currency||clientRecord?.deal_currency||'AED';
+  document.getElementById('docCurrency').value=prefill?.currency||getDefaultCurrency();
   document.getElementById('docNotes').value=prefill?.notes||'';
   document.getElementById('docLineItems').innerHTML='';
   const items=prefill?.line_items?.length?prefill.line_items:[{name:'',qty:1,price:0}];
@@ -1410,10 +1804,15 @@ async function saveDocument(){
   if(!title){ alert('Please give this document a title.'); return; }
   const lineItems=collectLineItems();
   if(!lineItems.length){ alert('Add at least one line item.'); return; }
+  const leadId=document.getElementById('docLeadId').value||null;
+  const customerName=document.getElementById('docCustomerName').value.trim()||null;
   const body={
     type:document.getElementById('docType').value,
-    title, lead_id:document.getElementById('docLeadId').value||null,
-    customer_name:document.getElementById('docCustomerName').value.trim()||null,
+    title, lead_id:leadId,
+    customer_name:customerName,
+    // Links this document's typed customer to fp_customers (Financial Planning), so it shows up
+    // there too — only when there's no CRM lead already doing that job.
+    customer_id:(!leadId && customerName)?await ensureFpCustomerByName(customerName):null,
     currency:document.getElementById('docCurrency').value.trim(),
     notes:document.getElementById('docNotes').value.trim(),
     line_items:lineItems
@@ -1474,7 +1873,7 @@ function renderDocumentsTable(){
 function openExpenseModal(){
   document.getElementById('expId').value='';
   document.getElementById('expAmount').value='';
-  document.getElementById('expCurrency').value=clientRecord?.deal_currency||'AED';
+  document.getElementById('expCurrency').value=getDefaultCurrency();
   document.getElementById('expDate').value=new Date().toISOString().slice(0,10);
   document.getElementById('expCategory').value='';
   document.getElementById('expVendor').value='';
@@ -1491,6 +1890,7 @@ async function saveExpense(){
   if(!amount){ alert('Enter an amount.'); return; }
   if(!expenseDate){ alert('Pick a date.'); return; }
   const expenseAccount=document.getElementById('expExpenseAccount').value.trim();
+  const vendor=document.getElementById('expVendor').value.trim();
   const body={
     expense_account:expenseAccount||'General',
     expense_account_name:expenseAccount,
@@ -1499,7 +1899,7 @@ async function saveExpense(){
     amount, currency:document.getElementById('expCurrency').value.trim()||'USD',
     expense_date:expenseDate,
     category:document.getElementById('expCategory').value.trim(),
-    vendor:document.getElementById('expVendor').value.trim(),
+    vendor, supplier_id:vendor?await ensureFpSupplierByName(vendor):null,
     cost_center:document.getElementById('expCostCenter').value.trim(),
     description:document.getElementById('expDescription').value.trim(),
   };
@@ -1544,7 +1944,7 @@ function openVendorBillModal(){
   document.getElementById('vbSupplier').value='';
   document.getElementById('vbVendorInvoiceNo').value='';
   document.getElementById('vbPayableAccount').value='';
-  document.getElementById('vbCurrency').value=clientRecord?.deal_currency||'AED';
+  document.getElementById('vbCurrency').value=getDefaultCurrency();
   document.getElementById('vbBillDate').value=new Date().toISOString().slice(0,10);
   document.getElementById('vbDueDate').value='';
   document.getElementById('vbNotes').value='';
@@ -1595,7 +1995,8 @@ async function saveVendorBill(){
   const lineItems=collectVbLineItems();
   if(!lineItems.length){ alert('Add at least one line item.'); return; }
   const body={
-    supplier, vendor_invoice_no:document.getElementById('vbVendorInvoiceNo').value.trim(),
+    supplier, supplier_id:await ensureFpSupplierByName(supplier),
+    vendor_invoice_no:document.getElementById('vbVendorInvoiceNo').value.trim(),
     erpnext_payable_account:document.getElementById('vbPayableAccount').value.trim()||null,
     currency:document.getElementById('vbCurrency').value.trim()||'USD',
     bill_date:billDate, due_date:document.getElementById('vbDueDate').value||null,
