@@ -132,9 +132,7 @@ tbody tr:hover{background:var(--bg)}
 
   <div id="tabs">
     <button class="tab active" data-tab="documents" onclick="showTab('documents')">🧾 Documents</button>
-    <button class="tab" data-tab="customers" onclick="showTab('customers')">👤 Customers</button>
     <button class="tab" data-tab="financial" onclick="showTab('financial')">💰 Financial Planning</button>
-    <button class="tab" data-tab="erpnext" onclick="showTab('erpnext')">⚙️ ERPNext</button>
     <button class="tab" data-tab="expenses" onclick="showTab('expenses')">💸 Expense Entry</button>
     <button class="tab" data-tab="vendorbills" onclick="showTab('vendorbills')">📥 Vendor Bills</button>
   </div>
@@ -160,37 +158,15 @@ tbody tr:hover{background:var(--bg)}
         </div>
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>Title</th><th>Type</th><th>Lead</th><th>Total</th><th>Status</th><th>ERPNext</th><th>Actions</th></tr></thead>
-            <tbody id="documentsTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+            <thead><tr><th>Title</th><th>Type</th><th>Customer</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="documentsTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
     </div>
 
-    <!-- CUSTOMERS — live list from this account's own ERPNext (Frappe Cloud) site. No local
-         mirror table: same "fetch live, no persisted mapping" choice as the rest of this module's
-         ERPNext integration. -->
-    <div id="tabCustomers" class="page">
-      <div class="card">
-        <div class="card-title-row">
-          <div class="card-title">ERPNext Customers</div>
-          <div class="card-actions">
-            <input class="search-input" id="custSearch" type="text" placeholder="🔍 Search…" oninput="renderCustomersTable()">
-            <button class="save-btn" onclick="openCustomerModal()">+ Add Customer</button>
-          </div>
-        </div>
-        <div class="tbl-wrap">
-          <table>
-            <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Actions</th></tr></thead>
-            <tbody id="customersTbody"><tr class="loading-row"><td colspan="4"><span class="spinner"></span>Loading…</td></tr></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- FINANCIAL PLANNING — this app's own recurring-billing/expense tracking (D1-backed, fully
-         separate from the live ERPNext passthrough above — see migrations/0015_financial_planning.sql
-         and SETUP.md "Financial Planning module"). -->
+    <!-- FINANCIAL PLANNING — this app's own recurring-billing/expense tracking (D1-backed — see
+         migrations/0015_financial_planning.sql and SETUP.md "Financial Planning module"). -->
     <div id="tabFinancial" class="page">
       <div class="fp-subnav">
         <button class="fp-pill active" data-fpsub="dashboard" onclick="showFpSub('dashboard')">📊 Dashboard</button>
@@ -204,17 +180,46 @@ tbody tr:hover{background:var(--bg)}
       <div id="fpSubDashboard" class="fp-sub active">
         <div class="card" id="fpDashLoading"><span class="spinner"></span>Loading dashboard…</div>
         <div id="fpDashContent" style="display:none">
+          <!-- AI BUSINESS SNAPSHOT — one auto-written plain-English paragraph, cached per calendar
+               month (worker.js fpAiGetOrRefreshSnapshot) so it doesn't re-call the AI on every
+               dashboard load. -->
+          <div class="card">
+            <div class="card-title-row">
+              <div class="card-title">🤖 Your Business, in Plain English</div>
+              <div class="card-actions"><button class="save-btn sec" id="fpAiSnapshotRegenBtn" onclick="regenerateAiSnapshot()" style="padding:6px 12px;font-size:12px">🔄 Regenerate</button></div>
+            </div>
+            <div id="fpAiSnapshotText" style="font-size:14px;line-height:1.6;color:var(--ink)">Loading…</div>
+          </div>
+          <!-- ASK YOUR BOOKS — natural-language Q&A answered only from this account's own real
+               numbers (worker.js handleFpAiAsk computes the data server-side and hands it to the
+               model as its entire universe of facts, so it can't invent an answer). -->
+          <div class="card">
+            <div class="card-title">💬 Ask Your Books</div>
+            <div class="s-hint" style="margin-bottom:10px">Ask in plain English — e.g. "How much do I owe in bills?" or "Am I making money this month?"</div>
+            <div style="display:flex;gap:8px">
+              <input class="s-input" id="fpAskInput" placeholder="Ask a question about your business…" onkeydown="if(event.key==='Enter')askYourBooks()">
+              <button class="save-btn" onclick="askYourBooks()" style="flex-shrink:0">Ask</button>
+            </div>
+            <div id="fpAskAnswer" style="margin-top:12px;font-size:14px;line-height:1.6"></div>
+          </div>
           <div class="card">
             <div class="card-title" id="fpDashPeriodLabel">This Month</div>
             <div class="stat-grid">
               <div class="stat-card"><div class="stat-lbl">Expected</div><div class="stat-val" id="fpStatExpected">—</div></div>
               <div class="stat-card"><div class="stat-lbl">Collected</div><div class="stat-val" id="fpStatCollected">—</div><div class="stat-sub" id="fpStatPct"></div></div>
               <div class="stat-card"><div class="stat-lbl">Total Expenses</div><div class="stat-val" id="fpStatExpenses">—</div><div class="stat-sub" id="fpStatExpensesSplit"></div></div>
-              <div class="stat-card"><div class="stat-lbl">Net Position</div><div class="stat-val" id="fpStatNet">—</div><div class="stat-sub">Collected − Expenses</div></div>
+              <div class="stat-card"><div class="stat-lbl">Profit</div><div class="stat-val" id="fpStatNet">—</div><div class="stat-sub">Collected − Expenses</div></div>
+              <div class="stat-card" id="fpStatTaxCard" style="display:none"><div class="stat-lbl">Consider Setting Aside for Tax</div><div class="stat-val" id="fpStatTax">—</div><div class="stat-sub">Estimate only — not filing advice</div></div>
             </div>
           </div>
+          <!-- CASH FLOW FORECAST — plain-English outlook built from open Expected Funds due before
+               month end + still-unbooked fixed expenses (worker.js fpAiComputeForecastData). -->
           <div class="card">
-            <div class="card-title">Aging — Outstanding Receivables by Days Overdue</div>
+            <div class="card-title">📈 Cash Flow Outlook (Rest of This Month)</div>
+            <div id="fpForecastText" style="font-size:14px;line-height:1.6;color:var(--ink)">Loading…</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Money Owed to You — How Overdue</div>
             <div class="aging-grid" id="fpAgingGrid"></div>
           </div>
           <div class="card">
@@ -223,7 +228,7 @@ tbody tr:hover{background:var(--bg)}
           </div>
           <div class="card">
             <div class="card-title-row">
-              <div class="card-title">Outstanding Receivables</div>
+              <div class="card-title">Money Owed to You</div>
               <div class="card-actions">
                 <select class="s-input" id="fpOutstandingSort" style="width:auto" onchange="renderFpOutstanding()">
                   <option value="overdue_days">Sort: Most overdue first</option>
@@ -234,7 +239,7 @@ tbody tr:hover{background:var(--bg)}
             </div>
             <div class="tbl-wrap">
               <table>
-                <thead><tr><th>Customer</th><th>Period</th><th>Due Date</th><th>Amount</th><th>Collected</th><th>Balance</th><th>Overdue</th><th>Aging</th></tr></thead>
+                <thead><tr><th>Customer</th><th>Period</th><th>Due Date</th><th>Amount</th><th>Collected</th><th>Balance</th><th>Overdue</th><th>How Overdue</th><th>Actions</th></tr></thead>
                 <tbody id="fpOutstandingTbody"></tbody>
               </table>
             </div>
@@ -252,7 +257,7 @@ tbody tr:hover{background:var(--bg)}
               <button class="save-btn" onclick="openFpCustomerModal()">+ Add Customer</button>
             </div>
           </div>
-          <div class="s-hint" style="margin-bottom:14px">Separate from the "👤 Customers" tab (that one is a live ERPNext lookup with no local record). These are the customers Expected Funds get generated for each billing cycle — a lead marked "✅ Won" is added here automatically.</div>
+          <div class="s-hint" style="margin-bottom:14px">These are the customers Expected Funds get generated for each billing cycle — a lead marked "✅ Won" is added here automatically.</div>
           <div class="tbl-wrap">
             <table>
               <thead><tr><th>Name</th><th>Plan</th><th>Value</th><th>Cycle</th><th>Billing Day</th><th>Lifecycle</th><th>Health</th><th>Renewal</th><th>Status</th><th>Actions</th></tr></thead>
@@ -289,6 +294,20 @@ tbody tr:hover{background:var(--bg)}
 
       <!-- EXPENSES -->
       <div id="fpSubExpenses" class="fp-sub">
+        <!-- AI QUICK ADD — Snap & Save (photo of a receipt) and Type-it-in (a plain sentence),
+             both parsed by worker.js's /financial/ai/parse-expense and handed to the One-time
+             Expense modal as a draft for the owner to review and save — never auto-saved from
+             here, so a misread amount can't slip straight into the books. -->
+        <div class="card">
+          <div class="card-title">🤖 AI Quick Add</div>
+          <div class="s-hint" style="margin-bottom:10px">Describe an expense in plain English, or snap a photo of a receipt — either way it'll pre-fill the form below for you to check and save.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input class="s-input" id="fpAiQuickAddText" placeholder="e.g. paid 3500 for electricity yesterday" style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')aiQuickAddFromText()">
+            <button class="save-btn" onclick="aiQuickAddFromText()">✨ Add with AI</button>
+            <label class="save-btn sec" style="cursor:pointer;margin:0">📸 Snap a Receipt<input type="file" accept="image/*" capture="environment" id="fpAiQuickAddPhoto" style="display:none" onchange="aiQuickAddFromPhoto(this)"></label>
+          </div>
+          <div class="save-msg" id="fpAiQuickAddMsg" style="margin-top:8px"></div>
+        </div>
         <div class="card">
           <div class="card-title-row">
             <div class="card-title">Fixed Recurring Expenses</div>
@@ -329,7 +348,13 @@ tbody tr:hover{background:var(--bg)}
           <div class="card-title">⚙️ Financial Planning Settings</div>
           <div class="toggle-row"><input type="checkbox" id="fpCfgEnabled"><label class="s-lbl" style="margin:0">Enabled — generate Expected Funds &amp; fixed expenses automatically on the 1st of each month</label></div>
           <div class="toggle-row"><input type="checkbox" id="fpCfgRemindersEnabled"><label class="s-lbl" style="margin:0">Send WhatsApp reminders for overdue Expected Funds (via Chatwoot)</label></div>
-          <div class="card-title" style="margin-top:10px">Razorpay (optional)</div>
+          <div class="card-title" style="margin-top:10px">🤖 AI Bookkeeping via WhatsApp (optional)</div>
+          <div class="s-hint" style="margin-bottom:10px">Add your own phone number(s) here to text your books directly — e.g. "spent 2000 on fuel", a voice note, or a photo of a receipt, sent to this same WhatsApp number. Messages from these numbers are handled as bookkeeping, not as customer leads. One per line or comma-separated.</div>
+          <textarea class="s-input" id="fpCfgAdminPhones" rows="2" placeholder="e.g. +971501234567" style="resize:vertical"></textarea>
+          <div class="card-title" style="margin-top:14px">Tax Set-Aside Estimate (optional)</div>
+          <div class="s-hint" style="margin-bottom:10px">Shows a rough "set aside ~X" nudge on the Dashboard whenever you're in profit for the month — a simple estimate, not tax or filing advice.</div>
+          <div style="max-width:220px"><label class="s-lbl">Set aside this % of profit</label><input class="s-input" id="fpCfgTaxReservePct" type="number" min="0" max="100" placeholder="e.g. 15"></div>
+          <div class="card-title" style="margin-top:14px">Razorpay (optional)</div>
           <div class="s-hint" style="margin-bottom:14px">Connect Razorpay to auto-record collections from webhook events (payment.captured / payment_link.paid). Pass <code>fp_customer_id</code> (and optionally <code>fp_expected_due_id</code>) in the payment's Notes so the webhook knows which customer to credit.</div>
           <div class="modal-grid" style="margin-bottom:0">
             <div><label class="s-lbl">Key ID</label><input class="s-input" id="fpCfgRzpKeyId" placeholder="rzp_live_…"></div>
@@ -345,29 +370,12 @@ tbody tr:hover{background:var(--bg)}
       </div>
     </div>
 
-    <!-- ERPNEXT CONNECTION — per-client Frappe Cloud credentials, one-way push only -->
-    <div id="tabErpnext" class="page">
-      <div class="card">
-        <div class="card-title">⚙️ ERPNext Connection</div>
-        <div class="s-hint" style="margin-bottom:16px">Connect this account's own ERPNext (Frappe Cloud) site — when you create a Quotation, Invoice or Receipt here, "Sync to ERPNext" pushes it there as a real Quotation / Sales Invoice / Payment Entry. One-way only (create in ERPNext, never pulled back). The customer and each line item are matched by name in ERPNext, or created automatically if no match exists.</div>
-        <div class="modal-grid" style="margin-bottom:0">
-          <div><label class="s-lbl">Frappe Cloud Site URL</label><input class="s-input" id="erpBaseUrl" placeholder="https://yoursite.frappe.cloud"></div>
-          <div><label class="s-lbl">API Key</label><input class="s-input" id="erpApiKey" placeholder="API Key"></div>
-          <div><label class="s-lbl">API Secret</label><input class="s-input" id="erpApiSecret" type="password" placeholder="API Secret"></div>
-        </div>
-        <div class="s-hint">Generate an API Key/Secret pair in ERPNext under Settings → My Settings → API Access.</div>
-        <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
-          <button class="save-btn" onclick="saveErpnextSettings()">Save Connection</button>
-          <span class="save-msg" id="erpSaveMsg"></span>
-        </div>
-      </div>
-    </div>
-
-    <!-- EXPENSE ENTRY — a one-off expense pushed to ERPNext as a Journal Entry (Company + Expense
-         Account debit, a cash/bank Paid From Account credit). Separate from Financial Planning's
-         "🧾 Expenses" sub-tab (fp_expenses — local-only recurring/fixed-cost bookkeeping, never
-         synced to ERPNext); this is the general "book a real expense against the client's own
-         ERPNext ledger" flow. -->
+    <!-- EXPENSE ENTRY — a one-off business expense, recorded straight into this account's own
+         local ledger (accounting_expenses, D1) the moment you save it. No external accounting
+         system required — Account/Paid-From are plain labels you type yourself (e.g. "Rent",
+         "Cash"), not looked up from anywhere. Separate from Financial Planning's "🧾 Expenses"
+         sub-tab (fp_expenses — recurring/fixed-cost bookkeeping with monthly auto-booking); this is
+         the general one-off "record an expense" flow. -->
     <div id="tabExpenses" class="page">
       <div class="card">
         <div class="card-title-row">
@@ -377,19 +385,18 @@ tbody tr:hover{background:var(--bg)}
             <button class="save-btn" onclick="openExpenseModal()">+ New Expense</button>
           </div>
         </div>
-        <div class="s-hint" style="margin-bottom:14px">Books a real Journal Entry in this account's own ERPNext — debiting the Expense Account you pick, crediting a cash/bank "Paid From" account (auto-suggested from the Company's default, once ERPNext is connected in the ⚙️ tab).</div>
+        <div class="s-hint" style="margin-bottom:14px">Recorded straight into your own books — no external accounting system needed.</div>
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Expense Account</th><th>Amount</th><th>ERPNext</th><th>Actions</th></tr></thead>
-            <tbody id="expensesTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+            <thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Account</th><th>Amount</th><th>Actions</th></tr></thead>
+            <tbody id="expensesTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
     </div>
 
     <!-- VENDOR BILLS — accounts-payable counterpart to Documents: what a client's own supplier
-         billed them, pushed as an ERPNext Purchase Invoice, then optionally a Payment Entry once
-         it's paid. -->
+         billed them, tracked entirely in this account's own local ledger until marked paid. -->
     <div id="tabVendorbills" class="page">
       <div class="card">
         <div class="card-title-row">
@@ -399,11 +406,11 @@ tbody tr:hover{background:var(--bg)}
             <button class="save-btn" onclick="openVendorBillModal()">+ New Bill</button>
           </div>
         </div>
-        <div class="s-hint" style="margin-bottom:14px">Books a real Purchase Invoice in this account's own ERPNext — pick (or type) a Supplier, add line items, then Sync and Publish. Once published, "Record Payment" posts a Payment Entry marking it paid.</div>
+        <div class="s-hint" style="margin-bottom:14px">Track what your suppliers bill you — add line items, then mark it paid once you've settled it.</div>
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>Bill Date</th><th>Supplier</th><th>Vendor Ref #</th><th>Total</th><th>Status</th><th>ERPNext</th><th>Actions</th></tr></thead>
-            <tbody id="vendorBillsTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+            <thead><tr><th>Bill Date</th><th>Supplier</th><th>Vendor Ref #</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="vendorBillsTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -429,23 +436,11 @@ tbody tr:hover{background:var(--bg)}
         <input class="s-input" id="docLeadSearch" placeholder="🔍 Search leads…" oninput="renderLeadPicker()">
         <select class="s-input" id="docLeadId" style="margin-top:6px"><option value="">— None —</option></select>
       </div>
-      <div><label class="s-lbl">ERPNext Customer</label>
-        <select class="s-input" id="docErpCustomer"><option value="">— None —</option></select>
-        <div class="s-hint" id="docErpCustomerHint" style="margin-top:4px"></div>
-      </div>
-      <div><label class="s-lbl">Company (ERPNext)</label>
-        <select class="s-input" id="docCompany" onchange="onDocCompanyChange()"><option value="">— None —</option></select>
-        <div class="s-hint" id="docCompanyHint" style="margin-top:4px"></div>
-      </div>
-      <div><label class="s-lbl">Currency</label><input class="s-input" id="docCurrency" list="erpCurrenciesDatalist" placeholder="e.g. AED" value="AED"></div>
-      <div><label class="s-lbl">Debtors Account</label>
-        <select class="s-input" id="docErpDebtorsAccount"><option value="">— Default —</option></select>
-      </div>
+      <div><label class="s-lbl">Customer Name (if no lead)</label><input class="s-input" id="docCustomerName" placeholder="e.g. Acme Corp / walk-in customer"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="docCurrency" placeholder="e.g. AED" value="AED"></div>
     </div>
-    <datalist id="erpCurrenciesDatalist"></datalist>
     <label class="s-lbl">Line Items</label>
-    <div class="s-hint" style="margin-bottom:6px">Type a product/description — matching an existing ERPNext item name lets "Sync to ERPNext" reuse that exact item; otherwise a new one is created automatically on sync.</div>
-    <datalist id="erpItemsDatalist"></datalist>
+    <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price — no separate catalog to set up first.</div>
     <div id="docLineItems"></div>
     <button class="save-btn sec" type="button" onclick="addLineItemRow()" style="margin-top:6px">+ Add Line Item</button>
     <!-- Suggested add-ons — matches current line-item names against dashboard.html's Settings →
@@ -465,32 +460,22 @@ tbody tr:hover{background:var(--bg)}
   </div>
 </div>
 
-<!-- ── EXPENSE ENTRY MODAL — Company + Expense Account are the two fields that actually matter
-     here (they decide what gets debited, and in which ERPNext Company); Paid From Account is
-     auto-suggested from the Company's default Cash/Bank Account once picked, but stays editable
-     since not every ERPNext site has one configured. ── -->
+<!-- ── EXPENSE ENTRY MODAL — Account/Paid From are plain labels you type yourself (e.g. "Rent",
+     "Cash", "Bank"), not looked up from anywhere — this books straight into your own local
+     ledger, no external accounting system required. ── -->
 <div class="modal-overlay" id="expenseModal">
   <div class="modal-card" style="max-width:560px">
     <div class="modal-title">New Expense Entry</div>
     <input type="hidden" id="expId">
     <div class="modal-grid">
-      <div><label class="s-lbl">Company</label>
-        <select class="s-input" id="expCompany" onchange="onExpenseCompanyChange()"><option value="">— None —</option></select>
-        <div class="s-hint" id="expCompanyHint" style="margin-top:4px"></div>
-      </div>
-      <div><label class="s-lbl">Expense Account</label>
-        <select class="s-input" id="expExpenseAccount"><option value="">— Pick a company first —</option></select>
-      </div>
-      <div><label class="s-lbl">Paid From (Cash/Bank Account)</label>
-        <select class="s-input" id="expPaidFromAccount"><option value="">— Pick a company first —</option></select>
-        <div class="s-hint" style="margin-top:4px">Auto-suggested from the Company's default Cash/Bank Account — change if this expense was paid from somewhere else.</div>
-      </div>
+      <div><label class="s-lbl">Account (optional)</label><input class="s-input" id="expExpenseAccount" placeholder="e.g. Rent, Utilities, Software"></div>
+      <div><label class="s-lbl">Paid From (optional)</label><input class="s-input" id="expPaidFromAccount" placeholder="e.g. Cash, Bank Account"></div>
       <div><label class="s-lbl">Amount</label><input class="s-input" id="expAmount" type="number" placeholder="e.g. 250"></div>
-      <div><label class="s-lbl">Currency</label><input class="s-input" id="expCurrency" list="erpCurrenciesDatalist" placeholder="e.g. AED" value="AED"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="expCurrency" placeholder="e.g. AED" value="AED"></div>
       <div><label class="s-lbl">Date</label><input class="s-input" id="expDate" type="date"></div>
       <div><label class="s-lbl">Category</label><input class="s-input" id="expCategory" placeholder="e.g. Rent, Software, Travel"></div>
       <div><label class="s-lbl">Vendor / Paid To</label><input class="s-input" id="expVendor" placeholder="e.g. AWS, Landlord"></div>
-      <div><label class="s-lbl">Cost Center (optional)</label><input class="s-input" id="expCostCenter" placeholder="Leave blank to use ERPNext's default"></div>
+      <div><label class="s-lbl">Cost Center (optional)</label><input class="s-input" id="expCostCenter" placeholder="Optional label"></div>
     </div>
     <label class="s-lbl">Description / Remarks</label>
     <textarea class="s-input" id="expDescription" rows="2" style="resize:vertical"></textarea>
@@ -502,30 +487,22 @@ tbody tr:hover{background:var(--bg)}
   </div>
 </div>
 
-<!-- ── VENDOR BILL MODAL — Supplier is a free-text field with suggestions (like the Documents
-     modal's line-item names), resolved-or-created by name in ERPNext on Sync rather than requiring
-     it to be picked from a pre-fetched list. ── -->
+<!-- ── VENDOR BILL MODAL — tracked entirely in this account's own local ledger, no external
+     accounting system required; Payable Account is an optional plain label. ── -->
 <div class="modal-overlay" id="vendorBillModal">
   <div class="modal-card">
     <div class="modal-title">New Vendor Bill</div>
     <input type="hidden" id="vbId">
     <div class="modal-grid">
-      <div><label class="s-lbl">Supplier</label><input class="s-input" id="vbSupplier" list="erpSuppliersDatalist" placeholder="e.g. AWS, Landlord"></div>
+      <div><label class="s-lbl">Supplier</label><input class="s-input" id="vbSupplier" placeholder="e.g. AWS, Landlord"></div>
       <div><label class="s-lbl">Vendor's Invoice/Ref #</label><input class="s-input" id="vbVendorInvoiceNo" placeholder="Their own bill number"></div>
-      <div><label class="s-lbl">Company</label>
-        <select class="s-input" id="vbCompany" onchange="onVendorBillCompanyChange()"><option value="">— None —</option></select>
-        <div class="s-hint" id="vbCompanyHint" style="margin-top:4px"></div>
-      </div>
-      <div><label class="s-lbl">Payable Account</label>
-        <select class="s-input" id="vbPayableAccount"><option value="">— Default —</option></select>
-      </div>
-      <div><label class="s-lbl">Currency</label><input class="s-input" id="vbCurrency" list="erpCurrenciesDatalist" placeholder="e.g. AED" value="AED"></div>
+      <div><label class="s-lbl">Account (optional)</label><input class="s-input" id="vbPayableAccount" placeholder="e.g. Accounts Payable"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="vbCurrency" placeholder="e.g. AED" value="AED"></div>
       <div><label class="s-lbl">Bill Date</label><input class="s-input" id="vbBillDate" type="date"></div>
       <div><label class="s-lbl">Due Date (optional)</label><input class="s-input" id="vbDueDate" type="date"></div>
     </div>
-    <datalist id="erpSuppliersDatalist"></datalist>
     <label class="s-lbl">Line Items</label>
-    <div class="s-hint" style="margin-bottom:6px">Type a product/service name — matching an existing ERPNext item name lets Sync reuse that exact item; otherwise a new one is created automatically.</div>
+    <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price.</div>
     <div id="vbLineItems"></div>
     <button class="save-btn sec" type="button" onclick="addVbLineItemRow()" style="margin-top:6px">+ Add Line Item</button>
     <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="vbTotalPreview">Total: —</div>
@@ -538,23 +515,6 @@ tbody tr:hover{background:var(--bg)}
       <button class="save-btn" onclick="saveVendorBill()">Save</button>
     </div>
     <div class="save-msg" id="vbSaveMsg" style="margin-top:8px"></div>
-  </div>
-</div>
-
-<!-- ── ADD CUSTOMER MODAL (creates a real ERPNext Customer) ── -->
-<div class="modal-overlay" id="customerModal">
-  <div class="modal-card" style="max-width:440px">
-    <div class="modal-title">Add Customer</div>
-    <div class="modal-grid" style="grid-template-columns:1fr">
-      <div><label class="s-lbl">Name</label><input class="s-input" id="custName" placeholder="e.g. Acme Corp"></div>
-      <div><label class="s-lbl">Email</label><input class="s-input" id="custEmail" type="email" placeholder="billing@acme.com"></div>
-      <div><label class="s-lbl">Phone</label><input class="s-input" id="custPhone" placeholder="+971 50 123 4567"></div>
-    </div>
-    <div class="modal-actions">
-      <button class="save-btn sec" onclick="closeCustomerModal()">Cancel</button>
-      <button class="save-btn" onclick="saveCustomer()">Create</button>
-    </div>
-    <div class="save-msg" id="custSaveMsg" style="margin-top:8px"></div>
   </div>
 </div>
 
@@ -714,25 +674,14 @@ let clientRecord = null;
 let allLeads = [];
 let allDocuments = [];
 let documentsLoadError = '';
-let allErpCustomers = [];
-let allErpItems = [];
-let allErpCompanies = [];
-let allErpCurrencies = [];
-let allErpDebtorsAccounts = [];
-let erpCustomersLoadError = '';
 
 /* ── Expense Entry state (migrations/0028_accounting_expenses.sql) ── */
 let allExpenses = [];
 let expensesLoadError = '';
-let allErpExpenseAccounts = [];
-let allErpPaidFromAccounts = [];
 
 /* ── Vendor Bills state (migrations/0029_accounting_vendor_bills.sql) ── */
 let allVendorBills = [];
 let vendorBillsLoadError = '';
-let allErpSuppliers = [];
-let allErpPayableAccounts = [];
-function erpAvailable(){ return !!(clientRecord?.erpnext_base_url&&clientRecord?.erpnext_api_key&&clientRecord?.erpnext_api_secret); }
 
 /* ── Financial Planning state (migrations/0015_financial_planning.sql) ── */
 let fpCustomers=[], fpDues=[], fpExpenseTemplates=[], fpExpenses=[], fpConfig=null, fpDashboardData=null;
@@ -797,36 +746,19 @@ async function init(){
   document.getElementById('app').style.display='flex';
   try{
     clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
-    document.getElementById('erpBaseUrl').value=clientRecord.erpnext_base_url||'';
-    document.getElementById('erpApiKey').value=clientRecord.erpnext_api_key||'';
-    document.getElementById('erpApiSecret').value=clientRecord.erpnext_api_secret||'';
     await loadAcctLogoDims(clientRecord.quote_logo_url||'');
     await loadLeads();
-    // Documents live in Cloudflare D1 (see migrations/0002_accounting_b2b_documents.sql), not a
-    // NocoDB table — so this can only fail if the D1 migration hasn't been applied yet or the
-    // Worker isn't deployed with a DB binding. Caught separately so it can't take down the ERPNext
-    // settings tab above.
+    // Documents/Expenses/Vendor Bills live in Cloudflare D1 (see migrations/0002, 0028, 0029) —
+    // fully standalone, no external accounting system required. Each load gets its own try/catch
+    // so one failing (e.g. a migration not yet applied) can't take the others down with it.
     try{ await loadDocuments(); }catch(e){ documentsLoadError=e.message; allDocuments=[]; }
     renderDocumentsTable();
     try{ await loadExpenses(); }catch(e){ expensesLoadError=e.message; allExpenses=[]; }
     renderExpensesTable();
     try{ await loadVendorBills(); }catch(e){ vendorBillsLoadError=e.message; allVendorBills=[]; }
     renderVendorBillsTable();
-    // ERPNext customers/items are only reachable once the client has saved a connection — best
-    // effort, and skipped entirely rather than surfacing an error if they haven't gotten there yet.
-    if(erpAvailable()){
-      try{ await loadErpCustomers(); }catch(e){ erpCustomersLoadError=e.message; allErpCustomers=[]; }
-      try{ await loadErpItems(); }catch(e){ allErpItems=[]; }
-      try{ const d=await acctFetch('/erpnext/companies',{method:'GET'}); allErpCompanies=d.list||[]; }catch(e){ allErpCompanies=[]; }
-      try{ const d=await acctFetch('/erpnext/currencies',{method:'GET'}); allErpCurrencies=d.list||[]; }catch(e){ allErpCurrencies=[]; }
-      try{ const d=await acctFetch('/erpnext/suppliers',{method:'GET'}); allErpSuppliers=d.list||[]; }catch(e){ allErpSuppliers=[]; }
-    }
-    renderCustomersTable();
-    populateItemsDatalist();
-    populateCurrenciesDatalist();
-    populateSuppliersDatalist();
     // Financial Planning is D1-backed (see migrations/0015_financial_planning.sql) — same
-    // "own try/catch so it can't take the ERPNext tab down" reasoning as loadDocuments above.
+    // "own try/catch" reasoning as loadDocuments above.
     try{ await loadFinancialPlanning(); }catch(e){ fpLoadError=e.message; }
     renderFinancialPlanning();
     // SaaS Ops now lives in its own standalone top-level tab (frontend/saas-ops.html) — nothing
@@ -850,43 +782,6 @@ async function loadExpenses(){
 async function loadVendorBills(){
   const data=await acctFetch('/accounting/vendor-bills',{method:'GET'});
   allVendorBills=data.list||[];
-}
-function populateSuppliersDatalist(){
-  const dl=document.getElementById('erpSuppliersDatalist');
-  dl.innerHTML=allErpSuppliers.map(s=>`<option value="${escAttr(s.supplier_name||s.name)}">`).join('');
-}
-async function loadErpCustomers(){
-  const data=await acctFetch('/erpnext/customers',{method:'GET'});
-  allErpCustomers=data.list||[];
-}
-async function loadErpItems(){
-  const data=await acctFetch('/erpnext/items',{method:'GET'});
-  allErpItems=data.list||[];
-}
-function populateItemsDatalist(){
-  const dl=document.getElementById('erpItemsDatalist');
-  dl.innerHTML=allErpItems.map(it=>`<option value="${escAttr(it.item_name||it.name)}">`).join('');
-}
-function populateCurrenciesDatalist(){
-  const dl=document.getElementById('erpCurrenciesDatalist');
-  dl.innerHTML=allErpCurrencies.map(c=>`<option value="${escAttr(c.name)}">`).join('');
-}
-function populateErpCompanySelect(selected){
-  const sel=document.getElementById('docCompany');
-  sel.innerHTML='<option value="">— None —</option>'+allErpCompanies.map(c=>`<option value="${escAttr(c.name)}">${esc(c.name)}</option>`).join('');
-  sel.value=selected||'';
-  document.getElementById('docCompanyHint').textContent=erpAvailable()?'':'Connect ERPNext (⚙️ tab) to pick a company here.';
-}
-function populateErpDebtorsAccountSelect(selected){
-  const sel=document.getElementById('docErpDebtorsAccount');
-  sel.innerHTML='<option value="">— Default —</option>'+allErpDebtorsAccounts.map(a=>`<option value="${escAttr(a.name)}">${esc(a.account_name||a.name)}</option>`).join('');
-  sel.value=selected||'';
-}
-function populateErpCustomerSelect(selected){
-  const sel=document.getElementById('docErpCustomer');
-  sel.innerHTML='<option value="">— None —</option>'+allErpCustomers.map(c=>`<option value="${escAttr(c.name)}">${esc(c.customer_name||c.name)}</option>`).join('');
-  sel.value=selected||'';
-  document.getElementById('docErpCustomerHint').textContent=erpAvailable()?'':'Connect ERPNext (⚙️ tab) to pick a customer here.';
 }
 
 function showTab(name){
@@ -928,6 +823,60 @@ function renderFinancialPlanning(){
   renderFpExpenseTemplatesTable();
   renderFpExpensesTable();
   renderFpConfigForm();
+  loadAiSnapshot();
+  loadAiForecast();
+}
+
+/* ── AI Business Snapshot ── */
+async function loadAiSnapshot(){
+  const el=document.getElementById('fpAiSnapshotText');
+  try{
+    const data=await acctFetch('/financial/ai/snapshot',{method:'GET'});
+    el.textContent=data.snapshot||data.error||'Not enough data yet to summarize.';
+  }catch(e){ el.textContent="Couldn't load your snapshot: "+e.message; }
+}
+async function regenerateAiSnapshot(){
+  const el=document.getElementById('fpAiSnapshotText');
+  const btn=document.getElementById('fpAiSnapshotRegenBtn');
+  el.textContent='Thinking…'; btn.disabled=true;
+  try{
+    const data=await acctFetch('/financial/ai/snapshot/regenerate',{method:'POST'});
+    el.textContent=data.snapshot||data.error||'Not enough data yet to summarize.';
+  }catch(e){ el.textContent="Couldn't regenerate: "+e.message; }
+  finally{ btn.disabled=false; }
+}
+
+/* ── Ask Your Books ── */
+async function askYourBooks(){
+  const input=document.getElementById('fpAskInput');
+  const question=input.value.trim();
+  if(!question) return;
+  const answerEl=document.getElementById('fpAskAnswer');
+  answerEl.textContent='Thinking…';
+  try{
+    const data=await acctFetch('/financial/ai/ask',{method:'POST',body:JSON.stringify({question})});
+    answerEl.textContent=data.answer||data.error||"Couldn't find an answer.";
+  }catch(e){ answerEl.textContent='Error: '+e.message; }
+}
+
+/* ── Cash Flow Forecast ── */
+async function loadAiForecast(){
+  const el=document.getElementById('fpForecastText');
+  try{
+    const data=await acctFetch('/financial/ai/forecast',{method:'GET'});
+    el.textContent=data.forecast||data.error||'Not enough data yet to forecast.';
+  }catch(e){ el.textContent="Couldn't load forecast: "+e.message; }
+}
+
+/* ── AI-drafted reminder for one overdue customer — a preview to copy/send yourself; the
+   automatic overdue sweep (fpSendRemindersForClient) already sends this same kind of
+   AI-drafted message via WhatsApp on its own schedule, so this button is for chasing one
+   customer right now rather than waiting for that sweep. ── */
+async function draftReminderForDue(dueId){
+  try{
+    const {draft}=await acctFetch('/financial/ai/draft-reminder',{method:'POST',body:JSON.stringify({due_id:dueId})});
+    prompt('AI-drafted reminder — copy and send it however you\'d like (WhatsApp, SMS, email):', draft||'');
+  }catch(e){ alert('Failed to draft reminder: '+e.message); }
 }
 
 /* ── Dashboard ── */
@@ -951,6 +900,10 @@ function renderFpDashboard(){
   netEl.textContent=fmtMoney(d.net_position,d.currency);
   netEl.style.color=d.net_position<0?'#DC2626':'var(--ink)';
 
+  const taxCard=document.getElementById('fpStatTaxCard');
+  if(d.estimated_tax_set_aside!=null){ taxCard.style.display='block'; document.getElementById('fpStatTax').textContent=fmtMoney(d.estimated_tax_set_aside,d.currency); }
+  else{ taxCard.style.display='none'; }
+
   document.getElementById('fpAgingGrid').innerHTML=(d.aging_buckets||[]).map(b=>`
     <div class="aging-cell"><div class="k">${esc(b.key)} days</div><div class="c">${b.count}</div><div class="a">${fmtMoney(b.amount,d.currency)}</div></div>
   `).join('');
@@ -966,7 +919,7 @@ function renderFpOutstanding(){
   else if(sortBy==='balance') rows.sort((a,b)=>b.balance-a.balance);
   else rows.sort((a,b)=>b.overdue_days-a.overdue_days);
   const tbody=document.getElementById('fpOutstandingTbody');
-  if(!rows.length){ tbody.innerHTML='<tr><td colspan="8" class="empty-state">No outstanding receivables — everything is collected.</td></tr>'; return; }
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="9" class="empty-state">Nothing owed to you right now — everything is collected.</td></tr>'; return; }
   tbody.innerHTML=rows.map(r=>`<tr>
     <td>${esc(r.customer_name)}</td>
     <td>${esc(r.period_key)}</td>
@@ -976,6 +929,7 @@ function renderFpOutstanding(){
     <td>${fmtMoney(r.balance,r.currency)}</td>
     <td>${r.overdue_days>0?r.overdue_days+'d':'—'}</td>
     <td>${r.aging_bucket?`<span class="badge">${esc(r.aging_bucket)}</span>`:'—'}</td>
+    <td><button class="icon-btn" title="AI-draft a reminder" onclick="draftReminderForDue(${r.Id})">✨ Draft reminder</button></td>
   </tr>`).join('');
 }
 function renderFpTrendChart(){
@@ -1240,23 +1194,54 @@ function renderFpExpensesTable(){
   tbody.innerHTML=rows.map(e=>`<tr>
     <td>${esc(e.expense_date)}</td>
     <td>${esc(e.name)}</td>
-    <td>${esc(e.category)}</td>
+    <td>${esc(e.category)}${e.is_unusual?` <span class="badge failed" title="Well above your usual ${fmtMoney(e.category_avg,e.currency)} for this category">⚠ unusual</span>`:''}</td>
     <td>${esc(e.type)}</td>
     <td>${fmtMoney(e.amount,e.currency)}</td>
     <td class="row-actions">${e.type==='onetime'?`<button class="icon-btn danger" title="Delete" onclick="deleteFpExpense(${e.Id})">🗑</button>`:''}</td>
   </tr>`).join('');
 }
-function openFpOnetimeExpenseModal(){
-  document.getElementById('fpOtName').value='';
-  document.getElementById('fpOtCategory').value='';
-  document.getElementById('fpOtAmount').value='';
-  document.getElementById('fpOtCurrency').value='INR';
-  document.getElementById('fpOtDate').value=new Date().toISOString().slice(0,10);
-  document.getElementById('fpOtNotes').value='';
+function openFpOnetimeExpenseModal(prefill){
+  document.getElementById('fpOtName').value=prefill?.name||'';
+  document.getElementById('fpOtCategory').value=prefill?.category||'';
+  document.getElementById('fpOtAmount').value=prefill?.amount||'';
+  document.getElementById('fpOtCurrency').value=prefill?.currency||'INR';
+  document.getElementById('fpOtDate').value=prefill?.expense_date||new Date().toISOString().slice(0,10);
+  document.getElementById('fpOtNotes').value=prefill?.vendor?`Vendor: ${prefill.vendor}`:'';
   document.getElementById('fpOtSaveMsg').textContent='';
   document.getElementById('fpOnetimeExpenseModal').classList.add('active');
 }
 function closeFpOnetimeExpenseModal(){ document.getElementById('fpOnetimeExpenseModal').classList.remove('active'); }
+
+/* ── AI Quick Add — Snap & Save / Type-it-in, both feed openFpOnetimeExpenseModal's prefill ── */
+async function aiQuickAddFromText(){
+  const input=document.getElementById('fpAiQuickAddText');
+  const text=input.value.trim();
+  const msg=document.getElementById('fpAiQuickAddMsg');
+  if(!text) return;
+  msg.textContent='✨ Reading that…'; msg.className='save-msg';
+  try{
+    const {parsed}=await acctFetch('/financial/ai/parse-expense',{method:'POST',body:JSON.stringify({text})});
+    input.value=''; msg.textContent='';
+    openFpOnetimeExpenseModal(parsed);
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function aiQuickAddFromPhoto(fileInput){
+  const file=fileInput.files?.[0];
+  if(!file) return;
+  const msg=document.getElementById('fpAiQuickAddMsg');
+  msg.textContent='✨ Reading the receipt…'; msg.className='save-msg';
+  try{
+    const imageBase64=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(String(reader.result).split(',')[1]||'');
+      reader.onerror=reject;
+      reader.readAsDataURL(file);
+    });
+    const {parsed}=await acctFetch('/financial/ai/parse-expense',{method:'POST',body:JSON.stringify({imageBase64, mimeType:file.type})});
+    fileInput.value=''; msg.textContent='';
+    openFpOnetimeExpenseModal(parsed);
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
 async function saveFpOnetimeExpense(){
   const msg=document.getElementById('fpOtSaveMsg');
   const name=document.getElementById('fpOtName').value.trim();
@@ -1289,6 +1274,8 @@ function renderFpConfigForm(){
   if(!fpConfig) return;
   document.getElementById('fpCfgEnabled').checked=!!fpConfig.enabled;
   document.getElementById('fpCfgRemindersEnabled').checked=!!fpConfig.reminders_enabled;
+  document.getElementById('fpCfgAdminPhones').value=(fpConfig.admin_phone_numbers||[]).join('\n');
+  document.getElementById('fpCfgTaxReservePct').value=fpConfig.tax_reserve_pct??'';
   document.getElementById('fpCfgRzpKeyId').value=fpConfig.razorpay_key_id||'';
   document.getElementById('fpCfgRzpKeySecret').value=fpConfig.razorpay_key_secret||'';
   document.getElementById('fpCfgRzpWebhookSecret').value=fpConfig.razorpay_webhook_secret||'';
@@ -1300,9 +1287,12 @@ async function saveFpConfig(){
   // per-client secrets) — so an untouched, blank field here means "leave it as-is", not "clear it".
   // Only include it (and the webhook secret, for the same reason) in the PATCH when the field
   // actually has something typed into it, so re-saving the toggles above can never wipe it out.
+  const taxPct=document.getElementById('fpCfgTaxReservePct').value.trim();
   const body={
     enabled:document.getElementById('fpCfgEnabled').checked,
     reminders_enabled:document.getElementById('fpCfgRemindersEnabled').checked,
+    admin_phone_numbers:document.getElementById('fpCfgAdminPhones').value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean),
+    tax_reserve_pct:taxPct===''?null:Number(taxPct),
     razorpay_key_id:document.getElementById('fpCfgRzpKeyId').value.trim(),
   };
   const keySecret=document.getElementById('fpCfgRzpKeySecret').value.trim();
@@ -1311,78 +1301,10 @@ async function saveFpConfig(){
   if(webhookSecret) body.razorpay_webhook_secret=webhookSecret;
   try{
     fpConfig=await acctFetch('/financial/config',{method:'PATCH',body:JSON.stringify(body)});
+    renderFpConfigForm();
     msg.textContent='✓ Saved'; msg.className='save-msg';
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
   setTimeout(()=>msg.textContent='',3000);
-}
-
-/* ── ERPNEXT SETTINGS ── */
-async function saveErpnextSettings(){
-  const msg=document.getElementById('erpSaveMsg');
-  msg.textContent='Saving…'; msg.className='save-msg';
-  try{
-    await patchClient({
-      erpnext_base_url:document.getElementById('erpBaseUrl').value.trim(),
-      erpnext_api_key:document.getElementById('erpApiKey').value.trim(),
-      erpnext_api_secret:document.getElementById('erpApiSecret').value.trim(),
-    });
-    msg.textContent='✓ Saved'; msg.className='save-msg';
-  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
-  setTimeout(()=>msg.textContent='',3000);
-}
-
-/* ── CUSTOMERS (live ERPNext Customer list) ── */
-function renderCustomersTable(){
-  const tbody=document.getElementById('customersTbody');
-  if(!erpAvailable()){
-    tbody.innerHTML='<tr><td colspan="4" class="empty-state"><div class="empty-icon">⚙️</div>Connect ERPNext (⚙️ tab) to see and manage customers here.</td></tr>';
-    return;
-  }
-  if(erpCustomersLoadError){
-    tbody.innerHTML=`<tr><td colspan="4" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load customers (${esc(erpCustomersLoadError)}).</td></tr>`;
-    return;
-  }
-  const q=(document.getElementById('custSearch').value||'').toLowerCase();
-  const rows=allErpCustomers.filter(c=>!q||(c.customer_name||'').toLowerCase().includes(q)||(c.email_id||'').toLowerCase().includes(q));
-  if(!rows.length){ tbody.innerHTML='<tr><td colspan="4" class="empty-state">No customers yet — add one, or it\'ll appear here once you sync a document to ERPNext.</td></tr>'; return; }
-  tbody.innerHTML=rows.map(c=>{
-    const idx=allErpCustomers.indexOf(c);
-    return `<tr>
-    <td>${esc(c.customer_name||c.name)}</td>
-    <td>${esc(c.email_id||'—')}</td>
-    <td>${esc(c.mobile_no||'—')}</td>
-    <td class="row-actions"><button class="save-btn sec" onclick="newInvoiceForCustomer(${idx})">🧾 New Invoice</button></td>
-  </tr>`;
-  }).join('');
-}
-function newInvoiceForCustomer(idx){
-  const c=allErpCustomers[idx];
-  if(!c) return;
-  openDocumentModal('invoice',{title:(c.customer_name||c.name)+' — Invoice', erpnext_customer:c.name});
-}
-function openCustomerModal(){
-  document.getElementById('custName').value='';
-  document.getElementById('custEmail').value='';
-  document.getElementById('custPhone').value='';
-  document.getElementById('custSaveMsg').textContent='';
-  document.getElementById('customerModal').classList.add('active');
-}
-function closeCustomerModal(){ document.getElementById('customerModal').classList.remove('active'); }
-async function saveCustomer(){
-  const name=document.getElementById('custName').value.trim();
-  const msg=document.getElementById('custSaveMsg');
-  if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
-  msg.textContent='Creating…'; msg.className='save-msg';
-  try{
-    await acctFetch('/erpnext/customers',{method:'POST',body:JSON.stringify({
-      customer_name:name,
-      email_id:document.getElementById('custEmail').value.trim(),
-      mobile_no:document.getElementById('custPhone').value.trim(),
-    })});
-    await loadErpCustomers();
-    closeCustomerModal();
-    renderCustomersTable();
-  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
 /* ── DOCUMENTS (Quotation / Invoice / Receipt) ── */
@@ -1402,32 +1324,9 @@ function openDocumentModal(type, prefill){
   items.forEach(li=>addLineItemRow(li));
   renderLeadPicker();
   if(prefill?.lead_id) document.getElementById('docLeadId').value=prefill.lead_id;
-  populateErpCustomerSelect(prefill?.erpnext_customer||'');
-  populateErpCompanySelect(prefill?.company||'');
-  if(prefill?.company){
-    // Re-fetch the company-scoped debtors account list up front so a prefilled selection (e.g.
-    // re-opening a document from Convert, or the Customers tab's New Invoice shortcut) has
-    // somewhere to resolve to instead of showing blank until Company's own onchange fires.
-    acctFetch(`/erpnext/accounts?company=${encodeURIComponent(prefill.company)}`,{method:'GET'})
-      .then(d=>{ allErpDebtorsAccounts=d.list||[]; populateErpDebtorsAccountSelect(prefill?.erpnext_debtors_account||''); })
-      .catch(()=>{ allErpDebtorsAccounts=[]; populateErpDebtorsAccountSelect(''); });
-  }else{
-    populateErpDebtorsAccountSelect(prefill?.erpnext_debtors_account||'');
-  }
+  document.getElementById('docCustomerName').value=prefill?.customer_name||'';
   document.getElementById('documentModal').classList.add('active');
   updateDocTotalPreview();
-}
-// Debtors accounts are company-scoped in ERPNext — re-fetch the list whenever Company changes,
-// keeping whatever was already selected if it's still in the new list.
-async function onDocCompanyChange(){
-  const acctSel=document.getElementById('docErpDebtorsAccount');
-  const current=acctSel.value;
-  const company=document.getElementById('docCompany').value;
-  const companyRec=allErpCompanies.find(c=>c.name===company);
-  if(companyRec?.default_currency) document.getElementById('docCurrency').value=companyRec.default_currency;
-  try{ allErpDebtorsAccounts=(await acctFetch(`/erpnext/accounts?company=${encodeURIComponent(company)}`,{method:'GET'})).list||[]; }
-  catch(e){ allErpDebtorsAccounts=[]; }
-  populateErpDebtorsAccountSelect(current);
 }
 function closeDocumentModal(){ document.getElementById('documentModal').classList.remove('active'); }
 function renderLeadPicker(){
@@ -1442,7 +1341,7 @@ function addLineItemRow(li){
   li=li||{name:'',qty:1,price:0};
   const row=document.createElement('div'); row.className='li-row';
   row.innerHTML=`
-    <input class="li-name" list="erpItemsDatalist" placeholder="Product / description" value="${escAttr(li.name)}">
+    <input class="li-name" placeholder="Product / description" value="${escAttr(li.name)}">
     <input class="li-qty" type="number" placeholder="Qty" value="${esc(li.qty)}">
     <input class="li-price" type="number" placeholder="Price" value="${esc(li.price)}">
     <span class="li-total" style="font-family:var(--mono);font-size:13px;text-align:right"></span>
@@ -1514,11 +1413,9 @@ async function saveDocument(){
   const body={
     type:document.getElementById('docType').value,
     title, lead_id:document.getElementById('docLeadId').value||null,
+    customer_name:document.getElementById('docCustomerName').value.trim()||null,
     currency:document.getElementById('docCurrency').value.trim(),
     notes:document.getElementById('docNotes').value.trim(),
-    erpnext_customer:document.getElementById('docErpCustomer').value||null,
-    company:document.getElementById('docCompany').value||null,
-    erpnext_debtors_account:document.getElementById('docErpDebtorsAccount').value||null,
     line_items:lineItems
   };
   try{
@@ -1529,14 +1426,14 @@ async function saveDocument(){
   }catch(e){ alert('Failed to save: '+e.message); }
 }
 
-function erpBadge(doc){
-  if(!doc.erpnext_sync_status) return '<span class="badge notsynced">Not synced</span>';
-  if(doc.erpnext_sync_status==='synced'){
-    if(doc.erpnext_submitted_at) return `<span class="badge paid" title="${escAttr(doc.erpnext_doc_name||'')}">✓ Published</span>`;
-    return `<span class="badge synced" title="${escAttr(doc.erpnext_doc_name||'')} — still a Draft in ERPNext until Published">✓ Synced (draft)</span>`;
-  }
-  if(doc.erpnext_sync_status==='failed') return `<span class="badge failed" title="${escAttr(doc.erpnext_sync_error||'Sync failed')}">⚠ Failed</span>`;
-  return '<span class="badge pending">Pending</span>';
+const DOC_STATUS_OPTIONS=['draft','sent','paid','void'];
+async function setDocumentStatus(id, status){
+  try{
+    await acctFetch('/accounting/documents',{method:'PATCH',body:JSON.stringify({id, status})});
+    const doc=allDocuments.find(d=>d.Id===id);
+    if(doc) doc.status=status;
+    renderDocumentsTable();
+  }catch(e){ alert('Failed to update status: '+e.message); }
 }
 
 function renderDocumentsTable(){
@@ -1544,29 +1441,27 @@ function renderDocumentsTable(){
   const typeFilter=document.getElementById('docFilterType').value;
   const tbody=document.getElementById('documentsTbody');
   if(documentsLoadError){
-    tbody.innerHTML=`<tr><td colspan="7" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load documents (${esc(documentsLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="6" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load documents (${esc(documentsLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
     return;
   }
   const rows=allDocuments.filter(d=>(!q||(d.title||'').toLowerCase().includes(q))&&(!typeFilter||d.type===typeFilter));
-  if(!rows.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No documents yet — create a quotation above, then convert it to an invoice and receipt as the deal progresses.</td></tr>'; return; }
-  const erpReady=!!(clientRecord?.erpnext_base_url&&clientRecord?.erpnext_api_key&&clientRecord?.erpnext_api_secret);
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="6" class="empty-state">No documents yet — create a quotation above, then convert it to an invoice and receipt as the deal progresses.</td></tr>'; return; }
   const convertTo={quotation:'invoice', invoice:'receipt'};
   tbody.innerHTML=rows.map(d=>{
     const lead=allLeads.find(l=>String(l.Id)===String(d.lead_id));
+    const customerLabel=lead?(lead.Name||lead.Phone):(d.customer_name||'—');
     const nextType=convertTo[d.type];
+    const status=d.status||'draft';
     return `<tr>
       <td>${esc(d.title||'')}</td>
       <td>${DOC_TYPE_LABEL[d.type]||esc(d.type)}</td>
-      <td>${lead?esc(lead.Name||lead.Phone):'—'}</td>
+      <td>${esc(customerLabel)}</td>
       <td>${fmtMoney(d.total,d.currency)}</td>
-      <td><span class="badge ${esc(d.status||'draft')}">${esc((d.status||'draft').toUpperCase())}</span></td>
-      <td>${erpBadge(d)}</td>
+      <td><select class="s-input" style="width:auto;font-size:12px;padding:4px 6px" onchange="setDocumentStatus(${d.Id},this.value)">${DOC_STATUS_OPTIONS.map(s=>`<option value="${s}" ${s===status?'selected':''}>${s.toUpperCase()}</option>`).join('')}</select></td>
       <td class="row-actions">
         <button class="icon-btn" title="Download PDF" onclick="downloadDocumentPdf(${d.Id})">⬇️</button>
         <button class="icon-btn" title="Send by email" onclick="openEmailModal(${d.Id})">📧</button>
         ${nextType?`<button class="icon-btn" title="Convert to ${nextType}" onclick="convertDocument(${d.Id},'${nextType}')">→ ${DOC_TYPE_LABEL[nextType]}</button>`:''}
-        <button class="icon-btn" title="${erpReady?'Sync to ERPNext':'Connect ERPNext first (⚙️ tab)'}" ${erpReady?'':'disabled'} onclick="syncDocumentToErpnext(${d.Id})">🔄 ERPNext</button>
-        ${d.erpnext_sync_status==='synced'&&!d.erpnext_submitted_at?`<button class="icon-btn" title="Publish — submits it in ERPNext so it posts to the ledger" onclick="submitDocumentToErpnext(${d.Id})">📮 Publish</button>`:''}
         <button class="icon-btn danger" onclick="deleteDocument(${d.Id})">🗑</button>
       </td>
     </tr>`;
@@ -1585,63 +1480,22 @@ function openExpenseModal(){
   document.getElementById('expVendor').value='';
   document.getElementById('expCostCenter').value='';
   document.getElementById('expDescription').value='';
-  const sel=document.getElementById('expCompany');
-  sel.innerHTML='<option value="">— None —</option>'+allErpCompanies.map(c=>`<option value="${escAttr(c.name)}">${esc(c.name)}</option>`).join('');
-  sel.value='';
-  document.getElementById('expCompanyHint').textContent=erpAvailable()?'Pick a Company to load its Expense/Paid From accounts.':'Connect ERPNext (⚙️ tab) to pick a company here.';
-  allErpExpenseAccounts=[]; allErpPaidFromAccounts=[];
-  populateExpenseAccountSelects();
+  document.getElementById('expExpenseAccount').value='';
+  document.getElementById('expPaidFromAccount').value='';
   document.getElementById('expenseModal').classList.add('active');
 }
 function closeExpenseModal(){ document.getElementById('expenseModal').classList.remove('active'); }
-function populateExpenseAccountSelects(selectedExpense, selectedPaidFrom){
-  const expSel=document.getElementById('expExpenseAccount');
-  expSel.innerHTML=allErpExpenseAccounts.length
-    ? '<option value="">— Select —</option>'+allErpExpenseAccounts.map(a=>`<option value="${escAttr(a.name)}">${esc(a.account_name||a.name)}</option>`).join('')
-    : '<option value="">— Pick a company first —</option>';
-  expSel.value=selectedExpense||'';
-  const pfSel=document.getElementById('expPaidFromAccount');
-  pfSel.innerHTML=allErpPaidFromAccounts.length
-    ? '<option value="">— Select —</option>'+allErpPaidFromAccounts.map(a=>`<option value="${escAttr(a.name)}">${esc(a.account_name||a.name)}</option>`).join('')
-    : '<option value="">— Pick a company first —</option>';
-  pfSel.value=selectedPaidFrom||'';
-}
-// Expense/Paid-From accounts are company-scoped in ERPNext — re-fetch both whenever Company
-// changes, same pattern as onDocCompanyChange. Paid From auto-preselects the Company's own default
-// Cash Account (falling back to its default Bank Account) so most expenses need zero extra picking
-// beyond Company + Expense Account, while staying fully editable if that's not where this one was
-// actually paid from.
-async function onExpenseCompanyChange(){
-  const company=document.getElementById('expCompany').value;
-  if(!company){ allErpExpenseAccounts=[]; allErpPaidFromAccounts=[]; populateExpenseAccountSelects(); return; }
-  const companyRec=allErpCompanies.find(c=>c.name===company);
-  if(companyRec?.default_currency) document.getElementById('expCurrency').value=companyRec.default_currency;
-  try{
-    const [expR, assetR]=await Promise.all([
-      acctFetch(`/erpnext/accounts?company=${encodeURIComponent(company)}&root_type=Expense`,{method:'GET'}),
-      acctFetch(`/erpnext/accounts?company=${encodeURIComponent(company)}&root_type=Asset`,{method:'GET'}),
-    ]);
-    allErpExpenseAccounts=expR.list||[];
-    allErpPaidFromAccounts=assetR.list||[];
-  }catch(e){ allErpExpenseAccounts=[]; allErpPaidFromAccounts=[]; }
-  const defaultPaidFrom=companyRec?.default_cash_account||companyRec?.default_bank_account||'';
-  populateExpenseAccountSelects('', defaultPaidFrom);
-}
 async function saveExpense(){
-  const expenseAccount=document.getElementById('expExpenseAccount').value;
   const amount=Number(document.getElementById('expAmount').value);
   const expenseDate=document.getElementById('expDate').value;
-  if(!expenseAccount){ alert('Pick an Expense Account.'); return; }
   if(!amount){ alert('Enter an amount.'); return; }
   if(!expenseDate){ alert('Pick a date.'); return; }
-  const expSel=document.getElementById('expExpenseAccount');
-  const pfSel=document.getElementById('expPaidFromAccount');
+  const expenseAccount=document.getElementById('expExpenseAccount').value.trim();
   const body={
-    company:document.getElementById('expCompany').value||null,
-    expense_account:expenseAccount,
-    expense_account_name:expSel.options[expSel.selectedIndex]?.textContent||'',
-    paid_from_account:pfSel.value||null,
-    paid_from_account_name:pfSel.options[pfSel.selectedIndex]?.textContent||'',
+    expense_account:expenseAccount||'General',
+    expense_account_name:expenseAccount,
+    paid_from_account:document.getElementById('expPaidFromAccount').value.trim()||null,
+    paid_from_account_name:document.getElementById('expPaidFromAccount').value.trim(),
     amount, currency:document.getElementById('expCurrency').value.trim()||'USD',
     expense_date:expenseDate,
     category:document.getElementById('expCategory').value.trim(),
@@ -1651,59 +1505,32 @@ async function saveExpense(){
   };
   try{
     const created=await acctFetch('/accounting/expenses',{method:'POST',body:JSON.stringify(body)});
-    allExpenses.unshift({...body, Id:created.Id, id:created.Id, status:'unsynced'});
+    allExpenses.unshift({...body, Id:created.Id, id:created.Id});
     closeExpenseModal();
     renderExpensesTable();
   }catch(e){ alert('Failed to save: '+e.message); }
 }
-async function syncExpenseToErpnext(id){
-  try{
-    await acctFetch('/accounting/expenses/sync-erpnext',{method:'POST',body:JSON.stringify({id})});
-    await loadExpenses();
-    renderExpensesTable();
-  }catch(e){ alert('Sync failed: '+e.message); }
-}
-async function submitExpenseToErpnext(id){
-  try{
-    await acctFetch('/accounting/expenses/submit-erpnext',{method:'POST',body:JSON.stringify({id})});
-    await loadExpenses();
-    renderExpensesTable();
-  }catch(e){ alert('Publish failed: '+e.message); }
-}
 async function deleteExpense(id){
-  if(!confirm('Delete this expense entry? (This only removes it here — it does not cancel an already-synced ERPNext Journal Entry.)')) return;
+  if(!confirm('Delete this expense entry?')) return;
   try{ await acctFetch('/accounting/expenses',{method:'DELETE',body:JSON.stringify({id})}); allExpenses=allExpenses.filter(e=>e.Id!==id); renderExpensesTable(); }
   catch(e){ alert('Failed: '+e.message); }
-}
-function expErpBadge(exp){
-  if(!exp.erpnext_sync_status) return '<span class="badge notsynced">Not synced</span>';
-  if(exp.erpnext_sync_status==='synced'){
-    if(exp.erpnext_submitted_at) return `<span class="badge paid" title="${escAttr(exp.erpnext_doc_name||'')}">✓ Published</span>`;
-    return `<span class="badge synced" title="${escAttr(exp.erpnext_doc_name||'')} — still a Draft in ERPNext until Published">✓ Synced (draft)</span>`;
-  }
-  if(exp.erpnext_sync_status==='failed') return `<span class="badge failed" title="${escAttr(exp.erpnext_sync_error||'Sync failed')}">⚠ Failed</span>`;
-  return '<span class="badge pending">Pending</span>';
 }
 function renderExpensesTable(){
   const q=(document.getElementById('expSearch').value||'').toLowerCase();
   const tbody=document.getElementById('expensesTbody');
   if(expensesLoadError){
-    tbody.innerHTML=`<tr><td colspan="7" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load expenses (${esc(expensesLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="6" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load expenses (${esc(expensesLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
     return;
   }
   const rows=allExpenses.filter(e=>!q||(e.category||'').toLowerCase().includes(q)||(e.vendor||'').toLowerCase().includes(q)||(e.expense_account_name||e.expense_account||'').toLowerCase().includes(q));
-  if(!rows.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No expense entries yet — click "+ New Expense" above to book one against this account\'s ERPNext.</td></tr>'; return; }
-  const erpReady=erpAvailable();
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="6" class="empty-state">No expense entries yet — click "+ New Expense" above to record one.</td></tr>'; return; }
   tbody.innerHTML=rows.map(e=>`<tr>
       <td>${esc(e.expense_date||'')}</td>
       <td>${esc(e.category||'—')}</td>
       <td>${esc(e.vendor||'—')}</td>
       <td>${esc(e.expense_account_name||e.expense_account||'')}</td>
       <td>${fmtMoney(e.amount,e.currency)}</td>
-      <td>${expErpBadge(e)}</td>
       <td class="row-actions">
-        <button class="icon-btn" title="${erpReady?'Sync to ERPNext':'Connect ERPNext first (⚙️ tab)'}" ${erpReady?'':'disabled'} onclick="syncExpenseToErpnext(${e.Id})">🔄 ERPNext</button>
-        ${e.erpnext_sync_status==='synced'&&!e.erpnext_submitted_at?`<button class="icon-btn" title="Publish — submits it in ERPNext so it posts to the ledger" onclick="submitExpenseToErpnext(${e.Id})">📮 Publish</button>`:''}
         <button class="icon-btn danger" onclick="deleteExpense(${e.Id})">🗑</button>
       </td>
     </tr>`).join('');
@@ -1716,48 +1543,22 @@ function openVendorBillModal(){
   document.getElementById('vbId').value='';
   document.getElementById('vbSupplier').value='';
   document.getElementById('vbVendorInvoiceNo').value='';
+  document.getElementById('vbPayableAccount').value='';
   document.getElementById('vbCurrency').value=clientRecord?.deal_currency||'AED';
   document.getElementById('vbBillDate').value=new Date().toISOString().slice(0,10);
   document.getElementById('vbDueDate').value='';
   document.getElementById('vbNotes').value='';
   document.getElementById('vbLineItems').innerHTML='';
   addVbLineItemRow();
-  const sel=document.getElementById('vbCompany');
-  sel.innerHTML='<option value="">— None —</option>'+allErpCompanies.map(c=>`<option value="${escAttr(c.name)}">${esc(c.name)}</option>`).join('');
-  sel.value='';
-  document.getElementById('vbCompanyHint').textContent=erpAvailable()?'Pick a Company to load its Payable accounts.':'Connect ERPNext (⚙️ tab) to pick a company here.';
-  allErpPayableAccounts=[];
-  populateVbPayableAccountSelect();
   document.getElementById('vendorBillModal').classList.add('active');
   updateVbTotalPreview();
 }
 function closeVendorBillModal(){ document.getElementById('vendorBillModal').classList.remove('active'); }
-function populateVbPayableAccountSelect(selected){
-  const sel=document.getElementById('vbPayableAccount');
-  sel.innerHTML=allErpPayableAccounts.length
-    ? '<option value="">— Default —</option>'+allErpPayableAccounts.map(a=>`<option value="${escAttr(a.name)}">${esc(a.account_name||a.name)}</option>`).join('')
-    : '<option value="">— Default —</option>';
-  sel.value=selected||'';
-}
-// Payable accounts are company-scoped in ERPNext — re-fetch whenever Company changes, same pattern
-// as onDocCompanyChange/onExpenseCompanyChange. account_type=Payable (ERPNext's standard type for
-// accounts-payable ledger accounts) reuses the same generalized /erpnext/accounts endpoint the
-// Debtors/Expense pickers use.
-async function onVendorBillCompanyChange(){
-  const payableSel=document.getElementById('vbPayableAccount');
-  const current=payableSel.value;
-  const company=document.getElementById('vbCompany').value;
-  const companyRec=allErpCompanies.find(c=>c.name===company);
-  if(companyRec?.default_currency) document.getElementById('vbCurrency').value=companyRec.default_currency;
-  try{ allErpPayableAccounts=(await acctFetch(`/erpnext/accounts?company=${encodeURIComponent(company)}&account_type=Payable`,{method:'GET'})).list||[]; }
-  catch(e){ allErpPayableAccounts=[]; }
-  populateVbPayableAccountSelect(current);
-}
 function addVbLineItemRow(li){
   li=li||{name:'',qty:1,price:0};
   const row=document.createElement('div'); row.className='li-row';
   row.innerHTML=`
-    <input class="li-name" list="erpItemsDatalist" placeholder="Product / service" value="${escAttr(li.name)}">
+    <input class="li-name" placeholder="Product / service" value="${escAttr(li.name)}">
     <input class="li-qty" type="number" placeholder="Qty" value="${esc(li.qty)}">
     <input class="li-price" type="number" placeholder="Price" value="${esc(li.price)}">
     <span class="li-total" style="font-family:var(--mono);font-size:13px;text-align:right"></span>
@@ -1795,8 +1596,7 @@ async function saveVendorBill(){
   if(!lineItems.length){ alert('Add at least one line item.'); return; }
   const body={
     supplier, vendor_invoice_no:document.getElementById('vbVendorInvoiceNo').value.trim(),
-    company:document.getElementById('vbCompany').value||null,
-    erpnext_payable_account:document.getElementById('vbPayableAccount').value||null,
+    erpnext_payable_account:document.getElementById('vbPayableAccount').value.trim()||null,
     currency:document.getElementById('vbCurrency').value.trim()||'USD',
     bill_date:billDate, due_date:document.getElementById('vbDueDate').value||null,
     notes:document.getElementById('vbNotes').value.trim(),
@@ -1810,64 +1610,36 @@ async function saveVendorBill(){
     renderVendorBillsTable();
   }catch(e){ alert('Failed to save: '+e.message); }
 }
-async function syncVendorBillToErpnext(id){
+async function markVendorBillPaid(id){
+  if(!confirm('Mark this bill as paid?')) return;
   try{
-    await acctFetch('/accounting/vendor-bills/sync-erpnext',{method:'POST',body:JSON.stringify({id})});
+    await acctFetch('/accounting/vendor-bills/mark-paid',{method:'POST',body:JSON.stringify({id})});
     await loadVendorBills();
     renderVendorBillsTable();
-  }catch(e){ alert('Sync failed: '+e.message); }
-}
-async function submitVendorBillToErpnext(id){
-  try{
-    await acctFetch('/accounting/vendor-bills/submit-erpnext',{method:'POST',body:JSON.stringify({id})});
-    await loadVendorBills();
-    renderVendorBillsTable();
-  }catch(e){ alert('Publish failed: '+e.message); }
-}
-async function recordVendorBillPayment(id){
-  if(!confirm('Record this bill as paid? This posts a real Payment Entry in ERPNext.')) return;
-  try{
-    await acctFetch('/accounting/vendor-bills/record-payment',{method:'POST',body:JSON.stringify({id})});
-    await loadVendorBills();
-    renderVendorBillsTable();
-  }catch(e){ alert('Recording payment failed: '+e.message); }
+  }catch(e){ alert('Failed: '+e.message); }
 }
 async function deleteVendorBill(id){
-  if(!confirm('Delete this vendor bill? (This only removes it here — it does not cancel an already-synced ERPNext Purchase Invoice.)')) return;
+  if(!confirm('Delete this vendor bill?')) return;
   try{ await acctFetch('/accounting/vendor-bills',{method:'DELETE',body:JSON.stringify({id})}); allVendorBills=allVendorBills.filter(b=>b.Id!==id); renderVendorBillsTable(); }
   catch(e){ alert('Failed: '+e.message); }
-}
-function vbErpBadge(bill){
-  if(!bill.erpnext_sync_status) return '<span class="badge notsynced">Not synced</span>';
-  if(bill.erpnext_sync_status==='synced'){
-    if(bill.erpnext_paid_at) return `<span class="badge paid" title="${escAttr(bill.erpnext_payment_doc_name||'')}">✓ Paid</span>`;
-    if(bill.erpnext_submitted_at) return `<span class="badge accepted" title="${escAttr(bill.erpnext_doc_name||'')}">✓ Published</span>`;
-    return `<span class="badge synced" title="${escAttr(bill.erpnext_doc_name||'')} — still a Draft in ERPNext until Published">✓ Synced (draft)</span>`;
-  }
-  if(bill.erpnext_sync_status==='failed') return `<span class="badge failed" title="${escAttr(bill.erpnext_sync_error||'Sync failed')}">⚠ Failed</span>`;
-  return '<span class="badge pending">Pending</span>';
 }
 function renderVendorBillsTable(){
   const q=(document.getElementById('vbSearch').value||'').toLowerCase();
   const tbody=document.getElementById('vendorBillsTbody');
   if(vendorBillsLoadError){
-    tbody.innerHTML=`<tr><td colspan="7" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load vendor bills (${esc(vendorBillsLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="6" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load vendor bills (${esc(vendorBillsLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
     return;
   }
   const rows=allVendorBills.filter(b=>!q||(b.supplier||'').toLowerCase().includes(q)||(b.vendor_invoice_no||'').toLowerCase().includes(q));
-  if(!rows.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No vendor bills yet — click "+ New Bill" above to book one against this account\'s ERPNext.</td></tr>'; return; }
-  const erpReady=erpAvailable();
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="6" class="empty-state">No vendor bills yet — click "+ New Bill" above to record one.</td></tr>'; return; }
   tbody.innerHTML=rows.map(b=>`<tr>
       <td>${esc(b.bill_date||'')}</td>
       <td>${esc(b.supplier||'')}</td>
       <td>${esc(b.vendor_invoice_no||'—')}</td>
       <td>${fmtMoney(b.total,b.currency)}</td>
       <td><span class="badge ${b.status==='paid'?'paid':'pending'}">${esc((b.status||'unpaid').toUpperCase())}</span></td>
-      <td>${vbErpBadge(b)}</td>
       <td class="row-actions">
-        <button class="icon-btn" title="${erpReady?'Sync to ERPNext':'Connect ERPNext first (⚙️ tab)'}" ${erpReady?'':'disabled'} onclick="syncVendorBillToErpnext(${b.Id})">🔄 ERPNext</button>
-        ${b.erpnext_sync_status==='synced'&&!b.erpnext_submitted_at?`<button class="icon-btn" title="Publish — submits it in ERPNext so it posts to the ledger" onclick="submitVendorBillToErpnext(${b.Id})">📮 Publish</button>`:''}
-        ${b.erpnext_submitted_at&&!b.erpnext_paid_at?`<button class="icon-btn" title="Record Payment — posts a Payment Entry in ERPNext" onclick="recordVendorBillPayment(${b.Id})">💵 Record Payment</button>`:''}
+        ${b.status!=='paid'?`<button class="icon-btn" title="Mark as Paid" onclick="markVendorBillPaid(${b.Id})">💵 Mark Paid</button>`:''}
         <button class="icon-btn danger" onclick="deleteVendorBill(${b.Id})">🗑</button>
       </td>
     </tr>`).join('');
@@ -1881,35 +1653,6 @@ async function convertDocument(id, toType){
     renderDocumentsTable();
     alert(`Draft ${toType} created — edit and send it whenever you're ready.`);
   }catch(e){ alert('Failed to convert: '+e.message); }
-}
-
-async function syncDocumentToErpnext(id){
-  const doc=allDocuments.find(d=>d.Id===id);
-  if(doc) doc.erpnext_sync_status='pending';
-  renderDocumentsTable();
-  try{
-    const result=await acctFetch('/accounting/documents/sync-erpnext',{method:'POST',body:JSON.stringify({id})});
-    if(doc){ doc.erpnext_sync_status='synced'; doc.erpnext_doc_name=result.erpnext_doc_name; doc.erpnext_sync_error=''; }
-    renderDocumentsTable();
-  }catch(e){
-    if(doc){ doc.erpnext_sync_status='failed'; doc.erpnext_sync_error=e.message; }
-    renderDocumentsTable();
-    alert('ERPNext sync failed: '+e.message);
-  }
-}
-
-// Publish — submits the synced ERPNext document (docstatus 0→1), the step that actually posts it
-// to the ledger; a merely-synced document is still an editable Draft in ERPNext. One-way, so a
-// confirm() here — same reasoning as the Spam confirm() on the Human Deals page, an action whose
-// consequence extends past this app.
-async function submitDocumentToErpnext(id){
-  if(!confirm('Publish this document in ERPNext? Once submitted it posts to the ledger and generally can\'t be edited or un-submitted from here.')) return;
-  const doc=allDocuments.find(d=>d.Id===id);
-  try{
-    const result=await acctFetch('/accounting/documents/submit-erpnext',{method:'POST',body:JSON.stringify({id})});
-    if(doc) doc.erpnext_submitted_at=result.erpnext_submitted_at||new Date().toISOString();
-    renderDocumentsTable();
-  }catch(e){ alert('Publish failed: '+e.message); }
 }
 
 async function deleteDocument(id){
@@ -1951,7 +1694,6 @@ function buildDocumentPdf(id){
   const d=allDocuments.find(x=>x.Id===id);
   if(!d) return null;
   const lead=allLeads.find(l=>String(l.Id)===String(d.lead_id));
-  const erpCustomer=allErpCustomers.find(c=>c.name===d.erpnext_customer);
   let items=[]; try{ items=JSON.parse(d.line_items_json||'[]'); }catch(e){}
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
@@ -1993,7 +1735,7 @@ function buildDocumentPdf(id){
   // ── Billed to (left) / document no. + date (right) ──
   const billLines=[];
   if(lead){ billLines.push(lead.Name||lead.Phone||'Customer'); if(lead.Phone) billLines.push(lead.Phone); if(lead.Email) billLines.push(lead.Email); }
-  else if(erpCustomer){ billLines.push(erpCustomer.customer_name||erpCustomer.name); if(erpCustomer.mobile_no) billLines.push(erpCustomer.mobile_no); if(erpCustomer.email_id) billLines.push(erpCustomer.email_id); }
+  else if(d.customer_name){ billLines.push(d.customer_name); }
   else billLines.push('Customer');
   const customerLabel=billLines[0];
 
@@ -2002,10 +1744,7 @@ function buildDocumentPdf(id){
   doc.setFont('helvetica','normal');doc.setFontSize(10);
   billLines.forEach((line,i)=>doc.text(line,marginX,y+15+i*13));
 
-  // Invoice number: the real ERPNext-issued number (e.g. "SINV-2026-00001") once synced, since
-  // that's the number that actually means something in the client's books — falls back to this
-  // document's own local id for one that hasn't been synced yet.
-  const docNumber=d.erpnext_doc_name||String(d.Id);
+  const docNumber=String(d.Id);
   const dateStr=d.doc_created_at?new Date(d.doc_created_at).toLocaleDateString(undefined,{day:'2-digit',month:'long',year:'numeric'}):new Date().toLocaleDateString();
   doc.text(`${typeLabel} No. ${docNumber}`,pageW-marginX,y,{align:'right'});
   doc.text(dateStr,pageW-marginX,y+15,{align:'right'});
@@ -2123,7 +1862,7 @@ function buildDocumentPdf(id){
   stampAcctFooter(doc,marginX);
 
   const filename=`${typeLabel}-${customerLabel.replace(/[^a-z0-9]+/gi,'-')}.pdf`;
-  return {doc, d, typeLabel, filename, customerLabel, erpCustomer};
+  return {doc, d, typeLabel, filename, customerLabel};
 }
 
 function downloadDocumentPdf(id){
@@ -2138,8 +1877,9 @@ function downloadDocumentPdf(id){
 function openEmailModal(id){
   const built=buildDocumentPdf(id);
   if(!built) return;
+  const lead=allLeads.find(l=>String(l.Id)===String(built.d.lead_id));
   document.getElementById('emailDocId').value=id;
-  document.getElementById('emailTo').value=built.erpCustomer?.email_id||'';
+  document.getElementById('emailTo').value=lead?.Email||'';
   document.getElementById('emailSubject').value=`${built.typeLabel} from ${clientRecord?.client_name||'us'}`;
   document.getElementById('emailSaveMsg').textContent='';
   document.getElementById('emailModal').classList.add('active');

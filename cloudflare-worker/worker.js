@@ -8099,6 +8099,16 @@ async function handleEngineWebhook(request, env, secret){
     let text=parsed.text;
     phone=parsed.phone;
 
+    // Admin-number bookkeeping shortcut (see fpHandleAdminWhatsappMessage's own comment) — checked
+    // before test_mode/openrouter/lead-state/anything else below, so a message from the business
+    // owner's own registered number never enters the customer lead pipeline at all, regardless of
+    // whether this client even has an OpenRouter key configured.
+    if(await fpIsAdminPhone(env, clientId, phone)){
+      await fpHandleAdminWhatsappMessage(env, c, clientId, convId, mediaType, mediaUrl, text);
+      await logEngineSkip(env, clientId, phone, convId, 'admin-bookkeeping-handled');
+      return json({ok:true, handled:'admin-bookkeeping'});
+    }
+
     if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')){ await logEngineSkip(env, clientId, phone, convId, 'test-mode'); return json({ok:true, skipped:'test-mode'}); }
     if(!c.openrouter_key){ await logEngineSkip(env, clientId, phone, convId, 'no-openrouter-key'); return json({ok:true, skipped:'no-openrouter-key'}); }
 
@@ -9116,6 +9126,11 @@ async function handleAccountingDocumentCreate(request, env){
     status:ACCOUNTING_VALID_STATUS.has(body.status)?body.status:'draft',
     linked_doc_id:body.linked_doc_id?Number(body.linked_doc_id):null,
     notes:String(body.notes||'').trim().slice(0,1000),
+    // customer_name (migration 0035) — a plain label for a walk-in/one-off customer not tied to a
+    // CRM lead, replacing the old ERPNext-only customer picker; erpnext_customer/company/
+    // erpnext_debtors_account stay writable too (still read by the optional ERPNext push) but are
+    // no longer set by the standalone Document modal.
+    customer_name:body.customer_name?String(body.customer_name).trim().slice(0,200):null,
     erpnext_customer:body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null,
     company:body.company?String(body.company).trim().slice(0,140):null,
     erpnext_debtors_account:body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null,
@@ -9123,9 +9138,9 @@ async function handleAccountingDocumentCreate(request, env){
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -9142,6 +9157,7 @@ async function handleAccountingDocumentUpdate(request, env){
   if(body.status!==undefined){ sets.push('status=?'); vals.push(String(body.status)); }
   if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
   if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10)); }
+  if(body.customer_name!==undefined){ sets.push('customer_name=?'); vals.push(body.customer_name?String(body.customer_name).trim().slice(0,200):null); }
   if(body.erpnext_customer!==undefined){ sets.push('erpnext_customer=?'); vals.push(body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null); }
   if(body.company!==undefined){ sets.push('company=?'); vals.push(body.company?String(body.company).trim().slice(0,140):null); }
   if(body.erpnext_debtors_account!==undefined){ sets.push('erpnext_debtors_account=?'); vals.push(body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null); }
@@ -9187,14 +9203,15 @@ async function handleAccountingDocumentConvert(request, env){
     type:toType, title:src.title||'', line_items_json:src.line_items_json||'[]',
     currency:src.currency||'', subtotal:src.subtotal||0, tax_pct:src.tax_pct||0, tax_amount:src.tax_amount||0, total:src.total||0,
     status:'draft', linked_doc_id:src.id, notes:src.notes||'',
+    customer_name:src.customer_name||null,
     erpnext_customer:src.erpnext_customer||null, company:src.company||null, erpnext_debtors_account:src.erpnext_debtors_account||null,
     erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -9723,6 +9740,21 @@ async function handleVendorBillRecordPayment(request, env){
     await reportOpsError(env, 'handleVendorBillRecordPayment — ERPNext payment push failed', e, {clientId:payload.cid, billId:bill.id});
     return json({error:'ERPNext payment failed: '+msg}, 502);
   }
+}
+// Standalone equivalent of handleVendorBillRecordPayment above (migration 0035's paid_at column) —
+// no ERPNext connection required, just marks the bill paid directly. This is the mark-paid action
+// the Vendor Bills tab actually uses now; the ERPNext-pushed version stays available for anyone who
+// still wants a real Payment Entry posted to a connected site.
+async function handleVendorBillMarkPaid(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const now=new Date().toISOString();
+  await env.DB.prepare(`UPDATE accounting_vendor_bills SET status='paid', paid_at=? WHERE id=?`).bind(now, bill.id).run();
+  return json({ok:true, paid_at:now});
 }
 
 /* ── RECRUITMENT MODULE (frontend/dashboard.html — 💼 Recruit tab, migrations/0032_recruitment.sql)
@@ -10278,7 +10310,7 @@ async function handleFpExpensesList(request, env){
   const since=new Date(); since.setMonth(since.getMonth()-(months-1)); since.setDate(1);
   const {results}=await env.DB.prepare(`SELECT * FROM fp_expenses WHERE client_id=? AND expense_date>=? ORDER BY expense_date DESC`)
     .bind(Number(payload.cid), since.toISOString().slice(0,10)).all();
-  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+  return json({list:fpAiFlagUnusualExpenses(results||[]).map(r=>({...r, Id:r.id}))});
 }
 async function handleFpExpenseCreate(request, env){
   const payload=await requireSession(request, env);
@@ -10307,11 +10339,19 @@ async function handleFpExpenseDelete(request, env){
   return json({ok:true});
 }
 
+const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct';
+// Shared by GET and PATCH (the latter now returns the fresh row instead of a bare {ok:true} — the
+// Settings tab's saveFpConfig assigns the response straight into fpConfig, so an {ok:true}-only
+// reply was quietly wiping every other field client-side until the next full page load).
+function fpConfigResponseShape(row, cid){
+  if(!row) return {client_id:Number(cid), enabled:1, reminders_enabled:1, razorpay_connected:false, admin_phone_numbers:[], tax_reserve_pct:null};
+  return {...row, razorpay_connected:!!(row.razorpay_key_id&&row.razorpay_webhook_secret), admin_phone_numbers:engineParseJsonField(row.admin_phone_numbers, [])};
+}
 async function handleFpConfigGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const row=await env.DB.prepare(`SELECT client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
-  return json(row?{...row, razorpay_connected:!!(row.razorpay_key_id&&row.razorpay_webhook_secret)}:{client_id:Number(payload.cid), enabled:1, reminders_enabled:1, razorpay_connected:false});
+  const row=await env.DB.prepare(`SELECT ${FP_CONFIG_SELECT_COLS} FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
+  return json(fpConfigResponseShape(row, payload.cid));
 }
 async function handleFpConfigUpdate(request, env){
   const payload=await requireSession(request, env);
@@ -10329,9 +10369,22 @@ async function handleFpConfigUpdate(request, env){
   if(body.razorpay_key_id!==undefined){ sets.push('razorpay_key_id=?'); vals.push(String(body.razorpay_key_id||'').trim()); }
   if(body.razorpay_key_secret!==undefined){ sets.push('razorpay_key_secret=?'); vals.push(String(body.razorpay_key_secret||'').trim()); }
   if(body.razorpay_webhook_secret!==undefined){ sets.push('razorpay_webhook_secret=?'); vals.push(String(body.razorpay_webhook_secret||'').trim()); }
+  // Admin bookkeeping numbers — see fpIsAdminPhone's own comment. Accepts either a real array or a
+  // comma-separated string (the Settings tab's own textarea/input sends the latter), capped at 10
+  // so this can never grow into an unbounded list by accident.
+  if(body.admin_phone_numbers!==undefined){
+    const nums=(Array.isArray(body.admin_phone_numbers)?body.admin_phone_numbers:String(body.admin_phone_numbers||'').split(','))
+      .map(n=>String(n||'').trim()).filter(Boolean).slice(0,10);
+    sets.push('admin_phone_numbers=?'); vals.push(JSON.stringify(nums));
+  }
+  if(body.tax_reserve_pct!==undefined){
+    sets.push('tax_reserve_pct=?');
+    vals.push(body.tax_reserve_pct===null||body.tax_reserve_pct===''?null:Math.max(0,Math.min(100,Number(body.tax_reserve_pct)||0)));
+  }
   vals.push(Number(payload.cid));
   await env.DB.prepare(`UPDATE fp_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
-  return json({ok:true});
+  const row=await env.DB.prepare(`SELECT ${FP_CONFIG_SELECT_COLS} FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
+  return json(fpConfigResponseShape(row, payload.cid));
 }
 
 // Month-end dashboard — one aggregate route (same "compute everything server-side, one response"
@@ -10385,12 +10438,21 @@ async function handleFpDashboard(request, env){
     expenses:Math.round((allExpensesForTrend||[]).filter(e=>e.expense_date.slice(0,7)===m).reduce((s,e)=>s+e.amount,0)*100)/100,
   }));
 
+  // Tax set-aside estimate — a plain `profit * tax_reserve_pct` nudge, nothing more (no bracket
+  // logic, no jurisdiction awareness). Only shown when the owner has actually set a rate in
+  // Settings AND this month is in profit — a negative net position has nothing to set aside, and
+  // showing a 0 there would read as "you owe nothing" rather than "not applicable this month".
+  const cfg=await env.DB.prepare(`SELECT tax_reserve_pct FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  const taxReservePct=cfg?.tax_reserve_pct;
+  const estimatedTaxSetAside=(taxReservePct&&netPosition>0)?Math.round(netPosition*(taxReservePct/100)*100)/100:null;
+
   const currency=thisMonthDues[0]?.currency||allDues[0]?.currency||'INR';
   return json({
     currency, current_period:currentPeriod,
     expected_this_month:Math.round(expectedThisMonth*100)/100, collected_this_month:Math.round(collectedThisMonth*100)/100, collection_pct:collectionPct,
     fixed_expense_total:Math.round(fixedExpenseTotal*100)/100, onetime_expense_total:Math.round(onetimeExpenseTotal*100)/100, total_expenses:Math.round(totalExpenses*100)/100,
     net_position:netPosition, aging_buckets:agingBuckets, outstanding, trend,
+    tax_reserve_pct:taxReservePct||null, estimated_tax_set_aside:estimatedTaxSetAside,
   });
 }
 
@@ -10436,6 +10498,324 @@ async function fpGenerateForClient(env, clientId, periodKey){
   }
 }
 
+// ── AI-Supported Bookkeeping (Financial Planning) — layman-friendly SMB features built on the
+// same shared Gemini integration the WhatsApp engine already uses (env.GEMINI_API_KEY,
+// engineGeminiGenerate above) — no new provider/credential to configure. Three capabilities:
+// (1) turn a plain-English sentence or a photo of a receipt into a structured fp_expenses draft
+// the owner still reviews and saves themselves (never auto-saved — a misread amount silently
+// posted would be worse than no AI at all); (2) "Ask Your Books", natural-language Q&A answered
+// ONLY from real numbers computed here server-side, never left to the model to recall/estimate;
+// (3) a cached one-paragraph monthly narrative snapshot (fp_config.ai_snapshot_period, migration
+// 0034), computed once per calendar month rather than on every dashboard load.
+const FP_EXPENSE_CATEGORIES=['Rent','Utilities','Salaries & Wages','Software & Subscriptions','Marketing & Ads','Travel','Office Supplies','Professional Fees','Bank Charges','Repairs & Maintenance','Inventory & Supplies','Taxes','Insurance','Miscellaneous'];
+
+function fpAiNormalizeParsedExpense(parsed, defaultCurrency){
+  if(!parsed || typeof parsed!=='object') return null;
+  return {
+    name:String(parsed.name||'').trim().slice(0,140)||'Expense',
+    category:FP_EXPENSE_CATEGORIES.includes(parsed.category)?parsed.category:'Miscellaneous',
+    vendor:String(parsed.vendor||'').trim().slice(0,140),
+    amount:Number(parsed.amount)||0,
+    currency:String(parsed.currency||defaultCurrency||'INR').trim().slice(0,10).toUpperCase(),
+    expense_date:/^\d{4}-\d{2}-\d{2}$/.test(parsed.expense_date||'')?parsed.expense_date:new Date().toISOString().slice(0,10),
+    notes:String(parsed.notes||'').trim().slice(0,500),
+  };
+}
+async function fpAiParseExpenseText(env, text, defaultCurrency){
+  if(!env.GEMINI_API_KEY || !text) return null;
+  const today=new Date().toISOString().slice(0,10);
+  const system=`You convert a small business owner's plain description of a purchase or expense into one structured bookkeeping record. They are not an accountant — never use accounting jargon back at them. Today's date is ${today}. Default currency is ${defaultCurrency} unless the text clearly states another. Respond with ONLY compact JSON, no commentary, in exactly this shape: {"name":"short title, 3-6 words","category":"one of: ${FP_EXPENSE_CATEGORIES.join(', ')}","vendor":"who was paid, or empty string","amount":number,"currency":"3-letter code","expense_date":"YYYY-MM-DD","notes":"anything extra worth keeping, or empty string"}. Resolve relative dates ("yesterday", "last Friday") against today's date. If you cannot tell the amount at all, set amount to 0.`;
+  const raw=await engineGeminiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, json:true});
+  if(!raw) return null;
+  try{ return fpAiNormalizeParsedExpense(JSON.parse(raw), defaultCurrency); }catch(e){ return null; }
+}
+async function fpAiParseExpenseImage(env, base64, mimeType, defaultCurrency){
+  if(!env.GEMINI_API_KEY || !base64) return null;
+  const today=new Date().toISOString().slice(0,10);
+  const prompt=`This image is a photo of a receipt or bill for a small business expense. Today's date is ${today}. Read the vendor/merchant name, the total amount actually paid, and the date printed on it (if no date is visible, use today). Default currency is ${defaultCurrency} unless the receipt clearly shows another. Respond with ONLY compact JSON, no commentary, in exactly this shape: {"name":"short title, 3-6 words","category":"one of: ${FP_EXPENSE_CATEGORIES.join(', ')}","vendor":"merchant name, or empty string","amount":number,"currency":"3-letter code","expense_date":"YYYY-MM-DD","notes":"anything extra worth keeping, or empty string"}. If the total amount isn't legible, set amount to 0.`;
+  try{
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{role:'user', parts:[
+        {text:prompt},
+        {inline_data:{mime_type:mimeType||'image/jpeg', data:base64}}
+      ]}], generationConfig:{temperature:0.1, maxOutputTokens:250, responseMimeType:'application/json'}})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const outText=parts.map(p=>p.text||'').join('').trim();
+    if(!outText) return null;
+    return fpAiNormalizeParsedExpense(JSON.parse(outText), defaultCurrency);
+  }catch(e){ return null; }
+}
+async function handleFpAiParseExpense(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.GEMINI_API_KEY) return json({error:'AI features are not configured for this deployment yet.'}, 503);
+  const body=await request.json().catch(()=>({}));
+  const clientId=Number(payload.cid);
+  const cust=await env.DB.prepare(`SELECT currency FROM fp_customers WHERE client_id=? ORDER BY id DESC LIMIT 1`).bind(clientId).first();
+  const defaultCurrency=cust?.currency||'INR';
+  let parsed=null;
+  if(body.imageBase64){
+    if(String(body.imageBase64).length>20*1024*1024) return json({error:'Image is too large.'}, 400);
+    parsed=await fpAiParseExpenseImage(env, body.imageBase64, body.mimeType, defaultCurrency);
+  }else if(body.text){
+    parsed=await fpAiParseExpenseText(env, String(body.text).slice(0,500), defaultCurrency);
+  }else{
+    return json({error:'text or imageBase64 required'}, 400);
+  }
+  if(!parsed) return json({error:"Couldn't make sense of that — try adding the amount and what it was for, or enter it manually below."}, 422);
+  return json({parsed});
+}
+
+// Real numbers only — the same aggregates a human would read off the Dashboard, just compact
+// enough to hand to the model as its entire universe of facts. Both "Ask Your Books" and the
+// monthly narrative snapshot below build their prompt around this one function so the two features
+// can never disagree with each other or with the Dashboard itself.
+async function fpAiComputeSnapshotData(env, clientId){
+  const now=new Date();
+  const currentPeriod=now.toISOString().slice(0,7);
+  const todayStr=now.toISOString().slice(0,10);
+  const {results:dues}=await env.DB.prepare(`SELECT d.* FROM fp_expected_dues d WHERE d.client_id=?`).bind(clientId).all();
+  const allDues=dues||[];
+  const thisMonthDues=allDues.filter(d=>d.period_key===currentPeriod);
+  const expected=thisMonthDues.reduce((s,d)=>s+d.amount,0);
+  const collected=thisMonthDues.reduce((s,d)=>s+d.collected_amount,0);
+  const outstanding=allDues.filter(d=>d.status==='open'||d.status==='partial');
+  const outstandingTotal=outstanding.reduce((s,d)=>s+(d.amount-d.collected_amount),0);
+  const overdueCount=outstanding.filter(d=>d.due_date<todayStr).length;
+
+  const since=new Date(now.getFullYear(), now.getMonth()-2, 1).toISOString().slice(0,10);
+  const {results:expenses}=await env.DB.prepare(`SELECT * FROM fp_expenses WHERE client_id=? AND expense_date>=?`).bind(clientId, since).all();
+  const thisMonthExpenses=(expenses||[]).filter(e=>e.expense_date.slice(0,7)===currentPeriod);
+  const totalExpensesThisMonth=thisMonthExpenses.reduce((s,e)=>s+e.amount,0);
+  const byCategory={};
+  for(const e of thisMonthExpenses){ byCategory[e.category]=(byCategory[e.category]||0)+e.amount; }
+  const topCategories=Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([category,amount])=>({category, amount:Math.round(amount*100)/100}));
+
+  const activeCustomers=await env.DB.prepare(`SELECT COUNT(*) as n FROM fp_customers WHERE client_id=? AND status='active'`).bind(clientId).first();
+  const currency=thisMonthDues[0]?.currency||allDues[0]?.currency||thisMonthExpenses[0]?.currency||'INR';
+  return {
+    current_period:currentPeriod, currency,
+    expected_this_month:Math.round(expected*100)/100, collected_this_month:Math.round(collected*100)/100,
+    total_expenses_this_month:Math.round(totalExpensesThisMonth*100)/100,
+    net_position_this_month:Math.round((collected-totalExpensesThisMonth)*100)/100,
+    outstanding_total:Math.round(outstandingTotal*100)/100, overdue_customer_count:overdueCount,
+    top_expense_categories_this_month:topCategories,
+    active_customer_count:activeCustomers?.n||0,
+  };
+}
+async function handleFpAiAsk(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.GEMINI_API_KEY) return json({error:'AI features are not configured for this deployment yet.'}, 503);
+  const body=await request.json().catch(()=>({}));
+  const question=String(body.question||'').trim().slice(0,300);
+  if(!question) return json({error:'question required'}, 400);
+  const data=await fpAiComputeSnapshotData(env, Number(payload.cid));
+  const system=`You are a friendly bookkeeping assistant for a small business owner who has no accounting background. Answer their question using ONLY the JSON data below — never invent or estimate a number that isn't in it. If the data doesn't cover what they're asking, say so plainly and suggest what to check instead. Keep the answer to 2-4 short sentences, warm and jargon-free (say "money customers owe you" not "receivables", "profit" not "net position"). All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
+  const answer=await engineGeminiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220});
+  if(!answer) return json({error:"Couldn't reach the AI assistant just now — try again in a moment."}, 502);
+  return json({answer, data});
+}
+
+async function fpAiGenerateSnapshotNarrative(env, clientId){
+  const data=await fpAiComputeSnapshotData(env, clientId);
+  const system=`You are a friendly bookkeeping assistant writing a one-paragraph monthly business snapshot for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, encouraging but honest tone; 3-5 short sentences; no jargon (say "money customers owe you" not "receivables", "profit" not "net position"). Mention: how much came in, how much went out, whether they're up or down, and the single biggest expense category if there is one. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
+  const text=await engineGeminiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220});
+  return {text, data};
+}
+async function fpAiGetOrRefreshSnapshot(env, clientId, force){
+  const currentPeriod=new Date().toISOString().slice(0,7);
+  const row=await env.DB.prepare(`SELECT ai_snapshot_text, ai_snapshot_period, ai_snapshot_generated_at FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  if(!force && row?.ai_snapshot_text && row.ai_snapshot_period===currentPeriod){
+    return {snapshot:row.ai_snapshot_text, period:row.ai_snapshot_period, generated_at:row.ai_snapshot_generated_at, cached:true};
+  }
+  if(!env.GEMINI_API_KEY) return {snapshot:row?.ai_snapshot_text||null, period:row?.ai_snapshot_period||null, error:'AI features are not configured for this deployment yet.'};
+  const {text}=await fpAiGenerateSnapshotNarrative(env, clientId);
+  if(!text) return {snapshot:row?.ai_snapshot_text||null, period:row?.ai_snapshot_period||null, generated_at:row?.ai_snapshot_generated_at||null, error:"Couldn't generate a fresh snapshot just now — showing the last one.", cached:!!row?.ai_snapshot_text};
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO fp_config (client_id, enabled, reminders_enabled, ai_snapshot_text, ai_snapshot_period, ai_snapshot_generated_at, updated_at) VALUES (?,1,1,?,?,?,?)
+    ON CONFLICT(client_id) DO UPDATE SET ai_snapshot_text=excluded.ai_snapshot_text, ai_snapshot_period=excluded.ai_snapshot_period, ai_snapshot_generated_at=excluded.ai_snapshot_generated_at, updated_at=excluded.updated_at`)
+    .bind(clientId, text, currentPeriod, now, now).run();
+  return {snapshot:text, period:currentPeriod, generated_at:now, cached:false};
+}
+async function handleFpAiSnapshotGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json(await fpAiGetOrRefreshSnapshot(env, Number(payload.cid), false));
+}
+async function handleFpAiSnapshotRegenerate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json(await fpAiGetOrRefreshSnapshot(env, Number(payload.cid), true));
+}
+
+// ── Cash Flow Forecast — plain-English "what's coming in/out before month end" narrative. Built
+// from the SAME two sources the monthly generation cron and dashboard already read (open
+// fp_expected_dues due before the end of THIS calendar month, and active fp_expense_templates —
+// exactly what fpGenerateForClient will book/has booked for this period), so the forecast can never
+// promise a number the rest of the module doesn't also expect to actually land.
+async function fpAiComputeForecastData(env, clientId){
+  const now=new Date();
+  const currentPeriod=now.toISOString().slice(0,7);
+  const todayStr=now.toISOString().slice(0,10);
+  const monthEnd=new Date(now.getFullYear(), now.getMonth()+1, 0).toISOString().slice(0,10);
+  const {results:dues}=await env.DB.prepare(
+    `SELECT d.*, c.name as customer_name FROM fp_expected_dues d JOIN fp_customers c ON c.id=d.customer_id
+     WHERE d.client_id=? AND d.period_key=? AND d.status IN ('open','partial')`
+  ).bind(clientId, currentPeriod).all();
+  const upcoming=(dues||[]).filter(d=>d.due_date<=monthEnd);
+  const upcomingTotal=upcoming.reduce((s,d)=>s+(d.amount-d.collected_amount),0);
+  const overdueAlready=upcoming.filter(d=>d.due_date<todayStr).reduce((s,d)=>s+(d.amount-d.collected_amount),0);
+
+  const {results:templates}=await env.DB.prepare(`SELECT * FROM fp_expense_templates WHERE client_id=? AND active=1`).bind(clientId).all();
+  const {results:bookedFixed}=await env.DB.prepare(`SELECT template_id FROM fp_expenses WHERE client_id=? AND period_key=? AND type='fixed'`).bind(clientId, currentPeriod).all();
+  const bookedIds=new Set((bookedFixed||[]).map(e=>e.template_id));
+  const stillDueFixed=(templates||[]).filter(t=>!bookedIds.has(t.id));
+  const fixedUpcomingTotal=stillDueFixed.reduce((s,t)=>s+t.amount,0);
+  const alreadyBookedFixedTotal=(bookedFixed||[]).length ? (await env.DB.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM fp_expenses WHERE client_id=? AND period_key=? AND type='fixed'`).bind(clientId, currentPeriod).first())?.total||0 : 0;
+
+  const currency=upcoming[0]?.currency||templates?.[0]?.currency||'INR';
+  return {
+    current_period:currentPeriod, today:todayStr, month_end:monthEnd, currency,
+    expected_to_collect_by_month_end:Math.round(upcomingTotal*100)/100,
+    already_overdue_within_that:Math.round(overdueAlready*100)/100,
+    fixed_expenses_still_to_go_out:Math.round(fixedUpcomingTotal*100)/100,
+    fixed_expenses_already_booked_this_month:Math.round(alreadyBookedFixedTotal*100)/100,
+    projected_net_by_month_end:Math.round((upcomingTotal-fixedUpcomingTotal)*100)/100,
+  };
+}
+async function handleFpAiForecast(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const data=await fpAiComputeForecastData(env, clientId);
+  if(!env.GEMINI_API_KEY) return json({forecast:null, data, error:'AI features are not configured for this deployment yet.'});
+  const system=`You are a friendly bookkeeping assistant writing a short cash-flow outlook for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, jargon-free (say "money still to come in" not "receivables", "bills still to pay" not "payables"), 2-4 short sentences, mention the money expected in before month end, what's still due to go out for fixed costs, and the rough net position that leaves. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
+  const forecast=await engineGeminiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200});
+  return json({forecast, data});
+}
+
+// ── AI-drafted invoice chase reminders — a friendlier, tone-matched replacement for the fixed
+// template fpSendRemindersForClient otherwise sends; falls back to that exact template (returned
+// alongside as `fallback`) if Gemini is unavailable or the call fails, so the automatic sweep never
+// goes silent just because AI generation had a bad moment.
+function fpDefaultReminderText(due, balance){
+  return `Hi ${due.customer_name||''}, this is a friendly reminder that ${due.currency} ${balance.toFixed(2)} is due for ${due.period_key}. Please let us know once it's settled — thank you! 🙏`;
+}
+async function fpAiDraftReminder(env, due){
+  const balance=Math.round((due.amount-due.collected_amount)*100)/100;
+  const fallback=fpDefaultReminderText(due, balance);
+  if(!env.GEMINI_API_KEY) return fallback;
+  const overdueDays=Math.max(0, Math.floor((Date.now()-new Date(due.due_date).getTime())/86400000));
+  const system=`Write one short, warm WhatsApp message to a customer reminding them a payment is due. Not robotic or threatening — this is a small business owner following up personally. Use the customer's name naturally. 1-3 sentences, end with a light thank-you. No subject line, no signature block, plain message text only.`;
+  const userPrompt=`Customer: ${due.customer_name||'the customer'}\nAmount due: ${due.currency} ${balance.toFixed(2)}\nBilling period: ${due.period_key}\nDays overdue: ${overdueDays>0?overdueDays:'not yet overdue, due soon'}`;
+  const drafted=await engineGeminiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150});
+  return drafted||fallback;
+}
+async function handleFpAiDraftReminder(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.due_id) return json({error:'due_id required'}, 400);
+  const due=await env.DB.prepare(`SELECT d.*, c.name as customer_name FROM fp_expected_dues d JOIN fp_customers c ON c.id=d.customer_id WHERE d.id=?`).bind(Number(body.due_id)).first();
+  if(!due || String(due.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const draft=await fpAiDraftReminder(env, due);
+  return json({draft});
+}
+
+// Lightweight, non-AI "this looks unusual" nudge — a plain average-vs-latest comparison per
+// category, not a model call, so it's instant and costs nothing on every list load. Needs at least
+// 3 onetime expenses already in the same category to have a baseline at all; flags anything more
+// than 2.5x that baseline. Deliberately skips 'fixed' rows (auto-booked from a template every month
+// at the same amount by design — never "unusual").
+function fpAiFlagUnusualExpenses(rows){
+  const byCategory={};
+  for(const r of rows){ if(r.type!=='onetime') continue; (byCategory[r.category]=byCategory[r.category]||[]).push(r); }
+  const avgByCategory={};
+  for(const [cat, list] of Object.entries(byCategory)){
+    if(list.length<3) continue;
+    avgByCategory[cat]=list.reduce((s,r)=>s+r.amount,0)/list.length;
+  }
+  return rows.map(r=>{
+    if(r.type!=='onetime') return r;
+    const avg=avgByCategory[r.category];
+    const isUnusual=!!(avg && r.amount>avg*2.5);
+    return {...r, is_unusual:isUnusual, category_avg:avg?Math.round(avg*100)/100:null};
+  });
+}
+
+// ── Admin-number WhatsApp bookkeeping shortcut ──────────────────────────────────────────────
+// The SAME WhatsApp number/inbox this client's lead-gen bot runs on can double as a private
+// "text your bookkeeper" line for the owner's own phone(s) (fp_config.admin_phone_numbers,
+// migration 0034) — handleEngineWebhook diverts a message from one of these numbers here BEFORE
+// any of the lead pipeline runs (state load, intent classification, LEADS upsert), so it can never
+// create/touch a CRM lead or count toward lead-gen metrics. Only the last 10 digits are ever
+// compared (fpNormalizePhoneTail) — WhatsApp/Chatwoot payloads aren't consistent about country-code
+// formatting, and a stored "+971501234567" still needs to match an inbound "00971501234567".
+function fpNormalizePhoneTail(raw){ return String(raw||'').replace(/[^0-9]/g,'').slice(-10); }
+async function fpIsAdminPhone(env, clientId, phone){
+  if(!phone) return false;
+  const row=await env.DB.prepare(`SELECT admin_phone_numbers FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  const list=engineParseJsonField(row?.admin_phone_numbers, []);
+  if(!Array.isArray(list) || !list.length) return false;
+  const tail=fpNormalizePhoneTail(phone);
+  return tail.length===10 && list.some(n=>fpNormalizePhoneTail(n)===tail);
+}
+// Supports three message shapes — a photo of a receipt (Snap & Save), a voice note, or plain text.
+// Voice is transcribed first (engineGeminiTranscribeVoice, same as the customer-facing pipeline),
+// then everything funnels into an "is this a question or an expense to log" split: a question
+// ("how much do I owe", trailing '?', etc.) gets the same fpAiComputeSnapshotData-backed answer as
+// the in-app Ask Your Books; anything else is treated as an expense to log and — unlike the in-app
+// Snap & Save/Quick Add, which always leaves a draft for the owner to confirm in the UI — is booked
+// immediately, since being on the admin allow-list at all IS the confirmation here.
+async function fpHandleAdminWhatsappMessage(env, c, clientId, convId, mediaType, mediaUrl, text){
+  let resolvedText=text;
+  let imageParsed=null;
+  const cust=await env.DB.prepare(`SELECT currency FROM fp_customers WHERE client_id=? ORDER BY id DESC LIMIT 1`).bind(clientId).first();
+  const defaultCurrency=cust?.currency||'INR';
+
+  if(mediaType==='voice' && mediaUrl){
+    const audio=await engineFetchAudioBase64(env, mediaUrl);
+    if(audio?.tooShort){ await engineSendChatwootReply(env, c, clientId, convId, "That voice note was too short to make out — could you resend it?"); return; }
+    if(audio?.base64) resolvedText=await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64, c.language, c.client_name);
+    if(!resolvedText){ await engineSendChatwootReply(env, c, clientId, convId, "Couldn't quite make that out — could you type it instead?"); return; }
+  }else if(mediaType==='image' && mediaUrl){
+    try{
+      const imgR=await fetch(mediaUrl);
+      if(imgR.ok){
+        const mimeType=(imgR.headers.get('content-type')||'image/jpeg').split(';')[0].trim();
+        const buf=await imgR.arrayBuffer();
+        if(buf.byteLength<=15*1024*1024) imageParsed=await fpAiParseExpenseImage(env, engineArrayBufferToBase64(buf), mimeType, defaultCurrency);
+      }
+    }catch(e){}
+    if(!imageParsed || !imageParsed.amount){ await engineSendChatwootReply(env, c, clientId, convId, "Couldn't read an amount off that photo — could you type the expense instead, e.g. \"paid 2000 for fuel\"?"); return; }
+  }
+
+  const trimmed=(resolvedText||'').trim();
+  const looksLikeQuestion=/\?\s*$/.test(trimmed) || /^(how|what|am i|is my|show|list|do i)\b/i.test(trimmed);
+  if(!imageParsed && looksLikeQuestion && trimmed){
+    const data=await fpAiComputeSnapshotData(env, clientId);
+    const system=`You are a friendly bookkeeping assistant replying over WhatsApp to a small business owner with no accounting background. Answer using ONLY the JSON data below — never invent or estimate a number that isn't in it. Keep it to 2-3 short sentences, warm and jargon-free (say "money customers owe you" not "receivables"). All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
+    const answer=await engineGeminiGenerate(env, system, trimmed, {temperature:0.3, maxOutputTokens:200});
+    await engineSendChatwootReply(env, c, clientId, convId, answer||"Couldn't reach the AI assistant just now — try again in a moment.");
+    return;
+  }
+
+  const parsed=imageParsed || (trimmed?await fpAiParseExpenseText(env, trimmed, defaultCurrency):null);
+  if(!parsed || !parsed.amount){
+    await engineSendChatwootReply(env, c, clientId, convId, "Couldn't catch an amount in that — try something like \"paid 3500 for electricity yesterday\", a voice note, or a photo of the receipt.");
+    return;
+  }
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO fp_expenses (client_id, template_id, type, category, name, amount, currency, period_key, expense_date, notes, created_at) VALUES (?,NULL,'onetime',?,?,?,?,NULL,?,?,?)`)
+    .bind(clientId, parsed.category, parsed.name, parsed.amount, parsed.currency, parsed.expense_date, parsed.vendor?`Vendor: ${parsed.vendor}`:'', now).run();
+  await engineSendChatwootReply(env, c, clientId, convId, `✅ Logged: ${parsed.name} — ${parsed.currency} ${parsed.amount.toLocaleString()} (${parsed.category}) on ${parsed.expense_date}. Open the Accounting app to edit or delete this if anything's off.`);
+}
+
 // ── Overdue-payment reminder sweep — runs on the same daily tick (see scheduled() below), unlike
 // the monthly generation above. Re-notifies at most once every 3 days per due (reminder_sent_at
 // flag-and-check, same "flag-flip idempotency" idiom as sweepAbandonedShopifyCheckouts) rather
@@ -10467,8 +10847,10 @@ async function fpSendRemindersForClient(env, clientId){
       convId=lead?.ConversationID||null;
     }catch(e){}
     if(!convId) continue;
-    const balance=Math.round((due.amount-due.collected_amount)*100)/100;
-    const msg=`Hi ${due.customer_name||''}, this is a friendly reminder that ${due.currency} ${balance.toFixed(2)} is due for ${due.period_key}. Please let us know once it's settled — thank you! 🙏`;
+    // AI-drafted, tone-matched reminder (fpAiDraftReminder) — falls back to the exact fixed
+    // template it always used before if Gemini is unavailable or the call fails, so this sweep
+    // never goes silent just because generation had a bad moment.
+    const msg=await fpAiDraftReminder(env, due);
     try{
       const fd=new FormData();
       fd.append('content', msg); fd.append('message_type','outgoing'); fd.append('private','false');
@@ -14512,6 +14894,7 @@ export default {
       else if(url.pathname==='/accounting/vendor-bills/sync-erpnext' && request.method==='POST'){ res=await handleVendorBillSyncErpnext(request, env); }
       else if(url.pathname==='/accounting/vendor-bills/submit-erpnext' && request.method==='POST'){ res=await handleVendorBillSubmitErpnext(request, env); }
       else if(url.pathname==='/accounting/vendor-bills/record-payment' && request.method==='POST'){ res=await handleVendorBillRecordPayment(request, env); }
+      else if(url.pathname==='/accounting/vendor-bills/mark-paid' && request.method==='POST'){ res=await handleVendorBillMarkPaid(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='GET'){ res=await handleFpCustomersList(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='POST'){ res=await handleFpCustomerCreate(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='PATCH'){ res=await handleFpCustomerUpdate(request, env); }
@@ -14530,6 +14913,12 @@ export default {
       else if(url.pathname==='/financial/config' && request.method==='GET'){ res=await handleFpConfigGet(request, env); }
       else if(url.pathname==='/financial/config' && request.method==='PATCH'){ res=await handleFpConfigUpdate(request, env); }
       else if(url.pathname==='/financial/dashboard' && request.method==='GET'){ res=await handleFpDashboard(request, env); }
+      else if(url.pathname==='/financial/ai/parse-expense' && request.method==='POST'){ res=await handleFpAiParseExpense(request, env); }
+      else if(url.pathname==='/financial/ai/ask' && request.method==='POST'){ res=await handleFpAiAsk(request, env); }
+      else if(url.pathname==='/financial/ai/snapshot' && request.method==='GET'){ res=await handleFpAiSnapshotGet(request, env); }
+      else if(url.pathname==='/financial/ai/snapshot/regenerate' && request.method==='POST'){ res=await handleFpAiSnapshotRegenerate(request, env); }
+      else if(url.pathname==='/financial/ai/forecast' && request.method==='GET'){ res=await handleFpAiForecast(request, env); }
+      else if(url.pathname==='/financial/ai/draft-reminder' && request.method==='POST'){ res=await handleFpAiDraftReminder(request, env); }
       else if(url.pathname.startsWith('/financial/razorpay-webhook/') && request.method==='POST'){ res=await handleRazorpayWebhook(request, env, url.pathname.slice('/financial/razorpay-webhook/'.length)); }
       else if(url.pathname.startsWith('/saas/webhooks/stripe/') && request.method==='POST'){ res=await handleSaasStripeWebhook(request, env, url.pathname.slice('/saas/webhooks/stripe/'.length)); }
       else if(url.pathname.startsWith('/saas/webhooks/chargebee/') && request.method==='POST'){ res=await handleSaasChargebeeWebhook(request, env, url.pathname.slice('/saas/webhooks/chargebee/'.length)); }
