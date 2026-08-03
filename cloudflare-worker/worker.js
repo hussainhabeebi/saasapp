@@ -9136,6 +9136,11 @@ async function handleAccountingDocumentCreate(request, env){
     // customer_name before this insert, so the frontend only ever sends a name and this column is
     // populated automatically.
     customer_id:body.customer_id?Number(body.customer_id):null,
+    // valid_until/due_date (migration 0037) — type-specific: a Quotation shows "Valid Until", an
+    // Invoice shows "Due Date"; only ever set by the modal matching this document's own type, but
+    // both columns exist on every row for simplicity (unused one just stays NULL).
+    valid_until:body.valid_until?String(body.valid_until).slice(0,10):null,
+    due_date:body.due_date?String(body.due_date).slice(0,10):null,
     erpnext_customer:body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null,
     company:body.company?String(body.company).trim().slice(0,140):null,
     erpnext_debtors_account:body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null,
@@ -9143,11 +9148,53 @@ async function handleAccountingDocumentCreate(request, env){
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, valid_until, due_date, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.valid_until, fields.due_date, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
+}
+
+// "Mark as Paid" on an Invoice automatically records the two things "money actually came in"
+// means elsewhere in this app: the income (a linked Receipt document — the same shape
+// handleAccountingDocumentConvert already creates for a manual Quotation→Invoice→Receipt
+// conversion, so P&L/Sales Summary count it exactly the same way) and the collection (an
+// fp_collections row, so it shows in Financial Planning → Collections and counts toward the
+// Dashboard's Collected total). paid_recorded_at (migration 0037) guards against double-booking
+// if the status is flipped away from and back to 'paid'.
+async function fpRecordInvoicePaidSideEffects(env, clientId, invoice){
+  const now=new Date().toISOString();
+  const existingReceipt=await env.DB.prepare(`SELECT id FROM accounting_documents WHERE client_id=? AND linked_doc_id=? AND type='receipt'`).bind(clientId, invoice.id).first();
+  if(!existingReceipt){
+    await env.DB.prepare(`INSERT INTO accounting_documents
+      (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, doc_created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(clientId, invoice.lead_id||null, 'receipt', invoice.title||'', invoice.line_items_json||'[]', invoice.currency||'',
+        invoice.subtotal||0, invoice.tax_pct||0, invoice.tax_amount||0, invoice.total||0, 'paid', invoice.id,
+        invoice.notes||'', invoice.customer_name||null, invoice.customer_id||null, now).run();
+  }
+
+  let customerId=invoice.customer_id||null;
+  if(!customerId){
+    let name=invoice.customer_name||'', phone='';
+    if(invoice.lead_id){
+      try{
+        const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${invoice.lead_id}?fields=Name,Phone`);
+        const lead=await leadR.json().catch(()=>null);
+        if(lead){ name=lead.Name||name; phone=lead.Phone||''; }
+      }catch(e){}
+    }
+    if(name){
+      const cust=await fpEnsureCustomerByName(env, clientId, name, {leadId:invoice.lead_id, phone, currency:invoice.currency});
+      customerId=cust?.Id||null;
+    }
+  }
+  if(customerId){
+    await env.DB.prepare(`INSERT INTO fp_collections (client_id, customer_id, expected_due_id, amount, currency, mode, collected_at, notes, created_at) VALUES (?,?,NULL,?,?,?,?,?,?)`)
+      .bind(clientId, customerId, invoice.total||0, invoice.currency||'', 'other', now, `Auto-recorded from Invoice #${invoice.id} marked paid`, now).run();
+  }
+
+  await env.DB.prepare(`UPDATE accounting_documents SET paid_recorded_at=? WHERE id=?`).bind(now, invoice.id).run();
 }
 
 async function handleAccountingDocumentUpdate(request, env){
@@ -9164,6 +9211,8 @@ async function handleAccountingDocumentUpdate(request, env){
   if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10)); }
   if(body.customer_name!==undefined){ sets.push('customer_name=?'); vals.push(body.customer_name?String(body.customer_name).trim().slice(0,200):null); }
   if(body.customer_id!==undefined){ sets.push('customer_id=?'); vals.push(body.customer_id?Number(body.customer_id):null); }
+  if(body.valid_until!==undefined){ sets.push('valid_until=?'); vals.push(body.valid_until?String(body.valid_until).slice(0,10):null); }
+  if(body.due_date!==undefined){ sets.push('due_date=?'); vals.push(body.due_date?String(body.due_date).slice(0,10):null); }
   if(body.erpnext_customer!==undefined){ sets.push('erpnext_customer=?'); vals.push(body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null); }
   if(body.company!==undefined){ sets.push('company=?'); vals.push(body.company?String(body.company).trim().slice(0,140):null); }
   if(body.erpnext_debtors_account!==undefined){ sets.push('erpnext_debtors_account=?'); vals.push(body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null); }
@@ -9176,6 +9225,12 @@ async function handleAccountingDocumentUpdate(request, env){
   if(!sets.length) return json({ok:true});
   vals.push(Number(body.id));
   await env.DB.prepare(`UPDATE accounting_documents SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  // See fpRecordInvoicePaidSideEffects's own comment — only on a genuine draft/sent→paid
+  // transition for an Invoice, and only once (paid_recorded_at guards a later flip-back-and-forth).
+  if(body.status==='paid' && existing.status!=='paid' && existing.type==='invoice' && !existing.paid_recorded_at){
+    try{ await fpRecordInvoicePaidSideEffects(env, Number(payload.cid), {...existing, ...body}); }
+    catch(e){ await reportOpsError(env, 'fpRecordInvoicePaidSideEffects failed', e, {clientId:payload.cid, docId:existing.id}); }
+  }
   return json({ok:true});
 }
 
@@ -10198,20 +10253,20 @@ async function handleFpCustomerEnsure(request, env){
 // Document modal resolves to an existing fp_customers row or creates a bare placeholder one, the
 // same way a lead's "✅ Won" click does via handleFpCustomerEnsure above, just keyed on name
 // instead of lead_id since a walk-in Document customer has no lead at all.
-async function handleFpCustomerEnsureByName(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const name=String(body.name||'').trim().slice(0,140);
-  if(!name) return json({error:'name required'}, 400);
-  const clientId=Number(payload.cid);
-  const existing=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=? AND LOWER(name)=LOWER(?)`).bind(clientId, name).first();
-  if(existing) return json({...fpCustomerOut(existing), created:false});
+// Core search-or-create, shared by the HTTP route below and fpRecordInvoicePaidSideEffects
+// (which needs the same idempotency when resolving an invoice's customer server-side, with no
+// request object to hand a body through).
+async function fpEnsureCustomerByName(env, clientId, name, opts={}){
+  const trimmed=String(name||'').trim().slice(0,140);
+  if(!trimmed) return null;
+  const existing=await env.DB.prepare(`SELECT * FROM fp_customers WHERE client_id=? AND LOWER(name)=LOWER(?)`).bind(clientId, trimmed).first();
+  if(existing) return {...fpCustomerOut(existing), created:false};
   const now=new Date().toISOString();
   const fields={
-    client_id:clientId, lead_id:null, name, phone:'', email:'', plan_name:'', monthly_value:0,
-    currency:String(body.currency||'INR').trim().slice(0,10).toUpperCase(), billing_cycle:'monthly', billing_day:1,
-    start_date:now.slice(0,10), status:'active', notes:'', created_at:now,
+    client_id:clientId, lead_id:opts.leadId?Number(opts.leadId):null, name:trimmed,
+    phone:String(opts.phone||'').trim().slice(0,40), email:String(opts.email||'').trim().slice(0,140),
+    plan_name:'', monthly_value:0, currency:String(opts.currency||'INR').trim().slice(0,10).toUpperCase(),
+    billing_cycle:'monthly', billing_day:1, start_date:now.slice(0,10), status:'active', notes:'', created_at:now,
   };
   const r=await env.DB.prepare(`INSERT INTO fp_customers
     (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at)
@@ -10219,7 +10274,15 @@ async function handleFpCustomerEnsureByName(request, env){
     .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at)
     .run();
   await fpEnsureConfigRow(env, clientId);
-  return json({...fpCustomerOut({...fields, id:r.meta.last_row_id}), created:true});
+  return {...fpCustomerOut({...fields, id:r.meta.last_row_id}), created:true};
+}
+async function handleFpCustomerEnsureByName(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!String(body.name||'').trim()) return json({error:'name required'}, 400);
+  const result=await fpEnsureCustomerByName(env, Number(payload.cid), body.name, {currency:body.currency});
+  return json(result);
 }
 
 // ── Suppliers master (migration 0036) — the accounts-payable mirror of fp_customers above, so
