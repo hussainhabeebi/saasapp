@@ -6365,6 +6365,51 @@ caveat as AI B-roll (`falBroll.js`)'s own comment: model ids/result-field names 
 documented shapes as of this writing, and every failure path surfaces the raw upstream response so
 a wrong field name is a one-line fix once tested against real credentials.
 
+### Image Studio extras (`cloudflare-worker/migrations/0040_marketing_image_studio_extras.sql`)
+Seven small additions on top of the base Image Studio, each reusing something already in this
+module rather than new infrastructure:
+- **Brand style profile** (`image_brand_style` column, `GET`/`POST /marketing/images/brand-style`)
+  — a saved text hint (e.g. "warm earthy tones, minimalist") appended to every generate/
+  generate-for-post/carousel prompt automatically, same idea as the video module's Brand Styles.
+- **Draft vs final quality** (`quality:'draft'|'final'` on generate/generate-for-post/carousel) —
+  `'draft'` uses `fal-ai/flux/schnell` (the distilled/turbo variant — faster and cheaper) so ideas
+  can be explored before committing to `'final'`'s `fal-ai/flux/dev` quality.
+- **Prompt-hash caching** (`marketing_image_log.prompt_hash`, `marketingImageCacheLookup`) — an
+  identical generate call (same client + prompt + aspect + quality) within the last 24h reuses the
+  earlier result instead of spending fresh fal.ai credits; most useful for an accidental
+  double-click or re-running the same "Generate a week" topic same-day.
+- **Multi-aspect reframe** (`handleMarketingImageReframe`, `POST /marketing/images/reframe`,
+  `reframeToAspect` in `imageCompose.js`) — a center crop to a different platform aspect (feed ↔
+  story/reel ↔ landscape) via the SAME deterministic ffmpeg delegation as watermark/
+  composite-background/text-overlay, so getting a second shape of an approved image doesn't cost a
+  second fal.ai generation.
+- **"Generate a themed set"** (`handleMarketingImageGenerateCarousel`, `POST /marketing/images/generate-carousel`)
+  — 2-4 images nudged toward distinct roles in a short sequence (intro/detail/detail/CTA) instead
+  of unrelated takes on the same prompt. Deliberately **generation only**: `marketing_content_posts`
+  has a single `image_key` column and this app has no Instagram publish step at all yet, so there's
+  nowhere to wire an actual multi-image carousel POST to — building that now would mean guessing at
+  a schema/publish shape ahead of the real auto-post feature existing. What a marketer gets today is
+  a coherent set to pick one favorite from via the normal `/marketing/images/attach` flow.
+- **Free stock-photo fallback** (`handleMarketingImageStockSearch`/`handleMarketingImageStockImport`,
+  `GET /marketing/images/stock-search`, `POST /marketing/images/stock-import`) — searches Pexels'
+  and Pixabay's PHOTO endpoints (distinct from the video-B-roll endpoints those same keys already
+  power in `render-pipeline/lib/assets.js`) using the client's existing free API keys, and imports
+  the chosen photo into this client's own R2 namespace so it behaves exactly like a generated image
+  afterward. Makes Image Studio usable without ever adding a paid fal.ai key.
+- **Usage counter now excludes free operations** — `MARKETING_IMAGE_PAID_KINDS` restricts the
+  "images generated this month" pill to `generate`/`restyle`/`remove-background` (the fal.ai-billed
+  kinds); watermark/composite-background/text-overlay/reframe/stock-import are free and would have
+  made that "money spent" signal misleadingly high if counted the same way.
+
+Frontend-only, no backend change: an **"Always watermark before attach"** checkbox
+(`localStorage`, not server-side — purely a per-browser convenience toggle) auto-runs the watermark
+step right before attaching if a logo is set and the current image isn't already watermarked; and a
+client-side-only **workspace history breadcrumb** (`workspaceHistorySteps`) shows what's been
+applied so far to the current image (Generated → Restyled → Watermarked → …), giving the existing
+"restyle again on the current image" flow (already fully iterative — each restyle already operates
+on whatever the workspace currently holds) a visible, chat-like trail instead of just a silently
+updating preview.
+
 ## Financial Planning module (`frontend/accounting.html` — "💰 Financial Planning" tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0015_financial_planning.sql`)
 
 Recurring-revenue and expense tracking for a client's own downstream customers — genuinely new to

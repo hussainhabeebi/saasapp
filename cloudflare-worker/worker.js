@@ -13490,6 +13490,7 @@ async function handleContentFromCustomer(request, env){
    caveat as AI B-roll/falBroll.js) — every failure path below surfaces the raw upstream response,
    so a wrong field/model name is a one-line fix once tested against real credentials. */
 const FAL_TEXT_TO_IMAGE_MODEL='fal-ai/flux/dev';
+const FAL_TEXT_TO_IMAGE_MODEL_DRAFT='fal-ai/flux/schnell'; // distilled/turbo variant — faster and cheaper, for exploring ideas before committing to a 'final' quality generation
 const FAL_IMAGE_EDIT_MODEL='fal-ai/flux-pro/kontext'; // single reference image + text instruction — "restyle a real photo"
 const FAL_BG_REMOVE_MODEL='fal-ai/imageutils/rembg';
 const FAL_ASPECT_TO_IMAGE_SIZE={'1:1':'square_hd', '4:5':'portrait_4_3', '9:16':'portrait_16_9', '16:9':'landscape_16_9'};
@@ -13522,15 +13523,20 @@ async function handleMarketingImagePromptTemplates(request, env){
 // "images generated this month" can be shown as a usage counter — same reasoning/shape as
 // marketing_minutes_used, just derived by COUNT(*) instead of a running total column since this
 // number never needs to be decremented/reset by anything other than the calendar turning over.
-async function marketingImageLog(env, clientId, kind, imageKey){
-  await env.DB.prepare(`INSERT INTO marketing_image_log (client_id, kind, image_key, created_at) VALUES (?,?,?,?)`)
-    .bind(Number(clientId), kind, imageKey||null, new Date().toISOString()).run();
+async function marketingImageLog(env, clientId, kind, imageKey, promptHash){
+  await env.DB.prepare(`INSERT INTO marketing_image_log (client_id, kind, image_key, prompt_hash, created_at) VALUES (?,?,?,?,?)`)
+    .bind(Number(clientId), kind, imageKey||null, promptHash||null, new Date().toISOString()).run();
 }
+// Only counts the fal.ai-billed operations (generate/restyle/remove-background) — watermark/
+// composite-background/text-overlay/reframe are free ffmpeg passes and a stock-photo import costs
+// nothing either, so counting those here would make this "money spent" signal misleadingly high.
+const MARKETING_IMAGE_PAID_KINDS=['generate','restyle','remove-background'];
 async function handleMarketingImageUsage(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const monthStart=new Date(); monthStart.setUTCDate(1); monthStart.setUTCHours(0,0,0,0);
-  const row=await env.DB.prepare(`SELECT COUNT(*) AS n FROM marketing_image_log WHERE client_id=? AND created_at>=?`).bind(Number(payload.cid), monthStart.toISOString()).first();
+  const placeholders=MARKETING_IMAGE_PAID_KINDS.map(()=>'?').join(',');
+  const row=await env.DB.prepare(`SELECT COUNT(*) AS n FROM marketing_image_log WHERE client_id=? AND created_at>=? AND kind IN (${placeholders})`).bind(Number(payload.cid), monthStart.toISOString(), ...MARKETING_IMAGE_PAID_KINDS).first();
   return json({used:Number(row?.n)||0});
 }
 
@@ -13570,23 +13576,51 @@ async function falPollImages(model, requestId, apiKey){
 // output_url) and stores it into OUR OWN R2 bucket — every image this module hands back to the
 // frontend is addressed the same way (an R2 key under marketing/<client>/images/) regardless of
 // which upstream produced it.
-async function marketingStoreExternalImage(env, clientId, imageUrl, kind){
+async function marketingStoreExternalImage(env, clientId, imageUrl, kind, promptHash){
   const imgR=await fetch(imageUrl);
   if(!imgR.ok) throw new Error('Could not download the generated image.');
   const key=marketingImageKey(clientId);
   await env.MARKETING_MEDIA.put(key, imgR.body, {httpMetadata:{contentType:imgR.headers.get('content-type')||'image/png'}});
-  await marketingImageLog(env, clientId, kind, key);
+  await marketingImageLog(env, clientId, kind, key, promptHash);
   return key;
 }
 
-async function marketingGenerateImages(env, clientId, {prompt, aspectRatio, numImages}){
+async function marketingGetImageBrandStyle(env, clientId){
+  const row=await env.DB.prepare(`SELECT image_brand_style FROM marketing_client_settings WHERE client_id=?`).bind(Number(clientId)).first();
+  return row?.image_brand_style||'';
+}
+
+// prompt-hash caching — a repeated identical generate call (most commonly: re-running "Generate a
+// week" with the same topic, or a marketer clicking Generate again without changing anything)
+// reuses the last matching result instead of spending fresh fal.ai credits. Scoped to this client +
+// exact prompt/aspect/quality combination, and only looks back 24h — long enough to catch an
+// accidental double-click or a same-day re-run, not so long that "generate a fresh take on this"
+// stays permanently stuck on an old result.
+async function marketingImageCacheLookup(env, clientId, promptHash, numImages){
+  const since=new Date(Date.now()-24*3600*1000).toISOString();
+  const {results}=await env.DB.prepare(`SELECT image_key FROM marketing_image_log WHERE client_id=? AND kind='generate' AND prompt_hash=? AND created_at>=? ORDER BY id DESC LIMIT ?`)
+    .bind(Number(clientId), promptHash, since, Number(numImages)).all();
+  const keys=(results||[]).map(r=>r.image_key).filter(Boolean);
+  return keys.length>=numImages ? keys.slice(0,numImages) : null;
+}
+
+async function marketingGenerateImages(env, clientId, {prompt, aspectRatio, numImages, quality}){
+  const n=Math.min(4,Math.max(1,Number(numImages)||1));
+  const brandStyle=await marketingGetImageBrandStyle(env, clientId);
+  const fullPrompt=brandStyle?`${prompt}. Style: ${brandStyle}`:prompt;
+  const model=quality==='draft'?FAL_TEXT_TO_IMAGE_MODEL_DRAFT:FAL_TEXT_TO_IMAGE_MODEL;
+  const promptHash=await marketingSha256Hex(`${fullPrompt}|${aspectRatio||''}|${n}|${model}`);
+
+  const cached=await marketingImageCacheLookup(env, clientId, promptHash, n);
+  if(cached) return {images:cached.map(k=>({image_key:k, image_url:mediaUrlFor(env,k)})), source:'cache'};
+
   const keys=await marketingGetClientKeys(env, clientId);
   if(!keys.fal_api_key) throw {status:400, message:'Add a fal.ai API key first — Settings → API Keys.'};
-  const requestId=await falSubmit(FAL_TEXT_TO_IMAGE_MODEL, keys.fal_api_key, {prompt, image_size:FAL_ASPECT_TO_IMAGE_SIZE[aspectRatio]||'square_hd', num_images:Math.min(4,Math.max(1,Number(numImages)||1))});
-  const urls=await falPollImages(FAL_TEXT_TO_IMAGE_MODEL, requestId, keys.fal_api_key);
+  const requestId=await falSubmit(model, keys.fal_api_key, {prompt:fullPrompt, image_size:FAL_ASPECT_TO_IMAGE_SIZE[aspectRatio]||'square_hd', num_images:n});
+  const urls=await falPollImages(model, requestId, keys.fal_api_key);
   const keysOut=[];
-  for(const url of urls) keysOut.push(await marketingStoreExternalImage(env, clientId, url, 'generate'));
-  return keysOut.map(k=>({image_key:k, image_url:mediaUrlFor(env,k)}));
+  for(const url of urls) keysOut.push(await marketingStoreExternalImage(env, clientId, url, 'generate', promptHash));
+  return {images:keysOut.map(k=>({image_key:k, image_url:mediaUrlFor(env,k)})), source:'fal'};
 }
 
 async function handleMarketingImageGenerate(request, env){
@@ -13596,8 +13630,8 @@ async function handleMarketingImageGenerate(request, env){
   const prompt=(body.prompt||'').trim().slice(0,2000);
   if(!prompt) return json({error:'prompt required'}, 400);
   try{
-    const images=await marketingGenerateImages(env, payload.cid, {prompt, aspectRatio:body.aspect_ratio, numImages:body.num_images});
-    return json({ok:true, images});
+    const {images, source}=await marketingGenerateImages(env, payload.cid, {prompt, aspectRatio:body.aspect_ratio, numImages:body.num_images, quality:body.quality});
+    return json({ok:true, images, source});
   }catch(e){ return json({error:String(e.message||e)}, e.status||502); }
 }
 
@@ -13618,9 +13652,124 @@ async function handleMarketingImageGenerateForPost(request, env){
   if(!seed) return json({error:'This post has no title/caption yet to generate an image from.'}, 400);
   const prompt=`A social media image for this post: ${seed}. Photorealistic, high quality, no text or logos in the image.`;
   try{
-    const images=await marketingGenerateImages(env, payload.cid, {prompt, aspectRatio:body.aspect_ratio, numImages:body.num_images});
+    const {images, source}=await marketingGenerateImages(env, payload.cid, {prompt, aspectRatio:body.aspect_ratio, numImages:body.num_images, quality:body.quality});
+    return json({ok:true, images, source});
+  }catch(e){ return json({error:String(e.message||e)}, e.status||502); }
+}
+
+// "Generate a themed set" (carousel material) — N images in one flow, each nudged toward a
+// distinct role in a short sequence (intro/detail/detail/CTA) rather than N unrelated takes on the
+// same prompt. NOTE: this only produces the images — Content Calendar posts still hold a single
+// image_key (marketing_content_posts has no multi-image column), and there is no Instagram
+// publish step in this app yet at all, so an actual multi-image carousel POST isn't wired end to
+// end. Deliberately not building that part yet: it would mean guessing at a schema/publish shape
+// ahead of the real auto-post feature actually existing. What this DOES give a marketer today: a
+// thematically coherent set of images to review and pick the single best one from via the normal
+// /marketing/images/attach flow.
+const MARKETING_CAROUSEL_SLOT_HINTS=['an eye-catching opening image that introduces the topic', 'a close-up detail shot related to the topic', 'a supporting/contextual shot related to the topic', 'a clear call-to-action closing image related to the topic'];
+async function handleMarketingImageGenerateCarousel(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const topic=(body.prompt||'').trim().slice(0,2000);
+  if(!topic) return json({error:'prompt required'}, 400);
+  const count=Math.min(4,Math.max(2,Number(body.count)||3));
+  try{
+    const images=[];
+    for(let i=0;i<count;i++){
+      const slotPrompt=`${topic}. This is ${MARKETING_CAROUSEL_SLOT_HINTS[i]||'another image in the same themed set'}. Keep a consistent visual style across the set.`;
+      const {images:one}=await marketingGenerateImages(env, payload.cid, {prompt:slotPrompt, aspectRatio:body.aspect_ratio, numImages:1, quality:body.quality});
+      images.push(...one);
+    }
     return json({ok:true, images});
   }catch(e){ return json({error:String(e.message||e)}, e.status||502); }
+}
+
+// Saved brand-style hint (e.g. "warm earthy tones, minimalist, natural light") appended to every
+// generate/generate-for-post/carousel prompt automatically — so a marketer doesn't have to
+// remember to retype their look every single time, same reasoning as the video module's Brand
+// Styles. Plain text, no masking needed (unlike the API-key settings above, this isn't a secret).
+async function handleMarketingImageBrandStyleGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json({style:await marketingGetImageBrandStyle(env, payload.cid)});
+}
+async function handleMarketingImageBrandStyleSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const style=String(body.style||'').trim().slice(0,500);
+  const now=new Date().toISOString();
+  const existing=await env.DB.prepare(`SELECT client_id FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
+  if(existing) await env.DB.prepare(`UPDATE marketing_client_settings SET image_brand_style=?, updated_at=? WHERE client_id=?`).bind(style||null, now, Number(payload.cid)).run();
+  else await env.DB.prepare(`INSERT INTO marketing_client_settings (client_id, image_brand_style, created_at, updated_at) VALUES (?,?,?,?)`).bind(Number(payload.cid), style||null, now, now).run();
+  return json({ok:true});
+}
+
+// Free stock-photo fallback (SETUP.md "Marketing Studio module — Image Studio") — reuses the SAME
+// Pexels/Pixabay API keys already stored for video B-roll (marketing_client_settings), just
+// against their PHOTO search endpoints instead of video. Makes Image Studio usable for a client
+// who hasn't (or won't) add a paid fal.ai key — search, then /marketing/images/stock-import below
+// pulls the chosen photo into this client's own R2 namespace so it behaves identically to any
+// generated image afterward (watermark/text-overlay/attach all just take an image_key).
+async function marketingSearchPexelsPhotos(query, apiKey){
+  const r=await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=12`, {headers:{Authorization:apiKey}});
+  if(!r.ok) throw new Error(`Pexels search failed: HTTP ${r.status}`);
+  const data=await r.json().catch(()=>({}));
+  return (data.photos||[]).map(p=>({source:'pexels', id:String(p.id), thumbnail_url:p.src?.medium||p.src?.small, full_url:p.src?.large2x||p.src?.original}));
+}
+async function marketingSearchPixabayPhotos(query, apiKey){
+  const r=await fetch(`https://pixabay.com/api/?key=${encodeURIComponent(apiKey)}&q=${encodeURIComponent(query)}&per_page=12`);
+  if(!r.ok) throw new Error(`Pixabay search failed: HTTP ${r.status}`);
+  const data=await r.json().catch(()=>({}));
+  return (data.hits||[]).map(h=>({source:'pixabay', id:String(h.id), thumbnail_url:h.webformatURL, full_url:h.largeImageURL||h.webformatURL}));
+}
+async function handleMarketingImageStockSearch(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const q=(url.searchParams.get('q')||'').trim().slice(0,200);
+  if(!q) return json({error:'q required'}, 400);
+  const keys=await marketingGetClientKeys(env, payload.cid);
+  if(!keys.pexels_api_key && !keys.pixabay_api_key) return json({error:'Add a free Pexels or Pixabay API key first — Settings → API Keys.'}, 400);
+  const [pexels, pixabay]=await Promise.all([
+    keys.pexels_api_key?marketingSearchPexelsPhotos(q, keys.pexels_api_key).catch(()=>[]):[],
+    keys.pixabay_api_key?marketingSearchPixabayPhotos(q, keys.pixabay_api_key).catch(()=>[]):[],
+  ]);
+  return json({list:[...pexels, ...pixabay]});
+}
+// Free (no image_log entry under a paid kind — see MARKETING_IMAGE_PAID_KINDS) — still logged
+// under kind='stock-import' for the same history/audit trail every other image operation gets.
+async function handleMarketingImageStockImport(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const fullUrl=String(body.full_url||'');
+  if(!fullUrl || !/^https:\/\//.test(fullUrl)) return json({error:'full_url required'}, 400);
+  try{
+    const key=await marketingStoreExternalImage(env, payload.cid, fullUrl, 'stock-import');
+    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
+  }catch(e){ return json({error:String(e.message||e)}, 502); }
+}
+
+// "Multi-aspect from one generation" — center-crops an already-approved image to a different
+// platform aspect (see render-pipeline/lib/imageCompose.js's reframeToAspect) instead of paying
+// for a second fal.ai generation just to get a different shape of the same shot. Deterministic,
+// free, same render-pipeline delegation as watermark/composite-background/text-overlay.
+async function handleMarketingImageReframe(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const imageKey=String(body.image_key||'');
+  const aspect=String(body.aspect||'');
+  if(!imageKey||!aspect) return json({error:'image_key and aspect required'}, 400);
+  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
+  const head=await env.MARKETING_MEDIA.head(imageKey);
+  if(!head) return json({error:'Image not found'}, 404);
+  try{
+    const key=await marketingRenderPipelineImageCompose(env, payload.cid, 'reframe', {image_url:mediaUrlFor(env,imageKey), aspect});
+    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
+  }catch(e){ return json({error:e.message||String(e)}, e.status||502); }
 }
 
 async function handleMarketingImageAttach(request, env){
@@ -16058,6 +16207,7 @@ export default {
       else if(url.pathname==='/marketing/images/usage' && request.method==='GET'){ res=await handleMarketingImageUsage(request, env); }
       else if(url.pathname==='/marketing/images/generate' && request.method==='POST'){ res=await handleMarketingImageGenerate(request, env); }
       else if(url.pathname==='/marketing/images/generate-for-post' && request.method==='POST'){ res=await handleMarketingImageGenerateForPost(request, env); }
+      else if(url.pathname==='/marketing/images/generate-carousel' && request.method==='POST'){ res=await handleMarketingImageGenerateCarousel(request, env); }
       else if(url.pathname==='/marketing/images/attach' && request.method==='POST'){ res=await handleMarketingImageAttach(request, env); }
       else if(url.pathname==='/marketing/images/upload' && request.method==='POST'){ res=await handleMarketingImageUpload(request, env); }
       else if(url.pathname==='/marketing/images/restyle' && request.method==='POST'){ res=await handleMarketingImageRestyle(request, env); }
@@ -16065,6 +16215,11 @@ export default {
       else if(url.pathname==='/marketing/images/watermark' && request.method==='POST'){ res=await handleMarketingImageWatermark(request, env); }
       else if(url.pathname==='/marketing/images/composite-background' && request.method==='POST'){ res=await handleMarketingImageCompositeBackground(request, env); }
       else if(url.pathname==='/marketing/images/text-overlay' && request.method==='POST'){ res=await handleMarketingImageTextOverlay(request, env); }
+      else if(url.pathname==='/marketing/images/reframe' && request.method==='POST'){ res=await handleMarketingImageReframe(request, env); }
+      else if(url.pathname==='/marketing/images/brand-style' && request.method==='GET'){ res=await handleMarketingImageBrandStyleGet(request, env); }
+      else if(url.pathname==='/marketing/images/brand-style' && request.method==='POST'){ res=await handleMarketingImageBrandStyleSave(request, env); }
+      else if(url.pathname==='/marketing/images/stock-search' && request.method==='GET'){ res=await handleMarketingImageStockSearch(request, env); }
+      else if(url.pathname==='/marketing/images/stock-import' && request.method==='POST'){ res=await handleMarketingImageStockImport(request, env); }
       else if(url.pathname==='/marketing/logo' && request.method==='GET'){ res=await handleMarketingLogoGet(request, env); }
       else if(url.pathname==='/marketing/logo' && request.method==='POST'){ res=await handleMarketingLogoUpload(request, env); }
       else if(url.pathname==='/marketing/projects' && request.method==='GET'){ res=await handleMarketingProjectsList(request, env); }

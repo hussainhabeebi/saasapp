@@ -97,4 +97,31 @@ async function textOverlay({ basePath, outPath, headline, subtext, textColor = '
   }
 }
 
-module.exports = { watermarkLogo, compositeOnColor, textOverlay };
+const ASPECT_RATIOS = { '1:1': 1, '4:5': 4 / 5, '9:16': 9 / 16, '16:9': 16 / 9 };
+
+// "Multi-aspect from one generation" — a center crop to a different platform aspect ratio (feed
+// vs story/reel cover vs landscape) instead of paying for a second fal.ai generation just to get a
+// different shape of the same image. Deterministic and free, same reasoning as every other
+// function in this file. Always crops (never pads/letterboxes) — simplest correct behavior, and
+// matches how Instagram's own feed/story previews already crop a shared source image.
+async function reframeToAspect({ basePath, outPath, aspect }) {
+  const targetRatio = ASPECT_RATIOS[aspect];
+  if (!targetRatio) throw new Error(`Unknown aspect ratio: ${aspect}`);
+  const dims = await getVideoDimensions(basePath);
+  if (!dims) throw new Error('Could not read the base image dimensions.');
+  const sourceRatio = dims.width / dims.height;
+  let cropW = dims.width, cropH = dims.height, x = 0, y = 0;
+  if (sourceRatio > targetRatio) {
+    // Source is relatively wider than the target — crop width down, keep full height.
+    cropW = Math.round(dims.height * targetRatio);
+    x = Math.round((dims.width - cropW) / 2);
+  } else if (sourceRatio < targetRatio) {
+    // Source is relatively taller than the target — crop height down, keep full width.
+    cropH = Math.round(dims.width / targetRatio);
+    y = Math.round((dims.height - cropH) / 2);
+  }
+  await run('ffmpeg', ['-y', '-i', basePath, '-vf', `crop=${cropW}:${cropH}:${x}:${y}`, '-frames:v', '1', '-update', '1', outPath]);
+  return outPath;
+}
+
+module.exports = { watermarkLogo, compositeOnColor, textOverlay, reframeToAspect };

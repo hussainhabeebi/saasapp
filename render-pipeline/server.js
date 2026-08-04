@@ -20,7 +20,7 @@ const { transcribe } = require('./lib/transcribe');
 const { detectScenes, generateSceneThumbnails } = require('./lib/sceneDetect');
 const { downloadToFile } = require('./lib/download');
 const { generateAiBroll } = require('./lib/falBroll');
-const { watermarkLogo, compositeOnColor, textOverlay } = require('./lib/imageCompose');
+const { watermarkLogo, compositeOnColor, textOverlay, reframeToAspect } = require('./lib/imageCompose');
 const { synthesizeVoiceover } = require('./lib/tts');
 const { synthesizeWithAi4Bharat, supportsLanguage: ai4bharatTtsSupportsLanguage } = require('./lib/ai4bharatTts');
 const { uploadOutput } = require('./lib/storage');
@@ -186,7 +186,7 @@ app.post('/detect-scenes', async (req, res) => {
 });
 
 // Also synchronous, same reasoning as /detect-scenes above — a single bounded ffmpeg still-image
-// pass (well under a second), not the multi-step video render. Three related, deterministic
+// pass (well under a second), not the multi-step video render. Four related, deterministic
 // (no-AI) Image Studio operations sharing one route, distinguished by `mode` — see
 // lib/imageCompose.js's own comment for why these are plain ffmpeg filters instead of a paid
 // fal.ai call. `image_url`/`logo_url`/`cutout_url` are the Worker's own public
@@ -222,6 +222,12 @@ app.post('/image-compose', async (req, res) => {
       const basePath = path.join(workDir, 'base.png');
       await downloadToFile(image_url, basePath);
       await textOverlay({ basePath, outPath, headline, subtext, textColor: text_color, boxColor: box_color, position });
+    } else if (mode === 'reframe') {
+      const { image_url, aspect } = req.body;
+      if (!image_url || !aspect) return res.status(400).json({ error: 'image_url and aspect required' });
+      const basePath = path.join(workDir, 'base.png');
+      await downloadToFile(image_url, basePath);
+      await reframeToAspect({ basePath, outPath, aspect });
     } else {
       return res.status(400).json({ error: `Unknown mode: ${mode}` });
     }
