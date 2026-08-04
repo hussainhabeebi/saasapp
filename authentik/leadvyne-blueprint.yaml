@@ -1,0 +1,92 @@
+# Leadvyne Authentik Blueprint
+#
+# Turns the one-time manual Authentik setup documented in SETUP.md ("One-time Authentik setup")
+# into a reviewable, re-appliable config file instead of "remember which 6 admin-UI clicks to
+# make" — the same problem this file exists to fix that plagues onboarding to a second/staging
+# Authentik instance.
+#
+# WHAT THIS FILE DOES:
+#   1. Creates/updates a "Leadvyne" Brand, with your logo/favicon/name, bound to Authentik's own
+#      BUILT-IN default-recovery-flow and default-enrollment-flow — this is what makes password
+#      reset ("Forgot password?") appear on the login screen at all (Suggestion #7), and closes the
+#      visual gap between your marketing site and Authentik's hosted pages (Suggestion #8).
+#   2. Creates the OAuth2/OIDC Provider + Application dashboard.html's login flow talks to
+#      (Suggestion #9) — the same Provider/Application SETUP.md currently has you click through by
+#      hand.
+#
+# WHAT THIS FILE DELIBERATELY DOES NOT DO:
+#   Author a custom enrollment flow with an email-verification stage (Suggestion #4). Hand-writing
+#   Authentik's flow/stage/policy-binding YAML blind, with no live instance to validate it against,
+#   is a real way to break signup if a stage ordering or policy binding is subtly wrong — this
+#   schema is intricate and version-sensitive. The SAFE way to add that: build the flow once via
+#   Authentik's own flow-builder UI (Admin → Flows & Stages → add an "Email" stage to a copy of
+#   default-enrollment-flow), confirm it works, then Admin → Customization → Blueprints → export
+#   that flow as YAML and merge it into this file. That export is guaranteed to match your actual
+#   Authentik version's schema; nothing in this file has to guess.
+#
+# HOW TO APPLY:
+#   Fill in the placeholders below (search for CHANGE-ME), then either:
+#     - Authentik Admin UI → Customization → Blueprints → Create → paste this file's contents, or
+#     - `ak import_blueprint /path/to/this/file` if you have shell access to the Authentik instance.
+#   Re-applying after edits is safe — every entry below is matched by its `identifiers` block
+#   (name/slug), so applying twice updates in place rather than duplicating.
+
+version: 1
+metadata:
+  name: Leadvyne
+  labels:
+    blueprints.goauthentik.io/description: "Leadvyne CRM — Brand, Recovery/Enrollment flow bindings, and the OAuth2 login app"
+
+entries:
+  # ── Brand: bind Authentik's own built-in Recovery + Enrollment flows, and brand the hosted
+  # pages so they look like Leadvyne instead of stock Authentik. Update branding_logo/
+  # branding_favicon to real URLs (your logo, e.g. the same one used in CLIENTS.quote_logo_url
+  # elsewhere in this app) before applying.
+  - model: authentik_brands.brand
+    identifiers:
+      domain: CHANGE-ME.leadvyne.com   # the hostname your Authentik instance is actually served on
+    attrs:
+      branding_title: Leadvyne
+      branding_logo: https://CHANGE-ME/logo.svg
+      branding_favicon: https://CHANGE-ME/favicon.ico
+      flow_recovery: !Find [authentik_flows.flow, [slug, default-recovery-flow]]
+      flow_authentication: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      flow_invalidation: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
+      default: true
+
+  # ── OAuth2/OIDC Provider — the piece dashboard.html's startAuthentikLogin()/CONFIG.client_id
+  # actually authenticates against. redirect_uris must include every origin this app is served
+  # from (production + any staging domain).
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: Leadvyne
+    attrs:
+      client_type: public
+      redirect_uris: |
+        https://CHANGE-ME.leadvyne.com/dashboard.html
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+
+  # ── Application — what actually shows up as a tile in Authentik's own UI, and is what the
+  # Provider above gets attached to. `slug` is cosmetic; `provider` links back to the entry above
+  # by name.
+  - model: authentik_core.application
+    identifiers:
+      slug: leadvyne
+    attrs:
+      name: Leadvyne
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, Leadvyne]]
+
+  # ── Enrollment (self-serve "Sign up"): reuses Authentik's own built-in default-enrollment-flow
+  # as-is, attached via the Identification stage — SETUP.md's manual step 3 ("edit the
+  # Identification stage to attach an Enrollment flow"). This is the flow to fork+extend with an
+  # email-verification stage per the note at the top of this file, once you've built and tested
+  # that addition through the UI.
+  - model: authentik_stages_identification.identificationstage
+    identifiers:
+      name: default-authentication-identification
+    attrs:
+      enrollment_flow: !Find [authentik_flows.flow, [slug, default-enrollment-flow]]

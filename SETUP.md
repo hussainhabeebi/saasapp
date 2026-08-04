@@ -197,6 +197,24 @@ with nowhere safe to store one).
 3. Copy the generated **Client ID** into `dashboard.html`'s `CONFIG.AUTHENTIK_BASE` /
    `AUTHENTIK_CLIENT_ID` / `AUTHENTIK_REDIRECT_URI`.
 
+**`authentik/leadvyne-blueprint.yaml`** — turns steps 2 and the Recovery-flow/branding setup
+further down into a reviewable, re-appliable file instead of manual admin-UI clicking, for standing
+up a second/staging Authentik instance without re-deriving these steps from scratch. Creates the
+OAuth2 Provider + Application above, plus a branded "Leadvyne" Brand bound to Authentik's own
+built-in Recovery and Enrollment flows (see "Self-service signup" and the Recovery-flow note
+below). Deliberately does **not** attempt to author a custom flow with an email-verification stage
+from scratch blind — see the file's own header comment for why, and the safe way to add one
+(build it once via Authentik's flow-builder UI, export it as a blueprint, merge it in here).
+Apply via Authentik Admin UI → Customization → Blueprints → Create, after filling in its
+`CHANGE-ME` placeholders (your actual domain, logo/favicon URLs, redirect URI).
+
+**Password reset ("Forgot password?")** — needs a Recovery flow bound to your Brand, same as the
+Enrollment flow below; the Blueprint above does this automatically by pointing `flow_recovery` at
+Authentik's own built-in `default-recovery-flow`. Without this, a locked-out user (or a new
+teammate invited via "Create New User" below) has no self-serve way back in, and every lockout
+becomes a support request. Confirm it's bound: Authentik Admin UI → Customization → Brands →
+your Brand → check the "Recovery flow" field isn't blank.
+
 **Per-client mapping:**
 Authentik only proves *who* logged in (their email); it has no concept of "Leadvyne clients."
 After a successful login, the **Worker proxy** (see below — not the browser, since the browser
@@ -217,12 +235,27 @@ beyond the Application/Provider setup above:
    password, and get redirected back to `dashboard.html`.
 
 **What happens on first login for a brand-new signup — fully automatic, no form:**
-The Worker's `/session/exchange` won't find a matching CLIENTS row (nobody's created one yet)
-— instead of a dead-end error, `dashboard.html` immediately calls the onboard workflow itself
-with a business name guessed from the email's local part (e.g. `jane.doe@x.com` → "Jane Doe"),
-`industry: 'general'`, and `authentik_email` set — then retries `/session/exchange` with the
-same (still-valid) Authentik access token and logs them straight into a fresh dashboard. No
-form, no admin step, no second Authentik trip.
+The Worker's `/session/exchange` won't find a matching CLIENTS row (nobody's created one yet) —
+instead of a dead-end error, it returns `{error:'no_account', email, access_token}` and
+`dashboard.html` calls a single Worker route, `POST /session/auto-provision`
+(`handleAutoProvision` in `worker.js`), with just that same access token.
+
+This route is the authoritative account creator — it independently re-verifies the token against
+Authentik's own `/userinfo` (the request body's email is never trusted), checks for an existing
+CLIENTS row first (`getClientByAuthentikEmail`) so a retried/double-clicked request can never
+create a duplicate account, creates the row directly via NocoDB if none exists (business name
+guessed from the email's local part, e.g. `jane.doe@x.com` → "Jane Doe", `industry:'general'`),
+and returns a session token in the same response — one round trip instead of the old
+"call an external webhook, then separately retry `/session/exchange` and hope" dance.
+
+For a brand-new signup specifically, the Worker *also* calls the same external onboarding webhook
+(`https://apps.leadvyne.com/webhook/leadvyne-onboard`) server-side afterward, bounded by an 8s
+timeout (`fetchWithTimeout`) — this used to be the only thing that created the account at all, and
+its exact contents beyond "creates the CLIENTS row" aren't visible from this repo (it's an n8n
+workflow, not code here), so it stays wired in as a safety net until that's confirmed unnecessary
+for every client. Its passcode is now a Worker secret, **`ONBOARD_WEBHOOK_PASSCODE`** (`wrangler
+secret put ONBOARD_WEBHOOK_PASSCODE`) — previously a literal string shipped in `dashboard.html`'s
+own source, readable by anyone via devtools.
 
 **Welcome Setup modal** — right after `showApp()` for a brand-new signup specifically (flagged via
 `session.isFreshSignup`, set in `autoProvisionAndLogin` and carried through the popup→opener
@@ -309,33 +342,46 @@ this Worker's `CHATWOOT_PLATFORM_TOKEN` only reaches accounts it created itself 
 owned account needs its own normal Chatwoot login.
 
 **Creating users directly (User Management → Create New User):** `POST /team/create-user`
-(session-gated) calls Authentik's own Core API — `POST /api/v3/core/users/` to create the account
-(`username`/`email`/`name`/`is_active`), then `POST /api/v3/core/users/{id}/set_password/` to set
-the password — using a service-account API token, `AUTHENTIK_API_TOKEN` (a new Worker secret, see
-"Deploy" below). The password is set directly on the Authentik user; it's never written to
-NocoDB or logged by this Worker. If `set_password` fails after the user was created, the Worker
-best-effort deletes the just-created user rather than leaving a passwordless, unreachable account
-behind. On success, the frontend appends the new email to `team_emails` the same way the existing
-"add by email" flow already does — no separate Worker-side write, reusing `patchClient()`.
-**Authentik token permissions needed**: `authentik_core.add_user` and
-`authentik_core.reset_user_password` (a superuser token also works, simplest for a self-hosted
-single-tenant Authentik instance where this Worker is the only caller of the Admin API). Create
-it under **Directory → Tokens** (or a dedicated service account) in Authentik.
+(session-gated, takes only `name`/`username`/`email` — no password field anymore) calls Authentik's
+own Core API — `POST /api/v3/core/users/` to create the account (`username`/`email`/`name`/
+`is_active`), then `POST /api/v3/core/users/{id}/set_password/` with a server-generated random
+password (`generateRandomPassword()`) using a service-account API token, `AUTHENTIK_API_TOKEN` (a
+new Worker secret, see "Deploy" below). If `set_password` fails after the user was created, the
+Worker best-effort deletes the just-created user rather than leaving a passwordless, unreachable
+account behind.
+
+**Invite link, not an admin-chosen password:** immediately after, the Worker calls
+`POST /api/v3/core/users/{id}/recovery/` to generate a one-time recovery link for the new user, and
+emails it (`sendTeamInviteEmail`, platform-level `RESEND_API_KEY`, same "own From address" pattern
+as `sendBillingEmail`) so the teammate sets their **own** password instead of the admin picking one
+on their behalf and relaying it. The link is also returned in the response and shown in the UI
+regardless of whether the email send could be confirmed, so it can be shared directly (WhatsApp,
+Slack) if email delivery isn't set up. This needs a Recovery flow bound on the Authentik instance
+(see the Blueprint note above) — if that call fails (not configured yet), the response falls back
+to the random password generated above instead (`fallbackPassword`), shown once in the UI exactly
+like the old flow; team creation is never blocked either way. On success, the frontend appends the
+new email to `team_emails` the same way the existing "add by email" flow already does — no separate
+Worker-side write, reusing `patchClient()`.
+**Authentik token permissions needed**: `authentik_core.add_user`, `authentik_core.reset_user_password`,
+and now also the ability to create recovery links for a user (a superuser token covers all three —
+simplest for a self-hosted single-tenant Authentik instance where this Worker is the only caller of
+the Admin API). Create it under **Directory → Tokens** (or a dedicated service account) in Authentik.
 
 **Matching Chatwoot agent (same request, best-effort):** if the client already has Chatwoot
 connected (`chatwoot_account_id` set — see "Channels module"), `handleTeamCreateUser` also calls
 `createChatwootAgent()`, which reuses `chatwootPlatformFetch` (the same Platform API helper
 `handleChannelsCreateAccount`/`handleChannelsChatwootSso` already use) to: create a Chatwoot
-Platform user with the *same* name/email/password, link them to the client's existing account via
-`POST /platform/api/v1/accounts/{id}/account_users` with `role:'agent'` (not `'administrator'` —
-that role is reserved for the account owner's own Chatwoot user), and generate a one-time SSO
-login link via `POST /platform/api/v1/users/{id}/login`. None of this can fail the overall
-`/team/create-user` request — Chatwoot may not be connected yet, or the email may already exist as
-a Chatwoot Platform user; either way the Authentik/dashboard account is still created and the
-response just carries `chatwoot:{ok:false, error}` instead. On success the frontend shows the new
-teammate's email/password plus two links: the one-time "Log in to Chatwoot now" SSO link, and a
-durable direct link to the connected inbox (`{chatwoot_base}/app/accounts/{account_id}/inbox/{inbox_id}`)
-for viewing conversation detail.
+Platform user with the *same* name/email and the server-generated random password (Chatwoot has no
+invite-link concept of its own, unlike the Authentik side above), link them to the client's
+existing account via `POST /platform/api/v1/accounts/{id}/account_users` with `role:'agent'` (not
+`'administrator'` — that role is reserved for the account owner's own Chatwoot user), and generate
+a one-time SSO login link via `POST /platform/api/v1/users/{id}/login`. None of this can fail the
+overall `/team/create-user` request — Chatwoot may not be connected yet, or the email may already
+exist as a Chatwoot Platform user; either way the Authentik/dashboard account is still created and
+the response just carries `chatwoot:{ok:false, error}` instead. On success the frontend shows
+`chatwootPassword` (Chatwoot-specific, separate from the Authentik invite link above) plus two
+links: the one-time "Log in to Chatwoot now" SSO link, and a durable direct link to the connected
+inbox (`{chatwoot_base}/app/accounts/{account_id}/inbox/{inbox_id}`) for viewing conversation detail.
 
 **`team_chatwoot_users`** (Long text, JSON — new Clients field, e.g. `{"jane@x.com":42}`): the
 one-time SSO link shown at creation time is single-use, so `handleTeamCreateUser` also persists
@@ -878,6 +924,7 @@ cd cloudflare-worker
 wrangler secret put NOCODB_TOKEN         # the master NocoDB token (nc_pat_...)
 wrangler secret put SESSION_SIGNING_KEY  # a long random string, e.g. `openssl rand -hex 32`
 wrangler secret put AUTHENTIK_API_TOKEN  # User Management → Create New User — see "Dashboard login" above
+wrangler secret put ONBOARD_WEBHOOK_PASSCODE  # POST /session/auto-provision's fallback call to the external onboarding webhook — see "Dashboard login" above
 wrangler secret put CHATWOOT_PLATFORM_TOKEN  # Channels module — see "Channels module" section below
 wrangler secret put META_APP_ID              # Channels module — Meta Tech Provider app id
 wrangler secret put META_APP_SECRET          # Channels module — Meta Tech Provider app secret
