@@ -76,6 +76,19 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .cal-post-title{font-weight:700;font-size:13.5px;margin-bottom:4px}
 .cal-post-caption{font-size:12.5px;color:var(--muted);white-space:pre-wrap;max-width:520px}
 .cal-post-actions{display:flex;gap:6px;flex-shrink:0}
+
+/* Image Studio */
+.tmpl-chip{display:inline-block;padding:6px 12px;border-radius:20px;font-size:12px;font-weight:600;color:var(--accent-ink);background:var(--accent-soft);border:1px solid transparent;cursor:pointer;margin:0 6px 6px 0}
+.tmpl-chip:hover{border-color:var(--accent)}
+.img-workspace{display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px;background:var(--card2);border-radius:12px;margin-bottom:16px}
+.img-workspace img{max-width:100%;max-height:420px;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.35)}
+.img-workspace-empty{color:var(--muted);font-size:13px;padding:40px 0}
+.img-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.img-grid-item{position:relative;border-radius:10px;overflow:hidden;cursor:pointer;border:2px solid transparent;transition:border-color .15s}
+.img-grid-item:hover{border-color:var(--accent)}
+.img-grid-item img{display:block;width:100%;aspect-ratio:1;object-fit:cover}
+.img-toolbar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.logo-preview{width:60px;height:60px;object-fit:contain;background:var(--card2);border-radius:8px;padding:6px;border:1px solid var(--line)}
 .empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:13.5px}
 #gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px}
 
@@ -201,6 +214,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
     <button class="tab active" id="tab-projects" onclick="showTab('projects')">🎞️ Projects</button>
     <button class="tab" id="tab-templates" onclick="showTab('templates')">🧩 Video Templates</button>
     <button class="tab" id="tab-calendar" onclick="showTab('calendar')">🗓️ Content Calendar</button>
+    <button class="tab" id="tab-imagestudio" onclick="showTab('imagestudio')">🖼️ Image Studio</button>
     <button class="tab" id="tab-styles" onclick="showTab('styles')">🎨 Brand Styles</button>
     <button class="tab" id="tab-apikeys" onclick="showTab('apikeys')">🔑 API Keys</button>
   </div>
@@ -368,6 +382,148 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
       </div>
     </div>
 
+    <!-- IMAGE STUDIO -->
+    <div id="page-imagestudio" class="hidden">
+      <div class="card">
+        <div class="card-head">
+          <div><h2>Image Studio</h2><div class="sub">Generate and edit post images with fal.ai. Requires a fal.ai API key (Settings → API Keys) — paid, billed to your own key.</div></div>
+          <div class="usage-pill" id="imgUsagePill">—</div>
+        </div>
+        <div class="row">
+          <div>
+            <label class="form-label">Brand logo (used for watermarking)</label>
+            <div style="display:flex;align-items:center;gap:12px">
+              <img class="logo-preview hidden" id="logoPreview">
+              <span class="note hidden" id="logoEmptyNote">No logo uploaded yet.</span>
+              <input type="file" id="logoFileInput" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="uploadLogo(this.files[0])">
+              <button class="btn btn-ghost btn-sm" onclick="document.getElementById('logoFileInput').click()">Upload logo</button>
+            </div>
+          </div>
+          <div>
+            <label class="form-label">Brand style hint <span style="font-weight:400;color:var(--muted)">(auto-added to every generate prompt)</span></label>
+            <div class="row">
+              <input class="form-input" id="imgBrandStyle" placeholder="e.g. warm earthy tones, minimalist, natural light">
+              <button class="btn btn-ghost btn-sm" onclick="saveImageBrandStyle()">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Generate</h2></div>
+        <div id="promptTemplateChips" style="margin-bottom:10px"></div>
+        <textarea class="form-textarea" id="imgPrompt" rows="3" placeholder="Describe the image you want…"></textarea>
+        <div class="row" style="margin-top:10px">
+          <div>
+            <label class="form-label">Aspect ratio</label>
+            <select class="form-select" id="imgAspect">
+              <option value="1:1">1:1 — Feed</option>
+              <option value="4:5">4:5 — Feed (tall)</option>
+              <option value="9:16">9:16 — Story / Reel cover</option>
+              <option value="16:9">16:9 — Landscape</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Variations</label>
+            <select class="form-select" id="imgNumImages">
+              <option value="1">1</option>
+              <option value="2" selected>2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Quality</label>
+            <select class="form-select" id="imgQuality">
+              <option value="draft">Draft (faster/cheaper)</option>
+              <option value="final" selected>Final</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-primary" id="imgGenerateBtn" onclick="generateImages()">✨ Generate</button>
+          <button class="btn btn-sec" id="imgCarouselBtn" onclick="generateCarousel()">🎠 Generate a themed set</button>
+          <select class="form-select" id="imgCarouselCount" style="width:auto">
+            <option value="2">2 images</option>
+            <option value="3" selected>3 images</option>
+            <option value="4">4 images</option>
+          </select>
+        </div>
+        <div class="note" style="margin-top:8px">A themed set gives you a few related images to pick ONE favorite from (e.g. for a carousel-style idea) — Instagram doesn't support multi-image posts here yet, so only one gets attached to a post.</div>
+        <div class="img-grid" id="imgResultsGrid" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div><h2>Or search free stock photos</h2><div class="sub">No fal.ai key needed — uses your free Pexels/Pixabay keys (Settings → API Keys), same ones used for video B-roll.</div></div></div>
+        <div class="row">
+          <input class="form-input" id="stockQuery" placeholder="e.g. coffee shop interior">
+          <button class="btn btn-sec" id="stockSearchBtn" onclick="searchStockPhotos()">Search</button>
+        </div>
+        <div class="img-grid" id="stockResultsGrid" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div><h2>Workspace</h2><div class="sub">Pick a generated/stock image above, or upload a real photo, then edit it here.</div></div></div>
+        <input type="file" id="uploadPhotoInput" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="uploadWorkspacePhoto(this.files[0])">
+        <div class="img-workspace">
+          <img class="hidden" id="workspaceImg">
+          <div class="img-workspace-empty" id="workspaceEmpty">No image selected yet.</div>
+          <div class="note hidden" id="workspaceHistory" style="text-align:center"></div>
+          <div class="img-toolbar">
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('uploadPhotoInput').click()">📤 Upload a photo</button>
+            <button class="btn btn-sec btn-sm" id="wsRemoveBgBtn" onclick="workspaceRemoveBackground()" disabled>✂️ Remove background</button>
+            <button class="btn btn-sec btn-sm" id="wsWatermarkBtn" onclick="workspaceWatermark()" disabled>🏷️ Add logo watermark</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label class="form-label">Composite on brand color</label>
+            <div class="row">
+              <input class="form-input" type="color" id="wsBgColor" value="#ffffff" style="flex:0 0 60px;padding:4px">
+              <button class="btn btn-ghost btn-sm" id="wsCompositeBtn" onclick="workspaceComposite()" disabled>Apply</button>
+            </div>
+          </div>
+          <div>
+            <label class="form-label">Restyle with a prompt <span style="font-weight:400;color:var(--muted)">(iterate — each apply builds on the current image)</span></label>
+            <div class="row">
+              <input class="form-input" id="wsRestylePrompt" placeholder="e.g. make it look like a watercolor painting">
+              <button class="btn btn-ghost btn-sm" id="wsRestyleBtn" onclick="workspaceRestyle()" disabled>Apply</button>
+            </div>
+          </div>
+        </div>
+
+        <label class="form-label">Also create a different crop <span style="font-weight:400;color:var(--muted)">(free, no fal cost)</span></label>
+        <div class="row">
+          <select class="form-select" id="wsReframeAspect">
+            <option value="1:1">1:1 — Feed</option>
+            <option value="4:5">4:5 — Feed (tall)</option>
+            <option value="9:16">9:16 — Story / Reel cover</option>
+            <option value="16:9">16:9 — Landscape</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" id="wsReframeBtn" onclick="workspaceReframe()" disabled>Create crop</button>
+        </div>
+
+        <label class="form-label">Text overlay (headline + subtext burned in — no AI, always legible)</label>
+        <div class="row">
+          <input class="form-input" id="wsHeadline" placeholder="Headline, e.g. SALE 20% OFF">
+          <input class="form-input" id="wsSubtext" placeholder="Subtext (optional)">
+        </div>
+        <button class="btn btn-ghost btn-sm" id="wsTextOverlayBtn" onclick="workspaceTextOverlay()" style="margin-top:8px" disabled>Apply text overlay</button>
+
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+          <label class="form-label">Attach to a Content Calendar post</label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);margin-bottom:8px;cursor:pointer">
+            <input type="checkbox" id="wsAlwaysWatermark"> Always watermark with my logo before attaching
+          </label>
+          <div class="row">
+            <select class="form-select" id="wsAttachPostSelect"></select>
+            <button class="btn btn-primary btn-sm" id="wsAttachBtn" onclick="workspaceAttach()" disabled>Attach</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- BRAND STYLES -->
     <div id="page-styles" class="hidden">
       <div class="card">
@@ -379,7 +535,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 
     <div id="page-apikeys" class="hidden">
       <div class="card">
-        <div class="card-head"><div><h2>API Keys</h2><div class="sub">Bring your own keys for B-Roll/SFX/AI-video sources — optional, falls back to the shared default when left blank. fal.ai is paid (per-second of generated video); the others are free.</div></div></div>
+        <div class="card-head"><div><h2>API Keys</h2><div class="sub">Bring your own keys for B-Roll/SFX/AI-video sources and Image Studio — optional, falls back to the shared default when left blank. fal.ai is paid (per-second of generated video, per generated image); the others are free.</div></div></div>
         <label class="form-label">Pexels (free B-Roll)</label>
         <div class="row"><input class="form-input" id="keyPexels" type="password" placeholder="Using shared default"><button class="btn btn-ghost btn-sm" onclick="clearApiKey('pexels_api_key')" style="flex:0">✕ Clear</button></div>
         <label class="form-label">Pixabay (free B-Roll, second source)</label>
@@ -631,6 +787,11 @@ let generatingForTemplate = null;
 let jobPollTimer = null;
 let contentPosts = [];
 let editingPostId = null;
+let imagePromptTemplates = [];
+let workspaceImageKey = null;
+let workspaceHasAlpha = false; // true right after a background-removal, so "Composite on brand color" is the obvious next step
+let pendingGenerateForPostId = null; // set by generateImageForPost() so the results grid knows which post to preselect in the attach dropdown
+let stockSearchResults = []; // last stock-photo search results, indexed by importStockPhoto()
 
 const $id = id => document.getElementById(id);
 function ncAuthHeaders(extra) { return { 'Authorization': 'Bearer ' + sessionToken, ...(extra || {}) }; }
@@ -692,13 +853,14 @@ function applyAutoeditPreset() {
 }
 
 function showTab(tab) {
-  ['projects', 'templates', 'calendar', 'styles', 'apikeys'].forEach(t => {
+  ['projects', 'templates', 'calendar', 'imagestudio', 'styles', 'apikeys'].forEach(t => {
     $id('tab-' + t).classList.toggle('active', t === tab);
     $id('page-' + t).classList.toggle('hidden', t !== tab);
   });
   $id('page-editor').classList.add('hidden');
   if (tab === 'apikeys') loadApiKeys();
   if (tab === 'calendar') loadContentPosts();
+  if (tab === 'imagestudio') loadImageStudio();
 }
 
 // ── CONTENT CALENDAR ────────────────────────────────────────────────────────────────────────
@@ -734,11 +896,15 @@ function renderContentPosts() {
     const label = key === 'unscheduled' ? 'Unscheduled drafts' : new Date(key + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
     const cards = groups[key].map(p => `
       <div class="cal-post-card">
-        <div>
-          <div class="cal-post-title">${esc(p.title || '(untitled)')} <span class="badge ${esc(p.status)}">${esc(p.status)}</span></div>
-          <div class="cal-post-caption">${esc(p.caption || '')}</div>
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          ${p.image_url ? `<img src="${p.image_url}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex-shrink:0">` : ''}
+          <div>
+            <div class="cal-post-title">${esc(p.title || '(untitled)')} <span class="badge ${esc(p.status)}">${esc(p.status)}</span></div>
+            <div class="cal-post-caption">${esc(p.caption || '')}</div>
+          </div>
         </div>
         <div class="cal-post-actions">
+          <button class="btn btn-ghost btn-sm" data-genimg-post="${p.id}" onclick="generateImageForPost(${p.id})">🖼️ ${p.image_url ? 'Change' : 'Generate'} image</button>
           <button class="btn btn-ghost btn-sm" onclick="editContentPost(${p.id})">Edit</button>
           <button class="btn btn-danger btn-sm" onclick="deleteContentPost(${p.id})">✕</button>
         </div>
@@ -855,6 +1021,310 @@ async function submitCustomerPost() {
     await loadContentPosts();
   } finally {
     btn.disabled = false; btn.textContent = 'Generate draft';
+  }
+}
+
+// ── IMAGE STUDIO ────────────────────────────────────────────────────────────────────────────
+async function loadImageStudio() {
+  $id('wsAlwaysWatermark').checked = localStorage.getItem('lv_img_always_watermark') === '1';
+  await Promise.all([loadImageUsage(), loadPromptTemplates(), loadLogo(), loadAttachPostOptions(), loadImageBrandStyle()]);
+  if (pendingGenerateForPostId) {
+    const sel = $id('wsAttachPostSelect');
+    if (sel.querySelector(`option[value="${pendingGenerateForPostId}"]`)) sel.value = pendingGenerateForPostId;
+  }
+}
+document.addEventListener('change', e => { if (e.target && e.target.id === 'wsAlwaysWatermark') localStorage.setItem('lv_img_always_watermark', e.target.checked ? '1' : '0'); });
+
+async function loadImageBrandStyle() {
+  const r = await fetch(`${WORKER_BASE}/marketing/images/brand-style`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ style: '' }));
+  $id('imgBrandStyle').value = d.style || '';
+}
+async function saveImageBrandStyle() {
+  const style = $id('imgBrandStyle').value.trim();
+  const r = await fetch(`${WORKER_BASE}/marketing/images/brand-style`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ style }) });
+  if (!r.ok) { toastError('Could not save the brand style.'); return; }
+  toastSuccess('Brand style saved — applied to every future generation.');
+}
+
+async function loadImageUsage() {
+  const r = await fetch(`${WORKER_BASE}/marketing/images/usage`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ used: 0 }));
+  $id('imgUsagePill').innerHTML = `<b>${d.used || 0}</b> images generated this month`;
+}
+
+async function loadPromptTemplates() {
+  const r = await fetch(`${WORKER_BASE}/marketing/images/prompt-templates`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ list: [] }));
+  imagePromptTemplates = d.list || [];
+  $id('promptTemplateChips').innerHTML = imagePromptTemplates.map(t => `<span class="tmpl-chip" onclick="applyPromptTemplate('${t.id}')">${esc(t.label)}</span>`).join('');
+}
+function applyPromptTemplate(id) {
+  const t = imagePromptTemplates.find(x => x.id === id);
+  if (t) $id('imgPrompt').value = t.prompt;
+}
+
+async function loadLogo() {
+  const r = await fetch(`${WORKER_BASE}/marketing/logo`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({}));
+  $id('logoPreview').classList.toggle('hidden', !d.logo_url);
+  $id('logoEmptyNote').classList.toggle('hidden', !!d.logo_url);
+  if (d.logo_url) $id('logoPreview').src = d.logo_url;
+  $id('wsWatermarkBtn').dataset.hasLogo = d.logo_url ? '1' : '';
+}
+async function uploadLogo(file) {
+  if (!file) return;
+  const fd = new FormData(); fd.append('file', file);
+  const r = await fetch(`${WORKER_BASE}/marketing/logo`, { method: 'POST', headers: ncAuthHeaders(), body: fd });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toastError(d.error || 'Could not upload the logo.'); return; }
+  toastSuccess('Logo saved.');
+  await loadLogo();
+}
+
+async function loadAttachPostOptions() {
+  const r = await fetch(`${WORKER_BASE}/marketing/content/posts`, { headers: ncAuthHeaders() });
+  const d = await r.json().catch(() => ({ list: [] }));
+  const eligible = (d.list || []).filter(p => p.status !== 'posted');
+  const sel = $id('wsAttachPostSelect');
+  sel.innerHTML = eligible.length
+    ? eligible.map(p => `<option value="${p.id}">${esc(p.title || '(untitled)')} — ${esc(p.status)}</option>`).join('')
+    : '<option value="">No draft/scheduled posts yet</option>';
+}
+
+async function generateImages() {
+  const prompt = $id('imgPrompt').value.trim();
+  if (!prompt) { toastError('Enter a prompt first.'); return; }
+  const aspect_ratio = $id('imgAspect').value;
+  const num_images = Number($id('imgNumImages').value) || 1;
+  const quality = $id('imgQuality').value;
+  const btn = $id('imgGenerateBtn');
+  btn.disabled = true; btn.textContent = 'Generating…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/images/generate`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ prompt, aspect_ratio, num_images, quality }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toastError(d.error || 'Could not generate images.'); return; }
+    renderImageResultsGrid(d.images || [], 'Generated');
+    if (d.source === 'cache') toastSuccess('Reused a matching image from earlier today — no new fal.ai credits spent.');
+    await loadImageUsage();
+  } finally {
+    btn.disabled = false; btn.textContent = '✨ Generate';
+  }
+}
+
+async function generateCarousel() {
+  const prompt = $id('imgPrompt').value.trim();
+  if (!prompt) { toastError('Enter a prompt first.'); return; }
+  const aspect_ratio = $id('imgAspect').value;
+  const quality = $id('imgQuality').value;
+  const count = Number($id('imgCarouselCount').value) || 3;
+  const btn = $id('imgCarouselBtn');
+  btn.disabled = true; btn.textContent = 'Generating…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/images/generate-carousel`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ prompt, aspect_ratio, quality, count }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toastError(d.error || 'Could not generate the themed set.'); return; }
+    renderImageResultsGrid(d.images || [], 'Generated (themed set)');
+    await loadImageUsage();
+  } finally {
+    btn.disabled = false; btn.textContent = '🎠 Generate a themed set';
+  }
+}
+
+async function searchStockPhotos() {
+  const q = $id('stockQuery').value.trim();
+  if (!q) { toastError('Enter a search term first.'); return; }
+  const btn = $id('stockSearchBtn');
+  btn.disabled = true; btn.textContent = 'Searching…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/images/stock-search?q=${encodeURIComponent(q)}`, { headers: ncAuthHeaders() });
+    const d = await r.json().catch(() => ({ list: [] }));
+    if (!r.ok) { toastError(d.error || 'Could not search stock photos.'); return; }
+    const list = d.list || [];
+    $id('stockResultsGrid').innerHTML = list.length
+      ? list.map((p, i) => `<div class="img-grid-item" onclick="importStockPhoto(${i})"><img src="${p.thumbnail_url}"></div>`).join('')
+      : '<div class="empty">No results — try a different search term.</div>';
+    stockSearchResults = list;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Search';
+  }
+}
+async function importStockPhoto(index) {
+  const photo = (stockSearchResults || [])[index];
+  if (!photo) return;
+  const r = await fetch(`${WORKER_BASE}/marketing/images/stock-import`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ full_url: photo.full_url }) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toastError(d.error || 'Could not import this photo.'); return; }
+  selectWorkspaceImage(d.image_key, d.image_url, false, `Stock photo (${photo.source})`, true);
+}
+
+function renderImageResultsGrid(images, label) {
+  $id('imgResultsGrid').innerHTML = images.map(img => `<div class="img-grid-item" onclick="selectWorkspaceImage('${img.image_key}', '${img.image_url}', false, '${label || 'Generated'}', true)"><img src="${img.image_url}"></div>`).join('');
+  if (images.length === 1) selectWorkspaceImage(images[0].image_key, images[0].image_url, false, label, true);
+}
+
+// workspaceHistorySteps is a client-side-only breadcrumb of what's been applied so far in this
+// session (upload/generate → restyle → watermark → …) — non-destructive (every step is still a
+// real R2 image, nothing is deleted), it just gives a "chat-style iterative editing" feel and a
+// quick way to see what's already been tried on the current image. `fresh:true` starts a new
+// breadcrumb (picking a different generated candidate, a new upload, a new stock photo); omitted
+// (or false) appends to the existing one (every edit action on the CURRENT image).
+let workspaceHistorySteps = [];
+function selectWorkspaceImage(imageKey, imageUrl, hasAlpha, stepLabel, fresh) {
+  workspaceImageKey = imageKey;
+  workspaceHasAlpha = !!hasAlpha;
+  $id('workspaceImg').src = imageUrl;
+  $id('workspaceImg').classList.remove('hidden');
+  $id('workspaceEmpty').classList.add('hidden');
+  ['wsRemoveBgBtn', 'wsWatermarkBtn', 'wsCompositeBtn', 'wsRestyleBtn', 'wsTextOverlayBtn', 'wsReframeBtn', 'wsAttachBtn'].forEach(id => $id(id).disabled = false);
+  if ($id('wsWatermarkBtn').dataset.hasLogo !== '1') $id('wsWatermarkBtn').disabled = true;
+  if (fresh) workspaceHistorySteps = [];
+  workspaceHistorySteps.push(stepLabel || 'Selected');
+  const histEl = $id('workspaceHistory');
+  histEl.textContent = workspaceHistorySteps.join(' → ');
+  histEl.classList.toggle('hidden', workspaceHistorySteps.length < 2);
+  document.querySelector('.img-workspace').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function uploadWorkspacePhoto(file) {
+  if (!file) return;
+  const fd = new FormData(); fd.append('file', file);
+  const r = await fetch(`${WORKER_BASE}/marketing/images/upload`, { method: 'POST', headers: ncAuthHeaders(), body: fd });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toastError(d.error || 'Could not upload the photo.'); return; }
+  selectWorkspaceImage(d.image_key, d.image_url, false, 'Uploaded photo', true);
+}
+
+async function workspaceRemoveBackground() {
+  const btn = $id('wsRemoveBgBtn');
+  btn.disabled = true; btn.textContent = 'Removing…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/images/remove-background`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ image_key: workspaceImageKey }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toastError(d.error || 'Could not remove the background.'); return; }
+    selectWorkspaceImage(d.image_key, d.image_url, true, 'Background removed');
+    toastSuccess('Background removed — try "Composite on brand color" next.');
+    await loadImageUsage();
+  } finally {
+    btn.disabled = false; btn.textContent = '✂️ Remove background';
+  }
+}
+
+async function workspaceWatermark() {
+  const btn = $id('wsWatermarkBtn');
+  btn.disabled = true; btn.textContent = 'Adding logo…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/images/watermark`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ image_key: workspaceImageKey, position: 'bottom-right' }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toastError(d.error || 'Could not add the watermark.'); return; }
+    selectWorkspaceImage(d.image_key, d.image_url, false, 'Watermarked');
+    await loadImageUsage();
+  } finally {
+    btn.disabled = false; btn.textContent = '🏷️ Add logo watermark';
+  }
+}
+
+async function workspaceComposite() {
+  const btn = $id('wsCompositeBtn');
+  const color = $id('wsBgColor').value;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/images/composite-background`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ image_key: workspaceImageKey, color }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toastError(d.error || 'Could not composite the background.'); return; }
+    selectWorkspaceImage(d.image_key, d.image_url, false, 'Composited on color');
+    await loadImageUsage();
+  } finally {
+    btn.disabled = false; btn.textContent = 'Apply';
+  }
+}
+
+async function workspaceRestyle() {
+  const prompt = $id('wsRestylePrompt').value.trim();
+  if (!prompt) { toastError('Describe the restyle first.'); return; }
+  const btn = $id('wsRestyleBtn');
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/images/restyle`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ image_key: workspaceImageKey, prompt }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toastError(d.error || 'Could not restyle the image.'); return; }
+    selectWorkspaceImage(d.image_key, d.image_url, false, `Restyled: "${prompt.slice(0, 30)}${prompt.length > 30 ? '…' : ''}"`);
+    $id('wsRestylePrompt').value = '';
+    await loadImageUsage();
+  } finally {
+    btn.disabled = false; btn.textContent = 'Apply';
+  }
+}
+
+async function workspaceReframe() {
+  const aspect = $id('wsReframeAspect').value;
+  const btn = $id('wsReframeBtn');
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/images/reframe`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ image_key: workspaceImageKey, aspect }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toastError(d.error || 'Could not create the crop.'); return; }
+    selectWorkspaceImage(d.image_key, d.image_url, false, `Cropped to ${aspect}`);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Create crop';
+  }
+}
+
+async function workspaceTextOverlay() {
+  const headline = $id('wsHeadline').value.trim();
+  const subtext = $id('wsSubtext').value.trim();
+  if (!headline && !subtext) { toastError('Enter a headline or subtext first.'); return; }
+  const btn = $id('wsTextOverlayBtn');
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/marketing/images/text-overlay`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ image_key: workspaceImageKey, headline, subtext }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toastError(d.error || 'Could not add the text overlay.'); return; }
+    selectWorkspaceImage(d.image_key, d.image_url, false, 'Text overlay added');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Apply text overlay';
+  }
+}
+
+// "Always watermark" applies the watermark step first (if a logo is set and it isn't already the
+// most recent history step) so the attached image is always branded without a separate manual
+// click every time — reuses workspaceWatermark() itself so the history breadcrumb stays accurate.
+async function workspaceAttach() {
+  const postId = Number($id('wsAttachPostSelect').value);
+  if (!postId) { toastError('No post selected.'); return; }
+  if ($id('wsAlwaysWatermark').checked && !$id('wsWatermarkBtn').disabled) {
+    const lastStep = workspaceHistorySteps[workspaceHistorySteps.length - 1];
+    if (lastStep !== 'Watermarked') await workspaceWatermark();
+  }
+  const r = await fetch(`${WORKER_BASE}/marketing/images/attach`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ post_id: postId, image_key: workspaceImageKey }) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toastError(d.error || 'Could not attach the image.'); return; }
+  toastSuccess('Image attached to the post.');
+  pendingGenerateForPostId = null;
+}
+
+// Called from a Content Calendar post card's "🖼️ Generate image" button — seeds the prompt from
+// that post's own caption/title instead of starting from a blank Image Studio, then jumps there
+// with results ready to pick from. Also pre-fills the text-overlay headline from the post's own
+// title, since that's usually a reasonable short headline already — saves retyping it.
+async function generateImageForPost(postId) {
+  pendingGenerateForPostId = postId;
+  showTab('imagestudio');
+  const btn = document.querySelector(`[data-genimg-post="${postId}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const post = contentPosts.find(p => p.id === postId);
+    if (post?.title) $id('wsHeadline').value = post.title;
+    const r = await fetch(`${WORKER_BASE}/marketing/images/generate-for-post`, { method: 'POST', headers: ncAuthHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ post_id: postId, num_images: 2 }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toastError(d.error || 'Could not generate an image for this post.'); return; }
+    renderImageResultsGrid(d.images || [], 'Generated for post');
+    await loadImageUsage();
+    const sel = $id('wsAttachPostSelect');
+    if (sel.querySelector(`option[value="${postId}"]`)) sel.value = postId;
+    toastSuccess('Pick your favorite below, then Attach it to this post.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🖼️ Generate image'; }
   }
 }
 

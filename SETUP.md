@@ -6350,6 +6350,113 @@ with no image**, same as every other generator in this module.
   named publicly, so it never assumes it. A marketer who *does* have consent can still type the
   name into the caption by hand afterward via the normal Edit flow.
 
+## Marketing Studio module — Image Studio (`frontend/marketing-studio.html` — "🖼️ Image Studio" tab, `cloudflare-worker/worker.js`, `render-pipeline/lib/imageCompose.js` + `render-pipeline/server.js`, `cloudflare-worker/migrations/0039_marketing_image_studio.sql`)
+Generates and edits post images for the Content Calendar. Deliberately split across two different
+execution paths depending on whether the operation genuinely needs an ML model:
+
+### Generative (fal.ai, paid, client-supplied key only — same policy as AI B-roll)
+- **Generate** (`handleMarketingImageGenerate`, `POST /marketing/images/generate`) — text-to-image
+  (`fal-ai/flux/dev`), with an aspect-ratio picker matching real Instagram formats (1:1/4:5 feed,
+  9:16 story/reel, 16:9 landscape) and up to 4 variations returned from a single call so a marketer
+  picks a favorite instead of regenerating one at a time. Curated starter prompts
+  (`MARKETING_IMAGE_PROMPT_TEMPLATES`, `GET /marketing/images/prompt-templates`) cost nothing —
+  static text, just pre-fills the prompt box for someone who doesn't know how to write one.
+- **Generate for post** (`handleMarketingImageGenerateForPost`, `POST /marketing/images/generate-for-post`)
+  — same generation path, but the prompt is seeded from a Content Calendar draft's own
+  title/caption instead of asking the marketer to describe the image separately — the "🖼️ Generate
+  image" button on each calendar card. Returns candidates only; nothing auto-attaches to the post.
+- **Restyle** (`handleMarketingImageRestyle`, `POST /marketing/images/restyle`) — image-to-image
+  (`fal-ai/flux-pro/kontext`) on an existing image or a freshly-uploaded real photo
+  (`POST /marketing/images/upload`) — "turn this actual shop/product photo into a polished graphic."
+- **Remove background** (`handleMarketingImageRemoveBackground`, `POST /marketing/images/remove-background`)
+  — `fal-ai/imageutils/rembg`. Pairs with the deterministic composite step below.
+
+### Deterministic (ffmpeg via the render pipeline, no fal cost, no AI unpredictability)
+A still image is a one-frame video as far as ffmpeg is concerned, so three operations that don't
+need an ML model at all reuse the SAME ffmpeg binary this pipeline already runs for video —
+`render-pipeline/lib/imageCompose.js`, called via a new synchronous route (same
+HMAC-signed-request, bounded-single-pass shape as `/detect-scenes`/`/concat-clips`):
+`POST /image-compose` with `{mode, client_id, ...}`.
+- **`watermark`** (`handleMarketingImageWatermark`, `POST /marketing/images/watermark`) — overlays
+  the client's brand logo (`marketing_client_settings.logo_key`, uploaded via
+  `POST /marketing/logo`) at a fixed corner, scaled to a % of the base image's width. Pixel-exact
+  and free, unlike asking a diffusion image-edit model to "add the logo" (unreliable placement,
+  costs a paid call) — fal.ai is reserved for edits that genuinely need semantic understanding.
+- **`composite-background`** (`handleMarketingImageCompositeBackground`, `POST /marketing/images/composite-background`)
+  — drops a (typically transparent) cutout onto a solid brand-color backdrop sized to match it. The
+  actual subject/background *separation* is still fal's `remove-background` above (a genuine ML
+  task); this is just the deterministic "now put it on a flat color" half.
+- **`text-overlay`** (`handleMarketingImageTextOverlay`, `POST /marketing/images/text-overlay`) —
+  burns in a headline/subtext via ffmpeg's `drawtext` filter (text written to a temp file and
+  referenced via `textfile=`, sidestepping filtergraph string-escaping entirely). Exists because
+  diffusion models are notoriously unreliable at rendering legible in-image text — for a "SALE 20%
+  OFF" style graphic, this is more reliable than asking fal to draw it, and it's free.
+
+`output_key` from the render pipeline (R2-backed) is already a key in the SAME `MARKETING_MEDIA`
+bucket the Worker serves from (see `render-pipeline/lib/storage.js`'s own comment) so it's used
+directly; `output_url` (local-fallback render pipeline, no R2 there) is re-fetched into that bucket
+via `marketingStoreExternalImage` so every image in this module is addressed the same way — an R2
+key — regardless of which path produced it.
+
+### Usage counter & ownership
+`marketing_image_log` (one row per successful operation, any kind) backs a simple "N images
+generated this month" pill (`GET /marketing/images/usage`) — fal.ai bills the client's own key, so
+this is a lightweight spend-awareness signal, not a hard cap. Image keys are random UUIDs under
+`marketing/<client>/images/` (or `marketing/<client>/logo.*` for the logo) — not reconstructible
+from client input, so ownership on every operation that takes an existing `image_key` is a prefix
+match against the caller's own namespace (`marketingImageKeyOwnedBy`), same reasoning as the
+multi-clip upload-finish check earlier in this file.
+
+**NOT verified against a live fal.ai key or a live render-pipeline deploy in this sandbox** — same
+caveat as AI B-roll (`falBroll.js`)'s own comment: model ids/result-field names are fal's
+documented shapes as of this writing, and every failure path surfaces the raw upstream response so
+a wrong field name is a one-line fix once tested against real credentials.
+
+### Image Studio extras (`cloudflare-worker/migrations/0040_marketing_image_studio_extras.sql`)
+Seven small additions on top of the base Image Studio, each reusing something already in this
+module rather than new infrastructure:
+- **Brand style profile** (`image_brand_style` column, `GET`/`POST /marketing/images/brand-style`)
+  — a saved text hint (e.g. "warm earthy tones, minimalist") appended to every generate/
+  generate-for-post/carousel prompt automatically, same idea as the video module's Brand Styles.
+- **Draft vs final quality** (`quality:'draft'|'final'` on generate/generate-for-post/carousel) —
+  `'draft'` uses `fal-ai/flux/schnell` (the distilled/turbo variant — faster and cheaper) so ideas
+  can be explored before committing to `'final'`'s `fal-ai/flux/dev` quality.
+- **Prompt-hash caching** (`marketing_image_log.prompt_hash`, `marketingImageCacheLookup`) — an
+  identical generate call (same client + prompt + aspect + quality) within the last 24h reuses the
+  earlier result instead of spending fresh fal.ai credits; most useful for an accidental
+  double-click or re-running the same "Generate a week" topic same-day.
+- **Multi-aspect reframe** (`handleMarketingImageReframe`, `POST /marketing/images/reframe`,
+  `reframeToAspect` in `imageCompose.js`) — a center crop to a different platform aspect (feed ↔
+  story/reel ↔ landscape) via the SAME deterministic ffmpeg delegation as watermark/
+  composite-background/text-overlay, so getting a second shape of an approved image doesn't cost a
+  second fal.ai generation.
+- **"Generate a themed set"** (`handleMarketingImageGenerateCarousel`, `POST /marketing/images/generate-carousel`)
+  — 2-4 images nudged toward distinct roles in a short sequence (intro/detail/detail/CTA) instead
+  of unrelated takes on the same prompt. Deliberately **generation only**: `marketing_content_posts`
+  has a single `image_key` column and this app has no Instagram publish step at all yet, so there's
+  nowhere to wire an actual multi-image carousel POST to — building that now would mean guessing at
+  a schema/publish shape ahead of the real auto-post feature existing. What a marketer gets today is
+  a coherent set to pick one favorite from via the normal `/marketing/images/attach` flow.
+- **Free stock-photo fallback** (`handleMarketingImageStockSearch`/`handleMarketingImageStockImport`,
+  `GET /marketing/images/stock-search`, `POST /marketing/images/stock-import`) — searches Pexels'
+  and Pixabay's PHOTO endpoints (distinct from the video-B-roll endpoints those same keys already
+  power in `render-pipeline/lib/assets.js`) using the client's existing free API keys, and imports
+  the chosen photo into this client's own R2 namespace so it behaves exactly like a generated image
+  afterward. Makes Image Studio usable without ever adding a paid fal.ai key.
+- **Usage counter now excludes free operations** — `MARKETING_IMAGE_PAID_KINDS` restricts the
+  "images generated this month" pill to `generate`/`restyle`/`remove-background` (the fal.ai-billed
+  kinds); watermark/composite-background/text-overlay/reframe/stock-import are free and would have
+  made that "money spent" signal misleadingly high if counted the same way.
+
+Frontend-only, no backend change: an **"Always watermark before attach"** checkbox
+(`localStorage`, not server-side — purely a per-browser convenience toggle) auto-runs the watermark
+step right before attaching if a logo is set and the current image isn't already watermarked; and a
+client-side-only **workspace history breadcrumb** (`workspaceHistorySteps`) shows what's been
+applied so far to the current image (Generated → Restyled → Watermarked → …), giving the existing
+"restyle again on the current image" flow (already fully iterative — each restyle already operates
+on whatever the workspace currently holds) a visible, chat-like trail instead of just a silently
+updating preview.
+
 ## Financial Planning module (`frontend/accounting.html` — "💰 Financial Planning" tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0015_financial_planning.sql`)
 
 Recurring-revenue and expense tracking for a client's own downstream customers — genuinely new to
