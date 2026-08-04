@@ -2984,12 +2984,11 @@ const ROLES = {
 
             <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
               <div style="font-weight:700;font-size:13px;margin-bottom:6px">Create New User</div>
-              <div class="s-note" style="margin-bottom:8px">Creates a real Authentik login for them, plus a matching Chatwoot agent (same email/password) if Chatwoot is connected — they can sign in to both immediately.</div>
+              <div class="s-note" style="margin-bottom:8px">Creates a real Authentik login for them and emails an invite link so they set their own password — you never choose a password on their behalf. Also creates a matching Chatwoot agent if Chatwoot is connected.</div>
               <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
                 <input class="form-input" id="teamNewName" type="text" placeholder="Full Name">
                 <input class="form-input" id="teamNewUsername" type="text" placeholder="Username">
                 <input class="form-input" id="teamNewUserEmail" type="email" placeholder="Email">
-                <input class="form-input" id="teamNewUserPassword" type="password" placeholder="Password (min 8 chars)">
               </div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
                 <button class="save-btn" onclick="createTeamUser()">Create User</button>
@@ -4446,55 +4445,31 @@ let _reminderTimer=null;
 
 function getIndustry(){ return INDUSTRIES[clientRecord?.industry] || INDUSTRIES.general; }
 
-
-function deriveBusinessName(email){
-  const local=(email.split('@')[0]||'').replace(/[._-]+/g,' ').trim();
-  return local.replace(/\b\w/g,c=>c.toUpperCase())||'New Business';
-}
-
-// Called by handleAuthentikCallback() when Authentik verifies a brand-new identity with
-// no matching CLIENTS row yet. No form, no extra step — creates a minimal row right away
-// (business name guessed from the email, industry defaulted to general) and logs them
-// straight in with the same still-valid access token. Chatwoot connection details are
+// Called by handleAuthentikCallback() when Authentik verifies a brand-new identity with no
+// matching CLIENTS row yet. No form, no extra step — one call to the Worker's own
+// /session/auto-provision route creates the CLIENTS row (business name guessed from the email,
+// industry defaulted to general), server-side idempotency means a retried click can never create
+// a duplicate account, and the same response hands back a real session token — no more separate
+// "call an external webhook with a hardcoded passcode, then hope /session/exchange finds the row"
+// dance, and no secret shipped to the browser at all anymore. Chatwoot connection details are
 // filled in later from Settings, once they're already inside the dashboard.
 async function autoProvisionAndLogin(email, accessToken){
   const err=$id('gErr');
-  err.textContent='Setting up your account…';
-  // The onboarding webhook writes the CLIENTS row first, then does slower, non-essential
-  // follow-up work (provisioning this client's automation workflow). That later work is what
-  // most often times out or errors — by then the account already exists. So a failure/bad
-  // response here is only ever a *hint*, never treated as final: we always fall through to the
-  // session check below and let that be the real source of truth for whether the account exists.
-  let onboardOk=false;
+  // The Worker still calls its own onboarding webhook server-side for a brand-new signup (in case
+  // it does anything beyond creating the row) before responding, so this can take a little while
+  // the first time — worth saying so explicitly rather than leaving a bare spinner up.
+  err.textContent='Setting up your workspace… this can take up to 20 seconds the first time.';
   try{
-    const res=await fetch('https://apps.leadvyne.com/webhook/leadvyne-onboard',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        passcode:'Bath*2026*ld',
-        client_name:deriveBusinessName(email),
-        authentik_email:email,
-        language:'en',industry:'general'
-      })
-    });
-    const data=await res.json().catch(()=>({}));
-    onboardOk=res.ok&&data.ok!==false;
-  }catch(onboardErr){ /* network hiccup — still worth checking whether the row landed */ }
-  err.textContent='Signing you in…';
-  try{
-    const sr=await fetch(`${CONFIG.WORKER_BASE}/session/exchange`,{
+    const sr=await fetch(`${CONFIG.WORKER_BASE}/session/auto-provision`,{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({access_token:accessToken})
     });
     const session=await sr.json().catch(()=>({}));
-    if(!sr.ok||!session.session_token){
-      throw new Error(onboardOk
-        ? 'Your account was created — click "Secure Login" to continue.'
-        : 'Account setup failed — try again.');
-    }
+    if(!sr.ok||!session.session_token) throw new Error(session.error||'Account setup failed — try again.');
     // Flags this as a brand-new account (not just a returning login) so completeLoginResult opens
     // the Welcome Setup modal (industry + business name) right after showApp() — this survives the
     // popup→opener postMessage relay too, since that spreads every property of `session`.
-    session.isFreshSignup=true;
+    session.isFreshSignup=!!session.isNewSignup;
     completeLoginResult(session);
   }catch(e){
     completeLoginError(e.message||'Account setup failed — try again.');
@@ -8221,12 +8196,10 @@ async function createTeamUser(){
   const name=$id('teamNewName').value.trim();
   const username=$id('teamNewUsername').value.trim();
   const email=$id('teamNewUserEmail').value.trim().toLowerCase();
-  const password=$id('teamNewUserPassword').value;
-  if(!username||!email||!password){ msg.textContent='Username, email and password are required.'; msg.className='save-msg err'; return; }
-  if(password.length<8){ msg.textContent='Password must be at least 8 characters.'; msg.className='save-msg err'; return; }
+  if(!username||!email){ msg.textContent='Username and email are required.'; msg.className='save-msg err'; return; }
   msg.textContent='Creating…';
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/team/create-user`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name,username,email,password})});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/create-user`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name,username,email})});
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
@@ -8238,29 +8211,48 @@ async function createTeamUser(){
       fields.team_names=JSON.stringify(names);
     }
     if(Object.keys(fields).length) await patchClient(fields);
-    msg.textContent='✓ User created — they can sign in now'; msg.className='save-msg ok';
+    msg.textContent=data.inviteLink?'✓ User created — invite sent':'✓ User created'; msg.className='save-msg ok';
     renderTeamMembers();
-    renderTeamCreateResult(email, password, data.chatwoot);
-    $id('teamNewName').value=''; $id('teamNewUsername').value=''; $id('teamNewUserEmail').value=''; $id('teamNewUserPassword').value='';
+    renderTeamCreateResult(email, data);
+    $id('teamNewName').value=''; $id('teamNewUsername').value=''; $id('teamNewUserEmail').value='';
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
-// Shows the login details right after a successful createTeamUser() call — the password never
-// round-trips back from the Worker, this is just the value the form was already holding, plus
-// whatever createChatwootAgent (cloudflare-worker/worker.js) reports about the matching Chatwoot
-// agent it tried to create alongside the Authentik user.
-function renderTeamCreateResult(email, password, chatwoot){
+// Shows what to hand the new teammate right after a successful createTeamUser() call. Two
+// mutually-exclusive cases for their actual dashboard/Authentik login:
+//  - inviteLink present (the common case) — they set their own password via the link, emailed to
+//    them automatically when inviteEmailSent is true; the link itself is still shown either way so
+//    it can be shared directly (WhatsApp, Slack) if email delivery isn't set up or lands in spam.
+//  - fallbackPassword present instead — this Authentik instance doesn't have a Recovery flow bound
+//    yet (SETUP.md "Authentik Recovery flow"), so a server-generated password is shown once here,
+//    same as the old flow, just never chosen by the admin.
+// chatwootPassword (if a Chatwoot agent was created) is always separate from both — Chatwoot has
+// no invite-link concept of its own.
+// data-attribute + dataset read, not the link interpolated straight into an onclick string — same
+// fragile-inline-handler issue this codebase already fixed once for the Follow-up button.
+function copyInviteLink(btn){
+  navigator.clipboard.writeText(btn.dataset.inviteLink||'').catch(()=>{});
+}
+function renderTeamCreateResult(email, data){
+  const {inviteLink, inviteEmailSent, fallbackPassword, chatwoot, chatwootPassword}=data;
   const box=$id('teamCreateUserResult');
   let html=`<div class="card" style="margin-top:10px;padding:12px 14px;background:var(--accent-soft)">
-    <div style="font-weight:700;font-size:13px;margin-bottom:6px">Login details for ${esc(email)}</div>
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px">Dashboard login for ${esc(email)}</div>`;
+  if(inviteLink){
+    html+=`<div class="s-note" style="margin-bottom:6px">${inviteEmailSent?`An invite email was sent to ${esc(email)} with a link to set their own password.`:`Couldn't confirm the invite email sent — share this link with them directly instead.`}</div>
+    <div style="font-size:12px;font-family:var(--mono);word-break:break-all;background:var(--bg);padding:8px;border-radius:6px;margin-bottom:4px">${esc(inviteLink)}</div>
+    <button class="save-btn sec" style="margin-top:4px" data-invite-link="${esc(inviteLink)}" onclick="copyInviteLink(this)">Copy link</button>`;
+  }else if(fallbackPassword){
+    html+=`<div class="s-note" style="margin-bottom:6px;color:var(--red)">This Authentik instance doesn't have a password-reset flow bound yet, so an invite link couldn't be generated — sharing a one-time password instead. Ask your admin to bind a Recovery flow (SETUP.md) so future invites are link-based.</div>
     <div style="font-size:13px;font-family:var(--mono);margin-bottom:2px">Email: ${esc(email)}</div>
-    <div style="font-size:13px;font-family:var(--mono);margin-bottom:8px">Password: ${esc(password)}</div>`;
+    <div style="font-size:13px;font-family:var(--mono);margin-bottom:8px">Password: ${esc(fallbackPassword)}</div>`;
+  }
   if(chatwoot?.ok){
-    html+=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+    html+=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
       ${chatwoot.sso_url?`<a class="save-btn" style="text-decoration:none;display:inline-block" href="${esc(chatwoot.sso_url)}" target="_blank" rel="noopener">Log in to Chatwoot now</a>`:''}
       ${chatwoot.inbox_url?`<a class="save-btn" style="text-decoration:none;display:inline-block;background:var(--muted)" href="${esc(chatwoot.inbox_url)}" target="_blank" rel="noopener">Open Chatwoot Inbox</a>`:''}
     </div>
-    <div class="s-note" style="margin-top:6px">A matching Chatwoot agent was created with the same email/password. This "Log in to Chatwoot now" link only works once — once they're signed in, they can always get back in via the "Log in to Chatwoot ↗" link at the top of their own Chats tab (or the email/password above).</div>`;
+    <div class="s-note" style="margin-top:6px">A matching Chatwoot agent was also created${chatwootPassword?` — Email: ${esc(email)} / Password: ${esc(chatwootPassword)}`:''}. This "Log in to Chatwoot now" link only works once — after that, they can always get back in via the "Log in to Chatwoot ↗" link at the top of their own Chats tab (or the email/password above).</div>`;
   }else if(chatwoot && !chatwoot.ok){
     html+=`<div class="s-note" style="margin-top:6px;color:var(--red)">Chatwoot agent wasn't created: ${esc(chatwoot.error||'unknown error')}. The dashboard/Authentik login above still works.</div>`;
   }else{

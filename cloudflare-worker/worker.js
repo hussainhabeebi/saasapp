@@ -71,6 +71,7 @@ function json(data, status, extraHeaders){
    for real users, which is the whole point of adding this without changing existing behavior. */
 const RATE_LIMIT_RULES = [
   {test:(p,m)=>p==='/session/exchange'&&m==='POST', bucket:'session-exchange', limit:30, windowSec:300},
+  {test:(p,m)=>p==='/session/auto-provision'&&m==='POST', bucket:'session-auto-provision', limit:10, windowSec:300},
   {test:(p,m)=>p==='/admin/login'&&m==='POST', bucket:'admin-login', limit:20, windowSec:300},
   {test:(p,m)=>p==='/ecom/public/order'&&m==='POST', bucket:'ecom-order', limit:20, windowSec:600},
   {test:(p,m)=>p==='/appt/public/book'&&m==='POST', bucket:'appt-book', limit:20, windowSec:600},
@@ -477,6 +478,77 @@ async function handleSessionExchange(request, env){
   return json({session_token, client_id:String(rec.Id), client:safeClient(rec), email});
 }
 
+// Fetches with a hard timeout — the external onboarding webhook below is a known-slow dependency
+// ("often times out or errors" per handleAutoProvision's own comment), and this Worker's fetch
+// handler has no ctx.waitUntil (see the "Awaited, not fire-and-forget" comment on
+// engineLogAnalytics above for the same constraint), so anything called here must be awaited to
+// completion rather than left running past the response — a bounded timeout keeps that wait from
+// being unbounded instead.
+async function fetchWithTimeout(url, opts, timeoutMs){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(), timeoutMs);
+  try{ return await fetch(url, {...opts, signal:controller.signal}); }
+  finally{ clearTimeout(timer); }
+}
+function deriveBusinessNameServer(email){
+  const local=(String(email||'').split('@')[0]||'').replace(/[._-]+/g,' ').trim();
+  return local.replace(/\b\w/g,c=>c.toUpperCase())||'New Business';
+}
+// Native replacement for the CLIENTS-row-creation half of the old signup flow, which used to
+// depend entirely on an external n8n webhook — a hardcoded passcode shipped to every browser
+// (dashboard.html's old autoProvisionAndLogin), and the frontend had no way to tell a slow
+// webhook apart from a genuinely failed one, so it just retried /session/exchange and hoped.
+// This route is now the single, authoritative, idempotent creator of a brand-new account:
+//  1. Verifies access_token itself (same Authentik /userinfo call handleSessionExchange makes) —
+//     the email this account gets created under is never trusted from the request body.
+//  2. Checks for an existing CLIENTS row FIRST (getClientByAuthentikEmail) — a retried call for
+//     the same email (a flaky network, a double-click) just logs into the account that already
+//     exists instead of risking a second, duplicate row.
+//  3. Creates the row directly via NocoDB (master token, same as every other admin-level CLIENTS
+//     write in this file) and returns a session token in the same response — collapsing the old
+//     "call the webhook, then separately call /session/exchange again and hope" into one round trip.
+// The external n8n webhook is still called too, AFTER the row exists and only for a brand-new
+// signup — best-effort, bounded by fetchWithTimeout, in case it does anything beyond creating the
+// row that isn't visible from this repo (SETUP.md "Conversation Engine" — most industries no longer
+// need the per-client bot workflow it used to provision, but this stays a safety net until that's
+// confirmed dead for every client). Its own passcode is now a Worker secret
+// (ONBOARD_WEBHOOK_PASSCODE), never sent to or stored in the browser.
+async function handleAutoProvision(request, env){
+  const {access_token}=await request.json().catch(()=>({}));
+  if(!access_token) return json({error:'access_token required'}, 400);
+  const info=await fetch(`${env.AUTHENTIK_BASE}/application/o/userinfo/`, {headers:{Authorization:`Bearer ${access_token}`}});
+  if(!info.ok) return json({error:'Invalid or expired Authentik session'}, 401);
+  const claims=await info.json();
+  const email=(claims.email||claims.preferred_username||'').toLowerCase();
+  if(!email) return json({error:'Your Authentik account has no email set.'}, 400);
+
+  let rec=await getClientByAuthentikEmail(env, email);
+  let isNewSignup=false;
+  if(!rec){
+    const clientName=deriveBusinessNameServer(email);
+    const createR=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'POST', body:{
+      client_name:clientName, authentik_email:email, language:'en', industry:'general',
+    }});
+    if(!createR.ok) return json({error:'Could not create your account — please try again in a moment.'}, 502);
+    rec=await createR.json().catch(()=>null);
+    if(!rec||!rec.Id) return json({error:'Account created but could not be read back — try logging in again.'}, 502);
+    isNewSignup=true;
+  }
+
+  const session_token=await signSession(env, rec.Id, email);
+
+  if(isNewSignup){
+    try{
+      await fetchWithTimeout('https://apps.leadvyne.com/webhook/leadvyne-onboard', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({passcode:env.ONBOARD_WEBHOOK_PASSCODE||'', client_name:rec.client_name, authentik_email:email, language:'en', industry:'general'}),
+      }, 8000);
+    }catch(e){ /* best-effort — the account already exists and has a session regardless */ }
+  }
+
+  return json({session_token, client_id:String(rec.Id), client:safeClient(rec), email, isNewSignup});
+}
+
 async function handleSessionMe(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -535,9 +607,8 @@ async function handleTeamCreateUser(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   if(!env.AUTHENTIK_API_TOKEN) return json({error:'Authentik admin API is not configured on the server.'}, 500);
-  const {name, username, email, password}=await request.json().catch(()=>({}));
-  if(!username||!email||!password) return json({error:'username, email and password are required'}, 400);
-  if(String(password).length<8) return json({error:'Password must be at least 8 characters.'}, 400);
+  const {name, username, email}=await request.json().catch(()=>({}));
+  if(!username||!email) return json({error:'username and email are required'}, 400);
   const emailNorm=String(email).trim().toLowerCase();
   const existing=await getClientByAuthentikEmail(env, emailNorm);
   if(existing) return json({error:'This email is already linked to an account.'}, 409);
@@ -554,7 +625,12 @@ async function handleTeamCreateUser(request, env){
     return json({error:'Authentik rejected the new user: '+detail}, 502);
   }
 
+  // No admin-chosen password anymore — this is always a server-generated value the admin never
+  // sees or types. In the common case (Recovery flow bound, see below) it's set once here purely
+  // so the account isn't literally passwordless, then never used again; the teammate always signs
+  // in by picking their own password via the invite link instead.
   const userId=createData.pk;
+  const password=generateRandomPassword();
   const pwR=await authentikApiFetch(env, `/core/users/${userId}/set_password/`, {method:'POST', body:JSON.stringify({password})});
   if(!pwR.ok){
     // Don't leave a passwordless, unreachable account behind — best-effort cleanup.
@@ -562,6 +638,20 @@ async function handleTeamCreateUser(request, env){
     const pwData=await pwR.json().catch(()=>({}));
     return json({error:'Failed to set password: '+(pwData?.password?.[0]||pwData?.detail||'HTTP '+pwR.status)}, 502);
   }
+
+  // Invite link — lets the teammate set their OWN password instead of the admin relaying one.
+  // Needs a Recovery flow bound on this Authentik instance's Brand (SETUP.md "Authentik Recovery
+  // flow"); if that isn't configured yet, this call fails and the response falls back to handing
+  // the admin the random password generated above — team creation is never blocked on it either way.
+  let inviteLink=null, inviteEmailSent=false;
+  try{
+    const recR=await authentikApiFetch(env, `/core/users/${userId}/recovery/`, {method:'POST'});
+    if(recR.ok){
+      const recData=await recR.json().catch(()=>({}));
+      inviteLink=recData?.link||null;
+    }
+  }catch(e){}
+  if(inviteLink) inviteEmailSent=await sendTeamInviteEmail(env, {to:emailNorm, name:name||username, inviteUrl:inviteLink, clientName:c.client_name||'your team'});
 
   let chatwoot=null;
   if(c.chatwoot_account_id && env.CHATWOOT_PLATFORM_TOKEN){
@@ -582,7 +672,12 @@ async function handleTeamCreateUser(request, env){
       await patchClientFields(env, payload.cid, {team_chatwoot_users:JSON.stringify(teamUsers), team_chatwoot_passwords:JSON.stringify(teamPasswords)}).catch(()=>{});
     }
   }
-  return json({ok:true, email:emailNorm, chatwoot});
+  // fallbackPassword is only ever populated when the invite link couldn't be generated — in the
+  // normal case this is null and the frontend shows the invite link/email status instead.
+  // chatwootPassword is separate: Chatwoot has no invite-link mechanism of its own, so this is
+  // always returned once (already persisted server-side in team_chatwoot_passwords for the User
+  // Management profile view to show again later) whenever a Chatwoot agent was actually created.
+  return json({ok:true, email:emailNorm, chatwoot, chatwootPassword:chatwoot?.ok?password:null, inviteLink, inviteEmailSent, fallbackPassword:inviteLink?null:password});
 }
 
 async function handleNocodbPassthrough(request, env, upstreamPath){
@@ -4566,6 +4661,36 @@ async function sendBillingEmail(env, {to, subject, heading, bodyHtml, ctaLabel, 
       body:JSON.stringify({from, to:[to], subject, html:renderBillingEmailHtml({heading, bodyHtml, ctaLabel, ctaUrl})})
     });
   }catch(e){ console.error('sendBillingEmail failed', e); }
+}
+
+// Reuses the same branded wrapper as billing mail, own From address so a team invite is visually
+// distinct from both billing notices and the client's own outbound campaigns. Best-effort — a
+// missing RESEND_API_KEY (or a bad `to`) just means the invite link never got emailed; the caller
+// (handleTeamCreateUser) always also returns the link itself so the admin has something to hand
+// over manually either way.
+async function sendTeamInviteEmail(env, {to, name, inviteUrl, clientName}){
+  if(!env.RESEND_API_KEY||!to||!inviteUrl) return false;
+  const from=env.TEAM_INVITE_FROM_EMAIL||'Leadvyne <team@leadvyne.com>';
+  const bodyHtml=`<p>Hi ${esc(name||'there')},</p>
+    <p>You've been added to <b>${esc(clientName||'a Leadvyne account')}</b>. Click below to set your own password and sign in.</p>
+    <p style="color:#6b7280;font-size:13px">This link is single-use and tied to your account — don't forward it.</p>`;
+  try{
+    const r=await fetch('https://api.resend.com/emails', {
+      method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({from, to:[to], subject:`You've been invited to ${clientName||'Leadvyne'}`, html:renderBillingEmailHtml({heading:'You\'re invited', bodyHtml, ctaLabel:'Set your password', ctaUrl:inviteUrl})})
+    });
+    return r.ok;
+  }catch(e){ return false; }
+}
+// A server-generated password, never chosen by (or shown to) the admin creating the account —
+// used internally for the matching Chatwoot agent (which has no invite-link concept of its own)
+// and as the Authentik fallback only when this instance's Recovery flow isn't bound yet (see
+// handleTeamCreateUser) — in the common case where the invite link works, this value is set on the
+// Authentik user but never surfaced to anyone; the teammate always picks their own password via
+// the link instead.
+function generateRandomPassword(){
+  const bytes=new Uint8Array(18); crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g,'A').replace(/\//g,'B').replace(/=+$/,'');
 }
 
 // Dedupe key is '<event>:<stripe_object_id>', stored in a capped comma-list on the CLIENTS row —
@@ -15409,6 +15534,7 @@ export default {
     try{
       if(url.pathname==='/health'){ res=json({ok:true, marketing_build:MARKETING_BUILD_TAG}); }
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
+      else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
