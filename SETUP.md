@@ -7383,3 +7383,43 @@ opt-in flag).
 `GEMINI_API_KEY` with Live API access, and no route to `generativelanguage.googleapis.com`'s
 WebSocket endpoint, were available in the dev sandbox this was built in. Test with a real client
 before relying on it in production.
+
+## Piper voice provider — optional, per-client (`frontend/dashboard.html` — Settings → 🎙️ Voice →
+## 🔧 TTS Provider)
+
+A fourth option (`piper`) alongside Sarvam/AI4Bharat/Gemini Live in `CLIENTS.voice_tts_provider`.
+Piper (rhasspy/piper, MIT-licensed) is genuinely free: a small local binary + one small neural
+voice model, no API key, no per-request cost, no PyTorch (unlike AI4Bharat's ~1.2GB torch stack).
+Sounds noticeably better than `lib/tts.js`'s espeak-ng (a real neural voice, not a formant
+synthesizer) but isn't a drop-in replacement for Sarvam's quality — documented tradeoff, same as
+every other provider here.
+
+**Opt-in ONLY, never an automatic fallback** — the real limitation is language coverage, not
+resource cost. Only `en_US-lessac-medium` (Piper's own canonical quickstart voice) is baked into
+the render-pipeline Docker image by default. This app targets Indic languages elsewhere (Sarvam,
+AI4Bharat), but no Malayalam/Tamil/Telugu/etc. Piper voice was independently confirmed to exist as
+a published model in this dev sandbox (no outbound access to huggingface.co here) — guessing at a
+voice-model filename that turns out not to exist would silently 404 at runtime, so this ships
+English-only rather than a guessed mapping. Auto-falling back to it for an Indic-language customer
+would otherwise silently downgrade them to an English-accented voice.
+
+**Adding more languages**: download the `<voice>.onnx`/`<voice>.onnx.json` pair for the language
+you want from https://huggingface.co/rhasspy/piper-voices into the render pipeline's
+`models/piper-voices/` directory (mount as a persistent volume — see the Dockerfile's `VOLUME`
+line, same convention as `assets/`/`fonts/`), then set `PIPER_VOICE_MAP_JSON` (a runtime env var,
+e.g. `{"hi":"hi_IN-<voice-name>-medium"}`) to map the language code to that voice's basename. No
+rebuild needed — `render-pipeline/lib/piperTts.js`'s `supportsLanguage()` checks the model file's
+actual presence on disk, not just the map.
+
+**Setup**: nothing beyond a normal render-pipeline deploy — the Piper binary and the default
+English voice are downloaded at Docker build time (see the Dockerfile's `PIPER_VERSION` build arg
+and its own comment on where to check for a current release tag if that URL ever 404s). `GET
+/health` reports `piper_available` and `piper_voices` (the list of languages with a model actually
+present on disk) so a stale/incomplete build is easy to spot before a client tries to use it.
+
+**Not verified against a live build** — the Piper binary release URL, its exact CLI flags
+(`--model`/`--output_file`, text piped via stdin), and the `rhasspy/piper-voices` model URL
+pattern are implemented from the project's own published quickstart/release conventions; no
+outbound access to github.com or huggingface.co release/model assets was available in the dev
+sandbox this was built in. Confirm the Dockerfile's Piper steps actually succeed on your first real
+build, and test a real synthesis call before enabling for a paying client.

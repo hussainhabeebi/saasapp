@@ -137,12 +137,39 @@ RUN node -e "require('@remotion/renderer').ensureBrowser().then(() => console.lo
 RUN mkdir -p models && curl -fL -o models/rvm_mobilenetv3_fp32.onnx \
   "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx"
 
+# Piper TTS (MIT-licensed binary, rhasspy/piper) — see lib/piperTts.js for the full rationale
+# (free, local, no PyTorch, opt-in voice provider for WhatsApp voice-to-voice replies). Binary
+# release tag pinned below — if it 404s (the project moves fast and occasionally reorganizes
+# release assets), check https://github.com/rhasspy/piper/releases for the current
+# piper_linux_x86_64.tar.gz asset name and update PIPER_VERSION. NOT independently verified against
+# a live build in this dev sandbox (no outbound access to github.com/huggingface.co release assets
+# here) — confirm this step actually succeeds on your first real build.
+ARG PIPER_VERSION=2023.11.14-2
+RUN mkdir -p /opt/piper && curl -fL -o /tmp/piper.tar.gz \
+    "https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_x86_64.tar.gz" \
+  && tar -xzf /tmp/piper.tar.gz -C /opt/piper --strip-components=1 \
+  && rm /tmp/piper.tar.gz
+
+# Piper's own canonical quickstart voice (en_US-lessac-medium, MIT-licensed model + config) — the
+# only voice baked in by default, see lib/piperTts.js's PIPER_VOICE_MAP comment for why more
+# languages aren't guessed at here. Add more by downloading additional
+# <voice>.onnx/<voice>.onnx.json pairs from https://huggingface.co/rhasspy/piper-voices into
+# models/piper-voices/ (mount as a persistent volume, same convention as assets/fonts below) and
+# setting PIPER_VOICE_MAP_JSON at runtime to map a language code to the new voice's basename.
+RUN mkdir -p models/piper-voices && \
+    curl -fL -o models/piper-voices/en_US-lessac-medium.onnx \
+      "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx" && \
+    curl -fL -o models/piper-voices/en_US-lessac-medium.onnx.json \
+      "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
+
 # Bring your own royalty-free B-roll/SFX/music — see assets/*/README.md. Mounting a volume here
 # in production means new assets don't need a rebuild+redeploy to pick up (Coolify: add a
 # persistent volume at /app/assets). Same for /app/fonts — see fonts/README.md — drop in a real
 # Malayalam (or any other) .ttf/.otf and it's usable on the very next render, no rebuild needed
-# (ffmpeg's `fontsdir` subtitles-filter option reads it straight off disk).
-VOLUME ["/app/assets", "/app/public", "/app/fonts"]
+# (ffmpeg's `fontsdir` subtitles-filter option reads it straight off disk). /app/models/piper-voices
+# is the same pattern for Piper TTS — drop in additional <voice>.onnx/.onnx.json pairs and set
+# PIPER_VOICE_MAP_JSON to pick them up without a rebuild.
+VOLUME ["/app/assets", "/app/public", "/app/fonts", "/app/models/piper-voices"]
 
 ENV PORT=8787
 EXPOSE 8787

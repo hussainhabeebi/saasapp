@@ -7891,12 +7891,48 @@ async function engineGeminiLiveTts(env, text, isoLangCode){
 // were added so each standby could be tested against real WhatsApp traffic for one client without
 // touching the shared SARVAM_API_KEY (which affects every client at once). 'gemini_live' is a
 // distinct, fully opt-in third option (see engineGeminiLiveTts above) — chosen explicitly, never
-// reached as an automatic fallback the way AI4Bharat is.
+// reached as an automatic fallback the way AI4Bharat is. 'piper' (below) is the same treatment.
+
+// OPTIONAL voice provider — Piper TTS (Settings → Voice → 🔧 TTS Provider →
+// CLIENTS.voice_tts_provider==='piper'). Free, fully local, no API key, no per-request cost — see
+// render-pipeline/lib/piperTts.js for the full rationale. Explicit opt-in ONLY, never an automatic
+// fallback: unlike AI4Bharat (which covers the same ~10 Indic languages this app targets
+// elsewhere), Piper's language coverage on the render pipeline defaults to English only (see that
+// file's PIPER_VOICE_MAP comment on why more languages aren't guessed at) — auto-falling back to
+// it for an Indic-language customer would silently downgrade them to an English-accented voice.
+// Same render-pipeline service as engineAi4BharatTts/engineGeminiLiveTts
+// (MARKETING_RENDER_WEBHOOK_URL/_SECRET) — reused, not a new service to configure.
+async function enginePiperTts(env, text, isoLangCode){
+  if(!text || !isoLangCode) return null;
+  if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
+  try{
+    const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
+    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
+    const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-piper-tts`;
+    const r=await engineFetchWithRetry(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      // A 400 here just means no Piper voice is configured for this language — expected/
+      // unconfigured for anything beyond English by default, same convention as the other
+      // providers' "not set up yet" cases above.
+      if(r.status!==400) await reportOpsError(env, 'enginePiperTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      return null;
+    }
+    const buf=await r.arrayBuffer();
+    if(buf.byteLength<200) return null;
+    return buf;
+  }catch(e){
+    await reportOpsError(env, 'enginePiperTts — request threw', e, {isoLangCode});
+    return null;
+  }
+}
+
 async function engineTtsWithFallback(env, text, langCode, provider){
   const iso=(langCode||'').toLowerCase();
   const bcp47=ENGINE_TTS_LANG_MAP[iso];
   const mode=(provider||'').toLowerCase();
   if(mode==='gemini_live') return engineGeminiLiveTts(env, text, iso);
+  if(mode==='piper') return enginePiperTts(env, text, iso);
   if(mode==='ai4bharat') return engineAi4BharatTts(env, text, iso);
   if(bcp47){
     const sarvamBuf=await engineSarvamTts(env, text, bcp47);
