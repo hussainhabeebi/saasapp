@@ -197,3 +197,11 @@ MARKETING_DEFAULT_MINUTES_LIMIT = "30"
 #                           shared across every client on this Worker — not a real credential, so
 #                           it's one server-level setting, not a per-client one like the keys
 #                           below.
+#   NATIVE_FORMS_PRIVATE_KEY_PEM / NATIVE_FORMS_PUBLIC_KEY_PEM   optional — one shared RSA keypair
+#                           (PEM) used by the Native Forms module (SETUP.md "Native Forms (WhatsApp
+#                           Flows)") to decrypt/encrypt WhatsApp Flow data-exchange submissions at
+#                           POST /native-forms/endpoint. `openssl genrsa`/`openssl rsa -pubout` —
+#                           see SETUP.md for the exact commands. Only needed if a client turns
+#                           Native Forms on; handleNativeFormSync fails with a clear error if unset.
+#                           /native-forms/endpoint's only auth is META_APP_SECRET (above) signing
+#                           X-Hub-Signature-256 — no session, called directly by Meta.

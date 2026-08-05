@@ -2031,6 +2031,34 @@ const ROLES = {
             </div>
           </div>
 
+          <!-- Native Forms (WhatsApp Flows) — optional, per-client. When on, the qualifying
+               questions below are collected as ONE native WhatsApp form instead of the classic
+               one-at-a-time chat questions (unchanged, still used when this is off or before the
+               form's been synced). Each question has its own "optional" checkbox, mapped straight
+               to that field's required/optional state in the form. See worker.js's "NATIVE FORMS"
+               section (engineSendNativeForm/handleNativeFormEndpoint) for how this is delivered. -->
+          <div class="settings-section">
+            <div class="s-head">📋 Qualifying Questions &amp; Native Forms</div>
+            <div class="s-note">Questions the bot asks a brand-new lead before routing them into your funnel. Mark a question "optional" to let the customer skip it. Turn on Native Forms to collect all of these in a single WhatsApp form instead of asking them one at a time in chat.</div>
+            <div id="qualQuestionList" style="margin-bottom:10px"></div>
+            <button type="button" onclick="addQualQuestion()" style="width:100%;padding:10px;border:2px dashed var(--ls);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px;margin-bottom:12px">+ Add Question</button>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+              <button class="save-btn" id="saveQualQuestions" onclick="saveQualQuestions()">Save Questions</button>
+              <span class="save-msg" id="saveQualQuestionsMsg"></span>
+            </div>
+            <label class="tgl-wrap" id="nativeFormsToggleWrap">
+              <input type="checkbox" id="cfgNativeFormsEnabled" onchange="saveNativeFormsToggle()">
+              <span class="tgl-track"></span>
+              <span class="tgl-label" id="nativeFormsToggleLabel">Off — ask questions one at a time in chat</span>
+            </label>
+            <span class="save-msg" id="saveNativeFormsEnabledMsg"></span>
+            <div id="nativeFormsSyncNote" class="s-note" style="margin-top:10px"></div>
+            <div style="margin-top:8px">
+              <button class="save-btn" onclick="syncNativeForm()">🔄 Sync WhatsApp Form</button>
+              <span class="save-msg" id="syncNativeFormMsg"></span>
+            </div>
+          </div>
+
           <div class="settings-section">
             <div class="s-head">💰 Deal Currency</div>
             <div class="s-note">Default currency stamped on each new lead's deal value (editable per lead in its detail view).</div>
@@ -2777,18 +2805,20 @@ const ROLES = {
              replies AND voice follow-ups use (CLIENTS.voice_tts_provider, read by worker.js's
              engineTtsWithFallback and backend/recovery.js's ttsWithFallback). Auto (blank, default)
              is unchanged production behavior: Sarvam AI primary, self-hosted AI4Bharat standby on
-             any Sarvam failure. Added specifically so the AI4Bharat standby can be tested against
-             real WhatsApp traffic for just this one client, without needing to break the shared
-             SARVAM_API_KEY Worker secret (which would affect every client's voice replies at once). -->
+             any Sarvam failure. "AI4Bharat only" tests the self-hosted standby directly against
+             real conversations without touching Sarvam for anyone else. "Gemini Live" is a
+             separate, fully optional provider (never an automatic fallback for anyone else) —
+             see engineGeminiLiveTts in worker.js; test with real traffic before relying on it. -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🔧 TTS Provider (testing)</div>
-            <div class="s-note">Which text-to-speech engine voice-to-voice replies and voice follow-ups use for this client. Leave on Auto for normal operation. Use "AI4Bharat only" to test the self-hosted standby directly against real conversations without touching Sarvam for anyone else.</div>
+            <div class="s-note">Which text-to-speech engine voice-to-voice replies and voice follow-ups use for this client. Leave on Auto for normal operation. "Gemini Live" is an optional alternative voice engine — enable it here to try it for this client only.</div>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
               <select class="form-input" id="cfgVoiceTtsProvider" style="max-width:300px">
                 <option value="">Auto — Sarvam, AI4Bharat standby</option>
                 <option value="sarvam">Sarvam only (no standby)</option>
                 <option value="ai4bharat">AI4Bharat only (force, for testing)</option>
+                <option value="gemini_live">Gemini Live (optional, beta)</option>
               </select>
               <button class="save-btn" onclick="saveVoiceTtsProvider()">Save</button>
               <span class="save-msg" id="saveVoiceTtsProviderMsg"></span>
@@ -8314,6 +8344,8 @@ function populateSettings(){
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
   $id('cfgDealCurrency').value=clientRecord.deal_currency||'AED';
   populateObjectionPlaybook();
+  loadQualQuestions();
+  renderNativeFormsCard();
   // knowledge base
   _kbText=clientRecord.kb_text||'';
   $id('cfgKbText').value=_kbText;
@@ -9221,6 +9253,90 @@ $id('saveObjPlaybook').addEventListener('click',async()=>{
   ].filter(e=>e.approved_response);
   await saveField('saveObjPlaybook','saveObjPlaybookMsg',{objection_playbook:JSON.stringify(entries)});
 });
+
+// Qualifying Questions + Native Forms — see worker.js's "NATIVE FORMS" section for how these are
+// consumed (engineQualQuestionText/engineQualQuestionOptional read either the legacy plain-string
+// shape or {text, optional}; engineSendNativeForm/handleNativeFormEndpoint for the WhatsApp Flow).
+let _qualQuestions=[];
+function loadQualQuestions(){
+  let raw=[]; try{ raw=JSON.parse(clientRecord.qual_questions||'[]'); }catch(e){ raw=[]; }
+  _qualQuestions=raw.map(q=>typeof q==='string'?{text:q, optional:false}:{text:q?.text||'', optional:!!q?.optional});
+  renderQualQuestions();
+}
+function renderQualQuestions(){
+  const list=$id('qualQuestionList');
+  if(!_qualQuestions.length){ list.innerHTML='<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No qualifying questions yet.</div>'; return; }
+  list.innerHTML=_qualQuestions.map((q,i)=>`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <input class="form-input" style="flex:1" value="${esc(q.text||'')}" oninput="_qualQuestions[${i}].text=this.value" placeholder="e.g. What's your budget?" />
+      <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);white-space:nowrap">
+        <input type="checkbox" ${q.optional?'checked':''} onchange="_qualQuestions[${i}].optional=this.checked">Optional
+      </label>
+      <button class="svc-del" onclick="removeQualQuestion(${i})">✕</button>
+    </div>`).join('');
+}
+function addQualQuestion(){
+  _qualQuestions.push({text:'', optional:false});
+  renderQualQuestions();
+  $id('qualQuestionList').lastElementChild?.querySelector('input')?.focus();
+}
+function removeQualQuestion(i){ _qualQuestions.splice(i,1); renderQualQuestions(); }
+async function saveQualQuestions(){
+  const btn=$id('saveQualQuestions'),msg=$id('saveQualQuestionsMsg');
+  btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+  try{
+    const cleaned=_qualQuestions.map(q=>({text:(q.text||'').trim(), optional:!!q.optional})).filter(q=>q.text);
+    await patchClient({qual_questions:JSON.stringify(cleaned)});
+    msg.textContent='✓ Saved';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; setTimeout(()=>msg.textContent='',3000); }
+}
+
+// Off by default: a client must both flip this on AND hit "Sync WhatsApp Form" (creates/publishes
+// the actual Meta Flow) before native forms actually send — engineRouteFlow's qualify route falls
+// back to the classic chat ladder until both are true. Merges into bot_config the same way
+// saveRateLimitMs does (see that handler's own comment) rather than overwriting the whole blob.
+function renderNativeFormsCard(){
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const enabled=botConfig.native_forms_enabled===true;
+  $id('cfgNativeFormsEnabled').checked=enabled;
+  $id('nativeFormsToggleLabel').textContent=enabled?'On — collected as one native WhatsApp form':'Off — ask questions one at a time in chat';
+  $id('nativeFormsSyncNote').textContent=clientRecord.native_flow_id
+    ? 'WhatsApp form synced and ready. Re-sync after adding or editing questions.'
+    : 'Not synced yet — click "Sync WhatsApp Form" below after saving your questions.';
+}
+async function saveNativeFormsToggle(){
+  const input=$id('cfgNativeFormsEnabled'),msg=$id('saveNativeFormsEnabledMsg'),label=$id('nativeFormsToggleLabel');
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  botConfig.native_forms_enabled=input.checked;
+  label.textContent=input.checked?'On — collected as one native WhatsApp form':'Off — ask questions one at a time in chat';
+  msg.textContent=''; msg.className='save-msg';
+  input.disabled=true;
+  try{
+    await patchClient({bot_config:JSON.stringify(botConfig)});
+    msg.textContent='✓ Saved';
+  }catch(e){
+    input.checked=!input.checked;
+    label.textContent=input.checked?'On — collected as one native WhatsApp form':'Off — ask questions one at a time in chat';
+    msg.textContent='Error: '+e.message; msg.className='save-msg err';
+  }finally{
+    input.disabled=false;
+    setTimeout(()=>msg.textContent='',3000);
+  }
+}
+async function syncNativeForm(){
+  const msg=$id('syncNativeFormMsg');
+  msg.textContent='Syncing…'; msg.className='save-msg';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/native-forms/sync`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok||!data.ok){ msg.textContent='Error: '+(data.error||'HTTP '+r.status); msg.className='save-msg err'; return; }
+    clientRecord.native_flow_id=data.flow_id;
+    msg.textContent='✓ Synced';
+    renderNativeFormsCard();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ setTimeout(()=>msg.textContent='',4000); }
+}
 
 $id('saveFlow').addEventListener('click',async()=>{
   const err=$id('flowErr');

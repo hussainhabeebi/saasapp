@@ -6655,6 +6655,14 @@ async function engineGeminiGenerateWithFallback(env, c, systemText, userText, op
 }
 
 function engineParseJsonField(raw, fallback){ try{ const v=JSON.parse(raw||''); return v??fallback; }catch(e){ return fallback; } }
+// qual_questions entries were always a plain string ("what's your budget?"). Native Forms (see
+// "NATIVE FORMS" section below) needs a per-question optional/required flag, which a bare string
+// has nowhere to hold — entries can now ALSO be {text, optional}. Every existing string entry is
+// unchanged (still required, same as before this existed); these two helpers are the one place
+// that shape difference is resolved, so every call site (the classic chat qualify_next ladder AND
+// the native-forms flow builder/endpoint) reads it the same way instead of re-deriving it.
+function engineQualQuestionText(q){ return typeof q==='string'?q:String(q?.text??''); }
+function engineQualQuestionOptional(q){ return !!(q && typeof q==='object' && q.optional===true); }
 function engineParseSalesReps(raw){
   try{ const a=JSON.parse(raw||'[]'); if(Array.isArray(a)&&a.length) return a; }catch(e){}
   return (raw||'').split('\n').map(s=>s.trim()).filter(Boolean);
@@ -7089,12 +7097,12 @@ function engineRouteFlow(c, state, userText, cls){
   if(route==='qualify_next'){
     const currentIdx=qualStage!==null?qualStage:0;
     const nextIdx=currentIdx+1;
-    if(qualQuestions[currentIdx]) qualAnswers[qualQuestions[currentIdx]]=userText;
+    if(qualQuestions[currentIdx]) qualAnswers[engineQualQuestionText(qualQuestions[currentIdx])]=userText;
     if(nextIdx<qualQuestions.length){
-      // qual_questions is documented/expected as an array of plain strings, but it's client-
-      // editable JSON with no schema enforcement — coerce defensively so a malformed entry (an
-      // object, a number, etc.) can never reach the Chatwoot/WhatsApp send as a non-string value.
-      reply=typeof qualQuestions[nextIdx]==='string'?qualQuestions[nextIdx]:String(qualQuestions[nextIdx]??'');
+      // qual_questions entries are plain strings or {text, optional} (see engineQualQuestionText
+      // above) — either way this coerces defensively so a malformed entry (a bare number, etc.)
+      // can never reach the Chatwoot/WhatsApp send as a non-string value.
+      reply=engineQualQuestionText(qualQuestions[nextIdx]);
       next='qual_'+nextIdx;
     } else {
       // The one place flow_json content is still sent verbatim — the single, one-time transition
@@ -7780,6 +7788,95 @@ async function engineAi4BharatTts(env, text, isoLangCode){
   }
 }
 
+// OPTIONAL voice provider — Gemini Live API (Settings → Voice → 🔧 TTS Provider →
+// CLIENTS.voice_tts_provider==='gemini_live'). Unlike Sarvam/AI4Bharat above this is opt-in ONLY
+// (never an automatic fallback for anyone who hasn't explicitly chosen it) — the Live API is a
+// real-time bidirectional session, a materially heavier/slower mechanism to reach for one turn's
+// worth of speech than a plain TTS REST call, so it stays a deliberate per-client choice rather
+// than folded into the Sarvam→AI4Bharat auto-fallback ladder.
+//
+// GEMINI_API_KEY is the same shared Worker secret the intent classifier/transcriber already use
+// (see engineGeminiGenerateWithFallback) — no new secret needed. Reuses the exact same
+// render-pipeline service as engineAi4BharatTts above (MARKETING_RENDER_WEBHOOK_URL/_SECRET) for
+// one thing only: converting the Live API's raw PCM16 output into the Ogg/Opus format WhatsApp
+// needs for a native voice-note bubble, since Cloudflare Workers have no audio codec available and
+// this repo's own convention is "anything ffmpeg-shaped runs on the render pipeline, not here" —
+// see render-pipeline/server.js's POST /pcm-to-ogg and its own comment.
+//
+// **Not verified against a live call** (no GEMINI_API_KEY with Live API access, and no route to
+// generativelanguage.googleapis.com's WebSocket endpoint, in this dev sandbox) — implemented
+// directly from Google's documented BidiGenerateContent wire protocol (setup → setupComplete →
+// clientContent turn → streamed serverContent.modelTurn.parts[].inlineData chunks →
+// serverContent.turnComplete), same "test before relying on it" caveat this file already gives
+// every other newly-added provider (see engineAi4BharatTts above). Test against a real client
+// before enabling in production.
+const ENGINE_GEMINI_LIVE_MODEL='models/gemini-2.0-flash-live-001';
+async function engineGeminiLiveTts(env, text, isoLangCode){
+  if(!text || !env.GEMINI_API_KEY) return null;
+  if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
+  let ws;
+  try{
+    const pcmChunks=await new Promise((resolve, reject)=>{
+      const chunks=[];
+      let settled=false;
+      const finish=(fn, val)=>{ if(settled) return; settled=true; clearTimeout(timer); try{ ws.close(); }catch(e){} fn(val); };
+      const timer=setTimeout(()=>finish(reject, new Error('Gemini Live: timed out waiting for a full turn')), 20000);
+      const url=`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
+      ws=new WebSocket(url);
+      ws.addEventListener('open', ()=>{
+        ws.send(JSON.stringify({setup:{model:ENGINE_GEMINI_LIVE_MODEL, generationConfig:{responseModalities:['AUDIO']}}}));
+      });
+      ws.addEventListener('message', async (evt)=>{
+        try{
+          const raw=typeof evt.data==='string'?evt.data:new TextDecoder().decode(await evt.data.arrayBuffer?.()??evt.data);
+          const msg=JSON.parse(raw);
+          if(msg.setupComplete){
+            ws.send(JSON.stringify({clientContent:{turns:[{role:'user', parts:[{text:text.slice(0,500)}]}], turnComplete:true}}));
+            return;
+          }
+          const parts=msg.serverContent?.modelTurn?.parts||[];
+          for(const p of parts){
+            if(p.inlineData?.data && (p.inlineData.mimeType||'').startsWith('audio/pcm')){
+              chunks.push(p.inlineData.data);
+            }
+          }
+          if(msg.serverContent?.turnComplete) finish(resolve, chunks);
+        }catch(e){ finish(reject, e); }
+      });
+      ws.addEventListener('error', ()=>finish(reject, new Error('Gemini Live: socket error')));
+      ws.addEventListener('close', ()=>finish(reject, new Error('Gemini Live: socket closed before turnComplete')));
+    });
+    if(!chunks.length) return null;
+    // Live API's documented default output: 16-bit PCM, little-endian, mono, 24kHz.
+    const pcmBytes=chunks.map(b64=>{
+      const bin=atob(b64); const arr=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+      return arr;
+    });
+    const totalLen=pcmBytes.reduce((n,a)=>n+a.length,0);
+    const pcm=new Uint8Array(totalLen);
+    let offset=0; for(const a of pcmBytes){ pcm.set(a, offset); offset+=a.length; }
+    let pcmB64=''; const CH=0x8000;
+    for(let i=0;i<pcm.length;i+=CH) pcmB64+=String.fromCharCode(...pcm.subarray(i, i+CH));
+    pcmB64=btoa(pcmB64);
+    const reqBody=JSON.stringify({pcm_base64:pcmB64, sample_rate:24000, channels:1});
+    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
+    const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/pcm-to-ogg`;
+    const r=await engineFetchWithRetry(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineGeminiLiveTts — render pipeline pcm-to-ogg returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      return null;
+    }
+    const buf=await r.arrayBuffer();
+    if(buf.byteLength<200) return null;
+    return buf;
+  }catch(e){
+    await reportOpsError(env, 'engineGeminiLiveTts — request threw', e, {isoLangCode});
+    return null;
+  }
+}
+
 // Single entry point every voice-reply call site should use instead of calling engineSarvamTts
 // directly — tries Sarvam (PRIMARY) first, and only reaches for the self-hosted AI4Bharat standby
 // (engineAi4BharatTts above) when Sarvam's own call returns null (missing key, unsupported
@@ -7790,15 +7887,16 @@ async function engineAi4BharatTts(env, text, isoLangCode){
 // if BOTH providers fail or aren't configured.
 //
 // `provider` is CLIENTS.voice_tts_provider (Settings → Voice → 🔧 TTS Provider (testing),
-// dashboard.html) — blank/unset means this normal auto behavior, unchanged. Added specifically so
-// the AI4Bharat standby can be tested against real WhatsApp traffic for one client without
-// touching the shared SARVAM_API_KEY (which affects every client at once): 'ai4bharat' skips
-// Sarvam and calls the standby directly; 'sarvam' skips the standby (Sarvam-or-nothing, so a
-// forced failure there falls straight to a text reply, same as before this standby existed).
+// dashboard.html) — blank/unset means this normal auto behavior, unchanged. 'ai4bharat'/'sarvam'
+// were added so each standby could be tested against real WhatsApp traffic for one client without
+// touching the shared SARVAM_API_KEY (which affects every client at once). 'gemini_live' is a
+// distinct, fully opt-in third option (see engineGeminiLiveTts above) — chosen explicitly, never
+// reached as an automatic fallback the way AI4Bharat is.
 async function engineTtsWithFallback(env, text, langCode, provider){
   const iso=(langCode||'').toLowerCase();
   const bcp47=ENGINE_TTS_LANG_MAP[iso];
   const mode=(provider||'').toLowerCase();
+  if(mode==='gemini_live') return engineGeminiLiveTts(env, text, iso);
   if(mode==='ai4bharat') return engineAi4BharatTts(env, text, iso);
   if(bcp47){
     const sarvamBuf=await engineSarvamTts(env, text, bcp47);
@@ -7806,6 +7904,292 @@ async function engineTtsWithFallback(env, text, langCode, provider){
   }
   if(mode==='sarvam') return null;
   return engineAi4BharatTts(env, text, iso);
+}
+
+/* ── NATIVE FORMS (WhatsApp Flows) ────────────────────────────────────────────────────────────
+   OPTIONAL, per-client (Settings → General → 📋 Native Forms — bot_config.native_forms_enabled,
+   dashboard.html). When on, a brand-new lead's qualifying questions (CLIENTS.qual_questions) are
+   collected as ONE native WhatsApp form (a Meta "Flow") instead of the classic one-question-at-a-
+   time chat ladder (engineRouteFlow's qualify/qualify_next routes — unchanged, and still the
+   fallback whenever this is off or not yet synced). Each question can be marked optional
+   (engineQualQuestionOptional, set from the same Settings card) — mapped straight to the Flow
+   field's own `required` property.
+
+   Why this needs its own encrypted endpoint instead of just reading the answer off the normal
+   engine webhook like a button-tap quick-reply: WhatsApp delivers a completed Flow's answers as an
+   `nfm_reply` interactive message over the SAME inbound webhook every other WhatsApp message uses
+   — but Chatwoot (this app's inbox/relay for every other inbound message) is a CONFIRMED case of
+   silently dropping that payload's content (chatwoot/chatwoot#13970 — content:null, content_type
+   stays 'text'; the actual answers never reach anything downstream of Chatwoot, agent UI
+   included). Rather than depend on a fix landing in Chatwoot, this uses WhatsApp Flows' other
+   supported completion mode: a `data_exchange` screen action, which Meta posts DIRECTLY to a
+   business-owned HTTPS endpoint (RSA/AES-encrypted, per Meta's Flow Endpoint spec) — completely
+   bypassing Chatwoot for this one payload. Everything else about the conversation (the Flow's own
+   send, every other message) still goes through the exact same channels as before.
+
+   One SHARED RSA keypair for every client (Worker secrets NATIVE_FORMS_PRIVATE_KEY_PEM /
+   NATIVE_FORMS_PUBLIC_KEY_PEM) — nothing in Meta's spec requires a distinct key per WABA, and
+   reusing one avoids storing a private key per client in NocoDB (a materially weaker secrets store
+   than Worker secrets). handleNativeFormSync uploads the shared public key to each client's own
+   WABA (POST /{waba_id}/whatsapp_business_encryption) the first time that client turns this on.
+
+   **Not verified against a live Meta call** — the crypto (RSA-OAEP key unwrap, AES-128-GCM
+   payload decrypt/encrypt with the response IV flipped per byte, the ping/data_exchange contract)
+   is implemented directly from Meta's published Flow Endpoint spec, same "documented but untested
+   here" caveat this file already carries for engineGeminiLiveTts/AI4Bharat elsewhere — no Meta app
+   with Flows + encryption enabled was reachable from this dev sandbox. Test end-to-end (sync a
+   real Flow, submit it from an actual WhatsApp client) before enabling for a paying client. ── */
+
+const NATIVE_FORM_SCREEN_ID='QUALIFY';
+
+// Builds the Flow JSON Meta expects as the FLOW_JSON asset (handleNativeFormSync uploads this
+// verbatim). One screen, one TextInput per qual_questions entry (required unless
+// engineQualQuestionOptional), whose "Submit" button fires a data_exchange action — NOT the
+// simpler 'complete' terminal action — specifically so the answers reach handleNativeFormEndpoint
+// below instead of arriving as an nfm_reply Chatwoot would drop (see block comment above).
+function engineBuildNativeFormFlowJson(qualQuestions){
+  const fields=qualQuestions.map((q,i)=>({
+    type:'TextInput', name:'q'+i, label:engineQualQuestionText(q).slice(0,80)||('Question '+(i+1)),
+    'input-type':'text', required:!engineQualQuestionOptional(q)
+  }));
+  return {
+    version:'3.0',
+    screens:[
+      {
+        id:NATIVE_FORM_SCREEN_ID, title:'Quick questions', terminal:false, data:{},
+        layout:{type:'SingleColumnLayout', children:[
+          {type:'Form', name:'form', children:[
+            ...fields,
+            {type:'Footer', label:'Submit', 'on-click-action':{name:'data_exchange', payload:fields.reduce((o,f)=>({...o,[f.name]:'${form.'+f.name+'}'}),{})}}
+          ]}
+        ]}
+      },
+      // Meta's own well-known terminal screen name — handleNativeFormEndpoint's data_exchange
+      // response points here to close the Flow with a success state after the answers are saved.
+      {id:'SUCCESS', title:'All set', terminal:true, success:true, data:{}, layout:{type:'SingleColumnLayout', children:[
+        {type:'TextBody', text:"Thanks — we've got your answers!"}
+      ]}}
+    ]
+  };
+}
+
+async function engineImportNativeFormsPrivateKey(env){
+  const pem=(env.NATIVE_FORMS_PRIVATE_KEY_PEM||'').trim();
+  if(!pem) return null;
+  const b64=pem.replace(/-----BEGIN PRIVATE KEY-----/,'').replace(/-----END PRIVATE KEY-----/,'').replace(/\s+/g,'');
+  const der=Uint8Array.from(atob(b64), ch=>ch.charCodeAt(0));
+  return crypto.subtle.importKey('pkcs8', der, {name:'RSA-OAEP', hash:'SHA-256'}, false, ['decrypt']);
+}
+function engineFlipBytes(bytes){ const out=new Uint8Array(bytes.length); for(let i=0;i<bytes.length;i++) out[i]=bytes[i]^0xFF; return out; }
+function engineB64ToBytes(b64){ const bin=atob(b64); const arr=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i); return arr; }
+function engineBytesToB64(bytes){ let s=''; const CH=0x8000; for(let i=0;i<bytes.length;i+=CH) s+=String.fromCharCode(...bytes.subarray(i, i+CH)); return btoa(s); }
+
+// Verifies X-Hub-Signature-256 the same way Meta signs every Graph API webhook (hex HMAC-SHA256
+// over the raw body, prefixed 'sha256=') — this endpoint is called directly by Meta, not through
+// requireSession, so this signature is the ONLY auth on it.
+async function verifyMetaWebhookSignature(env, rawBody, sigHeader){
+  if(!sigHeader || !env.META_APP_SECRET) return false;
+  const expected='sha256='+await hmacSha256Hex(env.META_APP_SECRET, rawBody);
+  if(expected.length!==sigHeader.length) return false;
+  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
+  return diff===0;
+}
+
+// One-time setup, called from Settings when a client turns Native Forms on (or hits "Sync"):
+// uploads the shared encryption public key to this client's WABA (idempotent — safe to re-POST),
+// builds the Flow JSON from their current qual_questions, and creates+publishes it (or, if
+// native_flow_id already exists, re-uploads that same Flow's asset instead of creating a new one —
+// so re-syncing after editing qual_questions doesn't leave orphaned old Flows behind).
+async function handleNativeFormSync(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account is not connected for this account — connect it from Settings → Channels first.'}, 400);
+  if(!env.NATIVE_FORMS_PUBLIC_KEY_PEM||!env.NATIVE_FORMS_PRIVATE_KEY_PEM) return json({error:'Native Forms encryption keys are not configured on the server.'}, 500);
+  const qualQuestions=engineParseJsonField(c.qual_questions, []);
+  if(!qualQuestions.length) return json({error:'Add at least one qualifying question first.'}, 400);
+
+  const keyR=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/whatsapp_business_encryption`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({business_public_key:env.NATIVE_FORMS_PUBLIC_KEY_PEM})
+  });
+  if(!keyR.ok){
+    const errBody=await keyR.text().catch(()=>'');
+    return json({error:'Failed to register the encryption key with Meta: '+errBody.slice(0,300)}, 502);
+  }
+
+  const flowJson=engineBuildNativeFormFlowJson(qualQuestions);
+  let flowId=c.native_flow_id;
+  if(!flowId){
+    const createR=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/flows`, {
+      method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({name:`leadvyne-qualify-${payload.cid}`, categories:['LEAD_GENERATION'], endpoint_uri:`${new URL(request.url).origin}/native-forms/endpoint`})
+    });
+    const createData=await createR.json().catch(()=>({}));
+    if(!createR.ok||!createData.id) return json({error:'Failed to create the WhatsApp Flow: '+(createData?.error?.message||'HTTP '+createR.status)}, 502);
+    flowId=createData.id;
+  }
+
+  const fd=new FormData();
+  fd.append('file', new Blob([JSON.stringify(flowJson)], {type:'application/json'}), 'flow.json');
+  fd.append('name', 'flow.json');
+  fd.append('asset_type', 'FLOW_JSON');
+  const assetR=await fetch(`https://graph.facebook.com/v18.0/${flowId}/assets`, {method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`}, body:fd});
+  if(!assetR.ok){
+    const errBody=await assetR.text().catch(()=>'');
+    return json({error:'Failed to upload the form definition: '+errBody.slice(0,300)}, 502);
+  }
+
+  const pubR=await fetch(`https://graph.facebook.com/v18.0/${flowId}/publish`, {method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`}});
+  if(!pubR.ok){
+    const errBody=await pubR.text().catch(()=>'');
+    // A Flow that fails validation (e.g. a malformed screen) is created but not publishable — the
+    // id is still saved below so a retry re-uses it instead of piling up orphaned draft Flows.
+    await ensureClientColumns(env, ['native_flow_id']);
+    await patchClientFields(env, payload.cid, {native_flow_id:flowId});
+    return json({error:'Flow created but failed to publish: '+errBody.slice(0,300)}, 502);
+  }
+
+  await ensureClientColumns(env, ['native_flow_id']);
+  await patchClientFields(env, payload.cid, {native_flow_id:flowId});
+  return json({ok:true, flow_id:flowId});
+}
+
+// Sends the native form as an interactive Flow message — direct Graph API (same pattern as
+// handleWaSend/handleWaSendTemplate above), bypassing Chatwoot for the SEND side too (Chatwoot's
+// own WhatsApp Cloud provider has no Flow message support to lean on either way). flow_token
+// carries just enough for handleNativeFormEndpoint to act on the eventual submission without a
+// database lookup of its own beyond the lead record itself: clientId (which client/WABA this is),
+// convId (so the completion message can go out through the same Chatwoot conversation as
+// everything else), and the customer's phone (to find/create the lead row, same identity key
+// engineGetLeadState already uses — no leadId yet at send time for a brand-new lead).
+async function engineSendNativeForm(env, c, clientId, convId, phone, replyLang){
+  if(!c.wa_phone_id||!c.wa_token||!c.native_flow_id) return false;
+  const flowToken=btoa(JSON.stringify({clientId:String(clientId), convId:convId||null, phone})).replace(/=+$/,'');
+  const bodyText=await engineLocalizeReply(env, c, 'Just a couple of quick questions to get you the right info — tap below to fill them in.', replyLang);
+  try{
+    const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({
+        messaging_product:'whatsapp', to:phone, type:'interactive',
+        interactive:{
+          type:'flow', body:{text:bodyText},
+          action:{
+            name:'flow',
+            parameters:{
+              flow_message_version:'3', flow_token:flowToken, flow_id:c.native_flow_id,
+              flow_cta:'Start', flow_action:'navigate',
+              flow_action_payload:{screen:NATIVE_FORM_SCREEN_ID, data:{}}
+            }
+          }
+        }
+      })
+    });
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendNativeForm — Meta rejected the Flow send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId});
+      return false;
+    }
+    return true;
+  }catch(e){
+    await reportOpsError(env, 'engineSendNativeForm — send threw', e, {clientId});
+    return false;
+  }
+}
+
+// Meta's Flow Endpoint contract (POST, encrypted, called directly by Meta — no session, only
+// X-Hub-Signature-256): every request has {encrypted_flow_data, encrypted_aes_key, initial_vector}
+// (all base64). Health-check pings (action:'ping') arrive the same way and must be answered the
+// same way, not skipped. See block comment above for what's verified vs. not.
+async function handleNativeFormEndpoint(request, env){
+  const rawBody=await request.text();
+  const sig=request.headers.get('X-Hub-Signature-256');
+  if(!await verifyMetaWebhookSignature(env, rawBody, sig)) return new Response('Invalid signature', {status:432});
+
+  let reqData;
+  try{ reqData=JSON.parse(rawBody); }catch(e){ return new Response('Bad request', {status:400}); }
+  const {encrypted_flow_data, encrypted_aes_key, initial_vector}=reqData||{};
+  if(!encrypted_flow_data||!encrypted_aes_key||!initial_vector) return new Response('Bad request', {status:400});
+
+  const privateKey=await engineImportNativeFormsPrivateKey(env);
+  if(!privateKey) return new Response('Not configured', {status:500});
+
+  let aesKeyBytes, ivBytes, decrypted;
+  try{
+    const aesKeyRaw=await crypto.subtle.decrypt({name:'RSA-OAEP'}, privateKey, engineB64ToBytes(encrypted_aes_key));
+    aesKeyBytes=new Uint8Array(aesKeyRaw);
+    ivBytes=engineB64ToBytes(initial_vector);
+    const aesKey=await crypto.subtle.importKey('raw', aesKeyBytes, {name:'AES-GCM'}, false, ['decrypt']);
+    const plainBuf=await crypto.subtle.decrypt({name:'AES-GCM', iv:ivBytes}, aesKey, engineB64ToBytes(encrypted_flow_data));
+    decrypted=JSON.parse(new TextDecoder().decode(plainBuf));
+  }catch(e){
+    await reportOpsError(env, 'handleNativeFormEndpoint — decrypt/parse failed', e, {});
+    return new Response('Decryption failed', {status:421});
+  }
+
+  // Encrypts and returns respObj the way Meta requires: same AES key, but the response IV is the
+  // REQUEST's IV with every byte bitwise-flipped (Meta's documented anti-replay requirement) — a
+  // plain base64 string body (Content-Type text/plain), not JSON.
+  const respond=async(respObj)=>{
+    const aesKey=await crypto.subtle.importKey('raw', aesKeyBytes, {name:'AES-GCM'}, false, ['encrypt']);
+    const cipherBuf=await crypto.subtle.encrypt({name:'AES-GCM', iv:engineFlipBytes(ivBytes)}, aesKey, new TextEncoder().encode(JSON.stringify(respObj)));
+    return new Response(engineBytesToB64(new Uint8Array(cipherBuf)), {status:200, headers:{'Content-Type':'text/plain'}});
+  };
+
+  if(decrypted.action==='ping') return respond({data:{status:'active'}});
+
+  if(decrypted.action==='data_exchange'){
+    let flowMeta={};
+    try{ flowMeta=JSON.parse(atob(decrypted.flow_token||'')); }catch(e){}
+    const clientId=flowMeta.clientId;
+    const c=clientId?await getClientById(env, clientId):null;
+    if(!c) return respond({data:{acknowledged:true}});
+
+    const qualQuestions=engineParseJsonField(c.qual_questions, []);
+    const submitted=decrypted.data||{};
+    const answers={};
+    qualQuestions.forEach((q,i)=>{
+      const val=submitted['q'+i];
+      if(val!=null && String(val).trim()!=='') answers[engineQualQuestionText(q)]=String(val);
+    });
+
+    const state=await engineGetLeadState(env, clientId, flowMeta.phone, 'Phone');
+    const flow=engineParseJsonField(c.flow_json, {});
+    const firstStage=Object.keys(flow.stages||{}).filter(k=>k!=='new')[0]||'new';
+    const firstAction=(flow.stages?.[firstStage]||{})['*']||{next:firstStage, msg:null};
+    const vars=flow.variables||{};
+    const replyLang=state.lead?.Language||c.language||'en';
+    const stageMsg=(flow.messages?.[firstAction.msg]||'Great, thanks! Let me share some information 😊').replace(/\[(\w+)\]/g,(_,k)=>vars[k]??'');
+    const sentText=await engineLocalizeReply(env, c, stageMsg, replyLang);
+    const nextStage=firstAction.next||firstStage;
+
+    const history=(state.history||[]).slice();
+    history.push({role:'assistant', content:sentText});
+    const leadBody={
+      ClientId:String(clientId), Phone:flowMeta.phone||state.phone||'', Name:state.name||'',
+      ConversationID:flowMeta.convId||state.lead?.ConversationID||null,
+      QualAnswers:JSON.stringify({...state.qualAnswers, ...answers}), Stage:nextStage,
+      ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString(), Channel:'whatsapp'
+    };
+    const resolvedLeadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+    if(resolvedLeadId && nextStage!==state.stage) await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, nextStage);
+
+    if(flowMeta.convId){
+      await engineDeliverReply(env, c, clientId, flowMeta.convId, sentText, {langCode:replyLang});
+    } else if(c.wa_phone_id && c.wa_token && flowMeta.phone){
+      // No Chatwoot conversation id was captured at send time — shouldn't normally happen, since
+      // convId is set the moment the customer's first inbound message creates one — but fall back
+      // to a direct Graph API send so the customer still gets the stage-1 message, not silence.
+      await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+        method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({messaging_product:'whatsapp', to:flowMeta.phone, type:'text', text:{body:sentText}})
+      }).catch(()=>{});
+    }
+
+    return respond({version:'3.0', screen:'SUCCESS', data:{extension_message_response:{params:{flow_token:decrypted.flow_token||''}}}});
+  }
+
+  return respond({data:{acknowledged:true}});
 }
 
 // Rewrites an already-composed reply into a short, natural, spoken sentence — never the literal
@@ -8527,16 +8911,33 @@ async function handleEngineWebhook(request, env, secret){
       // no reply
     } else if(routing.route==='qualify'){
       const qualQuestions=engineParseJsonField(c.qual_questions, []);
-      const firstQ=typeof qualQuestions[0]==='string'?qualQuestions[0]:'';
-      routing.next='qual_0';
-      // A brand-new lead gets a short intro to what the business offers ahead of the first
-      // qualifying question — see engineBuildFirstTouchIntro. A returning lead landing on this
-      // route again (edge case, e.g. a re-subscribe) just gets the plain scripted question.
-      sentText=isNewLead
-        ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang)
-        : await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
-      routing.reply=sentText;
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      // Native Forms (opt-in, Settings → General → 📋 Native Forms — bot_config.native_forms_enabled)
+      // replaces the one-question-at-a-time chat ladder below with a single WhatsApp Flow
+      // collecting every qual_questions answer in one native form, required/optional per question
+      // — see the "NATIVE FORMS" section above for engineSendNativeForm/handleNativeFormEndpoint.
+      // WhatsApp-only (no Chatwoot-relay/Instagram equivalent) and needs a published Flow
+      // (native_flow_id, set by handleNativeFormSync once a client turns this on) — falls back to
+      // the normal chat ladder whenever either isn't true, so enabling the toggle before syncing
+      // still leaves qualification working, just not yet as a native form.
+      const nativeFormSent=qualQuestions.length && botConfig.native_forms_enabled===true && c.native_flow_id && c.wa_phone_id && c.wa_token
+        ? await engineSendNativeForm(env, c, clientId, convId, phone, replyLang)
+        : false;
+      if(nativeFormSent){
+        routing.next='awaiting_native_form';
+        routing.reply='';
+        sentText=null; // the Flow message itself is what the customer sees — nothing to log as chat text
+      } else {
+        const firstQ=engineQualQuestionText(qualQuestions[0]);
+        routing.next='qual_0';
+        // A brand-new lead gets a short intro to what the business offers ahead of the first
+        // qualifying question — see engineBuildFirstTouchIntro. A returning lead landing on this
+        // route again (edge case, e.g. a re-subscribe) just gets the plain scripted question.
+        sentText=isNewLead
+          ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang)
+          : await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
+        routing.reply=sentText;
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      }
     } else if(routing.route==='qualify_next'){
       sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
       routing.reply=sentText;
@@ -8768,7 +9169,7 @@ async function handleInstagramWebhook(request, env){
         // no reply
       }else if(routing.route==='qualify'){
         const qualQuestions=engineParseJsonField(c.qual_questions, []);
-        const firstQ=typeof qualQuestions[0]==='string'?qualQuestions[0]:'';
+        const firstQ=engineQualQuestionText(qualQuestions[0]);
         routing.next='qual_0';
         sentText=isNewLead
           ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang)
@@ -16062,6 +16463,8 @@ export default {
       else if(url.pathname==='/wa/templates' && request.method==='POST'){ res=await handleWaTemplatesCreate(request, env); }
       else if(url.pathname==='/wa/send' && request.method==='POST'){ res=await handleWaSend(request, env); }
       else if(url.pathname==='/wa/send-template' && request.method==='POST'){ res=await handleWaSendTemplate(request, env); }
+      else if(url.pathname==='/native-forms/sync' && request.method==='POST'){ res=await handleNativeFormSync(request, env); }
+      else if(url.pathname==='/native-forms/endpoint' && request.method==='POST'){ res=await handleNativeFormEndpoint(request, env); }
       else if(url.pathname==='/tasks/notify' && request.method==='POST'){ res=await handleTaskEmailNotify(request, env); }
       else if(url.pathname==='/email/client' && request.method==='POST'){ res=await handleEmailClientUpdate(request, env); }
       else if(url.pathname==='/email/status' && request.method==='GET'){ res=await handleEmailStatus(request, env); }

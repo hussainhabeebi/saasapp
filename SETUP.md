@@ -7299,3 +7299,87 @@ LEADS read/write in this file). That mismatched filter meant these three lookups
 empty, so `/leads/booking-link`'s stage-advance step silently never found the lead it was supposed
 to advance, and the auto-tracking webhook's own "already booked" dedupe check never fired either
 (risking duplicate booking tasks). Fixed to match every other LEADS query in the file.
+
+## Native Forms (WhatsApp Flows) — optional, per-client (`frontend/dashboard.html` — Settings →
+## General → 📋 Qualifying Questions & Native Forms)
+
+Lets a client collect their qualifying questions (`CLIENTS.qual_questions`) as ONE native WhatsApp
+form instead of the classic one-question-at-a-time chat ladder (`engineRouteFlow`'s
+`qualify`/`qualify_next` routes — unchanged, still the fallback whenever this is off or not yet
+synced). Off by default; a client must both flip the toggle on AND click "Sync WhatsApp Form"
+before it actually takes effect.
+
+**Qualifying questions now support a per-question "optional" flag.** `qual_questions` entries can
+be a plain string (legacy — still treated as required, unchanged) or `{text, optional}`. The
+Settings card's per-question checkbox writes the latter shape; `engineQualQuestionText`/
+`engineQualQuestionOptional` (`worker.js`) are the one place either shape is read, so every call
+site (the chat ladder, the Flow builder, the completion endpoint) agrees.
+
+**Why this needs its own encrypted endpoint, not just the normal engine webhook**: WhatsApp
+delivers a completed Flow's answers as an `nfm_reply` interactive message over the SAME inbound
+webhook every other WhatsApp message uses — but Chatwoot (this app's inbox/relay for every other
+inbound message) is a **confirmed** case of silently dropping that payload
+(chatwoot/chatwoot#13970 — `content:null`, the answers never reach anything downstream of
+Chatwoot). Rather than depend on a Chatwoot fix, this uses a `data_exchange` screen action instead
+of the simpler `complete` action — Meta posts that directly to a business-owned HTTPS endpoint
+(RSA/AES-encrypted, Meta's Flow Endpoint spec), bypassing Chatwoot entirely for this one payload.
+Everything else (the Flow's own send, every other message) still goes through the exact same
+channels as before.
+
+**Setup — one shared RSA keypair for every client** (nothing in Meta's spec requires a distinct key
+per WABA; sharing one avoids storing a private key per client in NocoDB, a materially weaker store
+than Worker secrets):
+```
+openssl genrsa -out native_forms_private.pem 2048
+openssl rsa -in native_forms_private.pem -pubout -out native_forms_public.pem
+wrangler secret put NATIVE_FORMS_PRIVATE_KEY_PEM   # paste native_forms_private.pem's contents
+wrangler secret put NATIVE_FORMS_PUBLIC_KEY_PEM    # paste native_forms_public.pem's contents
+```
+Also needs `META_APP_SECRET` (already required for Embedded Signup — see "Channels module") since
+that's what signs `X-Hub-Signature-256` on every call to `POST /native-forms/endpoint`, the only
+auth on that route (it's called directly by Meta, no session).
+
+**Flow**: client edits questions + flips the toggle on in Settings, then clicks "Sync WhatsApp
+Form" → `handleNativeFormSync` (`POST /native-forms/sync`) registers the shared public key on that
+client's WABA, builds the Flow JSON from `qual_questions` (`engineBuildNativeFormFlowJson` — one
+`TextInput` per question, `required` mapped from `!optional`), creates+publishes the Flow via the
+Graph API, and stores the returned id as `CLIENTS.native_flow_id` (auto-provisioned column). From
+then on, a brand-new lead's `qualify` route sends the Flow (`engineSendNativeForm`, direct Graph
+API `interactive`/`flow` message, bypassing Chatwoot for the send too) instead of the first chat
+question, and `Stage` moves to `awaiting_native_form`. When the customer submits it,
+`handleNativeFormEndpoint` decrypts the submission, writes `QualAnswers`, advances `Stage` to the
+funnel's first real stage (mirroring the chat ladder's own completion step), and sends that
+stage-1 message through the same Chatwoot conversation as everything else.
+
+**Not verified against a live Meta call** — the crypto (RSA-OAEP key unwrap, AES-128-GCM
+decrypt/encrypt with the response IV flipped per byte, the `ping`/`data_exchange` contract) and the
+Flow JSON shape are implemented directly from Meta's published Flow Endpoint spec; no Meta app with
+Flows + encryption enabled was reachable from the dev sandbox this was built in. Test end-to-end —
+sync a real Flow, submit it from an actual WhatsApp client — before enabling for a paying client.
+
+## Gemini Live voice provider — optional, per-client (`frontend/dashboard.html` — Settings → 🎙️
+## Voice → 🔧 TTS Provider)
+
+A third option (`gemini_live`) alongside the existing Sarvam/AI4Bharat choices in
+`CLIENTS.voice_tts_provider`, read by `engineTtsWithFallback` (`worker.js`). Unlike AI4Bharat this
+is opt-in ONLY — never an automatic fallback for anyone who hasn't explicitly chosen it, since the
+Live API is a real-time bidirectional session, a materially heavier mechanism to reach for one
+turn's worth of speech than a plain TTS call.
+
+Uses the same shared `GEMINI_API_KEY` the intent classifier/transcriber already use — no new
+secret. `engineGeminiLiveTts` opens a WebSocket to Gemini's `BidiGenerateContent` Live API,
+sends the already-composed spoken reply text as one turn, and collects the streamed PCM16 audio
+chunks. Since Cloudflare Workers have no audio codec available and this repo's convention is
+"anything ffmpeg-shaped runs on the render pipeline, not the Worker," the raw PCM is sent to a new
+render-pipeline endpoint, `POST /pcm-to-ogg` (`render-pipeline/lib/pcmToOgg.js`), which converts it
+to the Ogg/Opus format WhatsApp needs for a native voice-note bubble — reusing the same
+`MARKETING_RENDER_WEBHOOK_URL`/`_SECRET` this Worker already calls for AI4Bharat TTS/transcription.
+No new render-pipeline env var needed (stateless ffmpeg conversion, no model to gate behind an
+opt-in flag).
+
+**Not verified against a live call** — implemented directly from Google's documented
+`BidiGenerateContent` wire protocol (`setup` → `setupComplete` → `clientContent` turn → streamed
+`serverContent.modelTurn.parts[].inlineData` chunks → `serverContent.turnComplete`); no
+`GEMINI_API_KEY` with Live API access, and no route to `generativelanguage.googleapis.com`'s
+WebSocket endpoint, were available in the dev sandbox this was built in. Test with a real client
+before relying on it in production.
