@@ -23,6 +23,7 @@ const { generateAiBroll } = require('./lib/falBroll');
 const { watermarkLogo, compositeOnColor, textOverlay, reframeToAspect } = require('./lib/imageCompose');
 const { synthesizeVoiceover } = require('./lib/tts');
 const { synthesizeWithAi4Bharat, supportsLanguage: ai4bharatTtsSupportsLanguage } = require('./lib/ai4bharatTts');
+const { pcmToOggOpus } = require('./lib/pcmToOgg');
 const { uploadOutput } = require('./lib/storage');
 const { MODEL_PATH } = require('./lib/segmentation');
 
@@ -294,6 +295,32 @@ app.post('/synthesize-voice-reply', async (req, res) => {
     res.send(audioBuf);
   } catch (err) {
     console.error('synthesize-voice-reply failed:', err.stderr || err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  }
+});
+
+// Synchronous, not queued — same reasoning as /synthesize-voice-reply above. This is the OPTIONAL
+// Gemini Live provider for the WhatsApp voice-to-voice reply feature (CLIENTS.voice_tts_provider
+// === 'gemini_live', see worker.js's engineTtsWithFallback): the Worker opens the Live API
+// WebSocket itself and gets back raw PCM16 audio (Gemini Live's native output format), but
+// WhatsApp only renders a native voice-note bubble for Ogg/Opus — ffmpeg does that conversion
+// here, mirroring how AI4Bharat TTS's audio already flows through this same service. Stateless and
+// model-free (no PyTorch, unlike AI4Bharat above), so this stays enabled by default rather than
+// behind its own opt-in env var.
+app.post('/pcm-to-ogg', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { pcm_base64, sample_rate, channels } = req.body || {};
+  if (!pcm_base64) return res.status(400).json({ error: 'pcm_base64 required' });
+  try {
+    const pcmBuf = Buffer.from(pcm_base64, 'base64');
+    const oggBuf = await pcmToOggOpus(pcmBuf, sample_rate, channels);
+    res.set('Content-Type', 'audio/ogg');
+    res.send(oggBuf);
+  } catch (err) {
+    console.error('pcm-to-ogg failed:', err.stderr || err.message || err);
     res.status(502).json({ error: String(err.message || err).slice(0, 500) });
   }
 });
