@@ -108,16 +108,50 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .dropzone{border:2px dashed var(--line);border-radius:12px;padding:34px 16px;text-align:center;color:var(--muted);cursor:pointer;transition:border-color .18s ease,background .18s ease,transform .1s ease}
 .dropzone:hover{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-ink)}
 .dropzone:active{transform:scale(.99)}
-.timeline-scenes{display:flex;height:64px;border-radius:8px;overflow:hidden;background:var(--card2)}
-.timeline-scene-tile{position:relative;height:100%;background-color:#000;background-size:cover;background-position:center;border-right:2px solid var(--card);cursor:pointer;display:flex;align-items:flex-end;min-width:0;transition:outline-color .15s ease}
-.timeline-scene-tile:last-child{border-right:none}
-.timeline-scene-tile:hover{outline:2px solid var(--accent);outline-offset:-2px}
-.timeline-scene-num{font-size:10px;font-weight:800;color:#fff;background:rgba(0,0,0,.6);padding:1px 5px;border-radius:4px;margin:3px;white-space:nowrap}
-.timeline-cues-row{position:relative;height:16px;margin-top:6px}
-.timeline-cue-mark{position:absolute;top:0;height:100%;border-radius:3px;cursor:pointer;min-width:5px}
-.timeline-cue-mark.broll{background:var(--accent)}
-.timeline-cue-mark.sfx{background:var(--warn)}
-.timeline-cue-mark.vfx{background:var(--good)}
+
+/* CapCut-style interactive timeline — pixel-per-second positioned (not percentage), so it can
+   scroll/zoom like a real NLE timeline instead of always squeezing the whole clip into one fixed
+   width. Drag handlers live in setupTimelineDragHandlers()/ccDragState in the script below. */
+/* Track labels live in a fixed, non-scrolling gutter (.cc-timeline-labels) — an absolutely
+   negative-offset label inside the scrolling area itself would just get clipped by
+   overflow-x:auto at scrollLeft:0, so the label column and the scrollable ruler+tracks are
+   separate flex children instead. */
+.cc-timeline{display:flex;gap:10px;background:var(--card2);border-radius:10px;padding:14px 12px 10px}
+.cc-timeline-labels{flex:0 0 46px}
+.cc-label-spacer{height:18px;margin-bottom:8px}
+.cc-track-label-row{height:36px;margin-bottom:7px;display:flex;align-items:center;justify-content:flex-end;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.02em}
+.cc-timeline-scroll{position:relative;overflow-x:auto;overflow-y:hidden;flex:1;min-width:0;-webkit-user-select:none;user-select:none}
+.cc-ruler{position:relative;height:18px;margin-bottom:8px;border-bottom:1px solid var(--line);min-width:100%}
+.cc-ruler-tick{position:absolute;top:0;bottom:0;border-left:1px solid var(--line);font-size:9.5px;color:var(--muted);padding-left:3px;white-space:nowrap}
+.cc-track{position:relative;height:36px;margin-bottom:7px;min-width:100%}
+.cc-track-trim{height:22px;background:var(--card);border-radius:6px}
+.cc-trim-region{position:absolute;top:0;bottom:0;background:var(--accent-soft);border:1.5px solid var(--accent);border-radius:6px;cursor:grab}
+.cc-trim-region:active{cursor:grabbing}
+.cc-trim-handle{position:absolute;top:0;bottom:0;width:10px;background:var(--accent);cursor:ew-resize;border-radius:3px;z-index:2}
+.cc-trim-handle.left{left:-3px}
+.cc-trim-handle.right{right:-3px}
+.cc-track-scenes{background:#000;border-radius:6px;overflow:hidden}
+.cc-scene-tile{position:absolute;top:0;bottom:0;background-color:#000;background-size:cover;background-position:center;border-right:2px solid var(--card2);cursor:pointer}
+.cc-scene-tile:hover{outline:2px solid var(--accent);outline-offset:-2px}
+.cc-scene-num{position:absolute;left:3px;top:3px;font-size:9px;font-weight:800;color:#fff;background:rgba(0,0,0,.6);padding:1px 4px;border-radius:4px;pointer-events:none}
+.cc-cue-block{position:absolute;top:2px;bottom:2px;border-radius:5px;cursor:grab;display:flex;align-items:center;padding:0 6px;font-size:10px;font-weight:700;color:#0b0c14;overflow:hidden;white-space:nowrap;min-width:16px}
+.cc-cue-block.broll{background:var(--accent)}
+.cc-cue-block.sfx{background:var(--warn)}
+.cc-cue-block.vfx{background:var(--good)}
+.cc-cue-block.unaccepted{opacity:.35}
+.cc-cue-block:active{cursor:grabbing}
+.cc-cue-resize{position:absolute;top:0;bottom:0;right:0;width:7px;cursor:ew-resize}
+.cc-playhead{position:absolute;top:0;bottom:6px;width:2px;background:#fff;pointer-events:none;box-shadow:0 0 4px rgba(255,255,255,.7);z-index:5}
+.cc-playhead::before{content:'';position:absolute;top:-4px;left:-4px;width:10px;height:10px;background:#fff;border-radius:50% 50% 50% 0;transform:rotate(45deg)}
+
+/* Tabbed side panel — replaces the old always-stacked step cards, CapCut-style tool switcher */
+.cc-tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.cc-tab{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:7px}
+.cc-tab.active{color:var(--accent-ink);border-color:var(--accent);background:var(--accent-soft)}
+.cc-tab-dot{width:7px;height:7px;border-radius:50%;background:var(--line);flex-shrink:0}
+.cc-tab-dot.active{background:var(--accent-ink)}
+.cc-tab-dot.done{background:var(--good)}
+
 .scene-block{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line)}
 .scene-block:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
 .scene-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;flex-wrap:wrap}
@@ -137,17 +171,6 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
 .chip{border:1.5px solid var(--line);border-radius:20px;padding:6px 12px;font-size:12.5px;cursor:pointer;user-select:none;transition:background .15s ease,border-color .15s ease,color .15s ease}
 .chip:hover{border-color:var(--accent)}
 .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
-.step-rail{display:flex;flex-direction:column}
-.step-rail-item{display:flex;align-items:center;gap:10px;padding:7px 4px;cursor:pointer;border-radius:8px;transition:background .15s ease}
-.step-rail-item:hover{background:var(--card2)}
-.step-rail-dots{display:flex;flex-direction:column;align-items:center;flex-shrink:0}
-.step-rail-dot{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800;background:var(--card2);border:1.5px solid var(--line);color:var(--muted);flex-shrink:0}
-.step-rail-dot.done{background:var(--good-soft);border-color:var(--good);color:var(--good)}
-.step-rail-dot.active{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 0 0 3px var(--accent-soft)}
-.step-rail-line{width:2px;height:14px;background:var(--line)}
-.step-rail-line.done{background:var(--good)}
-.step-rail-label{font-size:12.5px;color:var(--muted)}
-.step-rail-item.current .step-rail-label{color:var(--ink);font-weight:600}
 .progress{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:10px 0}
 .progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),#A5B4FC);transition:width .3s ease;background-size:200% 100%;animation:progress-shimmer 1.6s linear infinite}
 @keyframes progress-shimmer{0%{background-position:0% 0}100%{background-position:200% 0}}
@@ -560,9 +583,38 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
       </div>
 
       <div class="card hidden" id="timelineCard">
-        <div class="card-head"><h2>Timeline</h2><div class="sub">Scenes and B-Roll/SFX/VFX cues, positioned by time — click either to jump to it below.</div></div>
-        <div class="timeline-scenes" id="timelineScenes"></div>
-        <div class="timeline-cues-row" id="timelineCuesRow"></div>
+        <div class="card-head">
+          <div><h2>Timeline</h2><div class="sub">Drag the trim handles, drag cue blocks to reposition, drag their right edge to resize, click anywhere to scrub.</div></div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="note" id="timelineTimeLabel">0:00 / 0:00</span>
+            <span class="note">🔍</span>
+            <input type="range" id="timelineZoom" min="20" max="240" value="70" oninput="renderTimeline()" style="width:110px">
+          </div>
+        </div>
+        <div class="cc-timeline" id="ccTimeline">
+          <div class="cc-timeline-labels">
+            <div class="cc-label-spacer"></div>
+            <div class="cc-track-label-row">Trim</div>
+            <div class="cc-track-label-row">Scenes</div>
+            <div class="cc-track-label-row">B-Roll</div>
+            <div class="cc-track-label-row">SFX</div>
+            <div class="cc-track-label-row">VFX</div>
+          </div>
+          <div class="cc-timeline-scroll" id="ccTimelineScroll">
+            <div class="cc-ruler" id="ccRuler"></div>
+            <div class="cc-track cc-track-trim" id="ccTrackTrim">
+              <div class="cc-trim-region" id="ccTrimRegion">
+                <div class="cc-trim-handle left" data-handle="start"></div>
+                <div class="cc-trim-handle right" data-handle="end"></div>
+              </div>
+            </div>
+            <div class="cc-track cc-track-scenes" id="ccTrackScenes"></div>
+            <div class="cc-track cc-track-cue" id="ccTrackBroll"></div>
+            <div class="cc-track cc-track-cue" id="ccTrackSfx"></div>
+            <div class="cc-track cc-track-cue" id="ccTrackVfx"></div>
+            <div class="cc-playhead" id="ccPlayhead"></div>
+          </div>
+        </div>
       </div>
 
       <div class="editor-cols">
@@ -607,11 +659,6 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             </div>
           </div>
 
-          <div class="card">
-            <div class="card-head"><h2>Steps</h2></div>
-            <div class="step-rail" id="stepRail"></div>
-          </div>
-
           <div class="card hidden" id="clipsCard">
             <div class="card-head"><h2>Clips</h2><div class="sub">Multiple clips get stitched into one video, in this order.</div></div>
             <div id="clipsList"></div>
@@ -623,8 +670,18 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
           </div>
         </div>
 
-        <!-- RIGHT: steps -->
+        <!-- RIGHT: tabbed tool panel (CapCut-style) — one panel visible at a time via
+             showEditorTab(), replacing the old always-stacked step cards. Tab dots reflect the
+             same done/active/pending status the old "Steps" rail card used to show separately
+             (see renderStepRail()). -->
         <div>
+          <div class="cc-tabs" id="ccTabs">
+            <button class="cc-tab active" data-tab="captions" onclick="showEditorTab('captions')"><span class="cc-tab-dot"></span>📝 Captions</button>
+            <button class="cc-tab" data-tab="style" onclick="showEditorTab('style')"><span class="cc-tab-dot"></span>🎨 Style</button>
+            <button class="cc-tab" data-tab="autoedit" onclick="showEditorTab('autoedit')"><span class="cc-tab-dot"></span>⚙️ Auto-Edit</button>
+            <button class="cc-tab" data-tab="cues" onclick="showEditorTab('cues')"><span class="cc-tab-dot"></span>🎬 Cues</button>
+            <button class="cc-tab" data-tab="export" onclick="showEditorTab('export')"><span class="cc-tab-dot"></span>🚀 Export</button>
+          </div>
           <div class="card" id="stepCard1">
             <div class="card-head"><h2><span class="step-num">1</span> Transcript & captions</h2><div class="sub">Word-level, auto-detected language unless you set one — tap a word to fix it.</div></div>
             <button class="btn btn-primary btn-sm" id="transcribeBtn" onclick="transcribeProject()">🌀 Transcribe</button>
@@ -659,7 +716,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             </div>
           </div>
 
-          <div class="card" id="stepCard2">
+          <div class="card hidden" id="stepCard2">
             <div class="card-head"><h2><span class="step-num">2</span> Caption style</h2><div class="sub">Applied to the burned-in captions in the final export, previewed live on the left.</div></div>
             <div class="style-grid" id="styleGrid"></div>
             <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="saveCurrentAsBrandStyle()">💾 Save current look as a brand style</button>
@@ -668,7 +725,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div class="note" style="margin-top:4px">Overrides the selected style's font for THIS project — type the exact family name of a .ttf/.otf you've added to the render pipeline's fonts folder (see its README). Leave blank to use the style's own font.</div>
           </div>
 
-          <div class="card" id="stepCard3">
+          <div class="card hidden" id="stepCard3">
             <div class="card-head"><h2><span class="step-num">3</span> Auto-edit</h2><div class="sub">Pick a template to pre-fill these — still overridable per-project below. Everything here autosaves and applies automatically when you hit Render in step 5 — no separate "apply" step.</div></div>
             <label class="form-label">Auto-edit template</label>
             <select class="form-select" id="optAutoeditPreset" onchange="applyAutoeditPreset()">
@@ -709,7 +766,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div id="previewAutoeditResult" style="margin-top:10px"></div>
           </div>
 
-          <div class="card" id="stepCard4">
+          <div class="card hidden" id="stepCard4">
             <div class="card-head"><h2><span class="step-num">4</span> B-Roll / SFX / VFX cues</h2><div class="sub">Suggested from the script's keywords, free (no AI call) — review, check/uncheck what you want. Autosaves as you go; the Save button below is just a manual double-check.</div></div>
             <button class="btn btn-sec btn-sm" id="suggestCuesBtn" onclick="suggestCues()">✨ Suggest cues from script</button>
             <button class="btn btn-ghost btn-sm" onclick="saveCues()" style="margin-left:8px">💾 Save cues</button>
@@ -719,7 +776,7 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
             <div id="previewCuesResult" style="margin-top:10px"></div>
           </div>
 
-          <div class="card" id="stepCard5">
+          <div class="card hidden" id="stepCard5">
             <div class="card-head"><h2><span class="step-num">5</span> Render & export</h2></div>
             <div class="note" id="renderResNote"></div>
             <label class="form-label">Export quality</label>
@@ -1426,6 +1483,7 @@ function openEditor(id) {
   $id('page-projects').classList.add('hidden');
   $id('page-styles').classList.add('hidden');
   $id('page-editor').classList.remove('hidden');
+  showEditorTab('captions');
   renderEditor();
   loadClips();
   pollJobsIfNeeded();
@@ -1455,7 +1513,7 @@ function renderEditor() {
     $id('previewFrame').style.aspectRatio = p.target_aspect.replace(':', '/');
     $id('trimStart').value = p.trim_start_sec ?? 0;
     $id('trimEnd').value = p.trim_end_sec ?? (p.source_duration_sec || '');
-    video.ontimeupdate = updateCaptionOverlay;
+    video.ontimeupdate = () => { updateCaptionOverlay(); updateCcPlayhead(); };
   }
 
   $id('transcribeBtn').disabled = !hasVideo || p.status === 'transcribing';
@@ -1514,62 +1572,195 @@ function renderEditor() {
   renderTimeline();
 }
 
-// ── TIMELINE — real scene + cue visualization, positioned by time along the clip's duration
-// (each scene tile's width is proportional to its own duration via flex-grow; cue marks are
-// absolutely positioned by percentage of total duration). Click either to jump to it below.
-// Not drag/resize-editable yet — a further increment on top of this, not built.
-function renderTimeline() {
-  const p = currentProject;
-  const scenes = p?.scenes || [];
-  const card = $id('timelineCard');
-  if (!p?.source_key || !scenes.length) { card.classList.add('hidden'); return; }
-  card.classList.remove('hidden');
-
-  $id('timelineScenes').innerHTML = scenes.map((scene, si) => {
-    const dur = Math.max(0.1, scene.end - scene.start);
-    const bg = scene.thumbnail_url ? `background-image:url('${scene.thumbnail_url}')` : '';
-    return `<div class="timeline-scene-tile" style="flex:${dur} 0 0;${bg}" onclick="jumpToScene(${si})" title="Scene ${si + 1} · ${fmtDuration(scene.start)}–${fmtDuration(scene.end)}">
-      <span class="timeline-scene-num">${si + 1}</span>
-    </div>`;
-  }).join('');
-
-  const totalDuration = scenes[scenes.length - 1].end || p.source_duration_sec || 1;
-  const cues = (currentCues || []).filter(c => c.accepted !== false);
-  $id('timelineCuesRow').innerHTML = cues.map(c => {
-    const left = Math.max(0, Math.min(100, (Number(c.start) || 0) / totalDuration * 100));
-    const width = Math.max(0.6, ((Number(c.end) || Number(c.start) || 0) - (Number(c.start) || 0)) / totalDuration * 100);
-    return `<div class="timeline-cue-mark ${esc(c.type)}" style="left:${left}%;width:${width}%" onclick="scrollToStep(4)" title="${esc(c.label || c.type)} · ${fmtDuration(c.start)}"></div>`;
-  }).join('');
+// ── TAB SWITCHER (CapCut-style tool panel) — one stepCard visible at a time, replaces the old
+// always-stacked cards. EDITOR_TAB_TO_STEP keeps scrollToStep(n) (still called from a few other
+// places by step NUMBER, e.g. "jump to cues") working as a thin wrapper over tab-by-name.
+const EDITOR_TAB_TO_STEP = { captions: 1, style: 2, autoedit: 3, cues: 4, export: 5 };
+function showEditorTab(tab) {
+  Object.keys(EDITOR_TAB_TO_STEP).forEach(t => {
+    $id('stepCard' + EDITOR_TAB_TO_STEP[t]).classList.toggle('hidden', t !== tab);
+  });
+  document.querySelectorAll('#ccTabs .cc-tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
+}
+function scrollToStep(n) {
+  const tab = Object.keys(EDITOR_TAB_TO_STEP).find(k => EDITOR_TAB_TO_STEP[k] === n);
+  if (tab) showEditorTab(tab);
 }
 
-// ── STEP PROGRESS RAIL — at-a-glance done/active/pending state for the 5 numbered Editor steps,
-// click to jump straight to one instead of scrolling. Steps 2-4 have no hard pass/fail of their
-// own (a style is always picked by default, auto-edit/cues are optional) so they read "active"
-// only once the step before them is actually usable, and "done" once there's a concrete sign of
-// use (a saved cue, a completed render) — approximate on purpose rather than tracking every
-// field, since this is a progress hint, not a validator.
+// ── INTERACTIVE TIMELINE (CapCut-style) — pixel-per-second positioned, not percentage, so it can
+// scroll/zoom like a real NLE timeline. Trim handles/region are draggable (adjusts trim_start_sec/
+// trim_end_sec, same fields "Save trim & aspect" already wrote), cue blocks are draggable
+// (reposition) and right-edge resizable (change duration), and clicking anywhere scrubs the actual
+// <video> preview. All of this operates on data that already existed (trim/cues) — no new backend
+// endpoints, just a real drag interaction layer on top of what saveTrim()/autoSaveCues() already save.
+let ccPxPerSec = 70;
+let ccDuration = 1;
+let ccDragState = null;
+
+function ccTimeToPx(t) { return Math.max(0, t) * ccPxPerSec; }
+function ccPxToTime(px) { return Math.max(0, px / ccPxPerSec); }
+
+function renderTimeline() {
+  const p = currentProject;
+  const card = $id('timelineCard');
+  if (!p?.source_key) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  setupTimelineDragHandlers();
+
+  ccPxPerSec = Number($id('timelineZoom').value) || 70;
+  const trimStart = Number(p.trim_start_sec) || 0;
+  const trimEnd = p.trim_end_sec != null ? Number(p.trim_end_sec) : (Number(p.source_duration_sec) || trimStart + 10);
+  ccDuration = Math.max(1, Number(p.source_duration_sec) || trimEnd);
+  const widthPx = Math.max(600, ccDuration * ccPxPerSec);
+
+  // Ruler — one tick every 1/5/10s depending on zoom, so labels never overlap at either extreme.
+  const tickEverySec = ccPxPerSec < 35 ? 10 : ccPxPerSec < 90 ? 5 : 1;
+  const ruler = $id('ccRuler');
+  ruler.style.width = widthPx + 'px';
+  let ticks = '';
+  for (let t = 0; t <= ccDuration; t += tickEverySec) ticks += `<div class="cc-ruler-tick" style="left:${ccTimeToPx(t)}px">${fmtDuration(t)}</div>`;
+  ruler.innerHTML = ticks;
+
+  // Trim track
+  const trimTrack = $id('ccTrackTrim'); trimTrack.style.width = widthPx + 'px';
+  const region = $id('ccTrimRegion');
+  region.style.left = ccTimeToPx(trimStart) + 'px';
+  region.style.width = Math.max(6, ccTimeToPx(trimEnd - trimStart)) + 'px';
+
+  // Scenes track
+  const scenesTrack = $id('ccTrackScenes'); scenesTrack.style.width = widthPx + 'px';
+  const scenes = p.scenes || [];
+  scenesTrack.innerHTML = scenes.map((s, i) => `<div class="cc-scene-tile" style="left:${ccTimeToPx(s.start)}px;width:${Math.max(2, ccTimeToPx(s.end - s.start))}px;${s.thumbnail_url ? `background-image:url('${s.thumbnail_url}')` : ''}" onclick="jumpToScene(${i})" title="Scene ${i + 1} · ${fmtDuration(s.start)}–${fmtDuration(s.end)}"><span class="cc-scene-num">${i + 1}</span></div>`).join('');
+
+  // Cue tracks — one per type, each block draggable (move) + right-edge resizable (duration).
+  const trackByType = { broll: $id('ccTrackBroll'), sfx: $id('ccTrackSfx'), vfx: $id('ccTrackVfx') };
+  Object.values(trackByType).forEach(t => { t.style.width = widthPx + 'px'; t.innerHTML = ''; });
+  (currentCues || []).forEach((c, i) => {
+    const track = trackByType[c.type];
+    if (!track) return;
+    const start = Number(c.start) || 0, end = Number(c.end) || (start + 1);
+    const el = document.createElement('div');
+    el.className = `cc-cue-block ${esc(c.type)}${c.accepted === false ? ' unaccepted' : ''}`;
+    el.dataset.cueIndex = i;
+    el.style.left = ccTimeToPx(start) + 'px';
+    el.style.width = Math.max(16, ccTimeToPx(end - start)) + 'px';
+    el.title = `${c.label || c.type} · ${fmtDuration(start)}–${fmtDuration(end)}`;
+    el.textContent = c.label || c.type;
+    const resize = document.createElement('div');
+    resize.className = 'cc-cue-resize';
+    el.appendChild(resize);
+    track.appendChild(el);
+  });
+
+  updateCcPlayhead();
+}
+
+function updateCcPlayhead() {
+  const video = $id('previewVideo');
+  const t = video?.currentTime || 0;
+  const ph = $id('ccPlayhead');
+  if (ph) ph.style.left = ccTimeToPx(t) + 'px';
+  const label = $id('timelineTimeLabel');
+  if (label) label.textContent = `${fmtDuration(t)} / ${fmtDuration(ccDuration)}`;
+}
+
+// Delegated pointer events on the scroll container — wired once per page load (guarded by
+// _ccInit), not once per renderTimeline() call, since renderTimeline() re-runs on every edit.
+function setupTimelineDragHandlers() {
+  const container = $id('ccTimelineScroll');
+  if (!container || container._ccInit) return;
+  container._ccInit = true;
+
+  container.addEventListener('pointerdown', (e) => {
+    const target = e.target;
+    if (target.classList.contains('cc-trim-handle')) {
+      ccDragState = { type: 'trim-' + target.dataset.handle, startX: e.clientX, origStart: Number($id('trimStart').value) || 0, origEnd: Number($id('trimEnd').value) || ccDuration };
+    } else if (target.classList.contains('cc-cue-resize')) {
+      const block = target.closest('.cc-cue-block');
+      const idx = Number(block.dataset.cueIndex);
+      ccDragState = { type: 'cue-resize', idx, startX: e.clientX, origEnd: Number(currentCues[idx].end) || (Number(currentCues[idx].start) + 1) };
+    } else if (target.classList.contains('cc-cue-block')) {
+      const idx = Number(target.dataset.cueIndex);
+      const c = currentCues[idx];
+      const dur = (Number(c.end) || (Number(c.start) + 1)) - (Number(c.start) || 0);
+      ccDragState = { type: 'cue-move', idx, startX: e.clientX, origStart: Number(c.start) || 0, dur };
+    } else if (target.id === 'ccTrimRegion') {
+      ccDragState = { type: 'trim-move', startX: e.clientX, origStart: Number($id('trimStart').value) || 0, origEnd: Number($id('trimEnd').value) || ccDuration };
+    } else {
+      ccScrubToClientX(e.clientX);
+      ccDragState = { type: 'scrub' };
+    }
+    e.preventDefault();
+    container.setPointerCapture(e.pointerId);
+  });
+
+  container.addEventListener('pointermove', (e) => {
+    if (!ccDragState) return;
+    const deltaSec = (e.clientX - ccDragState.startX) / ccPxPerSec;
+    if (ccDragState.type === 'trim-start') {
+      $id('trimStart').value = Math.max(0, Math.min(ccDragState.origEnd - 0.2, ccDragState.origStart + deltaSec)).toFixed(1);
+      renderTimeline();
+    } else if (ccDragState.type === 'trim-end') {
+      $id('trimEnd').value = Math.min(ccDuration, Math.max(ccDragState.origStart + 0.2, ccDragState.origEnd + deltaSec)).toFixed(1);
+      renderTimeline();
+    } else if (ccDragState.type === 'trim-move') {
+      const dur = ccDragState.origEnd - ccDragState.origStart;
+      const newStart = Math.max(0, Math.min(ccDuration - dur, ccDragState.origStart + deltaSec));
+      $id('trimStart').value = newStart.toFixed(1);
+      $id('trimEnd').value = (newStart + dur).toFixed(1);
+      renderTimeline();
+    } else if (ccDragState.type === 'cue-resize') {
+      const c = currentCues[ccDragState.idx];
+      c.end = Math.max((Number(c.start) || 0) + 0.2, ccDragState.origEnd + deltaSec);
+      renderTimeline();
+    } else if (ccDragState.type === 'cue-move') {
+      const c = currentCues[ccDragState.idx];
+      const newStart = Math.max(0, ccDragState.origStart + deltaSec);
+      c.start = newStart;
+      c.end = newStart + ccDragState.dur;
+      renderTimeline();
+    } else if (ccDragState.type === 'scrub') {
+      ccScrubToClientX(e.clientX);
+    }
+  });
+
+  const finishDrag = () => {
+    if (!ccDragState) return;
+    const type = ccDragState.type;
+    ccDragState = null;
+    if (type === 'trim-start' || type === 'trim-end' || type === 'trim-move') saveTrim();
+    else if (type === 'cue-resize' || type === 'cue-move') { renderCues(); autoSaveCues(); }
+  };
+  container.addEventListener('pointerup', finishDrag);
+  container.addEventListener('pointercancel', finishDrag);
+}
+
+function ccScrubToClientX(clientX) {
+  const rect = $id('ccTimelineScroll').getBoundingClientRect();
+  const scrollLeft = $id('ccTimelineScroll').scrollLeft;
+  const t = ccPxToTime(clientX - rect.left + scrollLeft);
+  const video = $id('previewVideo');
+  if (video) video.currentTime = Math.max(0, Math.min(ccDuration, t));
+  updateCcPlayhead();
+}
+
+// ── TAB STATUS DOTS — at-a-glance done/active/pending state per tab, same status computation the
+// old separate "Steps" rail card used, now shown as a small dot on each tab button instead.
 function renderStepRail() {
   const p = currentProject;
   if (!p) return;
   const words = p.captions?.words || [];
-  const steps = [
-    { n: 1, label: 'Transcript & captions', status: p.status === 'transcribing' ? 'active' : words.length ? 'done' : 'pending' },
-    { n: 2, label: 'Caption style', status: words.length ? 'done' : 'pending' },
-    { n: 3, label: 'Auto-edit', status: words.length ? 'active' : 'pending' },
-    { n: 4, label: 'B-Roll / SFX / VFX cues', status: currentCues.length ? 'done' : (words.length ? 'active' : 'pending') },
-    { n: 5, label: 'Render & export', status: p.status === 'rendering' ? 'active' : (p.status === 'done' ? 'done' : (words.length ? 'active' : 'pending')) },
-  ];
-  $id('stepRail').innerHTML = steps.map((s, i) => `
-    <div class="step-rail-item${s.status === 'active' ? ' current' : ''}" onclick="scrollToStep(${s.n})">
-      <div class="step-rail-dots">
-        <div class="step-rail-dot ${s.status}">${s.status === 'done' ? '✓' : s.n}</div>
-        ${i < steps.length - 1 ? `<div class="step-rail-line ${s.status === 'done' ? 'done' : ''}"></div>` : ''}
-      </div>
-      <div class="step-rail-label">${esc(s.label)}</div>
-    </div>`).join('');
-}
-function scrollToStep(n) {
-  $id('stepCard' + n)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const statusByTab = {
+    captions: p.status === 'transcribing' ? 'active' : words.length ? 'done' : 'pending',
+    style: words.length ? 'done' : 'pending',
+    autoedit: words.length ? 'active' : 'pending',
+    cues: currentCues.length ? 'done' : (words.length ? 'active' : 'pending'),
+    export: p.status === 'rendering' ? 'active' : (p.status === 'done' ? 'done' : (words.length ? 'active' : 'pending')),
+  };
+  Object.entries(statusByTab).forEach(([tab, status]) => {
+    const dot = document.querySelector(`.cc-tab[data-tab="${tab}"] .cc-tab-dot`);
+    if (dot) dot.className = 'cc-tab-dot ' + status;
+  });
 }
 
 async function saveProjectMeta() {
@@ -1928,6 +2119,7 @@ function addWordToScene(si) {
   setTimeout(() => editWord(insertAt), 50); // focus the new word so it's immediately typeable
 }
 function jumpToScene(si) {
+  showEditorTab('captions');
   $id('sceneBlock' + si)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 function splitSceneEvenly(sceneIndex) {
