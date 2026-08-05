@@ -10614,7 +10614,9 @@ async function fpRecomputeDueStatus(env, dueId){
   if(!due) return;
   const {results}=await env.DB.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM fp_collections WHERE expected_due_id=?`).bind(Number(dueId)).all();
   const collected=Number(results?.[0]?.total)||0;
-  const status = collected<=0 ? 'open' : (collected>=due.amount ? 'paid' : 'partial');
+  // amount<=0 means nothing is actually owed — always 'paid', regardless of collected, so a
+  // zero-value due can never sit 'open'/'partial' and get picked up by the reminder sweep.
+  const status = due.amount<=0 ? 'paid' : (collected<=0 ? 'open' : (collected>=due.amount ? 'paid' : 'partial'));
   await env.DB.prepare(`UPDATE fp_expected_dues SET collected_amount=?, status=? WHERE id=?`).bind(collected, status, Number(dueId)).run();
 }
 
@@ -10746,12 +10748,12 @@ async function handleFpExpenseDelete(request, env){
   return json({ok:true});
 }
 
-const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct, default_currency';
+const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct, default_currency, reminder_template_name, reminder_template_category, reminder_template_language';
 // Shared by GET and PATCH (the latter now returns the fresh row instead of a bare {ok:true} — the
 // Settings tab's saveFpConfig assigns the response straight into fpConfig, so an {ok:true}-only
 // reply was quietly wiping every other field client-side until the next full page load).
 function fpConfigResponseShape(row, cid){
-  if(!row) return {client_id:Number(cid), enabled:1, reminders_enabled:1, razorpay_connected:false, admin_phone_numbers:[], tax_reserve_pct:null, default_currency:null};
+  if(!row) return {client_id:Number(cid), enabled:1, reminders_enabled:1, razorpay_connected:false, admin_phone_numbers:[], tax_reserve_pct:null, default_currency:null, reminder_template_name:null, reminder_template_category:null, reminder_template_language:null};
   return {...row, razorpay_connected:!!(row.razorpay_key_id&&row.razorpay_webhook_secret), admin_phone_numbers:engineParseJsonField(row.admin_phone_numbers, [])};
 }
 async function handleFpConfigGet(request, env){
@@ -10792,10 +10794,30 @@ async function handleFpConfigUpdate(request, env){
   // default for every currency field across Documents/Expense Entry/Vendor Bills/Financial
   // Planning, instead of each modal hardcoding its own fallback.
   if(body.default_currency!==undefined){ sets.push('default_currency=?'); vals.push(String(body.default_currency||'').trim().slice(0,10).toUpperCase()||null); }
+  // WhatsApp template used by the overdue-payment reminder sweep (fpSendRemindersForClient) —
+  // required because that sweep runs off a daily cron, never inside a customer-initiated 24h
+  // session window, so only an approved template can reliably reach the customer.
+  if(body.reminder_template_name!==undefined){ sets.push('reminder_template_name=?'); vals.push(String(body.reminder_template_name||'').trim()||null); }
+  if(body.reminder_template_category!==undefined){ sets.push('reminder_template_category=?'); vals.push(String(body.reminder_template_category||'').trim()||null); }
+  if(body.reminder_template_language!==undefined){ sets.push('reminder_template_language=?'); vals.push(String(body.reminder_template_language||'').trim()||null); }
   vals.push(Number(payload.cid));
   await env.DB.prepare(`UPDATE fp_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
   const row=await env.DB.prepare(`SELECT ${FP_CONFIG_SELECT_COLS} FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
   return json(fpConfigResponseShape(row, payload.cid));
+}
+
+// Audit trail for the overdue-reminder sweep (fpSendRemindersForClient/fpLogReminderAttempt) —
+// lets the Settings tab show exactly what was sent, skipped, or failed, and why, instead of the
+// old silent catch(e){} that left no record at all.
+async function handleFpReminderLog(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(
+    `SELECT l.id, l.due_id, l.status, l.detail, l.created_at, cu.name as customer_name
+     FROM fp_reminder_log l LEFT JOIN fp_expected_dues d ON d.id=l.due_id LEFT JOIN fp_customers cu ON cu.id=d.customer_id
+     WHERE l.client_id=? ORDER BY l.id DESC LIMIT 100`
+  ).bind(Number(payload.cid)).all();
+  return json({list:results||[]});
 }
 
 // Month-end dashboard — one aggregate route (same "compute everything server-side, one response"
@@ -11062,9 +11084,13 @@ async function fpGenerateForClient(env, clientId, periodKey){
     if(cust.billing_cycle==='quarterly' && ![1,4,7,10].includes(monthNum)) continue;
     if(cust.billing_cycle==='yearly' && (new Date(cust.start_date).getUTCMonth()+1)!==monthNum) continue;
     const dueDate=`${periodKey}-${String(cust.billing_day).padStart(2,'0')}`;
+    // A customer left at monthly_value=0 (e.g. just created, plan not set yet) has nothing
+    // actually owed — seed the due as already 'paid' instead of 'open' so it never enters the
+    // overdue-reminder sweep and gets chased for "0.00 due" (see fpSendRemindersForClient).
+    const status=Number(cust.monthly_value)>0?'open':'paid';
     try{
-      await env.DB.prepare(`INSERT INTO fp_expected_dues (client_id, customer_id, period_key, amount, currency, due_date, created_at) VALUES (?,?,?,?,?,?,?)`)
-        .bind(clientId, cust.id, periodKey, cust.monthly_value, cust.currency, dueDate, now).run();
+      await env.DB.prepare(`INSERT INTO fp_expected_dues (client_id, customer_id, period_key, amount, currency, due_date, status, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+        .bind(clientId, cust.id, periodKey, cust.monthly_value, cust.currency, dueDate, status, now).run();
     }catch(e){ /* unique(customer_id, period_key) already hit — this period was already generated, harmless no-op */ }
   }
   const {results:templates}=await env.DB.prepare(`SELECT * FROM fp_expense_templates WHERE client_id=? AND active=1`).bind(clientId).all();
@@ -11420,34 +11446,61 @@ async function runFinancialPlanningRemindersForAllClients(env){
     catch(e){ console.error('[financial-planning] reminder sweep failed for client', cfg.client_id, e.message); }
   }
 }
+// One row per reminder attempt — sent, failed, or skipped-and-why — so the sweep's previously
+// silent catch(e){} can no longer swallow a failure with zero trace (see migration 0041).
+async function fpLogReminderAttempt(env, clientId, dueId, status, detail){
+  try{
+    await env.DB.prepare(`INSERT INTO fp_reminder_log (client_id, due_id, status, detail, created_at) VALUES (?,?,?,?,?)`)
+      .bind(clientId, dueId||null, status, detail?String(detail).slice(0,500):null, new Date().toISOString()).run();
+  }catch(e){}
+}
 async function fpSendRemindersForClient(env, clientId){
   const c=await getClientById(env, clientId);
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return;
+  const cfg=await env.DB.prepare(`SELECT reminder_template_name, reminder_template_category, reminder_template_language FROM fp_config WHERE client_id=?`).bind(clientId).first();
+  const templateName=String(cfg?.reminder_template_name||'').trim();
+  // This sweep only ever runs off the daily cron (see comment above runFinancialPlanningRemindersForAllClients
+  // and the header comment on this function), never inside a customer-initiated 24h session window, so a
+  // plain-text send is not viable here — only an approved WhatsApp template reliably reaches the customer.
+  // Without one assigned, skip the whole client rather than repeatedly attempting sends that WhatsApp will
+  // reject (previously: plain-text POSTs that failed silently, see the old catch(e){} this replaced).
+  if(!templateName){
+    await fpLogReminderAttempt(env, clientId, null, 'skipped_no_template', 'No WhatsApp reminder template assigned in Financial Planning Settings.');
+    return;
+  }
   const todayStr=new Date().toISOString().slice(0,10);
   const staleCutoff=new Date(Date.now()-3*86400000).toISOString();
   const {results:overdue}=await env.DB.prepare(
     `SELECT d.*, cu.name as customer_name, cu.lead_id FROM fp_expected_dues d JOIN fp_customers cu ON cu.id=d.customer_id
-     WHERE d.client_id=? AND d.status IN ('open','partial') AND d.due_date<? AND (d.reminder_sent_at IS NULL OR d.reminder_sent_at<?)`
+     WHERE d.client_id=? AND d.status IN ('open','partial') AND d.due_date<? AND (d.amount-d.collected_amount)>0.009 AND (d.reminder_sent_at IS NULL OR d.reminder_sent_at<?)`
   ).bind(clientId, todayStr, staleCutoff).all();
   for(const due of (overdue||[])){
-    if(!due.lead_id) continue;
+    if(!due.lead_id){ await fpLogReminderAttempt(env, clientId, due.id, 'skipped_no_lead', 'Customer has no linked WhatsApp lead.'); continue; }
     let convId=null;
     try{
       const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${due.lead_id}?fields=ConversationID`);
       const lead=await leadR.json().catch(()=>null);
       convId=lead?.ConversationID||null;
     }catch(e){}
-    if(!convId) continue;
+    if(!convId){ await fpLogReminderAttempt(env, clientId, due.id, 'skipped_no_conversation', 'No WhatsApp conversation found for this customer\'s lead.'); continue; }
     // AI-drafted, tone-matched reminder (fpAiDraftReminder) — falls back to the exact fixed
-    // template it always used before if Gemini is unavailable or the call fails, so this sweep
-    // never goes silent just because generation had a bad moment.
+    // template text it always used before if Gemini is unavailable or the call fails, so this
+    // sweep never goes silent just because generation had a bad moment. Sent as the sole {{1}}
+    // variable of the assigned approved template (same single-variable shape as
+    // sendFlowWhatsappTemplate), since WhatsApp requires an approved template outside the 24h window.
     const msg=await fpAiDraftReminder(env, due);
     try{
-      const fd=new FormData();
-      fd.append('content', msg); fd.append('message_type','outgoing'); fd.append('private','false');
-      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-      if(r.ok) await env.DB.prepare(`UPDATE fp_expected_dues SET reminder_sent_at=? WHERE id=?`).bind(new Date().toISOString(), due.id).run();
-    }catch(e){}
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+        method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+        body:JSON.stringify({content:msg, message_type:'outgoing', private:false, template_params:{name:templateName, category:cfg.reminder_template_category||'MARKETING', language:cfg.reminder_template_language||'en', processed_params:{1:msg}}})
+      });
+      if(r.ok){
+        await env.DB.prepare(`UPDATE fp_expected_dues SET reminder_sent_at=? WHERE id=?`).bind(new Date().toISOString(), due.id).run();
+        await fpLogReminderAttempt(env, clientId, due.id, 'sent', null);
+      }else{
+        await fpLogReminderAttempt(env, clientId, due.id, 'failed', `Chatwoot send failed: HTTP ${r.status}`);
+      }
+    }catch(e){ await fpLogReminderAttempt(env, clientId, due.id, 'failed', e.message); }
     await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
   }
 }
@@ -16195,6 +16248,7 @@ export default {
       else if(url.pathname==='/financial/expenses' && request.method==='DELETE'){ res=await handleFpExpenseDelete(request, env); }
       else if(url.pathname==='/financial/config' && request.method==='GET'){ res=await handleFpConfigGet(request, env); }
       else if(url.pathname==='/financial/config' && request.method==='PATCH'){ res=await handleFpConfigUpdate(request, env); }
+      else if(url.pathname==='/financial/reminder-log' && request.method==='GET'){ res=await handleFpReminderLog(request, env); }
       else if(url.pathname==='/financial/dashboard' && request.method==='GET'){ res=await handleFpDashboard(request, env); }
       else if(url.pathname==='/financial/reports/pl' && request.method==='GET'){ res=await handleFpReportPL(request, env); }
       else if(url.pathname==='/financial/reports/ar-aging' && request.method==='GET'){ res=await handleFpReportArAging(request, env); }

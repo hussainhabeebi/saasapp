@@ -6524,13 +6524,36 @@ Both inserts rely on their table's unique index to make re-running the same peri
 ### Overdue reminders
 `runFinancialPlanningRemindersForAllClients` runs on the same daily tick, scanning
 `fp_config WHERE enabled=1 AND reminders_enabled=1`. For each client, `fpSendRemindersForClient`
-finds dues that are `open`/`partial`, past `due_date`, and either never reminded or last reminded
-3+ days ago (`reminder_sent_at`) — the same flag-flip idempotency as the Shopify abandoned-cart
-sweep's `nudge_sent`, just re-armed after a cooldown instead of one-shot. Resolves each due's linked
-lead's Chatwoot conversation and sends a WhatsApp nudge, pacing sends 300ms apart in a sequential
-loop (same spirit as `recovery.js`'s `SEND_DELAY_MS`) with a per-item try/catch so one failure can't
-kill the sweep. Skips entirely if the client has no Chatwoot connection, or if a due has no linked
-lead to message.
+finds dues that are `open`/`partial`, past `due_date`, have an actual positive balance owed
+(`amount - collected_amount > 0` — a due worth `0.00` is seeded/recomputed straight to `paid` and
+never enters this query at all, see below), and either never reminded or last reminded 3+ days ago
+(`reminder_sent_at`) — the same flag-flip idempotency as the Shopify abandoned-cart sweep's
+`nudge_sent`, just re-armed after a cooldown instead of one-shot.
+
+Since this sweep only ever fires off the daily cron — never inside a customer-initiated 24-hour
+WhatsApp session window — a plain-text Chatwoot send is not viable outside that window; only an
+approved WhatsApp template is. `fp_config.reminder_template_name` (+ `reminder_template_category`/
+`reminder_template_language`, Financial Planning → Settings) must be assigned before this sweep
+sends anything at all: with no template configured, `fpSendRemindersForClient` skips the entire
+client (logs `skipped_no_template`) rather than repeatedly attempting sends WhatsApp will reject.
+Once assigned, each due's AI-drafted (or fallback fixed-text) reminder is sent as the sole `{{1}}`
+variable of that template. Resolves each due's linked lead's Chatwoot conversation, pacing sends
+300ms apart in a sequential loop (same spirit as `recovery.js`'s `SEND_DELAY_MS`) with a per-item
+try/catch so one failure can't kill the sweep. Skips entirely if the client has no Chatwoot
+connection; skips a given due if it has no linked lead or no resolvable conversation.
+
+Every attempt — sent, failed, or skipped (and why) — is written to `fp_reminder_log`
+(`client_id, due_id, status, detail, created_at`, migration `0041_fp_reminder_tracking.sql`) via
+`fpLogReminderAttempt`, replacing the previous silent `catch(e){}` that left no trace of a failed
+send. `GET /financial/reminder-log` (session-scoped, last 100 rows) backs the "Reminder Log" table
+on the Settings tab.
+
+A zero-value due (customer left at `monthly_value: 0`, see "Lead conversion → customer" above) is
+never actually owed anything, so it's excluded from ever going `open` in the first place:
+`fpGenerateForClient` seeds it straight to `status:'paid'` when generated, and
+`fpRecomputeDueStatus` now also settles `amount<=0` dues to `'paid'` unconditionally on any
+collection recompute. Migration `0041` backfills any pre-existing `0.00` dues that were stuck
+`open`/`partial` (and getting reminded on) before this fix.
 
 ### Collections — manual or Razorpay webhook
 `POST /financial/collections` records a manual payment (bank/UPI/cash/other), full or partial,

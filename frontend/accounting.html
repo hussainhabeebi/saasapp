@@ -407,6 +407,13 @@ tbody tr:hover{background:var(--bg)}
           <div class="card-title">⚙️ Financial Planning Settings</div>
           <div class="toggle-row"><input type="checkbox" id="fpCfgEnabled"><label class="s-lbl" style="margin:0">Enabled — generate Expected Funds &amp; fixed expenses automatically on the 1st of each month</label></div>
           <div class="toggle-row"><input type="checkbox" id="fpCfgRemindersEnabled"><label class="s-lbl" style="margin:0">Send WhatsApp reminders for overdue Expected Funds (via Chatwoot)</label></div>
+          <div class="card-title" style="margin-top:10px">Reminder WhatsApp Template</div>
+          <div class="s-hint" style="margin-bottom:10px">Required to actually send reminders. This sweep runs on a daily schedule, not right after the customer messages you, so it's always outside WhatsApp's 24-hour session window — only an approved template can reach the customer then. Without a template assigned here, reminders are skipped (not silently attempted and dropped) and logged below as "no template assigned". The template should have a single {{1}} variable, which receives the reminder text.</div>
+          <div class="modal-grid" style="margin-bottom:0">
+            <div><label class="s-lbl">Template Name</label><input class="s-input" id="fpCfgReminderTplName" placeholder="e.g. payment_reminder"></div>
+            <div><label class="s-lbl">Category</label><input class="s-input" id="fpCfgReminderTplCategory" placeholder="MARKETING"></div>
+            <div><label class="s-lbl">Language</label><input class="s-input" id="fpCfgReminderTplLanguage" placeholder="en"></div>
+          </div>
           <div class="card-title" style="margin-top:10px">Default Currency</div>
           <div class="s-hint" style="margin-bottom:10px">Used as the starting currency everywhere in this module — Documents, Expense Entry, Vendor Bills, and Financial Planning — so you don't have to re-type it each time. Every currency field stays editable, this is just the shared default.</div>
           <div style="max-width:160px"><input class="s-input" id="fpCfgDefaultCurrency" placeholder="e.g. USD" maxlength="10"></div>
@@ -427,6 +434,16 @@ tbody tr:hover{background:var(--bg)}
           <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
             <button class="save-btn" onclick="saveFpConfig()">Save Settings</button>
             <span class="save-msg" id="fpCfgSaveMsg"></span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📋 Reminder Log</div>
+          <div class="s-hint" style="margin-bottom:14px">Last 100 reminder attempts — sent, failed, or skipped (and why), so every overdue-payment reminder and 24-hour-window follow-up stays trackable.</div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>When</th><th>Customer</th><th>Status</th><th>Detail</th></tr></thead>
+              <tbody id="fpReminderLogTbody"><tr class="loading-row"><td colspan="4"><span class="spinner"></span>Loading…</td></tr></tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -1020,9 +1037,10 @@ function showFpSub(name){
   document.getElementById('fpSub'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
   root.querySelector(`.fp-pill[data-fpsub="${name}"]`).classList.add('active');
   if(name==='dashboard' && fpDashboardData) try{renderFpTrendChart();}catch(e){}
+  if(name==='settings' && !_fpReminderLogLoaded){ _fpReminderLogLoaded=true; loadFpReminderLog(); }
 }
 
-let _repArLoaded=false, _repApLoaded=false, _repExpbreakLoaded=false;
+let _repArLoaded=false, _repApLoaded=false, _repExpbreakLoaded=false, _fpReminderLogLoaded=false;
 function showReportSub(name){
   const root=document.getElementById('tabReports');
   root.querySelectorAll('.fp-sub').forEach(p=>p.classList.remove('active'));
@@ -1631,6 +1649,9 @@ function renderFpConfigForm(){
   if(!fpConfig) return;
   document.getElementById('fpCfgEnabled').checked=!!fpConfig.enabled;
   document.getElementById('fpCfgRemindersEnabled').checked=!!fpConfig.reminders_enabled;
+  document.getElementById('fpCfgReminderTplName').value=fpConfig.reminder_template_name||'';
+  document.getElementById('fpCfgReminderTplCategory').value=fpConfig.reminder_template_category||'';
+  document.getElementById('fpCfgReminderTplLanguage').value=fpConfig.reminder_template_language||'';
   document.getElementById('fpCfgDefaultCurrency').value=fpConfig.default_currency||'';
   document.getElementById('fpCfgAdminPhones').value=(fpConfig.admin_phone_numbers||[]).join('\n');
   document.getElementById('fpCfgTaxReservePct').value=fpConfig.tax_reserve_pct??'';
@@ -1649,6 +1670,9 @@ async function saveFpConfig(){
   const body={
     enabled:document.getElementById('fpCfgEnabled').checked,
     reminders_enabled:document.getElementById('fpCfgRemindersEnabled').checked,
+    reminder_template_name:document.getElementById('fpCfgReminderTplName').value.trim(),
+    reminder_template_category:document.getElementById('fpCfgReminderTplCategory').value.trim(),
+    reminder_template_language:document.getElementById('fpCfgReminderTplLanguage').value.trim(),
     default_currency:document.getElementById('fpCfgDefaultCurrency').value.trim(),
     admin_phone_numbers:document.getElementById('fpCfgAdminPhones').value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean),
     tax_reserve_pct:taxPct===''?null:Number(taxPct),
@@ -1664,6 +1688,20 @@ async function saveFpConfig(){
     msg.textContent='✓ Saved'; msg.className='save-msg';
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
   setTimeout(()=>msg.textContent='',3000);
+}
+const FP_REMINDER_LOG_LABELS={sent:'✅ Sent', failed:'⚠️ Failed', skipped_no_template:'⏭️ No template assigned', skipped_no_lead:'⏭️ No linked lead', skipped_no_conversation:'⏭️ No conversation'};
+async function loadFpReminderLog(){
+  const tbody=document.getElementById('fpReminderLogTbody');
+  try{
+    const {list}=await acctFetch('/financial/reminder-log',{method:'GET'});
+    if(!list||!list.length){ tbody.innerHTML='<tr><td colspan="4" class="s-hint">No reminder attempts yet.</td></tr>'; return; }
+    tbody.innerHTML=list.map(r=>`<tr>
+      <td>${new Date(r.created_at).toLocaleString()}</td>
+      <td>${r.customer_name||'—'}</td>
+      <td>${FP_REMINDER_LOG_LABELS[r.status]||r.status}</td>
+      <td class="s-hint">${r.detail||''}</td>
+    </tr>`).join('');
+  }catch(e){ tbody.innerHTML=`<tr><td colspan="4" class="s-hint">Couldn't load reminder log: ${e.message}</td></tr>`; }
 }
 
 /* ══════════════════ REPORTS ══════════════════ */
