@@ -1012,6 +1012,16 @@ Cloud onboarding — you don't need a second Meta app).
    blocked (409) if the same `waba_id`/`phone_number_id` is already on a *different* CLIENTS row
    — a WhatsApp number can only ever belong to one client's row, since the schema has a single
    `waba_id`/`wa_phone_id`/`chatwoot_inbox_id` slot.
+   - **Manual fallback ("Wire Meta credentials directly")** — a `<details>` block under Step 2 for
+     clients whose WhatsApp inbox was already set up straight in Chatwoot (or elsewhere) rather
+     than through this Embedded Signup flow, so `waba_id`/`wa_token` never got written to their
+     CLIENTS row. It's a plain form (WABA ID, System User access token, optional phone number id)
+     that writes those fields straight onto the CLIENTS row via the generic `/nocodb` passthrough
+     (`saveManualWaCreds()` → `patchClient()`) — same mechanism every other Settings field uses,
+     since `waba_id`/`wa_token` aren't in the worker's `PROTECTED_CLIENT_FIELDS` list. No Chatwoot
+     call is made at all, so it's safe to use even when a WhatsApp inbox already exists in
+     Chatwoot: it only unblocks template create/list/send (`handleBroadcastTemplatesCreate` and
+     friends), which need `waba_id`/`wa_token` but not `wa_phone_id`/`chatwoot_inbox_id`.
 3. **Add Another Inbox** — `POST /channels/inbox` creates a Website widget, Email, SMS (Twilio),
    Telegram, LINE, or API inbox on the same Chatwoot account — the same channel types Chatwoot's
    own generic inbox API supports (`allowed_channel_types` minus `whatsapp`, which has its own

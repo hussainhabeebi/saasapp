@@ -1873,7 +1873,7 @@ async function handleBroadcastTemplatesCreate(request, env){
   const {name, category, language, body, header, footer}=await request.json().catch(()=>({}));
   if(!name||!body) return json({error:'name and body required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.waba_id||!c?.wa_token) return json({error:'Creating a new template requires connecting your Meta WhatsApp Business API (Settings → Channels) — Chatwoot can only sync templates that already exist on Meta, not create new ones. Alternatively, create the template directly in Meta Business Manager, then use Refresh to pull it in.'}, 400);
+  if(!c?.waba_id||!c?.wa_token) return json({error:'Creating a new template requires connecting your Meta WhatsApp Business API — Chatwoot can only sync templates that already exist on Meta, not create new ones. Go to Settings → Channels and either run "Connect WhatsApp" (Embedded Signup), or, if WhatsApp is already connected another way, open "Wire Meta credentials directly" and paste your WABA ID + System User access token. Alternatively, create the template directly in Meta Business Manager, then use Refresh to pull it in.'}, 400);
   const components=[{type:'BODY', text:body}];
   if(header) components.unshift({type:'HEADER', format:'TEXT', text:header});
   if(footer) components.push({type:'FOOTER', text:footer});

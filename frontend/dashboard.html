@@ -2311,6 +2311,20 @@ const ROLES = {
             <div id="chWaDone" style="display:none">
               <div class="s-note">✅ WhatsApp connected — phone number ID <span id="chWaPhoneDisplay"></span></div>
             </div>
+            <details style="margin-top:12px">
+              <summary style="cursor:pointer;font-weight:600;color:var(--muted)">Already have WhatsApp connected another way? Wire Meta credentials directly</summary>
+              <div style="margin-top:10px">
+                <div class="s-note" style="margin-bottom:8px">If your WhatsApp inbox was set up straight in Chatwoot (or another way) instead of through Embedded Signup above, this app still doesn't know your Meta credentials — and Chatwoot itself has no API to create new templates, only to sync ones already approved. Paste your WhatsApp Business Account ID and a Meta System User access token here to wire template create/list/send straight to Meta's Graph API, no Chatwoot or re-signup needed.</div>
+                <label class="form-label">WhatsApp Business Account ID (WABA ID)</label>
+                <input class="form-input" id="chManualWabaId" type="text" placeholder="e.g. 123456789012345" style="margin-bottom:8px">
+                <label class="form-label">System User Access Token</label>
+                <input class="form-input" id="chManualWaToken" type="password" placeholder="Meta System User token" style="margin-bottom:8px">
+                <label class="form-label">Phone Number ID <span style="color:var(--muted);font-weight:400">(optional — only needed to send messages, not to create templates)</span></label>
+                <input class="form-input" id="chManualWaPhoneId" type="text" placeholder="e.g. 109876543210" style="margin-bottom:8px">
+                <button class="save-btn" id="chManualWaSaveBtn" onclick="saveManualWaCreds()">Save Meta Credentials</button>
+                <span class="save-msg" id="chManualWaMsg"></span>
+              </div>
+            </details>
           </div>
         </div>
 
@@ -9435,7 +9449,10 @@ async function loadChannelsStatus(){
 function renderChannelsPage(){
   const hasAccount=!!(clientRecord.chatwoot_account_id && clientRecord.chatwoot_token);
   const status=_channelsStatus||{inboxes:[], has_whatsapp:false};
-  const hasWa=!!(clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id) || !!status.has_whatsapp;
+  // Manually-wired Meta credentials (waba_id/wa_token, no phone number required) also count as
+  // "connected" for the purposes of this page — they're enough for template create/list/send even
+  // without a Chatwoot WhatsApp inbox or an Embedded Signup phone number.
+  const hasWa=!!(clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id) || !!status.has_whatsapp || !!(clientRecord.waba_id && clientRecord.wa_token);
 
   $id('chAccountPending').style.display=hasAccount?'none':'block';
   $id('chAccountDone').style.display=hasAccount?'block':'none';
@@ -9447,7 +9464,10 @@ function renderChannelsPage(){
   $id('chWaSection').style.display=hasAccount?'block':'none';
   $id('chWaPending').style.display=hasWa?'none':'block';
   $id('chWaDone').style.display=hasWa?'block':'none';
-  if(hasWa) $id('chWaPhoneDisplay').textContent=clientRecord.wa_phone_id||'';
+  if(hasWa) $id('chWaPhoneDisplay').textContent=clientRecord.wa_phone_id||('WABA '+(clientRecord.waba_id||''));
+  $id('chManualWabaId').value=clientRecord.waba_id||'';
+  $id('chManualWaToken').value=clientRecord.wa_token||'';
+  $id('chManualWaPhoneId').value=clientRecord.wa_phone_id||'';
 
   $id('chOtherSection').style.display=hasAccount?'block':'none';
 
@@ -10045,6 +10065,30 @@ async function completeWaConnect(code, waba_id, phone_number_id){
     renderChannelsPage();
     loadChannelsStatus();
   }catch(e){ msg.textContent='Error: '+e.message; }
+}
+
+// Fallback for clients whose WhatsApp inbox was set up directly in Chatwoot (or elsewhere)
+// instead of through the Embedded Signup flow above — those never get waba_id/wa_token written
+// to this app's CLIENTS row, since that only happens inside completeWaConnect. Writes straight to
+// the CLIENTS row via patchClient (same generic /nocodb passthrough every other Settings field
+// uses — waba_id/wa_token aren't in the worker's PROTECTED_CLIENT_FIELDS list), independent of
+// Chatwoot: no inbox is created or touched, so this is safe to use even when a WhatsApp inbox
+// already exists in Chatwoot under a different setup.
+async function saveManualWaCreds(){
+  const waba_id=$id('chManualWabaId').value.trim();
+  const wa_token=$id('chManualWaToken').value.trim();
+  const wa_phone_id=$id('chManualWaPhoneId').value.trim();
+  const btn=$id('chManualWaSaveBtn'), msg=$id('chManualWaMsg');
+  if(!waba_id||!wa_token){ msg.textContent='WABA ID and access token are required.'; msg.className='save-msg err'; return; }
+  btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+  try{
+    const fields={waba_id, wa_token};
+    if(wa_phone_id) fields.wa_phone_id=wa_phone_id;
+    await patchClient(fields);
+    msg.textContent='✓ Saved — templates can now be created directly via Meta';
+    renderChannelsPage();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; setTimeout(()=>{ msg.textContent=''; msg.className='save-msg'; },4000); }
 }
 
 // ── Instagram DM (native — no Chatwoot) ── "Instagram API with Instagram Login" authenticates
