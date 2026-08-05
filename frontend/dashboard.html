@@ -2806,19 +2806,23 @@ const ROLES = {
              engineTtsWithFallback and backend/recovery.js's ttsWithFallback). Auto (blank, default)
              is unchanged production behavior: Sarvam AI primary, self-hosted AI4Bharat standby on
              any Sarvam failure. "AI4Bharat only" tests the self-hosted standby directly against
-             real conversations without touching Sarvam for anyone else. "Gemini Live" is a
-             separate, fully optional provider (never an automatic fallback for anyone else) —
-             see engineGeminiLiveTts in worker.js; test with real traffic before relying on it. -->
+             real conversations without touching Sarvam for anyone else. "Gemini Live" and "Piper"
+             are separate, fully optional providers (never an automatic fallback for anyone else)
+             — see engineGeminiLiveTts/enginePiperTts in worker.js. Piper is free and fully local
+             (no API key, no per-request cost) but only has an English voice configured by default
+             — see render-pipeline/lib/piperTts.js to add more languages. Test with real traffic
+             before relying on either. -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🔧 TTS Provider (testing)</div>
-            <div class="s-note">Which text-to-speech engine voice-to-voice replies and voice follow-ups use for this client. Leave on Auto for normal operation. "Gemini Live" is an optional alternative voice engine — enable it here to try it for this client only.</div>
+            <div class="s-note">Which text-to-speech engine voice-to-voice replies and voice follow-ups use for this client. Leave on Auto for normal operation. "Gemini Live" and "Piper" are optional alternative voice engines — enable one here to try it for this client only. Piper is free and local but English-only by default.</div>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
               <select class="form-input" id="cfgVoiceTtsProvider" style="max-width:300px">
                 <option value="">Auto — Sarvam, AI4Bharat standby</option>
                 <option value="sarvam">Sarvam only (no standby)</option>
                 <option value="ai4bharat">AI4Bharat only (force, for testing)</option>
                 <option value="gemini_live">Gemini Live (optional, beta)</option>
+                <option value="piper">Piper (free, local, English-only, beta)</option>
               </select>
               <button class="save-btn" onclick="saveVoiceTtsProvider()">Save</button>
               <span class="save-msg" id="saveVoiceTtsProviderMsg"></span>

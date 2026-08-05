@@ -23,6 +23,7 @@ const { generateAiBroll } = require('./lib/falBroll');
 const { watermarkLogo, compositeOnColor, textOverlay, reframeToAspect } = require('./lib/imageCompose');
 const { synthesizeVoiceover } = require('./lib/tts');
 const { synthesizeWithAi4Bharat, supportsLanguage: ai4bharatTtsSupportsLanguage } = require('./lib/ai4bharatTts');
+const { synthesizeWithPiper, supportsLanguage: piperSupportsLanguage, PIPER_VOICE_MAP } = require('./lib/piperTts');
 const { pcmToOggOpus } = require('./lib/pcmToOgg');
 const { uploadOutput } = require('./lib/storage');
 const { MODEL_PATH } = require('./lib/segmentation');
@@ -58,11 +59,14 @@ app.use(express.json({
 // was just pushed — curl this before assuming a "feature doesn't work" report is a code bug.
 app.get('/health', (_req, res) => {
   const espeakAvailable = spawnSync('espeak-ng', ['--version']).status === 0;
+  const piperBin = process.env.PIPER_BIN || '/opt/piper/piper';
   res.json({
     ok: true,
     build: BUILD_TAG,
     espeak_ng_available: espeakAvailable,
     rvm_model_present: fs.existsSync(MODEL_PATH),
+    piper_available: fs.existsSync(piperBin),
+    piper_voices: Object.keys(PIPER_VOICE_MAP).filter(lang => piperSupportsLanguage(lang)),
   });
 });
 
@@ -295,6 +299,31 @@ app.post('/synthesize-voice-reply', async (req, res) => {
     res.send(audioBuf);
   } catch (err) {
     console.error('synthesize-voice-reply failed:', err.stderr || err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  }
+});
+
+// Synchronous, not queued — same reasoning as /synthesize-voice-reply above. Piper TTS
+// (CLIENTS.voice_tts_provider==='piper', see worker.js's engineTtsWithFallback) — a free, fully
+// local, always-available provider (no PyTorch, no opt-in env var needed, unlike AI4Bharat above)
+// baked into this image's Dockerfile. Not gated behind an enable flag: unlike AI4Bharat's ~1.2GB
+// torch stack, Piper is a small binary + one small voice model with no meaningful resource cost to
+// leave available — the real gate is per-language voice coverage (piperSupportsLanguage), not
+// whether the feature is turned on at all.
+app.post('/synthesize-piper-tts', async (req, res) => {
+  const signature = req.header('X-Signature');
+  if (!hmac.verify(env.RENDER_WEBHOOK_SECRET, req.rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { text, language } = req.body || {};
+  if (!text || !language) return res.status(400).json({ error: 'text and language required' });
+  if (!piperSupportsLanguage(language)) return res.status(400).json({ error: `No Piper voice available for language: ${language}` });
+  try {
+    const audioBuf = await synthesizeWithPiper(text, language);
+    res.set('Content-Type', 'audio/ogg');
+    res.send(audioBuf);
+  } catch (err) {
+    console.error('synthesize-piper-tts failed:', err.stderr || err.message || err);
     res.status(502).json({ error: String(err.message || err).slice(0, 500) });
   }
 });
