@@ -6251,6 +6251,31 @@ actually ends up in a render — cues were never excluded by default, only *surf
 - **Inline, click-to-edit captions** replace a blocking `prompt()` dialog — click a word, type the
   fix in place (a real `contenteditable` span, not a modal), Enter or click-away commits it.
 
+### CapCut-style editor layout — interactive timeline + tabbed tool panel
+Replaces the old always-stacked "5 numbered step cards" layout and the old read-only percentage-
+positioned timeline strip. Purely a frontend interaction layer on top of data that already
+existed — **no new backend endpoints**; every drag ends by calling the same `saveTrim()`/
+`autoSaveCues()` functions the old manual controls already used.
+- **Interactive timeline** (`#ccTimeline`, `renderTimeline()`/`setupTimelineDragHandlers()`) —
+  pixel-per-second positioned (a `timelineZoom` slider controls `ccPxPerSec`), horizontally
+  scrollable, with a fixed non-scrolling label gutter (`.cc-timeline-labels`) so track labels don't
+  get clipped by the scrolling area. Five tracks: **Trim** (draggable region + two resize handles,
+  writes to the same `#trimStart`/`#trimEnd` inputs "Save trim & aspect" always used), **Scenes**
+  (read-only, click to jump — from `detectScenes()`), and **B-Roll/SFX/VFX** (one track per cue
+  type, each cue block draggable to reposition and right-edge-resizable to change duration,
+  writing straight into `currentCues[i].start/end`). Clicking anywhere else on the timeline scrubs
+  the actual `<video id="previewVideo">` via `currentTime`; playback moves a live playhead via the
+  video's own `timeupdate` event.
+- **Tabbed tool panel** (`#ccTabs`, `showEditorTab()`) — the old 5 stacked cards (Captions/Style/
+  Auto-Edit/Cues/Export) are now one-at-a-time panels switched by tab, with a small status dot per
+  tab (done/active/pending) replacing the old separate "Steps" rail card. `scrollToStep(n)` is kept
+  as a thin numeric-to-tab-name wrapper since a few other places (e.g. clicking a cue on the old
+  timeline) called it by step number.
+- **NOT built**: thumbnail filmstrips or an audio waveform on the timeline (would need new backend
+  support — frame extraction / waveform generation — not just a frontend change), and multi-track
+  compositing beyond what already existed (this is still one video source with cue overlays, not a
+  layered multi-clip timeline).
+
 ## Marketing Studio module — Content Calendar & Instagram Auto-Posting (`frontend/marketing-studio.html` — "🗓️ Content Calendar" tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0038_marketing_content_studio.sql`)
 Plan Instagram posts (title + caption, scheduled to a date) ahead of time, on the same D1-not-
 NocoDB `marketing_content_posts` table the rest of this module uses. This is the **planning layer
