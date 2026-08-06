@@ -3217,19 +3217,20 @@ path, which has no sku) — line items themselves never carry style/attribute da
 after the existing (untouched) Top Products card, in both the Shopify Analytics and Product
 Performance report tabs.
 
-## Per-product audio note / video (`frontend/ecom.html` product modal, `cloudflare-worker/worker.js`)
-Two new optional fields on a product — `audio_url`/`video_url`, pasted Google Drive share links,
-same convention as every other media field in this app (Hospitality units, Ecommerce categories'
-photos above). Sent right after the product's existing photo whenever that specific product is
-confidently identified in the conversation — a customer asking about/selecting a product can now
-get a voice note or short demo video alongside the photo and text reply, not just a static image.
+## Per-product audio note / video / PDF (`frontend/ecom.html` product modal, `cloudflare-worker/worker.js`)
+Three new optional fields on a product — `audio_url`/`video_url`/`pdf_url`, pasted Google Drive
+share links, same convention as every other media field in this app (Hospitality units, Ecommerce
+categories' photos above). Sent right after the product's existing photo whenever that specific
+product is confidently identified in the conversation — a customer asking about/selecting a
+product can now get a voice note, short demo video, and/or a PDF (spec sheet, brochure) alongside
+the photo and text reply, not just a static image.
 
 ### Schema — NocoDB product table columns, auto-provisioned
-`audio_url`/`video_url` are added to the same `ECOM_STYLE_FIELD_TITLES` list
+`audio_url`/`video_url`/`pdf_url` are added to the same `ECOM_STYLE_FIELD_TITLES` list
 `ensureEcomProductStyleFields()` already auto-creates missing columns from (see "Product styles"
 above) — no manual NocoDB setup step, no new migration, no dedicated D1 table. Deliberately not
-modeled as a D1 table the way Ecommerce categories' photos are: a product's media is just two more
-attributes on the product itself, not a new entity needing its own storage.
+modeled as a D1 table the way Ecommerce categories' photos are: a product's media is just three
+more attributes on the product itself, not a new entity needing its own storage.
 
 ### Sending — `engineMaybeSendProductMedia()` (`cloudflare-worker/worker.js`)
 Called from `handleEngineWebhook`'s existing `detectOrderSignal`/`ecomResolveProduct` block, right
@@ -3239,17 +3240,28 @@ category-browsing fallback branch (no single product is confidently identified t
 nothing specific to attach media to). Unlike the existing photo send (`engineSendChatwootImageReply`,
 an image-only thumbnail-URL trick), this reuses the general-purpose `sendDriveMediaToChatwoot`
 helper (`worker.js` — the same one Automations & Flow's `send_whatsapp_media` step and the
-Follow-up Engine's per-variant media use) since audio/video need the real file bytes fetched via
+Follow-up Engine's per-variant media use) since audio/video/PDF need the real file bytes fetched via
 `driveFileId`/`driveFetchFile`, not a thumbnail. Best-effort and independent per field — a
-missing/unshared link on either just skips that one send, never blocks the reply or the other
-field. No per-lead dedup (same as the existing photo send it sits beside) — a customer can ask
-about the same product more than once and hear/see it again each time, by design.
+missing/unshared link on any one just skips that one send, never blocks the reply or the other two
+fields. No per-lead dedup (same as the existing photo send it sits beside) — a customer can ask
+about the same product more than once and hear/see/read it again each time, by design.
 
 ### Frontend (`frontend/ecom.html`)
-Product Add/Edit modal gained **Audio Note Link** and **Video Link** inputs next to the existing
-**Image Link** field, all three sharing one hint: paste a Google Drive share link, shared as
-"Anyone with the link can view." Also added to `PRODUCT_FIELDS` (CSV template download/import), so
-bulk-managed catalogs can set these two columns the same way as every other product attribute.
+Product Add/Edit modal gained **Audio Note Link**, **Video Link**, and **PDF Link** inputs next to
+the existing **Image Link** field, all four sharing one hint: paste a Google Drive share link,
+shared as "Anyone with the link can view." Also added to `PRODUCT_FIELDS` (CSV template download/
+import), so bulk-managed catalogs can set these columns the same way as every other product
+attribute — **whenever `PRODUCT_FIELDS` gains or loses a column, the hardcoded `samples` rows in
+`downloadProductTemplate()` must be updated to the same column count**, or the downloaded CSV
+template ships with sample data shifted into the wrong headers (this happened once already,
+silently, when a concurrent PR added `product_link` without updating the samples — fixed alongside
+adding `pdf_url` here).
+
+**Frontend is a separate deploy from the Worker.** `wrangler deploy` only ships
+`cloudflare-worker/worker.js` — `frontend/*.html` (including this feature's new modal fields) is a
+static site deployed independently (SETUP.md "4. Deploy the front-end"). After merging a frontend
+change, the static site itself needs redeploying (Coolify redeploy/restart, or wherever it's
+actually hosted) before the change is visible — a `wrangler deploy` alone will not surface it.
 
 ## Per-product Shopify link → chat order links (`buildOrderLink`, `cloudflare-worker/worker.js`)
 A product can optionally carry its own `shopify_product_url` (set in the product modal, field only
