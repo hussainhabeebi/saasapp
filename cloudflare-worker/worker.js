@@ -5482,10 +5482,10 @@ async function ecomResolveTable(env, clientId, kind){
 // ensureB2bLeadFields above, but memoized per table id (a Set, not a single boolean) since
 // ecomResolveTable returns a different products table per client rather than one shared constant.
 const _ecomStyleFieldsEnsured=new Set();
-// audio_url/video_url (Google Drive share links) added here alongside the style fields — same
-// "auto-provision on first write, no manual NocoDB step" mechanism, just product-level media
+// audio_url/video_url/pdf_url (Google Drive share links) added here alongside the style fields —
+// same "auto-provision on first write, no manual NocoDB step" mechanism, just product-level media
 // instead of a style attribute. See engineMaybeSendProductMedia for how they're actually sent.
-const ECOM_STYLE_FIELD_TITLES=['style','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','audio_url','video_url'];
+const ECOM_STYLE_FIELD_TITLES=['style','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','audio_url','video_url','pdf_url'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -6313,21 +6313,22 @@ async function ecomResolveProduct(env, clientId, sku, productName){
   })||null;
 }
 
-// Product-level audio note / video (audio_url/video_url, Google Drive share links set on the
-// product itself in ecom.html's Add/Edit Product modal) — sent right after the product's photo
-// whenever a specific product was confidently identified, same "the customer asked about this, so
-// show/tell them everything curated for it" reasoning as the photo send just above it at each call
-// site. Deliberately separate from engineSendChatwootImageReply (the existing photo path, an
-// image-only thumbnail-URL trick) — audio/video need the real file bytes, not a thumbnail, so this
-// reuses the general-purpose sendDriveMediaToChatwoot (Automations & Flow's send_whatsapp_media
-// step, Follow-up Engine's per-variant media) instead of duplicating a second Drive-fetch path.
-// Best-effort: a missing/unshared Drive link for either just skips that one send, never blocks or
-// fails the product reply that already went out above it.
+// Product-level audio note / video / PDF (audio_url/video_url/pdf_url, Google Drive share links
+// set on the product itself in ecom.html's Add/Edit Product modal) — sent right after the
+// product's photo whenever a specific product was confidently identified, same "the customer asked
+// about this, so show/tell them everything curated for it" reasoning as the photo send just above
+// it at each call site. Deliberately separate from engineSendChatwootImageReply (the existing
+// photo path, an image-only thumbnail-URL trick) — audio/video/PDF need the real file bytes, not a
+// thumbnail, so this reuses the general-purpose sendDriveMediaToChatwoot (Automations & Flow's
+// send_whatsapp_media step, Follow-up Engine's per-variant media) instead of duplicating a second
+// Drive-fetch path. Best-effort: a missing/unshared Drive link for any of the three just skips that
+// one send, never blocks or fails the product reply that already went out above it.
 async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
   if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   try{
     if(product.audio_url) await sendDriveMediaToChatwoot(c, convId, product.audio_url, '');
     if(product.video_url) await sendDriveMediaToChatwoot(c, convId, product.video_url, '');
+    if(product.pdf_url) await sendDriveMediaToChatwoot(c, convId, product.pdf_url, '');
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductMedia', e, {clientId, convId}); }
 }
 
