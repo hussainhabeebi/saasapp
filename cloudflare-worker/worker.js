@@ -5491,12 +5491,21 @@ async function ensureEcomProductStyleFields(env, tableId){
   try{
     const existingR=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`);
     const existing=await existingR.json().catch(()=>({}));
+    if(!existingR.ok) throw new Error(`list fields failed: ${existingR.status} ${JSON.stringify(existing)}`);
     const names=new Set((existing.list||[]).map(f=>f.title));
+    const failed=[];
     for(const title of ECOM_STYLE_FIELD_TITLES){
-      if(!names.has(title)) await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{title, uidt:'SingleLineText'}});
+      if(names.has(title)) continue;
+      const r=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{title, uidt:'SingleLineText'}});
+      if(!r.ok){ const errBody=await r.json().catch(()=>({})); failed.push(`${title}: ${r.status} ${JSON.stringify(errBody)}`); }
     }
-    _ecomStyleFieldsEnsured.add(tableId);
-  }catch(e){ console.error('[ecom] ensureEcomProductStyleFields failed', e.message); }
+    // Only memoize success — a partial failure (e.g. NocoDB rejected one column) must not
+    // permanently mask retrying it on the next save; previously this was swallowed by a bare
+    // console.error with no memoization guard either, so it silently kept limping along per-request
+    // with no visibility at all into which client/table/field was actually failing.
+    if(failed.length) await reportOpsError(env, 'ensureEcomProductStyleFields', new Error(failed.join('; ')), {tableId});
+    else _ecomStyleFieldsEnsured.add(tableId);
+  }catch(e){ await reportOpsError(env, 'ensureEcomProductStyleFields', e, {tableId}); }
 }
 
 async function handleEcomClientGet(request, env){
