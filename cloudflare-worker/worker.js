@@ -607,8 +607,9 @@ async function handleTeamCreateUser(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   if(!env.AUTHENTIK_API_TOKEN) return json({error:'Authentik admin API is not configured on the server.'}, 500);
-  const {name, username, email}=await request.json().catch(()=>({}));
+  const {name, username, email, password:adminPassword}=await request.json().catch(()=>({}));
   if(!username||!email) return json({error:'username and email are required'}, 400);
+  if(adminPassword && String(adminPassword).length<8) return json({error:'Password must be at least 8 characters.'}, 400);
   const emailNorm=String(email).trim().toLowerCase();
   const existing=await getClientByAuthentikEmail(env, emailNorm);
   if(existing) return json({error:'This email is already linked to an account.'}, 409);
@@ -625,12 +626,13 @@ async function handleTeamCreateUser(request, env){
     return json({error:'Authentik rejected the new user: '+detail}, 502);
   }
 
-  // No admin-chosen password anymore — this is always a server-generated value the admin never
-  // sees or types. In the common case (Recovery flow bound, see below) it's set once here purely
-  // so the account isn't literally passwordless, then never used again; the teammate always signs
-  // in by picking their own password via the invite link instead.
+  // An admin can now type a password directly here instead of relying on the invite-link/email
+  // flow — see User Management's "Create New User" form (dashboard.html). explicitPassword tracks
+  // which path this was so the invite-link step below is skipped entirely for it (no link, no
+  // email — exactly what was asked) and the response tells the frontend which message to show.
   const userId=createData.pk;
-  const password=generateRandomPassword();
+  const explicitPassword=!!adminPassword;
+  const password=explicitPassword?String(adminPassword):generateRandomPassword();
   const pwR=await authentikApiFetch(env, `/core/users/${userId}/set_password/`, {method:'POST', body:JSON.stringify({password})});
   if(!pwR.ok){
     // Don't leave a passwordless, unreachable account behind — best-effort cleanup.
@@ -642,16 +644,20 @@ async function handleTeamCreateUser(request, env){
   // Invite link — lets the teammate set their OWN password instead of the admin relaying one.
   // Needs a Recovery flow bound on this Authentik instance's Brand (SETUP.md "Authentik Recovery
   // flow"); if that isn't configured yet, this call fails and the response falls back to handing
-  // the admin the random password generated above — team creation is never blocked on it either way.
+  // the admin the random password generated above — team creation is never blocked on it either
+  // way. Skipped entirely when the admin chose an explicit password above — no link, no email, the
+  // password just set directly is the login, full stop.
   let inviteLink=null, inviteEmailSent=false;
-  try{
-    const recR=await authentikApiFetch(env, `/core/users/${userId}/recovery/`, {method:'POST'});
-    if(recR.ok){
-      const recData=await recR.json().catch(()=>({}));
-      inviteLink=recData?.link||null;
-    }
-  }catch(e){}
-  if(inviteLink) inviteEmailSent=await sendTeamInviteEmail(env, {to:emailNorm, name:name||username, inviteUrl:inviteLink, clientName:c.client_name||'your team'});
+  if(!explicitPassword){
+    try{
+      const recR=await authentikApiFetch(env, `/core/users/${userId}/recovery/`, {method:'POST'});
+      if(recR.ok){
+        const recData=await recR.json().catch(()=>({}));
+        inviteLink=recData?.link||null;
+      }
+    }catch(e){}
+    if(inviteLink) inviteEmailSent=await sendTeamInviteEmail(env, {to:emailNorm, name:name||username, inviteUrl:inviteLink, clientName:c.client_name||'your team'});
+  }
 
   let chatwoot=null;
   if(c.chatwoot_account_id && env.CHATWOOT_PLATFORM_TOKEN){
@@ -672,12 +678,94 @@ async function handleTeamCreateUser(request, env){
       await patchClientFields(env, payload.cid, {team_chatwoot_users:JSON.stringify(teamUsers), team_chatwoot_passwords:JSON.stringify(teamPasswords)}).catch(()=>{});
     }
   }
-  // fallbackPassword is only ever populated when the invite link couldn't be generated — in the
-  // normal case this is null and the frontend shows the invite link/email status instead.
-  // chatwootPassword is separate: Chatwoot has no invite-link mechanism of its own, so this is
-  // always returned once (already persisted server-side in team_chatwoot_passwords for the User
-  // Management profile view to show again later) whenever a Chatwoot agent was actually created.
-  return json({ok:true, email:emailNorm, chatwoot, chatwootPassword:chatwoot?.ok?password:null, inviteLink, inviteEmailSent, fallbackPassword:inviteLink?null:password});
+  // fallbackPassword is populated whenever there's no invite link to show instead — either because
+  // the admin chose an explicit password (explicitPassword:true) or because the invite link
+  // couldn't be generated (no Recovery flow bound). chatwootPassword is separate: Chatwoot has no
+  // invite-link mechanism of its own, so this is always returned once (already persisted
+  // server-side in team_chatwoot_passwords for the User Management profile view to show again
+  // later) whenever a Chatwoot agent was actually created.
+  return json({ok:true, email:emailNorm, chatwoot, chatwootPassword:chatwoot?.ok?password:null, inviteLink, inviteEmailSent, fallbackPassword:inviteLink?null:password, explicitPassword});
+}
+
+// Looks up an Authentik user's pk by email — needed because neither "Add Existing Authentik User"
+// (adds a teammate's email to team_emails without ever creating or storing an Authentik account
+// here) nor handleTeamCreateUser (its own userId isn't persisted anywhere on the CLIENTS row)
+// leave a pk sitting around to reuse later, so every password reset re-resolves it by email.
+// Authentik's Core API user-list endpoint supports an exact `email` filter — not exercised against
+// a live Authentik instance in this dev sandbox; if it ever behaves unexpectedly, Authentik's own
+// `?search=<email>` (fuzzy across name/username/email) is the documented fallback, with an exact
+// match picked out client-side.
+async function authentikFindUserByEmail(env, email){
+  const r=await authentikApiFetch(env, `/core/users/?email=${encodeURIComponent(email)}`);
+  if(!r.ok) return null;
+  const data=await r.json().catch(()=>({}));
+  return (data?.results||[])[0]||null;
+}
+
+// User Management → profile → "Set / Reset Password" (dashboard.html's renderUserProfileModal).
+// Sets a password directly on the Authentik account — and, if a linked Chatwoot agent exists, that
+// too — right here: no invite link, no email, for BOTH the account owner ("admin") and any
+// teammate ("user"). Two authorization paths: the account owner can reset anyone on their own
+// account (including themselves); anyone else can only reset their own password.
+//
+// The target email must belong to THIS client's account (the owner's own authentik_email, or a
+// listed team_emails entry) — checked explicitly rather than trusted from the caller, since
+// authentikApiFetch runs on one shared service-account token that reaches every Authentik user on
+// the whole instance, not just this client's own users. Skipping this check would let any signed-in
+// client reset an arbitrary stranger's password by guessing their email.
+async function handleTeamSetPassword(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.AUTHENTIK_API_TOKEN) return json({error:'Authentik admin API is not configured on the server.'}, 500);
+  const {email, password}=await request.json().catch(()=>({}));
+  if(!email||!password) return json({error:'email and password are required'}, 400);
+  if(String(password).length<8) return json({error:'Password must be at least 8 characters.'}, 400);
+  const emailNorm=String(email).trim().toLowerCase();
+
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const ownerEmail=String(c.authentik_email||'').trim().toLowerCase();
+  const teamEmails=(c.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
+  if(emailNorm!==ownerEmail && !teamEmails.includes(emailNorm)) return json({error:'That email is not part of this account.'}, 404);
+
+  const requesterEmail=String(payload.email||'').trim().toLowerCase();
+  const requesterIsOwner=requesterEmail===ownerEmail;
+  if(!requesterIsOwner && requesterEmail!==emailNorm) return json({error:"Only the account owner can reset another user's password."}, 403);
+
+  const authentikUser=await authentikFindUserByEmail(env, emailNorm);
+  if(!authentikUser?.pk) return json({error:'No Authentik account found for that email.'}, 404);
+  const pwR=await authentikApiFetch(env, `/core/users/${authentikUser.pk}/set_password/`, {method:'POST', body:JSON.stringify({password})});
+  if(!pwR.ok){
+    const pwData=await pwR.json().catch(()=>({}));
+    return json({error:'Authentik rejected the new password: '+(pwData?.password?.[0]||pwData?.detail||'HTTP '+pwR.status)}, 502);
+  }
+
+  // Best-effort: also update the matching Chatwoot agent's password so both logins stay in sync —
+  // same createChatwootAgent-adjacent pattern as handleTeamCreateUser. Never fails the overall
+  // request over this; the actual dashboard login (Authentik, above) is already set either way.
+  let chatwootUpdated=false;
+  const isOwnerEmail=emailNorm===ownerEmail;
+  let chatwootUserId=null;
+  if(isOwnerEmail){ chatwootUserId=c.chatwoot_user_id||null; }
+  else{ try{ chatwootUserId=JSON.parse(c.team_chatwoot_users||'{}')[emailNorm]||null; }catch(e){} }
+  if(chatwootUserId && env.CHATWOOT_PLATFORM_TOKEN){
+    try{
+      const cwR=await chatwootPlatformFetch(env, `/platform/api/v1/users/${chatwootUserId}`, {method:'PATCH', body:{password}});
+      chatwootUpdated=cwR.ok;
+    }catch(e){}
+  }
+  if(chatwootUpdated){
+    if(isOwnerEmail){
+      await patchClientFields(env, payload.cid, {chatwoot_owner_password:password}).catch(()=>{});
+    }else{
+      await ensureClientColumns(env, ['team_chatwoot_passwords']);
+      let teamPw={}; try{ teamPw=JSON.parse(c.team_chatwoot_passwords||'{}'); }catch(e){}
+      teamPw[emailNorm]=password;
+      await patchClientFields(env, payload.cid, {team_chatwoot_passwords:JSON.stringify(teamPw)}).catch(()=>{});
+    }
+  }
+
+  return json({ok:true, email:emailNorm, chatwootUpdated});
 }
 
 async function handleNocodbPassthrough(request, env, upstreamPath){
@@ -4894,7 +4982,11 @@ async function handleBillingWebhook(request, env){
 // displays "Frequently bought together" hints from it; the rule list itself is edited in one
 // place, dashboard.html Settings → "🔄 Cross-Sell & Upsell", same as every other CLIENTS-JSON
 // catalog (services etc.) having a single owning editor.
-const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules'];
+// client_slug/external_store_link added so ecom.html can mirror buildOrderLink's own link-priority
+// logic client-side (the products table's "🔗 Copy Link" quick action) without a dedicated
+// resolve-link endpoint — both are already public-facing values (the storefront URL itself is
+// exactly what these build), not sensitive like a token/secret would be.
+const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link'];
 const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone'];
 
 // Shared default tables used until a client explicitly saves their own table
@@ -4914,7 +5006,7 @@ async function ecomResolveTable(env, clientId, kind){
 // ensureB2bLeadFields above, but memoized per table id (a Set, not a single boolean) since
 // ecomResolveTable returns a different products table per client rather than one shared constant.
 const _ecomStyleFieldsEnsured=new Set();
-const ECOM_STYLE_FIELD_TITLES=['style','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url'];
+const ECOM_STYLE_FIELD_TITLES=['style','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -5662,6 +5754,16 @@ function buildOrderLink(c, clientId, sku, product){
   // straight at the real product page rather than a generic storefront/catalog link.
   const shopifyProductUrl=(product?.shopify_product_url||'').trim();
   if(shopifyProductUrl) return shopifyProductUrl;
+  // product_link — a generic per-product override (ecom.html's "Product Link" field, always
+  // visible, unlike shopify_product_url which only appears once Shopify is connected). For a
+  // client who sells through something other than Shopify (Instagram, Amazon, their own landing
+  // page, a marketplace listing) this is the one way to point a specific product at that URL
+  // instead of the built-in onshope.com/store.html catalog link below. Checked after the
+  // Shopify-specific field (still the most specific option when both happen to be set) but before
+  // the client-wide external_store_link, since a per-product link is always more specific than a
+  // client-wide one.
+  const productLink=(product?.product_link||'').trim();
+  if(productLink) return productLink;
   const ext=(c.external_store_link||'').trim();
   if(ext) return ext;
   const slug=c.client_slug;
@@ -16492,6 +16594,7 @@ export default {
       else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
+      else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/quote/send' && request.method==='POST'){ res=await handleQuoteSend(request, env); }

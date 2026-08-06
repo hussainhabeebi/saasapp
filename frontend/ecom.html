@@ -399,6 +399,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       </div>
       <div class="s-sec"><span class="s-lbl">Image Link</span><input class="s-input" id="pmImage" type="url"></div>
       <div class="s-sec" id="pmShopifyUrlWrap" style="display:none"><span class="s-lbl">Shopify Product Link</span><input class="s-input" id="pmShopifyUrl" type="url" placeholder="https://yourstore.myshopify.com/products/..."></div>
+      <div class="s-sec">
+        <span class="s-lbl">Product Link (optional)</span>
+        <input class="s-input" id="pmProductLink" type="url" placeholder="https://instagram.com/p/... or any product page">
+        <div class="s-hint">Sent instead of your default storefront link when the bot shares this product — use this if you sell it somewhere other than Shopify (Instagram, Amazon, a landing page, a marketplace listing). Leave blank to keep using your storefront link.</div>
+      </div>
     </div>
     <div class="s-sec">
       <span class="s-lbl">Description</span>
@@ -517,6 +522,7 @@ const PRODUCT_FIELDS = [
   { key:'variant',     label:'Variant' },
   { key:'warranty_period', label:'Warranty' },
   { key:'shopify_product_url', label:'Shopify Product Link' },
+  { key:'product_link', label:'Product Link' },
   { key:'price',       label:'Price' },
   { key:'currency',    label:'Currency' },
   { key:'stock',       label:'Stock' },
@@ -698,6 +704,7 @@ function renderProductsTable() {
         <td><input type="number" class="stock-input" min="0" value="${p.stock ?? 0}" onchange="updateProductStock(${p.Id}, this.value)"></td>
         <td><span class="badge ${p.status==='active'?'shipped':p.status==='inactive'?'cancelled':''}">${esc(p.status||'—')}</span></td>
         <td><div class="row-actions">
+          <button class="icon-btn" onclick="copyProductLink(${p.Id})" title="Copy this product's link">🔗</button>
           <button class="icon-btn" onclick="openEditProductModal(${p.Id})" title="Edit product">✏️</button>
           <button class="icon-btn danger" onclick="deleteProductById(${p.Id})" title="Delete product">🗑</button>
         </div></td>
@@ -711,6 +718,29 @@ function renderProductsTable() {
     selectAll.indeterminate = !selectAll.checked && visibleIds.some(id => selectedProductIds.has(id));
   }
   updateBulkDeleteUI();
+}
+
+// Mirrors worker.js's buildOrderLink priority exactly (Shopify product URL > this product's own
+// Product Link > the client-wide external_store_link > the built-in onshope.com/store.html
+// catalog link) so "Copy Link" here always matches what the bot actually sends in chat — not a
+// separate/different link a merchant might get confused by.
+function resolveProductLink(p) {
+  const shopifyUrl = (p.shopify_product_url || '').trim();
+  if (shopifyUrl) return shopifyUrl;
+  const productLink = (p.product_link || '').trim();
+  if (productLink) return productLink;
+  const ext = (clientRecord?.external_store_link || '').trim();
+  if (ext) return ext;
+  const slug = clientRecord?.client_slug;
+  const base = slug ? `https://onshope.com/${slug}` : `https://app.leadvyne.com/store.html?client=${clientId}`;
+  if (!p.sku) return base;
+  return slug ? `${base}?sku=${encodeURIComponent(p.sku)}` : `${base}&sku=${encodeURIComponent(p.sku)}`;
+}
+function copyProductLink(id) {
+  const p = allProducts.find(x => x.Id === id);
+  if (!p) return;
+  const link = resolveProductLink(p);
+  navigator.clipboard.writeText(link).then(() => alert('Copied: ' + link)).catch(() => alert(link));
 }
 
 // ── SELECTION / BULK DELETE ────────────────────────
@@ -766,7 +796,7 @@ const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'G
 // Fields specific to the non-default styles (Cosmetics/Haircare/General) — see onProductStyleChange
 // and the data-style-group attributes on their <div class="s-sec"> in the modal markup above.
 const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod'];
-const PRODUCT_MODAL_FIELDS = ['pmName','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmDescription','pmShopifyUrl', ...PRODUCT_STYLE_FIELDS];
+const PRODUCT_MODAL_FIELDS = ['pmName','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
 
 function openAddProductModal() {
   if (!ecomTableIds.products) { alert('Set the Products Table ID in Settings first.'); return; }
@@ -807,6 +837,7 @@ function openEditProductModal(id) {
   document.getElementById('pmVariant').value = p.variant || '';
   document.getElementById('pmWarrantyPeriod').value = p.warranty_period || '';
   document.getElementById('pmShopifyUrl').value = p.shopify_product_url || '';
+  document.getElementById('pmProductLink').value = p.product_link || '';
   document.getElementById('pmPrice').value = p.price ?? '';
   document.getElementById('pmCurrency').value = p.currency || 'INR';
   document.getElementById('pmStock').value = p.stock ?? '';
@@ -872,6 +903,7 @@ async function submitProductForm() {
     variant: document.getElementById('pmVariant').value.trim(),
     warranty_period: document.getElementById('pmWarrantyPeriod').value.trim(),
     shopify_product_url: document.getElementById('pmShopifyUrl').value.trim(),
+    product_link: document.getElementById('pmProductLink').value.trim(),
     price: parseFloat(document.getElementById('pmPrice').value) || 0,
     currency: document.getElementById('pmCurrency').value.trim() || 'INR',
     stock: parseInt(document.getElementById('pmStock').value, 10) || 0,
@@ -1061,6 +1093,7 @@ function parseImportCsv(text) {
         variant: get('variant'),
         warranty_period: get('warranty_period'),
         shopify_product_url: get('shopify_product_url'),
+        product_link: get('product_link'),
         price: parseFloat(get('price')) || 0,
         currency: get('currency') || 'INR',
         stock: parseInt(get('stock'), 10) || 0,

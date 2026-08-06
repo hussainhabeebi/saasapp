@@ -7448,3 +7448,59 @@ pattern are implemented from the project's own published quickstart/release conv
 outbound access to github.com or huggingface.co release/model assets was available in the dev
 sandbox this was built in. Confirm the Dockerfile's Piper steps actually succeed on your first real
 build, and test a real synthesis call before enabling for a paying client.
+
+## Direct password setting/reset (User Management, `frontend/dashboard.html` — 👥 User Management)
+
+Team user creation previously only ever set a password directly on the new Authentik account so it
+wasn't literally passwordless — the teammate always had to pick their own via an emailed invite
+link (Authentik Recovery flow), or, if that flow wasn't bound yet, was handed a one-time
+server-generated password as a fallback. Two things changed:
+
+1. **Create New User now has an optional Password field.** Leave it blank to keep the exact same
+   invite-link/email behavior as before. Fill it in (or click 🎲 to generate one) and
+   `handleTeamCreateUser` (`worker.js`) sets that password directly on the new Authentik account and
+   skips the invite-link/email step entirely — `explicitPassword:true` in the response tells
+   `renderTeamCreateResult` (`dashboard.html`) to show the right message ("password set directly",
+   not "no Recovery flow bound").
+2. **Every profile in User Management now has a "🔑 Set / Reset Password" card** (both the account
+   owner and any teammate) — `handleTeamSetPassword` (`POST /team/set-password`), sets the password
+   directly on Authentik and, if a linked Chatwoot agent exists for that email, there too (same
+   `PATCH /platform/api/v1/users/:id` Chatwoot Platform API call pattern `createChatwootAgent`
+   already uses).
+
+**Authorization, enforced server-side** (never trust the frontend's own `canViewCredentials` check
+alone): the account owner can reset anyone on their own account, including themselves; anyone else
+can only reset their own password. The target email must also actually belong to that client's
+account (the owner's `authentik_email`, or a listed `team_emails` entry) — checked explicitly,
+since `authentikApiFetch` runs on one shared service-account token that reaches every Authentik
+user on the whole instance, not just this client's own users; skipping that check would let any
+signed-in client reset an arbitrary stranger's password by guessing their email.
+
+**Not verified against a live call**: `authentikFindUserByEmail`'s `?email=` exact-match filter on
+Authentik's Core API user-list endpoint (needed because neither the "Add Existing Authentik User"
+flow nor `handleTeamCreateUser` persist an Authentik user's `pk` anywhere on the CLIENTS row) is
+implemented from Authentik's documented filterable-fields convention, not exercised against a live
+instance in this dev sandbox. If it doesn't filter as expected, `?search=<email>` (fuzzy, documented
+as always available) is the fallback, with an exact match picked out client-side.
+
+## Generic per-product link (`frontend/ecom.html` — Ecommerce products)
+
+The Ecommerce module already let a product override its default storefront link with a
+Shopify-specific URL (`shopify_product_url`, only shown once Shopify is connected) — but a client
+selling through anything else (Instagram, Amazon, a marketplace listing, a standalone landing page)
+had no equivalent. **`product_link`** is a new, always-visible per-product field ("Product Link
+(optional)" in the product editor) that does the same job without requiring Shopify.
+
+`buildOrderLink` (`worker.js`) now checks, in order: `shopify_product_url` → `product_link` →
+the client-wide `external_store_link` (Settings → Order Link) → the built-in
+`onshope.com`/`store.html` catalog link. A per-product link (Shopify or generic) always wins over
+the client-wide one, since it's more specific.
+
+Also added: a **🔗 Copy Link** button on every product row in the Ecommerce products table
+(`resolveProductLink`/`copyProductLink`, `ecom.html`) that mirrors `buildOrderLink`'s exact
+priority client-side, so what a merchant copies always matches what the bot would actually send —
+useful for pasting a product's link into an Instagram bio, a manual DM, or anywhere outside the
+WhatsApp chat flow itself. `ECOM_CLIENT_READ_FIELDS` (`worker.js`) gained `client_slug`/
+`external_store_link` so `GET /ecom/client` can expose what this needs to compute the fallback link
+correctly — both already public-facing values (they ARE the storefront URL), not sensitive like a
+token would be.

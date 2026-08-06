@@ -3032,11 +3032,15 @@ const ROLES = {
 
             <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
               <div style="font-weight:700;font-size:13px;margin-bottom:6px">Create New User</div>
-              <div class="s-note" style="margin-bottom:8px">Creates a real Authentik login for them and emails an invite link so they set their own password — you never choose a password on their behalf. Also creates a matching Chatwoot agent if Chatwoot is connected.</div>
+              <div class="s-note" style="margin-bottom:8px">Creates a real Authentik login for them, and a matching Chatwoot agent if Chatwoot is connected. Set a password directly below, or leave it blank to email them an invite link to set their own instead.</div>
               <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
                 <input class="form-input" id="teamNewName" type="text" placeholder="Full Name">
                 <input class="form-input" id="teamNewUsername" type="text" placeholder="Username">
                 <input class="form-input" id="teamNewUserEmail" type="email" placeholder="Email">
+                <div style="display:flex;gap:6px">
+                  <input class="form-input" id="teamNewPassword" type="text" placeholder="Password (optional)" style="flex:1">
+                  <button type="button" class="save-btn sec" onclick="$id('teamNewPassword').value=generateStrongPassword()" title="Generate a strong password">🎲</button>
+                </div>
               </div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
                 <button class="save-btn" onclick="createTeamUser()">Create User</button>
@@ -8148,11 +8152,25 @@ function renderUserProfileModal(email){
     </label>`;
   }).join('');
 
+  const passwordHtml=canViewCredentials?`
+    <div class="profile-card" style="margin-bottom:14px">
+      <div class="pc-title">🔑 Set / Reset Password</div>
+      <div class="s-note" style="margin-bottom:8px">Sets the Authentik login (and matching Chatwoot login, if one exists) directly — no invite link, no email.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <input class="form-input" id="upNewPassword" type="text" placeholder="New password" style="max-width:220px">
+        <button type="button" class="save-btn sec" onclick="$id('upNewPassword').value=generateStrongPassword()" title="Generate a strong password">🎲</button>
+        <button class="save-btn" onclick="resetUserPassword('${esc(email)}')">Set Password</button>
+      </div>
+      <span class="save-msg" id="upPasswordMsg"></span>
+    </div>
+  `:'';
+
   $id('userProfileBody').innerHTML=`
     <div class="profile-card" style="margin-bottom:14px">
       <div class="pc-title">💬 Chatwoot Login</div>
       ${chatwootHtml}
     </div>
+    ${passwordHtml}
     ${!owner?`
     <div style="font-weight:700;font-size:13px;margin-bottom:6px">Role</div>
     <div class="s-note" style="margin-bottom:8px">${canEdit?'Picking a role fills in Module Access below with a sensible starting point (still editable), and shapes what the Home and Leads pages show for this person. Works the same for every industry.':'Only the account owner can change this.'}</div>
@@ -8192,6 +8210,32 @@ function applyRolePreset(roleKey){
 function maskedReveal(value){
   const id='pw'+Math.random().toString(36).slice(2);
   return `<span id="${id}" style="font-family:var(--mono);cursor:pointer" data-shown="0" data-val="${esc(value)}" onclick="const el=this;el.dataset.shown=el.dataset.shown==='1'?'0':'1';el.textContent=el.dataset.shown==='1'?el.dataset.val:'••••••••';" title="Click to reveal">••••••••</span>`;
+}
+// User Management → profile → "Set / Reset Password". Server (handleTeamSetPassword, worker.js)
+// re-checks authorization itself (owner can reset anyone on their account, anyone else only their
+// own) — this call is only reachable at all when renderUserProfileModal's canViewCredentials
+// already agreed, but the server never trusts that alone.
+async function resetUserPassword(email){
+  const input=$id('upNewPassword'),msg=$id('upPasswordMsg');
+  const password=input.value;
+  if(!password||password.length<8){ msg.textContent='Password must be at least 8 characters.'; msg.className='save-msg err'; return; }
+  msg.textContent='Setting…'; msg.className='save-msg';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/set-password`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({email,password})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    if(data.chatwootUpdated){
+      if(isAccountOwner(email)) clientRecord.chatwoot_owner_password=password;
+      else{
+        let teamPw={}; try{ teamPw=JSON.parse(clientRecord.team_chatwoot_passwords||'{}'); }catch(e){}
+        teamPw[email]=password;
+        clientRecord.team_chatwoot_passwords=JSON.stringify(teamPw);
+      }
+    }
+    input.value='';
+    msg.textContent='✓ Password set'; msg.className='save-msg ok';
+    setTimeout(()=>{ msg.textContent=''; },3000);
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 async function saveUserProfilePermissions(email){
   const msg=$id('userProfileMsg'); msg.textContent='Saving…'; msg.className='save-msg';
@@ -8238,16 +8282,27 @@ async function addTeamMember(){
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
+// Client-side convenience only — the server never trusts this, it's just what fills the "🎲"
+// button and the profile modal's reset-password field. 16 chars, mixed classes, no ambiguous-look
+// characters (0/O, 1/l/I) so it's easy to read back if handed over verbally or by screen-share.
+function generateStrongPassword(){
+  const chars='ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*';
+  const bytes=crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes,b=>chars[b%chars.length]).join('');
+}
+
 async function createTeamUser(){
   const msg=$id('teamCreateUserMsg'); msg.textContent=''; msg.className='save-msg';
   $id('teamCreateUserResult').innerHTML='';
   const name=$id('teamNewName').value.trim();
   const username=$id('teamNewUsername').value.trim();
   const email=$id('teamNewUserEmail').value.trim().toLowerCase();
+  const password=$id('teamNewPassword').value;
   if(!username||!email){ msg.textContent='Username and email are required.'; msg.className='save-msg err'; return; }
+  if(password && password.length<8){ msg.textContent='Password must be at least 8 characters.'; msg.className='save-msg err'; return; }
   msg.textContent='Creating…';
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/team/create-user`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name,username,email})});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/create-user`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name,username,email,password:password||undefined})});
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
@@ -8262,7 +8317,7 @@ async function createTeamUser(){
     msg.textContent=data.inviteLink?'✓ User created — invite sent':'✓ User created'; msg.className='save-msg ok';
     renderTeamMembers();
     renderTeamCreateResult(email, data);
-    $id('teamNewName').value=''; $id('teamNewUsername').value=''; $id('teamNewUserEmail').value='';
+    $id('teamNewName').value=''; $id('teamNewUsername').value=''; $id('teamNewUserEmail').value=''; $id('teamNewPassword').value='';
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
@@ -8282,16 +8337,20 @@ function copyInviteLink(btn){
   navigator.clipboard.writeText(btn.dataset.inviteLink||'').catch(()=>{});
 }
 function renderTeamCreateResult(email, data){
-  const {inviteLink, inviteEmailSent, fallbackPassword, chatwoot, chatwootPassword}=data;
+  const {inviteLink, inviteEmailSent, fallbackPassword, explicitPassword, chatwoot, chatwootPassword}=data;
   const box=$id('teamCreateUserResult');
   let html=`<div class="card" style="margin-top:10px;padding:12px 14px;background:var(--accent-soft)">
     <div style="font-weight:700;font-size:13px;margin-bottom:6px">Dashboard login for ${esc(email)}</div>`;
-  if(inviteLink){
+  if(explicitPassword && fallbackPassword){
+    html+=`<div class="s-note" style="margin-bottom:6px">Password set directly — no invite link or email was sent. Share this with them however you like.</div>
+    <div style="font-size:13px;font-family:var(--mono);margin-bottom:2px">Email: ${esc(email)}</div>
+    <div style="font-size:13px;font-family:var(--mono);margin-bottom:8px">Password: ${esc(fallbackPassword)}</div>`;
+  }else if(inviteLink){
     html+=`<div class="s-note" style="margin-bottom:6px">${inviteEmailSent?`An invite email was sent to ${esc(email)} with a link to set their own password.`:`Couldn't confirm the invite email sent — share this link with them directly instead.`}</div>
     <div style="font-size:12px;font-family:var(--mono);word-break:break-all;background:var(--bg);padding:8px;border-radius:6px;margin-bottom:4px">${esc(inviteLink)}</div>
     <button class="save-btn sec" style="margin-top:4px" data-invite-link="${esc(inviteLink)}" onclick="copyInviteLink(this)">Copy link</button>`;
   }else if(fallbackPassword){
-    html+=`<div class="s-note" style="margin-bottom:6px;color:var(--red)">This Authentik instance doesn't have a password-reset flow bound yet, so an invite link couldn't be generated — sharing a one-time password instead. Ask your admin to bind a Recovery flow (SETUP.md) so future invites are link-based.</div>
+    html+=`<div class="s-note" style="margin-bottom:6px;color:var(--red)">This Authentik instance doesn't have a password-reset flow bound yet, so an invite link couldn't be generated — sharing a one-time password instead. Ask your admin to bind a Recovery flow (SETUP.md) so future invites are link-based, or set a password directly next time.</div>
     <div style="font-size:13px;font-family:var(--mono);margin-bottom:2px">Email: ${esc(email)}</div>
     <div style="font-size:13px;font-family:var(--mono);margin-bottom:8px">Password: ${esc(fallbackPassword)}</div>`;
   }
