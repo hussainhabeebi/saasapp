@@ -5725,6 +5725,7 @@ async function handleEcomCreate(request, env, kind){
   const { client_id, Id, ...fields }=body;
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:{...fields, client_id:clientId}});
   const data=await r.json().catch(()=>({}));
+  if(kind==='products' && r.ok && data?.Id) await ecomVerifyProductWrite(env, tableId, data.Id, fields);
   return json(data, r.status);
 }
 
@@ -5742,7 +5743,23 @@ async function handleEcomUpdate(request, env, kind){
   const { client_id, Id, ...fields }=body;
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:id, ...fields}});
   const data=await r.json().catch(()=>({}));
+  if(kind==='products' && r.ok) await ecomVerifyProductWrite(env, tableId, id, fields);
   return json(data, r.status);
+}
+
+// NocoDB can return 200 on a PATCH while silently ignoring a field it doesn't like the value for
+// (e.g. a pre-existing Single-Select column whose fixed option list doesn't include the value we
+// sent) — the write looks successful end to end with nothing to catch it. Re-reading the record
+// right after the write and diffing it against what we sent turns that into a visible ops alert
+// naming the exact field, instead of a product quietly reverting the moment you reopen it.
+async function ecomVerifyProductWrite(env, tableId, id, fields){
+  try{
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
+    const saved=await r.json().catch(()=>null);
+    if(!r.ok || !saved) return;
+    const dropped=Object.entries(fields).filter(([k,v])=>String(saved[k]??'')!==String(v??''));
+    if(dropped.length) await reportOpsError(env, 'ecom product field(s) not persisted by NocoDB', new Error(dropped.map(([k,v])=>`${k}: sent ${JSON.stringify(v)}, saved as ${JSON.stringify(saved[k])}`).join('; ')), {tableId, id});
+  }catch(e){ await reportOpsError(env, 'ecomVerifyProductWrite failed', e, {tableId, id}); }
 }
 
 async function handleEcomDelete(request, env, kind){
