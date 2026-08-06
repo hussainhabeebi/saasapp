@@ -5482,7 +5482,10 @@ async function ecomResolveTable(env, clientId, kind){
 // ensureB2bLeadFields above, but memoized per table id (a Set, not a single boolean) since
 // ecomResolveTable returns a different products table per client rather than one shared constant.
 const _ecomStyleFieldsEnsured=new Set();
-const ECOM_STYLE_FIELD_TITLES=['style','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link'];
+// audio_url/video_url (Google Drive share links) added here alongside the style fields — same
+// "auto-provision on first write, no manual NocoDB step" mechanism, just product-level media
+// instead of a style attribute. See engineMaybeSendProductMedia for how they're actually sent.
+const ECOM_STYLE_FIELD_TITLES=['style','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','audio_url','video_url'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -6308,6 +6311,24 @@ async function ecomResolveProduct(env, clientId, sku, productName){
     const name=(p.name||'').trim().toLowerCase();
     return name && (name.includes(guess) || guess.includes(name));
   })||null;
+}
+
+// Product-level audio note / video (audio_url/video_url, Google Drive share links set on the
+// product itself in ecom.html's Add/Edit Product modal) — sent right after the product's photo
+// whenever a specific product was confidently identified, same "the customer asked about this, so
+// show/tell them everything curated for it" reasoning as the photo send just above it at each call
+// site. Deliberately separate from engineSendChatwootImageReply (the existing photo path, an
+// image-only thumbnail-URL trick) — audio/video need the real file bytes, not a thumbnail, so this
+// reuses the general-purpose sendDriveMediaToChatwoot (Automations & Flow's send_whatsapp_media
+// step, Follow-up Engine's per-variant media) instead of duplicating a second Drive-fetch path.
+// Best-effort: a missing/unshared Drive link for either just skips that one send, never blocks or
+// fails the product reply that already went out above it.
+async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    if(product.audio_url) await sendDriveMediaToChatwoot(c, convId, product.audio_url, '');
+    if(product.video_url) await sendDriveMediaToChatwoot(c, convId, product.video_url, '');
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendProductMedia', e, {clientId, convId}); }
 }
 
 // Category-level browsing: the customer named a category ("shirts") rather than one specific
@@ -9446,6 +9467,7 @@ async function handleEngineWebhook(request, env, secret){
           sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
           routing.reply=sentText;
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
+          await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           await logPendingOrder(env, c, clientId, phone, name, product);
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product){
@@ -9466,6 +9488,7 @@ async function handleEngineWebhook(request, env, secret){
           // (this was briefly restricted to link-only sends; reverted per explicit product
           // direction — the photo isn't "extra" media here, it's answering what was asked).
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
+          await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           // Only logged as a pending order when the link was actually made available this turn —
           // an enquiry reply with the toggle off shares no link, so there's nothing to log yet.
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
