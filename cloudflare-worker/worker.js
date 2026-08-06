@@ -4194,6 +4194,482 @@ async function handleReportsProducts(request, env){
   return json({services, top_products:topProducts, style_breakdown:styleBreakdown, has_orders_table:hasOrdersTable});
 }
 
+/* ── SCHEDULED REPORT BUILDER (Reports page → 🗓️ Scheduled Reports) ─────────────────────────────
+   A client picks which report sections they want (REPORT_SECTIONS below), a frequency (daily or
+   weekly), a template/accent color, and who gets it by email — saved as a row in D1's
+   scheduled_reports table (migrations/0042_scheduled_reports.sql). Multiple reports per client are
+   just multiple rows. runScheduledReportsForAllClients (piggybacked on the existing daily
+   '0 2 * * *' cron tick, same reasoning as every other daily-granularity sweep in this file — see
+   that tick's own comment) sends whichever reports are due.
+
+   Every section's data comes from either a genuinely new, lightweight direct-Lead-table query
+   (Overview/Sales/Team/SaaS — these never had a server-side endpoint at all before this, only
+   client-side computation in dashboard.html) or by calling this file's EXISTING report handlers
+   directly as plain functions (WhatsApp/Ecommerce/Product/SEO/Marketing) — the same
+   "handleReportsProducts calls handleShopifyAnalytics(request, env) directly and reads its JSON"
+   pattern already used in this file, just with a synthetic internally-signed session request
+   (buildInternalReportRequest) instead of a real browser one, since a cron tick has no browser
+   session to reuse.
+
+   Every report's header uses THIS CLIENT'S OWN business name (c.client_name) — never "Leadvyne"
+   anywhere in the output. This is the one hard rule the whole renderer is built around: the
+   product is white-label from the report recipient's point of view. ── */
+
+const REPORT_TERMINAL_STAGES=new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
+// Mirrors dashboard.html's own isWonLead/isLostLead exactly (see those functions' own comments) —
+// kept in sync by hand since this is server-side Worker code and that's client-side dashboard
+// code, no shared module between them.
+function reportIsWonLead(l){ return l.Stage==='won'||l.Stage==='converted'||(REPORT_TERMINAL_STAGES.has(l.Stage)&&l.Stage!=='human_handover'); }
+function reportIsLostLead(l){ return l.Stage==='lost'; }
+
+async function reportFetchAllLeads(env, clientId, fields){
+  let rows=[];
+  for(let page=1; page<=10; page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=200&offset=${(page-1)*200}&fields=${fields}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const list=data?.list||[];
+    rows=rows.concat(list);
+    if(list.length<200) break;
+  }
+  return rows;
+}
+
+async function computeReportOverview(env, c, clientId){
+  const leads=await reportFetchAllLeads(env, clientId, 'Stage,Date,DealValue');
+  const since30=new Date(); since30.setDate(since30.getDate()-30);
+  const newLeads30d=leads.filter(l=>l.Date && new Date(l.Date)>=since30).length;
+  const won=leads.filter(reportIsWonLead);
+  const lost=leads.filter(reportIsLostLead);
+  const revenue=won.reduce((sum,l)=>sum+(Number(l.DealValue)||0),0);
+  return {
+    total_leads:leads.length, new_leads_30d:newLeads30d, won_count:won.length, lost_count:lost.length,
+    conversion_rate: leads.length?Math.round((won.length/leads.length)*1000)/10:0,
+    revenue, currency:c.deal_currency||'AED'
+  };
+}
+
+async function computeReportSales(env, c, clientId){
+  const leads=await reportFetchAllLeads(env, clientId, 'Stage,Date,ClosedAt,DealValue');
+  const won=leads.filter(reportIsWonLead);
+  const lost=leads.filter(reportIsLostLead);
+  const revenue=won.reduce((sum,l)=>sum+(Number(l.DealValue)||0),0);
+  const byWeek={};
+  won.forEach(l=>{
+    const d=l.ClosedAt||l.Date; if(!d) return;
+    const dt=new Date(d); if(isNaN(dt.getTime())) return;
+    const weekStart=new Date(dt); weekStart.setDate(dt.getDate()-dt.getDay());
+    const key=weekStart.toISOString().slice(0,10);
+    byWeek[key]=(byWeek[key]||0)+(Number(l.DealValue)||0);
+  });
+  const trend=Object.entries(byWeek).sort((a,b)=>a[0].localeCompare(b[0])).slice(-8).map(([week,total])=>({week,total}));
+  return {
+    won_count:won.length, lost_count:lost.length, revenue,
+    avg_deal_value: won.length?Math.round((revenue/won.length)*100)/100:0,
+    currency:c.deal_currency||'AED', trend
+  };
+}
+
+async function computeReportTeam(env, c, clientId){
+  const leads=await reportFetchAllLeads(env, clientId, 'Stage,Owner,DealValue');
+  const owner=(c.authentik_email||'').trim();
+  const teamEmails=(c.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
+  let names={}; try{ names=JSON.parse(c.team_names||'{}'); }catch(e){}
+  const members=[...new Set([owner, ...teamEmails].filter(Boolean))];
+  const rows=members.map(email=>{
+    const mine=leads.filter(l=>(l.Owner||'').toLowerCase()===email.toLowerCase());
+    const won=mine.filter(reportIsWonLead);
+    return {
+      email, name: email.toLowerCase()===owner.toLowerCase()?(c.client_name||email):(names[email]||email),
+      assigned:mine.length, won:won.length, revenue:won.reduce((s,l)=>s+(Number(l.DealValue)||0),0)
+    };
+  }).sort((a,b)=>b.revenue-a.revenue);
+  return {members:rows, currency:c.deal_currency||'AED'};
+}
+
+// SaaS Ops summary — best-effort, only populated for clients with the SaaS Ops module configured
+// (saas_config). Mirrors runWeeklyOwnerDigest's own churned/at-risk computation rather than
+// inventing a third way to read it.
+async function computeReportSaas(env, c, clientId){
+  const cfg=await env.DB.prepare(`SELECT nocodb_customers_table_id FROM saas_config WHERE client_id=?`).bind(Number(clientId)).first();
+  if(!cfg?.nocodb_customers_table_id) return {enabled:false};
+  const customers=await saasFetchAllCustomers(env, cfg.nocodb_customers_table_id);
+  const churned=customers.filter(cust=>cust.saas_lifecycle_stage==='churned').length;
+  const atRisk=customers.filter(cust=>cust.saas_lifecycle_stage!=='churned' && Number(cust.saas_health_score)<40);
+  const healthy=customers.length-churned-atRisk.length;
+  return {enabled:true, total_customers:customers.length, churned, at_risk:atRisk.length, healthy};
+}
+
+// Mints a fresh internally-signed session (signSession — same primitive a real login uses) and
+// builds a synthetic Request so this file's EXISTING session-authed report handlers
+// (handleReportsWhatsapp/handleShopifyAnalytics/handleReportsProducts/handleReportsSeo/
+// handleMetaAdsSpendTrend) can be called directly, unmodified, from a cron tick — which has no
+// real browser session to reuse. Exactly the same "call the handler as a plain function" pattern
+// handleReportsProducts already uses on handleShopifyAnalytics, just with a request built here
+// instead of a passed-through one.
+async function buildInternalReportRequest(env, clientId, path, params){
+  const token=await signSession(env, clientId, '');
+  const qs=params?('?'+new URLSearchParams(params).toString()):'';
+  return new Request(`https://internal.leadvyne${path}${qs}`, {headers:{Authorization:`Bearer ${token}`}});
+}
+
+// The selectable catalog the report builder's UI (dashboard.html) checkboxes are built from —
+// `key` is what's saved in scheduled_reports.sections (a JSON array of these), `compute` returns
+// the section's data given the client row and a fresh internal request, `render` turns that data
+// into the HTML block renderScheduledReportHtml drops into the report body.
+const REPORT_SECTIONS={
+  overview:{
+    label:'🧭 Overview', compute: async(env,c,clientId)=>computeReportOverview(env,c,clientId),
+    render:(d,accent)=>`
+      <div class="rep-stats">
+        <div class="rep-stat"><div class="rep-stat-n">${d.total_leads}</div><div class="rep-stat-l">Total Leads</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.new_leads_30d}</div><div class="rep-stat-l">New (30d)</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.won_count}</div><div class="rep-stat-l">Won</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.conversion_rate}%</div><div class="rep-stat-l">Conversion</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.currency} ${d.revenue.toLocaleString()}</div><div class="rep-stat-l">Revenue</div></div>
+      </div>`
+  },
+  sales:{
+    label:'💰 Sales', compute: async(env,c,clientId)=>computeReportSales(env,c,clientId),
+    render:(d,accent)=>`
+      <div class="rep-stats">
+        <div class="rep-stat"><div class="rep-stat-n">${d.won_count}</div><div class="rep-stat-l">Deals Won</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.lost_count}</div><div class="rep-stat-l">Deals Lost</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.currency} ${d.revenue.toLocaleString()}</div><div class="rep-stat-l">Revenue</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.currency} ${d.avg_deal_value.toLocaleString()}</div><div class="rep-stat-l">Avg Deal</div></div>
+      </div>
+      ${d.trend.length?`<table class="rep-tbl"><thead><tr><th>Week of</th><th>Revenue</th></tr></thead><tbody>${d.trend.map(t=>`<tr><td>${esc(t.week)}</td><td>${d.currency} ${t.total.toLocaleString()}</td></tr>`).join('')}</tbody></table>`:''}`
+  },
+  team:{
+    label:'📊 Team', compute: async(env,c,clientId)=>computeReportTeam(env,c,clientId),
+    render:(d,accent)=>`<table class="rep-tbl"><thead><tr><th>Team Member</th><th>Assigned</th><th>Won</th><th>Revenue</th></tr></thead><tbody>${d.members.map(m=>`<tr><td>${esc(m.name)}</td><td>${m.assigned}</td><td>${m.won}</td><td>${d.currency} ${m.revenue.toLocaleString()}</td></tr>`).join('')||'<tr><td colspan="4">No team data yet.</td></tr>'}</tbody></table>`
+  },
+  marketing:{
+    label:'📣 Marketing', compute: async(env,c,clientId,request)=>{
+      const budget=Number(c.monthly_ad_budget)||0;
+      let spend=0, connected=false;
+      if(c.meta_ad_account_id && c.meta_capi_token){
+        try{
+          const r=await handleMetaAdsSpendTrend(request, env);
+          const data=r.ok?await r.json():null;
+          connected=!!data?.connected;
+          if(connected){
+            const now=new Date();
+            const thisMonthKey=now.toISOString().slice(0,7);
+            spend=data.months?.find(m=>m.key===thisMonthKey)?.spend||0;
+          }
+        }catch(e){}
+      }
+      return {budget, spend, connected, budget_used_pct: budget?Math.round((spend/budget)*1000)/10:0};
+    },
+    render:(d,accent)=>`
+      <div class="rep-stats">
+        <div class="rep-stat"><div class="rep-stat-n">${d.budget?d.budget.toLocaleString():'—'}</div><div class="rep-stat-l">Monthly Budget</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.connected?d.spend.toLocaleString():'—'}</div><div class="rep-stat-l">Ad Spend (MTD)</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.budget&&d.connected?d.budget_used_pct+'%':'—'}</div><div class="rep-stat-l">Budget Used</div></div>
+      </div>
+      ${!d.connected?'<p class="rep-empty">Connect a Meta Ads account (Settings → Integrations) for spend tracking.</p>':''}`
+  },
+  whatsapp:{
+    label:'💬 WhatsApp', compute: async(env,c,clientId,request)=>{
+      const r=await handleReportsWhatsapp(request, env);
+      return r.ok?await r.json():null;
+    },
+    render:(d,accent)=>!d?'<p class="rep-empty">No WhatsApp activity data available.</p>':`
+      <div class="rep-stats">
+        <div class="rep-stat"><div class="rep-stat-n">${d.total_messages}</div><div class="rep-stat-l">Messages (${d.days}d)</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.avg_response_ms?Math.round(d.avg_response_ms/1000)+'s':'—'}</div><div class="rep-stat-l">Avg Response</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.error_rate}%</div><div class="rep-stat-l">Error Rate</div></div>
+      </div>
+      ${d.intent_breakdown?.length?`<table class="rep-tbl"><thead><tr><th>Intent</th><th>Count</th></tr></thead><tbody>${d.intent_breakdown.slice(0,8).map(i=>`<tr><td>${esc(i.intent)}</td><td>${i.count}</td></tr>`).join('')}</tbody></table>`:''}`
+  },
+  ecommerce:{
+    label:'🛍️ Ecommerce', compute: async(env,c,clientId,request)=>{
+      const r=await handleShopifyAnalytics(request, env);
+      return r.ok?await r.json():null;
+    },
+    render:(d,accent)=>!d||!d.has_orders_table?'<p class="rep-empty">Ecommerce module isn\'t set up yet.</p>':`
+      <div class="rep-stats">
+        <div class="rep-stat"><div class="rep-stat-n">${d.order_count}</div><div class="rep-stat-l">Orders</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${(d.total_revenue||0).toLocaleString()}</div><div class="rep-stat-l">Revenue</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${(d.aov||0).toLocaleString()}</div><div class="rep-stat-l">AOV</div></div>
+      </div>
+      ${d.top_products?.length?`<table class="rep-tbl"><thead><tr><th>Product</th><th>Qty</th><th>Revenue</th></tr></thead><tbody>${d.top_products.slice(0,8).map(p=>`<tr><td>${esc(p.title||p.name||'—')}</td><td>${p.quantity||0}</td><td>${(p.revenue||0).toLocaleString()}</td></tr>`).join('')}</tbody></table>`:''}`
+  },
+  product:{
+    label:'🧩 Product', compute: async(env,c,clientId,request)=>{
+      const r=await handleReportsProducts(request, env);
+      return r.ok?await r.json():null;
+    },
+    render:(d,accent)=>!d||!d.services?.length?'<p class="rep-empty">No service booking data available.</p>':`<table class="rep-tbl"><thead><tr><th>Service</th><th>Bookings</th><th>Revenue</th></tr></thead><tbody>${d.services.slice(0,8).map(s=>`<tr><td>${esc(s.name)}</td><td>${s.bookings}</td><td>${s.currency} ${(s.revenue||0).toLocaleString()}</td></tr>`).join('')}</tbody></table>`
+  },
+  seo:{
+    label:'🔍 SEO', compute: async(env,c,clientId,request)=>{
+      if(!c.gsc_refresh_token) return null;
+      const r=await handleReportsSeo(request, env);
+      return r.ok?await r.json():null;
+    },
+    render:(d,accent)=>!d?'<p class="rep-empty">Google Search Console isn\'t connected.</p>':`
+      <div class="rep-stats">
+        <div class="rep-stat"><div class="rep-stat-n">${(d.totals?.clicks||0).toLocaleString()}</div><div class="rep-stat-l">Clicks</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${(d.totals?.impressions||0).toLocaleString()}</div><div class="rep-stat-l">Impressions</div></div>
+      </div>
+      ${d.top_queries?.length?`<table class="rep-tbl"><thead><tr><th>Query</th><th>Clicks</th></tr></thead><tbody>${d.top_queries.slice(0,8).map(q=>`<tr><td>${esc(q.query||'—')}</td><td>${q.clicks||0}</td></tr>`).join('')}</tbody></table>`:''}`
+  },
+  saas:{
+    label:'📈 SaaS Ops', compute: async(env,c,clientId)=>computeReportSaas(env,c,clientId),
+    render:(d,accent)=>!d?.enabled?'<p class="rep-empty">SaaS Ops module isn\'t set up yet.</p>':`
+      <div class="rep-stats">
+        <div class="rep-stat"><div class="rep-stat-n">${d.total_customers}</div><div class="rep-stat-l">Customers</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.healthy}</div><div class="rep-stat-l">Healthy</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.at_risk}</div><div class="rep-stat-l">At Risk</div></div>
+        <div class="rep-stat"><div class="rep-stat-n">${d.churned}</div><div class="rep-stat-l">Churned</div></div>
+      </div>`
+  }
+};
+
+// Three visual templates — all share the same markup (rep-stats/rep-tbl/rep-empty classes used by
+// REPORT_SECTIONS' own render() functions above), differing only in the CSS: 'classic' is a
+// visibly bordered, boxed layout (a border around every section, a ruled header) — the literal
+// "borders" ask; 'modern' is a left accent-bar card style with soft shadows, no hard borders;
+// 'minimal' is bare, divider-only, maximum whitespace. accentColor is the one client-chosen color
+// threaded through all three (header rule, stat numbers, table header, and — classic only — every
+// section border).
+function reportTemplateCss(template, accentColor){
+  const accent=/^#[0-9a-f]{3,8}$/i.test(accentColor||'')?accentColor:'#4f46e5';
+  const base=`
+    body{margin:0;padding:0;background:#f4f4f6;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1a1a1a}
+    .rep-wrap{max-width:680px;margin:0 auto;padding:24px 16px}
+    .rep-header{margin-bottom:20px}
+    .rep-header h1{font-size:20px;margin:0 0 4px}
+    .rep-header .rep-sub{color:#666;font-size:13px;margin:0}
+    .rep-section{margin-bottom:20px;padding:18px 20px;background:#fff}
+    .rep-section h2{font-size:15px;margin:0 0 12px}
+    .rep-stats{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:10px}
+    .rep-stat{flex:1;min-width:110px}
+    .rep-stat-n{font-size:20px;font-weight:700;color:${accent}}
+    .rep-stat-l{font-size:11px;color:#777;text-transform:uppercase;letter-spacing:.03em}
+    .rep-tbl{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+    .rep-tbl th{text-align:left;padding:6px 8px;background:${accent}1a;color:${accent};font-size:11px;text-transform:uppercase}
+    .rep-tbl td{padding:6px 8px;border-bottom:1px solid #eee}
+    .rep-empty{color:#888;font-size:13px;margin:4px 0 0}
+    .rep-footer{text-align:center;color:#999;font-size:11px;margin-top:24px}
+  `;
+  if(template==='modern') return base+`
+    .rep-header{border-left:5px solid ${accent};padding:4px 0 4px 14px}
+    .rep-section{border-radius:12px;border-left:4px solid ${accent};box-shadow:0 1px 4px rgba(0,0,0,.06)}
+  `;
+  if(template==='minimal') return base+`
+    .rep-header{border-bottom:2px solid #eee;padding-bottom:12px}
+    .rep-section{padding:16px 0;border-bottom:1px solid #eee}
+    .rep-section h2{color:${accent}}
+  `;
+  // 'classic' (default) — the explicit bordered/boxed look.
+  return base+`
+    .rep-header{border-bottom:3px solid ${accent};padding-bottom:12px}
+    .rep-section{border:1px solid #ddd;border-radius:6px}
+    .rep-section h2{border-bottom:1px solid #eee;padding-bottom:8px;color:${accent}}
+  `;
+}
+
+// Builds the full report HTML — header ALWAYS uses c.client_name (never "Leadvyne"), so a report
+// is genuinely white-label from the recipient's point of view. `sectionResults` is
+// [{key, data}, ...] already computed by the caller (runScheduledReportsForAllClients or the
+// preview/send-now handlers below), in the same order the report's `sections` array was saved.
+function renderScheduledReportHtml(c, report, sectionResults){
+  const businessName=c.client_name||'Your Business';
+  const periodLabel=report.frequency==='daily'?'Daily Report':'Weekly Report';
+  const dateLabel=new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+  const sectionsHtml=sectionResults.map(({key,data})=>{
+    const def=REPORT_SECTIONS[key];
+    if(!def) return '';
+    let body; try{ body=def.render(data, report.accent_color); }catch(e){ body='<p class="rep-empty">Couldn\'t render this section.</p>'; }
+    return `<div class="rep-section"><h2>${def.label}</h2>${body}</div>`;
+  }).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${reportTemplateCss(report.template, report.accent_color)}</style></head>
+<body><div class="rep-wrap">
+  <div class="rep-header">
+    <h1>${esc(businessName)}</h1>
+    <p class="rep-sub">${esc(report.name)} — ${esc(periodLabel)} · ${esc(dateLabel)}</p>
+  </div>
+  ${sectionsHtml}
+  <div class="rep-footer">Sent automatically by your ${esc(report.frequency)} report — ${esc(businessName)}</div>
+</div></body></html>`;
+}
+
+// Runs every REPORT_SECTIONS key saved on a report and returns [{key,data}], skipping (not
+// failing the whole report over) any single section that throws — a broken SEO connection
+// shouldn't cost a client their Sales/Team numbers.
+async function computeScheduledReportSections(env, c, clientId, report){
+  let sectionKeys=[]; try{ sectionKeys=JSON.parse(report.sections||'[]'); }catch(e){}
+  const results=[];
+  // One signed internal request reused across every section this report needs (each section's
+  // compute() that calls another handler — WhatsApp/Ecommerce/Product/SEO/Marketing — only ever
+  // reads it, never consumes/mutates the body) rather than re-signing a session per section.
+  const request=await buildInternalReportRequest(env, clientId, '/reports/internal');
+  for(const key of sectionKeys){
+    const def=REPORT_SECTIONS[key];
+    if(!def) continue;
+    try{
+      const data=await def.compute(env, c, clientId, request);
+      results.push({key, data});
+    }catch(e){
+      console.error('[scheduled-reports] section failed', key, 'client', clientId, e.message);
+    }
+  }
+  return results;
+}
+
+async function sendScheduledReportEmail(env, c, report, html){
+  if(!env.RESEND_API_KEY) return {ok:false, error:'RESEND_API_KEY not configured on the server.'};
+  const recipients=(report.recipient_emails||c.notification_email||'').split(',').map(e=>e.trim()).filter(Boolean);
+  if(!recipients.length) return {ok:false, error:'No recipient email configured.'};
+  // From-NAME is always this client's own business, never Leadvyne — same white-label rule as the
+  // report header itself. The from-ADDRESS stays the platform-verified sending domain
+  // (env.RESEND_FROM_EMAIL, e.g. "Leadvyne Tasks <tasks@leadvyne.com>" or a bare address — a
+  // client can't verify their own domain in Resend just for this), only the display name changes.
+  const rawFrom=env.RESEND_FROM_EMAIL||'reports@leadvyne.com';
+  const fromAddress=(rawFrom.match(/<([^>]+)>/)||[])[1]||rawFrom;
+  const fromHeader=`${c.client_name||'Reports'} Reports <${fromAddress}>`;
+  const r=await fetch('https://api.resend.com/emails', {
+    method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({from:fromHeader, to:recipients, subject:`${c.client_name||'Your'} ${report.frequency==='daily'?'Daily':'Weekly'} Report — ${report.name}`, html})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return {ok:false, error:data?.message||'Resend API HTTP '+r.status};
+  return {ok:true};
+}
+
+async function handleScheduledReportsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM scheduled_reports WHERE client_id=? ORDER BY id DESC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(r=>({...r, sections:JSON.parse(r.sections||'[]'), active:!!r.active}))});
+}
+async function handleScheduledReportCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name) return json({error:'name is required'}, 400);
+  const sections=(Array.isArray(body.sections)?body.sections:[]).filter(k=>REPORT_SECTIONS[k]);
+  if(!sections.length) return json({error:'Select at least one report section'}, 400);
+  const frequency=body.frequency==='daily'?'daily':'weekly';
+  const weeklyDay=Math.max(0, Math.min(6, parseInt(body.weekly_day,10)||1));
+  const template=['classic','modern','minimal'].includes(body.template)?body.template:'classic';
+  const accentColor=/^#[0-9a-f]{3,8}$/i.test(body.accent_color||'')?body.accent_color:'#4f46e5';
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO scheduled_reports (client_id,name,sections,frequency,weekly_day,recipient_emails,template,accent_color,active,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), String(body.name).slice(0,150), JSON.stringify(sections), frequency, weeklyDay, String(body.recipient_emails||'').slice(0,500), template, accentColor, 1, now, now).run();
+  const row=await env.DB.prepare(`SELECT * FROM scheduled_reports WHERE id=?`).bind(r.meta.last_row_id).first();
+  return json({...row, sections:JSON.parse(row.sections||'[]'), active:!!row.active});
+}
+async function handleScheduledReportUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM scheduled_reports WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).slice(0,150)); }
+  if(body.sections!==undefined){
+    const sections=(Array.isArray(body.sections)?body.sections:[]).filter(k=>REPORT_SECTIONS[k]);
+    sets.push('sections=?'); vals.push(JSON.stringify(sections));
+  }
+  if(body.frequency!==undefined){ sets.push('frequency=?'); vals.push(body.frequency==='daily'?'daily':'weekly'); }
+  if(body.weekly_day!==undefined){ sets.push('weekly_day=?'); vals.push(Math.max(0, Math.min(6, parseInt(body.weekly_day,10)||1))); }
+  if(body.recipient_emails!==undefined){ sets.push('recipient_emails=?'); vals.push(String(body.recipient_emails).slice(0,500)); }
+  if(body.template!==undefined){ sets.push('template=?'); vals.push(['classic','modern','minimal'].includes(body.template)?body.template:'classic'); }
+  if(body.accent_color!==undefined){ sets.push('accent_color=?'); vals.push(/^#[0-9a-f]{3,8}$/i.test(body.accent_color||'')?body.accent_color:'#4f46e5'); }
+  if(body.active!==undefined){ sets.push('active=?'); vals.push(body.active?1:0); }
+  if(!sets.length) return json({ok:true});
+  sets.push('updated_at=?'); vals.push(new Date().toISOString());
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE scheduled_reports SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleScheduledReportDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM scheduled_reports WHERE id=?`).bind(Number(body.id)).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM scheduled_reports WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+// Renders without sending — dashboard.html opens the returned HTML in a new tab so a client can
+// see exactly what their template/section choices will look like before waiting for the schedule.
+async function handleScheduledReportPreview(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  // Preview works for both an already-saved report (id) and an in-progress unsaved draft (the
+  // builder's own current form state) — the latter lets a client see the result before ever
+  // clicking Save.
+  let report=body;
+  if(body.id){
+    const existing=await env.DB.prepare(`SELECT * FROM scheduled_reports WHERE id=? AND client_id=?`).bind(Number(body.id), Number(payload.cid)).first();
+    if(!existing) return json({error:'Not found'}, 404);
+    report={...existing, sections:JSON.parse(existing.sections||'[]')};
+  }
+  if(!Array.isArray(report.sections)||!report.sections.length) return json({error:'Select at least one section'}, 400);
+  const fakeReport={name:report.name||'Preview', frequency:report.frequency||'weekly', template:report.template||'classic', accent_color:report.accent_color||'#4f46e5', sections:JSON.stringify(report.sections)};
+  const sectionResults=await computeScheduledReportSections(env, c, payload.cid, fakeReport);
+  const html=renderScheduledReportHtml(c, fakeReport, sectionResults);
+  return new Response(html, {status:200, headers:{'Content-Type':'text/html'}});
+}
+async function handleScheduledReportSendNow(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const report=await env.DB.prepare(`SELECT * FROM scheduled_reports WHERE id=? AND client_id=?`).bind(Number(body.id), Number(payload.cid)).first();
+  if(!report) return json({error:'Not found'}, 404);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const sectionResults=await computeScheduledReportSections(env, c, payload.cid, report);
+  const html=renderScheduledReportHtml(c, report, sectionResults);
+  const sent=await sendScheduledReportEmail(env, c, report, html);
+  if(!sent.ok) return json({error:sent.error}, 502);
+  await env.DB.prepare(`UPDATE scheduled_reports SET last_sent_at=? WHERE id=?`).bind(new Date().toISOString(), report.id).run();
+  return json({ok:true});
+}
+
+// Daily cron tick (piggybacked on '0 2 * * *' — see that tick's own comment) — sends every active
+// report that's due today. 'daily' reports are due every tick; 'weekly' reports are due only on
+// their configured weekly_day (0=Sunday..6=Saturday, UTC, matching Date.getUTCDay()). last_sent_at
+// is checked against today's date so a report already sent today is never sent twice, even if this
+// tick somehow fires more than once in a day.
+async function runScheduledReportsForAllClients(env){
+  const {results:reports}=await env.DB.prepare(`SELECT * FROM scheduled_reports WHERE active=1`).all();
+  if(!reports?.length) return;
+  const today=new Date();
+  const todayStr=today.toISOString().slice(0,10);
+  const todayDow=today.getUTCDay();
+  for(const report of reports){
+    try{
+      if(report.last_sent_at && String(report.last_sent_at).slice(0,10)===todayStr) continue;
+      const due=report.frequency==='daily' || (report.frequency==='weekly' && report.weekly_day===todayDow);
+      if(!due) continue;
+      const c=await getClientById(env, report.client_id);
+      if(!c) continue;
+      const sectionResults=await computeScheduledReportSections(env, c, report.client_id, report);
+      const html=renderScheduledReportHtml(c, report, sectionResults);
+      const sent=await sendScheduledReportEmail(env, c, report, html);
+      if(sent.ok){
+        await env.DB.prepare(`UPDATE scheduled_reports SET last_sent_at=? WHERE id=?`).bind(today.toISOString(), report.id).run();
+      } else {
+        console.error('[scheduled-reports] send failed for report', report.id, 'client', report.client_id, sent.error);
+      }
+    }catch(e){
+      console.error('[scheduled-reports] tick failed for report', report.id, e.message);
+    }
+  }
+}
+
 // ── Leads page: AI Analyst — "Bottlenecks" tab (SETUP.md "Leads page: AI Analyst") ──
 // Reuses the Advanced Pipeline follow-up cadence's own D1 table (migrations/0013_pipeline_followups.sql,
 // stage_entered_at reset on every real Stage change) rather than adding new instrumentation — it
@@ -16624,6 +17100,12 @@ export default {
       else if(url.pathname==='/reports/whatsapp' && request.method==='GET'){ res=await handleReportsWhatsapp(request, env); }
       else if(url.pathname==='/reports/products' && request.method==='GET'){ res=await handleReportsProducts(request, env); }
       else if(url.pathname==='/reports/seo' && request.method==='GET'){ res=await handleReportsSeo(request, env); }
+      else if(url.pathname==='/reports/scheduled' && request.method==='GET'){ res=await handleScheduledReportsList(request, env); }
+      else if(url.pathname==='/reports/scheduled' && request.method==='POST'){ res=await handleScheduledReportCreate(request, env); }
+      else if(url.pathname==='/reports/scheduled' && request.method==='PATCH'){ res=await handleScheduledReportUpdate(request, env); }
+      else if(url.pathname==='/reports/scheduled' && request.method==='DELETE'){ res=await handleScheduledReportDelete(request, env); }
+      else if(url.pathname==='/reports/scheduled/preview' && request.method==='POST'){ res=await handleScheduledReportPreview(request, env); }
+      else if(url.pathname==='/reports/scheduled/send-now' && request.method==='POST'){ res=await handleScheduledReportSendNow(request, env); }
       else if(url.pathname==='/ai/stage-durations' && request.method==='GET'){ res=await handleAiStageDurations(request, env); }
       else if(url.pathname==='/ai/repeat-customers' && request.method==='GET'){ res=await handleAiRepeatCustomers(request, env); }
       else if(url.pathname==='/shopify/analytics' && request.method==='GET'){ res=await handleShopifyAnalytics(request, env); }
@@ -17021,6 +17503,10 @@ export default {
       ctx.waitUntil(cleanupRateLimitCounters(env));
       // Engine event log (SETUP.md "Engine event log") — sweep rows older than 30 days.
       ctx.waitUntil(cleanupEngineEventLog(env));
+      // Scheduled Report Builder (Reports page → 🗓️ Scheduled Reports) — sends whichever reports
+      // are due today (daily reports every tick, weekly reports only on their configured
+      // weekly_day); see runScheduledReportsForAllClients's own comment.
+      ctx.waitUntil(runScheduledReportsForAllClients(env));
     }
     else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env)); }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }

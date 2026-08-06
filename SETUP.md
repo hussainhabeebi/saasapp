@@ -7504,3 +7504,60 @@ WhatsApp chat flow itself. `ECOM_CLIENT_READ_FIELDS` (`worker.js`) gained `clien
 `external_store_link` so `GET /ecom/client` can expose what this needs to compute the fallback link
 correctly — both already public-facing values (they ARE the storefront URL), not sensitive like a
 token would be.
+
+## Scheduled Report Builder (Reports page → 🗓️ Scheduled Reports)
+
+A client can build one or more custom reports (`scheduled_reports`, D1 —
+`migrations/0042_scheduled_reports.sql`; multiple reports per client are just multiple rows, same
+convention as `re_channel_partners`/`fp_expected_dues`), pick which sections go in each, choose
+Daily or Weekly delivery, and have it emailed automatically — no Cube.js or any other external BI
+engine involved (see below for why).
+
+**Why not Cube.js**: this was originally scoped to use a fork of
+[cube-js/cube](https://github.com/hussainhabeebi/cube), the open-source semantic layer. Cube needs
+a direct SQL database driver connection (Postgres/MySQL/Snowflake/etc.) — this app's data lives
+behind NocoDB's REST API (no raw Postgres connection string exists anywhere in this codebase) and
+Cloudflare D1 (SQLite, only reachable from inside the Worker). Standing Cube up for real would need
+DB credentials and a new hosted service neither of which existed to build against, so — by explicit
+choice, confirmed with the client — the report builder instead reuses this app's own existing
+query patterns (NocoDB REST + D1), the same way every other report on this page already works.
+
+**Sections** (`REPORT_SECTIONS`, `worker.js`) — a fixed catalog the builder's checkboxes are drawn
+from, one of two shapes:
+- **Genuinely new server-side computations** (Overview/Sales/Team/SaaS Ops) — these never had a
+  server endpoint before (Sales/Team/Overview were client-side-only, computed from `allLeads`
+  already loaded in the browser; see the Reports page's own "no new backend" note above). Direct
+  NocoDB Lead queries (`reportFetchAllLeads`), mirroring `isWonLead`/`isLostLead`/`getTeamMembers`
+  from dashboard.html by hand (no shared module between client and Worker code).
+- **Reused existing handlers** (WhatsApp/Ecommerce/Product/SEO/Marketing) — called directly as
+  plain functions, exactly the way `handleReportsProducts` already calls
+  `handleShopifyAnalytics(request, env)` internally. Since a cron tick has no real browser session
+  to pass through, `buildInternalReportRequest` mints a fresh signed session (`signSession`, the
+  same primitive a real login uses) and builds a synthetic `Request` for these handlers to read.
+
+**Branding**: the report header always shows `CLIENTS.client_name` — never "Leadvyne" anywhere in
+the output, and the email's From display name is `"<client_name> Reports"` (the From ADDRESS stays
+the platform's verified Resend domain, `RESEND_FROM_EMAIL` — a client can't verify their own domain
+in Resend just for this, only the display name is theirs).
+
+**Templates/layout** (`reportTemplateCss`) — three built-in visual templates sharing the same
+markup, picked per-report: `classic` (visibly bordered/boxed sections — the literal "give borders"
+ask), `modern` (left accent-bar cards, soft shadow, no hard borders), `minimal` (bare, divider-only,
+maximum whitespace). One `accent_color` (a hex value, client-chosen) threads through all three —
+header rule, stat numbers, table headers, and (classic only) every section's border color.
+
+**Scheduling**: `frequency` is `daily` or `weekly` (+ `weekly_day`, 0=Sunday..6=Saturday UTC, only
+used when weekly). `runScheduledReportsForAllClients` is piggybacked on the existing daily
+`0 2 * * *` cron tick (same reasoning as every other daily-granularity sweep already on that tick —
+see its own comment) — a report is skipped if `last_sent_at` already falls on today's UTC date, so
+one extra tick in a day can never double-send.
+
+**Routes**: `GET/POST/PATCH/DELETE /reports/scheduled` (CRUD), `POST /reports/scheduled/preview`
+(renders without sending — dashboard.html opens the HTML in a new tab via a Blob URL, works for
+both an already-saved report and an in-progress unsaved draft), `POST /reports/scheduled/send-now`
+(manual send + updates `last_sent_at`, for testing a report before waiting on its schedule).
+
+**Email delivery** uses the platform-level `RESEND_API_KEY`/`RESEND_FROM_EMAIL` (the same shared
+key task-notify emails already use) — works out of the box for every client, no per-client Resend
+account needed (unlike the Email Marketing module's bulk campaigns, which rightly stay gated behind
+a client's own Resend key/domain since that's real outbound marketing volume).

@@ -1922,6 +1922,7 @@ const ROLES = {
         <button class="hosp-tab" data-reports="product">🧩 Product</button>
         <button class="hosp-tab" data-reports="saas">📈 SaaS</button>
         <button class="hosp-tab" data-reports="seo">🔍 SEO</button>
+        <button class="hosp-tab" data-reports="scheduled">🗓️ Scheduled Reports</button>
       </div>
       <div class="page-pad" id="reportsContent">
         <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
@@ -3811,6 +3812,68 @@ const ROLES = {
   </div>
   <div class="modal-body" id="userProfileBody"></div>
   <div class="modal-footer" id="userProfileFooter"></div>
+</div>
+
+<!-- MODAL: Scheduled Report Builder — Reports page → 🗓️ Scheduled Reports. See
+     renderReportBuilderModal()/saveReportBuilder() (dashboard.html) and REPORT_SECTIONS/
+     handleScheduledReport* (worker.js). -->
+<div class="modal" id="modalReportBuilder" style="max-width:600px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd">
+    <span class="modal-title" id="reportBuilderTitle">New Scheduled Report</span>
+    <button class="icon-btn" onclick="closeModal('modalReportBuilder')">✕</button>
+  </div>
+  <div class="modal-body">
+    <input type="hidden" id="rbId">
+    <label class="form-label">Report Name</label>
+    <input class="form-input" id="rbName" placeholder="e.g. Weekly Sales Summary" style="margin-bottom:12px">
+
+    <label class="form-label">Sections to include</label>
+    <div class="s-note" style="margin-bottom:6px">Pick whichever data this report should cover — each becomes its own block in the email.</div>
+    <div id="rbSectionList" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px"></div>
+
+    <div style="display:grid;gap:10px;grid-template-columns:1fr 1fr;margin-bottom:12px">
+      <div>
+        <label class="form-label">Frequency</label>
+        <select class="form-input" id="rbFrequency" onchange="$id('rbWeeklyDayWrap').style.display=this.value==='weekly'?'':'none'">
+          <option value="weekly">Weekly</option>
+          <option value="daily">Daily</option>
+        </select>
+      </div>
+      <div id="rbWeeklyDayWrap">
+        <label class="form-label">Day of week</label>
+        <select class="form-input" id="rbWeeklyDay">
+          <option value="0">Sunday</option><option value="1" selected>Monday</option><option value="2">Tuesday</option>
+          <option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option>
+        </select>
+      </div>
+    </div>
+
+    <label class="form-label">Send to (comma-separated emails)</label>
+    <input class="form-input" id="rbRecipients" type="text" placeholder="you@yourbusiness.com, teammate@yourbusiness.com" style="margin-bottom:12px">
+
+    <div style="display:grid;gap:10px;grid-template-columns:1fr 1fr;margin-bottom:6px">
+      <div>
+        <label class="form-label">Template / Layout</label>
+        <select class="form-input" id="rbTemplate">
+          <option value="classic">Classic — bordered boxes</option>
+          <option value="modern">Modern — accent cards</option>
+          <option value="minimal">Minimal — clean dividers</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label">Accent Color</label>
+        <input class="form-input" id="rbAccentColor" type="color" value="#4f46e5" style="height:38px;padding:2px">
+      </div>
+    </div>
+    <div class="s-note" style="margin-bottom:8px">The report header always shows <b id="rbBusinessNamePreview">your business name</b> — never Leadvyne.</div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" style="flex:1" onclick="saveReportBuilder()">Save Report</button>
+    <button class="btn btn-secondary" onclick="previewReportBuilder()">👁 Preview</button>
+    <button class="btn btn-secondary" onclick="closeModal('modalReportBuilder')">Cancel</button>
+  </div>
+  <span class="save-msg" id="reportBuilderMsg" style="display:block;padding:0 20px 12px"></span>
 </div>
 
 <!-- MODAL: Lead Detail -->
@@ -13161,6 +13224,7 @@ function renderReportsSubPage(page){
     overview:renderReportsOverview, sales:renderReportsSales, team:renderReportsTeamReport,
     marketing:renderReportsMarketing, whatsapp:renderReportsWhatsapp, shopify:renderReportsShopify,
     product:renderReportsProduct, saas:renderReportsSaas, seo:renderReportsSeo,
+    scheduled:renderReportsScheduled,
   };
   (fns[page]||renderReportsOverview)();
 }
@@ -13752,6 +13816,150 @@ async function disconnectGsc(){
     clientRecord.gsc_connected=false; clientRecord.gsc_site_url='';
     renderReportsSeo();
   }catch(e){ showToast('Failed to disconnect: '+e.message,'err'); }
+}
+
+/* ── SCHEDULED REPORT BUILDER (Reports page → 🗓️ Scheduled Reports) — see worker.js's
+   REPORT_SECTIONS/handleScheduledReport* for the server side. Mirrors the section keys/labels
+   there exactly so the checkbox list always matches what the backend can actually compute. */
+const REPORT_SECTION_CATALOG=[
+  {key:'overview', label:'🧭 Overview'}, {key:'sales', label:'💰 Sales'}, {key:'team', label:'📊 Team'},
+  {key:'marketing', label:'📣 Marketing'}, {key:'whatsapp', label:'💬 WhatsApp'}, {key:'ecommerce', label:'🛍️ Ecommerce'},
+  {key:'product', label:'🧩 Product'}, {key:'seo', label:'🔍 SEO'}, {key:'saas', label:'📈 SaaS Ops'},
+];
+let _scheduledReports=[];
+
+async function renderReportsScheduled(){
+  const el=$id('reportsContent');
+  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/reports/scheduled`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    _scheduledReports=data.list||[];
+  }catch(e){ el.innerHTML='<div class="empty-state">Failed to load scheduled reports.</div>'; return; }
+
+  const cards=_scheduledReports.map(rep=>{
+    const sectionLabels=rep.sections.map(k=>REPORT_SECTION_CATALOG.find(s=>s.key===k)?.label||k).join(', ');
+    const freqLabel=rep.frequency==='daily'?'Daily':'Weekly ('+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][rep.weekly_day]+')';
+    return `<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700;font-size:14px">${esc(rep.name)} ${rep.active?'':'<span style="color:var(--muted);font-weight:400;font-size:11px">(paused)</span>'}</div>
+          <div class="s-note" style="margin:4px 0">${esc(freqLabel)} · ${esc(rep.template)} template · sent to ${esc(rep.recipient_emails||clientRecord.notification_email||'no recipient set')}</div>
+          <div class="s-note">Sections: ${esc(sectionLabels)||'none'}</div>
+          <div class="s-note" style="color:var(--muted)">${rep.last_sent_at?'Last sent '+esc(new Date(rep.last_sent_at).toLocaleString()):'Not sent yet'}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="save-btn sec" onclick="sendScheduledReportNow(${rep.id})">📧 Send Now</button>
+          <button class="save-btn sec" onclick="openReportBuilder(${rep.id})">✏️ Edit</button>
+          <button class="save-btn sec" onclick="toggleScheduledReportActive(${rep.id},${!rep.active})">${rep.active?'⏸ Pause':'▶ Resume'}</button>
+          <button class="save-btn sec" style="color:var(--red)" onclick="deleteScheduledReport(${rep.id})">🗑</button>
+        </div>
+      </div>
+      <span class="save-msg" id="repMsg${rep.id}"></span>
+    </div>`;
+  }).join('');
+
+  el.innerHTML=`
+    <div class="s-note" style="margin-bottom:14px">Build one or more custom reports, pick what goes in them, and have them emailed automatically on a daily or weekly schedule — always branded with your own business name, never Leadvyne's.</div>
+    <button class="save-btn" style="margin-bottom:14px" onclick="openReportBuilder()">+ New Report</button>
+    ${cards||'<div class="empty-state"><div class="ei">🗓️</div>No scheduled reports yet — click "+ New Report" to build one.</div>'}`;
+}
+
+function openReportBuilder(id){
+  const rep=id?_scheduledReports.find(r=>r.id===id):null;
+  $id('rbId').value=rep?rep.id:'';
+  $id('reportBuilderTitle').textContent=rep?'Edit Scheduled Report':'New Scheduled Report';
+  $id('rbName').value=rep?.name||'';
+  $id('rbFrequency').value=rep?.frequency||'weekly';
+  $id('rbWeeklyDay').value=rep?.weekly_day??1;
+  $id('rbWeeklyDayWrap').style.display=(rep?.frequency||'weekly')==='daily'?'none':'';
+  $id('rbRecipients').value=rep?.recipient_emails||clientRecord?.notification_email||'';
+  $id('rbTemplate').value=rep?.template||'classic';
+  $id('rbAccentColor').value=rep?.accent_color||'#4f46e5';
+  $id('rbBusinessNamePreview').textContent=clientRecord?.client_name||'your business name';
+  const selected=new Set(rep?.sections||['overview']);
+  $id('rbSectionList').innerHTML=REPORT_SECTION_CATALOG.map(s=>`
+    <label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px">
+      <input type="checkbox" class="rbSectionChk" value="${s.key}" ${selected.has(s.key)?'checked':''}> ${s.label}
+    </label>`).join('');
+  $id('reportBuilderMsg').textContent='';
+  openModal('modalReportBuilder');
+}
+
+function collectReportBuilderForm(){
+  return {
+    name: $id('rbName').value.trim(),
+    sections: [...document.querySelectorAll('.rbSectionChk:checked')].map(el=>el.value),
+    frequency: $id('rbFrequency').value,
+    weekly_day: parseInt($id('rbWeeklyDay').value,10),
+    recipient_emails: $id('rbRecipients').value.trim(),
+    template: $id('rbTemplate').value,
+    accent_color: $id('rbAccentColor').value,
+  };
+}
+
+async function saveReportBuilder(){
+  const msg=$id('reportBuilderMsg'); msg.textContent=''; msg.className='save-msg';
+  const form=collectReportBuilderForm();
+  if(!form.name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
+  if(!form.sections.length){ msg.textContent='Select at least one section.'; msg.className='save-msg err'; return; }
+  const id=$id('rbId').value;
+  msg.textContent='Saving…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/reports/scheduled`,{
+      method:id?'PATCH':'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify(id?{id:parseInt(id,10),...form}:form)
+    });
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    closeModal('modalReportBuilder');
+    showToast(id?'Report updated':'Report created');
+    renderReportsScheduled();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+// Opens the rendered report HTML in a new tab (Blob URL) so a client can see exactly what their
+// current section/template/color choices produce before saving — works even for a brand-new,
+// never-saved report (the builder's current form state, not just an already-saved one).
+async function previewReportBuilder(){
+  const msg=$id('reportBuilderMsg'); msg.textContent='Rendering preview…'; msg.className='save-msg';
+  const form=collectReportBuilderForm();
+  if(!form.sections.length){ msg.textContent='Select at least one section first.'; msg.className='save-msg err'; return; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/reports/scheduled/preview`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(form)});
+    if(!r.ok){ const data=await r.json().catch(()=>({})); throw new Error(data.error||'HTTP '+r.status); }
+    const html=await r.text();
+    const blob=new Blob([html],{type:'text/html'});
+    window.open(URL.createObjectURL(blob),'_blank');
+    msg.textContent='';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+async function sendScheduledReportNow(id){
+  const msg=$id('repMsg'+id);
+  if(msg){ msg.textContent='Sending…'; msg.className='save-msg'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/reports/scheduled/send-now`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    if(msg){ msg.textContent='✓ Sent'; msg.className='save-msg ok'; setTimeout(()=>msg.textContent='',3000); }
+    renderReportsScheduled();
+  }catch(e){ if(msg){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; } }
+}
+
+async function toggleScheduledReportActive(id, active){
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/reports/scheduled`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id,active})});
+    renderReportsScheduled();
+  }catch(e){ showToast('Failed to update: '+e.message,'err'); }
+}
+
+async function deleteScheduledReport(id){
+  if(!confirm('Delete this scheduled report? This cannot be undone.')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/reports/scheduled`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id})});
+    renderReportsScheduled();
+  }catch(e){ showToast('Failed to delete: '+e.message,'err'); }
 }
 
 /* ── PDF REPORT ── */
