@@ -180,6 +180,11 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
   padding:.2rem .55rem;border-radius:999px;background:var(--accent-soft);color:var(--accent-ink);
   font-family:var(--mono);
 }
+/* Distinct from the plain .chip above so a glance at the grid tells "on a real tier" (limits
+   apply) from "legacy" (unlimited, grandfathered — see getPlanLimits in worker.js) without
+   opening the edit modal. */
+.plan-chip{background:#ede9fe;color:#5b21b6}
+.plan-chip.legacy{background:#F1F5F9;color:var(--muted)}
 .card-stats{
   display:flex;gap:1.25rem;padding:.625rem 0;
   border-top:1px solid var(--line);border-bottom:1px solid var(--line);
@@ -257,14 +262,15 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 .btn-cancel:hover{border-color:var(--ink);color:var(--ink)}
 .modal-form-group{margin-bottom:1rem}
 .modal-form-group label{display:block;font-size:.8rem;font-weight:500;color:var(--ink);margin-bottom:.375rem}
-.modal-form-group input,.modal-form-group textarea{
+.modal-form-group input,.modal-form-group textarea,.modal-form-group select{
   width:100%;padding:.5625rem .875rem;border:1.5px solid var(--line-strong);
   border-radius:8px;font-family:var(--body);font-size:.875rem;color:var(--ink);
   background:#fff;outline:none;transition:border-color .15s;resize:vertical;
 }
-.modal-form-group input:focus,.modal-form-group textarea:focus{border-color:var(--accent)}
+.modal-form-group input:focus,.modal-form-group textarea:focus,.modal-form-group select:focus{border-color:var(--accent)}
 .modal-form-group textarea{min-height:100px;font-family:var(--mono);font-size:.8125rem;line-height:1.6}
 .modal-form-row{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+.field-note{font-size:.75rem;color:var(--muted);line-height:1.5;margin-top:.375rem}
 .modal-section-label{
   font-size:.75rem;font-weight:600;color:var(--muted);
   text-transform:uppercase;letter-spacing:.06em;
@@ -293,7 +299,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 @keyframes modalIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 .login-card{animation:loginIn .35s cubic-bezier(.22,.61,.36,1);box-shadow:0 24px 80px rgba(0,0,0,.32)}
 @keyframes loginIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
-.modal-form-group input:focus,.modal-form-group textarea:focus{box-shadow:0 0 0 3px rgba(13,156,147,.1)}
+.modal-form-group input:focus,.modal-form-group textarea:focus,.modal-form-group select:focus{box-shadow:0 0 0 3px rgba(13,156,147,.1)}
 .btn-save{transition:background .15s,box-shadow .15s}
 .btn-save:hover{box-shadow:0 2px 8px rgba(13,156,147,.2)}
 ::-webkit-scrollbar{width:5px;height:5px}
@@ -393,6 +399,19 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
         </div>
       </div>
 
+      <div class="modal-section-label">Plan</div>
+      <div class="modal-form-group">
+        <label>Plan Tier</label>
+        <select id="e-plan-tier">
+          <option value="">Legacy — unlimited (default, grandfathered)</option>
+          <option value="basic">Basic — 1 user, 1 channel</option>
+          <option value="standard">Standard — 3 users, 2 channels</option>
+          <option value="business_intelligence">Business Intelligence — 8 users, 5 channels</option>
+          <option value="marketing_pro">Marketing Pro — 15 users, 10 channels</option>
+        </select>
+        <div class="field-note">Moving a client off "Legacy" applies real limits immediately — only do this for a client who's actually on a paid tier. This field can't be changed by the client themselves.</div>
+      </div>
+
       <div class="modal-section-label">Chatwoot Settings</div>
       <div class="modal-form-group">
         <label>Chatwoot Base URL</label>
@@ -453,6 +472,15 @@ const CONFIG = {
   ANALYTICS_TABLE_ID: 'm2in19v8n7phitr',
 };
 // ─────────────────────────────────────────────────────────────
+
+// Mirrors PLAN_TIERS in cloudflare-worker/worker.js — labels only, the actual limits (max_users/
+// max_channels/modules) are enforced server-side and never duplicated here. Keep the keys in sync
+// if a tier is renamed there; a blank/unrecognized plan_tier always means "legacy" (unlimited,
+// grandfathered) both here and in getPlanLimits.
+const PLAN_TIER_LABELS = {
+  basic: 'Basic', standard: 'Standard',
+  business_intelligence: 'Business Intelligence', marketing_pro: 'Marketing Pro',
+};
 
 let adminSessionToken = sessionStorage.getItem('lv_admin_session') || '';
 
@@ -678,6 +706,9 @@ function renderCard(c) {
     : '<span class="badge badge-suspended">Suspended</span>';
   const langChip = c.language ? `<span class="chip">${escHtml(c.language)}</span>` : '';
   const modelChip = c.model ? `<span class="chip">${escHtml(c.model)}</span>` : '';
+  const planChip = c.plan_tier && PLAN_TIER_LABELS[c.plan_tier]
+    ? `<span class="chip plan-chip">${escHtml(PLAN_TIER_LABELS[c.plan_tier])}</span>`
+    : `<span class="chip plan-chip legacy">Legacy — unlimited</span>`;
   const toggleBtn = active
     ? `<button class="btn-toggle suspend" data-id="${c.Id}" data-action="suspend">Suspend</button>`
     : `<button class="btn-toggle activate" data-id="${c.Id}" data-action="activate">Activate</button>`;
@@ -690,6 +721,7 @@ function renderCard(c) {
       </div>
       <div class="status-row">
         ${statusBadge}
+        ${planChip}
         ${langChip}
         ${modelChip}
       </div>
@@ -783,6 +815,7 @@ function openEditModal(clientId) {
 
   document.getElementById('edit-modal-title').textContent = `Edit — ${c.client_name || 'Client'}`;
   document.getElementById('e-client-name').value = c.client_name || '';
+  document.getElementById('e-plan-tier').value = PLAN_TIER_LABELS[c.plan_tier] ? c.plan_tier : '';
   document.getElementById('e-language').value = c.language || '';
   document.getElementById('e-model').value = c.model || '';
   document.getElementById('e-chatwoot-base').value = c.chatwoot_base || '';
@@ -817,6 +850,7 @@ document.getElementById('btn-save-modal').addEventListener('click', async () => 
   const patch = {
     Id: editingId,
     client_name: document.getElementById('e-client-name').value,
+    plan_tier: document.getElementById('e-plan-tier').value,
     language: document.getElementById('e-language').value,
     model: document.getElementById('e-model').value,
     chatwoot_base: document.getElementById('e-chatwoot-base').value,
