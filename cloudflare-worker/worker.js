@@ -5725,7 +5725,7 @@ async function handleEcomCreate(request, env, kind){
   const { client_id, Id, ...fields }=body;
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:{...fields, client_id:clientId}});
   const data=await r.json().catch(()=>({}));
-  if(kind==='products' && r.ok && data?.Id) await ecomVerifyProductWrite(env, tableId, data.Id, fields);
+  if(kind==='products' && r.ok && data?.Id) await ecomVerifyProductWrite(env, clientId, tableId, data.Id, fields);
   return json(data, r.status);
 }
 
@@ -5743,7 +5743,7 @@ async function handleEcomUpdate(request, env, kind){
   const { client_id, Id, ...fields }=body;
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:id, ...fields}});
   const data=await r.json().catch(()=>({}));
-  if(kind==='products' && r.ok) await ecomVerifyProductWrite(env, tableId, id, fields);
+  if(kind==='products' && r.ok) await ecomVerifyProductWrite(env, clientId, tableId, id, fields);
   return json(data, r.status);
 }
 
@@ -5766,35 +5766,59 @@ async function ecomRepairFieldType(env, tableId, fieldTitle){
   }catch(e){ return false; }
 }
 
+// Upserts the record NocoDB actually persisted (post any self-heal in ecomVerifyProductWrite below)
+// into ecom_products_mirror (migrations/0043_ecom_products_mirror.sql) — a durable backup in our own
+// D1 that survives NocoDB misconfiguration/downtime/deletion, keyed by (client_id, nocodb_id) so
+// repeat edits update the same row instead of piling up duplicates. NocoDB (via ecomResolveTable)
+// stays the source of truth ecom.html actually reads from — this is a backup only, so a D1 hiccup
+// here is logged and swallowed rather than ever failing the product save itself.
+const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description'];
+async function ecomMirrorProductToD1(env, clientId, nocodbId, saved){
+  if(!env.DB || !clientId || !nocodbId) return;
+  try{
+    const now=new Date().toISOString();
+    const cols=['client_id','nocodb_id', ...ECOM_MIRROR_COLUMNS, 'created_at','updated_at'];
+    const vals=[Number(clientId), Number(nocodbId), ...ECOM_MIRROR_COLUMNS.map(k=>saved[k]??null), now, now];
+    const updateSet=ECOM_MIRROR_COLUMNS.map(k=>`${k}=excluded.${k}`).concat('updated_at=excluded.updated_at').join(', ');
+    await env.DB.prepare(
+      `INSERT INTO ecom_products_mirror (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})
+       ON CONFLICT(client_id, nocodb_id) DO UPDATE SET ${updateSet}`
+    ).bind(...vals).run();
+  }catch(e){ console.error('[ecomMirrorProductToD1] failed for client', clientId, 'nocodb id', nocodbId, ':', e.message); }
+}
+
 // NocoDB can return 200 on a PATCH while silently ignoring a field it doesn't like the value for
 // (e.g. a pre-existing Single-Select column whose fixed option list doesn't include the value we
 // sent) — the write looks successful end to end with nothing to catch it. Re-reading the record
 // right after the write and diffing it against what we sent catches that. For our own style/media/
 // link fields (never legitimately anything but free text) this now self-heals: convert the offending
 // column to text and retry the write once, so the product's save actually sticks instead of quietly
-// reverting the moment you reopen it. Only alerts ops if the repair+retry still didn't take.
-async function ecomVerifyProductWrite(env, tableId, id, fields){
+// reverting the moment you reopen it. Only alerts ops if the repair+retry still didn't take. Either
+// way, whatever NocoDB ends up holding gets mirrored into D1 (ecomMirrorProductToD1) as a backup.
+async function ecomVerifyProductWrite(env, clientId, tableId, id, fields){
+  let saved=null;
   try{
     const r=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
-    const saved=await r.json().catch(()=>null);
+    saved=await r.json().catch(()=>null);
     if(!r.ok || !saved) return;
     let dropped=Object.entries(fields).filter(([k,v])=>String(saved[k]??'')!==String(v??''));
-    if(!dropped.length) return;
 
-    const repairable=dropped.filter(([k])=>ECOM_STYLE_FIELD_TITLES.includes(k));
-    if(repairable.length){
-      const repairs=await Promise.all(repairable.map(([k])=>ecomRepairFieldType(env, tableId, k)));
-      if(repairs.some(Boolean)){
-        const retryFields={}; repairable.forEach(([k,v])=>{ retryFields[k]=v; });
-        await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:id, ...retryFields}});
-        const r2=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
-        const saved2=await r2.json().catch(()=>null);
-        if(r2.ok && saved2) dropped=Object.entries(fields).filter(([k,v])=>String(saved2[k]??'')!==String(v??''));
+    if(dropped.length){
+      const repairable=dropped.filter(([k])=>ECOM_STYLE_FIELD_TITLES.includes(k));
+      if(repairable.length){
+        const repairs=await Promise.all(repairable.map(([k])=>ecomRepairFieldType(env, tableId, k)));
+        if(repairs.some(Boolean)){
+          const retryFields={}; repairable.forEach(([k,v])=>{ retryFields[k]=v; });
+          await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:id, ...retryFields}});
+          const r2=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
+          const saved2=await r2.json().catch(()=>null);
+          if(r2.ok && saved2){ saved=saved2; dropped=Object.entries(fields).filter(([k,v])=>String(saved2[k]??'')!==String(v??'')); }
+        }
       }
+      if(dropped.length) await reportOpsError(env, 'ecom product field(s) not persisted by NocoDB', new Error(dropped.map(([k,v])=>`${k}: sent ${JSON.stringify(v)}, saved as ${JSON.stringify(saved[k])}`).join('; ')), {tableId, id});
     }
-
-    if(dropped.length) await reportOpsError(env, 'ecom product field(s) not persisted by NocoDB', new Error(dropped.map(([k,v])=>`${k}: sent ${JSON.stringify(v)}, saved as ${JSON.stringify(saved[k])}`).join('; ')), {tableId, id});
   }catch(e){ await reportOpsError(env, 'ecomVerifyProductWrite failed', e, {tableId, id}); }
+  if(saved) await ecomMirrorProductToD1(env, clientId, id, saved);
 }
 
 async function handleEcomDelete(request, env, kind){
