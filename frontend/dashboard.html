@@ -3118,6 +3118,31 @@ const ROLES = {
 
         <div id="billingBanner" style="display:none;margin-bottom:14px"></div>
 
+        <!-- Plan & Usage — one place for tier, seat/channel usage against the plan, and which
+             modules the plan does/doesn't include, fed by GET /billing/plan-status. A blank
+             plan_tier (every account that existed before plans shipped) comes back as
+             is_legacy:true / limits:null, rendered as "Legacy plan — unlimited" rather than a
+             0/0 empty state — see getPlanLimits in worker.js for why that's the default, not
+             something that needs a migration to be true. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🧩 Plan &amp; Usage</div>
+            <div id="planStatusLoading" class="s-note">Loading…</div>
+            <div id="planStatusBody" style="display:none">
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+                <span id="planTierBadge" style="font-size:13px;font-weight:700;padding:5px 14px;border-radius:20px;font-family:var(--disp);background:#EEF2FF;color:#4338CA"></span>
+                <span id="planLegacyNote" class="s-note" style="margin:0"></span>
+              </div>
+              <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px">
+                <div class="stat"><div class="stat-lbl">Users</div><div class="stat-val" id="planUsageUsers">—</div></div>
+                <div class="stat"><div class="stat-lbl">Channels</div><div class="stat-val" id="planUsageChannels">—</div></div>
+              </div>
+              <div class="s-note" style="margin-bottom:8px">Modules included in your plan — locked ones can be turned on after upgrading, from 🧩 Modules.</div>
+              <div id="planModulesGrid" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Customer Portal — plan status and any payment warnings first, since that's what a
              client actually needs to see before anything else on this page. -->
         <div class="card" style="margin-bottom:14px">
@@ -10627,6 +10652,39 @@ function daysUntil(isoDate){
   return Math.max(0, Math.ceil(ms/86400000));
 }
 
+// Plan & Usage card — GET /billing/plan-status returns is_legacy:true / limits:null for every
+// account that existed before plan tiers shipped, which this renders as "Legacy — unlimited"
+// rather than leaving the card blank or showing a misleading 0/0.
+async function loadBillingPlanStatus(){
+  const loading=$id('planStatusLoading'), body=$id('planStatusBody');
+  loading.style.display='block'; loading.textContent='Loading…'; body.style.display='none';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/plan-status`,{headers:ncAuthHeaders()});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    loading.style.display='none'; body.style.display='block';
+
+    const badge=$id('planTierBadge');
+    badge.textContent=d.plan_label+(d.is_legacy?' (Legacy)':'');
+    badge.style.background=d.is_legacy?'#F1F5F9':'#EEF2FF';
+    badge.style.color=d.is_legacy?'#64748B':'#4338CA';
+    $id('planLegacyNote').textContent=d.is_legacy?'Grandfathered — unlimited users, channels and modules on your current plan.':'';
+
+    $id('planUsageUsers').textContent=d.limits?`${d.usage.users} / ${d.limits.max_users}`:`${d.usage.users} / Unlimited`;
+    $id('planUsageChannels').textContent=d.limits?`${d.usage.channels} / ${d.limits.max_channels}`:`${d.usage.channels} / Unlimited`;
+
+    const grid=$id('planModulesGrid');
+    grid.innerHTML=Object.values(d.modules).map(m=>{
+      const state=m.enabled?'✓ On':(m.allowed?'Available':'🔒 Locked');
+      const bg=m.enabled?'#DCFCE7':(m.allowed?'#F1F5F9':'#FEF2F2');
+      const fg=m.enabled?'#166534':(m.allowed?'#64748B':'#B23A2E');
+      return `<span style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:20px;font-family:var(--disp);background:${bg};color:${fg}">${esc(m.label)} — ${state}</span>`;
+    }).join('');
+  }catch(e){
+    loading.style.display='block'; loading.textContent='Could not load plan status: '+e.message;
+  }
+}
+
 function renderBillingPage(){
   const hasPlan=!!clientRecord.stripe_subscription_id;
   $id('billingNoPlan').style.display=hasPlan?'none':'block';
@@ -10701,6 +10759,7 @@ async function billingInit(){
   renderBillingCurrencyToggle();
   renderBillingAddonList();
   renderBillingPage();
+  loadBillingPlanStatus();
 }
 
 async function saveCompanyProfile(){
