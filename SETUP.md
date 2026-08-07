@@ -1029,6 +1029,20 @@ Cloud onboarding — you don't need a second Meta app).
    written back to CLIENTS (nothing in the bot engine references them) — the response links
    straight to that inbox's settings page in Chatwoot for any manual finishing touches (widget
    styling, IMAP for email, etc).
+**Folded into signup itself** — a brand-new customer no longer has to go find Settings → Channels
+on their own. The moment a fresh signup logs in (`completeLoginResult`'s `session.isFreshSignup`
+check, `dashboard.html`), `autoCreateChatwootAccountSilently()` fires step 1 above in the
+background with no UI at all — by the time the Welcome Setup modal's business-name/industry step
+is filled in, it's normally already done. `saveWelcomeSetup()` then shows a second Welcome Setup
+step with a single "Connect WhatsApp" button (reusing `connectWhatsApp`/`completeWaConnect`,
+now parameterized with a `msgElId`/`context` pair so the same Embedded Signup code path can report
+into either the modal or the Channels page) — the one part of this that genuinely cannot be
+automated, since only the WhatsApp number's own owner can authorize it with Meta. A "Skip for now"
+option leaves it for Settings → Channels later; the step itself is skipped entirely if the account
+already has WhatsApp connected, or if this deploy has no `META_APP_ID` configured. If the silent
+Chatwoot creation happens to fail (e.g. `CHATWOOT_PLATFORM_TOKEN` misconfigured), the modal says so
+plainly rather than showing a WhatsApp button that would just fail against a nonexistent account.
+
 4. **Shopify** — Chatwoot's Shopify integration is itself an OAuth app configured at the
    *Chatwoot instance* level (`SHOPIFY_CLIENT_ID`/`SHOPIFY_CLIENT_SECRET` env vars on that
    install, redirect URL `{chatwoot_base}/shopify/callback`) — that OAuth hop runs on Chatwoot's
