@@ -5747,17 +5747,52 @@ async function handleEcomUpdate(request, env, kind){
   return json(data, r.status);
 }
 
+// Converts a known style/media/link column back to plain text when NocoDB rejected a write to it —
+// these titles (ECOM_STYLE_FIELD_TITLES) only ever hold free-form text/URLs, so a rejection means the
+// column exists as some other, more restrictive type (Single Select with a fixed option list, Number,
+// Checkbox, ...), most likely left over from someone creating it by hand in NocoDB before this table's
+// column was auto-provisioned, or auto-provisioned once as text and later hand-edited. Scoped to just
+// these titles so unrelated columns (color/category/status/stock, ...) — which may legitimately be
+// constrained types by the client's own design — are never touched.
+async function ecomRepairFieldType(env, tableId, fieldTitle){
+  try{
+    const r=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`);
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) return false;
+    const field=(data.list||[]).find(f=>f.title===fieldTitle);
+    if(!field || field.uidt==='SingleLineText' || field.uidt==='LongText') return false;
+    const pr=await ncFetch(env, `api/v2/meta/fields/${field.id}`, {method:'PATCH', body:{title:fieldTitle, uidt:'SingleLineText'}});
+    return pr.ok;
+  }catch(e){ return false; }
+}
+
 // NocoDB can return 200 on a PATCH while silently ignoring a field it doesn't like the value for
 // (e.g. a pre-existing Single-Select column whose fixed option list doesn't include the value we
 // sent) — the write looks successful end to end with nothing to catch it. Re-reading the record
-// right after the write and diffing it against what we sent turns that into a visible ops alert
-// naming the exact field, instead of a product quietly reverting the moment you reopen it.
+// right after the write and diffing it against what we sent catches that. For our own style/media/
+// link fields (never legitimately anything but free text) this now self-heals: convert the offending
+// column to text and retry the write once, so the product's save actually sticks instead of quietly
+// reverting the moment you reopen it. Only alerts ops if the repair+retry still didn't take.
 async function ecomVerifyProductWrite(env, tableId, id, fields){
   try{
     const r=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
     const saved=await r.json().catch(()=>null);
     if(!r.ok || !saved) return;
-    const dropped=Object.entries(fields).filter(([k,v])=>String(saved[k]??'')!==String(v??''));
+    let dropped=Object.entries(fields).filter(([k,v])=>String(saved[k]??'')!==String(v??''));
+    if(!dropped.length) return;
+
+    const repairable=dropped.filter(([k])=>ECOM_STYLE_FIELD_TITLES.includes(k));
+    if(repairable.length){
+      const repairs=await Promise.all(repairable.map(([k])=>ecomRepairFieldType(env, tableId, k)));
+      if(repairs.some(Boolean)){
+        const retryFields={}; repairable.forEach(([k,v])=>{ retryFields[k]=v; });
+        await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:id, ...retryFields}});
+        const r2=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
+        const saved2=await r2.json().catch(()=>null);
+        if(r2.ok && saved2) dropped=Object.entries(fields).filter(([k,v])=>String(saved2[k]??'')!==String(v??''));
+      }
+    }
+
     if(dropped.length) await reportOpsError(env, 'ecom product field(s) not persisted by NocoDB', new Error(dropped.map(([k,v])=>`${k}: sent ${JSON.stringify(v)}, saved as ${JSON.stringify(saved[k])}`).join('; ')), {tableId, id});
   }catch(e){ await reportOpsError(env, 'ecomVerifyProductWrite failed', e, {tableId, id}); }
 }
