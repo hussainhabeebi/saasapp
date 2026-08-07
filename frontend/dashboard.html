@@ -4336,14 +4336,25 @@ const ROLES = {
      #overlay like every other modal. -->
 <div class="modal" id="modalWelcomeSetup" style="width:460px">
   <div class="modal-hd"><div class="modal-title">👋 Welcome to Leadvyne</div></div>
-  <div class="modal-body">
+  <div class="modal-body" id="wsStepBusiness">
     <div class="s-note" style="margin-bottom:14px">Two quick things — this shapes the labels, stage tags, and theme you'll see throughout the dashboard. You can change either later in Settings.</div>
     <div class="form-group"><label class="form-label">Business Name</label><input class="form-input" id="wsBusinessName" placeholder="e.g. Acme Travels"></div>
     <div class="form-group"><label class="form-label">Industry</label><select class="form-input" id="wsIndustry"></select></div>
   </div>
-  <div class="modal-footer">
-    <button class="btn btn-primary" onclick="saveWelcomeSetup()">Get Started</button>
+  <div class="modal-footer" id="wsFooterBusiness">
+    <button class="btn btn-primary" onclick="saveWelcomeSetup()">Continue</button>
     <span class="save-msg" id="wsModalMsg"></span>
+  </div>
+  <!-- Step 2 — Chatwoot's own account was already created silently in the background the moment
+       login finished (autoCreateChatwootAccountSilently), so all that's left for the customer to
+       do by hand is the one step Meta requires their own authorization for. -->
+  <div class="modal-body" id="wsStepWhatsapp" style="display:none">
+    <div class="s-note" style="margin-bottom:14px">Connect your WhatsApp Business number so leads can start reaching you right away — this opens Meta's secure connection popup, no manual token copying.</div>
+    <button class="btn btn-primary" onclick="connectWhatsApp('wsWaMsg','welcome')" style="width:100%">💬 Connect WhatsApp</button>
+    <div class="save-msg" id="wsWaMsg" style="margin-top:10px"></div>
+  </div>
+  <div class="modal-footer" id="wsFooterWhatsapp" style="display:none">
+    <button class="btn btn-secondary" onclick="closeModal('modalWelcomeSetup');renderOnboardingChecklist()">Skip for now</button>
   </div>
 </div>
 
@@ -4627,7 +4638,10 @@ function completeLoginResult(session){
   localStorage.setItem('lv_session',sessionToken);
   localStorage.setItem('lv_me_email',myEmail);
   showApp();
-  if(session.isFreshSignup) openWelcomeSetupModal();
+  if(session.isFreshSignup){
+    autoCreateChatwootAccountSilently();
+    openWelcomeSetupModal();
+  }
   setTimeout(maybeShowInstallBanner,2000);
 }
 function completeLoginError(message){
@@ -8680,6 +8694,11 @@ function openWelcomeSetupModal(){
   const sel=$id('wsIndustry');
   sel.innerHTML=Object.entries(INDUSTRIES).map(([k,v])=>`<option value="${k}"${clientRecord?.industry===k?' selected':''}>${esc(v.label)}</option>`).join('');
   $id('wsModalMsg').textContent='';
+  $id('wsWaMsg').textContent='';
+  $id('wsStepBusiness').style.display='block';
+  $id('wsFooterBusiness').style.display='flex';
+  $id('wsStepWhatsapp').style.display='none';
+  $id('wsFooterWhatsapp').style.display='none';
   openModal('modalWelcomeSetup');
 }
 async function saveWelcomeSetup(){
@@ -8691,9 +8710,26 @@ async function saveWelcomeSetup(){
     await applyIndustryChange($id('wsIndustry').value, {client_name:name});
     clientRecord.client_name=name;
     $id('hChip').textContent=name;
-    closeModal('modalWelcomeSetup');
-    renderOnboardingChecklist();
+    // WhatsApp itself can't be pre-provisioned — Meta requires the number's own owner to
+    // authorize it live — but the Chatwoot account behind it already was, in the background,
+    // the moment login finished. Skip straight past this step if that's already connected
+    // (or if this deploy has no Meta app configured to offer it at all).
+    if(CONFIG.META_APP_ID && !(clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id)){
+      await showWelcomeWhatsappStep();
+    }else{
+      closeModal('modalWelcomeSetup');
+      renderOnboardingChecklist();
+    }
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function showWelcomeWhatsappStep(){
+  $id('wsStepBusiness').style.display='none';
+  $id('wsFooterBusiness').style.display='none';
+  $id('wsStepWhatsapp').style.display='block';
+  $id('wsFooterWhatsapp').style.display='flex';
+  _loadFbSdk();
+  if(_autoChatwootPromise) await _autoChatwootPromise;
+  $id('wsWaMsg').textContent=clientRecord.chatwoot_account_id?'':'Couldn\'t prepare your Chatwoot account automatically — you can still connect WhatsApp later from Settings → Channels.';
 }
 
 // hospitality_enabled is a brand-new CLIENTS column (unlike ta_enabled/recruit_enabled, which
@@ -9668,10 +9704,28 @@ window.addEventListener('message', (event)=>{
 
 function _maybeFinishWaSignup(){
   if(_waSignupData.code && _waSignupData.waba_id && _waSignupData.phone_number_id){
-    const {code, waba_id, phone_number_id}=_waSignupData;
+    const {code, waba_id, phone_number_id, msgElId, context}=_waSignupData;
     _waSignupData={};
-    completeWaConnect(code, waba_id, phone_number_id);
+    completeWaConnect(code, waba_id, phone_number_id, msgElId, context);
   }
+}
+
+// Fires right after a fresh signup logs in — creates the Chatwoot account/user via the Platform
+// API in the background (worker.js handleChannelsCreateAccount) so the Welcome Setup modal's
+// WhatsApp step (showWelcomeWhatsappStep) only ever has to ask the customer for the one thing
+// that genuinely can't be automated: their own Meta authorization. Failure here is silent — the
+// Channels settings page still offers the same "Create Chatwoot Account" button as a manual retry.
+let _autoChatwootPromise=null;
+function autoCreateChatwootAccountSilently(){
+  if(clientRecord?.chatwoot_account_id) return Promise.resolve();
+  _autoChatwootPromise=(async()=>{
+    try{
+      const r=await fetch(`${CONFIG.WORKER_BASE}/channels/create-account`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
+      const data=await r.json().catch(()=>({}));
+      if(r.ok) Object.assign(clientRecord,{chatwoot_base:data.chatwoot_base, chatwoot_account_id:data.chatwoot_account_id});
+    }catch(e){}
+  })();
+  return _autoChatwootPromise;
 }
 
 let _channelsStatus=null; // last response from /channels/status — the source of truth for what's already connected
@@ -10279,13 +10333,16 @@ async function createChatwootAccount(){
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
-function connectWhatsApp(){
-  const msg=$id('chConnectWaMsg');
+function connectWhatsApp(msgElId, context){
+  msgElId=msgElId||'chConnectWaMsg';
+  const msg=$id(msgElId);
   if(_channelsStatus?.has_whatsapp || (clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id)){
     msg.textContent='WhatsApp is already connected for this client.'; return;
   }
   if(!window.FB){ msg.textContent='Facebook SDK still loading — try again in a moment.'; return; }
   msg.textContent='';
+  _waSignupData.msgElId=msgElId;
+  _waSignupData.context=context||'channels';
   FB.login((response)=>{
     if(response.authResponse && response.authResponse.code){
       _waSignupData.code=response.authResponse.code;
@@ -10296,15 +10353,21 @@ function connectWhatsApp(){
   }, {config_id:CONFIG.META_WHATSAPP_CONFIG_ID, response_type:'code', override_default_response_type:true, extras:{setup:{}, featureType:'', sessionInfoVersion:'3'}});
 }
 
-async function completeWaConnect(code, waba_id, phone_number_id){
-  const msg=$id('chConnectWaMsg'); msg.textContent='Connecting WhatsApp…';
+async function completeWaConnect(code, waba_id, phone_number_id, msgElId, context){
+  msgElId=msgElId||'chConnectWaMsg';
+  const msg=$id(msgElId); msg.textContent='Connecting WhatsApp…';
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/connect`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({code, waba_id, phone_number_id})});
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     Object.assign(clientRecord,{chatwoot_inbox_id:data.chatwoot_inbox_id, waba_id:data.waba_id, wa_phone_id:data.wa_phone_id});
-    msg.textContent='';
-    renderChannelsPage();
+    if(context==='welcome'){
+      msg.textContent='✅ WhatsApp connected!';
+      setTimeout(()=>{ closeModal('modalWelcomeSetup'); renderOnboardingChecklist(); }, 1200);
+    }else{
+      msg.textContent='';
+      renderChannelsPage();
+    }
     loadChannelsStatus();
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
