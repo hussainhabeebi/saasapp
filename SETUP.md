@@ -3721,10 +3721,105 @@ counts (which come from `allLeads`, not this log).
   Lead, Cost/Booking) and the monthly table show spend-dependent figures as `—` rather than hiding
   the whole report when `ads_read` isn't connected.
 
+## Meta Ads Automation module (`frontend/dashboard.html` — Reports page's 🤖 Ads Automation tab)
+A **standalone module**, separate from the read-only Marketing/ROI tab above — genuinely
+write-capable against Meta's **Marketing API**: it creates/syncs Custom Audiences and moves real
+campaign budget, not just reads spend. Manual-only in this first version: every action fires only
+when a client clicks "Run now" — nothing here runs on a cron yet.
+
+**Why cost-per-lead, not lead mood, drives the Budget Shifter**: the original idea was to shift
+budget from campaigns generating Cold leads to campaigns generating Hot ones. That needs each lead
+attributed to the Meta campaign that produced it — which this CRM can't do yet (no `ctwa_clid`
+capture, same limitation as the CAPI module above). Instead, the Budget Shifter reads
+**cost-per-lead straight from Meta's own Ads Insights**, per campaign — a real signal Meta already
+computes, that still rewards efficient campaigns over wasteful ones, just not mood-weighted. If
+`ctwa_clid` capture is ever wired into the engine, a true mood-weighted shifter becomes possible
+without changing this module's plumbing — just the scoring function inside
+`metaFetchCampaignPerformance`.
+
+### Schema — Clients table (`mxl33bg4wi70fqj`)
+Add these columns before using the module (same "add this column" pattern as `monthly_ad_budget`
+above) — none are secrets, they reuse the existing `meta_ad_account_id`/`meta_capi_token` pair for
+all API calls:
+- `meta_automation_config` (Long text) — JSON blob of guardrails (`budget_shift_pct`,
+  `budget_shift_floor`, `budget_shift_min_spend`, `lookalike_country`, `lookalike_ratio`,
+  `fatigue_frequency_threshold`, `fatigue_ctr_drop_pct`), defaults in
+  `META_AUTOMATION_CONFIG_DEFAULTS` (worker.js) if unset.
+- `meta_suppression_audience_id` (Single line text) — Custom Audience id, created once by
+  `metaEnsureCustomAudience` and reused on every later suppression run.
+- `meta_hotleads_audience_id` (Single line text) — same, for the Lookalike source audience.
+- `meta_lookalike_audience_id` (Single line text) — the Lookalike Audience itself, created once.
+
+### Schema — Cloudflare D1 (`env.DB`, table `meta_ads_automation_runs` — see
+`migrations/0044_meta_ads_automation.sql`)
+One row per "Run now" click, success or failure: `client_id`, `automation`
+(`suppression`/`lookalike`/`budget_shift`/`fatigue`), `status` (`ok`/`error`), `summary` (short
+human string shown in the Run History table), `detail_json` (full result, incl. errors),
+`created_at`. Same "audit trail of what actually happened" reasoning as `meta_capi_events`.
+
+### Worker routes (`cloudflare-worker/worker.js`)
+All session-gated, all return `{error:...}` with a clear message (never a silent no-op) if
+`meta_ad_account_id`/`meta_capi_token` aren't set.
+- `GET /meta/automation/config` — `{connected, config, suppression_audience_id,
+  hotleads_audience_id, lookalike_audience_id}`.
+- `POST /meta/automation/config` — body `{config:{...}}`, merges + clamps each guardrail to a sane
+  range server-side (e.g. `budget_shift_pct` 1-50) before saving.
+- `GET /meta/automation/runs?automation=&limit=` — recent rows from `meta_ads_automation_runs`.
+- `POST /meta/automation/suppression/run` — **Dead Lead Suppression Sync**. Pulls leads where
+  `Stage='lost'` or `Score='Cold'` (`reportIsLostLead`/`Score` — a heuristic, not a wired pipeline
+  concept, since `Stage` names are freeform per client), hashes `Email`/`Phone` the same way CAPI
+  does (`capiHashEmail`/`capiHashPhone` — SHA-256, lowercase+trim / digits-only), and syncs them
+  into the suppression Custom Audience via Meta's `/customaudiences` (create-once) and `/users`
+  (add) endpoints.
+- `POST /meta/automation/lookalike/run` — **Lookalike Auto-Refresh**. Same sync mechanism, sourced
+  from `Score='Hot'` or won leads, into the Hot Leads audience; creates the Lookalike Audience
+  (`subtype:'LOOKALIKE'`, `lookalike_spec` with the configured country/ratio) the first time only —
+  Meta has no "recompute now" endpoint, it recomputes a lookalike's composition on its own schedule
+  as the source audience changes, so "refresh" here means keeping the source topped up.
+- `GET /meta/automation/budget-shift/preview` — **read-only**. Calls
+  `metaFetchCampaignPerformance` (Ads Insights at `level=campaign`, last 7 days, `spend` +
+  `actions` filtered to any `action_type` matching `/lead/i`) for every ACTIVE campaign with a
+  daily budget, computes cost-per-lead, and — if one campaign's cost-per-lead is >15% worse than
+  the group average and there's a clear best campaign to move it to — proposes moving
+  `budget_shift_pct`% of the worst campaign's budget to the best one, floored at
+  `budget_shift_floor` and only considering campaigns with ≥ `budget_shift_min_spend` spend in the
+  window. Returns the full campaign table either way so the client can see the numbers behind the
+  (non-)proposal.
+- `POST /meta/automation/budget-shift/apply` — body `{shifts:[...]}`, the **exact array the client
+  got back from `/preview`**, echoed back once the client confirms. Re-validates the floor/max-shift
+  guardrails server-side against the numbers in the payload (never trusts the browser) before
+  POSTing each campaign's new `daily_budget` (in the account's minor currency unit — see below) to
+  Meta.
+- `GET /meta/automation/fatigue/check` — **read-only, no Meta writes**. Pulls `level=ad` Insights
+  for the last 7 days and the 7 days before that, flags any ad whose `frequency` crosses
+  `fatigue_frequency_threshold` or whose `ctr` has dropped ≥ `fatigue_ctr_drop_pct`% vs. the prior
+  window.
+
+**Known simplification**: `daily_budget` is divided/multiplied by 100 when reading/writing (Meta
+returns/expects budgets in the account's minor currency unit — cents — for virtually every
+currency, INR/AED included). Not adjusted for the small set of zero-decimal currencies (JPY, KRW,
+etc.) — would need a per-currency lookup table if a client ever runs one of those ad accounts.
+
+### Frontend (`dashboard.html`)
+- `renderReportsAdsAutomation()` — four cards (Suppression, Lookalike, Fatigue Check, Budget
+  Shifter) plus a Guardrails settings form and a Run History table, all under the new `🤖 Ads
+  Automation` sub-tab (`data-reports="adsauto"`) next to Marketing.
+- `runMetaAdsAutomation(kind)` — shared handler for the three simple one-click actions
+  (suppression/lookalike/fatigue), disables its button while in flight, shows the result inline,
+  and refreshes the Run History table.
+- `previewMetaBudgetShift()` / `applyMetaBudgetShift()` — the Budget Shifter's two-step flow.
+  Preview renders the campaign table and (if any) the proposed shift with an **Apply** button;
+  the exact `shifts` array from the preview response is held in `_pendingBudgetShifts` and POSTed
+  back unmodified on Apply — the frontend never invents or edits shift numbers itself.
+- `saveMetaAdsAutomationConfig()` — saves the Guardrails form to `/meta/automation/config`.
+- Integrations tab's existing "Meta Ads (Conversions API)" card gained a note that this module
+  reuses the same token but additionally needs `ads_management`.
+
 ## Reports page (`frontend/dashboard.html` — 📈 Reports tab; `feat_reports_enabled`)
 A dedicated top-level nav tab (promoted out from under Team, which used to have a single-report
 "📈 Reports" sub-view — see the Meta Ads ROI Report section above) with eight sub-tabs, one per
-report area requested: Overview, Sales, Team, Marketing, WhatsApp, Shopify, Product, SEO. Same
+report area requested: Overview, Sales, Team, Marketing, Ads Automation, WhatsApp, Shopify, Product,
+SaaS, SEO, Scheduled Reports. Same
 sub-nav/lazy-load convention as Recruit/Appointments/Hospitality (`renderReports()` →
 `renderReportsSubPage(page)`, a `.hosp-tab`/`data-reports` sub-nav — reusing that CSS class rather
 than inventing a near-identical fourth one — one shared `#reportsContent` container). Toggleable
