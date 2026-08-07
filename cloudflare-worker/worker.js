@@ -41,6 +41,62 @@ const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
 // for. The env-var-or-placeholder tables that used to live here (B2B_DOCUMENTS_TABLE,
 // ACCOUNTING_DOCUMENTS_TABLE) are gone — see "B2B MODULE"/"ACCOUNTING MODULE" further down.
 
+/* ── PLAN TIERS (Settings → Billing "Plan & Usage") ──────────────────────────────────────────
+   A client's `plan_tier` field on CLIENTS_TABLE is empty for every account that existed before
+   this feature shipped, and getPlanLimits() below treats an empty/unrecognized plan_tier as
+   "legacy" — unlimited users, unlimited channels, every module already allowed. No backfill or
+   migration is required for that guarantee to hold: it's the *default* when the field is blank,
+   not a value someone has to set. Only a client an admin explicitly moves onto one of the tiers
+   below (via /admin/nocodb/tables/.../records or a future admin UI — never the client's own
+   session) becomes limited. This is deliberate: it's what makes "don't change existing
+   customers" true by construction instead of by remembering to run a script first.
+   modules[] lists which of the client-toggleable CLIENTS fields (Settings → Modules, saved via
+   the generic /nocodb/ passthrough — see PLAN_MANAGED_FIELDS and handleNocodbPassthrough) a plan
+   is allowed to turn to 'Yes'. Turning one OFF ('No') is always allowed, on any plan. */
+const PLAN_TIERS = {
+  basic:{ label:'Basic', max_users:1, max_channels:1, modules:[] },
+  standard:{ label:'Standard', max_users:3, max_channels:2, modules:['appt_enabled','b2b_enabled'] },
+  business_intelligence:{ label:'Business Intelligence', max_users:8, max_channels:5, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled'] },
+  marketing_pro:{ label:'Marketing Pro', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','feat_marketing_studio_enabled'] }
+};
+// Human labels for the module fields PLAN_TIERS.modules refers to — shared by /billing/plan-status
+// (so dashboard.html can render a modules grid without hardcoding this list twice) and the
+// passthrough's upgrade-required error message.
+const PLAN_GATED_MODULES = {
+  ta_enabled:'Travel Agency', recruit_enabled:'Recruitment & Consultancy', appt_enabled:'Appointment Booking',
+  b2b_enabled:'B2B Suite', hospitality_enabled:'Hospitality', real_estate_enabled:'Real Estate',
+  feat_marketing_studio_enabled:'Marketing Studio'
+};
+// Never writable by a client's own session — plan_tier is billing-controlled (admin or a future
+// Stripe-price→tier sync), not something a teammate can grant themselves via the same generic
+// passthrough that saves every other Settings field. See handleNocodbPassthrough.
+const PLAN_MANAGED_FIELDS = ['plan_tier'];
+// Returns null for an empty/unset/unrecognized tier — callers treat null as "unlimited", which is
+// what makes every pre-existing client (and any typo'd/future tier name) fail open, not closed.
+function getPlanLimits(planTier){
+  return PLAN_TIERS[String(planTier||'').trim()] || null;
+}
+function countClientTeamUsers(c){
+  let teamUsers={}; try{ teamUsers=JSON.parse(c?.team_chatwoot_users||'{}'); }catch(e){}
+  return Object.keys(teamUsers).length + 1; // +1 for the account owner, who has no entry of their own
+}
+// Live count from Chatwoot rather than a cached field — inboxes can also be created/removed
+// directly in Chatwoot, so a stored counter would drift. Mirrors handleChannelsStatus's own call.
+// Every Chatwoot inbox counts (WhatsApp, plus the web_widget/email/sms/telegram/line/api types
+// handleChannelsInboxCreate can add) — Instagram DM is added on top since it's a native
+// connection (ig_id/ig_access_token) that never creates a Chatwoot inbox at all.
+async function countClientChannels(env, c){
+  let count=(c?.ig_id && c?.ig_access_token) ? 1 : 0;
+  if(!c?.chatwoot_account_id || !c?.chatwoot_token) return count;
+  try{
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {headers:{api_access_token:c.chatwoot_token}});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) return count;
+    const inboxes=data?.payload||data?.data?.payload||[];
+    return count+inboxes.length;
+  }catch(e){ return count; }
+}
+
 function corsHeaders(origin, env){
   const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
   const headers={};
@@ -616,6 +672,17 @@ async function handleTeamCreateUser(request, env){
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
 
+  // Plan-based seat cap. getPlanLimits returns null for a blank/unrecognized plan_tier — i.e.
+  // every client that existed before plans shipped, plus anyone whose tier isn't set yet — so
+  // this only ever blocks a client an admin has explicitly moved onto a limited tier.
+  const planLimits=getPlanLimits(c.plan_tier);
+  if(planLimits){
+    const currentUsers=countClientTeamUsers(c);
+    if(currentUsers>=planLimits.max_users){
+      return json({error:`Your ${planLimits.label} plan includes ${planLimits.max_users} user${planLimits.max_users===1?'':'s'}. Upgrade your plan to add more team members.`}, 402);
+    }
+  }
+
   const createR=await authentikApiFetch(env, '/core/users/', {
     method:'POST',
     body:JSON.stringify({username:String(username).trim(), email:emailNorm, name:String(name||username).trim(), is_active:true})
@@ -799,6 +866,27 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   if(isClientPatch){ try{ parsedBody=JSON.parse(body); }catch(e){} }
   const touchesProtectedField=!!parsedBody && PROTECTED_CLIENT_FIELDS.some(k=>k in parsedBody);
   const isLeadsList=method==='GET' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`;
+
+  // Plan enforcement, same generic-passthrough choke point as the permission checks below —
+  // dashboard.html's Settings/Modules saves write straight through here with no per-field
+  // handler, which is also the only place a client-side bypass (calling this endpoint directly)
+  // would show up, so the check has to live here rather than only in the Settings UI.
+  if(isClientPatch && parsedBody){
+    // plan_tier is billing-controlled — never something a client's own session can set, no matter
+    // who's logged in. Distinct from PROTECTED_CLIENT_FIELDS above (owner-only, but still
+    // client-writable) because this one has no legitimate client-side writer at all.
+    if(PLAN_MANAGED_FIELDS.some(k=>k in parsedBody)){
+      return json({error:'Plan fields are managed by billing, not editable here.'}, 403);
+    }
+    const enablingGatedModule=Object.keys(PLAN_GATED_MODULES).find(field=>field in parsedBody && parsedBody[field]==='Yes');
+    if(enablingGatedModule){
+      const c=await getClientById(env, payload.cid);
+      const planLimits=getPlanLimits(c?.plan_tier);
+      if(planLimits && !planLimits.modules.includes(enablingGatedModule)){
+        return json({error:`${PLAN_GATED_MODULES[enablingGatedModule]} isn't included in your ${planLimits.label} plan. Upgrade your plan to enable it.`}, 402);
+      }
+    }
+  }
 
   if(touchesProtectedField || (isLeadsList && payload.email)){
     const c=await getClientById(env, payload.cid);
@@ -3465,6 +3553,14 @@ async function handleChannelsWhatsappConnect(request, env){
   const collision=await findOtherClientByField(env, 'waba_id', waba_id, payload.cid) || await findOtherClientByField(env, 'wa_phone_id', phone_number_id, payload.cid);
   if(collision) return json({error:'This WhatsApp Business Account / number is already connected to a different client.'}, 409);
 
+  const planLimits=getPlanLimits(c.plan_tier);
+  if(planLimits){
+    const currentChannels=await countClientChannels(env, c);
+    if(currentChannels>=planLimits.max_channels){
+      return json({error:`Your ${planLimits.label} plan includes ${planLimits.max_channels} channel${planLimits.max_channels===1?'':'s'}. Upgrade your plan to connect another.`}, 402);
+    }
+  }
+
   const tokenR=await fetch(`https://graph.facebook.com/v18.0/oauth/access_token?client_id=${env.META_APP_ID}&client_secret=${env.META_APP_SECRET}&code=${encodeURIComponent(code)}`);
   const tokenData=await tokenR.json().catch(()=>({}));
   if(!tokenR.ok||!tokenData.access_token) return json({error:'Meta token exchange failed: '+(tokenData?.error?.message||('HTTP '+tokenR.status))}, 502);
@@ -3556,6 +3652,13 @@ async function handleInstagramOauthCallback(request, env){
   const statePayload=await verifyOauthState(env, state);
   if(!statePayload) return fail('This connection link expired — try connecting again from Integrations');
 
+  const cForLimit=await getClientById(env, statePayload.cid);
+  const planLimits=cForLimit?getPlanLimits(cForLimit.plan_tier):null;
+  if(planLimits){
+    const currentChannels=await countClientChannels(env, cForLimit);
+    if(currentChannels>=planLimits.max_channels) return fail(`Your ${planLimits.label} plan includes ${planLimits.max_channels} channel${planLimits.max_channels===1?'':'s'} — upgrade your plan to connect another.`);
+  }
+
   const redirectUri=`${env.WORKER_BASE_URL}/ig/oauth/callback`;
   const shortTokenR=await fetch('https://api.instagram.com/oauth/access_token', {
     method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
@@ -3640,6 +3743,14 @@ async function handleChannelsInboxCreate(request, env){
   if(!['web_widget','email','api','sms','telegram','line'].includes(type)) return json({error:'Unsupported channel type.'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
+
+  const planLimits=getPlanLimits(c.plan_tier);
+  if(planLimits){
+    const currentChannels=await countClientChannels(env, c);
+    if(currentChannels>=planLimits.max_channels){
+      return json({error:`Your ${planLimits.label} plan includes ${planLimits.max_channels} channel${planLimits.max_channels===1?'':'s'}. Upgrade your plan to add another.`}, 402);
+    }
+  }
 
   let channel, name;
   if(type==='web_widget'){
@@ -5247,6 +5358,39 @@ async function handleBillingCompanyProfile(request, env){
     }).catch(()=>{});
   }
   return json({ok:true});
+}
+
+// Powers the Billing page's "Plan & Usage" card — one place a client can see their tier, how
+// many of their user/channel allowance they've used, and which modules their plan does/doesn't
+// include. A client with no plan_tier (every account that existed before this shipped) gets
+// limits:null back, which the frontend renders as "Legacy plan — unlimited", not a 0/0 empty
+// state — see getPlanLimits' fail-open-to-null contract above.
+async function handleBillingPlanStatus(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const planTier=String(c.plan_tier||'').trim();
+  const limits=getPlanLimits(planTier);
+  const users=countClientTeamUsers(c);
+  const channels=await countClientChannels(env, c);
+  const modules={};
+  for(const field of Object.keys(PLAN_GATED_MODULES)){
+    modules[field]={
+      label:PLAN_GATED_MODULES[field],
+      enabled:c[field]==='Yes',
+      allowed: !limits || limits.modules.includes(field) // no limits (legacy) = everything allowed
+    };
+  }
+  return json({
+    ok:true,
+    plan_tier:planTier||'legacy',
+    plan_label:limits?limits.label:'Legacy',
+    is_legacy:!limits,
+    limits:limits?{max_users:limits.max_users, max_channels:limits.max_channels}:null,
+    usage:{users, channels},
+    modules
+  });
 }
 
 // Feeds dashboard.html's own plan-picker UI (replaces the Stripe-hosted Pricing Table so the
@@ -17667,6 +17811,7 @@ export default {
       else if(url.pathname==='/shopify/oauth/callback' && request.method==='GET'){ res=await handleShopifyOauthCallback(request, env); }
       else if(url.pathname==='/shopify/webhook' && request.method==='POST'){ res=await handleShopifyWebhook(request, env); }
       else if(url.pathname==='/shopify/disconnect' && request.method==='POST'){ res=await handleShopifyDisconnect(request, env); }
+      else if(url.pathname==='/billing/plan-status' && request.method==='GET'){ res=await handleBillingPlanStatus(request, env); }
       else if(url.pathname==='/billing/plans' && request.method==='GET'){ res=await handleBillingPlans(request, env); }
       else if(url.pathname==='/billing/checkout-subscription' && request.method==='POST'){ res=await handleBillingCheckoutSubscription(request, env); }
       else if(url.pathname==='/billing/portal' && request.method==='GET'){ res=await handleBillingPortal(request, env); }
