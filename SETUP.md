@@ -3242,9 +3242,10 @@ the photo and text reply, not just a static image.
 ### Schema — NocoDB product table columns, auto-provisioned
 `audio_url`/`video_url`/`pdf_url` are added to the same `ECOM_STYLE_FIELD_TITLES` list
 `ensureEcomProductStyleFields()` already auto-creates missing columns from (see "Product styles"
-above) — no manual NocoDB setup step, no new migration, no dedicated D1 table. Deliberately not
-modeled as a D1 table the way Ecommerce categories' photos are: a product's media is just three
-more attributes on the product itself, not a new entity needing its own storage.
+above) — no manual NocoDB setup step. NocoDB is still the only *source of truth* a product is read
+from (no dedicated D1 table modeling the product itself, unlike Ecommerce categories' photos); every
+write is additionally mirrored into D1 as a backup copy — see "Ecom product write self-heal + D1
+mirror backup" below.
 
 ### Sending — `engineMaybeSendProductMedia()` (`cloudflare-worker/worker.js`)
 Called from `handleEngineWebhook`'s existing `detectOrderSignal`/`ecomResolveProduct` block, right
@@ -3276,6 +3277,33 @@ adding `pdf_url` here).
 static site deployed independently (SETUP.md "4. Deploy the front-end"). After merging a frontend
 change, the static site itself needs redeploying (Coolify redeploy/restart, or wherever it's
 actually hosted) before the change is visible — a `wrangler deploy` alone will not surface it.
+
+## Ecom product write self-heal + D1 mirror backup (`cloudflare-worker/worker.js`, `migrations/0043_ecom_products_mirror.sql`)
+NocoDB can return `200 OK` on a product create/update while silently discarding a field it doesn't
+like the value for — most commonly a `style`/`audio_url`/`video_url`/`pdf_url`/`product_link` column
+that got hand-created in NocoDB (or hand-edited afterward) as something other than plain text, e.g. a
+Single Select whose fixed option list doesn't include the value being saved. The write looks
+successful end to end; the product just silently reverts the moment you reopen it, with nothing to
+catch it short of noticing by eye. `ecomVerifyProductWrite()` (called from both `handleEcomCreate`
+and `handleEcomUpdate` whenever `kind==='products'`) re-reads the record right after every write and
+diffs it against what was sent:
+
+- **Self-heal.** If a dropped field is one of `ECOM_STYLE_FIELD_TITLES` — which only ever hold
+  free-form text/URLs, never a legitimate reason to reject a text value — `ecomRepairFieldType()`
+  converts that column back to `SingleLineText` via NocoDB's field-meta API and the write is retried
+  once. Scoped to just those titles; unrelated columns like `color`/`category`/`status`/`stock` are
+  never touched, since those may legitimately be constrained types by the client's own design.
+- **Ops alert.** Only if a field is still missing after the repair+retry (or isn't one of the
+  self-healable titles) does this fall back to `reportOpsError`, naming the exact table/field/record.
+- **D1 mirror.** Whatever NocoDB ends up actually holding — after any repair — gets upserted into
+  `ecom_products_mirror` (`ECOM_MIRROR_COLUMNS` in worker.js) keyed by `(client_id, nocodb_id)`, via
+  `ecomMirrorProductToD1()`. This is a backup only, not a second read path — `ecom.html`/the chat
+  engine still read products from NocoDB exclusively via `ecomResolveTable`. If a client's NocoDB
+  base is ever misconfigured, wiped, or unreachable, every product's last-known-good data is still
+  recoverable from this D1 table instead of gone with nothing to restore from. Fails silently (logged,
+  not alerted) on a D1 hiccup — a backup write must never block or fail the actual product save.
+  **Manual step after deploying this**: run `wrangler d1 migrations apply leadvyne-d1 --remote` to
+  create the table, same as every other D1 migration in this repo.
 
 ## Per-product Shopify link → chat order links (`buildOrderLink`, `cloudflare-worker/worker.js`)
 A product can optionally carry its own `shopify_product_url` (set in the product modal, field only
