@@ -1179,6 +1179,351 @@ async function handleMetaCapiLogTrend(request, env){
   return json({months:Object.values(byMonth).sort((a,b)=>a.key.localeCompare(b.key))});
 }
 
+/* ── Meta Ads Automation (standalone module — Reports page → 🤖 Ads Automation) ─────────────────
+   Distinct from the read-only Marketing/ROI tab above (spend-trend only): this is genuinely
+   write-capable against Meta's Marketing API — creating/syncing Custom Audiences and moving real
+   campaign budget. Reuses the same meta_ad_account_id/meta_capi_token pair (see the ROI report's
+   own comment on why a System User token commonly carries both ads_management and ads_read
+   together) — every write here additionally needs ads_management, on top of ads_read.
+
+   Manual-only for this first version: nothing here runs on a cron, every action fires only when a
+   client clicks "Run now" in the dashboard. Every run — success or failure — is logged to D1's
+   meta_ads_automation_runs (migrations/0044_meta_ads_automation.sql) so there's an audit trail of
+   what actually happened to a client's live ad account, same reasoning as meta_capi_events above.
+
+   Known limitation, same honest scoping as the ROI report's own "no ctwa_clid" note: this CRM
+   doesn't attribute individual leads to the Meta campaign that produced them (no click-id capture
+   — see the CAPI module's own limitation), so the Budget Shifter below can't move money based on
+   which *campaign* generated Hot vs. Cold leads (the original idea). Instead it uses cost-per-lead
+   computed straight from Meta's own Ads Insights per campaign — a real, directly-available signal
+   that still rewards efficient campaigns over wasteful ones, just not mood-weighted. */
+
+const META_AUTOMATION_CONFIG_DEFAULTS={
+  budget_shift_pct:15,             // max % of a campaign's current daily budget moved per run, either direction
+  budget_shift_floor:200,          // a campaign's daily budget is never moved below this (account currency units)
+  budget_shift_min_spend:500,      // a campaign needs at least this much spend in the lookback window to be eligible for shifting — guards against reallocating on a tiny, noisy sample
+  lookalike_country:'IN',
+  lookalike_ratio:5,               // %, Meta accepts a 1-20 range in 1% steps for a single-country lookalike
+  fatigue_frequency_threshold:3,   // flag an ad once average frequency (impressions/reach) crosses this
+  fatigue_ctr_drop_pct:25,         // ...or CTR has dropped this % vs. the prior 7-day window
+};
+function getMetaAutomationConfig(c){
+  let saved={}; try{ saved=JSON.parse(c?.meta_automation_config||'{}'); }catch(e){}
+  return {...META_AUTOMATION_CONFIG_DEFAULTS, ...saved};
+}
+function metaAdAccountPath(c){ return `act_${String(c.meta_ad_account_id||'').replace(/^act_/,'')}`; }
+async function metaGraphFetch(env, c, path, {method='GET', params=null, body=null}={}){
+  const qs=new URLSearchParams(params||{});
+  qs.set('access_token', c.meta_capi_token);
+  const url=`https://graph.facebook.com/v18.0/${path}?${qs.toString()}`;
+  const r=await fetch(url, method==='GET'?undefined:{method, headers:{'Content-Type':'application/json'}, body:body?JSON.stringify(body):undefined});
+  const data=await r.json().catch(()=>({}));
+  return {ok:r.ok, status:r.status, data};
+}
+async function logMetaAutomationRun(env, clientId, automation, status, summary, detail){
+  // Best-effort like every other audit-log insert in this file (e.g. sendMetaCapiEvent's own) — a
+  // logging failure must never mask or replace the real error/result already sent to the caller.
+  try{
+    await env.DB.prepare(`INSERT INTO meta_ads_automation_runs (client_id, automation, status, summary, detail_json, created_at) VALUES (?,?,?,?,?,?)`)
+      .bind(Number(clientId), automation, status, summary, JSON.stringify(detail||{}), new Date().toISOString()).run();
+  }catch(e){}
+}
+function metaAutomationNotConnected(c){
+  return !(c?.meta_ad_account_id && c?.meta_capi_token);
+}
+
+// Creates the named Custom Audience once and remembers its id on the given CLIENTS field
+// (meta_suppression_audience_id / meta_hotleads_audience_id) — every later run reuses the same
+// audience rather than creating a new one each time, same "create once, reuse the stored id"
+// pattern as meta_pixel_id itself.
+async function metaEnsureCustomAudience(env, c, fieldName, name, description){
+  if(c[fieldName]) return c[fieldName];
+  const r=await metaGraphFetch(env, c, `${metaAdAccountPath(c)}/customaudiences`, {method:'POST', body:{
+    name, description, subtype:'CUSTOM', customer_file_source:'USER_PROVIDED_ONLY',
+  }});
+  if(!r.ok||!r.data?.id) throw new Error(r.data?.error?.message||'Meta rejected the audience creation request — check the token has ads_management.');
+  await patchClientFields(env, c.Id, {[fieldName]:r.data.id});
+  c[fieldName]=r.data.id;
+  return r.data.id;
+}
+// Adds/updates users in a Custom Audience via hashed email+phone — same SHA-256 hashing
+// (capiHashEmail/capiHashPhone) already used for Conversions API events above, since Meta expects
+// identical normalization (lowercase+trim email, digits-only phone) for both. Sent as a
+// form-encoded POST with `payload` JSON-stringified — the shape Meta's /users edge documents and
+// expects, unlike most other Graph endpoints in this file which take a plain JSON body.
+async function metaSyncAudienceUsers(env, c, audienceId, leads){
+  const rows=[];
+  for(const lead of leads){
+    const em=await capiHashEmail(lead.Email);
+    const ph=await capiHashPhone(lead.Phone);
+    if(!em && !ph) continue;
+    rows.push([em||'', ph||'']);
+  }
+  if(!rows.length) return {added:0};
+  let added=0;
+  // Meta caps a single /users call at 10,000 rows — batched defensively even though no client here
+  // is remotely close to that yet.
+  for(let i=0;i<rows.length;i+=10000){
+    const batch=rows.slice(i,i+10000);
+    const form=new URLSearchParams({access_token:c.meta_capi_token, payload:JSON.stringify({schema:['EMAIL','PHONE'], data:batch})});
+    const r=await fetch(`https://graph.facebook.com/v18.0/${audienceId}/users`, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:form});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data?.error?.message||'Meta rejected the audience sync request.');
+    added+=batch.length;
+  }
+  return {added};
+}
+// Lookalikes have no "refresh now" API — Meta recomputes their composition on its own schedule as
+// the source audience changes, so "Lookalike Auto-Refresh" (see the Reports tab) really means
+// "keep pushing fresh Hot leads into the source audience", not re-issuing this create call.
+async function metaEnsureLookalikeAudience(env, c, sourceAudienceId, country, ratioPct){
+  if(c.meta_lookalike_audience_id) return c.meta_lookalike_audience_id;
+  const r=await metaGraphFetch(env, c, `${metaAdAccountPath(c)}/customaudiences`, {method:'POST', body:{
+    name:'Leadvyne — Hot Lead Lookalike', subtype:'LOOKALIKE', origin_audience_id:sourceAudienceId,
+    lookalike_spec:JSON.stringify({type:'similarity', country, ratio:Math.max(0.01,Math.min(0.2,ratioPct/100))}),
+  }});
+  if(!r.ok||!r.data?.id) throw new Error(r.data?.error?.message||'Meta rejected the lookalike creation request — check the source audience has at least 100 matched users yet.');
+  await patchClientFields(env, c.Id, {meta_lookalike_audience_id:r.data.id});
+  return r.data.id;
+}
+
+async function handleMetaAutomationConfigGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  return json({
+    connected:!metaAutomationNotConnected(c),
+    config:getMetaAutomationConfig(c),
+    suppression_audience_id:c.meta_suppression_audience_id||'',
+    hotleads_audience_id:c.meta_hotleads_audience_id||'',
+    lookalike_audience_id:c.meta_lookalike_audience_id||'',
+  });
+}
+async function handleMetaAutomationConfigSet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const body=await request.json().catch(()=>({}));
+  const merged=getMetaAutomationConfig(c);
+  const NUM_FIELDS={
+    budget_shift_pct:[1,50], budget_shift_floor:[0,1e9], budget_shift_min_spend:[0,1e9],
+    lookalike_ratio:[1,20], fatigue_frequency_threshold:[1,20], fatigue_ctr_drop_pct:[1,90],
+  };
+  Object.entries(NUM_FIELDS).forEach(([k,[min,max]])=>{
+    if(body.config && k in body.config){
+      const v=Number(body.config[k]);
+      if(isFinite(v)) merged[k]=Math.max(min,Math.min(max,v));
+    }
+  });
+  if(body.config && typeof body.config.lookalike_country==='string' && /^[A-Za-z]{2}$/.test(body.config.lookalike_country.trim())){
+    merged.lookalike_country=body.config.lookalike_country.trim().toUpperCase();
+  }
+  await patchClientFields(env, c.Id, {meta_automation_config:JSON.stringify(merged)});
+  return json({ok:true, config:merged});
+}
+async function handleMetaAutomationRuns(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const automation=url.searchParams.get('automation');
+  const limit=Math.min(50, parseInt(url.searchParams.get('limit'))||20);
+  let q=`SELECT * FROM meta_ads_automation_runs WHERE client_id=?`; const binds=[Number(payload.cid)];
+  if(automation){ q+=` AND automation=?`; binds.push(automation); }
+  q+=` ORDER BY id DESC LIMIT ?`; binds.push(limit);
+  const {results}=await env.DB.prepare(q).bind(...binds).all();
+  return json({runs:(results||[]).map(r=>({...r, detail:JSON.parse(r.detail_json||'{}')}))});
+}
+
+// Dead Lead Suppression Sync — pushes Closed/Cold leads (Stage='lost' or Score='Cold') into a
+// Custom Audience so ad campaigns can exclude them, instead of paying to re-target people who
+// already said no. Heuristic, not a wired-up pipeline concept (Stage names are freeform per client
+// via the stage builder — see reportIsLostLead's own comment) — 'lost' plus Score='Cold' catches
+// the common cases without needing every client's flow config.
+async function handleMetaAutomationSuppressionRun(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(metaAutomationNotConnected(c)) return json({error:'Connect your Ad Account ID and Conversions API token in Settings → Integrations → Meta Ads first.'}, 400);
+  try{
+    const leads=await reportFetchAllLeads(env, payload.cid, 'Email,Phone,Stage,Score');
+    const dead=leads.filter(l=>reportIsLostLead(l)||l.Score==='Cold');
+    const audienceId=await metaEnsureCustomAudience(env, c, 'meta_suppression_audience_id', 'Leadvyne — Dead Leads (Suppression)', 'Closed/Cold leads — exclude from ad targeting. Auto-managed by Leadvyne, do not edit manually.');
+    const {added}=await metaSyncAudienceUsers(env, c, audienceId, dead);
+    const summary=`Synced ${added} dead lead${added===1?'':'s'} to the suppression audience (${dead.length} candidates found).`;
+    await logMetaAutomationRun(env, payload.cid, 'suppression', 'ok', summary, {audience_id:audienceId, candidates:dead.length, added});
+    return json({ok:true, audience_id:audienceId, candidates:dead.length, synced:added, summary});
+  }catch(e){
+    await logMetaAutomationRun(env, payload.cid, 'suppression', 'error', e.message, {});
+    return json({error:e.message}, 502);
+  }
+}
+
+// Lookalike Auto-Refresh — keeps a "Hot Leads" source audience (Score='Hot' or won) topped up with
+// the latest matches, then ensures a Lookalike Audience sourced from it exists (created once — see
+// metaEnsureLookalikeAudience's own comment on why there's no separate "refresh" call).
+async function handleMetaAutomationLookalikeRun(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(metaAutomationNotConnected(c)) return json({error:'Connect your Ad Account ID and Conversions API token in Settings → Integrations → Meta Ads first.'}, 400);
+  const cfg=getMetaAutomationConfig(c);
+  try{
+    const leads=await reportFetchAllLeads(env, payload.cid, 'Email,Phone,Stage,Score');
+    const hot=leads.filter(l=>reportIsWonLead(l)||l.Score==='Hot');
+    const sourceId=await metaEnsureCustomAudience(env, c, 'meta_hotleads_audience_id', 'Leadvyne — Hot Leads (Lookalike Source)', 'Hot-mood / won leads — source audience for the Hot Lead Lookalike. Auto-managed by Leadvyne, do not edit manually.');
+    const {added}=await metaSyncAudienceUsers(env, c, sourceId, hot);
+    const wasNew=!c.meta_lookalike_audience_id;
+    const lookalikeId=await metaEnsureLookalikeAudience(env, c, sourceId, cfg.lookalike_country, cfg.lookalike_ratio);
+    const summary=`Refreshed the source audience with ${added} hot lead${added===1?'':'s'} (${hot.length} candidates found); lookalike audience ${wasNew?'created':'already exists — Meta recomputes it automatically'}.`;
+    await logMetaAutomationRun(env, payload.cid, 'lookalike', 'ok', summary, {source_audience_id:sourceId, lookalike_audience_id:lookalikeId, candidates:hot.length, added});
+    return json({ok:true, source_audience_id:sourceId, lookalike_audience_id:lookalikeId, candidates:hot.length, synced:added, summary});
+  }catch(e){
+    await logMetaAutomationRun(env, payload.cid, 'lookalike', 'error', e.message, {});
+    return json({error:e.message}, 502);
+  }
+}
+
+// Shared by the Budget Shifter's preview/apply below — pulls every ACTIVE campaign with a daily
+// budget plus its own last-`lookbackDays` spend/leads from Ads Insights, and derives cost-per-lead
+// (see this whole module's own top comment for why cost-per-lead, not lead mood, is the signal
+// used here). `daily_budget` comes back from Meta in the account's minor currency unit (cents) for
+// virtually every currency this app's clients use (INR/AED included) — NOT converted for the small
+// set of zero-decimal currencies (JPY, KRW, etc.), a known simplification.
+async function metaFetchCampaignPerformance(env, c, lookbackDays){
+  const acct=metaAdAccountPath(c);
+  const campR=await metaGraphFetch(env, c, `${acct}/campaigns`, {params:{fields:'id,name,effective_status,daily_budget', limit:'200'}});
+  if(!campR.ok) throw new Error(campR.data?.error?.message||'Meta rejected the campaign list request — check the token has ads_management.');
+  const campaigns=(campR.data?.data||[]).filter(cp=>cp.effective_status==='ACTIVE'&&cp.daily_budget);
+  if(!campaigns.length) return [];
+  const since=new Date(); since.setDate(since.getDate()-lookbackDays);
+  const timeRange=JSON.stringify({since:since.toISOString().slice(0,10), until:new Date().toISOString().slice(0,10)});
+  const insR=await metaGraphFetch(env, c, `${acct}/insights`, {params:{level:'campaign', fields:'campaign_id,spend,actions', time_range:timeRange, limit:'200'}});
+  if(!insR.ok) throw new Error(insR.data?.error?.message||'Meta rejected the insights request.');
+  const byId={};
+  (insR.data?.data||[]).forEach(row=>{
+    const leadCount=(row.actions||[]).filter(a=>/lead/i.test(a.action_type)).reduce((s,a)=>s+(Number(a.value)||0),0);
+    byId[row.campaign_id]={spend:Number(row.spend)||0, leads:leadCount};
+  });
+  return campaigns.map(cp=>{
+    const stats=byId[cp.id]||{spend:0, leads:0};
+    return {id:cp.id, name:cp.name, daily_budget:Number(cp.daily_budget)/100, spend:stats.spend, leads:stats.leads, cost_per_lead:stats.leads?stats.spend/stats.leads:null};
+  });
+}
+// Preview only — computes a single proposed shift (worst cost-per-lead campaign → best) and
+// returns it for review. Nothing is written to Meta here; the frontend echoes the exact `shifts`
+// array back to /apply below once the user confirms.
+async function handleMetaAutomationBudgetShiftPreview(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(metaAutomationNotConnected(c)) return json({error:'Connect your Ad Account ID and Conversions API token in Settings → Integrations → Meta Ads first.'}, 400);
+  const cfg=getMetaAutomationConfig(c);
+  try{
+    const campaigns=await metaFetchCampaignPerformance(env, c, 7);
+    const eligible=campaigns.filter(cp=>cp.spend>=cfg.budget_shift_min_spend && cp.cost_per_lead!=null);
+    let shifts=[], note;
+    if(eligible.length<2){
+      note=`Need at least 2 active campaigns with ≥ ${cfg.budget_shift_min_spend} spend and at least one lead in the last 7 days to compare — only ${eligible.length} qualifies right now.`;
+    }else{
+      const avgCpl=eligible.reduce((s,cp)=>s+cp.cost_per_lead,0)/eligible.length;
+      const worst=[...eligible].sort((a,b)=>b.cost_per_lead-a.cost_per_lead)[0];
+      const best=[...eligible].sort((a,b)=>a.cost_per_lead-b.cost_per_lead)[0];
+      if(worst.id!==best.id && worst.cost_per_lead>avgCpl*1.15){
+        // Capped by BOTH legs' own budget_shift_pct allowance — moving a fixed cash amount capped
+        // only by the worst campaign's budget could blow way past best's own % guardrail if best's
+        // budget is much smaller (e.g. worst=10,000 → 15%=1,500 moved is only 1.5% of a worst-case
+        // best=100,000 budget, but would be 1,500% of a best=100 budget). Apply's own re-validation
+        // enforces the same cap server-side, so this keeps preview and apply in agreement.
+        const worstAllowedMove=Math.min(worst.daily_budget*(cfg.budget_shift_pct/100), worst.daily_budget-cfg.budget_shift_floor);
+        const bestAllowedMove=best.daily_budget*(cfg.budget_shift_pct/100);
+        const actualMove=Math.round(Math.max(0, Math.min(worstAllowedMove, bestAllowedMove)));
+        const worstNew=worst.daily_budget-actualMove;
+        if(actualMove>0){
+          shifts=[
+            {campaign_id:worst.id, name:worst.name, direction:'decrease', from:worst.daily_budget, to:worstNew, cost_per_lead:worst.cost_per_lead},
+            {campaign_id:best.id, name:best.name, direction:'increase', from:best.daily_budget, to:best.daily_budget+actualMove, cost_per_lead:best.cost_per_lead},
+          ];
+        }
+      }
+      note=shifts.length?`Proposal: move ~${cfg.budget_shift_pct}% of "${worst.name}"'s budget (highest cost/lead) to "${best.name}" (lowest cost/lead). Review below, then Apply.`:'No campaign is enough of an outlier vs. the group average to warrant a shift right now — nothing proposed this run.';
+    }
+    return json({ok:true, shifts, campaigns, note});
+  }catch(e){
+    await logMetaAutomationRun(env, payload.cid, 'budget_shift', 'error', e.message, {stage:'preview'});
+    return json({error:e.message}, 502);
+  }
+}
+// Applies exactly the `shifts` array the client got back from /preview — guardrails are
+// re-enforced here server-side (never trust numbers echoed back by the browser) before any real
+// Meta write happens.
+async function handleMetaAutomationBudgetShiftApply(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(metaAutomationNotConnected(c)) return json({error:'Connect your Ad Account ID and Conversions API token in Settings → Integrations → Meta Ads first.'}, 400);
+  const cfg=getMetaAutomationConfig(c);
+  const body=await request.json().catch(()=>({}));
+  const shifts=Array.isArray(body.shifts)?body.shifts:[];
+  if(!shifts.length) return json({error:'No shifts to apply'}, 400);
+  const results=[];
+  for(const s of shifts){
+    const campaignId=String(s.campaign_id||''); const to=Number(s.to); const from=Number(s.from);
+    if(!campaignId||!isFinite(to)||!isFinite(from)||to<0){ results.push({campaign_id:campaignId, name:s.name, ok:false, error:'Malformed shift'}); continue; }
+    const movePct=from?Math.abs(to-from)/from*100:100;
+    if(to<from && to<cfg.budget_shift_floor){ results.push({campaign_id:campaignId, name:s.name, ok:false, error:`Below the configured floor (${cfg.budget_shift_floor})`}); continue; }
+    if(movePct>cfg.budget_shift_pct+0.5){ results.push({campaign_id:campaignId, name:s.name, ok:false, error:`Exceeds the configured max shift (${cfg.budget_shift_pct}%)`}); continue; }
+    const r=await metaGraphFetch(env, c, campaignId, {method:'POST', body:{daily_budget:Math.round(to*100)}});
+    results.push({campaign_id:campaignId, name:s.name, ok:r.ok, error:r.ok?null:(r.data?.error?.message||'Meta rejected the update')});
+  }
+  const okCount=results.filter(r=>r.ok).length;
+  const summary=`Applied ${okCount}/${results.length} budget change${results.length===1?'':'s'}.`;
+  await logMetaAutomationRun(env, payload.cid, 'budget_shift', okCount===results.length?'ok':'error', summary, {results});
+  return json({ok:okCount>0, results, summary});
+}
+
+// Creative Fatigue Check — read-only, no Meta writes. Flags ads whose 7-day average frequency has
+// crossed the configured threshold, or whose CTR has dropped sharply vs. the prior 7-day window.
+function metaDaysAgoStr(n){ const d=new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+async function handleMetaAutomationFatigueCheck(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(metaAutomationNotConnected(c)) return json({error:'Connect your Ad Account ID and Conversions API token in Settings → Integrations → Meta Ads first.'}, 400);
+  const cfg=getMetaAutomationConfig(c);
+  try{
+    const acct=metaAdAccountPath(c);
+    const fields='ad_id,ad_name,campaign_name,frequency,ctr,spend';
+    const [curR, prevR]=await Promise.all([
+      metaGraphFetch(env, c, `${acct}/insights`, {params:{level:'ad', fields, date_preset:'last_7d', limit:'200'}}),
+      metaGraphFetch(env, c, `${acct}/insights`, {params:{level:'ad', fields, time_range:JSON.stringify({since:metaDaysAgoStr(14), until:metaDaysAgoStr(8)}), limit:'200'}}),
+    ]);
+    if(!curR.ok) throw new Error(curR.data?.error?.message||'Meta rejected the ad insights request.');
+    const prevByAd={};
+    (prevR.data?.data||[]).forEach(row=>{ prevByAd[row.ad_id]=Number(row.ctr)||0; });
+    const flagged=(curR.data?.data||[]).map(row=>{
+      const freq=Number(row.frequency)||0, ctr=Number(row.ctr)||0, prevCtr=prevByAd[row.ad_id];
+      const ctrDropPct=prevCtr?Math.round((1-ctr/prevCtr)*100):null;
+      const reasons=[];
+      if(freq>=cfg.fatigue_frequency_threshold) reasons.push(`frequency ${freq.toFixed(1)} ≥ ${cfg.fatigue_frequency_threshold}`);
+      if(ctrDropPct!=null && ctrDropPct>=cfg.fatigue_ctr_drop_pct) reasons.push(`CTR down ${ctrDropPct}% vs. the prior week`);
+      return {ad_id:row.ad_id, ad_name:row.ad_name, campaign_name:row.campaign_name, frequency:freq, ctr, ctr_drop_pct:ctrDropPct, spend:Number(row.spend)||0, reasons};
+    }).filter(r=>r.reasons.length);
+    const summary=flagged.length?`${flagged.length} ad${flagged.length===1?'':'s'} showing fatigue.`:'No fatigued ads this run.';
+    await logMetaAutomationRun(env, payload.cid, 'fatigue', 'ok', summary, {flagged});
+    return json({ok:true, flagged, summary});
+  }catch(e){
+    await logMetaAutomationRun(env, payload.cid, 'fatigue', 'error', e.message, {});
+    return json({error:e.message}, 502);
+  }
+}
+
 // WhatsApp/Bot Analytics — Reports page's "💬 WhatsApp" tab. ENGINE_ANALYTICS_TABLE
 // (engineLogAnalytics, defined further down — one row per real inbound message, written every
 // turn) has been write-only since it was added: no route anywhere read it back until this one.
@@ -17206,6 +17551,14 @@ export default {
       else if(url.pathname==='/meta/capi/status' && request.method==='GET'){ res=await handleMetaCapiStatus(request, env); }
       else if(url.pathname==='/meta/ads/spend-trend' && request.method==='GET'){ res=await handleMetaAdsSpendTrend(request, env); }
       else if(url.pathname==='/meta/capi/log-trend' && request.method==='GET'){ res=await handleMetaCapiLogTrend(request, env); }
+      else if(url.pathname==='/meta/automation/config' && request.method==='GET'){ res=await handleMetaAutomationConfigGet(request, env); }
+      else if(url.pathname==='/meta/automation/config' && request.method==='POST'){ res=await handleMetaAutomationConfigSet(request, env); }
+      else if(url.pathname==='/meta/automation/runs' && request.method==='GET'){ res=await handleMetaAutomationRuns(request, env); }
+      else if(url.pathname==='/meta/automation/suppression/run' && request.method==='POST'){ res=await handleMetaAutomationSuppressionRun(request, env); }
+      else if(url.pathname==='/meta/automation/lookalike/run' && request.method==='POST'){ res=await handleMetaAutomationLookalikeRun(request, env); }
+      else if(url.pathname==='/meta/automation/budget-shift/preview' && request.method==='GET'){ res=await handleMetaAutomationBudgetShiftPreview(request, env); }
+      else if(url.pathname==='/meta/automation/budget-shift/apply' && request.method==='POST'){ res=await handleMetaAutomationBudgetShiftApply(request, env); }
+      else if(url.pathname==='/meta/automation/fatigue/check' && request.method==='GET'){ res=await handleMetaAutomationFatigueCheck(request, env); }
       else if(url.pathname==='/reports/whatsapp' && request.method==='GET'){ res=await handleReportsWhatsapp(request, env); }
       else if(url.pathname==='/reports/products' && request.method==='GET'){ res=await handleReportsProducts(request, env); }
       else if(url.pathname==='/reports/seo' && request.method==='GET'){ res=await handleReportsSeo(request, env); }

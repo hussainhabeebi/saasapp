@@ -1917,6 +1917,7 @@ const ROLES = {
         <button class="hosp-tab" data-reports="sales">💰 Sales</button>
         <button class="hosp-tab" data-reports="team">📊 Team</button>
         <button class="hosp-tab" data-reports="marketing">📣 Marketing</button>
+        <button class="hosp-tab" data-reports="adsauto">🤖 Ads Automation</button>
         <button class="hosp-tab" data-reports="whatsapp">💬 WhatsApp</button>
         <button class="hosp-tab" data-reports="shopify">🛍️ Ecommerce</button>
         <button class="hosp-tab" data-reports="product">🧩 Product</button>
@@ -2640,7 +2641,7 @@ const ROLES = {
             <input class="form-input" id="cfgMetaCapiToken" type="password" placeholder="Leave blank to keep the current token" style="margin-bottom:8px">
             <label class="form-label">Ad Account ID <span style="font-weight:400;color:var(--muted)">(for the ROI report's ad spend — Team → Reports)</span></label>
             <input class="form-input" id="cfgMetaAdAccountId" type="text" placeholder="123456789012345 (with or without the act_ prefix)" style="margin-bottom:8px">
-            <div class="s-note">Conversions API only ever sends events to Meta — it can't report spend back. Ad spend needs Meta's separate Marketing API, which uses this Ad Account ID plus the same token above (it needs the <b>ads_read</b> permission too — check this under the token's System User in Business Settings if the ROI report shows "not connected").</div>
+            <div class="s-note">Conversions API only ever sends events to Meta — it can't report spend back. Ad spend needs Meta's separate Marketing API, which uses this Ad Account ID plus the same token above (it needs the <b>ads_read</b> permission too — check this under the token's System User in Business Settings if the ROI report shows "not connected"). The <a href="#" onclick="navigate('reports');return false">🤖 Ads Automation</a> tab (Reports page) also reuses this same token, but needs <b>ads_management</b> as well — required to create/sync audiences and change campaign budgets.</div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
               <button class="save-btn" onclick="saveMetaCapiConfig()">Save</button>
               <span class="save-msg" id="saveMetaCapiMsg"></span>
@@ -13285,7 +13286,7 @@ function renderReportsSubPage(page){
   document.querySelectorAll('#reportsSubNav .hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.reports===page));
   const fns={
     overview:renderReportsOverview, sales:renderReportsSales, team:renderReportsTeamReport,
-    marketing:renderReportsMarketing, whatsapp:renderReportsWhatsapp, shopify:renderReportsShopify,
+    marketing:renderReportsMarketing, adsauto:renderReportsAdsAutomation, whatsapp:renderReportsWhatsapp, shopify:renderReportsShopify,
     product:renderReportsProduct, saas:renderReportsSaas, seo:renderReportsSeo,
     scheduled:renderReportsScheduled,
   };
@@ -13586,6 +13587,178 @@ async function saveReportsBudget(){
     renderReportsMarketing();
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
   finally{ btn.disabled=false; setTimeout(()=>{ if($id('reportsBudgetMsg')) $id('reportsBudgetMsg').textContent=''; },3000); }
+}
+
+/* ── Ads Automation — standalone module (Reports page → 🤖 Ads Automation), distinct from the
+   read-only Marketing/ROI tab above. Genuinely write-capable against Meta's Marketing API
+   (worker.js's handleMetaAutomation* handlers) — Dead Lead Suppression Sync, Lookalike
+   Auto-Refresh, a cost-per-lead Budget Shifter (preview → review → apply), and a read-only
+   Creative Fatigue Check. Manual-only for this first version: every action fires only on "Run
+   now", nothing here is on a cron yet. See worker.js's own top-of-module comment for the honest
+   scoping note on why the Budget Shifter uses cost-per-lead rather than lead mood. */
+let _pendingBudgetShifts=null;
+async function renderReportsAdsAutomation(){
+  const el=$id('reportsContent');
+  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
+
+  let status={connected:false, config:{}};
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/automation/config`,{headers:ncAuthHeaders()});
+    status=await r.json();
+  }catch(e){}
+  const cfg=status.config||{};
+
+  el.innerHTML=`
+    <div style="margin-bottom:14px"><div class="card-title" style="margin-bottom:0">🤖 Meta Ads Automation</div><div class="s-note">Write-capable automation against Meta's Marketing API — separate from the read-only ROI report in the Marketing tab. Every action below only runs when you click it; nothing here is scheduled yet.</div></div>
+    <div id="adsAutoNotConnected" class="card" style="display:${status.connected?'none':'block'};margin-bottom:14px"><div class="s-note">Not connected — <a href="#" onclick="navigate('integrations');return false">add your Ad Account ID and Conversions API token in Settings → Integrations → Meta Ads</a> first. Writing to campaigns/audiences also needs the <b>ads_management</b> permission on that token, on top of <b>ads_read</b>.</div></div>
+
+    <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));margin-bottom:14px">
+      <div class="card">
+        <div class="s-head" style="margin-bottom:4px">🚫 Dead Lead Suppression Sync</div>
+        <div class="s-note" style="margin-bottom:10px">Pushes Closed/Cold leads into a Meta Custom Audience so campaigns can exclude them — stop paying to re-target people who already said no.</div>
+        <button class="save-btn" id="adsAutoSuppressBtn" onclick="runMetaAdsAutomation('suppression')" ${status.connected?'':'disabled'}>Run now</button>
+        <div class="save-msg" id="adsAutoSuppressMsg" style="margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="s-head" style="margin-bottom:4px">🧬 Lookalike Auto-Refresh</div>
+        <div class="s-note" style="margin-bottom:10px">Tops up a "Hot Leads" source audience (Score=Hot / won) and ensures a Lookalike Audience exists from it. Meta recomputes the lookalike itself as the source updates.</div>
+        <button class="save-btn" id="adsAutoLookalikeBtn" onclick="runMetaAdsAutomation('lookalike')" ${status.connected?'':'disabled'}>Run now</button>
+        <div class="save-msg" id="adsAutoLookalikeMsg" style="margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="s-head" style="margin-bottom:4px">📉 Creative Fatigue Check</div>
+        <div class="s-note" style="margin-bottom:10px">Flags ads whose frequency has crept up or whose CTR has dropped sharply vs. the prior week. Read-only — no changes made to Meta.</div>
+        <button class="save-btn" id="adsAutoFatigueBtn" onclick="runMetaAdsAutomation('fatigue')" ${status.connected?'':'disabled'}>Check now</button>
+        <div id="adsAutoFatigueResult" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:4px">🔀 Auto-Pilot Budget Shifter</div>
+      <div class="s-note" style="margin-bottom:10px">Compares cost-per-lead across your active campaigns (last 7 days) and proposes moving budget from the least efficient campaign to the most efficient one, within the guardrails below. <b>Preview first — nothing moves until you click Apply.</b></div>
+      <button class="save-btn" id="adsAutoBudgetPreviewBtn" onclick="previewMetaBudgetShift()" ${status.connected?'':'disabled'}>Preview shift</button>
+      <div id="adsAutoBudgetResult" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="s-head" style="margin-bottom:8px">⚙️ Guardrails</div>
+      <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+        <div><label class="form-label">Max budget shift per run</label><input class="form-input" type="number" min="1" max="50" id="adsAutoCfgShiftPct" value="${esc(cfg.budget_shift_pct??15)}"><div style="font-size:11px;color:var(--muted)">% of a campaign's daily budget</div></div>
+        <div><label class="form-label">Budget floor</label><input class="form-input" type="number" min="0" id="adsAutoCfgShiftFloor" value="${esc(cfg.budget_shift_floor??200)}"><div style="font-size:11px;color:var(--muted)">never shift a campaign below this</div></div>
+        <div><label class="form-label">Min. 7-day spend to consider</label><input class="form-input" type="number" min="0" id="adsAutoCfgMinSpend" value="${esc(cfg.budget_shift_min_spend??500)}"></div>
+        <div><label class="form-label">Lookalike country</label><input class="form-input" maxlength="2" style="text-transform:uppercase" id="adsAutoCfgLookalikeCountry" value="${esc(cfg.lookalike_country||'IN')}"></div>
+        <div><label class="form-label">Lookalike size</label><input class="form-input" type="number" min="1" max="20" id="adsAutoCfgLookalikeRatio" value="${esc(cfg.lookalike_ratio??5)}"><div style="font-size:11px;color:var(--muted)">% (1-20)</div></div>
+        <div><label class="form-label">Fatigue frequency threshold</label><input class="form-input" type="number" min="1" step="0.1" id="adsAutoCfgFatigueFreq" value="${esc(cfg.fatigue_frequency_threshold??3)}"></div>
+        <div><label class="form-label">Fatigue CTR drop</label><input class="form-input" type="number" min="1" max="90" id="adsAutoCfgFatigueCtr" value="${esc(cfg.fatigue_ctr_drop_pct??25)}"><div style="font-size:11px;color:var(--muted)">% vs. the prior week</div></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+        <button class="save-btn" onclick="saveMetaAdsAutomationConfig()">Save guardrails</button>
+        <span class="save-msg" id="adsAutoCfgMsg"></span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:20px">
+      <div class="s-head" style="margin-bottom:8px">Run History <span style="font-weight:400;color:var(--muted);font-size:11px">(audit trail)</span></div>
+      <div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:600px" id="adsAutoRunsTable"></table></div>
+    </div>
+  `;
+  loadMetaAdsAutomationRuns();
+}
+
+async function runMetaAdsAutomation(kind){
+  const btnId={suppression:'adsAutoSuppressBtn', lookalike:'adsAutoLookalikeBtn', fatigue:'adsAutoFatigueBtn'}[kind];
+  const msgId={suppression:'adsAutoSuppressMsg', lookalike:'adsAutoLookalikeMsg'}[kind];
+  const btn=$id(btnId); if(btn) btn.disabled=true;
+  const msg=msgId?$id(msgId):null;
+  if(msg){ msg.textContent='Running…'; msg.className='save-msg'; }
+  if(kind==='fatigue') $id('adsAutoFatigueResult').innerHTML='<div style="color:var(--muted);font-size:13px">Checking…</div>';
+  try{
+    const path=kind==='fatigue'?'/meta/automation/fatigue/check':`/meta/automation/${kind}/run`;
+    const r=await fetch(`${CONFIG.WORKER_BASE}${path}`,{method:kind==='fatigue'?'GET':'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    if(kind==='fatigue'){
+      const el=$id('adsAutoFatigueResult');
+      if(!data.flagged||!data.flagged.length){ el.innerHTML='<div style="color:var(--muted);font-size:13px">✓ No fatigued ads right now.</div>'; }
+      else{
+        el.innerHTML=`<table class="leads-tbl" style="width:100%"><thead><tr><th>Ad</th><th>Campaign</th><th>Frequency</th><th>CTR</th><th>Why</th></tr></thead><tbody>${data.flagged.map(f=>`<tr><td>${esc(f.ad_name||f.ad_id)}</td><td>${esc(f.campaign_name||'')}</td><td>${f.frequency.toFixed(2)}</td><td>${f.ctr.toFixed(2)}%</td><td style="color:var(--red);font-size:12px">${esc(f.reasons.join('; '))}</td></tr>`).join('')}</tbody></table>`;
+      }
+    }else if(msg){ msg.textContent='✓ '+(data.summary||'Done'); msg.className='save-msg ok'; }
+    loadMetaAdsAutomationRuns();
+  }catch(e){
+    if(kind==='fatigue') $id('adsAutoFatigueResult').innerHTML='<div style="color:var(--red);font-size:13px">Error: '+esc(e.message)+'</div>';
+    else if(msg){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  }finally{ if(btn) btn.disabled=false; }
+}
+
+async function previewMetaBudgetShift(){
+  const btn=$id('adsAutoBudgetPreviewBtn'), el=$id('adsAutoBudgetResult');
+  btn.disabled=true; el.innerHTML='<div style="color:var(--muted);font-size:13px">Fetching campaign performance…</div>';
+  _pendingBudgetShifts=null;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/automation/budget-shift/preview`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    const campRows=(data.campaigns||[]).map(c=>`<tr><td>${esc(c.name)}</td><td>${c.daily_budget.toLocaleString()}</td><td>${c.spend.toLocaleString()}</td><td>${c.leads}</td><td>${c.cost_per_lead!=null?c.cost_per_lead.toFixed(2):'—'}</td></tr>`).join('');
+    let html=`<div class="s-note" style="margin-bottom:8px">${esc(data.note||'')}</div>`;
+    if(data.campaigns&&data.campaigns.length){
+      html+=`<div style="overflow-x:auto;margin-bottom:10px"><table class="leads-tbl" style="width:100%;min-width:500px"><thead><tr><th>Campaign</th><th>Daily Budget</th><th>Spend (7d)</th><th>Leads (7d)</th><th>Cost/Lead</th></tr></thead><tbody>${campRows}</tbody></table></div>`;
+    }
+    if(data.shifts&&data.shifts.length){
+      _pendingBudgetShifts=data.shifts;
+      html+=`<div style="overflow-x:auto;margin-bottom:10px"><table class="leads-tbl" style="width:100%;min-width:400px"><thead><tr><th>Campaign</th><th>Change</th><th>From</th><th>To</th></tr></thead><tbody>${data.shifts.map(s=>`<tr><td>${esc(s.name)}</td><td>${s.direction==='increase'?'⬆️ increase':'⬇️ decrease'}</td><td>${s.from.toLocaleString()}</td><td>${s.to.toLocaleString()}</td></tr>`).join('')}</tbody></table></div>`;
+      html+=`<button class="save-btn" onclick="applyMetaBudgetShift()">Apply this shift</button> <span class="save-msg" id="adsAutoBudgetApplyMsg"></span>`;
+    }
+    el.innerHTML=html;
+  }catch(e){ el.innerHTML='<div style="color:var(--red);font-size:13px">Error: '+esc(e.message)+'</div>'; }
+  finally{ btn.disabled=false; }
+}
+async function applyMetaBudgetShift(){
+  if(!_pendingBudgetShifts||!_pendingBudgetShifts.length) return;
+  const msg=$id('adsAutoBudgetApplyMsg');
+  if(msg){ msg.textContent='Applying…'; msg.className='save-msg'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/automation/budget-shift/apply`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({shifts:_pendingBudgetShifts})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    if(msg){ msg.textContent='✓ '+(data.summary||'Applied'); msg.className='save-msg ok'; }
+    _pendingBudgetShifts=null;
+    loadMetaAdsAutomationRuns();
+  }catch(e){ if(msg){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; } }
+}
+
+async function saveMetaAdsAutomationConfig(){
+  const msg=$id('adsAutoCfgMsg'); msg.textContent='Saving…'; msg.className='save-msg';
+  const config={
+    budget_shift_pct:parseFloat($id('adsAutoCfgShiftPct').value)||15,
+    budget_shift_floor:parseFloat($id('adsAutoCfgShiftFloor').value)||0,
+    budget_shift_min_spend:parseFloat($id('adsAutoCfgMinSpend').value)||0,
+    lookalike_country:$id('adsAutoCfgLookalikeCountry').value.trim().toUpperCase()||'IN',
+    lookalike_ratio:parseFloat($id('adsAutoCfgLookalikeRatio').value)||5,
+    fatigue_frequency_threshold:parseFloat($id('adsAutoCfgFatigueFreq').value)||3,
+    fatigue_ctr_drop_pct:parseFloat($id('adsAutoCfgFatigueCtr').value)||25,
+  };
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/automation/config`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({config})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    msg.textContent='✓ Saved'; msg.className='save-msg ok';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+async function loadMetaAdsAutomationRuns(){
+  const el=$id('adsAutoRunsTable');
+  if(!el) return;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/automation/runs?limit=20`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    const runs=data.runs||[];
+    const LABELS={suppression:'🚫 Suppression', lookalike:'🧬 Lookalike', budget_shift:'🔀 Budget Shift', fatigue:'📉 Fatigue Check'};
+    el.innerHTML=`<thead><tr><th>When</th><th>Action</th><th>Status</th><th>Summary</th></tr></thead><tbody>${
+      runs.length ? runs.map(rr=>`<tr><td>${new Date(rr.created_at).toLocaleString()}</td><td>${esc(LABELS[rr.automation]||rr.automation)}</td><td>${rr.status==='ok'?'✅':'❌'}</td><td>${esc(rr.summary||'')}</td></tr>`).join('')
+      : '<tr><td colspan="4" style="color:var(--muted)">No runs yet.</td></tr>'
+    }</tbody>`;
+  }catch(e){ el.innerHTML='<tbody><tr><td style="color:var(--muted)">Could not load run history.</td></tr></tbody>'; }
 }
 
 /* ── WhatsApp — surfaces ENGINE_ANALYTICS_TABLE, write-only until /reports/whatsapp existed (see
