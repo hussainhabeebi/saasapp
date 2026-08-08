@@ -451,6 +451,20 @@ async function handleAdminNocodbPassthrough(request, env, upstreamPath){
   const method=request.method;
   const hasBody=!['GET','HEAD'].includes(method);
   const body=hasBody?await request.text():undefined;
+
+  // plan_tier is new — NocoDB PATCHes to a column that doesn't exist yet don't error, they
+  // silently no-op (see ncPatchVerified's own comment on this exact failure mode), so admin.html's
+  // "Saved successfully!" would lie the very first time someone picks a plan tier. Same
+  // lazy-create-the-column-on-first-write convention already used for ta_enabled, ig_id, etc. —
+  // ensureClientColumns no-ops instantly once the column exists, so this costs nothing on every
+  // later save.
+  if(method==='PATCH' && upstreamPath.startsWith(`api/v2/tables/${CLIENTS_TABLE}/records`) && body){
+    try{
+      const parsed=JSON.parse(body);
+      if(parsed && 'plan_tier' in parsed) await ensureClientColumns(env, ['plan_tier']);
+    }catch(e){}
+  }
+
   const r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
     method,
     headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'},
