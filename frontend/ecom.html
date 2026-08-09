@@ -1011,7 +1011,17 @@ async function submitProductForm() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    // dropped_fields: the write went through (HTTP 200) but one or more fields didn't actually
+    // persist — NocoDB itself gives no error for this, so without this check the modal would just
+    // close as if everything saved while e.g. Category quietly reverted. See ecomVerifyProductWrite
+    // in worker.js.
+    if (data.dropped_fields && data.dropped_fields.length) {
+      loadProducts();
+      showMsg('productModalMsg', `Saved, but ${data.dropped_fields.join(', ')} didn't stick — that field may be set up wrong in NocoDB. We tried to auto-fix it; please try saving again.`, 8000);
+      return;
+    }
     closeProductModal();
     loadProducts();
   } catch(e) {

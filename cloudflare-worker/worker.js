@@ -5988,7 +5988,14 @@ const _ecomStyleFieldsEnsured=new Set();
 // audio_url/video_url/pdf_url (Google Drive share links) added here alongside the style fields —
 // same "auto-provision on first write, no manual NocoDB step" mechanism, just product-level media
 // instead of a style attribute. See engineMaybeSendProductMedia for how they're actually sent.
-const ECOM_STYLE_FIELD_TITLES=['style','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','audio_url','video_url','pdf_url'];
+// 'category' included despite ecomRepairFieldType's own comment once arguing color/category/
+// status/stock should stay untouched as "possibly a deliberate constraint" — in practice, for
+// this product, category is filled from the Categories tab's own free-text add-a-category flow,
+// so a NocoDB column that's silently become a Single Select (auto-inferred from a CSV import, or
+// hand-edited before this system existed) has no legitimate reason to reject a value a merchant
+// picked from their own Categories list. Left as a silently-dropped, unrepaired, unsurfaced write
+// it was simply "category selection doesn't save" with no error anywhere a merchant could see.
+const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','audio_url','video_url','pdf_url'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -6228,8 +6235,9 @@ async function handleEcomCreate(request, env, kind){
   const { client_id, Id, ...fields }=body;
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:{...fields, client_id:clientId}});
   const data=await r.json().catch(()=>({}));
-  if(kind==='products' && r.ok && data?.Id) await ecomVerifyProductWrite(env, clientId, tableId, data.Id, fields);
-  return json(data, r.status);
+  let droppedFields=[];
+  if(kind==='products' && r.ok && data?.Id) droppedFields=await ecomVerifyProductWrite(env, clientId, tableId, data.Id, fields);
+  return json(droppedFields.length?{...data, dropped_fields:droppedFields}:data, r.status);
 }
 
 async function handleEcomUpdate(request, env, kind){
@@ -6246,8 +6254,9 @@ async function handleEcomUpdate(request, env, kind){
   const { client_id, Id, ...fields }=body;
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:id, ...fields}});
   const data=await r.json().catch(()=>({}));
-  if(kind==='products' && r.ok) await ecomVerifyProductWrite(env, clientId, tableId, id, fields);
-  return json(data, r.status);
+  let droppedFields=[];
+  if(kind==='products' && r.ok) droppedFields=await ecomVerifyProductWrite(env, clientId, tableId, id, fields);
+  return json(droppedFields.length?{...data, dropped_fields:droppedFields}:data, r.status);
 }
 
 // Converts a known style/media/link column back to plain text when NocoDB rejected a write to it —
@@ -6298,13 +6307,18 @@ async function ecomMirrorProductToD1(env, clientId, nocodbId, saved){
 // column to text and retry the write once, so the product's save actually sticks instead of quietly
 // reverting the moment you reopen it. Only alerts ops if the repair+retry still didn't take. Either
 // way, whatever NocoDB ends up holding gets mirrored into D1 (ecomMirrorProductToD1) as a backup.
+// Returns the list of field names that STILL didn't persist after the auto-repair attempt (empty
+// array = everything saved) — callers surface this to the merchant instead of the silent-200
+// "looks saved" response NocoDB itself gives on a dropped field. See ECOM_STYLE_FIELD_TITLES'
+// comment for why category was added to the repairable set.
 async function ecomVerifyProductWrite(env, clientId, tableId, id, fields){
   let saved=null;
+  let dropped=[];
   try{
     const r=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
     saved=await r.json().catch(()=>null);
-    if(!r.ok || !saved) return;
-    let dropped=Object.entries(fields).filter(([k,v])=>String(saved[k]??'')!==String(v??''));
+    if(!r.ok || !saved) return [];
+    dropped=Object.entries(fields).filter(([k,v])=>String(saved[k]??'')!==String(v??''));
 
     if(dropped.length){
       const repairable=dropped.filter(([k])=>ECOM_STYLE_FIELD_TITLES.includes(k));
@@ -6322,6 +6336,7 @@ async function ecomVerifyProductWrite(env, clientId, tableId, id, fields){
     }
   }catch(e){ await reportOpsError(env, 'ecomVerifyProductWrite failed', e, {tableId, id}); }
   if(saved) await ecomMirrorProductToD1(env, clientId, id, saved);
+  return dropped.map(([k])=>k);
 }
 
 async function handleEcomDelete(request, env, kind){
