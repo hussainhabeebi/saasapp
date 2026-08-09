@@ -139,6 +139,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 <div id="tabs">
   <button class="tab active" data-tab="products" onclick="showTab('products')">📦 Products</button>
   <button class="tab" data-tab="categories" onclick="showTab('categories')">🏷️ Categories</button>
+  <button class="tab" data-tab="promotions" onclick="showTab('promotions')">🎁 Promotions</button>
   <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
   <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
@@ -200,6 +201,38 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <thead><tr><th>Name</th><th>Photos</th><th>Actions</th></tr></thead>
         <tbody id="categoriesTbody">
           <tr class="loading-row"><td colspan="3"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- PROMOTIONS TAB — promo codes the AI bot recognizes on its own: a customer mentioning an
+     active code by name, or asking about offers/discounts in general, gets reply_text plus
+     whichever of image/audio/video are set, sent as a follow-up right after the bot's normal
+     reply (see engineMaybeSendPromoOffer in worker.js). Applicable Products is optional —
+     leave empty for a storewide promo. -->
+<div id="tabPromotions" class="page">
+  <div class="stats" id="promoStats">
+    <div class="stat"><div class="stat-val" id="statTotalPromos">—</div><div class="stat-lbl">Total Promotions</div></div>
+    <div class="stat"><div class="stat-val" id="statActivePromos">—</div><div class="stat-lbl">Active</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">Promotions &amp; Offers</div>
+      <div class="card-actions">
+        <input class="search-input" id="promoSearch" type="text" placeholder="🔍 Search promotions…" oninput="renderPromotionsTable()">
+        <button class="save-btn" onclick="openAddPromotionModal()">+ Add Promotion</button>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:12px">When a customer mentions one of these codes — or asks about offers/discounts in general — the bot automatically replies with the offer text plus any image, audio note, or video attached to it.</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Code</th><th>Description</th><th>Applicable Products</th><th>Media</th><th>Status</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="promotionsTbody">
+          <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -429,6 +462,47 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 </div>
 
+<!-- PROMOTION MODAL -->
+<div class="modal-overlay" id="promotionModalOverlay" onclick="if(event.target===this) closePromotionModal()">
+  <div class="modal-card">
+    <div class="modal-title" id="promotionModalTitle">Add Promotion</div>
+    <input type="hidden" id="pmoId">
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Promo Code *</span><input class="s-input" id="pmoCode" type="text" placeholder="e.g. SAVE20" style="text-transform:uppercase"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Status</span>
+        <select class="s-input" id="pmoStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Description</span>
+      <textarea class="s-input" id="pmoDescription" rows="2" placeholder="e.g. 20% off your first order"></textarea>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Reply Text</span>
+      <textarea class="s-input" id="pmoReplyText" rows="3" placeholder="What the bot says when a customer mentions this code or asks about offers — e.g. &quot;🎉 Use code SAVE20 at checkout for 20% off your order, valid this week only!&quot;"></textarea>
+      <div class="s-hint">Sent as-is when this promo matches. Leave blank to fall back to the description above.</div>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Applicable Products</span>
+      <input class="s-input" id="pmoProductSearch" type="text" placeholder="🔍 Filter products…" oninput="renderPmoProductList()">
+      <div id="pmoProductList" style="max-height:160px;overflow-y:auto;border:1.5px solid var(--line);border-radius:10px;padding:8px 10px;margin-top:6px;background:var(--bg)"></div>
+      <div class="s-hint">Leave nothing checked to apply this promo storewide. Only products from the Products tab appear here.</div>
+    </div>
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Image Link</span><input class="s-input" id="pmoImage" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Audio Note Link</span><input class="s-input" id="pmoAudioUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Video Link</span><input class="s-input" id="pmoVideoUrl" type="url" placeholder="Google Drive share link"></div>
+    </div>
+    <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Image/Audio/Video Links are pasted Google Drive share links (shared as "Anyone with the link can view") — the bot sends whichever are set right after the reply text, the same way product photos and videos are sent elsewhere in this module.</div>
+    <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" onclick="closePromotionModal()">Cancel</button>
+      <button class="save-btn" id="promotionModalSaveBtn" onclick="submitPromotionForm()">Save Promotion</button>
+      <span class="save-msg" id="promotionModalMsg"></span>
+    </div>
+  </div>
+</div>
+
 <!-- IMPORT PRODUCTS CSV MODAL -->
 <div class="modal-overlay" id="importModalOverlay" onclick="if(event.target===this) closeImportModal()">
   <div class="modal-card" style="max-width:820px">
@@ -556,6 +630,8 @@ let allProducts = [];
 let selectedProductIds = new Set();
 let allCategories = [];
 let allOrders = [];
+let allPromotions = [];
+let pmSelectedProductIds = new Set();
 const ORDER_STATUS_OPTIONS = ['pending','received','processing','shipped','delivered','cancelled'];
 
 const WA_TEMPLATE_KINDS = [
@@ -625,6 +701,7 @@ async function init() {
 
   loadProducts();
   loadCategories();
+  loadPromotions();
   loadOrders();
 }
 
@@ -657,6 +734,7 @@ function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.getElementById('tabProducts').classList.toggle('active', name === 'products');
   document.getElementById('tabCategories').classList.toggle('active', name === 'categories');
+  document.getElementById('tabPromotions').classList.toggle('active', name === 'promotions');
   document.getElementById('tabOrders').classList.toggle('active', name === 'orders');
   document.getElementById('tabShopify').classList.toggle('active', name === 'shopify');
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
@@ -1368,6 +1446,162 @@ async function onCategorySelectChange(sel) {
     populateCategorySelect();
     sel.value = created.name;
   } catch(e) { alert('Failed to add category: ' + e.message); sel.value = ''; }
+}
+
+// ── PROMOTIONS ──────────────────────────────────────
+async function loadPromotions() {
+  const tbody = document.getElementById('promotionsTbody');
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/promotions?client_id=${encodeURIComponent(clientId)}`);
+    const data = await r.json();
+    allPromotions = data.list || [];
+    renderPromotionsTable();
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="loading-row">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function pmoProductNames(ids) {
+  if (!Array.isArray(ids) || !ids.length) return 'Storewide';
+  const names = ids.map(id => allProducts.find(p => p.Id === id)?.name).filter(Boolean);
+  return names.length ? names.join(', ') : `${ids.length} product${ids.length>1?'s':''}`;
+}
+
+function renderPromotionsTable() {
+  const tbody = document.getElementById('promotionsTbody');
+  const q = (document.getElementById('promoSearch')?.value || '').trim().toLowerCase();
+  const list = q
+    ? allPromotions.filter(p => [p.code, p.description].some(v => (v||'').toLowerCase().includes(q)))
+    : allPromotions;
+
+  document.getElementById('statTotalPromos').textContent = allPromotions.length;
+  document.getElementById('statActivePromos').textContent = allPromotions.filter(p => p.status !== 'inactive').length;
+
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">🎁</div>${allPromotions.length ? 'No promotions match your search' : 'No promotions yet — add one to have the bot auto-reply with offer details.'}</div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(p => {
+    const media = [p.image_url && '🖼️', p.audio_url && '🎙️', p.video_url && '🎬'].filter(Boolean).join(' ') || '—';
+    return `
+      <tr>
+        <td style="font-family:var(--mono);font-weight:700">${esc(p.code)}</td>
+        <td>${esc(p.description || '—')}</td>
+        <td>${esc(pmoProductNames(p.product_ids))}</td>
+        <td>${media}</td>
+        <td><span class="badge ${p.status==='inactive'?'cancelled':'shipped'}">${p.status==='inactive'?'Inactive':'Active'}</span></td>
+        <td><div class="row-actions">
+          <button class="icon-btn" onclick="openEditPromotionModal(${p.Id})" title="Edit promotion">✏️</button>
+          <button class="icon-btn danger" onclick="deletePromotionById(${p.Id})" title="Delete promotion">🗑</button>
+        </div></td>
+      </tr>`;
+  }).join('');
+}
+
+function renderPmoProductList() {
+  const wrap = document.getElementById('pmoProductList');
+  const q = (document.getElementById('pmoProductSearch')?.value || '').trim().toLowerCase();
+  const list = q
+    ? allProducts.filter(p => [p.name, p.sku].some(v => (v||'').toLowerCase().includes(q)))
+    : allProducts;
+  if (!list.length) { wrap.innerHTML = `<div class="s-hint">No products yet — add some in the Products tab first.</div>`; return; }
+  wrap.innerHTML = list.map(p => `
+    <label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer">
+      <input type="checkbox" value="${p.Id}" ${pmSelectedProductIds.has(p.Id)?'checked':''} onchange="if(this.checked) pmSelectedProductIds.add(${p.Id}); else pmSelectedProductIds.delete(${p.Id});">
+      <span>${esc(p.name||'—')}</span>
+      ${p.sku ? `<span style="color:var(--muted);font-family:var(--mono);font-size:11px">${esc(p.sku)}</span>` : ''}
+    </label>`).join('');
+}
+
+function openAddPromotionModal() {
+  document.getElementById('pmoId').value = '';
+  document.getElementById('pmoCode').value = '';
+  document.getElementById('pmoDescription').value = '';
+  document.getElementById('pmoReplyText').value = '';
+  document.getElementById('pmoImage').value = '';
+  document.getElementById('pmoAudioUrl').value = '';
+  document.getElementById('pmoVideoUrl').value = '';
+  document.getElementById('pmoStatus').value = 'active';
+  document.getElementById('pmoProductSearch').value = '';
+  pmSelectedProductIds = new Set();
+  renderPmoProductList();
+  document.getElementById('promotionModalTitle').textContent = 'Add Promotion';
+  document.getElementById('promotionModalSaveBtn').textContent = 'Save Promotion';
+  document.getElementById('promotionModalMsg').textContent = '';
+  document.getElementById('promotionModalOverlay').classList.add('active');
+  document.getElementById('pmoCode').focus();
+}
+
+function openEditPromotionModal(id) {
+  const p = allPromotions.find(x => x.Id === id);
+  if (!p) return;
+  document.getElementById('pmoId').value = p.Id;
+  document.getElementById('pmoCode').value = p.code || '';
+  document.getElementById('pmoDescription').value = p.description || '';
+  document.getElementById('pmoReplyText').value = p.reply_text || '';
+  document.getElementById('pmoImage').value = p.image_url || '';
+  document.getElementById('pmoAudioUrl').value = p.audio_url || '';
+  document.getElementById('pmoVideoUrl').value = p.video_url || '';
+  document.getElementById('pmoStatus').value = p.status === 'inactive' ? 'inactive' : 'active';
+  document.getElementById('pmoProductSearch').value = '';
+  pmSelectedProductIds = new Set(Array.isArray(p.product_ids) ? p.product_ids : []);
+  renderPmoProductList();
+  document.getElementById('promotionModalTitle').textContent = 'Edit Promotion';
+  document.getElementById('promotionModalSaveBtn').textContent = 'Save Changes';
+  document.getElementById('promotionModalMsg').textContent = '';
+  document.getElementById('promotionModalOverlay').classList.add('active');
+  document.getElementById('pmoCode').focus();
+}
+
+function closePromotionModal() {
+  document.getElementById('promotionModalOverlay').classList.remove('active');
+}
+
+async function submitPromotionForm() {
+  const code = document.getElementById('pmoCode').value.trim();
+  if (!code) { showMsg('promotionModalMsg', 'Promo code is required'); return; }
+  const editId = document.getElementById('pmoId').value;
+  const body = {
+    code,
+    description: document.getElementById('pmoDescription').value.trim(),
+    reply_text: document.getElementById('pmoReplyText').value.trim(),
+    product_ids: [...pmSelectedProductIds],
+    image_url: document.getElementById('pmoImage').value.trim(),
+    audio_url: document.getElementById('pmoAudioUrl').value.trim(),
+    video_url: document.getElementById('pmoVideoUrl').value.trim(),
+    status: document.getElementById('pmoStatus').value,
+    client_id: clientId
+  };
+  if (editId) body.Id = parseInt(editId, 10);
+  showMsg('promotionModalMsg', 'Saving…', 10000);
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/promotions`, {
+      method: editId ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    closePromotionModal();
+    loadPromotions();
+  } catch(e) {
+    showMsg('promotionModalMsg', 'Error: ' + e.message);
+  }
+}
+
+async function deletePromotionById(id) {
+  if (!confirm('Delete this promotion? This cannot be undone.')) return;
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/promotions`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, Id: id })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    loadPromotions();
+  } catch(e) {
+    alert('Failed to delete: ' + e.message);
+  }
 }
 
 // ── ORDERS ──────────────────────────────────────
