@@ -234,8 +234,15 @@ function chatSelectLead(leadId){
         const prevOut=i>0&&(history[i-1].role==='assistant'||history[i-1].role==='bot');
         const firstInGroup=i===0||prevOut!==isOut;
         const side=isOut?'out':'in';
+        // Quick-reply options (routing.quickReplies, see engineBuildLeadUpsertBody in worker.js)
+        // — stacked full-width rows attached under the message, matching how WhatsApp itself
+        // renders the interactive-button message Chatwoot sent for this turn. Display-only here:
+        // the real tap target was on the customer's phone, this is just an accurate echo of it.
+        const optsHtml=(m.options&&m.options.length)
+          ? `<div class="bubble-options">${m.options.map(o=>`<div class="bubble-option-btn">${esc(o.title||o.value||'')}</div>`).join('')}</div>`
+          : '';
         return `<div class="chat-bubble-row ${side}">
-          <div class="chat-bubble ${side}${firstInGroup?' tail-'+side:''}">${esc(m.content||'').replace(/\n/g,'<br>')}<span class="bubble-meta">${m.ts?`<span class="bubble-time">${new Date(m.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`:''}${isOut?'<span class="bubble-check">✓✓</span>':''}</span>
+          <div class="chat-bubble ${side}${firstInGroup?' tail-'+side:''}${optsHtml?' has-options':''}">${esc(m.content||'').replace(/\n/g,'<br>')}<span class="bubble-meta">${m.ts?`<span class="bubble-time">${new Date(m.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`:''}${isOut?'<span class="bubble-check">✓✓</span>':''}</span>${optsHtml}
           </div>
         </div>`;
       }).join(''):'<div style="color:#667781;font-size:13px;text-align:center;padding:20px">No conversation yet</div>'}

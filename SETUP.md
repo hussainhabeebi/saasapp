@@ -7430,6 +7430,26 @@ wired to functionality the app already had elsewhere rather than new backend wor
   `--accent`/`--bg` theme vars (this subtree's look isn't meant to shift with the industry theme
   picker — see this file's own header comment).
 
+## Chats tab: quick-reply button styling (`cloudflare-worker/worker.js`, `frontend/chats.js`, `frontend/chats.css`)
+
+The objection route already sends a real WhatsApp interactive-button message via
+`engineSendChatwootQuickReply` (a "🙋 Talk to a human" button, gated by
+`quick_reply_buttons_enabled`) — but the button never reached `ConvHistory`, so the Chats tab had
+no way to know a turn had offered tappable options; it just showed the LLM's reply text like any
+other message.
+
+Fixed with a minimal, backward-compatible `ConvHistory` addition: the objection route now stashes
+its `quickReplies` onto `routing.quickReplies` before calling `engineBuildLeadUpsertBody`, which
+adds an `options:[{title,value}]` array to that turn's history entry only when present —
+`{role:'assistant', content, options?}`. Every other turn keeps the exact same `{role,content}`
+shape it always had.
+
+`chatSelectLead` (`chats.js`) renders `m.options` (when present) as stacked full-width button rows
+attached under the bubble (`.bubble-options`/`.bubble-option-btn` in `chats.css`) — a display-only
+echo of the real interactive buttons the customer saw/tapped on WhatsApp itself, not a second live
+control (the actual tap already went through Chatwoot's own webhook as a normal inbound text
+message, same as any WANTS_HUMAN-style reply).
+
 ## Conversation history summarization (`cloudflare-worker/worker.js`)
 
 `ConvHistory` is capped at the last 40 turns (`engineBuildLeadUpsertBody`), and only the last 20 of

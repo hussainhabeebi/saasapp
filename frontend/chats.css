@@ -51,6 +51,13 @@
 .chat-bubble.out{background:linear-gradient(135deg,#ddfdd8,#d3fbcd)}
 .chat-bubble.tail-in::before{content:'';position:absolute;top:0;left:-7px;width:0;height:0;border-style:solid;border-width:0 8px 9px 0;border-color:transparent #fff transparent transparent}
 .chat-bubble.tail-out::before{content:'';position:absolute;top:0;right:-7px;width:0;height:0;border-style:solid;border-width:0 0 9px 8px;border-color:transparent transparent transparent #d3fbcd}
+/* Quick-reply options — the WhatsApp interactive-button message Chatwoot sends for a turn with
+   routing.quickReplies (see worker.js engineSendChatwootQuickReply/engineBuildLeadUpsertBody).
+   Display-only echo of what the customer actually saw/tapped on their phone, styled to read as
+   real buttons rather than plain text. */
+.bubble-options{clear:both;margin-top:8px;padding-top:7px;border-top:1px solid rgba(0,0,0,.09);display:flex;flex-direction:column;gap:5px}
+.bubble-option-btn{padding:7px 11px;font-size:13px;font-weight:600;color:#00806a;text-align:center;background:rgba(255,255,255,.65);border:1px solid rgba(0,128,106,.25);border-radius:8px;cursor:default;user-select:none;transition:background .15s}
+.chat-bubble.in .bubble-option-btn{background:#f3f6f5}
 .bubble-meta{display:flex;align-items:center;justify-content:flex-end;gap:3px;margin-top:2px;margin-left:10px;float:right}
 .bubble-time{font-size:10.5px;color:#8a99a3;white-space:nowrap}
 .bubble-check{font-size:11px;color:#00a884}

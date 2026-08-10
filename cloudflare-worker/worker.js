@@ -9861,7 +9861,10 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
 
   const history=(state.history||[]).slice();
   if(userText) history.push({role:'user', content:userText});
-  if(reply) history.push({role:'assistant', content:reply});
+  // options — only present on the one route (objection, see quick_reply_buttons_enabled above)
+  // that actually offered the customer tappable choices via engineSendChatwootQuickReply; every
+  // other reply keeps the exact same {role,content} shape ConvHistory has always had.
+  if(reply) history.push({role:'assistant', content:reply, ...(routing.quickReplies&&routing.quickReplies.length?{options:routing.quickReplies}:{})});
 
   const body={
     ClientId:String(clientId), Phone:state.phone||'', Name:state.name, ConversationID:state.convId,
@@ -10357,6 +10360,10 @@ async function handleEngineWebhook(request, env, secret){
       // recognizes ("talk to a human" contains "talk to"). Opt-out via the same bot_config a client
       // already uses for the other handover/objection toggles.
       const quickReplies=botConfig.quick_reply_buttons_enabled!==false?[{title:'🙋 Talk to a human', value:'Talk to a human'}]:null;
+      // Carried on `routing` (already passed to engineBuildLeadUpsertBody just below) purely so the
+      // Chats tab can render this turn with the same button styling the customer actually saw on
+      // WhatsApp — see that function's own history.push for how it lands in ConvHistory.
+      routing.quickReplies=quickReplies;
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies});
     }
 
