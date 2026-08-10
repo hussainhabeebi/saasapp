@@ -112,8 +112,12 @@ WORKER_BASE_URL = "https://leadvyne-api-proxy.leadvyne.workers.dev"
 # fallback to n8n). Requires a redeploy to change; there's no live/dynamic toggle. Any value other
 # than the literal string "false" (including leaving this unset) means enabled.
 ENGINE_ENABLED = "true"
-# Starter and Pro (INR, AED) are live; Growth still needs a Product/Price created in Stripe.
-STRIPE_PLAN_PRICE_IDS = "price_1TWsQ1JWa5B2ayZgL5zPAf3U,price_1Tpv9nJWa5B2ayZgiCfm5jNo,REPLACE_STRIPE_PRICE_GROWTH_INR,REPLACE_STRIPE_PRICE_GROWTH_AED,price_1TpvODJWa5B2ayZg5kNKP689,price_1TpvNsJWa5B2ayZgDMLLFGj8"
+# 4-tier plan structure (Basic/Standard/Business Intelligence/Marketing Pro — see PLAN_TIERS
+# above, which controls feature/seat/channel limits independently of these Stripe Prices). INR
+# only for now; add AED Price IDs to this same list once created in Stripe (handleBillingPlans
+# fetches each by id and the dashboard's currency toggle filters by each Price's own `currency`
+# field — see its own comment for why order in this list doesn't matter).
+STRIPE_PLAN_PRICE_IDS = "price_1U2XJAJWa5B2ayZg2jScv4AN,price_1U2XTJJWa5B2ayZga444C5SV,price_1U2XMvJWa5B2ayZgPRBaFUX2,price_1U2XW2JWa5B2ayZgTeXP12Yo"
 STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZghpfgBxli,price_1TpvPlJWa5B2ayZgHya1YHiK,price_1TpvPRJWa5B2ayZgWmPFKXvG"
 # Marketing Studio module (SETUP.md "Marketing Studio module") — fallback minutes/month for a
 # client with no marketing_minutes_limit set on their Clients row yet.
