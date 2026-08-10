@@ -1535,6 +1535,12 @@ const ROLES = {
             <select class="form-input" id="leadCategoryFilter" onchange="onLeadsFilterChange()" style="display:none;flex:0 0 140px;padding:9px 10px">
               <option value="">All categories</option>
             </select>
+            <!-- Brand/Product Detected — chat-derived InterestedProduct (see engineClassifyIntent()
+                 in worker.js), surfaced as a first-class filter alongside Score/Owner rather than
+                 buried in the detail-panel signal chips only. -->
+            <select class="form-input" id="leadProductFilter" onchange="onLeadsFilterChange()" style="flex:0 0 160px;padding:9px 10px" title="Filter by brand/product detected in chat">
+              <option value="">All products/brands</option>
+            </select>
             <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
             <button class="btn btn-secondary btn-sm" onclick="toggleLeadsAdvFilters()" title="Filter by stage or tag">🔎 Stage/Tag</button>
             <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
@@ -5891,6 +5897,8 @@ function applyLeadsViewFilter(leads){
   if(sf) out=out.filter(l=>l.Score===sf);
   const cf=$id('leadCategoryFilter')?.value||'';
   if(cf) out=out.filter(l=>(l.ServiceCategory||'')===cf);
+  const pf=$id('leadProductFilter')?.value||'';
+  if(pf) out=out.filter(l=>(l.InterestedProduct||'')===pf);
   if(_leadsFilter.stages.length) out=out.filter(l=>_leadsFilter.stages.includes(l.Stage));
   if(_leadsFilter.tag) out=out.filter(l=>parseTags(l.Tags).some(t=>t.toLowerCase()===_leadsFilter.tag.toLowerCase()));
   return out;
@@ -5955,6 +5963,7 @@ function selectLeadsView(id){
   if($id('leadOwnerFilter')) $id('leadOwnerFilter').value=saved?.owner||'';
   if($id('leadMineOnly')) $id('leadMineOnly').checked=!!saved?.mineOnly;
   if($id('leadScoreFilter')) $id('leadScoreFilter').value=saved?.score||'';
+  if($id('leadProductFilter')) $id('leadProductFilter').value=saved?.product||'';
   _leadsPage=1;
   renderLeadsCurrentView();
 }
@@ -5964,6 +5973,7 @@ async function promptSaveLeadsView(){
     id:'lv_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), name,
     stages:_leadsFilter.stages.slice(), tag:_leadsFilter.tag||'',
     owner:$id('leadOwnerFilter')?.value||'', mineOnly:!!$id('leadMineOnly')?.checked, score:$id('leadScoreFilter')?.value||'',
+    product:$id('leadProductFilter')?.value||'',
   };
   const list=[...getLeadSavedViews(), view];
   try{ await saveLeadSavedViewsList(list); _leadsActiveView=view.id; renderLeadsCurrentView(); showToast('✓ View saved','ok'); }
@@ -6100,6 +6110,9 @@ function renderLeadsList(){
   const ownerSet=[...new Set(allLeads.map(l=>l.Owner).filter(Boolean))];
   const of=$id('leadOwnerFilter')?.value||'';
   $id('leadOwnerFilter').innerHTML='<option value="">All owners</option>'+ownerSet.map(o=>`<option value="${o}"${of===o?' selected':''}>${o}</option>`).join('');
+  const productSet=[...new Set(allLeads.map(l=>l.InterestedProduct).filter(Boolean))].sort();
+  const pf=$id('leadProductFilter')?.value||'';
+  $id('leadProductFilter').innerHTML='<option value="">All products/brands</option>'+productSet.map(p=>`<option value="${esc(p)}"${pf===p?' selected':''}>${esc(p)}</option>`).join('');
 
   const el=$id('leadsList');
   if(!filtered.length){
@@ -6125,7 +6138,7 @@ function renderLeadsList(){
       <div class="li-body">
         <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub">${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
-        ${(tags.length||attemptBadge)?`<div class="tags-row" style="margin-top:4px">${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}</div>`:''}
+        ${(tags.length||attemptBadge||l.InterestedProduct)?`<div class="tags-row" style="margin-top:4px">${l.InterestedProduct?`<span class="tag" style="background:#E0E7FF;color:#3730A3">🏷️ ${esc(l.InterestedProduct)}</span>`:''}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
           <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
@@ -6199,7 +6212,7 @@ function renderLeadsTable(){
   const rows=filtered.slice(0,_leadsPage*LEADS_PGS);
   const remaining=filtered.length-rows.length;
   el.innerHTML=`<table class="leads-tbl"><thead><tr>
-    <th></th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Owner</th>
+    <th></th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Brand/Product</th><th>Owner</th>
     <th>Age</th><th>Profession</th><th>Email</th><th>City</th><th>Country</th><th>Budget</th><th>Language</th><th>Source</th>
     <th>Date</th><th>Actions</th>
   </tr></thead><tbody>${rows.map(l=>{
@@ -6215,6 +6228,7 @@ function renderLeadsTable(){
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}</td>
       <td>${scoreBadge(l.Score)}</td>
+      <td>${l.InterestedProduct?`<span class="tag" style="background:#E0E7FF;color:#3730A3">🏷️ ${esc(l.InterestedProduct)}</span>`:'—'}</td>
       <td>${esc(l.Owner||'—')}</td>
       <td>${esc(qGet('age'))}</td>
       <td>${esc(qGet('profession'))}</td>
@@ -7871,7 +7885,7 @@ async function generateSummary(){
 /* ── EXPORT ── */
 function exportCsv(){
   if(!allLeads.length){alert('No leads.');return;}
-  const cols=['Id','Name','Phone','Stage','Score','Owner','Tags','Language','Date','BookingTime','ReminderDate','Handover','IsDuplicate'];
+  const cols=['Id','Name','Phone','Stage','Score','InterestedProduct','Owner','Tags','Language','Date','BookingTime','ReminderDate','Handover','IsDuplicate'];
   const csv=[cols.join(','),...allLeads.map(l=>cols.map(c=>'"'+(String(l[c]||'').replace(/"/g,'""'))+'"').join(','))].join('\n');
   dlFile('data:text/csv;charset=utf-8,'+encodeURIComponent(csv),'leads_'+clientId+'_'+TODAY+'.csv');
 }

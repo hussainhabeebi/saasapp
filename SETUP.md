@@ -4979,6 +4979,14 @@ returned something specific, so a lead's last-known interest survives in between
 of getting clobbered with an empty string on every reply that isn't about a product at all (the
 same "sparse signal, never overwrite with blank" treatment `LastObjectionCategory` already gets).
 
+**Leads page — Brand/Product Detected as a first-class filter/table column.** Previously
+`InterestedProduct` only surfaced as a signal chip in the lead detail panel
+(`renderDetailSignals`). It's now a main element of the Leads list itself, alongside Score/Owner:
+a `#leadProductFilter` dropdown in the toolbar (options populated from the distinct
+`InterestedProduct` values across `allLeads`, same pattern as `#leadOwnerFilter`), a "Brand/Product"
+column in `renderLeadsTable`, a chip on each row in the default `renderLeadsList` view, a saved-view
+field (`product`, alongside `owner`/`score`/`mineOnly`), and a column in `exportCsv`.
+
 ## Dashboard reorganization (`frontend/dashboard.html`, `frontend/broadcast.html`, `frontend/ecom.html`)
 A single information-architecture pass: two new pages, one page promoted out of Settings, two
 pairs of pages merged into one, and one standalone page brought inside the dashboard shell instead
