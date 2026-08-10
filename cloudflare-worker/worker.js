@@ -8153,7 +8153,7 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   const activeHistory=history.length>20?history.slice(-20):history;
   let qualAnswers={}; try{ qualAnswers=JSON.parse(lead?.QualAnswers||'{}'); }catch(e){}
   return {
-    lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping,
+    lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping, botMsgs,
     qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
     winProbabilityManual:lead?.WinProbabilityManual||'No', lastMsgAt:lead?.LastMsgAt||null,
     // See engineMaybeSummarizeHistory — a rolling summary of everything ConvHistory's 40-turn cap
@@ -8391,6 +8391,28 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
 // Stage progression is now `cls.nextStage`, the classifier's own judgment call (same reliability
 // trade-off as intent/sentiment/language already are), and stage content only ever reaches the
 // customer as guidance inside the same FAQ/objection reply — see engineBuildFaqSystemPrompt.
+// Every fixed/configured confirmation text the engine can send when handing a lead to a human —
+// used to stop the anti-loop detector below from treating "the bot correctly sent the same
+// handover confirmation 3 times" as evidence it's stuck failing to help. Without this exclusion,
+// once a lead's last 3 bot messages happen to all be this text (any route to 'human' — explicit
+// ask, frustration, low-confidence, final-stage), state.looping stays permanently true: every
+// future turn re-forces effIntent='WANTS_HUMAN' regardless of what the customer actually says,
+// which re-sends this same text, which keeps the last-3-identical condition true forever. Observed
+// live: a lead stuck replying "Sure 🙏 connecting you to our advisor..." to every message
+// including plain "Hi", even after being released back to the bot from Human Deals (release clears
+// Stage/Handover, but never touches ConvHistory, which is what this check actually looks at).
+function engineHandoverCannedTexts(botConfig){
+  return new Set([
+    'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.',
+    'Sure — connecting you to our team now. Someone will reply here shortly.',
+    botConfig.callback_msg,
+    botConfig.callback_msg_frustrated,
+    botConfig.callback_msg_lowconf,
+    "I'm sorry about that — connecting you with our team right now so we can help properly.",
+    'I want to make sure you get the right answer — connecting you with a member of our team now.',
+  ].filter(Boolean));
+}
+
 function engineRouteFlow(c, state, userText, cls){
   const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest}=cls;
   const lowText=userText.toLowerCase().trim();
@@ -8408,7 +8430,11 @@ function engineRouteFlow(c, state, userText, cls){
   const industry=c.industry||'general';
   const industryFaqRoute=industry==='ecommerce'?'ecom_faq':(industry==='travel'?'travel_faq':(industry==='saas_digital_marketing'?'saas_faq':'faq'));
   let effIntent=intent;
-  if(state.looping && botConfig.antiloop_enabled!==false) effIntent='WANTS_HUMAN';
+  // state.looping alone isn't enough — see engineHandoverCannedTexts' comment for why a lead
+  // whose last 3 bot messages are all a prior handover confirmation must NOT re-trigger this, or
+  // it can never leave that state again regardless of Stage/Handover being reset elsewhere.
+  const isRealLoop=state.looping && !engineHandoverCannedTexts(botConfig).has((state.botMsgs||[])[0]);
+  if(isRealLoop && botConfig.antiloop_enabled!==false) effIntent='WANTS_HUMAN';
 
   const qualDone=!qualQuestions.length || botConfig.qual_enabled===false || (state.stage && !state.stage.startsWith('qual_') && state.stage!=='new');
   const qualStage=state.stage?.startsWith('qual_')?parseInt(state.stage.replace('qual_','')):null;
