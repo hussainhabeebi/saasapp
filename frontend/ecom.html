@@ -303,6 +303,22 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 
   <div class="card">
+    <div class="card-title">Order Link Sending</div>
+    <div class="s-sec">
+      <span class="s-lbl">When a customer is ready to order, how should the bot take it?</span>
+      <select class="s-input" id="cfgOrderLinkEnabled">
+        <option value="Yes">Send a checkout link — customer completes the order on your store page</option>
+        <option value="No">Collect the order in chat — bot asks for items and delivery address, no link sent</option>
+      </select>
+      <div class="s-hint">Default is on: the bot sends a checkout link once a customer confirms they want to order. Turn this off to keep the whole order inside WhatsApp instead — the bot asks what they'd like to order and their delivery address right there in chat, then logs the order for your team to confirm (same "pending" status a link-based order gets on the Orders page).</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveOrderLinkEnabled()">Save</button>
+      <span class="save-msg" id="orderLinkEnabledMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">Storefront Order Button</div>
     <div class="s-sec">
       <span class="s-lbl">WhatsApp Number for Orders</span>
@@ -679,6 +695,7 @@ async function init() {
   if (clientRecord.review_link)         document.getElementById('cfgReviewLink').value    = clientRecord.review_link;
   if (clientRecord.support_phone)       document.getElementById('cfgSupportPhone').value  = clientRecord.support_phone;
   document.getElementById('cfgLinkOnEnquiry').value = clientRecord.ecom_link_on_enquiry === 'Yes' ? 'Yes' : 'No';
+  document.getElementById('cfgOrderLinkEnabled').value = clientRecord.ecom_order_link_enabled === 'No' ? 'No' : 'Yes';
   if (!clientRecord.wa_display_phone && !clientRecord.support_phone) {
     document.getElementById('cfgSupportPhone').placeholder = '+91 94969 71950 — required, no order button will show without this or Channels WhatsApp';
   }
@@ -1901,6 +1918,15 @@ async function saveLinkOnEnquiry() {
     clientRecord.ecom_link_on_enquiry = value;
     showMsg('linkOnEnquiryMsg', 'Saved ✓');
   } catch (e) { showMsg('linkOnEnquiryMsg', 'Error: ' + e.message, 6000); }
+}
+
+async function saveOrderLinkEnabled() {
+  const value = document.getElementById('cfgOrderLinkEnabled').value;
+  try {
+    await patchClient({ ecom_order_link_enabled: value });
+    clientRecord.ecom_order_link_enabled = value;
+    showMsg('orderLinkEnabledMsg', 'Saved ✓');
+  } catch (e) { showMsg('orderLinkEnabledMsg', 'Error: ' + e.message, 6000); }
 }
 
 async function saveSupportPhone() {

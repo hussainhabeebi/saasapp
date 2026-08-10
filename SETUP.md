@@ -4958,6 +4958,44 @@ list/thread UI as WhatsApp (`chatConvoLeads`/`chatSelectLead`, filtered by `Chan
 posts to `POST /instagram/send` (`{lead_id, text}`) instead of `/chat/send`, since there's no
 Chatwoot conversation id to send through.
 
+### Order Link Sending toggle + chat-based order collection (`cloudflare-worker/worker.js`, `frontend/ecom.html`)
+
+Ecom Settings → **Order Link Sending** (`ecom_order_link_enabled`, Yes/No, default Yes — same
+Yes/No toggle pattern as the existing "Order Link on Product Questions" card just above it).
+Default (Yes, or unset for every existing client) is the original behavior unchanged: once
+`detectOrderSignal` confirms real order intent for a resolved product, the bot sends a checkout
+link and logs a `pending` order (`logPendingOrder`).
+
+Turned off, the bot never sends a link at all — it collects the order right there in chat instead,
+a two-step ladder that fully overrides normal routing for exactly two dedicated `LEADS.Stage`
+values, `order_collect_items` → `order_collect_address`, then finalizes:
+1. Order intent detected → bot asks what they'd like (item/size/color/quantity), `Stage` set to
+   `order_collect_items`, a seed (`{sku, productName, price, currency}` from the matched product)
+   stashed on a new self-migrating `OrderCollect` LEADS column (`ensureOrderCollectField`, same
+   pattern as `ensureB2bLeadFields`).
+2. Customer answers → stored as `seed.items`, bot asks for the delivery address, `Stage` set to
+   `order_collect_address`.
+3. Customer answers → `finalizeChatOrder` writes the order row (same shape/table as
+   `handleEcomPublicOrder`'s storefront submission: `items`, `delivery_address`, a best-effort
+   `total`/`currency` from the seed, always `status:'pending'` since a free-text item list can't be
+   reliably priced) and `Stage` resets to `new` — funnel-neutral, same as a lead who ordered via the
+   link leaves no lingering stage of its own.
+
+This override (in `handleEngineWebhook`, right where `sentText`/`orderHandledInline` are declared)
+is deliberately **not** woven into `engineRouteFlow`'s own cascade — that function already juggles
+a lot of tuned, order-sensitive handover/frustration/objection/qualification precedence, and a lead
+only ever enters/exits these two stages from this one call site, so a self-contained override was
+the lowest-risk way to add this without touching that cascade. An explicit human ask (or a message
+that flips `sentiment`/`intent` to trigger `route==='human'`) and opt-out/re-subscribe still take
+priority — both were already checked unconditionally inside `engineRouteFlow` before this ever
+runs, so they're honored automatically.
+
+**Bug fixed in passing**: `ecom_link_on_enquiry` (the toggle just above this one) had never
+actually been wired into `ECOM_CLIENT_READ_FIELDS`/`ECOM_CLIENT_WRITE_FIELDS` — `handleEcomClientGet`/
+`handleEcomClientUpdate` only ever read/write whatever's whitelisted in those two arrays, so its
+Settings toggle silently always read back "Off" and never actually saved a change, with no error
+anywhere. Both `ecom_link_on_enquiry` and the new `ecom_order_link_enabled` are now in both arrays.
+
 ### `InterestedProduct` — brand/category/product interest, detected from the conversation
 A new LEADS column (see the LEADS field table near the top of this file) capturing whichever
 brand, product, or category a lead has shown interest in, judged straight from the chat rather than

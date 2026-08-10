@@ -5965,8 +5965,14 @@ async function handleBillingWebhook(request, env){
 // logic client-side (the products table's "🔗 Copy Link" quick action) without a dedicated
 // resolve-link endpoint — both are already public-facing values (the storefront URL itself is
 // exactly what these build), not sensitive like a token/secret would be.
-const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link'];
-const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone'];
+// ecom_link_on_enquiry and ecom_order_link_enabled were missing from both arrays below (the
+// former since it was added, the latter being new) — handleEcomClientGet/handleEcomClientUpdate
+// only ever read/write whatever's whitelisted here, so ecom.html's toggle for either one would
+// silently never load its saved value (always reading back undefined) and never actually persist
+// a save (dropped, with no error — handleEcomClientUpdate only errors on an empty body, not a
+// filtered-out field). Both now included so their Settings toggles actually work.
+const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link','ecom_link_on_enquiry','ecom_order_link_enabled'];
+const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone','ecom_link_on_enquiry','ecom_order_link_enabled'];
 
 // Shared default tables used until a client explicitly saves their own table
 // ID in Settings — mirrors ecom.html's client-side DEFAULT_ECOM_IDS fallback.
@@ -7030,6 +7036,55 @@ async function logPendingOrder(env, c, clientId, phone, name, product){
     return null;
   }
   return order_id;
+}
+
+// Self-migrating LEADS column, same pattern as ensureB2bLeadFields — holds the in-progress
+// item/price seed for the chat-based order collection ladder below (order_collect_items →
+// order_collect_address) while it's waiting on the customer's next reply; cleared once the order
+// is finalized. Cached per-isolate so this only ever calls NocoDB's meta API once, not on every
+// message.
+let _orderCollectFieldEnsured=false;
+async function ensureOrderCollectField(env){
+  if(_orderCollectFieldEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('OrderCollect')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'OrderCollect', uidt:'LongText'}});
+    _orderCollectFieldEnsured=true;
+  }catch(e){ console.error('[ecom] ensureOrderCollectField failed', e.message); }
+}
+
+// Writes the order a customer just finished dictating in chat (see the order_collect_items/
+// order_collect_address handling in handleEngineWebhook) — the ecom_order_link_enabled==='No'
+// alternative to sending a checkout link at all. Deliberately its own writer rather than reusing
+// logPendingOrder (only ever has a matched catalog product's own name/price, no address, no
+// free-text item list) or handleEcomPublicOrder's inline POST (shaped around strictly validating
+// a public web-form submission, which doesn't apply to values the bot itself already collected
+// turn-by-turn). `seed` carries whatever context was known when collection started — items is the
+// customer's own free-text answer; price/currency are a best-effort estimate from the product that
+// triggered collection, not a real computed total (a free-text item list can't be reliably priced
+// here), which is why this is always logged as `pending` with a note for staff to verify.
+async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return {ok:false};
+  const order_id='ORD-'+Date.now();
+  const body={
+    client_id:clientId, order_id,
+    customer_name:name||'', customer_phone:phone,
+    order_date:new Date().toISOString().slice(0,10),
+    items:(seed?.items||'').trim().slice(0,500)||'Collected via chat',
+    total:seed?.price||0, currency:seed?.currency||'',
+    delivery_address:(address||'').trim().slice(0,500), status:'pending',
+    notes:'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'
+  };
+  const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
+  if(!r.ok){
+    const data=await r.json().catch(()=>({}));
+    await reportOpsError(env, 'finalizeChatOrder', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId, phone, ordersTable});
+    return {ok:false};
+  }
+  return {ok:true, order_id};
 }
 
 async function ecomFindProductBySku(env, clientId, sku){
@@ -9877,6 +9932,12 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   if(state.igId) body.IgId=state.igId;
   if(messageId) body.LastProcessedMessageId=messageId;
   if(qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers=JSON.stringify(qualAnswers);
+  // OrderCollect — the in-progress item/price seed for the chat-based order collection ladder
+  // (order_collect_items/order_collect_address, see handleEngineWebhook and finalizeChatOrder).
+  // Cleared back to '' once the order is finalized so a later, unrelated order doesn't inherit a
+  // stale seed.
+  if(routing.orderCollectSeed) body.OrderCollect=JSON.stringify(routing.orderCollectSeed);
+  else if(routing.clearOrderCollect) body.OrderCollect='';
   if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
   else body.Stage=next;
   if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; }
@@ -10186,6 +10247,42 @@ async function handleEngineWebhook(request, env, secret){
 
     let sentText=null;
     let orderHandledInline=false;
+    // Chat-based order collection (ecom_order_link_enabled==='No', see the toggle in ecom.html →
+    // Settings) — a dedicated two-step ladder (order_collect_items → order_collect_address →
+    // finalize) that fully overrides whatever engineRouteFlow decided for these two stages only,
+    // the same "override entirely" treatment the order-signal detection below already gives every
+    // other route (see that block's own comment) — deliberately not woven into engineRouteFlow's
+    // own cascade, which already juggles handover/frustration/objection/qualification precedence
+    // with a lot of tuned, order-sensitive logic; a lead only ever enters/exits these two stages
+    // from right here, so a self-contained override is the lowest-risk way to add this without
+    // touching that cascade at all. isOptOut/isResub are still honored (engineRouteFlow itself
+    // already short-circuits those unconditionally, above its own cascade) and an explicit human
+    // ask still wins, so neither is checked again here.
+    if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && state.stage && state.stage.startsWith('order_collect_')){
+      let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+      if(state.stage==='order_collect_items'){
+        seed.items=userText;
+        sentText=await engineLocalizeReply(env, c, "Got it! And what's the delivery address for this order?", replyLang);
+        routing.reply=sentText;
+        routing.next='order_collect_address';
+        routing.orderCollectSeed=seed;
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        orderHandledInline=true;
+      } else if(state.stage==='order_collect_address'){
+        const order=await finalizeChatOrder(env, c, clientId, phone, name, seed, userText);
+        sentText=await engineLocalizeReply(env, c, order.ok
+          ? `Thank you! ✅ Your order is in (Ref: ${order.order_id}). Our team will confirm the details with you shortly.`
+          : "Thanks — I've noted your order details. Our team will follow up shortly to confirm everything.", replyLang);
+        routing.reply=sentText;
+        // Funnel-neutral once finalized — leaves this lead free to fall back into normal FAQ/flow
+        // routing on their next message, exactly like a customer who orders via the checkout link
+        // leaves no lingering stage of its own.
+        routing.next='new';
+        routing.clearOrderCollect=true;
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        orderHandledInline=true;
+      }
+    }
     // Order-readiness overrides the flow_json state machine's own routing entirely, not just
     // within the ecom_faq branch — observed real failure: a customer given a product's full detail
     // card said "Order this" next, and instead of the order link got a scripted, unrelated
@@ -10214,12 +10311,24 @@ async function handleEngineWebhook(request, env, secret){
     // whenever the checkout link goes out (order, or enquiry with the link toggle on) — link
     // presence no longer gates the photo, only whether a product was actually identified.
     const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
-    if(c.industry==='ecommerce' && c.openrouter_key && routing.route!=='drop' && !humanBlocksOrderCheck){
+    if(!orderHandledInline && c.industry==='ecommerce' && c.openrouter_key && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       if(detection.signal){
         const product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
-        if(detection.mode==='order' && product){
+        if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
+          // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
+          // instead: ask for the item(s) now, address next turn, then finalizeChatOrder writes the
+          // order row. See the order_collect_items/order_collect_address handling above.
+          await ensureOrderCollectField(env);
+          sentText=await engineLocalizeReply(env, c, "Great choice! 🛍️ Let's get this ordered right here — could you tell me exactly what you'd like (item, size/color, quantity)?", replyLang);
+          routing.reply=sentText;
+          routing.next='order_collect_items';
+          routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
+          await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          orderHandledInline=true;
+        } else if(detection.mode==='order' && product){
           const link=buildCheckoutLink(c, clientId, detection.sku);
           sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
           routing.reply=sentText;
