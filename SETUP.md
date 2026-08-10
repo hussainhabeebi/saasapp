@@ -4985,7 +4985,10 @@ same "sparse signal, never overwrite with blank" treatment `LastObjectionCategor
 a `#leadProductFilter` dropdown in the toolbar (options populated from the distinct
 `InterestedProduct` values across `allLeads`, same pattern as `#leadOwnerFilter`), a "Brand/Product"
 column in `renderLeadsTable`, a chip on each row in the default `renderLeadsList` view, a saved-view
-field (`product`, alongside `owner`/`score`/`mineOnly`), and a column in `exportCsv`.
+field (`product`, alongside `owner`/`score`/`mineOnly`), and a column in `exportCsv`. Also added to
+the Import CSV column-mapping UI (`IMPORT_FIELDS`, labeled "Brand/Product", auto-guessed from any
+header containing "brand" or "product"), skipped when blank on import — same
+never-overwrite-with-blank treatment the field gets everywhere else.
 
 ## Dashboard reorganization (`frontend/dashboard.html`, `frontend/broadcast.html`, `frontend/ecom.html`)
 A single information-architecture pass: two new pages, one page promoted out of Settings, two

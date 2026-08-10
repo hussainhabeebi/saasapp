@@ -14342,7 +14342,8 @@ td{padding:8px 10px;border-bottom:1px solid #EEF2F0;font-size:12px}
 
 /* ── IMPORT CSV ── */
 let _importRows=[], _importHeaders=[];
-const IMPORT_FIELDS=['Name','Phone','Stage','Owner','Score'];
+const IMPORT_FIELDS=['Name','Phone','Stage','Owner','Score','InterestedProduct'];
+const IMPORT_FIELD_LABELS={InterestedProduct:'Brand/Product'};
 
 function openImport(){
   _importRows=[];_importHeaders=[];
@@ -14391,8 +14392,12 @@ function renderImportPreview(){
 function renderImportMapping(){
   const grid=$id('importMapGrid');
   grid.innerHTML=IMPORT_FIELDS.map(f=>{
-    const guessIdx=_importHeaders.findIndex(h=>h.toLowerCase().includes(f.toLowerCase()));
-    return`<div><label class="form-label">${f}</label><select class="form-input" id="map_${f}"><option value="">— skip —</option>${_importHeaders.map((h,i)=>`<option value="${i}"${i===guessIdx?' selected':''}>${esc(h)}</option>`).join('')}</select></div>`;
+    const label=IMPORT_FIELD_LABELS[f]||f;
+    const guessIdx=_importHeaders.findIndex(h=>{
+      const hl=h.toLowerCase();
+      return f==='InterestedProduct' ? /brand|product/.test(hl) : hl.includes(f.toLowerCase());
+    });
+    return`<div><label class="form-label">${label}</label><select class="form-input" id="map_${f}"><option value="">— skip —</option>${_importHeaders.map((h,i)=>`<option value="${i}"${i===guessIdx?' selected':''}>${esc(h)}</option>`).join('')}</select></div>`;
   }).join('');
   $id('importMapping').style.display='block';
 }
@@ -14412,6 +14417,7 @@ async function doImport(){
     const row=_importRows[i];
     const lead={ClientId:String(clientId)};
     IMPORT_FIELDS.forEach(f=>{if(mapping[f]!==undefined)lead[f]=(row[mapping[f]]||'').trim();});
+    if(!lead.InterestedProduct)delete lead.InterestedProduct;
     if(!lead.Phone){fail++;continue;}
     lead.Phone=lead.Phone.replace(/[^0-9]/g,'');
     if(!lead.Stage||!validStages.includes(lead.Stage))lead.Stage='new';
