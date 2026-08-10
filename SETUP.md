@@ -7403,6 +7403,33 @@ touched by that poll either, only Home's widgets were).
   got the message. Purely additive — the 60s poll and 5-minute cache are both untouched as the
   fallback if the socket is ever closed/reconnecting.
 
+## Chats tab: attach image/document + send template, modern restyle (`frontend/chats.js`, `frontend/chats.css`)
+
+The composer at the bottom of an open chat thread previously only sent plain text. It now also
+offers an image-attach button, a document-attach button, and a "send template" button — all three
+wired to functionality the app already had elsewhere rather than new backend work:
+
+- **Image/document attach** — `chatAttachFile(leadId, file, kind)` (`chats.js`). Reuses `/quote/send`
+  (`handleQuoteSend`, worker.js), the same Chatwoot-attachment relay Quotes/Invoices already uses to
+  send a generated PDF — it just forwards whatever `conv_id`/`caption`/`file` it's given as a
+  Chatwoot `attachments[]`, so it was already file-type-agnostic. The composer posts a `FormData` of
+  `{conv_id, caption:'', file}` to it, then (mirroring `chatSendFromTab`'s own pattern) appends a
+  marker line (`🖼️ filename` / `📎 filename`) to the lead's `ConvHistory` and re-renders the thread.
+  Client-side caps at 16 MB with a friendly error; no new upload/storage mechanism was added.
+- **Send template** — just `openSendTemplateModal([leadId])` (dashboard.html), the exact same modal
+  already used from the Leads page's "📣 Send" button — it already accepts an array of lead ids, a
+  single-lead array from an open chat needed no changes.
+- Both tools are only rendered when `!isInstagram && leadConvId(lead)` — Instagram DM leads have no
+  Chatwoot conversation (that channel only has the plain-text `/instagram/send` path) and no
+  WhatsApp-template equivalent, so the tools are omitted there instead of wiring up a send path that
+  doesn't exist server-side, and a WhatsApp lead with no linked Chatwoot conversation yet gets the
+  same "no conversation" treatment `chatSendFromTab` already gives plain text.
+- **Restyle** (`chats.css`) — visual refresh only, no structural/behavioral change to the parts that
+  existed before: gradient avatars and send button, softer shadows on bubbles/header/search, smoother
+  hover/focus transitions throughout. Still deliberately hardcoded colors rather than the app's
+  `--accent`/`--bg` theme vars (this subtree's look isn't meant to shift with the industry theme
+  picker — see this file's own header comment).
+
 ## Conversation history summarization (`cloudflare-worker/worker.js`)
 
 `ConvHistory` is capped at the last 40 turns (`engineBuildLeadUpsertBody`), and only the last 20 of

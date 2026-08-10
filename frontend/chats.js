@@ -206,6 +206,14 @@ function chatSelectLead(leadId){
   let history=[];
   try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
 
+  // Attach/template tools reuse the same Chatwoot-conversation relay (/quote/send) and template
+  // modal (openSendTemplateModal) already built for Quotes/Leads — neither has an Instagram-DM
+  // equivalent (that channel only has the plain-text /instagram/send path), so the tools are
+  // simply not offered there rather than wiring up a send path that doesn't exist server-side.
+  const isInstagram=lead.Channel==='instagram';
+  const convId=isInstagram?null:leadConvId(lead);
+  const canUseTools=!isInstagram&&!!convId;
+
   document.querySelector('.chats-layout')?.classList.add('chat-open');
   const main=$id('chatMain');
   main.innerHTML=`
@@ -232,13 +240,59 @@ function chatSelectLead(leadId){
         </div>`;
       }).join(''):'<div style="color:#667781;font-size:13px;text-align:center;padding:20px">No conversation yet</div>'}
     </div>
+    <div id="chatAttachStatus" class="chat-send-status"></div>
     <div class="chat-input-bar">
+      ${canUseTools?`
+      <input type="file" id="chatImgInput" accept="image/*" style="display:none" onchange="chatAttachFile(${lead.Id},this.files[0],'image')">
+      <input type="file" id="chatDocInput" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" style="display:none" onchange="chatAttachFile(${lead.Id},this.files[0],'document')">
+      <div class="chat-tools">
+        <button class="chat-tool-btn" onclick="$id('chatImgInput').click()" title="Attach image">🖼️</button>
+        <button class="chat-tool-btn" onclick="$id('chatDocInput').click()" title="Attach document">📎</button>
+        <button class="chat-tool-btn" onclick="openSendTemplateModal([${lead.Id}])" title="Send WhatsApp template">📣</button>
+      </div>`:''}
       <textarea id="chatReplyBox" class="chat-input-box" rows="1" placeholder="Type a message"></textarea>
       <button class="chat-send-btn" onclick="chatSendFromTab(${lead.Id})" title="Send">➤</button>
     </div>
     <div id="chatReplyMsg" class="chat-send-status"></div>`;
   // scroll to bottom
   setTimeout(()=>{const b=$id('chatMsgBox');if(b)b.scrollTop=b.scrollHeight;},50);
+}
+
+// Image/document attach from the Chats composer — same Chatwoot attachment relay (/quote/send)
+// Quotes already uses to send a generated PDF; it just forwards conv_id/caption/file untouched,
+// so any file type works. No new backend endpoint needed.
+async function chatAttachFile(leadId,file,kind){
+  const input=$id(kind==='image'?'chatImgInput':'chatDocInput');
+  if(!file){return;}
+  const status=$id('chatAttachStatus');
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead){return;}
+  const convId=leadConvId(lead);
+  if(!convId){status.textContent='No Chatwoot conversation linked to this lead — attachment cannot be sent.';status.className='chat-send-status err';if(input)input.value='';return;}
+  const maxBytes=16*1024*1024;
+  if(file.size>maxBytes){status.textContent='File too large — max 16 MB.';status.className='chat-send-status err';if(input)input.value='';return;}
+  const kindLabel=kind==='image'?'image':'document';
+  status.textContent=`Sending ${kindLabel}…`;status.className='chat-send-status';
+  try{
+    const fd=new FormData();
+    fd.append('conv_id',convId);
+    fd.append('caption','');
+    fd.append('file',file,file.name);
+    const r=await fetch(`${CONFIG.WORKER_BASE}/quote/send`,{method:'POST',headers:ncAuthHeaders(),body:fd});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+  }catch(e){
+    status.textContent=`Failed to send ${kindLabel}: `+e.message;status.className='chat-send-status err';
+    if(input)input.value='';
+    return;
+  }
+  const hist=await freshConvHistory(lead);
+  hist.push({role:'assistant',content:(kind==='image'?'🖼️ ':'📎 ')+file.name,ts:new Date().toISOString()});
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
+  }catch(e){/* best-effort — the attachment already reached Chatwoot */}
+  lead.ConvHistory=JSON.stringify(hist);
+  chatSelectLead(leadId);
 }
 
 async function chatSendFromTab(leadId){
