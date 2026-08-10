@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Field Service — Owner Dashboard</title>
+<style>
+  :root{
+    --teal:#0D9C93; --teal-dark:#0a7d75; --navy:#0F2C4C; --ink:#1A2233; --muted:#667085;
+    --bg:#F4F6F8; --card:#ffffff; --border:#E3E7EB; --danger:#D64545; --warn:#E08A2E;
+    --ok:#1E9E5A; --blue:#2D6CDF; --purple:#7A4FDB;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; background:var(--bg); color:var(--ink);}
+  a{color:inherit;}
+  .hidden{display:none !important;}
+  /* ── auth ── */
+  #auth-wrap{max-width:420px; margin:60px auto; padding:0 20px;}
+  .logo{font-size:26px; font-weight:900; color:var(--navy); text-align:center; margin-bottom:6px;}
+  .tagline{text-align:center; color:var(--muted); margin-bottom:28px;}
+  .card{background:var(--card); border:1px solid var(--border); border-radius:14px; padding:22px; margin-bottom:16px;}
+  label{display:block; font-weight:600; margin:12px 0 6px; font-size:14px; color:var(--navy);}
+  input,select,textarea{width:100%; padding:11px 12px; font-size:15px; border:1.5px solid var(--border); border-radius:9px; font-family:inherit; background:#fff; color:var(--ink);}
+  textarea{min-height:70px;}
+  .btn{display:inline-block; padding:11px 18px; font-size:15px; font-weight:700; border-radius:9px; border:none; cursor:pointer; margin-right:8px; margin-top:8px;}
+  .btn-primary{background:var(--teal); color:#fff;}
+  .btn-primary:hover{background:var(--teal-dark);}
+  .btn-secondary{background:#fff; color:var(--navy); border:1.5px solid var(--navy);}
+  .btn-danger{background:var(--danger); color:#fff;}
+  .btn-block{display:block; width:100%; text-align:center;}
+  .btn:disabled{opacity:.5; cursor:default;}
+  .link-btn{background:none; border:none; color:var(--teal-dark); font-weight:700; cursor:pointer; padding:0; font-size:14px;}
+  .error{background:#FDEDED; color:var(--danger); padding:10px 12px; border-radius:8px; margin-bottom:12px; font-weight:600; font-size:14px;}
+  .success{background:#E9F9EF; color:var(--ok); padding:10px 12px; border-radius:8px; margin-bottom:12px; font-weight:600; font-size:14px;}
+  /* ── shell ── */
+  #app-shell{display:none; min-height:100vh; flex-direction:column;}
+  #app-shell.active{display:flex;}
+  .topbar{background:var(--navy); color:#fff; padding:14px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;}
+  .topbar .brand{font-weight:800; font-size:18px;}
+  .topbar .who{font-size:13px; opacity:.85;}
+  .topbar button{background:rgba(255,255,255,.12); border:none; color:#fff; padding:8px 14px; border-radius:8px; cursor:pointer; font-size:13px;}
+  nav.tabs{display:flex; gap:4px; background:#fff; border-bottom:1px solid var(--border); padding:0 16px; overflow-x:auto;}
+  nav.tabs button{background:none; border:none; padding:14px 16px; font-size:14px; font-weight:700; color:var(--muted); cursor:pointer; white-space:nowrap; border-bottom:3px solid transparent;}
+  nav.tabs button.active{color:var(--teal-dark); border-bottom-color:var(--teal);}
+  main{flex:1; padding:24px; max-width:1100px; width:100%; margin:0 auto;}
+  h2{margin-top:0; color:var(--navy);}
+  .toolbar{display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:16px;}
+  .toolbar input[type=text],.toolbar select{width:auto; min-width:180px;}
+  table{width:100%; border-collapse:collapse; background:#fff; border-radius:12px; overflow:hidden; border:1px solid var(--border);}
+  th,td{text-align:left; padding:11px 14px; font-size:14px; border-bottom:1px solid var(--border);}
+  th{background:#FAFBFC; color:var(--muted); font-weight:700; text-transform:uppercase; font-size:11px; letter-spacing:.04em;}
+  tr:last-child td{border-bottom:none;}
+  tr.clickable{cursor:pointer;}
+  tr.clickable:hover{background:#F8FAFB;}
+  .badge{display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:700; color:#fff;}
+  .badge-requested,.badge-draft,.badge-unpaid{background:var(--muted);}
+  .badge-scheduled,.badge-sent{background:var(--blue);}
+  .badge-en_route,.badge-partial,.badge-overdue{background:var(--warn);}
+  .badge-in_progress{background:var(--purple);}
+  .badge-completed,.badge-accepted,.badge-paid{background:var(--ok);}
+  .badge-cancelled,.badge-declined{background:var(--danger);}
+  .panel{background:#fff; border:1px solid var(--border); border-radius:14px; padding:20px; margin-bottom:20px;}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
+  .items-row{display:grid; grid-template-columns:3fr 1fr 1fr auto; gap:8px; margin-bottom:8px; align-items:center;}
+  .totals{text-align:right; font-size:15px; margin-top:10px;}
+  .totals b{font-size:19px; color:var(--navy);}
+  .empty{color:var(--muted); text-align:center; padding:40px; font-size:15px;}
+  .spinner{color:var(--muted); text-align:center; padding:40px;}
+  .modal-backdrop{position:fixed; inset:0; background:rgba(15,44,76,.45); display:flex; align-items:flex-start; justify-content:center; padding:40px 16px; overflow:auto; z-index:20;}
+  .modal{background:#fff; border-radius:16px; padding:24px; max-width:560px; width:100%;}
+  .modal h3{margin-top:0;}
+  .close-x{float:right; background:none; border:none; font-size:20px; cursor:pointer; color:var(--muted);}
+  .small{font-size:13px; color:var(--muted);}
+  .kv{display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border); font-size:14px;}
+  .kv:last-child{border-bottom:none;}
+</style>
+</head>
+<body>
+
+<!-- ═══ AUTH ═══ -->
+<div id="auth-wrap">
+  <div class="logo">🔧 Field Service</div>
+  <div class="tagline">Business owner &amp; manager dashboard</div>
+
+  <div id="login-card" class="card">
+    <div id="login-error"></div>
+    <label>Email</label><input id="login-email" type="email" autocomplete="username">
+    <label>Password</label><input id="login-password" type="password" autocomplete="current-password">
+    <button class="btn btn-primary btn-block" id="login-btn">Log In</button>
+    <p class="small" style="text-align:center; margin-top:14px;">No account yet? <button class="link-btn" id="show-signup">Create your business account</button></p>
+  </div>
+
+  <div id="signup-card" class="card hidden">
+    <div id="signup-error"></div>
+    <label>Business name</label><input id="su-business" type="text" placeholder="Acme AC Repair">
+    <label>Your name</label><input id="su-owner-name" type="text" placeholder="Jane Doe">
+    <label>Email</label><input id="su-email" type="email" autocomplete="username">
+    <label>Password (min 8 characters)</label><input id="su-password" type="password" autocomplete="new-password">
+    <label>Tax system</label>
+    <select id="su-tax-mode">
+      <option value="vat">UAE VAT (5%)</option>
+      <option value="gst">India GST (18%)</option>
+      <option value="none">No tax / none</option>
+    </select>
+    <button class="btn btn-primary btn-block" id="signup-btn">Create Account</button>
+    <p class="small" style="text-align:center; margin-top:14px;">Already have an account? <button class="link-btn" id="show-login">Log in</button></p>
+  </div>
+</div>
+
+<!-- ═══ APP SHELL ═══ -->
+<div id="app-shell">
+  <div class="topbar">
+    <div class="brand" id="tenant-name">🔧 Field Service</div>
+    <div style="display:flex; align-items:center; gap:14px;">
+      <span class="who" id="who-am-i"></span>
+      <button id="logout-btn">Log Out</button>
+    </div>
+  </div>
+  <nav class="tabs" id="tabs"></nav>
+  <main id="main-content"><div class="spinner">Loading…</div></main>
+</div>
+
+<div id="modal-root"></div>
+
+<script>
+// ─────────────────────────── config ───────────────────────────
+const API_BASE = window.FIELD_SERVICE_API_BASE || 'https://leadvyne-field-service-api.YOUR_SUBDOMAIN.workers.dev';
+const AUTH_KEY = 'fs_owner_auth';
+
+function $(sel, root){ return (root||document).querySelector(sel); }
+function $all(sel, root){ return [...(root||document).querySelectorAll(sel)]; }
+function escapeHtml(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function money(n, cur){ return `${cur || ''} ${Number(n||0).toFixed(2)}`; }
+function fmtDate(iso){ return iso ? new Date(iso).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '—'; }
+
+function getAuth(){ try { return JSON.parse(localStorage.getItem(AUTH_KEY) || 'null'); } catch { return null; } }
+function setAuth(a){ localStorage.setItem(AUTH_KEY, JSON.stringify(a)); }
+function clearAuth(){ localStorage.removeItem(AUTH_KEY); }
+
+async function api(path, options){
+  const auth = getAuth();
+  const headers = { 'Content-Type': 'application/json', ...(options && options.headers) };
+  if (auth && auth.token) headers.Authorization = `Bearer ${auth.token}`;
+  const res = await fetch(API_BASE + path, { ...options, headers });
+  if (res.status === 401) { clearAuth(); location.reload(); throw new Error('Session expired'); }
+  const isCsv = (res.headers.get('Content-Type') || '').includes('text/csv');
+  if (isCsv) { if (!res.ok) throw new Error('Export failed'); return res.blob(); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function modal(html){
+  $('#modal-root').innerHTML = `<div class="modal-backdrop" id="modal-backdrop"><div class="modal">${html}</div></div>`;
+  $('#modal-backdrop').addEventListener('click', e => { if (e.target.id === 'modal-backdrop') closeModal(); });
+}
+function closeModal(){ $('#modal-root').innerHTML = ''; }
+
+// ─────────────────────────── auth screens ───────────────────────────
+$('#show-signup').addEventListener('click', () => { $('#login-card').classList.add('hidden'); $('#signup-card').classList.remove('hidden'); });
+$('#show-login').addEventListener('click', () => { $('#signup-card').classList.add('hidden'); $('#login-card').classList.remove('hidden'); });
+
+$('#login-btn').addEventListener('click', async () => {
+  const email = $('#login-email').value.trim(), password = $('#login-password').value;
+  const box = $('#login-error'); box.innerHTML = '';
+  if (!email || !password) { box.innerHTML = '<div class="error">Enter your email and password.</div>'; return; }
+  try {
+    const res = await fetch(API_BASE + '/api/auth/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email,password}) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Login failed');
+    if (data.user.role === 'staff') { box.innerHTML = '<div class="error">Staff accounts use the Field Staff App (staff.html), not this dashboard.</div>'; return; }
+    setAuth({ token: data.token, user: data.user });
+    boot();
+  } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+});
+
+$('#signup-btn').addEventListener('click', async () => {
+  const business_name = $('#su-business').value.trim();
+  const owner_name = $('#su-owner-name').value.trim();
+  const email = $('#su-email').value.trim();
+  const password = $('#su-password').value;
+  const tax_mode = $('#su-tax-mode').value;
+  const box = $('#signup-error'); box.innerHTML = '';
+  if (!business_name || !owner_name || !email || !password) { box.innerHTML = '<div class="error">All fields are required.</div>'; return; }
+  try {
+    const res = await fetch(API_BASE + '/api/auth/signup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({business_name, owner_name, email, password, tax_mode}) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Sign up failed');
+    setAuth({ token: data.token, user: data.user });
+    boot();
+  } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+});
+
+$('#logout-btn').addEventListener('click', () => { clearAuth(); location.reload(); });
+
+// ─────────────────────────── shell / tabs ───────────────────────────
+let ME = null; // {user, tenant}
+
+const TABS = [
+  { id: 'jobs', label: 'Jobs', render: renderJobs },
+  { id: 'customers', label: 'Customers', render: renderCustomers },
+  { id: 'staff', label: 'Staff', render: renderStaff, minRole: 'manager' },
+  { id: 'quotes', label: 'Quotes', render: renderQuotes },
+  { id: 'invoices', label: 'Invoices', render: renderInvoices },
+  { id: 'inventory', label: 'Inventory', render: renderInventory },
+  { id: 'recurring', label: 'Recurring Billing', render: renderRecurring, minRole: 'manager' },
+  { id: 'settings', label: 'Settings', render: renderSettings, minRole: 'owner' },
+];
+const ROLE_RANK = { staff: 1, manager: 2, owner: 3 };
+let activeTab = 'jobs';
+
+async function boot(){
+  const auth = getAuth();
+  if (!auth) return;
+  try {
+    ME = await api('/api/me');
+  } catch { clearAuth(); location.reload(); return; }
+  if (ME.user.role === 'staff') {
+    document.body.innerHTML = '<div style="max-width:480px;margin:80px auto;text-align:center;font-family:sans-serif;"><h2>Wrong app</h2><p>Staff accounts use the Field Staff App. Open <b>staff.html</b> instead.</p></div>';
+    return;
+  }
+  $('#tenant-name').textContent = '🔧 ' + ME.tenant.name;
+  $('#who-am-i').textContent = `${ME.user.name} · ${ME.user.role}`;
+  $('#app-shell').classList.add('active');
+  $('#tabs').innerHTML = TABS.filter(t => !t.minRole || ROLE_RANK[ME.user.role] >= ROLE_RANK[t.minRole])
+    .map(t => `<button data-tab="${t.id}" class="${t.id === activeTab ? 'active' : ''}">${t.label}</button>`).join('');
+  $all('#tabs button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+  switchTab(activeTab);
+}
+
+function switchTab(id){
+  activeTab = id;
+  $all('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === id));
+  const tab = TABS.find(t => t.id === id);
+  $('#main-content').innerHTML = '<div class="spinner">Loading…</div>';
+  tab.render();
+}
+
+if (getAuth()) boot();
+
+// ═══════════════════════════════ JOBS ═══════════════════════════════
+
+async function renderJobs(){
+  const [jobs, customers, staff] = await Promise.all([api('/api/jobs'), api('/api/customers'), api('/api/staff').catch(() => [])]);
+  const main = $('#main-content');
+  main.innerHTML = `
+    <div class="toolbar">
+      <h2 style="margin:0; flex:1;">Jobs</h2>
+      <select id="job-status-filter">
+        <option value="">All statuses</option>
+        ${['requested','scheduled','en_route','in_progress','completed','cancelled'].map(s => `<option value="${s}">${s.replace('_',' ')}</option>`).join('')}
+      </select>
+      <button class="btn btn-secondary" id="export-jobs-btn">Export CSV</button>
+      <button class="btn btn-primary" id="new-job-btn">+ New Job</button>
+    </div>
+    <div id="jobs-table"></div>
+  `;
+  function draw(list){
+    if (!list.length) { $('#jobs-table').innerHTML = '<div class="empty">No jobs yet.</div>'; return; }
+    $('#jobs-table').innerHTML = `
+      <table><thead><tr><th>Job</th><th>Customer</th><th>Staff</th><th>When</th><th>Status</th></tr></thead>
+      <tbody>${list.map(j => `
+        <tr class="clickable" data-id="${j.id}">
+          <td>${escapeHtml(j.title)}</td><td>${escapeHtml(j.customer_name)}</td>
+          <td>${escapeHtml(j.staff_name || '—')}</td><td>${fmtDate(j.scheduled_start)}</td>
+          <td><span class="badge badge-${j.status}">${j.status.replace('_',' ')}</span></td>
+        </tr>`).join('')}</tbody></table>`;
+    $all('#jobs-table tr.clickable').forEach(tr => tr.addEventListener('click', () => openJobModal(tr.dataset.id, customers, staff)));
+  }
+  draw(jobs);
+  $('#job-status-filter').addEventListener('change', async e => {
+    const s = e.target.value;
+    draw(s ? await api(`/api/jobs?status=${encodeURIComponent(s)}`) : jobs);
+  });
+  $('#export-jobs-btn').addEventListener('click', async () => downloadBlob(await api('/api/jobs/export'), 'jobs.csv'));
+  $('#new-job-btn').addEventListener('click', () => openJobModal(null, customers, staff));
+}
+
+function openJobModal(jobId, customers, staff){
+  const isNew = !jobId;
+  modal(`<button class="close-x" id="modal-close">✕</button><h3>${isNew ? 'New Job' : 'Job Details'}</h3><div id="job-modal-body"><div class="spinner">Loading…</div></div>`);
+  $('#modal-close').addEventListener('click', closeModal);
+
+  if (isNew) {
+    $('#job-modal-body').innerHTML = jobFormHtml(customers, staff, {});
+    wireJobForm(null, customers, staff);
+    return;
+  }
+  api(`/api/jobs/${jobId}`).then(job => {
+    $('#job-modal-body').innerHTML = `
+      <div id="job-modal-msg"></div>
+      <div class="kv"><span>Status</span><span class="badge badge-${job.status}">${job.status.replace('_',' ')}</span></div>
+      <div class="kv"><span>Customer</span><span>${escapeHtml(job.customer_name)}</span></div>
+      <div class="kv"><span>Cancellation fee charged</span><span>${money(job.cancellation_fee_charged, ME.tenant.currency)}</span></div>
+      ${jobFormHtml(customers, staff, job)}
+      ${job.status !== 'cancelled' && job.status !== 'completed' ? '<button class="btn btn-danger" id="cancel-job-btn">Cancel Job</button>' : ''}
+      <div class="small" style="margin-top:16px;"><b>History</b><br>${(job.history||[]).map(h => `${fmtDate(h.changed_at)} — ${h.status.replace('_',' ')}`).join('<br>')}</div>
+    `;
+    wireJobForm(jobId, customers, staff);
+    $('#cancel-job-btn') && $('#cancel-job-btn').addEventListener('click', async () => {
+      const reason = prompt('Reason for cancellation (optional):') || '';
+      try {
+        const r = await api(`/api/jobs/${jobId}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+        $('#job-modal-msg').innerHTML = `<div class="success">Cancelled. Fee charged: ${money(r.cancellation_fee_charged, ME.tenant.currency)}</div>`;
+        setTimeout(() => { closeModal(); switchTab('jobs'); }, 1200);
+      } catch (e) { $('#job-modal-msg').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    });
+  });
+}
+
+function jobFormHtml(customers, staff, job){
+  return `
+    <label>Customer</label>
+    <select id="jf-customer">${customers.map(c => `<option value="${c.id}" ${job.customer_id===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select>
+    <label>Title</label><input id="jf-title" type="text" value="${escapeHtml(job.title||'')}" placeholder="AC servicing">
+    <label>Description</label><textarea id="jf-desc">${escapeHtml(job.description||'')}</textarea>
+    <div class="grid2">
+      <div><label>Scheduled start</label><input id="jf-start" type="datetime-local" value="${job.scheduled_start ? job.scheduled_start.slice(0,16) : ''}"></div>
+      <div><label>Assign staff</label><select id="jf-staff"><option value="">Unassigned</option>${staff.map(s => `<option value="${s.id}" ${job.assigned_staff_id===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></div>
+    </div>
+    <label>Address</label><input id="jf-address" type="text" value="${escapeHtml(job.address||'')}">
+    <label>Price estimate</label><input id="jf-price" type="number" step="0.01" value="${job.price_estimate ?? ''}">
+    <button class="btn btn-primary" id="jf-save-btn">${job.id ? 'Save Changes' : 'Create Job'}</button>
+  `;
+}
+
+function wireJobForm(jobId, customers, staff){
+  $('#jf-save-btn').addEventListener('click', async () => {
+    const payload = {
+      customer_id: $('#jf-customer').value,
+      title: $('#jf-title').value.trim(),
+      description: $('#jf-desc').value.trim(),
+      scheduled_start: $('#jf-start').value ? new Date($('#jf-start').value).toISOString() : null,
+      assigned_staff_id: $('#jf-staff').value || null,
+      address: $('#jf-address').value.trim(),
+      price_estimate: $('#jf-price').value ? Number($('#jf-price').value) : null,
+    };
+    try {
+      if (jobId) await api(`/api/jobs/${jobId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      else await api('/api/jobs', { method: 'POST', body: JSON.stringify(payload) });
+      closeModal(); switchTab('jobs');
+    } catch (e) { alert(e.message); }
+  });
+}
+
+// ═══════════════════════════════ CUSTOMERS ═══════════════════════════════
+
+async function renderCustomers(){
+  const customers = await api('/api/customers');
+  const main = $('#main-content');
+  main.innerHTML = `
+    <div class="toolbar">
+      <h2 style="margin:0; flex:1;">Customers</h2>
+      <input type="text" id="cust-search" placeholder="Search name or phone…">
+      <button class="btn btn-secondary" id="export-cust-btn">Export CSV</button>
+      <label class="btn btn-secondary" style="margin:8px 0 0;">Import CSV<input type="file" id="import-cust-file" accept=".csv" style="display:none;"></label>
+      <button class="btn btn-primary" id="new-cust-btn">+ New Customer</button>
+    </div>
+    <div id="cust-table"></div>
+  `;
+  function draw(list){
+    if (!list.length) { $('#cust-table').innerHTML = '<div class="empty">No customers yet.</div>'; return; }
+    $('#cust-table').innerHTML = `
+      <table><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Address</th></tr></thead>
+      <tbody>${list.map(c => `<tr class="clickable" data-id="${c.id}"><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.phone||'—')}</td><td>${escapeHtml(c.email||'—')}</td><td>${escapeHtml(c.address||'—')}</td></tr>`).join('')}</tbody></table>`;
+    $all('#cust-table tr.clickable').forEach(tr => tr.addEventListener('click', () => openCustomerModal(tr.dataset.id)));
+  }
+  draw(customers);
+  $('#cust-search').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    draw(customers.filter(c => c.name.toLowerCase().includes(q) || (c.phone||'').includes(q)));
+  });
+  $('#export-cust-btn').addEventListener('click', async () => downloadBlob(await api('/api/customers/export'), 'customers.csv'));
+  $('#import-cust-file').addEventListener('change', async e => {
+    const file = e.target.files[0]; if (!file) return;
+    const text = await file.text();
+    try {
+      const r = await api('/api/customers/import', { method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: text });
+      alert(`Imported ${r.created} of ${r.total} rows.`);
+      switchTab('customers');
+    } catch (err) { alert(err.message); }
+  });
+  $('#new-cust-btn').addEventListener('click', () => openCustomerModal(null));
+}
+
+function openCustomerModal(custId){
+  modal(`<button class="close-x" id="modal-close">✕</button><h3>${custId ? 'Customer' : 'New Customer'}</h3><div id="cust-modal-body"><div class="spinner">Loading…</div></div>`);
+  $('#modal-close').addEventListener('click', closeModal);
+  const draw = (c) => {
+    $('#cust-modal-body').innerHTML = `
+      <div id="cust-modal-msg"></div>
+      <label>Name</label><input id="cf-name" type="text" value="${escapeHtml(c.name||'')}">
+      <label>Phone</label><input id="cf-phone" type="text" value="${escapeHtml(c.phone||'')}">
+      <label>Email</label><input id="cf-email" type="email" value="${escapeHtml(c.email||'')}">
+      <label>Address</label><input id="cf-address" type="text" value="${escapeHtml(c.address||'')}">
+      <label>Notes</label><textarea id="cf-notes">${escapeHtml(c.notes||'')}</textarea>
+      <button class="btn btn-primary" id="cf-save-btn">${c.id ? 'Save' : 'Create Customer'}</button>
+      ${c.portal_token ? `<p class="small" style="margin-top:16px;">Self-service portal link (copy to send the customer):<br><code>customer.html?t=${c.portal_token}</code></p>` : ''}
+    `;
+    $('#cf-save-btn').addEventListener('click', async () => {
+      const payload = { name: $('#cf-name').value.trim(), phone: $('#cf-phone').value.trim(), email: $('#cf-email').value.trim(), address: $('#cf-address').value.trim(), notes: $('#cf-notes').value.trim() };
+      try {
+        if (c.id) await api(`/api/customers/${c.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+        else await api('/api/customers', { method: 'POST', body: JSON.stringify(payload) });
+        closeModal(); switchTab('customers');
+      } catch (e) { $('#cust-modal-msg').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    });
+  };
+  if (custId) api(`/api/customers/${custId}`).then(draw); else draw({});
+}
+
+// ═══════════════════════════════ STAFF ═══════════════════════════════
+
+async function renderStaff(){
+  const list = await api('/api/staff');
+  const main = $('#main-content');
+  main.innerHTML = `
+    <div class="toolbar"><h2 style="margin:0; flex:1;">Staff</h2><button class="btn btn-primary" id="new-staff-btn">+ Add Staff</button></div>
+    <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+    <tbody>${list.map(s => `
+      <tr><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.email)}</td><td>${escapeHtml(s.role)}</td>
+      <td>${s.active ? '<span class="badge badge-completed">Active</span>' : '<span class="badge badge-cancelled">Inactive</span>'}</td>
+      <td><button class="link-btn" data-toggle="${s.id}" data-active="${s.active}">${s.active ? 'Deactivate' : 'Reactivate'}</button></td>
+      </tr>`).join('')}</tbody></table>
+  `;
+  $all('[data-toggle]').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.toggle, active = btn.dataset.active === '1' || btn.dataset.active === 'true';
+    await api(`/api/staff/${id}`, { method: 'PATCH', body: JSON.stringify({ active: !active }) });
+    switchTab('staff');
+  }));
+  $('#new-staff-btn').addEventListener('click', () => {
+    modal(`<button class="close-x" id="modal-close">✕</button><h3>Add Staff</h3>
+      <div id="staff-msg"></div>
+      <label>Name</label><input id="sf-name" type="text">
+      <label>Email</label><input id="sf-email" type="email">
+      <label>Temporary password (min 8 chars)</label><input id="sf-password" type="text">
+      <label>Role</label><select id="sf-role"><option value="staff">Field Staff</option>${ME.user.role === 'owner' ? '<option value="manager">Manager</option>' : ''}</select>
+      <label>Phone</label><input id="sf-phone" type="text">
+      <button class="btn btn-primary" id="sf-save-btn">Create</button>`);
+    $('#modal-close').addEventListener('click', closeModal);
+    $('#sf-save-btn').addEventListener('click', async () => {
+      try {
+        await api('/api/staff', { method: 'POST', body: JSON.stringify({ name: $('#sf-name').value.trim(), email: $('#sf-email').value.trim(), password: $('#sf-password').value, role: $('#sf-role').value, phone: $('#sf-phone').value.trim() }) });
+        closeModal(); switchTab('staff');
+      } catch (e) { $('#staff-msg').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    });
+  });
+}
+
+// ═══════════════════════════════ QUOTES ═══════════════════════════════
+
+async function renderQuotes(){
+  const [quotes, customers] = await Promise.all([api('/api/quotes'), api('/api/customers')]);
+  $('#main-content').innerHTML = `
+    <div class="toolbar"><h2 style="margin:0; flex:1;">Quotes</h2><button class="btn btn-primary" id="new-quote-btn">+ New Quote</button></div>
+    <div id="quotes-table">${quotes.length ? `<table><thead><tr><th>Customer</th><th>Total</th><th>Status</th></tr></thead>
+      <tbody>${quotes.map(q => `<tr class="clickable" data-id="${q.id}"><td>${escapeHtml(q.customer_name)}</td><td>${money(q.total, q.currency)}</td><td><span class="badge badge-${q.status}">${q.status}</span></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No quotes yet.</div>'}</div>
+  `;
+  $all('#quotes-table tr.clickable').forEach(tr => tr.addEventListener('click', () => openQuoteModal(tr.dataset.id)));
+  $('#new-quote-btn').addEventListener('click', () => openLineItemModal('quote', customers));
+}
+
+function openQuoteModal(quoteId){
+  modal(`<button class="close-x" id="modal-close">✕</button><h3>Quote</h3><div id="quote-body"><div class="spinner">Loading…</div></div>`);
+  $('#modal-close').addEventListener('click', closeModal);
+  api(`/api/quotes/${quoteId}`).then(q => {
+    $('#quote-body').innerHTML = `
+      <div id="quote-msg"></div>
+      <div class="kv"><span>Customer</span><span>${escapeHtml(q.customer_id)}</span></div>
+      <div class="kv"><span>Status</span><span class="badge badge-${q.status}">${q.status}</span></div>
+      <table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+      <tbody>${q.items.map(i => `<tr><td>${escapeHtml(i.description)}</td><td>${i.qty}</td><td>${money(i.unit_price,q.currency)}</td><td>${money(i.total,q.currency)}</td></tr>`).join('')}</tbody></table>
+      <div class="totals">Subtotal: ${money(q.subtotal,q.currency)}<br>Tax (${q.tax_rate}%): ${money(q.tax_amount,q.currency)}<br><b>Total: ${money(q.total,q.currency)}</b></div>
+      ${q.status === 'draft' ? `<button class="btn btn-secondary" id="q-send-btn">Send to Customer</button>` : ''}
+      ${q.status === 'sent' ? `<button class="btn btn-primary" id="q-accept-btn">Mark Accepted → Create Invoice</button> <button class="btn btn-danger" id="q-decline-btn">Mark Declined</button>` : ''}
+    `;
+    $('#q-send-btn') && $('#q-send-btn').addEventListener('click', async () => { await api(`/api/quotes/${quoteId}/send`, { method: 'POST' }); closeModal(); switchTab('quotes'); });
+    $('#q-decline-btn') && $('#q-decline-btn').addEventListener('click', async () => { await api(`/api/quotes/${quoteId}/decline`, { method: 'POST' }); closeModal(); switchTab('quotes'); });
+    $('#q-accept-btn') && $('#q-accept-btn').addEventListener('click', async () => {
+      const r = await api(`/api/quotes/${quoteId}/accept`, { method: 'POST' });
+      $('#quote-msg').innerHTML = `<div class="success">Invoice created.</div>`;
+      setTimeout(() => { closeModal(); switchTab('invoices'); }, 900);
+    });
+  });
+}
+
+// ═══════════════════════════════ INVOICES ═══════════════════════════════
+
+async function renderInvoices(){
+  const [invoices, customers] = await Promise.all([api('/api/invoices'), api('/api/customers')]);
+  $('#main-content').innerHTML = `
+    <div class="toolbar"><h2 style="margin:0; flex:1;">Invoices</h2><button class="btn btn-secondary" id="export-inv-btn">Export CSV</button><button class="btn btn-primary" id="new-inv-btn">+ New Invoice</button></div>
+    <div id="inv-table">${invoices.length ? `<table><thead><tr><th>Customer</th><th>Total</th><th>Paid</th><th>Status</th></tr></thead>
+      <tbody>${invoices.map(i => `<tr class="clickable" data-id="${i.id}"><td>${escapeHtml(i.customer_name)}</td><td>${money(i.total,i.currency)}</td><td>${money(i.amount_paid,i.currency)}</td><td><span class="badge badge-${i.status}">${i.status}</span></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No invoices yet.</div>'}</div>
+  `;
+  $all('#inv-table tr.clickable').forEach(tr => tr.addEventListener('click', () => openInvoiceModal(tr.dataset.id)));
+  $('#export-inv-btn').addEventListener('click', async () => downloadBlob(await api('/api/invoices/export'), 'invoices.csv'));
+  $('#new-inv-btn').addEventListener('click', () => openLineItemModal('invoice', customers));
+}
+
+function openInvoiceModal(invId){
+  modal(`<button class="close-x" id="modal-close">✕</button><h3>Invoice</h3><div id="inv-body"><div class="spinner">Loading…</div></div>`);
+  $('#modal-close').addEventListener('click', closeModal);
+  api(`/api/invoices/${invId}`).then(inv => {
+    $('#inv-body').innerHTML = `
+      <div id="inv-msg"></div>
+      <div class="kv"><span>Customer</span><span>${escapeHtml(inv.customer_name)}</span></div>
+      <div class="kv"><span>Status</span><span class="badge badge-${inv.status}">${inv.status}</span></div>
+      <table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+      <tbody>${inv.items.map(i => `<tr><td>${escapeHtml(i.description)}</td><td>${i.qty}</td><td>${money(i.unit_price,inv.currency)}</td><td>${money(i.total,inv.currency)}</td></tr>`).join('')}</tbody></table>
+      <div class="totals">Subtotal: ${money(inv.subtotal,inv.currency)}<br>Tax: ${money(inv.tax_amount,inv.currency)}<br><b>Total: ${money(inv.total,inv.currency)}</b><br>Paid: ${money(inv.amount_paid,inv.currency)}</div>
+      <div class="small" style="margin:10px 0;"><b>Payments</b><br>${inv.payments.length ? inv.payments.map(p => `${fmtDate(p.paid_at)} — ${money(p.amount,inv.currency)} (${p.method})`).join('<br>') : 'None recorded yet.'}</div>
+      ${inv.status !== 'paid' && inv.status !== 'cancelled' ? `
+        <label>Record payment amount</label><input id="pay-amount" type="number" step="0.01">
+        <label>Method</label><select id="pay-method"><option value="cash">Cash</option><option value="card">Card</option><option value="bank_transfer">Bank Transfer</option><option value="other">Other</option></select>
+        <button class="btn btn-primary" id="pay-save-btn">Record Payment</button>` : ''}
+    `;
+    $('#pay-save-btn') && $('#pay-save-btn').addEventListener('click', async () => {
+      try {
+        await api(`/api/invoices/${invId}/payments`, { method: 'POST', body: JSON.stringify({ amount: Number($('#pay-amount').value), method: $('#pay-method').value }) });
+        openInvoiceModal(invId);
+      } catch (e) { $('#inv-msg').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    });
+  });
+}
+
+// shared line-item builder for New Quote / New Invoice
+function openLineItemModal(kind, customers){
+  let items = [{ description: '', qty: 1, unit_price: 0 }];
+  modal(`<button class="close-x" id="modal-close">✕</button><h3>New ${kind === 'quote' ? 'Quote' : 'Invoice'}</h3>
+    <div id="li-msg"></div>
+    <label>Customer</label><select id="li-customer">${customers.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select>
+    <label>Line items</label>
+    <div id="li-items"></div>
+    <button class="link-btn" id="li-add-item">+ Add line</button>
+    <label style="margin-top:14px;">Notes</label><textarea id="li-notes"></textarea>
+    <button class="btn btn-primary" id="li-save-btn">Create ${kind === 'quote' ? 'Quote' : 'Invoice'}</button>
+  `);
+  $('#modal-close').addEventListener('click', closeModal);
+  function drawItems(){
+    $('#li-items').innerHTML = items.map((it, i) => `
+      <div class="items-row">
+        <input type="text" placeholder="Description" value="${escapeHtml(it.description)}" data-i="${i}" data-f="description">
+        <input type="number" placeholder="Qty" value="${it.qty}" data-i="${i}" data-f="qty">
+        <input type="number" placeholder="Unit price" value="${it.unit_price}" data-i="${i}" data-f="unit_price">
+        <button class="link-btn" data-remove="${i}">✕</button>
+      </div>`).join('');
+    $all('#li-items input').forEach(inp => inp.addEventListener('input', () => {
+      items[Number(inp.dataset.i)][inp.dataset.f] = inp.dataset.f === 'description' ? inp.value : Number(inp.value);
+    }));
+    $all('#li-items [data-remove]').forEach(btn => btn.addEventListener('click', () => { items.splice(Number(btn.dataset.remove), 1); drawItems(); }));
+  }
+  drawItems();
+  $('#li-add-item').addEventListener('click', () => { items.push({ description: '', qty: 1, unit_price: 0 }); drawItems(); });
+  $('#li-save-btn').addEventListener('click', async () => {
+    const payload = { customer_id: $('#li-customer').value, items: items.filter(i => i.description), notes: $('#li-notes').value.trim() };
+    if (!payload.items.length) { $('#li-msg').innerHTML = '<div class="error">Add at least one line item.</div>'; return; }
+    try {
+      await api(kind === 'quote' ? '/api/quotes' : '/api/invoices', { method: 'POST', body: JSON.stringify(payload) });
+      closeModal(); switchTab(kind === 'quote' ? 'quotes' : 'invoices');
+    } catch (e) { $('#li-msg').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+  });
+}
+
+// ═══════════════════════════════ INVENTORY ═══════════════════════════════
+
+async function renderInventory(){
+  const parts = await api('/api/parts');
+  $('#main-content').innerHTML = `
+    <div class="toolbar"><h2 style="margin:0; flex:1;">Inventory / Parts</h2><button class="btn btn-primary" id="new-part-btn">+ Add Part</button></div>
+    ${parts.length ? `<table><thead><tr><th>Name</th><th>SKU</th><th>Cost</th><th>Price</th><th>On hand</th><th>Reorder at</th></tr></thead>
+      <tbody>${parts.map(p => `<tr class="clickable" data-id="${p.id}"><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.sku||'—')}</td><td>${money(p.unit_cost,ME.tenant.currency)}</td><td>${money(p.unit_price,ME.tenant.currency)}</td><td>${p.qty_on_hand <= p.reorder_level ? `<b style="color:var(--danger)">${p.qty_on_hand}</b>` : p.qty_on_hand}</td><td>${p.reorder_level}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No parts yet.</div>'}
+  `;
+  $all('#main-content tr.clickable').forEach(tr => tr.addEventListener('click', () => openPartModal(parts.find(p => p.id === tr.dataset.id))));
+  $('#new-part-btn').addEventListener('click', () => openPartModal({}));
+}
+
+function openPartModal(p){
+  modal(`<button class="close-x" id="modal-close">✕</button><h3>${p.id ? 'Edit Part' : 'Add Part'}</h3>
+    <div id="part-msg"></div>
+    <label>Name</label><input id="pf-name" type="text" value="${escapeHtml(p.name||'')}">
+    <label>SKU</label><input id="pf-sku" type="text" value="${escapeHtml(p.sku||'')}">
+    <div class="grid2"><div><label>Unit cost</label><input id="pf-cost" type="number" step="0.01" value="${p.unit_cost ?? 0}"></div><div><label>Unit price</label><input id="pf-price" type="number" step="0.01" value="${p.unit_price ?? 0}"></div></div>
+    <div class="grid2"><div><label>Qty on hand</label><input id="pf-qty" type="number" step="1" value="${p.qty_on_hand ?? 0}"></div><div><label>Reorder level</label><input id="pf-reorder" type="number" step="1" value="${p.reorder_level ?? 0}"></div></div>
+    <button class="btn btn-primary" id="pf-save-btn">Save</button>`);
+  $('#modal-close').addEventListener('click', closeModal);
+  $('#pf-save-btn').addEventListener('click', async () => {
+    const payload = { name: $('#pf-name').value.trim(), sku: $('#pf-sku').value.trim(), unit_cost: Number($('#pf-cost').value), unit_price: Number($('#pf-price').value), qty_on_hand: Number($('#pf-qty').value), reorder_level: Number($('#pf-reorder').value) };
+    try {
+      if (p.id) await api(`/api/parts/${p.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      else await api('/api/parts', { method: 'POST', body: JSON.stringify(payload) });
+      closeModal(); switchTab('inventory');
+    } catch (e) { $('#part-msg').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+  });
+}
+
+// ═══════════════════════════════ RECURRING BILLING ═══════════════════════════════
+
+async function renderRecurring(){
+  const [plans, customers] = await Promise.all([api('/api/recurring-plans'), api('/api/customers')]);
+  $('#main-content').innerHTML = `
+    <div class="toolbar"><h2 style="margin:0; flex:1;">Recurring Billing</h2><button class="btn btn-primary" id="new-plan-btn">+ New Plan</button></div>
+    ${plans.length ? `<table><thead><tr><th>Customer</th><th>Title</th><th>Frequency</th><th>Amount</th><th>Next invoice</th><th>Active</th></tr></thead>
+      <tbody>${plans.map(p => `<tr><td>${escapeHtml(p.customer_name)}</td><td>${escapeHtml(p.title)}</td><td>${p.frequency}</td><td>${money(p.amount,ME.tenant.currency)}</td><td>${fmtDate(p.next_run_date)}</td>
+      <td><button class="link-btn" data-toggle="${p.id}" data-active="${p.active}">${p.active ? 'Pause' : 'Resume'}</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No recurring plans yet. Great for subscription cleaning / pest control clients.</div>'}
+  `;
+  $all('[data-toggle]').forEach(btn => btn.addEventListener('click', async () => {
+    await api(`/api/recurring-plans/${btn.dataset.toggle}`, { method: 'PATCH', body: JSON.stringify({ active: !(btn.dataset.active === '1' || btn.dataset.active === 'true') }) });
+    switchTab('recurring');
+  }));
+  $('#new-plan-btn').addEventListener('click', () => {
+    modal(`<button class="close-x" id="modal-close">✕</button><h3>New Recurring Plan</h3>
+      <div id="plan-msg"></div>
+      <label>Customer</label><select id="rf-customer">${customers.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select>
+      <label>Title</label><input id="rf-title" type="text" placeholder="Monthly AC servicing">
+      <label>Frequency</label><select id="rf-freq"><option value="weekly">Weekly</option><option value="biweekly">Biweekly</option><option value="monthly">Monthly</option></select>
+      <label>Amount</label><input id="rf-amount" type="number" step="0.01">
+      <label>First invoice date</label><input id="rf-next" type="date">
+      <button class="btn btn-primary" id="rf-save-btn">Create Plan</button>`);
+    $('#modal-close').addEventListener('click', closeModal);
+    $('#rf-save-btn').addEventListener('click', async () => {
+      try {
+        await api('/api/recurring-plans', { method: 'POST', body: JSON.stringify({ customer_id: $('#rf-customer').value, title: $('#rf-title').value.trim(), frequency: $('#rf-freq').value, amount: Number($('#rf-amount').value), next_run_date: $('#rf-next').value }) });
+        closeModal(); switchTab('recurring');
+      } catch (e) { $('#plan-msg').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    });
+  });
+}
+
+// ═══════════════════════════════ SETTINGS ═══════════════════════════════
+
+async function renderSettings(){
+  const t = await api('/api/tenant');
+  $('#main-content').innerHTML = `
+    <h2>Business Settings</h2>
+    <div class="panel">
+      <div id="settings-msg"></div>
+      <label>Business name</label><input id="sf-name" type="text" value="${escapeHtml(t.name)}">
+      <div class="grid2">
+        <div><label>Currency</label><input id="sf-currency" type="text" value="${escapeHtml(t.currency)}"></div>
+        <div><label>Tax mode</label><select id="sf-taxmode"><option value="vat" ${t.tax_mode==='vat'?'selected':''}>VAT</option><option value="gst" ${t.tax_mode==='gst'?'selected':''}>GST</option><option value="none" ${t.tax_mode==='none'?'selected':''}>None</option></select></div>
+      </div>
+      <div class="grid2">
+        <div><label>Tax rate (%)</label><input id="sf-taxrate" type="number" step="0.01" value="${t.tax_rate}"></div>
+        <div><label>Tax label</label><input id="sf-taxlabel" type="text" value="${escapeHtml(t.tax_label)}"></div>
+      </div>
+      <h3>Cancellation policy</h3>
+      <div class="grid2">
+        <div><label>Fee type</label><select id="sf-feetype"><option value="flat" ${t.cancellation_fee_type==='flat'?'selected':''}>Flat amount</option><option value="percent" ${t.cancellation_fee_type==='percent'?'selected':''}>% of job price</option></select></div>
+        <div><label>Fee value</label><input id="sf-feevalue" type="number" step="0.01" value="${t.cancellation_fee_value}"></div>
+      </div>
+      <label>Cancellation window (hours before job start)</label><input id="sf-window" type="number" step="1" value="${t.cancellation_window_hours}">
+      <button class="btn btn-primary" id="settings-save-btn">Save Settings</button>
+    </div>
+  `;
+  $('#settings-save-btn').addEventListener('click', async () => {
+    const payload = {
+      name: $('#sf-name').value.trim(), currency: $('#sf-currency').value.trim(), tax_mode: $('#sf-taxmode').value,
+      tax_rate: Number($('#sf-taxrate').value), tax_label: $('#sf-taxlabel').value.trim(),
+      cancellation_fee_type: $('#sf-feetype').value, cancellation_fee_value: Number($('#sf-feevalue').value),
+      cancellation_window_hours: Number($('#sf-window').value),
+    };
+    try {
+      await api('/api/tenant', { method: 'PATCH', body: JSON.stringify(payload) });
+      $('#settings-msg').innerHTML = '<div class="success">Saved.</div>';
+    } catch (e) { $('#settings-msg').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+  });
+}
+</script>
+</body>
+</html>

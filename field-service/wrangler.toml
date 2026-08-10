@@ -1,0 +1,33 @@
+name = "leadvyne-field-service-api"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# Daily sweep: generate invoices for due recurring_plans, flip unpaid+overdue invoices to
+# 'overdue' (see runRecurringBillingSweep in worker.js). Independent of the main platform's
+# cron schedules in ../cloudflare-worker/wrangler.toml — this module owns its own trigger.
+[triggers]
+crons = ["0 2 * * *"]
+
+# Own D1 database — NOT the leadvyne-d1 binding used by ../cloudflare-worker. Keeping tenants,
+# jobs, invoices, etc. in a separate database is what makes this module removable/independently
+# deployable without touching the existing platform's data.
+# One-time setup:
+#   1. wrangler d1 create leadvyne-field-service-d1
+#   2. Paste the returned database_id below over the placeholder.
+#   3. wrangler d1 migrations apply leadvyne-field-service-d1 --remote
+[[d1_databases]]
+binding = "DB"
+database_name = "leadvyne-field-service-d1"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# Non-secret config (safe to commit).
+[vars]
+# Comma-separated list of frontend origins allowed to call this API (owner.html / staff.html /
+# customer.html). Add each domain you actually deploy the frontend/ folder to.
+ALLOWED_ORIGINS = "https://fs.leadvyne.com,http://localhost:8080"
+
+# Secrets (NOT stored here — set via `wrangler secret put <NAME>`):
+#   SESSION_SIGNING_KEY   long random string signing/verifying JWTs, e.g. `openssl rand -hex 32`.
+#                         Must NOT be the same value as the main platform's SESSION_SIGNING_KEY —
+#                         keeping them distinct means a leak of one never lets someone forge
+#                         tokens for the other.
