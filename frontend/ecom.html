@@ -480,6 +480,8 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <select class="s-input" id="pmStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
       </div>
       <div class="s-sec"><span class="s-lbl">Image Link</span><input class="s-input" id="pmImage" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Image Link 2 (optional)</span><input class="s-input" id="pmImage2" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Image Link 3 (optional)</span><input class="s-input" id="pmImage3" type="url" placeholder="Google Drive share link"></div>
       <div class="s-sec"><span class="s-lbl">Audio Note Link</span><input class="s-input" id="pmAudioUrl" type="url" placeholder="Google Drive share link"></div>
       <div class="s-sec"><span class="s-lbl">Video Link</span><input class="s-input" id="pmVideoUrl" type="url" placeholder="Google Drive share link"></div>
       <div class="s-sec"><span class="s-lbl">PDF Link</span><input class="s-input" id="pmPdfUrl" type="url" placeholder="Google Drive share link"></div>
@@ -490,7 +492,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <div class="s-hint">Sent instead of your default storefront link when the bot shares this product — use this if you sell it somewhere other than Shopify (Instagram, Amazon, a landing page, a marketplace listing). Leave blank to keep using your storefront link.</div>
       </div>
     </div>
-    <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Image/Audio/Video/PDF Links are pasted Google Drive share links (shared as "Anyone with the link can view") — the bot sends the audio note, video and/or PDF (e.g. a spec sheet or brochure) right after the product photo whenever a customer asks about this specific product.</div>
+    <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Image/Audio/Video/PDF Links are pasted Google Drive share links (shared as "Anyone with the link can view"). Image Link is the main photo sent with the bot's reply; Image Link 2/3 are optional extra photos, sent right after — along with the audio note, video and/or PDF (e.g. a spec sheet or brochure) — whenever a customer asks about this specific product.</div>
     <div class="s-sec">
       <span class="s-lbl">Description</span>
       <textarea class="s-input" id="pmDescription" rows="3" oninput="renderPmCrossSell()"></textarea>
@@ -970,7 +972,7 @@ const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'G
 // Fields specific to the non-default styles (Cosmetics/Haircare/General) — see onProductStyleChange
 // and the data-style-group attributes on their <div class="s-sec"> in the modal markup above.
 const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod'];
-const PRODUCT_MODAL_FIELDS = ['pmName','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
+const PRODUCT_MODAL_FIELDS = ['pmName','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
 
 function openAddProductModal() {
   if (!ecomTableIds.products) { alert('Set the Products Table ID in Settings first.'); return; }
@@ -1017,6 +1019,8 @@ function openEditProductModal(id) {
   document.getElementById('pmStock').value = p.stock ?? '';
   document.getElementById('pmStatus').value = p.status === 'inactive' ? 'inactive' : 'active';
   document.getElementById('pmImage').value = p.image_url || '';
+  document.getElementById('pmImage2').value = p.image_url_2 || '';
+  document.getElementById('pmImage3').value = p.image_url_3 || '';
   document.getElementById('pmAudioUrl').value = p.audio_url || '';
   document.getElementById('pmVideoUrl').value = p.video_url || '';
   document.getElementById('pmPdfUrl').value = p.pdf_url || '';
@@ -1086,6 +1090,8 @@ async function submitProductForm() {
     stock: parseInt(document.getElementById('pmStock').value, 10) || 0,
     status: document.getElementById('pmStatus').value,
     image_url: document.getElementById('pmImage').value.trim(),
+    image_url_2: document.getElementById('pmImage2').value.trim(),
+    image_url_3: document.getElementById('pmImage3').value.trim(),
     audio_url: document.getElementById('pmAudioUrl').value.trim(),
     video_url: document.getElementById('pmVideoUrl').value.trim(),
     pdf_url: document.getElementById('pmPdfUrl').value.trim(),
