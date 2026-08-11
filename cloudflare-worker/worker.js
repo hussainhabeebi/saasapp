@@ -6524,6 +6524,73 @@ async function handleEcomPromotionDelete(request, env){
   return json({ok:true});
 }
 
+/* ── TESTIMONIALS (migrations/0046_ecom_testimonials.sql, Ecom → 🌟 Testimonials tab) ──
+   Same D1-backed CRUD shape as Promotions above. product_ids is a JSON array of NocoDB product
+   Ids from this client's own products table; empty means the testimonial applies to every
+   product. engineMaybeSendProductTestimonial (further down) sends the matching one's image/video
+   the first time a lead's chat resolves to that product, once per (lead, product) ever. ── */
+async function handleEcomTestimonialsList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM ecom_testimonials WHERE client_id=? ORDER BY created_at DESC`).bind(Number(clientId)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id, product_ids:engineParseJsonField(r.product_ids, [])}))});
+}
+async function handleEcomTestimonialCreate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const text=String(body.text||'').trim().slice(0,1000);
+  const customerName=String(body.customer_name||'').trim().slice(0,120);
+  if(!text && !customerName) return json({error:'text or customer_name required'},400);
+  const productIds=Array.isArray(body.product_ids)?body.product_ids.map(Number).filter(n=>Number.isFinite(n)):[];
+  const r=await env.DB.prepare(
+    `INSERT INTO ecom_testimonials (client_id, customer_name, text, product_ids, image_url, video_url, status, created_at) VALUES (?,?,?,?,?,?,?,?)`
+  ).bind(
+    Number(clientId), customerName, text, JSON.stringify(productIds),
+    body.image_url?String(body.image_url).trim().slice(0,500):null,
+    body.video_url?String(body.video_url).trim().slice(0,500):null,
+    body.status==='inactive'?'inactive':'active',
+    new Date().toISOString()
+  ).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId)});
+}
+async function findEcomTestimonial(env, id){
+  return await env.DB.prepare(`SELECT * FROM ecom_testimonials WHERE id=?`).bind(Number(id)).first();
+}
+async function handleEcomTestimonialUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEcomTestimonial(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  if(body.customer_name!==undefined){ sets.push('customer_name=?'); vals.push(String(body.customer_name).trim().slice(0,120)); }
+  if(body.text!==undefined){ sets.push('text=?'); vals.push(String(body.text).trim().slice(0,1000)); }
+  if(body.product_ids!==undefined){
+    const productIds=Array.isArray(body.product_ids)?body.product_ids.map(Number).filter(n=>Number.isFinite(n)):[];
+    sets.push('product_ids=?'); vals.push(JSON.stringify(productIds));
+  }
+  if(body.image_url!==undefined){ sets.push('image_url=?'); vals.push(body.image_url?String(body.image_url).trim().slice(0,500):null); }
+  if(body.video_url!==undefined){ sets.push('video_url=?'); vals.push(body.video_url?String(body.video_url).trim().slice(0,500):null); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(body.status==='inactive'?'inactive':'active'); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE ecom_testimonials SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleEcomTestimonialDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEcomTestimonial(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM ecom_testimonials WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
 // Up to 3 photos per category (no video slot — unlike Hospitality's units, a category is a
 // grouping concept, not a bookable thing worth a walkthrough video). image_url_1/2/3 now hold a
 // pasted Google Drive share link (same "Ecommerce categories — photos" switch as Hospitality's
@@ -6709,6 +6776,40 @@ async function engineMaybeSendPromoOffer(env, c, clientId, convId, userText){
     if(match.audio_url) await sendDriveMediaToChatwoot(c, convId, match.audio_url, '');
     if(match.video_url) await sendDriveMediaToChatwoot(c, convId, match.video_url, '');
   }catch(e){ await reportOpsError(env, 'engineMaybeSendPromoOffer', e, {clientId, convId}); }
+}
+
+/* ── TESTIMONIALS engine hook (migrations/0046_ecom_testimonials.sql) ────────────────────────
+   Fires once a specific product has been resolved this turn (order or enquiry — see the caller,
+   which tracks the matched product across engineRouteFlow's order-detection block the same way
+   engineMaybeSendEcomCategoryMedia's caller tracks orderHandledInline). Picks the most relevant
+   active testimonial for that product — one naming it specifically over one that applies
+   storewide — and sends its text plus image/video, once per (lead, product) ever
+   (ecom_testimonial_sent), same "supplementary message after the AI's own reply" layering as
+   engineMaybeSendPromoOffer/engineMaybeSendEcomCategoryMedia above. */
+async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, product){
+  if(c.industry!=='ecommerce' || !product?.Id || !resolvedLeadId || !convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const already=await env.DB.prepare(`SELECT id FROM ecom_testimonial_sent WHERE lead_id=? AND product_id=?`).bind(resolvedLeadId, product.Id).first();
+    if(already) return;
+    const {results:testimonials}=await env.DB.prepare(`SELECT * FROM ecom_testimonials WHERE client_id=? AND status='active'`).bind(Number(clientId)).all();
+    if(!testimonials||!testimonials.length) return;
+    let bestMatch=null;
+    for(const t of testimonials){
+      const productIds=engineParseJsonField(t.product_ids, []);
+      if(Array.isArray(productIds) && productIds.includes(product.Id)){ bestMatch=t; break; }
+      if(!bestMatch && (!Array.isArray(productIds) || !productIds.length)) bestMatch=t; // storewide fallback, keep looking for a more specific one
+    }
+    if(!bestMatch) return;
+    const quote=(bestMatch.text||'').trim();
+    const attribution=bestMatch.customer_name?` — ${bestMatch.customer_name}`:'';
+    const replyText=quote?`⭐ Here's what a customer had to say:\n\n"${quote}"${attribution}`:`⭐ Take a look at what our customers say${bestMatch.customer_name?' — '+bestMatch.customer_name:''}!`;
+    await engineSendChatwootReply(env, c, clientId, convId, replyText);
+    if(bestMatch.image_url) await sendDriveMediaToChatwoot(c, convId, bestMatch.image_url, '');
+    if(bestMatch.video_url) await sendDriveMediaToChatwoot(c, convId, bestMatch.video_url, '');
+    await env.DB.prepare(`INSERT OR IGNORE INTO ecom_testimonial_sent (client_id, lead_id, product_id, testimonial_id, sent_at) VALUES (?,?,?,?,?)`)
+      .bind(Number(clientId), resolvedLeadId, product.Id, bestMatch.id, new Date().toISOString()).run();
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendProductTestimonial', e, {clientId, convId}); }
 }
 
 /* ── ADVANCED PIPELINE — escalating follow-up cadence (SETUP.md "Advanced Pipeline follow-up
@@ -10289,6 +10390,10 @@ async function handleEngineWebhook(request, env, secret){
 
     let sentText=null;
     let orderHandledInline=false;
+    // Tracked across the order-detection block below (same reasoning as orderHandledInline) so
+    // engineMaybeSendProductTestimonial, called later once resolvedLeadId exists, knows which
+    // product (if any) this turn actually resolved to.
+    let matchedProduct=null;
     // Chat-based order collection (ecom_order_link_enabled==='No', see the toggle in ecom.html →
     // Settings) — a dedicated two-step ladder (order_collect_items → order_collect_address →
     // finalize) that fully overrides whatever engineRouteFlow decided for these two stages only,
@@ -10358,6 +10463,7 @@ async function handleEngineWebhook(request, env, secret){
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       if(detection.signal){
         const product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
+        if(product) matchedProduct=product;
         if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
           // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
           // instead: ask for the item(s) now, address next turn, then finalizeChatOrder writes the
@@ -10569,6 +10675,9 @@ async function handleEngineWebhook(request, env, secret){
     // Promotions & Offers (migrations/0045_ecom_promotions.sql) — see engineMaybeSendPromoOffer's
     // own comment for the code-match / keyword-match split.
     await engineMaybeSendPromoOffer(env, c, clientId, convId, userText);
+    // Testimonials (migrations/0046_ecom_testimonials.sql) — matchedProduct is whatever
+    // product the order-detection block above resolved this turn, if any.
+    await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
     // background promise left running past the returned Response risks being cut off mid-flight.
@@ -18085,6 +18194,10 @@ export default {
       else if(url.pathname==='/ecom/promotions' && request.method==='POST'){ res=await handleEcomPromotionCreate(request, env); }
       else if(url.pathname==='/ecom/promotions' && request.method==='PATCH'){ res=await handleEcomPromotionUpdate(request, env); }
       else if(url.pathname==='/ecom/promotions' && request.method==='DELETE'){ res=await handleEcomPromotionDelete(request, env); }
+      else if(url.pathname==='/ecom/testimonials' && request.method==='GET'){ res=await handleEcomTestimonialsList(request, env); }
+      else if(url.pathname==='/ecom/testimonials' && request.method==='POST'){ res=await handleEcomTestimonialCreate(request, env); }
+      else if(url.pathname==='/ecom/testimonials' && request.method==='PATCH'){ res=await handleEcomTestimonialUpdate(request, env); }
+      else if(url.pathname==='/ecom/testimonials' && request.method==='DELETE'){ res=await handleEcomTestimonialDelete(request, env); }
       else if(url.pathname==='/ecom/categories/media' && request.method==='POST'){ res=await handleEcomCategoryMediaUpload(request, env); }
       else if(url.pathname==='/ecom/categories/media' && request.method==='DELETE'){ res=await handleEcomCategoryMediaDelete(request, env); }
       else if(url.pathname==='/pipeline/followups/on-stage-change' && request.method==='POST'){ res=await handlePipelineStageChange(request, env); }
