@@ -6781,9 +6781,13 @@ async function engineMaybeSendPromoOffer(env, c, clientId, convId, userText){
 /* ── TESTIMONIALS engine hook (migrations/0046_ecom_testimonials.sql) ────────────────────────
    Fires once a specific product has been resolved this turn (order or enquiry — see the caller,
    which tracks the matched product across engineRouteFlow's order-detection block the same way
-   engineMaybeSendEcomCategoryMedia's caller tracks orderHandledInline). Picks the most relevant
-   active testimonial for that product — one naming it specifically over one that applies
-   storewide — and sends its text plus image/video, once per (lead, product) ever
+   engineMaybeSendEcomCategoryMedia's caller tracks orderHandledInline). Picks ONE testimonial at
+   random from whichever candidates apply to that product — product-specific ones over storewide
+   ones when any exist, so it's still relevant, but not always the same one every time — and sends
+   ONLY its image, no text and no video (a deliberate choice — a bare photo reads as a quick,
+   unobtrusive bit of social proof; a caption or a second video attachment would feel like the bot
+   interrupting the conversation with a sales pitch). Candidates with no image_url are skipped
+   entirely — there's nothing to send. Deduped once per (lead, product) ever
    (ecom_testimonial_sent), same "supplementary message after the AI's own reply" layering as
    engineMaybeSendPromoOffer/engineMaybeSendEcomCategoryMedia above. */
 async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, product){
@@ -6794,19 +6798,17 @@ async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resol
     if(already) return;
     const {results:testimonials}=await env.DB.prepare(`SELECT * FROM ecom_testimonials WHERE client_id=? AND status='active'`).bind(Number(clientId)).all();
     if(!testimonials||!testimonials.length) return;
-    let bestMatch=null;
+    const specific=[], storewide=[];
     for(const t of testimonials){
+      if(!t.image_url) continue; // nothing to send without an image
       const productIds=engineParseJsonField(t.product_ids, []);
-      if(Array.isArray(productIds) && productIds.includes(product.Id)){ bestMatch=t; break; }
-      if(!bestMatch && (!Array.isArray(productIds) || !productIds.length)) bestMatch=t; // storewide fallback, keep looking for a more specific one
+      if(Array.isArray(productIds) && productIds.includes(product.Id)) specific.push(t);
+      else if(!Array.isArray(productIds) || !productIds.length) storewide.push(t);
     }
-    if(!bestMatch) return;
-    const quote=(bestMatch.text||'').trim();
-    const attribution=bestMatch.customer_name?` — ${bestMatch.customer_name}`:'';
-    const replyText=quote?`⭐ Here's what a customer had to say:\n\n"${quote}"${attribution}`:`⭐ Take a look at what our customers say${bestMatch.customer_name?' — '+bestMatch.customer_name:''}!`;
-    await engineSendChatwootReply(env, c, clientId, convId, replyText);
-    if(bestMatch.image_url) await sendDriveMediaToChatwoot(c, convId, bestMatch.image_url, '');
-    if(bestMatch.video_url) await sendDriveMediaToChatwoot(c, convId, bestMatch.video_url, '');
+    const candidates=specific.length?specific:storewide;
+    if(!candidates.length) return;
+    const bestMatch=candidates[Math.floor(Math.random()*candidates.length)];
+    await sendDriveMediaToChatwoot(c, convId, bestMatch.image_url, '');
     await env.DB.prepare(`INSERT OR IGNORE INTO ecom_testimonial_sent (client_id, lead_id, product_id, testimonial_id, sent_at) VALUES (?,?,?,?,?)`)
       .bind(Number(clientId), resolvedLeadId, product.Id, bestMatch.id, new Date().toISOString()).run();
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductTestimonial', e, {clientId, convId}); }
