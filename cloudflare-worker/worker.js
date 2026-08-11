@@ -8466,8 +8466,14 @@ function engineRouteFlow(c, state, userText, cls){
   // whole dispatch) uses humanReason to still recognize an unambiguous product enquiry/order even
   // when route ends up 'human' for this non-explicit reason, but never overrides an explicit ask or
   // real frustration — see that check's own comment.
-  if(effIntent==='WANTS_HUMAN' && botConfig.handover_enabled!==false){ route='human'; humanReason='explicit'; }
-  else if(isFinalStage && POSITIVE.has(effIntent) && botConfig.handover_enabled!==false){
+  // handover_enabled — a flat CLIENTS field (Settings → Human Handover, matching
+  // handover_silence_enabled's own naming/value convention), NOT the same-named bot_config JSON
+  // flag this used to read: that one never had a dashboard control, so nothing could set it and
+  // every client was silently always-enabled. 'No' here turns off human escalation entirely (every
+  // branch below), so the bot always answers itself and Human Deals has nothing to ever queue —
+  // dashboard.html hides that tab automatically while this is off.
+  if(effIntent==='WANTS_HUMAN' && c.handover_enabled!=='No'){ route='human'; humanReason='explicit'; }
+  else if(isFinalStage && POSITIVE.has(effIntent) && c.handover_enabled!=='No'){
     // Reached the end of the funnel with a positive reply — this used to hand straight over to a
     // human with no order/trial link ever sent. Real product requirement: when a self-serve link
     // is configured (Order Link in Integrations, or a Cal.com link), try to let the customer
@@ -8509,7 +8515,7 @@ function engineRouteFlow(c, state, userText, cls){
   else if(!qualDone && qualStage!==null) route='qualify_next';
   else route=industryFaqRoute;
 
-  if(sentiment==='Frustrated' && route!=='human' && botConfig.handover_enabled!==false){
+  if(sentiment==='Frustrated' && route!=='human' && c.handover_enabled!=='No'){
     route='human'; humanReason='explicit';
     reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
   }
@@ -8520,7 +8526,7 @@ function engineRouteFlow(c, state, userText, cls){
   // 'explicit' — same heuristic-not-request treatment engineRouteFlow already gives
   // 'final_stage_positive' (see handleEngineWebhook's humanBlocksOrderCheck), so an unambiguous
   // product/order signal can still override it.
-  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && botConfig.handover_enabled!==false && botConfig.proactive_handover_enabled!==false){
+  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled!==false){
     route='human'; humanReason='low_confidence';
     reply=botConfig.callback_msg_lowconf||botConfig.callback_msg_frustrated||botConfig.callback_msg||"I want to make sure you get the right answer — connecting you with a member of our team now.";
   } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){

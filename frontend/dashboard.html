@@ -1161,7 +1161,7 @@ const ROLES = {
   <!-- Desktop nav -->
   <div id="desktopNav">
     <button class="dnTab active" data-page="home">🏠 Home</button>
-    <button class="dnTab" data-page="humandeals">🤝 Human Deals<span id="dnHdBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
+    <button class="dnTab" data-page="humandeals" id="dnHumandealsTab">🤝 Human Deals<span id="dnHdBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab" data-page="chats">💬 Chats<span id="dnChatBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab" data-page="leads">👥 Leads</button>
     <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
@@ -2249,7 +2249,14 @@ const ROLES = {
 
           <div class="settings-section">
             <div class="s-head">🤝 Human Handover</div>
-            <div class="s-note">By default the bot keeps replying even after a lead is handed over to a human (e.g. outside business hours, or while waiting for a rep to pick up) — the lead still shows as handed over either way. Turn this on if you'd rather the bot go fully silent the moment a human takes over, so it can never talk over your team.</div>
+            <div class="s-note">Turn this off if you never want the bot escalating to a human at all — no "connecting you to our advisor" replies, no entries in the Human Deals queue, regardless of what a customer asks or how frustrated they sound. The bot answers everything itself instead. The Human Deals tab is hidden automatically while this is off, since there'd be nothing to triage there.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+              <div><label class="form-label">Human handover</label><select class="form-input" id="cfgHandoverEnabled"><option value="Yes">On — bot can hand off to a human</option><option value="No">Off — bot always answers itself</option></select></div>
+              <button class="save-btn" id="saveHandoverEnabled">Save</button>
+              <span class="save-msg" id="saveHandoverEnabledMsg"></span>
+              <span id="handoverEnabledStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+            <div class="s-note">With handover on (above), the bot still keeps replying even after a lead is handed over to a human by default (e.g. outside business hours, or while waiting for a rep to pick up) — the lead still shows as handed over either way. Turn this on if you'd rather the bot go fully silent the moment a human takes over, so it can never talk over your team.</div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
               <div><label class="form-label">Silence bot after handover</label><select class="form-input" id="cfgHandoverSilence"><option value="No">Off — bot keeps replying</option><option value="Yes">On — bot goes silent</option></select></div>
               <button class="save-btn" id="saveHandoverSilence">Save</button>
@@ -3235,7 +3242,7 @@ const ROLES = {
   <div id="bottomNav">
     <button class="bnItem active" data-page="home"><span class="bnIcon">🏠</span><span class="bnLabel">Home</span></button>
     <button class="bnItem" data-page="chats" style="position:relative"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span><span id="bnChatBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
-    <button class="bnItem" data-page="humandeals" style="position:relative"><span class="bnIcon">🤝</span><span class="bnLabel">Deals</span><span id="bnHdBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
+    <button class="bnItem" data-page="humandeals" id="bnHumandealsTab" style="position:relative"><span class="bnIcon">🤝</span><span class="bnLabel">Deals</span><span id="bnHdBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
     <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span><span id="bnTaskBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
     <button class="bnItem" id="bnMore" onclick="openMoreSheet()"><span class="bnIcon">⋯</span><span class="bnLabel">More</span></button>
   </div>
@@ -17188,6 +17195,11 @@ function setupFeatureTabToggle({field, selectId, saveBtnId, msgId, badgeId, tabI
   });
   return populate;
 }
+// Human handover on/off (distinct from handover_silence_enabled above, which only controls
+// whether the bot stays quiet AFTER a handover already happened) — 'No' means the bot never
+// routes to a human at all, so the Human Deals tab (nothing to triage there) hides along with it,
+// same tabIds-hide mechanism as the four below.
+const _populateHandoverEnabled=setupFeatureTabToggle({field:'handover_enabled', selectId:'cfgHandoverEnabled', saveBtnId:'saveHandoverEnabled', msgId:'saveHandoverEnabledMsg', badgeId:'handoverEnabledStatusBadge', tabIds:['dnHumandealsTab','bnHumandealsTab']});
 const _populateCampaignsTab=setupFeatureTabToggle({field:'feat_campaigns_enabled', selectId:'cfgFeatCampaignsEnabled', saveBtnId:'saveFeatCampaignsEnabled', msgId:'saveFeatCampaignsEnabledMsg', badgeId:'campaignsTabStatusBadge', tabIds:['dnCampaignsTab','moreCampaignsTab']});
 const _populateTeamTab=setupFeatureTabToggle({field:'feat_team_enabled', selectId:'cfgFeatTeamEnabled', saveBtnId:'saveFeatTeamEnabled', msgId:'saveFeatTeamEnabledMsg', badgeId:'teamTabStatusBadge', tabIds:['dnTeamTab','moreTeamTab']});
 const _populateReportsTab=setupFeatureTabToggle({field:'feat_reports_enabled', selectId:'cfgFeatReportsEnabled', saveBtnId:'saveFeatReportsEnabled', msgId:'saveFeatReportsEnabledMsg', badgeId:'reportsTabStatusBadge', tabIds:['dnReportsTab','moreReportsTab']});
@@ -17198,6 +17210,7 @@ const _populateAccountingTab=setupFeatureTabToggle({field:'feat_accounting_enabl
 // happens to visit the Modules page — mirrors how updateAgencyTabVisibility()/etc. are also
 // called from showApp() for the Industry Modules above.
 function updateFeatureTabVisibility(){
+  _populateHandoverEnabled();
   _populateCampaignsTab(); _populateTeamTab(); _populateReportsTab(); _populateKbTab(); _populateAccountingTab();
 }
 
