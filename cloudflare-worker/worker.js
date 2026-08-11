@@ -7255,7 +7255,17 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
 // row logPendingOrder writes here. Only used for the built-in Ecommerce module's own storefront; a
 // client selling through their own external_store_link (Shopify etc.) has no in-house checkout
 // page for this to point at, so that link is used unchanged, same as buildOrderLink above.
-function buildCheckoutLink(c, clientId, sku){
+// `product` is optional (a general FAQ/objection reply has no specific product in view) — when
+// given, its own shopify_product_url/product_link override the client-wide external_store_link
+// exactly like buildOrderLink above does; this used to skip straight to external_store_link with
+// no way to honor a per-product override at all, so a product with its own Product Link set
+// (ecom.html, "sold somewhere other than Shopify") still got the generic client-wide/catalog link
+// in the live chat order flow — the one place most real orders actually happen.
+function buildCheckoutLink(c, clientId, sku, product){
+  const shopifyProductUrl=(product?.shopify_product_url||'').trim();
+  if(shopifyProductUrl) return shopifyProductUrl;
+  const productLink=(product?.product_link||'').trim();
+  if(productLink) return productLink;
   const ext=(c.external_store_link||'').trim();
   if(ext) return ext;
   return `https://app.leadvyne.com/order.html?client=${clientId}&sku=${encodeURIComponent(sku)}`;
@@ -7273,9 +7283,9 @@ function buildCheckoutLink(c, clientId, sku){
 // `buildCheckoutLink`'s own no-sku behavior (`external_store_link`, or the generic order.html
 // catalog page). Cheap early-out via the regex test so clients who never use this placeholder pay
 // nothing extra.
-function engineSubstituteOrderLinkPlaceholder(text, c, clientId, sku){
+function engineSubstituteOrderLinkPlaceholder(text, c, clientId, sku, product){
   if(!text || c.industry!=='ecommerce' || !/\[order_link\]/i.test(text)) return text;
-  return text.replace(/\[order_link\]/gi, buildCheckoutLink(c, clientId, sku||''));
+  return text.replace(/\[order_link\]/gi, buildCheckoutLink(c, clientId, sku||'', product));
 }
 
 // Core "actually send the order link" logic — direct Meta Graph API, bypassing Chatwoot. Kept as
@@ -10361,7 +10371,7 @@ async function handleEngineWebhook(request, env, secret){
           await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           orderHandledInline=true;
         } else if(detection.mode==='order' && product){
-          const link=buildCheckoutLink(c, clientId, detection.sku);
+          const link=buildCheckoutLink(c, clientId, detection.sku, product);
           sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
           routing.reply=sentText;
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
@@ -10376,10 +10386,10 @@ async function handleEngineWebhook(request, env, secret){
         } else if(detection.mode==='enquiry' && product){
           // Opt-in (ecom_link_on_enquiry) — see engineBuildProductEnquirySystemPrompt's own
           // comment on this parameter for why it's off by default.
-          const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? buildCheckoutLink(c, clientId, product.sku) : null;
+          const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? buildCheckoutLink(c, clientId, product.sku, product) : null;
           const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink);
           sentText=await engineCallLlm(env, c, sysPrompt, userText, 200);
-          sentText=engineSubstituteOrderLinkPlaceholder(sentText, c, clientId, product.sku);
+          sentText=engineSubstituteOrderLinkPlaceholder(sentText, c, clientId, product.sku, product);
           routing.reply=sentText;
           // Photo sent whenever a product is confidently identified, link or no link — a customer
           // asking about size/color/stock should see the actual item, not just read a description
