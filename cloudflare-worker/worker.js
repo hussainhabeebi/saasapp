@@ -6001,7 +6001,10 @@ const _ecomStyleFieldsEnsured=new Set();
 // hand-edited before this system existed) has no legitimate reason to reject a value a merchant
 // picked from their own Categories list. Left as a silently-dropped, unrepaired, unsurfaced write
 // it was simply "category selection doesn't save" with no error anywhere a merchant could see.
-const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','audio_url','video_url','pdf_url'];
+// image_url included alongside the newer image_url_2/image_url_3 (up to 3 photos per product,
+// same convention as Hospitality units and Ecom Categories) — it was the one original field this
+// list somehow never covered, same silent-drop risk category's own fix addressed above.
+const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','audio_url','video_url','pdf_url'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -7237,6 +7240,11 @@ async function ecomResolveProduct(env, clientId, sku, productName){
 async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
   if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   try{
+    // image_url itself is sent separately, inline as the reply's own photo+caption
+    // (engineDeliverReply's imageUrl param at each call site) — these two are extra angles/views
+    // (ecom.html "Image Link 2/3"), sent as follow-up attachments same as audio/video/pdf below.
+    if(product.image_url_2) await sendDriveMediaToChatwoot(c, convId, product.image_url_2, '');
+    if(product.image_url_3) await sendDriveMediaToChatwoot(c, convId, product.image_url_3, '');
     if(product.audio_url) await sendDriveMediaToChatwoot(c, convId, product.audio_url, '');
     if(product.video_url) await sendDriveMediaToChatwoot(c, convId, product.video_url, '');
     if(product.pdf_url) await sendDriveMediaToChatwoot(c, convId, product.pdf_url, '');
