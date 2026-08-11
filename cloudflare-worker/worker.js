@@ -6001,10 +6001,11 @@ const _ecomStyleFieldsEnsured=new Set();
 // hand-edited before this system existed) has no legitimate reason to reject a value a merchant
 // picked from their own Categories list. Left as a silently-dropped, unrepaired, unsurfaced write
 // it was simply "category selection doesn't save" with no error anywhere a merchant could see.
-// image_url included alongside the newer image_url_2/image_url_3 (up to 3 photos per product,
-// same convention as Hospitality units and Ecom Categories) — it was the one original field this
-// list somehow never covered, same silent-drop risk category's own fix addressed above.
-const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','audio_url','video_url','pdf_url'];
+// image_url included alongside the newer image_url_2..image_url_5 (up to 5 photos per product —
+// more than Hospitality units/Ecom Categories' 3-photo convention, a deliberate product-specific
+// choice) — image_url itself was the one original field this list somehow never covered, same
+// silent-drop risk category's own fix addressed above.
+const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -6817,6 +6818,31 @@ async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resol
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductTestimonial', e, {clientId, convId}); }
 }
 
+// Explicit "give me the full details/description" phrasing — deliberately narrower than a plain
+// product enquiry (which the AI already answers conversationally, only what was actually asked —
+// see engineBuildProductEnquirySystemPrompt's own "do not recite every field like a spec sheet"
+// instruction) so this doesn't fire on every ordinary question and dump the whole description
+// unasked-for.
+const ECOM_PRODUCT_DETAILS_KEYWORD_RE=/\b(more details?|full details?|more info(?:rmation)?|product details?|tell me more|full description|describe (?:it|this)|specifications?|specs?)\b/i;
+
+/* ── PRODUCT DESCRIPTION on request — no new field, reuses the existing product `description`
+   (ecom.html's Description textarea, already used as AI grounding context via
+   engineBuildProductEnquirySystemPrompt) as a customer-facing message in its own right. The AI's
+   own enquiry reply stays conversational/partial as before; this sends the full description
+   verbatim as a supplementary follow-up, only when the customer's own wording asks for it
+   specifically — same layering as engineMaybeSendProductTestimonial/engineMaybeSendPromoOffer
+   above (a follow-up after the AI's own reply, not a replacement for it). No dedup — a customer
+   asking again later (e.g. they forgot) should get it again, same as the promo/keyword replies. */
+async function engineMaybeSendProductDescription(env, c, clientId, convId, userText, product){
+  if(c.industry!=='ecommerce' || !userText || !convId || !product?.description) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  if(!ECOM_PRODUCT_DETAILS_KEYWORD_RE.test(userText)) return;
+  try{
+    const heading=product.name?`📋 *${product.name}*\n\n`:'📋 ';
+    await engineSendChatwootReply(env, c, clientId, convId, `${heading}${product.description}`);
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendProductDescription', e, {clientId, convId}); }
+}
+
 /* ── ADVANCED PIPELINE — escalating follow-up cadence (SETUP.md "Advanced Pipeline follow-up
    cadence") ──
    Whenever a lead's Stage changes, this makes sure a rep always has exactly one open, tagged
@@ -7241,10 +7267,12 @@ async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
   if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   try{
     // image_url itself is sent separately, inline as the reply's own photo+caption
-    // (engineDeliverReply's imageUrl param at each call site) — these two are extra angles/views
-    // (ecom.html "Image Link 2/3"), sent as follow-up attachments same as audio/video/pdf below.
+    // (engineDeliverReply's imageUrl param at each call site) — these four are extra angles/views
+    // (ecom.html "Image Link 2"–"Image Link 5"), sent as follow-up attachments same as audio/video/pdf below.
     if(product.image_url_2) await sendDriveMediaToChatwoot(c, convId, product.image_url_2, '');
     if(product.image_url_3) await sendDriveMediaToChatwoot(c, convId, product.image_url_3, '');
+    if(product.image_url_4) await sendDriveMediaToChatwoot(c, convId, product.image_url_4, '');
+    if(product.image_url_5) await sendDriveMediaToChatwoot(c, convId, product.image_url_5, '');
     if(product.audio_url) await sendDriveMediaToChatwoot(c, convId, product.audio_url, '');
     if(product.video_url) await sendDriveMediaToChatwoot(c, convId, product.video_url, '');
     if(product.pdf_url) await sendDriveMediaToChatwoot(c, convId, product.pdf_url, '');
@@ -10688,6 +10716,8 @@ async function handleEngineWebhook(request, env, secret){
     // Testimonials (migrations/0046_ecom_testimonials.sql) — matchedProduct is whatever
     // product the order-detection block above resolved this turn, if any.
     await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
+    // Full product description on explicit request — same matchedProduct.
+    await engineMaybeSendProductDescription(env, c, clientId, convId, userText, matchedProduct);
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
     // background promise left running past the returned Response risks being cut off mid-flight.
