@@ -140,6 +140,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   <button class="tab active" data-tab="products" onclick="showTab('products')">📦 Products</button>
   <button class="tab" data-tab="categories" onclick="showTab('categories')">🏷️ Categories</button>
   <button class="tab" data-tab="promotions" onclick="showTab('promotions')">🎁 Promotions</button>
+  <button class="tab" data-tab="testimonials" onclick="showTab('testimonials')">🌟 Testimonials</button>
   <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
   <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
@@ -232,6 +233,38 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
           <tr><th>Code</th><th>Description</th><th>Applicable Products</th><th>Media</th><th>Status</th><th>Actions</th></tr>
         </thead>
         <tbody id="promotionsTbody">
+          <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- TESTIMONIALS TAB — customer testimonials the bot shares automatically: the first time a
+     customer's chat resolves to a specific product (order or enquiry), the best-matching
+     testimonial's text + image/video get sent as a follow-up, once per (lead, product) ever
+     (see engineMaybeSendProductTestimonial in worker.js). Applicable Products is optional —
+     leave empty for a testimonial that can be shared for any product. -->
+<div id="tabTestimonials" class="page">
+  <div class="stats" id="testimonialStats">
+    <div class="stat"><div class="stat-val" id="statTotalTestimonials">—</div><div class="stat-lbl">Total Testimonials</div></div>
+    <div class="stat"><div class="stat-val" id="statActiveTestimonials">—</div><div class="stat-lbl">Active</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">Testimonials</div>
+      <div class="card-actions">
+        <input class="search-input" id="testimonialSearch" type="text" placeholder="🔍 Search testimonials…" oninput="renderTestimonialsTable()">
+        <button class="save-btn" onclick="openAddTestimonialModal()">+ Add Testimonial</button>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:12px">The first time a customer's chat resolves to one of a testimonial's applicable products, the bot shares its text plus photo/video right after its normal reply — once per customer per product.</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Customer</th><th>Testimonial</th><th>Applicable Products</th><th>Media</th><th>Status</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="testimonialsTbody">
           <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
         </tbody>
       </table>
@@ -519,6 +552,41 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 </div>
 
+<!-- TESTIMONIAL MODAL -->
+<div class="modal-overlay" id="testimonialModalOverlay" onclick="if(event.target===this) closeTestimonialModal()">
+  <div class="modal-card">
+    <div class="modal-title" id="testimonialModalTitle">Add Testimonial</div>
+    <input type="hidden" id="tmId">
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Customer Name</span><input class="s-input" id="tmCustomerName" type="text" placeholder="e.g. Priya K."></div>
+      <div class="s-sec">
+        <span class="s-lbl">Status</span>
+        <select class="s-input" id="tmStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Testimonial Text</span>
+      <textarea class="s-input" id="tmText" rows="3" placeholder="e.g. &quot;Absolutely loved the quality — arrived faster than expected too!&quot;"></textarea>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Applicable Products</span>
+      <input class="s-input" id="tmProductSearch" type="text" placeholder="🔍 Filter products…" oninput="renderTmProductList()">
+      <div id="tmProductList" style="max-height:160px;overflow-y:auto;border:1.5px solid var(--line);border-radius:10px;padding:8px 10px;margin-top:6px;background:var(--bg)"></div>
+      <div class="s-hint">Leave nothing checked so this testimonial can be shared for any product. Only products from the Products tab appear here.</div>
+    </div>
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Image Link</span><input class="s-input" id="tmImage" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Video Link</span><input class="s-input" id="tmVideoUrl" type="url" placeholder="Google Drive share link"></div>
+    </div>
+    <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Image/Video Links are pasted Google Drive share links (shared as "Anyone with the link can view") — the bot sends whichever are set right after the testimonial text, the first time a chat resolves to one of the applicable products above.</div>
+    <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" onclick="closeTestimonialModal()">Cancel</button>
+      <button class="save-btn" id="testimonialModalSaveBtn" onclick="submitTestimonialForm()">Save Testimonial</button>
+      <span class="save-msg" id="testimonialModalMsg"></span>
+    </div>
+  </div>
+</div>
+
 <!-- IMPORT PRODUCTS CSV MODAL -->
 <div class="modal-overlay" id="importModalOverlay" onclick="if(event.target===this) closeImportModal()">
   <div class="modal-card" style="max-width:820px">
@@ -648,6 +716,8 @@ let allCategories = [];
 let allOrders = [];
 let allPromotions = [];
 let pmSelectedProductIds = new Set();
+let allTestimonials = [];
+let tmSelectedProductIds = new Set();
 const ORDER_STATUS_OPTIONS = ['pending','received','processing','shipped','delivered','cancelled'];
 
 const WA_TEMPLATE_KINDS = [
@@ -719,6 +789,7 @@ async function init() {
   loadProducts();
   loadCategories();
   loadPromotions();
+  loadTestimonials();
   loadOrders();
 }
 
@@ -752,6 +823,7 @@ function showTab(name) {
   document.getElementById('tabProducts').classList.toggle('active', name === 'products');
   document.getElementById('tabCategories').classList.toggle('active', name === 'categories');
   document.getElementById('tabPromotions').classList.toggle('active', name === 'promotions');
+  document.getElementById('tabTestimonials').classList.toggle('active', name === 'testimonials');
   document.getElementById('tabOrders').classList.toggle('active', name === 'orders');
   document.getElementById('tabShopify').classList.toggle('active', name === 'shopify');
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
@@ -1626,6 +1698,152 @@ async function deletePromotionById(id) {
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     loadPromotions();
+  } catch(e) {
+    alert('Failed to delete: ' + e.message);
+  }
+}
+
+// ── TESTIMONIALS ──────────────────────────────────
+async function loadTestimonials() {
+  const tbody = document.getElementById('testimonialsTbody');
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/testimonials?client_id=${encodeURIComponent(clientId)}`);
+    const data = await r.json();
+    allTestimonials = data.list || [];
+    renderTestimonialsTable();
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="loading-row">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function renderTestimonialsTable() {
+  const tbody = document.getElementById('testimonialsTbody');
+  const q = (document.getElementById('testimonialSearch')?.value || '').trim().toLowerCase();
+  const list = q
+    ? allTestimonials.filter(t => [t.customer_name, t.text].some(v => (v||'').toLowerCase().includes(q)))
+    : allTestimonials;
+
+  document.getElementById('statTotalTestimonials').textContent = allTestimonials.length;
+  document.getElementById('statActiveTestimonials').textContent = allTestimonials.filter(t => t.status !== 'inactive').length;
+
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">🌟</div>${allTestimonials.length ? 'No testimonials match your search' : 'No testimonials yet — add one to have the bot share it automatically.'}</div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(t => {
+    const media = [t.image_url && '🖼️', t.video_url && '🎬'].filter(Boolean).join(' ') || '—';
+    const snippet = (t.text||'').length > 60 ? t.text.slice(0,60)+'…' : (t.text||'—');
+    return `
+      <tr>
+        <td>${esc(t.customer_name || '—')}</td>
+        <td>${esc(snippet)}</td>
+        <td>${esc(pmoProductNames(t.product_ids))}</td>
+        <td>${media}</td>
+        <td><span class="badge ${t.status==='inactive'?'cancelled':'shipped'}">${t.status==='inactive'?'Inactive':'Active'}</span></td>
+        <td><div class="row-actions">
+          <button class="icon-btn" onclick="openEditTestimonialModal(${t.Id})" title="Edit testimonial">✏️</button>
+          <button class="icon-btn danger" onclick="deleteTestimonialById(${t.Id})" title="Delete testimonial">🗑</button>
+        </div></td>
+      </tr>`;
+  }).join('');
+}
+
+function renderTmProductList() {
+  const wrap = document.getElementById('tmProductList');
+  const q = (document.getElementById('tmProductSearch')?.value || '').trim().toLowerCase();
+  const list = q
+    ? allProducts.filter(p => [p.name, p.sku].some(v => (v||'').toLowerCase().includes(q)))
+    : allProducts;
+  if (!list.length) { wrap.innerHTML = `<div class="s-hint">No products yet — add some in the Products tab first.</div>`; return; }
+  wrap.innerHTML = list.map(p => `
+    <label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer">
+      <input type="checkbox" value="${p.Id}" ${tmSelectedProductIds.has(p.Id)?'checked':''} onchange="if(this.checked) tmSelectedProductIds.add(${p.Id}); else tmSelectedProductIds.delete(${p.Id});">
+      <span>${esc(p.name||'—')}</span>
+      ${p.sku ? `<span style="color:var(--muted);font-family:var(--mono);font-size:11px">${esc(p.sku)}</span>` : ''}
+    </label>`).join('');
+}
+
+function openAddTestimonialModal() {
+  document.getElementById('tmId').value = '';
+  document.getElementById('tmCustomerName').value = '';
+  document.getElementById('tmText').value = '';
+  document.getElementById('tmImage').value = '';
+  document.getElementById('tmVideoUrl').value = '';
+  document.getElementById('tmStatus').value = 'active';
+  document.getElementById('tmProductSearch').value = '';
+  tmSelectedProductIds = new Set();
+  renderTmProductList();
+  document.getElementById('testimonialModalTitle').textContent = 'Add Testimonial';
+  document.getElementById('testimonialModalSaveBtn').textContent = 'Save Testimonial';
+  document.getElementById('testimonialModalMsg').textContent = '';
+  document.getElementById('testimonialModalOverlay').classList.add('active');
+  document.getElementById('tmCustomerName').focus();
+}
+
+function openEditTestimonialModal(id) {
+  const t = allTestimonials.find(x => x.Id === id);
+  if (!t) return;
+  document.getElementById('tmId').value = t.Id;
+  document.getElementById('tmCustomerName').value = t.customer_name || '';
+  document.getElementById('tmText').value = t.text || '';
+  document.getElementById('tmImage').value = t.image_url || '';
+  document.getElementById('tmVideoUrl').value = t.video_url || '';
+  document.getElementById('tmStatus').value = t.status === 'inactive' ? 'inactive' : 'active';
+  document.getElementById('tmProductSearch').value = '';
+  tmSelectedProductIds = new Set(Array.isArray(t.product_ids) ? t.product_ids : []);
+  renderTmProductList();
+  document.getElementById('testimonialModalTitle').textContent = 'Edit Testimonial';
+  document.getElementById('testimonialModalSaveBtn').textContent = 'Save Changes';
+  document.getElementById('testimonialModalMsg').textContent = '';
+  document.getElementById('testimonialModalOverlay').classList.add('active');
+  document.getElementById('tmCustomerName').focus();
+}
+
+function closeTestimonialModal() {
+  document.getElementById('testimonialModalOverlay').classList.remove('active');
+}
+
+async function submitTestimonialForm() {
+  const customerName = document.getElementById('tmCustomerName').value.trim();
+  const text = document.getElementById('tmText').value.trim();
+  if (!customerName && !text) { showMsg('testimonialModalMsg', 'Add a customer name or testimonial text'); return; }
+  const editId = document.getElementById('tmId').value;
+  const body = {
+    customer_name: customerName,
+    text,
+    product_ids: [...tmSelectedProductIds],
+    image_url: document.getElementById('tmImage').value.trim(),
+    video_url: document.getElementById('tmVideoUrl').value.trim(),
+    status: document.getElementById('tmStatus').value,
+    client_id: clientId
+  };
+  if (editId) body.Id = parseInt(editId, 10);
+  showMsg('testimonialModalMsg', 'Saving…', 10000);
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/testimonials`, {
+      method: editId ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    closeTestimonialModal();
+    loadTestimonials();
+  } catch(e) {
+    showMsg('testimonialModalMsg', 'Error: ' + e.message);
+  }
+}
+
+async function deleteTestimonialById(id) {
+  if (!confirm('Delete this testimonial? This cannot be undone.')) return;
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/testimonials`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, Id: id })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    loadTestimonials();
   } catch(e) {
     alert('Failed to delete: ' + e.message);
   }
