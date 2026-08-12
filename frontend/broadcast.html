@@ -550,8 +550,19 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
   ══════════════════════════════════════ -->
   <div id="view-fuengine" style="display:none">
     <div class="card">
+      <div class="card-title">⏰ Preferred Send Window</div>
+      <div class="msg info">A step that becomes due outside this window waits for the window to open instead of firing right away — nothing is skipped, just delayed to the next time it's within hours. Defaults to evenings, after typical office hours, since that's usually when a lead actually has time to reply on WhatsApp.</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" style="width:auto" id="fuQuietHoursEnabled" checked> Only send within this window</label>
+        <div class="form-field" style="width:110px"><label>From (hour, 0-23)</label><input type="number" min="0" max="23" id="fuQuietHoursStart" value="18"></div>
+        <div class="form-field" style="width:110px"><label>Until (hour, 0-23)</label><input type="number" min="0" max="23" id="fuQuietHoursEnd" value="21"></div>
+        <button class="btn btn-sec" onclick="saveFollowupQuietHours()">Save</button>
+        <span id="fuQuietHoursMsg" style="font-size:12.5px"></span>
+      </div>
+    </div>
+    <div class="card">
       <div class="card-title">💪 Follow-up Engine</div>
-      <div class="msg info">Every follow-up setting lives here now. The first two nudges go out as normal WhatsApp messages while the conversation is still "open" (within 24 hours) — after that, WhatsApp only allows pre-approved template messages, so the day 2/4/7 re-engagement steps each need a template chosen below (sent directly via the WhatsApp Cloud API, not through Chatwoot).</div>
+      <div class="msg info">Every follow-up setting lives here now. The first two nudges go out as normal WhatsApp messages while the conversation is still "open" (within 24 hours) — after that, WhatsApp only allows pre-approved template messages, so the day 2/4/7 re-engagement steps each need a template chosen below (sent directly via the WhatsApp Cloud API, not through Chatwoot). For ecommerce clients, a session-step message automatically gets a real low-stock line appended (e.g. "Only 3 left in…") whenever the lead's last-shown product is genuinely running low — never a fabricated countdown.</div>
 
       <div style="font-weight:700;font-size:14px;margin:14px 0 8px">📱 Before 24 Hours — Session Messages</div>
       <div id="fuLadderSession"></div>
@@ -1601,31 +1612,64 @@ function renderFollowupLadderSession(){
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
         <div class="form-field" style="width:140px"><label>Step ${step} — hours of silence</label><input type="number" min="1" max="23" id="${fuLadderFieldId(step,'hours')}" value="${esc(s.hours||(step===1?1:6))}"></div>
       </div>
-      <div class="form-field"><label>Message — use {name} for the customer's name</label><textarea id="${fuLadderFieldId(step,'message')}" rows="3">${esc(s.message||'')}</textarea></div>
+      <div class="form-field"><label>Message (Variant A) — use {name} for the customer's name</label><textarea id="${fuLadderFieldId(step,'message')}" rows="3">${esc(s.message||'')}</textarea></div>
+      <div class="form-field"><label>Variant B (optional) — leave blank to always send A. Once both have enough sends, the better-performing one starts getting sent more often.</label><textarea id="${fuLadderFieldId(step,'message_b')}" rows="3" placeholder="Optional second wording to test against Variant A">${esc(s.message_b||'')}</textarea></div>
     </div>`;
   }).join('');
 }
+function fuLadderTemplateSelectHtml(step, variantSuffix, selectedName){
+  const options=fuLadderTemplates.map(t=>`<option value="${escAttr(t.name)}"${selectedName===t.name?' selected':''}>${esc(t.name)} (${esc(t.language)})</option>`).join('');
+  return `<select id="${fuLadderFieldId(step,'template'+variantSuffix)}" onchange="fuLadderOnTemplateChange(${step},'${variantSuffix}')"><option value="">— none —</option>${options}</select>`;
+}
 function renderFollowupLadderTemplateStep(step, containerId){
   const s=fuLadderStepById(step);
-  const options=fuLadderTemplates.map(t=>`<option value="${escAttr(t.name)}"${s.template_name===t.name?' selected':''}>${esc(t.name)} (${esc(t.language)})</option>`).join('');
   $id(containerId).innerHTML=`<div style="border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px">
     ${fuLadderTemplates.length
-      ? `<div class="form-field"><label>Template</label><select id="${fuLadderFieldId(step,'template')}" onchange="fuLadderOnTemplateChange(${step})"><option value="">— choose an approved template —</option>${options}</select></div>
-         <div class="msg info" style="margin-top:6px" id="${fuLadderFieldId(step,'info')}">${s.template_name?`This template's body has ${s.template_body_vars||0} variable(s) — each is filled with the customer's name.`:'Pick a template above.'}</div>`
+      ? `<div class="form-field"><label>Template (Variant A)</label>${fuLadderTemplateSelectHtml(step,'',s.template_name)}</div>
+         <div class="msg info" style="margin-top:6px;margin-bottom:10px" id="${fuLadderFieldId(step,'info')}">${s.template_name?`This template's body has ${s.template_body_vars||0} variable(s) — each is filled with the customer's name.`:'Pick a template above.'}</div>
+         <div class="form-field"><label>Variant B (optional) — leave as "none" to always send A. Once both have enough sends, the better-performing one starts getting sent more often.</label>${fuLadderTemplateSelectHtml(step,'_b',s.template_name_b)}</div>
+         <div class="msg info" style="margin-top:6px" id="${fuLadderFieldId(step,'info_b')}">${s.template_name_b?`This template's body has ${s.template_body_vars_b||0} variable(s) — each is filled with the customer's name.`:'Optional — pick a template above to test against Variant A.'}</div>`
       : `<div class="msg warn">No approved WhatsApp templates found. <a href="broadcast.html#templates" style="color:inherit;text-decoration:underline">Create one in Manage Templates</a>, or connect WhatsApp Business API from Settings → Channels if you haven't yet.</div>`}
   </div>`;
 }
-function fuLadderOnTemplateChange(step){
-  const sel=$id(fuLadderFieldId(step,'template'));
+function fuLadderOnTemplateChange(step, variantSuffix){
+  const sel=$id(fuLadderFieldId(step,'template'+variantSuffix));
   const tpl=fuLadderTemplates.find(t=>t.name===sel.value);
   const varCount=tpl?fuLadderCountBodyVars(tpl):0;
   const s=fuLadderStepById(step);
-  s._pendingLanguage=tpl?.language||'en_US';
-  s._pendingCategory=tpl?.category||'MARKETING';
-  s._pendingBodyVars=varCount;
-  $id(fuLadderFieldId(step,'info')).textContent=tpl?`This template's body has ${varCount} variable(s) — each is filled with the customer's name.`:'Pick a template above.';
+  const isB=variantSuffix==='_b';
+  s[isB?'_pendingLanguageB':'_pendingLanguage']=tpl?.language||'en_US';
+  s[isB?'_pendingCategoryB':'_pendingCategory']=tpl?.category||'MARKETING';
+  s[isB?'_pendingBodyVarsB':'_pendingBodyVars']=varCount;
+  $id(fuLadderFieldId(step,isB?'info_b':'info')).textContent=tpl
+    ?`This template's body has ${varCount} variable(s) — each is filled with the customer's name.`
+    :(isB?'Optional — pick a template above to test against Variant A.':'Pick a template above.');
+}
+// Quiet Hours — bot_config is one shared JSON blob (also holds quick_reply_buttons_enabled/
+// rate_limit_ms/etc, none of which live on this page) — merge into whatever's already there rather
+// than overwriting the whole field, same reasoning as every other bot_config writer in this app.
+function loadFollowupQuietHours(){
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  $id('fuQuietHoursEnabled').checked=botConfig.followup_quiet_hours_enabled!==false;
+  $id('fuQuietHoursStart').value=Number.isFinite(botConfig.followup_window_start_hour)?botConfig.followup_window_start_hour:18;
+  $id('fuQuietHoursEnd').value=Number.isFinite(botConfig.followup_window_end_hour)?botConfig.followup_window_end_hour:21;
+}
+async function saveFollowupQuietHours(){
+  const msg=$id('fuQuietHoursMsg');
+  msg.textContent='Saving…';
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  botConfig.followup_quiet_hours_enabled=$id('fuQuietHoursEnabled').checked;
+  botConfig.followup_window_start_hour=Math.max(0,Math.min(23,parseInt($id('fuQuietHoursStart').value)||0));
+  botConfig.followup_window_end_hour=Math.max(0,Math.min(23,parseInt($id('fuQuietHoursEnd').value)||0));
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId), bot_config:JSON.stringify(botConfig)});
+    clientRecord.bot_config=JSON.stringify(botConfig);
+    msg.textContent='Saved ✓';
+    setTimeout(()=>{ if($id('fuQuietHoursMsg')) $id('fuQuietHoursMsg').textContent=''; },2000);
+  }catch(e){ msg.textContent='Failed to save.'; }
 }
 async function loadFollowupEngine(){
+  loadFollowupQuietHours();
   ['fuLadderSession','fuLadderStep3','fuLadderStep4','fuLadderStep5'].forEach(id=>{ $id(id).innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>'; });
   try{
     const [ladderR]=await Promise.all([
@@ -1648,20 +1692,27 @@ async function saveFollowupEngine(){
     step, type:'session',
     hours:parseInt($id(fuLadderFieldId(step,'hours')).value)||(step===1?1:6),
     message:$id(fuLadderFieldId(step,'message')).value.trim(),
+    message_b:$id(fuLadderFieldId(step,'message_b')).value.trim(),
   }));
   [3,4,5].forEach(step=>{
     const s=fuLadderStepById(step);
     const sel=$id(fuLadderFieldId(step,'template'));
+    const selB=$id(fuLadderFieldId(step,'template_b'));
     const templateName=sel?sel.value:(s.template_name||'');
-    // A step whose dropdown was never touched this session keeps its already-saved
-    // language/category/body-var-count (s.template_*) rather than losing them; only a step whose
-    // template was actively picked/changed uses the freshly-computed _pending* values.
+    const templateNameB=selB?selB.value:(s.template_name_b||'');
+    // A dropdown that was never touched this session keeps its already-saved
+    // language/category/body-var-count (s.template_*) rather than losing them; only a dropdown that
+    // was actively picked/changed uses the freshly-computed _pending* values.
     steps.push({
       step, type:'template',
       template_name:templateName,
       template_language:s._pendingLanguage||s.template_language||'en_US',
       template_category:s._pendingCategory||s.template_category||'MARKETING',
       template_body_vars:s._pendingBodyVars!==undefined?s._pendingBodyVars:(s.template_body_vars||0),
+      template_name_b:templateNameB,
+      template_language_b:s._pendingLanguageB||s.template_language_b||'en_US',
+      template_category_b:s._pendingCategoryB||s.template_category_b||'MARKETING',
+      template_body_vars_b:s._pendingBodyVarsB!==undefined?s._pendingBodyVarsB:(s.template_body_vars_b||0),
     });
   });
   try{
@@ -1682,9 +1733,19 @@ async function fetchFollowupEngineStats(){
 }
 function renderFollowupEngineStats(rows){
   if(!rows.length){ $id('fuEngineStats').innerHTML='<div style="font-size:12px;color:var(--muted)">No follow-ups sent yet.</div>'; return; }
+  // A/B rows for the same step: highlight whichever currently has the higher reply rate once both
+  // have at least 20 sends — matches worker.js pickLadderVariant's own MIN_SAMPLES before it starts
+  // weighting sends toward the winner, so this label only ever appears once auto-promotion could
+  // actually be live for that pair.
+  const byStep={}; rows.forEach(r=>{ (byStep[r.step]=byStep[r.step]||[]).push(r); });
   $id('fuEngineStats').innerHTML=`<div class="tbl-wrap"><table class="tbl">
-    <thead><tr><th>Step</th><th>Sent</th><th>Replied</th><th>Reply Rate</th></tr></thead>
-    <tbody>${rows.map(r=>`<tr><td>${esc(r.step)}</td><td>${esc(r.sent)}</td><td>${esc(r.replied)}</td><td>${esc(r.reply_rate)}%</td></tr>`).join('')}</tbody>
+    <thead><tr><th>Step</th><th>Variant</th><th>Sent</th><th>Replied</th><th>Reply Rate</th></tr></thead>
+    <tbody>${rows.map(r=>{
+      const pair=byStep[r.step];
+      const other=pair.find(x=>x.variant!==r.variant && (x.variant==='A'||x.variant==='B'));
+      const isWinning=other && r.sent>=20 && other.sent>=20 && r.reply_rate>other.reply_rate;
+      return `<tr><td>${esc(r.step)}</td><td>${esc(r.variant)}${isWinning?' 🏆':''}</td><td>${esc(r.sent)}</td><td>${esc(r.replied)}</td><td>${esc(r.reply_rate)}%</td></tr>`;
+    }).join('')}</tbody>
   </table></div>`;
 }
 
