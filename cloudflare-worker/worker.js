@@ -6004,8 +6004,14 @@ const _ecomStyleFieldsEnsured=new Set();
 // image_url included alongside the newer image_url_2..image_url_5 (up to 5 photos per product —
 // more than Hospitality units/Ecom Categories' 3-photo convention, a deliberate product-specific
 // choice) — image_url itself was the one original field this list somehow never covered, same
-// silent-drop risk category's own fix addressed above.
-const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url'];
+// silent-drop risk category's own fix addressed above. short_label is an optional, merchant-
+// curated short display name (e.g. "Brightening Cream" for a full name like "Glutathione
+// Brightening Combo – Lotion + Cream") — no truncation algorithm can safely guess which words of a
+// long product name actually matter to a customer, so this exists purely so a merchant can supply
+// that judgment call themselves; the enquiry route's category/product picker (below) prefers it
+// over the full name, falling back to auto-truncating the full name when it's blank (the common
+// case — most product names are already short enough).
+const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -10588,7 +10594,16 @@ async function handleEngineWebhook(request, env, secret){
             const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
             const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
             const variants=[...new Set(categoryProducts.map(p=>(p.color||'').trim()).filter(Boolean))];
-            const choices=variants.length?variants:[...new Set(categoryProducts.map(p=>p.name).filter(Boolean))];
+            // label is what's actually shown to the customer (button/list title or plain-text
+            // line); value is what's sent back and matched against on the next turn — kept as the
+            // real product name even when short_label is set, so tapping/typing a short label still
+            // resolves to the right product the same way the full name always has.
+            const nameChoices=[];
+            for(const p of categoryProducts){
+              if(!p.name || nameChoices.some(ch=>ch.value===p.name)) continue;
+              nameChoices.push({value:p.name, label:(p.short_label||'').trim()||p.name});
+            }
+            const choices=variants.length?variants.map(v=>({value:v, label:v})):nameChoices;
             const intro=variants.length?`Which type of ${detection.category} are you looking for?`:`Here's what we have in ${detection.category}:`;
             const photoUrl=categoryImage||withImage.image_url;
             // Tappable picker (buttons for <=3 choices, a Chatwoot list message for up to 10)
@@ -10599,12 +10614,12 @@ async function handleEngineWebhook(request, env, secret){
             if(botConfig.quick_reply_buttons_enabled!==false && choices.length){
               sentText=await engineLocalizeReply(env, c, intro, replyLang);
               routing.reply=sentText;
-              const items=choices.slice(0,10).map(v=>({title:v, value:v}));
+              const items=choices.slice(0,10).map(ch=>({title:ch.label, value:ch.value}));
               routing.quickReplies=items;
               if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
               await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
             } else {
-              const listText=choices.map(v=>`- ${v}`).join('\n');
+              const listText=choices.map(ch=>`- ${ch.label}`).join('\n');
               sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
               routing.reply=sentText;
               await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:photoUrl});
