@@ -7259,6 +7259,28 @@ async function ecomResolveProduct(env, clientId, sku, productName){
   })||null;
 }
 
+// The reverse direction of ecomResolveProduct above: given a block of text (the ecom_faq LLM's own
+// generated reply, not the customer's message), find whether it confidently names exactly one
+// catalog product — used to attach one-tap follow-up buttons (order / more details / talk to a
+// human) to a FAQ answer that happens to recommend a specific item, the free-text path's equivalent
+// of the deterministic category picker's buttons. Deliberately returns null on zero OR more than
+// one match — offering buttons tied to the wrong product (or a random pick among several actually
+// named) is worse than offering no buttons at all.
+async function ecomDetectMentionedProduct(env, clientId, replyText){
+  const text=(replyText||'').toLowerCase();
+  if(!text) return null;
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return null;
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+  const pd=await pr.json().catch(()=>({}));
+  const products=pd?.list||[];
+  const matches=products.filter(p=>{
+    const name=(p.name||'').trim().toLowerCase();
+    return name.length>2 && text.includes(name);
+  });
+  return matches.length===1?matches[0]:null;
+}
+
 // Product-level audio note / video / PDF (audio_url/video_url/pdf_url, Google Drive share links
 // set on the product itself in ecom.html's Add/Edit Product modal) — sent right after the
 // product's photo whenever a specific product was confidently identified, same "the customer asked
@@ -8922,6 +8944,13 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // instead of one rule that (as observed) can be read as license for either.
   sys+='\n\nDefault style (follow this unless the persona/instructions above specify a different tone, reply length, closing style, or message format — in that case, follow those instead): a short greeting or small talk deserves a short, natural reply, not a long pitch covering everything you could possibly say — but a short, specific question (a number, a policy, a fact) always deserves the real, complete answer, even if that makes the reply a bit longer than the question itself; never trade accuracy or completeness for brevity. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
 
+  // engineExtractReplyOptions (worker.js) parses this exact marker back out and strips it before
+  // the customer ever sees it, then (where the channel/settings support it) resends the options as
+  // tappable buttons instead of leaving the customer to type one back by hand — see that function's
+  // own comment. Must stay a literal, parseable last line whenever it's used, which is why the
+  // instruction pins the keyword itself to English even when the rest of the reply is not.
+  sys+='\n\nIf — and only if — your reply itself asks the customer to choose between 2 or 3 clear, short, named options (e.g. "glowing skin, anti-ageing, or something else?"), add ONE final line after your reply, in exactly this format and nothing else on that line: OPTIONS: option one | option two | option three — keep the literal English word "OPTIONS:" even when the rest of your reply is in another language, write each option itself in the customer\'s language, and keep each option under 20 characters. Leave this line out entirely for any reply that is not itself offering a choice between a few named options — that is most replies.';
+
   if(industry==='ecommerce'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
     // Observed real failure, paired with the routing change above: a product listed sizes "S, M,
@@ -9148,6 +9177,21 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
   }
 }
 
+// Pulls an optional trailing "OPTIONS: A | B | C" directive back out of an LLM-generated FAQ reply
+// — engineBuildFaqSystemPrompt asks the model to append exactly this line, and only this line,
+// whenever its own reply poses a 2-3-way clarifying question ("glowing skin, anti-ageing, or
+// something else?"), so it can be resent as tappable buttons instead of making the customer type
+// one back. Always strips the marker line from the returned text regardless of whether the caller
+// goes on to use `options` — a caller that ignores them (e.g. the Instagram flow, which can't
+// render buttons at all) must never leak a raw "OPTIONS:" line into what the customer reads.
+function engineExtractReplyOptions(replyText){
+  const text=(typeof replyText==='string'?replyText:'');
+  const match=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
+  if(!match) return {text, options:null};
+  const stripped=text.slice(0, match.index).trimEnd();
+  const options=match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,3);
+  return {text:stripped, options:options.length?options:null};
+}
 // Same message-create endpoint as engineSendChatwootReply, plus the content_type/content_attributes
 // pair Chatwoot's own WhatsApp Cloud provider turns into a real WhatsApp interactive message
 // (confirmed against Chatwoot's own source: MessageBuilder reads content_type/content_attributes —
@@ -10699,8 +10743,32 @@ async function handleEngineWebhook(request, env, secret){
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
+      const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
+      reply=cleanReply;
       routing.reply=reply; sentText=reply;
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      let faqQuickReplies=null;
+      if(botConfig.quick_reply_buttons_enabled!==false){
+        if(replyOptions && replyOptions.length){
+          // The LLM's own clarifying question already named these — tapping one sends its exact
+          // text back as a normal message, resolved the same way a customer typing it by hand
+          // already is (see the OPTIONS: instruction in engineBuildFaqSystemPrompt).
+          faqQuickReplies=replyOptions.map(o=>({title:o, value:o}));
+        } else if(routing.route==='ecom_faq'){
+          // No clarifying question this turn, but the answer named exactly one catalog product with
+          // enough confidence to act on — offer the same one-tap next steps the deterministic
+          // category picker gets. Values are phrased to land on existing keyword/classifier matches
+          // (order detection, ECOM_PRODUCT_DETAILS_KEYWORD_RE, WANTS_HUMAN) the same way a customer
+          // typing them by hand already does — no new receive-side handling needed.
+          const mentionedProduct=await ecomDetectMentionedProduct(env, clientId, reply);
+          if(mentionedProduct) faqQuickReplies=[
+            {title:'🛒 Order this', value:`I want to order ${mentionedProduct.name}`},
+            {title:'📋 More details', value:`Tell me more about ${mentionedProduct.name}`},
+            {title:'🙋 Talk to a human', value:'Talk to a human'},
+          ];
+        }
+      }
+      routing.quickReplies=faqQuickReplies;
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
@@ -10948,7 +11016,11 @@ async function handleInstagramWebhook(request, env){
         if(sentText) await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
       }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
         const sysPrompt=engineBuildFaqSystemPrompt(c, state, null, c.industry||'general', replyLang, isNewLead);
-        const reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
+        let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
+        // Instagram is text-only (engineDeliverReply short-circuits to engineSendInstagramReply
+        // before any button/list code) — the OPTIONS: marker itself must still be stripped here so
+        // it never shows up as a literal line in the DM, even though it's never turned into buttons.
+        reply=engineExtractReplyOptions(reply).text;
         routing.reply=reply; sentText=reply;
         await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
       }else if(routing.route==='objection'){
