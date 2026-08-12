@@ -2182,6 +2182,18 @@ const ROLES = {
           <hr class="div">
 
           <div class="settings-section">
+            <div class="s-head">🔘 Quick-Reply Buttons</div>
+            <div class="s-note">When on, the bot offers tappable WhatsApp buttons (or a scrollable list, for more than 3 options) wherever it would otherwise ask the customer to pick from a few choices — e.g. which product variant they want, or a one-tap "Talk to a human" alongside an objection reply. Turn this off if you'd rather the bot always reply with plain text instead.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div><label class="form-label">Quick-reply buttons</label><select class="form-input" id="cfgQuickReplyButtons"><option value="Yes">On — offer tappable buttons</option><option value="No">Off — plain text only</option></select></div>
+              <button class="save-btn" id="saveQuickReplyButtons">Save</button>
+              <span class="save-msg" id="saveQuickReplyButtonsMsg"></span>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
             <div class="s-head">Conversation Stages</div>
             <div class="s-note">Exact messages the bot sends at each stage — sent only when the customer gives a genuine reply that moves the conversation forward (e.g. "yes", a booking time), never mixed into an answer to a question. Keep these generic ("Would you like to see pricing?") rather than naming a specific product or service — if you sell multiple, the bot already pulls in live details for whichever one the customer is actually asking about when they ask, from your Products/Services data. A stage message naming one specific product will read oddly to a customer asking about a different one.</div>
             <div id="stageList" style="margin-bottom:12px"></div>
@@ -8039,6 +8051,10 @@ function populateSettings(){
   // of 4000 when the key isn't set at all yet.
   try{ $id('cfgRateLimitMs').value=(JSON.parse(clientRecord.bot_config||'{}').rate_limit_ms)||4000; }
   catch(e){ $id('cfgRateLimitMs').value=4000; }
+  // quick_reply_buttons_enabled — same bot_config blob, worker.js's own default is "on" (only
+  // treated as off when explicitly === false), so an unset key shows as "Yes" here too.
+  try{ $id('cfgQuickReplyButtons').value=(JSON.parse(clientRecord.bot_config||'{}').quick_reply_buttons_enabled===false)?'No':'Yes'; }
+  catch(e){ $id('cfgQuickReplyButtons').value='Yes'; }
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -8976,6 +8992,12 @@ $id('saveRateLimitMs').addEventListener('click',async()=>{
   // Object.assign(clientRecord, fresh) on an actual confirmed save, never unconditionally here,
   // so a failed save can't leave clientRecord showing a value NocoDB doesn't actually have.
   await saveField('saveRateLimitMs','saveRateLimitMsMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveQuickReplyButtons').addEventListener('click',async()=>{
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  botConfig.quick_reply_buttons_enabled=$id('cfgQuickReplyButtons').value!=='No';
+  await saveField('saveQuickReplyButtons','saveQuickReplyButtonsMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
