@@ -1923,6 +1923,7 @@ const ROLES = {
         <button class="hosp-tab" data-reports="sales">💰 Sales</button>
         <button class="hosp-tab" data-reports="team">📊 Team</button>
         <button class="hosp-tab" data-reports="marketing">📣 Marketing</button>
+        <button class="hosp-tab" data-reports="source">🎯 Lead Source</button>
         <button class="hosp-tab" data-reports="adsauto">🤖 Ads Automation</button>
         <button class="hosp-tab" data-reports="whatsapp">💬 WhatsApp</button>
         <button class="hosp-tab" data-reports="shopify">🛍️ Ecommerce</button>
@@ -3795,6 +3796,8 @@ const ROLES = {
       <select class="form-input" id="fScore"><option value="Cold">Cold</option><option value="Warm">Warm</option><option value="Hot">Hot</option></select>
     </div>
     <div class="form-group"><label class="form-label">Tags (comma separated)</label><input class="form-input" id="fTags" type="text" placeholder="Hot, Callback" /></div>
+    <div class="form-group"><label class="form-label">Source</label><input class="form-input" id="fSource" list="fSourceList" type="text" placeholder="Facebook Ads, Google Ads, Referral…" /><datalist id="fSourceList"></datalist></div>
+    <div class="form-group"><label class="form-label">Brand / Product</label><input class="form-input" id="fBrand" list="fBrandList" type="text" placeholder="Which brand or product this lead is interested in" /><datalist id="fBrandList"></datalist></div>
     <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="fNotes" rows="3" placeholder="Add a note…"></textarea></div>
     <div class="form-group"><label class="form-label">Reminder Date</label><input class="form-input" id="fReminder" type="date" /></div>
     <!-- Travel fields (shown when travel industry) -->
@@ -6040,12 +6043,17 @@ function renderBulkBar(){
   const n=_bulkSelectedLeadIds.size;
   el.style.display=n?'flex':'none';
   if(!n) return;
+  populateSourceBrandDatalists();
   el.innerHTML=`
     <strong>${n} selected</strong>
     <select class="form-input" style="max-width:160px" onchange="if(this.value)bulkMoveStage(this.value);this.value=''"><option value="">Move to stage…</option>${stageOptionsForBulk()}</select>
     <input class="form-input" id="bulkTagInput" placeholder="Add tag…" style="max-width:140px" onkeydown="if(event.key==='Enter')bulkAddTag()">
     <button class="btn btn-secondary btn-sm" onclick="bulkAddTag()">Tag</button>
     <select class="form-input" style="max-width:170px" onchange="if(this.value)bulkAssign(this.value);this.value=''"><option value="">Assign to…</option>${teamMemberOptions('')}</select>
+    <input class="form-input" id="bulkSourceInput" list="fSourceList" placeholder="Set source…" style="max-width:140px" onkeydown="if(event.key==='Enter')bulkSetSource()">
+    <button class="btn btn-secondary btn-sm" onclick="bulkSetSource()">Source</button>
+    <input class="form-input" id="bulkBrandInput" list="fBrandList" placeholder="Set brand…" style="max-width:140px" onkeydown="if(event.key==='Enter')bulkSetBrand()">
+    <button class="btn btn-secondary btn-sm" onclick="bulkSetBrand()">Brand</button>
     <button class="btn btn-primary btn-sm" onclick="openSendTemplateModal([..._bulkSelectedLeadIds])">📣 Send Template</button>
     <span style="flex:1"></span>
     <button class="btn btn-secondary btn-sm" onclick="clearBulkSelection()">Clear</button>`;
@@ -6082,6 +6090,24 @@ async function bulkAssign(email){
     try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,Owner:email}); lead.Owner=email; }catch(e){}
   }
   showToast(`✓ Assigned ${_bulkSelectedLeadIds.size} lead(s)`,'ok');
+  clearBulkSelection();
+}
+async function bulkSetSource(){
+  const input=$id('bulkSourceInput'); const val=(input?.value||'').trim(); if(!val) return;
+  for(const id of _bulkSelectedLeadIds){
+    const lead=allLeads.find(l=>l.Id===id); if(!lead) continue;
+    try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,Source:val}); lead.Source=val; }catch(e){}
+  }
+  showToast(`✓ Set source for ${_bulkSelectedLeadIds.size} lead(s)`,'ok');
+  clearBulkSelection();
+}
+async function bulkSetBrand(){
+  const input=$id('bulkBrandInput'); const val=(input?.value||'').trim(); if(!val) return;
+  for(const id of _bulkSelectedLeadIds){
+    const lead=allLeads.find(l=>l.Id===id); if(!lead) continue;
+    try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,InterestedProduct:val}); lead.InterestedProduct=val; }catch(e){}
+  }
+  showToast(`✓ Set brand for ${_bulkSelectedLeadIds.size} lead(s)`,'ok');
   clearBulkSelection();
 }
 
@@ -7266,8 +7292,10 @@ function openAddLead(){
   $id('modalLeadTitle').textContent=clientRecord?.industry==='travel'?'Add Inquiry':'Add Lead';
   $id('fLeadId').value='';
   $id('fName').value=''; $id('fPhone').value=''; $id('fEmail').value=''; $id('fNotes').value=''; $id('fTags').value=''; $id('fReminder').value='';
+  $id('fSource').value=''; $id('fBrand').value='';
   if(clientRecord?.industry==='travel'){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';$id('fServiceCategory').value='';}
   populateFormSelects('');
+  populateSourceBrandDatalists();
   $id('fStage').value='new'; $id('fScore').value='Cold';
   openModal('modalLead');
 }
@@ -7277,6 +7305,8 @@ function openEditLead(lead){
   $id('fLeadId').value=lead.Id;
   $id('fName').value=lead.Name||''; $id('fPhone').value=lead.Phone||''; $id('fEmail').value=lead.Email||'';
   $id('fNotes').value=lead.Notes||''; $id('fTags').value=lead.Tags||''; $id('fReminder').value=lead.ReminderDate||'';
+  $id('fSource').value=lead.Source||''; $id('fBrand').value=lead.InterestedProduct||'';
+  populateSourceBrandDatalists();
   // Travel fields
   if(clientRecord?.industry==='travel'){
     const dates=(lead.TravelDates||'').split('→');
@@ -7300,6 +7330,15 @@ function populateFormSelects(currentOwner){
   const stages=['new',...Object.keys(flow.stages||{}).filter(k=>k!=='new')];
   $id('fStage').innerHTML=stages.map(s=>`<option value="${s}">${s}</option>`).join('');
   $id('fOwner').innerHTML=teamMemberOptions(currentOwner||'');
+}
+// Suggests previously-used values (typed freely, not a closed enum — sources/brands vary per
+// client) in the Add/Edit Lead modal and the bulk-edit bar, same distinct-values-from-allLeads
+// approach leadProductFilter already uses for its dropdown.
+function populateSourceBrandDatalists(){
+  const sources=[...new Set(allLeads.map(l=>l.Source).filter(Boolean))].sort();
+  const brands=[...new Set(allLeads.map(l=>l.InterestedProduct).filter(Boolean))].sort();
+  const srcList=$id('fSourceList'); if(srcList) srcList.innerHTML=sources.map(s=>`<option value="${esc(s)}">`).join('');
+  const brandList=$id('fBrandList'); if(brandList) brandList.innerHTML=brands.map(b=>`<option value="${esc(b)}">`).join('');
 }
 
 // Data enrichment on capture — a small phone-calling-code table (same idea as the engine's own
@@ -7350,6 +7389,8 @@ async function saveLead(){
     Owner:$id('fOwner').value,
     Score:$id('fScore').value,
     Tags:$id('fTags').value.trim(),
+    Source:$id('fSource').value.trim(),
+    InterestedProduct:$id('fBrand').value.trim(),
     Notes:$id('fNotes').value.trim(),
     ReminderDate:$id('fReminder').value||null,
     Date:new Date().toISOString(),
@@ -7892,7 +7933,7 @@ async function generateSummary(){
 /* ── EXPORT ── */
 function exportCsv(){
   if(!allLeads.length){alert('No leads.');return;}
-  const cols=['Id','Name','Phone','Stage','Score','InterestedProduct','Owner','Tags','Language','Date','BookingTime','ReminderDate','Handover','IsDuplicate'];
+  const cols=['Id','Name','Phone','Stage','Score','InterestedProduct','Source','Owner','Tags','Language','Date','BookingTime','ReminderDate','Handover','IsDuplicate'];
   const csv=[cols.join(','),...allLeads.map(l=>cols.map(c=>'"'+(String(l[c]||'').replace(/"/g,'""'))+'"').join(','))].join('\n');
   dlFile('data:text/csv;charset=utf-8,'+encodeURIComponent(csv),'leads_'+clientId+'_'+TODAY+'.csv');
 }
@@ -13366,7 +13407,7 @@ function renderReportsSubPage(page){
   document.querySelectorAll('#reportsSubNav .hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.reports===page));
   const fns={
     overview:renderReportsOverview, sales:renderReportsSales, team:renderReportsTeamReport,
-    marketing:renderReportsMarketing, adsauto:renderReportsAdsAutomation, whatsapp:renderReportsWhatsapp, shopify:renderReportsShopify,
+    marketing:renderReportsMarketing, source:renderReportsSource, adsauto:renderReportsAdsAutomation, whatsapp:renderReportsWhatsapp, shopify:renderReportsShopify,
     product:renderReportsProduct, saas:renderReportsSaas, seo:renderReportsSeo,
     scheduled:renderReportsScheduled,
   };
@@ -13667,6 +13708,84 @@ async function saveReportsBudget(){
     renderReportsMarketing();
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
   finally{ btn.disabled=false; setTimeout(()=>{ if($id('reportsBudgetMsg')) $id('reportsBudgetMsg').textContent=''; },3000); }
+}
+
+/* ── Lead Source Report — per-source lead volume and conversion, using this CRM's own Source
+   field (now settable via Add/Edit Lead and the leads bulk-edit bar). There's no automatic
+   per-source spend feed anywhere (Marketing's Meta spend above is account-wide only, and it isn't
+   tied to individual leads at all), so cost per source is a manual input here — stored as a JSON
+   map on the CLIENTS record, same ensureClientField/patchClient pattern monthly_ad_budget above
+   uses for its own manual figure. */
+async function renderReportsSource(){
+  const el=$id('reportsContent');
+  let costs={};
+  try{ costs=JSON.parse(clientRecord?.source_costs||'{}'); }catch(e){}
+
+  const bySource={};
+  allLeads.forEach(l=>{
+    const src=l.Source||'Unknown';
+    if(!bySource[src]) bySource[src]={leads:0,won:0};
+    bySource[src].leads++;
+    if(isWonLead(l)) bySource[src].won++;
+  });
+  const sources=Object.keys(bySource).sort((a,b)=>bySource[b].leads-bySource[a].leads);
+
+  const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
+  const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
+
+  const totalLeads=allLeads.length;
+  const totalWon=allLeads.filter(isWonLead).length;
+  const totalCost=sources.reduce((s,src)=>s+(Number(costs[src])||0),0);
+
+  el.innerHTML=`
+    <div style="margin-bottom:14px"><div class="card-title" style="margin-bottom:0">🎯 Lead Source Report</div><div class="s-note">Leads and conversions per source, with cost you enter manually below — there's no automatic per-source spend feed yet (Marketing's spend is account-wide only).</div></div>
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+      <div class="stat"><div class="stat-lbl">Total Leads</div><div class="stat-val">${totalLeads}</div></div>
+      <div class="stat"><div class="stat-lbl">Total Conversions</div><div class="stat-val">${totalWon}</div></div>
+      <div class="stat"><div class="stat-lbl">Total Cost (entered)</div><div class="stat-val">${totalCost?fmtMoney(totalCost):'—'}</div></div>
+      <div class="stat accent"><div class="stat-lbl">Blended Cost / Conversion</div><div class="stat-val">${(totalCost&&totalWon)?fmtMoney(totalCost/totalWon):'—'}</div></div>
+    </div>
+    <div class="card">
+      <div class="s-head" style="margin-bottom:8px">By Source</div>
+      <div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:760px">
+        <thead><tr><th>Source</th><th>Leads</th><th>Conversions</th><th>Conv. Rate</th><th>Cost</th><th>Cost / Lead</th><th>Cost / Conversion</th></tr></thead>
+        <tbody>${sources.map(src=>{
+          const s=bySource[src];
+          const rate=s.leads?Math.round(s.won/s.leads*1000)/10:0;
+          const cost=Number(costs[src])||0;
+          return `<tr>
+            <td>${esc(src)}</td>
+            <td>${s.leads}</td>
+            <td>${s.won}</td>
+            <td>${rate}%</td>
+            <td><input class="form-input src-cost-input" type="number" min="0" data-source="${esc(src)}" value="${cost||''}" placeholder="0" style="max-width:110px"></td>
+            <td>${(cost&&s.leads)?fmtMoney(cost/s.leads):'—'}</td>
+            <td>${(cost&&s.won)?fmtMoney(cost/s.won):'—'}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
+        <button class="save-btn" id="reportsSourceCostSaveBtn" onclick="saveReportsSourceCosts()">Save Costs</button>
+        <span class="save-msg" id="reportsSourceCostMsg"></span>
+      </div>
+    </div>`;
+}
+async function saveReportsSourceCosts(){
+  const btn=$id('reportsSourceCostSaveBtn'), msg=$id('reportsSourceCostMsg');
+  btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+  try{
+    const costs={};
+    document.querySelectorAll('.src-cost-input').forEach(inp=>{
+      const src=inp.dataset.source; const val=parseFloat(inp.value)||0;
+      if(val>0) costs[src]=val;
+    });
+    await ensureClientField('source_costs','LongText');
+    await patchClient({source_costs:JSON.stringify(costs)});
+    clientRecord.source_costs=JSON.stringify(costs);
+    msg.textContent='✓ Saved';
+    renderReportsSource();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; setTimeout(()=>{ if($id('reportsSourceCostMsg')) $id('reportsSourceCostMsg').textContent=''; },3000); }
 }
 
 /* ── Ads Automation — standalone module (Reports page → 🤖 Ads Automation), distinct from the
@@ -14349,7 +14468,7 @@ td{padding:8px 10px;border-bottom:1px solid #EEF2F0;font-size:12px}
 
 /* ── IMPORT CSV ── */
 let _importRows=[], _importHeaders=[];
-const IMPORT_FIELDS=['Name','Phone','Stage','Owner','Score','InterestedProduct'];
+const IMPORT_FIELDS=['Name','Phone','Stage','Owner','Score','InterestedProduct','Source'];
 const IMPORT_FIELD_LABELS={InterestedProduct:'Brand/Product'};
 
 function openImport(){
