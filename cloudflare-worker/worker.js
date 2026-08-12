@@ -9153,12 +9153,38 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
 // Meta rejection (see engineSendChatwootReply's own comment on that exact class of failure). >3 items
 // now sends as a Chatwoot list message (still content_type input_select — Chatwoot itself decides
 // button vs list off the item count) instead of silently dropping everything past the 3rd.
+// Titles longer than the cap are truncated on the last word boundary with an ellipsis (see
+// engineTruncateButtonTitle) rather than a hard character cut, so a title never ends mid-word.
+// If two different items still truncate down to the exact same visible title, buttons/list rows
+// would look identical on screen — the customer could tap one meaning the other — so that case
+// falls back to a plain text list of the untruncated titles instead of sending ambiguous buttons.
+function engineTruncateButtonTitle(title, cap){
+  const t=String(title||'').trim();
+  if(t.length<=cap) return t;
+  const slice=t.slice(0, cap-1);
+  const lastSpace=slice.lastIndexOf(' ');
+  // Only break on the space if it doesn't throw away most of the cap (a title like "XL" has no
+  // useful space to break on at all) — otherwise a hard cut is the better of two bad options.
+  const cut=lastSpace>Math.floor(cap*0.4) ? slice.slice(0, lastSpace) : slice;
+  return cut.trimEnd()+'…';
+}
 async function engineSendChatwootQuickReply(env, c, clientId, convId, text, items){
   const raw=(items||[]).filter(it=>it && (it.title||it.value));
   const isList=raw.length>3;
   const titleCap=isList?24:20;
-  const trimmedItems=raw.slice(0,10).map(it=>({title:String(it?.title||it?.value||'').slice(0,titleCap), value:String(it?.value||it?.title||'')})).filter(it=>it.title);
+  const trimmedItems=raw.slice(0,10).map(it=>({title:engineTruncateButtonTitle(it?.title||it?.value||'', titleCap), value:String(it?.value||it?.title||'')})).filter(it=>it.title);
   if(!trimmedItems.length) return engineSendChatwootReply(env, c, clientId, convId, text);
+  const seenTitles=new Set();
+  const hasCollision=trimmedItems.some(it=>{
+    const key=it.title.toLowerCase();
+    if(seenTitles.has(key)) return true;
+    seenTitles.add(key);
+    return false;
+  });
+  if(hasCollision){
+    const listText=raw.map(it=>`- ${it.title||it.value}`).join('\n');
+    return engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
+  }
   const trimmed=(typeof text==='string'?text:'').trim();
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return;
   try{
