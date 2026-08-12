@@ -9143,19 +9143,21 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
 }
 
 // Same message-create endpoint as engineSendChatwootReply, plus the content_type/content_attributes
-// pair Chatwoot's own WhatsApp Cloud provider turns into a real WhatsApp interactive button message
+// pair Chatwoot's own WhatsApp Cloud provider turns into a real WhatsApp interactive message
 // (confirmed against Chatwoot's own source: MessageBuilder reads content_type/content_attributes —
 // content_attributes accepted as a JSON string over multipart form-data, same as this file already
 // sends content/message_type/private that way — and WhatsappCloudService#create_payload_based_on_items
-// builds a button-type payload for <=3 items). items is [{title, value}]; WhatsApp's Cloud API caps
-// button titles at 20 characters and allows at most 3 buttons, so both are enforced defensively here
-// rather than trusting a caller and getting a silent downstream Meta rejection (see
-// engineSendChatwootReply's own comment on that exact class of failure). List-type payloads (>3
-// items) are a real Chatwoot capability too but aren't used by any caller yet, so this only ever
-// sends the button shape — extra items are dropped, not upgraded to a list, until a caller actually
-// needs more than 3.
+// picks button vs list shape off the same items array itself). items is [{title, value}]; WhatsApp's
+// Cloud API caps plain buttons at 3 (20-char titles) and list rows at 10 (24-char titles), so both
+// shapes are enforced defensively here rather than trusting a caller and getting a silent downstream
+// Meta rejection (see engineSendChatwootReply's own comment on that exact class of failure). >3 items
+// now sends as a Chatwoot list message (still content_type input_select — Chatwoot itself decides
+// button vs list off the item count) instead of silently dropping everything past the 3rd.
 async function engineSendChatwootQuickReply(env, c, clientId, convId, text, items){
-  const trimmedItems=(items||[]).slice(0,3).map(it=>({title:String(it?.title||'').slice(0,20), value:String(it?.value||it?.title||'')})).filter(it=>it.title);
+  const raw=(items||[]).filter(it=>it && (it.title||it.value));
+  const isList=raw.length>3;
+  const titleCap=isList?24:20;
+  const trimmedItems=raw.slice(0,10).map(it=>({title:String(it?.title||it?.value||'').slice(0,titleCap), value:String(it?.value||it?.title||'')})).filter(it=>it.title);
   if(!trimmedItems.length) return engineSendChatwootReply(env, c, clientId, convId, text);
   const trimmed=(typeof text==='string'?text:'').trim();
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return;
@@ -10097,9 +10099,10 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
 
   const history=(state.history||[]).slice();
   if(userText) history.push({role:'user', content:userText});
-  // options — only present on the one route (objection, see quick_reply_buttons_enabled above)
-  // that actually offered the customer tappable choices via engineSendChatwootQuickReply; every
-  // other reply keeps the exact same {role,content} shape ConvHistory has always had.
+  // options — only present on turns that actually offered the customer tappable choices via
+  // engineSendChatwootQuickReply (objection route's next-step buttons, the enquiry route's
+  // category/product picker — both gated on quick_reply_buttons_enabled above); every other reply
+  // keeps the exact same {role,content} shape ConvHistory has always had.
   if(reply) history.push({role:'assistant', content:reply, ...(routing.quickReplies&&routing.quickReplies.length?{options:routing.quickReplies}:{})});
 
   const body={
@@ -10559,11 +10562,27 @@ async function handleEngineWebhook(request, env, secret){
             const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
             const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
             const variants=[...new Set(categoryProducts.map(p=>(p.color||'').trim()).filter(Boolean))];
-            const listText=(variants.length?variants:categoryProducts.map(p=>p.name)).map(v=>`- ${v}`).join('\n');
+            const choices=variants.length?variants:[...new Set(categoryProducts.map(p=>p.name).filter(Boolean))];
             const intro=variants.length?`Which type of ${detection.category} are you looking for?`:`Here's what we have in ${detection.category}:`;
-            sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
-            routing.reply=sentText;
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:categoryImage||withImage.image_url});
+            const photoUrl=categoryImage||withImage.image_url;
+            // Tappable picker (buttons for <=3 choices, a Chatwoot list message for up to 10)
+            // instead of a plain text bullet list the customer had to retype by hand — tapping a
+            // choice sends its exact name back as a normal incoming message (Chatwoot's own
+            // behavior for a button/list reply), which the next turn's product/category resolution
+            // already handles the same as if the customer had typed it themselves.
+            if(botConfig.quick_reply_buttons_enabled!==false && choices.length){
+              sentText=await engineLocalizeReply(env, c, intro, replyLang);
+              routing.reply=sentText;
+              const items=choices.slice(0,10).map(v=>({title:v, value:v}));
+              routing.quickReplies=items;
+              if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
+              await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+            } else {
+              const listText=choices.map(v=>`- ${v}`).join('\n');
+              sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
+              routing.reply=sentText;
+              await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:photoUrl});
+            }
             orderHandledInline=true;
           }
           // No products at all in that category — falls through to FAQ below ("we don't carry that").
@@ -10646,15 +10665,20 @@ async function handleEngineWebhook(request, env, secret){
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
-      // The one deterministic, low-risk spot this ships to for now: a customer who just raised an
-      // objection is exactly who benefits from an explicit, one-tap human escalation offered
-      // alongside the LLM's own answer, rather than only ever reachable by typing something the
-      // WANTS_HUMAN classifier happens to catch. Tapping it sends its title back as a normal
+      // A customer who just raised an objection benefits from explicit, one-tap next steps
+      // alongside the LLM's own answer, rather than only ever reachable by typing something a
+      // classifier happens to catch. Tapping any of these sends its title back as a normal
       // incoming text message (Chatwoot's own webhook behavior for a button reply — no special
-      // receive-side handling needed), which the existing WANTS_HUMAN keyword match already
-      // recognizes ("talk to a human" contains "talk to"). Opt-out via the same bot_config a client
-      // already uses for the other handover/objection toggles.
-      const quickReplies=botConfig.quick_reply_buttons_enabled!==false?[{title:'🙋 Talk to a human', value:'Talk to a human'}]:null;
+      // receive-side handling needed): "Talk to a human" is caught by the existing WANTS_HUMAN
+      // keyword match ("talk to a human" contains "talk to"); the other two land as plain text
+      // that the next turn's classifier reads normally (AFFIRMATIVE / QUESTION respectively) — no
+      // new intent handling needed for either. Opt-out via the same bot_config a client already
+      // uses for the other handover/objection toggles.
+      const quickReplies=botConfig.quick_reply_buttons_enabled!==false?[
+        {title:"👍 I'm convinced", value:"Okay, I'm convinced — let's proceed"},
+        {title:'❓ Another question', value:'I have another question'},
+        {title:'🙋 Talk to a human', value:'Talk to a human'},
+      ]:null;
       // Carried on `routing` (already passed to engineBuildLeadUpsertBody just below) purely so the
       // Chats tab can render this turn with the same button styling the customer actually saw on
       // WhatsApp — see that function's own history.push for how it lands in ConvHistory.
