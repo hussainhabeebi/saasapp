@@ -1981,12 +1981,11 @@ const HEALTH_CHECKS=[
     return {status:'ok', detail:'Last run '+Math.round(hrs)+'h ago'};
   }},
   { key:'followup_config', label:'Follow-up Sequence Config', category:'core', fn: async (env,c)=>{
-    const count=parseInt(c.followup_count||0);
-    if(!count) return {status:'warn', detail:'Not configured'};
-    const hours=(c.followup_hours||'').split(',').map(s=>s.trim()).filter(Boolean);
-    const msgs=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
-    if(hours.length<count||msgs.length<count) return {status:'fail', detail:`Configured for ${count} steps but only ${hours.length} hour(s) / ${msgs.length} message(s) set`};
-    return {status:'ok', detail:count+'-step sequence configured correctly'};
+    const {results}=await env.DB.prepare(`SELECT step, type, message, template_name FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
+    if(!results||!results.length) return {status:'warn', detail:'Not configured'};
+    const incomplete=(results||[]).filter(r=>(r.type==='session'&&!r.message)||(r.type==='template'&&!r.template_name)).length;
+    if(incomplete) return {status:'fail', detail:`${incomplete} of ${results.length} step(s) missing a message/template`};
+    return {status:'ok', detail:results.length+'-step ladder configured'};
   }},
 ];
 
@@ -2460,154 +2459,194 @@ async function handleBroadcastSendTemplate(request, env){
   return json({ok:true, data:await r.json().catch(()=>({}))});
 }
 
-// Server-side mirror of dashboard.html's getRecentBookingsCount (client-side, used for the AI-assist
-// reply-suggestion prompt) — this Worker route has no access to the browser's allLeads array, so
-// it needs its own copy for the Follow-up Engine's "social proof" line. Same set of "won-ish"
-// stages (dashboard.html's isWonLead) and the same "lead's own Date as a proxy for when they
-// converted" caveat — no dedicated stage-change timestamp exists to do better than that.
-const FOLLOWUP_SOCIAL_PROOF_STAGES=new Set(['won','converted','consultation_booked','visit_booked','appt_booked']);
-async function computeFollowupSocialProofCount(env, clientId){
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=500&sort=-Date&fields=Stage,Date`);
-  if(!r.ok) return 0;
-  const data=await r.json().catch(()=>({list:[]}));
-  const cutoff=Date.now()-7*86400000;
-  return (data.list||[]).filter(l=>FOLLOWUP_SOCIAL_PROOF_STAGES.has(l.Stage)&&l.Date&&new Date(l.Date).getTime()>=cutoff).length;
+// Follow-up Engine's fixed 5-step ladder shape — one single place for every follow-up setting
+// (previously split between this D1 table, added by migrations/0047_followup_ladder.sql, and
+// dashboard.html's now-retired Settings → Follow-up Messages section). Steps 1-2 stay inside
+// WhatsApp's 24h customer-service window, so a plain session message is allowed; steps 3-5 are
+// fixed at 2/4/7 days of silence — always past 24h, so only an approved template can legally reach
+// the customer there (see sendFollowupLadderStep). Days for steps 3-5 are NOT merchant-editable —
+// the whole point of this ladder replacing the old free-form "up to 3 steps, any hours" model is a
+// fixed, predictable shape; hours for steps 1-2 stay editable since both are well inside the same
+// 24h window regardless of the exact value.
+const FOLLOWUP_LADDER_STEP_SHAPE=[
+  {step:1, type:'session', defaultHours:1},
+  {step:2, type:'session', defaultHours:6},
+  {step:3, type:'template', days:2},
+  {step:4, type:'template', days:4},
+  {step:5, type:'template', days:7},
+];
+function followupLadderDefaultStep(step, legacyHours, legacyMessages){
+  const shape=FOLLOWUP_LADDER_STEP_SHAPE.find(s=>s.step===step);
+  if(shape.type==='session'){
+    const legacyIdx=step-1;
+    const legacyHour=legacyHours[legacyIdx];
+    return {step, type:'session', hours:(legacyHour&&legacyHour<24)?legacyHour:shape.defaultHours, days:null,
+      message:legacyMessages[legacyIdx]||'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0};
+  }
+  return {step, type:'template', hours:null, days:shape.days,
+    message:'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0};
 }
 
-// Picks which message to actually send for a given classic-sequence step — either an A/B variant
-// configured in the Follow-up Engine (D1, migrations/0007_followup_engine.sql) or, for a client
-// who hasn't set any up, the plain followup_messages text exactly as before. When both Variant A
-// and B are configured and active, one is picked 50/50 per send (not per lead — a lead who
-// receives step 1 and later step 2 can get either variant independently each time) so the sample
-// splits roughly evenly over time. Building the incentive/social-proof line has no separate
-// "is this lead a fresh lead" check: this function is only ever reached from
-// handleBroadcastFollowupSend, whose caller only exists because a lead already went quiet long
-// enough to need a follow-up in the first place — a fresh, still-engaged lead never reaches here.
-async function pickFollowupVariant(env, clientId, step, fallbackText, leadName){
-  const {results}=await env.DB.prepare(`SELECT * FROM followup_variants WHERE client_id=? AND step=? AND active=1 AND message!=''`)
-    .bind(Number(clientId), step).all();
-  const rows=results||[];
-  let chosen=null, variantLabel='legacy';
-  if(rows.length){
-    chosen=rows.length>1?rows[Math.random()<0.5?0:1]:rows[0];
-    variantLabel=chosen.variant;
-  }
-  let text=(chosen?chosen.message:fallbackText).replace(/\{name\}/gi, leadName||'there');
-  if(chosen?.cta) text+=`\n\n${chosen.cta}`;
-  if(chosen?.incentive_text){
-    const expiry=chosen.incentive_expires_hours?` — offer expires in ${chosen.incentive_expires_hours}h`:'';
-    text+=`\n\n⏳ ${chosen.incentive_text}${expiry}.`;
-  }
-  if(chosen?.social_proof){
-    const count=await computeFollowupSocialProofCount(env, clientId);
-    if(count>0) text+=`\n\n${count} customer(s) closed with us in the last 7 days.`;
-  }
-  return {text, variantLabel, mediaUrl:chosen?.media_url||'', mediaCaption:chosen?.media_caption||''};
+// GET/POST /followups/ladder — the Follow-up Engine tab's single settings surface (replaces the
+// old GET/POST /followups/variants A/B-per-step model, migrations/0007, now unused going forward
+// but left in place rather than dropped).
+async function handleFollowupLadderGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  const {results}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(payload.cid)).all();
+  const bySt={}; (results||[]).forEach(r=>{ bySt[r.step]=r; });
+  // Best-effort one-time read-only migration: a client who configured the old classic sequence
+  // (dashboard.html Settings, now retired) but never saved this new ladder yet sees step 1-2
+  // pre-filled from their existing followup_hours/followup_messages instead of starting blank —
+  // nothing is written here, only shown; hitting Save is what actually persists it.
+  const legacyHours=(c?.followup_hours||'').split(',').map(s=>parseFloat(s.trim())).filter(n=>n>0);
+  const legacyMessages=(c?.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const list=FOLLOWUP_LADDER_STEP_SHAPE.map(shape=>{
+    const r=bySt[shape.step];
+    return r
+      ? {step:r.step, type:r.type, hours:r.hours, days:r.days, message:r.message, template_name:r.template_name, template_language:r.template_language, template_category:r.template_category, template_body_vars:r.template_body_vars}
+      : followupLadderDefaultStep(shape.step, legacyHours, legacyMessages);
+  });
+  return json({list});
 }
-
-// Manual "send next follow-up now" — a rep's on-demand override alongside the automated
-// classic follow-up sequence (followup-template.json) and the recovery ladder (recovery.js).
-// Only covers the classic followup_messages sequence, not the recovery_* ladder, which stays
-// automation-only and read-only in the Follow-ups tab (see SETUP.md).
-// The actual "resolve variant, send (voice-first, falling back to text), attach media, mark
-// Follow up N, log followup_sends" work for one classic-sequence step — shared by the manual
-// "Send Next Now" route below and the automated cron (runClassicFollowupsForAllClients) further
-// down this file, so the automated side never has to fork its own copy of this logic (and, more to
-// the point, so a client's Follow-up Engine A/B content — resolved via pickFollowupVariant — is the
-// primary content for BOTH the manual and the fully-automatic sends, not just the manual one).
-// Throws on a hard send failure (bad Chatwoot config, HTTP error) so callers decide for themselves
-// how to report/log that — a 502 to the rep for the manual route, a caught-and-logged per-lead skip
-// for the cron sweep, same "one lead's failure can't take down the batch" pattern used everywhere
-// else in this file.
-async function sendClassicFollowupStep(env, c, lead, nextIdx, tmpl){
-  const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
-  const {text, variantLabel, mediaUrl, mediaCaption}=await pickFollowupVariant(env, c.Id, nextIdx+1, tmpl, lead.Name);
-  const clientId=String(c.Id);
-
-  // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live
-  // voice-to-voice replies (engineTtsWithFallback). Language: prefer this lead's own last-detected
-  // language (lead.Language, stamped by the live engine's engineClassifyIntent on every inbound
-  // message) over the client's static default — a follow-up should speak back in whatever language
-  // the customer was actually last using, not whatever the account happens to be configured for.
-  let sentViaVoice=false;
-  if(c.voice_followup_enabled==='Yes'){
-    const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
-    if(bcp47){
-      const audioBuf=await engineTtsWithFallback(env, text, (lead.Language||c.language||'en'), c.voice_tts_provider);
-      if(audioBuf){
-        const vfd=new FormData();
-        vfd.append('content', engineExtractLinkPriceCaption(text));
-        vfd.append('message_type','outgoing'); vfd.append('private','false');
-        vfd.append('attachments[]', new Blob([audioBuf], {type:'audio/ogg; codecs=opus'}), 'followup.ogg');
-        const vr=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:vfd});
-        sentViaVoice=vr.ok;
-        if(!vr.ok) await reportOpsError(env, 'sendClassicFollowupStep — voice send failed, falling back to text', new Error('HTTP '+vr.status), {clientId, convId});
-      }
+async function handleFollowupLadderSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const steps=Array.isArray(body.steps)?body.steps:[];
+  const now=new Date().toISOString();
+  for(const shape of FOLLOWUP_LADDER_STEP_SHAPE){
+    const s=steps.find(x=>parseInt(x.step)===shape.step);
+    if(!s) continue;
+    if(shape.type==='session'){
+      const hours=Math.min(23, Math.max(1, parseInt(s.hours)||shape.defaultHours));
+      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, template_name, template_language, template_category, template_body_vars, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, message=excluded.message, updated_at=excluded.updated_at`)
+        .bind(Number(payload.cid), shape.step, 'session', hours, null, String(s.message||'').trim().slice(0,1000), '', 'en_US', 'MARKETING', 0, now)
+        .run();
+    } else {
+      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, template_name, template_language, template_category, template_body_vars, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(client_id, step) DO UPDATE SET template_name=excluded.template_name, template_language=excluded.template_language, template_category=excluded.template_category, template_body_vars=excluded.template_body_vars, updated_at=excluded.updated_at`)
+        .bind(Number(payload.cid), shape.step, 'template', null, shape.days, '',
+          String(s.template_name||'').trim().slice(0,200), String(s.template_language||'en_US').trim().slice(0,20), String(s.template_category||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars)||0), now)
+        .run();
     }
   }
-
-  if(!sentViaVoice){
-    const fd=new FormData();
-    fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
-    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-    if(!r.ok) throw new Error('HTTP '+r.status);
-  }
-
-  // Follow-up Engine — optional per-variant media attachment (video/image/audio/PDF via a Google
-  // Drive link), sent as a second message right after the text above. Best-effort: a failed/missing
-  // Drive fetch never fails this whole send, since the text follow-up (the part that already
-  // succeeded above) is the one thing either caller is actually waiting on.
-  if(mediaUrl) await sendDriveMediaToChatwoot(c, convId, mediaUrl, mediaCaption);
-
-  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+(nextIdx+1)]:'Yes'}});
-  try{
-    await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
-      .bind(Number(c.Id), Number(lead.Id), nextIdx+1, variantLabel, new Date().toISOString()).run();
-  }catch(e){ /* best-effort — the message already went out regardless of whether this logs */ }
-  return {text, variantLabel, sentViaVoice};
+  return json({ok:true});
 }
 
+// The actual "send, mark Follow up N, log followup_sends" work for one ladder step — shared by the
+// manual "Send Next Now" route (handleBroadcastFollowupSend) and the automated cron
+// (runClassicFollowupsForAllClients) further down, so neither has to fork its own copy.
+// Steps 1-2 (type 'session') go out as a plain Chatwoot session message — only valid within
+// WhatsApp's 24h customer-service window, which is exactly why both are capped under 24h at save
+// time (handleFollowupLadderSave). Steps 3-5 (type 'template') go straight through Meta's Graph
+// API as an approved template message instead — same direct-Graph-API shape as
+// handleWaSendTemplate/sendShopifyNotification, deliberately bypassing Chatwoot for the send side
+// (Chatwoot's own template relay depends on a separate sync some inboxes 404 on, per
+// handleWaSendTemplate's own comment) — the only message type WhatsApp allows this far past the
+// customer's last message. Throws on a hard send failure so callers decide how to report it: a 502
+// to the rep for the manual route, a caught-and-logged per-lead skip for the cron sweep.
+async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
+  const clientId=String(c.Id);
+  let sentText='', sentViaVoice=false;
+
+  if(stepCfg.type==='session'){
+    if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) throw new Error('Chatwoot is not configured for this account.');
+    const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
+    if(!convId) throw new Error('This lead has no conversation yet.');
+    sentText=String(stepCfg.message||'').replace(/\{name\}/gi, lead.Name||'there');
+
+    // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live
+    // voice-to-voice replies. Only applies to steps 1-2: a WhatsApp template's approved wording is
+    // fixed by Meta, so there is no text to speak in its place for steps 3-5.
+    if(c.voice_followup_enabled==='Yes'){
+      const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
+      if(bcp47){
+        const audioBuf=await engineTtsWithFallback(env, sentText, (lead.Language||c.language||'en'), c.voice_tts_provider);
+        if(audioBuf){
+          const vfd=new FormData();
+          vfd.append('content', engineExtractLinkPriceCaption(sentText));
+          vfd.append('message_type','outgoing'); vfd.append('private','false');
+          vfd.append('attachments[]', new Blob([audioBuf], {type:'audio/ogg; codecs=opus'}), 'followup.ogg');
+          const vr=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:vfd});
+          sentViaVoice=vr.ok;
+          if(!vr.ok) await reportOpsError(env, 'sendFollowupLadderStep — voice send failed, falling back to text', new Error('HTTP '+vr.status), {clientId, convId});
+        }
+      }
+    }
+    if(!sentViaVoice){
+      const fd=new FormData();
+      fd.append('content', sentText); fd.append('message_type','outgoing'); fd.append('private','false');
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+    }
+  } else {
+    if(!c.wa_phone_id||!c.wa_token) throw new Error('WhatsApp Business API is not connected for this account — connect it from Settings → Channels.');
+    if(!lead.Phone) throw new Error('This lead has no phone number.');
+    // Each {{n}} placeholder in the template's approved BODY text gets filled with the lead's name
+    // (template_body_vars, counted when the template was picked in the Follow-up Engine UI) — a
+    // pragmatic default covering the overwhelmingly common case (a template's only variable is the
+    // customer's name), not a general variable-mapping system.
+    const varCount=Math.max(0, stepCfg.template_body_vars||0);
+    const components=varCount?[{type:'body', parameters:Array.from({length:varCount}, ()=>({type:'text', text:lead.Name||'there'}))}]:[];
+    const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp', to:lead.Phone, type:'template', template:{name:stepCfg.template_name, language:{code:stepCfg.template_language||'en_US'}, components}})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data?.error?.message||('HTTP '+r.status));
+    sentText=`[template: ${stepCfg.template_name}]`;
+  }
+
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+step]:'Yes'}});
+  try{
+    await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
+      .bind(Number(c.Id), Number(lead.Id), step, 'ladder', new Date().toISOString()).run();
+  }catch(e){ /* best-effort — the message already went out regardless of whether this logs */ }
+  return {text:sentText, sentViaVoice};
+}
+
+// Manual "send next follow-up now" — a rep's on-demand override alongside the automated ladder
+// cron (runClassicFollowupsForAllClients) and the separate recovery ladder (recovery.js, untouched
+// by this). `stage` in the response keeps its old field name (not `step`) since dashboard.html's
+// sendTaskWaFollowUp already reads response.stage to flip the right Lead field client-side.
 async function handleBroadcastFollowupSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {lead_id}=await request.json().catch(()=>({}));
   if(!lead_id) return json({error:'lead_id required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
 
   const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
   if(!leadR.ok) return json({error:'Lead not found'}, 404);
   const lead=await leadR.json();
   if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Not your lead'}, 403);
-  const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
-  if(!convId) return json({error:'This lead has no conversation yet.'}, 400);
 
-  const messages=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
-  const count=parseInt(c.followup_count||0);
-  let nextIdx=-1;
-  for(let i=0;i<Math.min(count,3);i++){ if(lead['Follow up '+(i+1)]!=='Yes'){ nextIdx=i; break; } }
-  if(nextIdx===-1) return json({error:'No follow-up steps left to send for this lead.'}, 400);
-  const tmpl=messages[nextIdx]||messages[messages.length-1];
-  if(!tmpl) return json({error:'No follow-up message configured for this client.'}, 400);
+  await ensureLeadsColumns(env, ['Follow up 4','Follow up 5']);
+  const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(payload.cid)).all();
+  const steps={}; (stepRows||[]).forEach(r=>{ steps[r.step]=r; });
+  let nextStep=-1;
+  for(let s=1; s<=5; s++){ if(lead['Follow up '+s]!=='Yes'){ nextStep=s; break; } }
+  if(nextStep===-1) return json({error:'No follow-up steps left to send for this lead.'}, 400);
+  const stepCfg=steps[nextStep];
+  if(!stepCfg) return json({error:`Step ${nextStep} isn't set up yet — configure it in Campaigns → Follow-up Engine.`}, 400);
+  if(stepCfg.type==='session' && !stepCfg.message) return json({error:'No message configured for this step yet.'}, 400);
+  if(stepCfg.type==='template' && !stepCfg.template_name) return json({error:'No template chosen for this step yet.'}, 400);
 
   try{
-    const {text, variantLabel, sentViaVoice}=await sendClassicFollowupStep(env, c, lead, nextIdx, tmpl);
-    return json({ok:true, stage:nextIdx+1, sentText:text, sentViaVoice, variant:variantLabel});
+    const {text, sentViaVoice}=await sendFollowupLadderStep(env, c, lead, nextStep, stepCfg);
+    return json({ok:true, stage:nextStep, sentText:text, sentViaVoice});
   }catch(e){ return json({error:e.message||'Send failed'}, 502); }
 }
 
-// Automated classic follow-up sequence — this used to exist only as an external n8n workflow
-// (followup-template.json, a separate repo out of this codebase's scope) that read
-// `followup_messages` straight off the Clients table with zero awareness of this repo's Follow-up
-// Engine A/B variants — so a client's variant content only ever reached the manual "Send Next Now"
-// button above, never the actual scheduled/automatic sends. Migrated in natively so both paths run
-// through the same sendClassicFollowupStep/pickFollowupVariant: the Follow-up Engine's content is
-// now primary wherever a classic follow-up goes out, not just on a rep's click.
-// Runs on the existing `*/15 * * * *` tick (see scheduled() below) rather than the daily one —
-// `followup_hours` is commonly sub-daily (e.g. "6,24,48"), the same reasoning Automations & Flow's
-// own `wait N hours` steps are already checked at this granularity for. Gated per-client on
-// `followup_count>0` (and a configured Chatwoot connection) so a client who never set up the
-// classic sequence is never scanned.
+// Automated ladder sweep — runs on the existing `*/15 * * * *` tick (see scheduled() below) rather
+// than the daily one, since steps 1-2 are sub-daily (hours, not days). Per-client cost stays low:
+// a client who's never touched the Follow-up Engine has zero rows in followup_ladder_steps and is
+// skipped in one query, same as the old count>0 gate.
 async function runClassicFollowupsForAllClients(env){
   let page=1;
   while(true){
@@ -2617,46 +2656,45 @@ async function runClassicFollowupsForAllClients(env){
     const rows=data?.list||[];
     if(!rows.length) break;
     for(const c of rows){
-      const count=parseInt(c.followup_count||0);
-      if(!count||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) continue;
-      try{ await classicFollowupProcessClient(env, c, count); }
+      try{ await classicFollowupProcessClient(env, c); }
       catch(e){ console.error('[classic-followups] failed for client', c.Id, e.message); }
     }
     if(rows.length<200) break;
     page++;
   }
 }
-// `followup_hours` is read as cumulative hours-of-silence-since-last-activity thresholds — step N
-// fires once a lead has been silent for at least hours[N-1] — the same "single fixed anchor,
-// elapsed-time-to-step lookup" model `pipelineFollowupTargetStep`'s cadence already uses in this
-// same file, rather than chaining each step's anchor off the previous step's own send time.
-async function classicFollowupProcessClient(env, c, count){
-  const hours=(c.followup_hours||'').split(',').map(s=>parseFloat(s.trim())).filter(n=>n>0);
-  const messages=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
-  if(!hours.length||!messages.length) return;
-  const steps=Math.min(count,3,hours.length);
+async function classicFollowupProcessClient(env, c){
+  const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
+  if(!stepRows||!stepRows.length) return; // Follow-up Engine never configured for this client
+  const steps={}; stepRows.forEach(r=>{ steps[r.step]=r; });
+  // Silent-hours threshold per step: 1-2 use their own configured `hours`; 3-5 are fixed at their
+  // day count * 24 (not merchant-editable — see FOLLOWUP_LADDER_STEP_SHAPE's own comment).
+  const thresholdHours=step=>steps[step].type==='session'?(steps[step].hours||24):((steps[step].days||0)*24);
+  await ensureLeadsColumns(env, ['Follow up 4','Follow up 5']);
   const where=`(ClientId,eq,${c.Id})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
   let page=1;
   while(true){
-    const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent('Id,Name,Stage,LastMsgAt,Date,Language,ConversationID,conv_id,ConversationId,chatwoot_conv_id,Follow up 1,Follow up 2,Follow up 3')}`);
+    const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent('Id,Name,Phone,Stage,LastMsgAt,Date,Language,ConversationID,conv_id,ConversationId,chatwoot_conv_id,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
     if(!leadsR.ok) break;
     const data=await leadsR.json().catch(()=>({}));
     const leadRows=data?.list||[];
     if(!leadRows.length) break;
     for(const lead of leadRows){
       if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
-      let nextIdx=-1;
-      for(let i=0;i<steps;i++){ if(lead['Follow up '+(i+1)]!=='Yes'){ nextIdx=i; break; } }
-      if(nextIdx===-1) continue; // sequence exhausted or fully sent
-      const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
-      if(!convId) continue;
+      let nextStep=-1;
+      for(let s=1; s<=5; s++){
+        if(!steps[s]) continue; // step not configured yet — transparently skipped, not blocking
+        if(lead['Follow up '+s]!=='Yes'){ nextStep=s; break; }
+      }
+      if(nextStep===-1) continue; // sequence exhausted, or fully sent
+      const stepCfg=steps[nextStep];
+      if(stepCfg.type==='session' && !stepCfg.message) continue;
+      if(stepCfg.type==='template' && !stepCfg.template_name) continue;
       const lastRealMs=lead.LastMsgAt||lead.Date;
       if(!lastRealMs) continue;
       const silentHours=(Date.now()-new Date(lastRealMs).getTime())/3600000;
-      if(silentHours<hours[nextIdx]) continue; // not due yet
-      const tmpl=messages[nextIdx]||messages[messages.length-1];
-      if(!tmpl) continue;
-      try{ await sendClassicFollowupStep(env, c, lead, nextIdx, tmpl); }
+      if(silentHours<thresholdHours(nextStep)) continue; // not due yet
+      try{ await sendFollowupLadderStep(env, c, lead, nextStep, stepCfg); }
       catch(e){ console.error('[classic-followups] send failed for lead', lead.Id, e.message); }
       await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
     }
@@ -2694,58 +2732,17 @@ async function handleHumanDealsCoach(request, env){
   });
 }
 
-async function handleFollowupVariantsList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT * FROM followup_variants WHERE client_id=?`).bind(Number(payload.cid)).all();
-  const byKey={};
-  (results||[]).forEach(r=>{ byKey[`${r.step}_${r.variant}`]=r; });
-  const list=[];
-  for(let step=1; step<=3; step++){
-    for(const variant of ['A','B']){
-      const r=byKey[`${step}_${variant}`];
-      list.push(r
-        ?{step, variant, message:r.message, cta:r.cta, incentive_text:r.incentive_text, incentive_expires_hours:r.incentive_expires_hours, social_proof:!!r.social_proof, active:!!r.active, media_url:r.media_url||'', media_caption:r.media_caption||''}
-        :{step, variant, message:'', cta:'', incentive_text:'', incentive_expires_hours:null, social_proof:false, active:true, media_url:'', media_caption:''});
-    }
-  }
-  return json({list});
-}
-
-async function handleFollowupVariantsSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const variants=Array.isArray(body.variants)?body.variants:[];
-  const now=new Date().toISOString();
-  for(const v of variants){
-    const step=parseInt(v.step);
-    const variant=v.variant==='B'?'B':'A';
-    if(!(step>=1&&step<=3)) continue;
-    await env.DB.prepare(`INSERT INTO followup_variants (client_id, step, variant, message, cta, incentive_text, incentive_expires_hours, social_proof, active, media_url, media_caption, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(client_id, step, variant) DO UPDATE SET message=excluded.message, cta=excluded.cta, incentive_text=excluded.incentive_text, incentive_expires_hours=excluded.incentive_expires_hours, social_proof=excluded.social_proof, active=excluded.active, media_url=excluded.media_url, media_caption=excluded.media_caption, updated_at=excluded.updated_at`)
-      .bind(Number(payload.cid), step, variant,
-        String(v.message||'').trim().slice(0,1000),
-        String(v.cta||'').trim().slice(0,200),
-        String(v.incentive_text||'').trim().slice(0,300),
-        v.incentive_expires_hours?Number(v.incentive_expires_hours):null,
-        v.social_proof?1:0, v.active===false?0:1,
-        String(v.media_url||'').trim().slice(0,500),
-        String(v.media_caption||'').trim().slice(0,300),
-        now)
-      .run();
-  }
-  return json({ok:true});
-}
-
+// Grouped by step only (not step+variant) — the ladder no longer has A/B variants per step, and
+// summing across whatever `variant` value a row happens to carry ('ladder' for new sends, 'A'/'B'/
+// 'legacy' for anything sent before this ladder existed) keeps historical stats visible instead of
+// splitting them out by a distinction the current UI no longer makes.
 async function handleFollowupStats(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT step, variant, COUNT(*) as sent, SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) as replied
-    FROM followup_sends WHERE client_id=? GROUP BY step, variant ORDER BY step, variant`)
+  const {results}=await env.DB.prepare(`SELECT step, COUNT(*) as sent, SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) as replied
+    FROM followup_sends WHERE client_id=? GROUP BY step ORDER BY step`)
     .bind(Number(payload.cid)).all();
-  const list=(results||[]).map(r=>({step:r.step, variant:r.variant, sent:r.sent, replied:r.replied, reply_rate:r.sent?Math.round(r.replied/r.sent*100):0}));
+  const list=(results||[]).map(r=>({step:r.step, sent:r.sent, replied:r.replied, reply_rate:r.sent?Math.round(r.replied/r.sent*100):0}));
   return json({list});
 }
 
@@ -10200,7 +10197,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   else if(routing.clearOrderCollect) body.OrderCollect='';
   if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
   else body.Stage=next;
-  if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; }
+  if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; body['Follow up 4']='No'; body['Follow up 5']='No'; }
   if(intentData?.booking_time) body.BookingTime=intentData.booking_time;
 
   let score='Cold';
@@ -14382,7 +14379,7 @@ async function runSaasSupportPullForAllClients(env){
 // ── Reminders — renewal (90/60/30 days before renewal_date) and activation-milestone-miss nudges.
 // pipeline_followups couldn't be reused for this (see migration comment); saas_account_reminders
 // holds several independent reminder rows per account. Sent via the same Chatwoot conversations-
-// API pattern used throughout this file (fpSendRemindersForClient, sendClassicFollowupStep).
+// API pattern used throughout this file (fpSendRemindersForClient, sendFollowupLadderStep).
 async function saasSendChatwootMessage(c, convId, text){
   if(!c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token || !convId) return false;
   const fd=new FormData();
@@ -15015,11 +15012,10 @@ function driveGuessFilename(contentType){
 }
 // Fetches one Google Drive file (video/image/audio/PDF) and forwards it into a Chatwoot
 // conversation as a real attachment — the general-purpose version of hospitalitySendUnitMedia's
-// per-item send, shared by the Automations & Flow module's send_whatsapp_media step and the
-// classic follow-up sequence's per-variant media attachment (see pickFollowupVariant/
-// handleBroadcastFollowupSend below). Returns false (never throws) on anything that didn't work —
-// an unshared file, a bad link, or a Chatwoot send failure — so callers can treat it as best-effort
-// exactly like every other WhatsApp send in this file.
+// per-item send, shared by the Automations & Flow module's send_whatsapp_media step, ecom
+// promotions/testimonials/product media, and others. Returns false (never throws) on anything that
+// didn't work — an unshared file, a bad link, or a Chatwoot send failure — so callers can treat it
+// as best-effort exactly like every other WhatsApp send in this file.
 async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption){
   const fileId=driveFileId(driveUrl);
   if(!fileId) return false;
@@ -18408,8 +18404,8 @@ export default {
       else if(url.pathname==='/broadcast/send-template' && request.method==='POST'){ res=await handleBroadcastSendTemplate(request, env); }
       else if(url.pathname==='/broadcast/followup-send' && request.method==='POST'){ res=await handleBroadcastFollowupSend(request, env); }
       else if(url.pathname==='/human-deals/coach' && request.method==='GET'){ res=await handleHumanDealsCoach(request, env); }
-      else if(url.pathname==='/followups/variants' && request.method==='GET'){ res=await handleFollowupVariantsList(request, env); }
-      else if(url.pathname==='/followups/variants' && request.method==='POST'){ res=await handleFollowupVariantsSave(request, env); }
+      else if(url.pathname==='/followups/ladder' && request.method==='GET'){ res=await handleFollowupLadderGet(request, env); }
+      else if(url.pathname==='/followups/ladder' && request.method==='POST'){ res=await handleFollowupLadderSave(request, env); }
       else if(url.pathname==='/followups/stats' && request.method==='GET'){ res=await handleFollowupStats(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='GET'){ res=await handleAutomationFlowsList(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='POST'){ res=await handleAutomationFlowCreate(request, env); }

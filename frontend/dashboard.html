@@ -2110,17 +2110,7 @@ const ROLES = {
 
           <div class="settings-section">
             <div class="s-head">Follow-up Messages</div>
-            <div class="s-note">Automated nudges sent when a lead goes quiet.</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-              <div><label class="form-label">Number of follow-ups (0–3)</label><input class="form-input" type="number" id="cfgFuCount" min="0" max="3"></div>
-              <div><label class="form-label">Hours (comma-separated)</label><input class="form-input" type="text" id="cfgFuHours" placeholder="24, 72, 168"></div>
-            </div>
-            <label class="form-label">Messages (one per line)</label>
-            <textarea class="form-input" id="cfgFuMsgs" rows="4"></textarea>
-            <div style="margin-top:10px;display:flex;align-items:center">
-              <button class="save-btn" id="saveFu">Save Follow-ups</button>
-              <span class="save-msg" id="saveFuMsg"></span>
-            </div>
+            <div class="s-note">Every follow-up setting — the two nudges sent while still inside WhatsApp's 24-hour reply window, and the three template-based re-engagement sends at day 2/4/7 — now lives in one place: <a href="broadcast.html#fuengine" style="color:var(--accent);font-weight:600">Campaigns → 💪 Follow-up Engine</a>.</div>
           </div>
 
           <hr class="div">
@@ -5301,26 +5291,28 @@ async function saveLeadSavedViewsList(list){
   await patchClient({lead_saved_views:JSON.stringify(list)});
 }
 
-// Contact-attempt counter — reuses the existing Follow up 1/2/3 Yes/No fields (already present on
-// the Leads table, already reset to 'No' on Stage change by the Conversation Engine) as three
-// attempt slots instead of adding a new column. Count = how many of those are flipped to 'Yes' so
-// far; bumpLeadAttempt() flips the next unflipped one whenever a rep actually reaches out (a
-// template send or a scheduled follow-up — see sendLeadsTemplate()/saveTaskFromModal()), so the
-// counter tracks real outreach attempts, not just time passing.
+// Contact-attempt counter — reuses the existing Follow up 1-5 Yes/No fields (already present on
+// the Leads table, already reset to 'No' on Stage change by the Conversation Engine, and now the
+// same 5 slots the Follow-up Engine ladder's steps 1-5 flip 'Yes' on — see worker.js's
+// sendFollowupLadderStep) as five attempt slots instead of adding a new column. Count = how many
+// of those are flipped to 'Yes' so far; bumpLeadAttempt() flips the next unflipped one whenever a
+// rep actually reaches out (a template send or a scheduled follow-up — see
+// sendLeadsTemplate()/saveTaskFromModal()), so the counter tracks real outreach attempts (both
+// automated ladder sends and manual rep attempts), not just time passing.
+const LEAD_ATTEMPT_KEYS=['Follow up 1','Follow up 2','Follow up 3','Follow up 4','Follow up 5'];
 function leadAttemptCount(l){
-  return ['Follow up 1','Follow up 2','Follow up 3'].filter(k=>l[k]==='Yes').length;
+  return LEAD_ATTEMPT_KEYS.filter(k=>l[k]==='Yes').length;
 }
 function leadAttemptBadge(l){
   const n=leadAttemptCount(l);
   if(n<2) return '';
-  const label=n>=3?'3rd no-answer':'2nd no-answer';
-  return `<span class="tag" style="background:#FEE2E2;color:#991B1B;font-weight:600" title="${n} contact attempt(s) with no reply yet">📵 ${label}</span>`;
+  const ORDINALS={2:'2nd',3:'3rd',4:'4th',5:'5th'};
+  return `<span class="tag" style="background:#FEE2E2;color:#991B1B;font-weight:600" title="${n} contact attempt(s) with no reply yet">📵 ${ORDINALS[n]||n+'th'} no-answer</span>`;
 }
 async function bumpLeadAttempt(leadId){
   const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
-  const keys=['Follow up 1','Follow up 2','Follow up 3'];
-  const next=keys.find(k=>lead[k]!=='Yes');
-  if(!next) return; // already at the 3rd-attempt cap — nothing further to flip
+  const next=LEAD_ATTEMPT_KEYS.find(k=>lead[k]!=='Yes');
+  if(!next) return; // already at the 5th-attempt cap — nothing further to flip
   try{
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,[next]:'Yes'});
     lead[next]='Yes';
@@ -5609,7 +5601,7 @@ async function reactivateLead(leadId,ev){
   const nextStage=stageIds[1]||stageIds[0]||'new';
   const tags=parseTags(lead.Tags).filter(t=>t.toLowerCase()!=='cold');
   const patch={Id:leadId, Stage:nextStage, OptOut:'No', Tags:tags.join(', '),
-    'Follow up 1':'No', 'Follow up 2':'No', 'Follow up 3':'No'};
+    'Follow up 1':'No', 'Follow up 2':'No', 'Follow up 3':'No', 'Follow up 4':'No', 'Follow up 5':'No'};
   try{
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
     Object.assign(lead,patch);
@@ -8037,11 +8029,10 @@ function populateSettings(){
   // industry
   const indEl=$id('cfgIndustry');
   indEl.innerHTML=Object.entries(INDUSTRIES).map(([k,v])=>`<option value="${k}"${clientRecord.industry===k?' selected':''}>${v.label}</option>`).join('');
-  // prompt / followup / test
+  // prompt / test — followup_count/hours/messages retired from this page, see the Follow-up
+  // Messages settings-section note above; broadcast.html's Follow-up Engine is now the only place
+  // that reads/writes follow-up config (followup_ladder_steps, D1).
   $id('cfgPrompt').value=clientRecord.main_prompt||'';
-  $id('cfgFuCount').value=clientRecord.followup_count||'3';
-  $id('cfgFuHours').value=clientRecord.followup_hours||'2, 12, 20';
-  $id('cfgFuMsgs').value=clientRecord.followup_messages||'';
   $id('cfgTestPhone').value=clientRecord.test_phone||'';
   $id('cfgTestMode').value=clientRecord.test_mode||'No';
   $id('cfgHandoverSilence').value=clientRecord.handover_silence_enabled||'No';
@@ -8430,7 +8421,6 @@ $id('savePrompt').addEventListener('click',async()=>{
   await saveField('savePrompt','savePromptMsg',{main_prompt:$id('cfgPrompt').value});
   if(clientRecord?.kb_text?.trim())triggerKbRefresh();
 });
-$id('saveFu').addEventListener('click',async()=>saveField('saveFu','saveFuMsg',{followup_count:parseInt($id('cfgFuCount').value)||0,followup_hours:$id('cfgFuHours').value,followup_messages:$id('cfgFuMsgs').value}));
 
 // ── QUOTATION MODULE ─────────────────────────────────────────────
 const QUOTE_DEFAULT_TEMPLATE=`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Please find our official quotation attached.
@@ -12373,7 +12363,7 @@ function previewTheme(val){
 async function reopenLead(){
   if(!currentLead)return;
   if(!confirm('Re-open this lead? The bot will start responding again from the beginning.'))return;
-  const patch={Id:currentLead.Id,Stage:'new',Handover:'No',OptOut:'No','Follow up 1':'No','Follow up 2':'No','Follow up 3':'No'};
+  const patch={Id:currentLead.Id,Stage:'new',Handover:'No',OptOut:'No','Follow up 1':'No','Follow up 2':'No','Follow up 3':'No','Follow up 4':'No','Follow up 5':'No'};
   await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
   Object.assign(currentLead,patch);
   const idx=allLeads.findIndex(l=>l.Id===currentLead.Id);
