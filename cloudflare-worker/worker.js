@@ -18054,14 +18054,43 @@ export class ClientUpdatesHub{
       return new Response('ok');
     }
     if(request.headers.get('Upgrade')==='websocket'){
+      // email/name identify which teammate this socket belongs to, for the "seen by" presence
+      // relay below — same trust level as every other agent-identity field this app already
+      // takes on faith from an authenticated dashboard tab (e.g. Owner via bulkAssign), since the
+      // shared session token itself carries no per-agent identity (verifySession's payload is
+      // just {cid, exp}). Stored via serializeAttachment so it survives hibernation — the
+      // Hibernatable WebSockets API can evict/recreate this DO between messages, and a plain JS
+      // field on `this` would be lost when that happens.
+      const email=(url.searchParams.get('email')||'').toLowerCase().slice(0,140);
+      const name=(url.searchParams.get('name')||'').slice(0,140);
       const pair=new WebSocketPair();
       const [client, server]=Object.values(pair);
       this.state.acceptWebSocket(server);
+      try{ server.serializeAttachment({email, name}); }catch(e){}
       return new Response(null, {status:101, webSocket:client});
     }
     return new Response('Not found', {status:404});
   }
-  async webSocketMessage(ws, message){}
+  // Chats tab "seen by" avatars (chats.js chatSelectLead/renderSeenBy) — a lead's viewers, not a
+  // persisted read-receipt: dashboard.html sends a small {type:'viewing', lead_id} heartbeat every
+  // ~20s while that lead's thread is open, relayed here to every other connected socket for this
+  // client so teammates see who else is currently looking at the same conversation. Deliberately
+  // ephemeral (nothing written to D1/NocoDB) — a stale/closed tab just stops heartbeating and every
+  // other client ages its avatar out on its own after ~45s (see chats.js renderSeenBy), so there's
+  // nothing here that needs cleaning up server-side.
+  async webSocketMessage(ws, message){
+    let msg=null;
+    try{ msg=JSON.parse(message); }catch(e){ return; }
+    if(msg?.type!=='viewing' || !msg.lead_id) return;
+    let who={};
+    try{ who=ws.deserializeAttachment()||{}; }catch(e){}
+    if(!who.email) return;
+    const out=JSON.stringify({type:'viewing', lead_id:msg.lead_id, email:who.email, name:who.name||who.email, at:new Date().toISOString()});
+    for(const other of this.state.getWebSockets()){
+      if(other===ws) continue;
+      try{ other.send(out); }catch(e){}
+    }
+  }
   async webSocketClose(ws, code, reason, wasClean){ try{ ws.close(code, reason); }catch(e){} }
   async webSocketError(ws, error){}
 }

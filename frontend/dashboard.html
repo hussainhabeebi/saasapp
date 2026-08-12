@@ -4436,6 +4436,22 @@ const ROLES = {
   </div>
 </div>
 
+<!-- MODAL: Saved Replies (Chats composer "/" picker — see chats.js openSavedRepliesModal) -->
+<div class="modal" id="modalSavedReplies" style="width:520px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title">Saved Replies</div><button class="icon-btn" onclick="closeModal('modalSavedReplies')">✕</button></div>
+  <div class="modal-body">
+    <div class="s-note" style="margin-bottom:10px">Type <code>/shortcut</code> in the chat composer to insert one instantly. Shared with your whole team.</div>
+    <div id="savedReplyList"></div>
+    <button type="button" class="task-action-btn" onclick="addSavedReplyRow()">+ Add saved reply</button>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="saveSavedReplies" onclick="saveSavedReplies()">Save</button>
+    <span class="save-msg" id="saveSavedRepliesMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalSavedReplies')">Cancel</button>
+  </div>
+</div>
+
 <!-- MODAL: Project Settings (client info + AI summary toggle) -->
 <div class="modal" id="modalProject" style="width:480px">
   <span class="modal-drag"></span>
@@ -4592,6 +4608,9 @@ const ROLES = {
 /* ── STATE ── */
 let clientId = null, clientRecord = null, refreshTimer = null;
 let _liveSocket = null, _liveReconnectTimer = null;
+// "Seen by" presence (see chats.js) — leadId -> {email -> {name, at}}, and the heartbeat interval
+// that keeps sending {type:'viewing'} for whichever lead is currently open in the Chats tab.
+let _chatPresence = {}, _chatHeartbeatTimer = null;
 // lv_cid/lv_session/lv_me_email deliberately live in localStorage, not sessionStorage — closing a
 // tab/browser used to wipe sessionStorage entirely, forcing a fresh Authentik login far more often
 // than the session token's own TTL ever would (the real cause of "have to log in again constantly"
@@ -5063,11 +5082,15 @@ function connectLiveUpdates(){
   clearTimeout(_liveReconnectTimer);
   try{ _liveSocket?.close(); }catch(e){}
   const wsBase=CONFIG.WORKER_BASE.replace(/^http/,'ws');
-  _liveSocket=new WebSocket(`${wsBase}/engine/live?token=${encodeURIComponent(sessionToken)}`);
+  const myName=getTeamMembers().find(m=>m.email===myEmail)?.name||myEmail;
+  _liveSocket=new WebSocket(`${wsBase}/engine/live?token=${encodeURIComponent(sessionToken)}&email=${encodeURIComponent(myEmail||'')}&name=${encodeURIComponent(myName||'')}`);
   _liveSocket.onmessage=(ev)=>{
     let msg=null;
     try{ msg=JSON.parse(ev.data); }catch(e){ return; }
     if(msg?.type==='message') onLiveMessageEvent(msg);
+    // Chats tab "seen by" heartbeat relay (worker.js ClientUpdatesHub.webSocketMessage) — never
+    // touches allLeads/loadAll, purely a presence overlay on whatever's already rendered.
+    else if(msg?.type==='viewing') onLiveViewingEvent(msg);
   };
   // Reconnects on any close (server restart, idle Worker recycle, network blip) as long as the
   // app is still actually open — checked at fire time, not just at schedule time, so a logout in
@@ -5079,6 +5102,7 @@ function connectLiveUpdates(){
 }
 function disconnectLiveUpdates(){
   clearTimeout(_liveReconnectTimer);
+  clearInterval(_chatHeartbeatTimer);
   try{ _liveSocket?.close(); }catch(e){}
   _liveSocket=null;
 }
@@ -5094,6 +5118,15 @@ async function onLiveMessageEvent(msg){
     renderChatContacts();
     if(_chatLeadId && _chatLeadId===msg.lead_id) chatSelectLead(_chatLeadId);
   }
+}
+// "Seen by" presence — see chats.js chatSelectLead's heartbeat and renderSeenBy for the
+// send/render halves; this is just the receive half, kept here next to onLiveMessageEvent since
+// both hang off the same socket's onmessage. Never touches allLeads or triggers loadAll.
+function onLiveViewingEvent(msg){
+  if(!msg.lead_id||!msg.email) return;
+  if(!_chatPresence[msg.lead_id]) _chatPresence[msg.lead_id]={};
+  _chatPresence[msg.lead_id][msg.email]={name:msg.name||msg.email, at:msg.at||new Date().toISOString()};
+  if(_chatLeadId===msg.lead_id && !$id('pageChats').classList.contains('hidden')) renderSeenBy(msg.lead_id);
 }
 
 /* ── HOME ── */
@@ -7654,7 +7687,12 @@ async function removeTag(tag,e){
 function renderDetailNotes(lead){
   let notes=[]; try{notes=JSON.parse(lead.NotesList||'[]');}catch(e){}
   $id('detailNotes').innerHTML=notes.length
-    ?notes.map(n=>`<div class="note-item">${esc(n.text).replace(/\n/g,'<br>')}<div class="note-meta">${n.date||''}</div></div>`).join('')
+    ?notes.map(n=>{
+      // author — added alongside the Chats tab's internal-note composer (chats.js chatSubmitNote)
+      // so a note written from either place shows who wrote it; older notes simply lack it.
+      const authorName=n.author?(getTeamMembers().find(m=>m.email===n.author)?.name||n.author):'';
+      return `<div class="note-item">${esc(n.text).replace(/\n/g,'<br>')}<div class="note-meta">${authorName?esc(authorName)+' · ':''}${n.date||''}</div></div>`;
+    }).join('')
     :'<div style="color:var(--muted);font-size:13px;margin-bottom:10px">No notes yet.</div>';
 }
 
@@ -7662,7 +7700,10 @@ async function addNote(){
   const text=$id('noteInput').value.trim();
   if(!text||!currentLead)return;
   let notes=[]; try{notes=JSON.parse(currentLead.NotesList||'[]');}catch(e){}
-  notes.unshift({text,date:new Date().toLocaleString()});
+  // ts (ISO) is what chats.js's merged timeline sorts by — date stays for the existing display
+  // format above, ts is the addition. author lets both this panel and the Chats tab show who
+  // wrote it.
+  notes.unshift({text,date:new Date().toLocaleString(),ts:new Date().toISOString(),author:myEmail});
   currentLead.NotesList=JSON.stringify(notes);
   $id('noteInput').value='';
   renderDetailNotes(currentLead);

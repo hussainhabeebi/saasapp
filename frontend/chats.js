@@ -2,12 +2,19 @@
    Loaded as a plain classic <script> (not a module) right where this code used to sit inline, so
    it shares dashboard.html's global scope exactly as before — this is a file-organization change
    only, not a behavior change. Depends on globals defined in dashboard.html: $id, esc, timeAgo,
-   maskPhone, allLeads, clientId, myEmail, sessionToken, CONFIG, ncAuthHeaders, ncPatch,
-   freshConvHistory, leadConvId, openDetail, updateChatBadge's DOM targets (dnChatBadge/
-   bnChatBadge). connectLiveUpdates/onLiveMessageEvent/disconnectLiveUpdates stayed in
-   dashboard.html — they're wired into core app lifecycle (showApp/hLogout) and touch both Home and
-   Chats, not Chats-only, so moving them here would need a lifecycle bridge for no real benefit. */
+   maskPhone, allLeads, clientId, clientRecord, currentLead, myEmail, sessionToken, CONFIG,
+   ncAuthHeaders, ncPatch, patchClient, ensureClientField, freshConvHistory, leadConvId, openDetail,
+   renderDetailNotes, getTeamMembers, teamMemberOptions, openModal, closeModal, showToast,
+   updateChatBadge's DOM targets (dnChatBadge/bnChatBadge), and the "seen by" presence globals
+   _liveSocket/_chatPresence/_chatHeartbeatTimer. connectLiveUpdates/onLiveMessageEvent/
+   onLiveViewingEvent/disconnectLiveUpdates stayed in dashboard.html — they're wired into core app
+   lifecycle (showApp/hLogout) and touch both Home and Chats, not Chats-only, so moving them here
+   would need a lifecycle bridge for no real benefit. */
 let _chatSearchTimer=null, _chatLeadId=null, CHAT_FILTER='all', CHAT_CHANNEL='whatsapp';
+// Composer state — reply vs. internal-note mode (chatSetComposerMode) and the "/" saved-reply
+// picker's current match list (chatComposerInput/chatComposerKeydown/chatPickSavedReply).
+let _chatComposerMode='reply', _chatPickerMatches=[], _chatPickerIndex=0;
+const CHAT_PRESENCE_TTL_MS=45000;
 // All leads are already in memory (loadAll fetches up to 2000 in one shot — every other page
 // depends on allLeads being the complete set, so that fetch itself isn't paginated here). This is
 // DOM-level pagination instead: chatConvoLeads on a busy account can still be a few hundred rows,
@@ -188,11 +195,34 @@ function chatLoadMore(){
   renderChatContacts();
 }
 
+// Merges ConvHistory (chat messages) and NotesList (internal notes, shared with the Lead Detail
+// panel's own Notes tab — same field, same addNote() shape, just also rendered inline here) into
+// one chronological timeline. Most engine-generated messages carry no `ts` at all (only
+// manually-sent replies/attachments do — see chatSendFromTab/chatAttachFile), so exact
+// interleaving isn't always possible; each note is inserted right before the first later-timestamped
+// message it precedes, or appended at the end otherwise, which is correct for the overwhelmingly
+// common case (a note written live while looking at the current conversation).
+function chatMergedTimeline(lead){
+  let history=[]; try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+  let notesRaw=[]; try{notesRaw=JSON.parse(lead.NotesList||'[]');}catch(e){}
+  const timeline=history.map(m=>({kind:'msg', role:m.role, content:m.content, options:m.options||null, tsMs:m.ts?Date.parse(m.ts):NaN}));
+  notesRaw.slice().reverse().forEach(n=>{
+    const tsMs=n.ts?Date.parse(n.ts):(n.date?Date.parse(n.date):NaN);
+    const note={kind:'note', text:n.text, author:n.author||'', tsMs};
+    if(isNaN(tsMs)){ timeline.push(note); return; }
+    const idx=timeline.findIndex(e=>e.kind==='msg' && !isNaN(e.tsMs) && e.tsMs>tsMs);
+    if(idx===-1) timeline.push(note); else timeline.splice(idx,0,note);
+  });
+  return timeline;
+}
+
 function chatSelectLead(leadId){
   document.querySelectorAll('.chat-contact-row').forEach(r=>r.classList.remove('active'));
   const row=$id('ccRow'+leadId);
   if(row) row.classList.add('active');
   _chatLeadId=leadId;
+  _chatComposerMode='reply';
+  closeSavedReplyPicker();
   const lead=allLeads.find(l=>l.Id===leadId);
   if(!lead) return;
   // Marks read on open, not on send/close — matches every real chat app (opening the thread is
@@ -203,8 +233,7 @@ function chatSelectLead(leadId){
     updateChatBadge();
   }
 
-  let history=[];
-  try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+  const timeline=chatMergedTimeline(lead);
 
   // Attach/template tools reuse the same Chatwoot-conversation relay (/quote/send) and template
   // modal (openSendTemplateModal) already built for Quotes/Leads — neither has an Instagram-DM
@@ -224,15 +253,24 @@ function chatSelectLead(leadId){
         <div class="chat-main-name">${esc(lead.Name||'Unknown')}</div>
         <div class="chat-main-phone">${lead.Channel==='instagram'?'📷 Instagram DM':esc(lead.Phone||'')} · ${esc(lead.Stage||'new')}</div>
       </div>
+      <div class="chat-seenby" id="chatSeenBy"></div>
+      <select class="chat-assignee-select" id="chatAssigneeSelect" title="Assigned to" onchange="chatSetAssignee(${lead.Id}, this.value)">${teamMemberOptions(lead.Owner||'')}</select>
       <button class="btn btn-secondary btn-sm" onclick="openDetail(${lead.Id})">View Lead →</button>
     </div>
     <div class="chat-messages" id="chatMsgBox" style="flex:1;overflow-y:auto;padding:16px 6%">
-      ${history.length?history.map((m,i)=>{
+      ${timeline.length?timeline.map((m,i)=>{
+        if(m.kind==='note'){
+          const authorName=m.author?(getTeamMembers().find(tm=>tm.email===m.author)?.name||m.author):'';
+          const when=!isNaN(m.tsMs)?new Date(m.tsMs).toLocaleString():'';
+          return `<div class="chat-note-row"><div class="chat-note">📝 ${esc(m.text||'').replace(/\n/g,'<br>')}${(authorName||when)?`<div class="chat-note-meta">${esc(authorName)}${authorName&&when?' · ':''}${esc(when)}</div>`:''}</div></div>`;
+        }
         const isOut=m.role==='assistant'||m.role==='bot';
-        // Tail only on the first bubble of a consecutive run from the same side — matches
-        // how WhatsApp groups a burst of messages from one sender under a single tail.
-        const prevOut=i>0&&(history[i-1].role==='assistant'||history[i-1].role==='bot');
-        const firstInGroup=i===0||prevOut!==isOut;
+        // Tail only on the first bubble of a consecutive run from the same side — matches how
+        // WhatsApp groups a burst of messages from one sender under a single tail. A note always
+        // breaks a group (it's not a chat bubble at all), same as switching sides would.
+        const prev=timeline[i-1];
+        const prevOut=prev&&prev.kind==='msg'&&(prev.role==='assistant'||prev.role==='bot');
+        const firstInGroup=i===0||!prev||prev.kind==='note'||prevOut!==isOut;
         const side=isOut?'out':'in';
         // Quick-reply options (routing.quickReplies, see engineBuildLeadUpsertBody in worker.js)
         // — stacked full-width rows attached under the message, matching how WhatsApp itself
@@ -242,27 +280,195 @@ function chatSelectLead(leadId){
           ? `<div class="bubble-options">${m.options.map(o=>`<div class="bubble-option-btn">${esc(o.title||o.value||'')}</div>`).join('')}</div>`
           : '';
         return `<div class="chat-bubble-row ${side}">
-          <div class="chat-bubble ${side}${firstInGroup?' tail-'+side:''}${optsHtml?' has-options':''}">${esc(m.content||'').replace(/\n/g,'<br>')}<span class="bubble-meta">${m.ts?`<span class="bubble-time">${new Date(m.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`:''}${isOut?'<span class="bubble-check">✓✓</span>':''}</span>${optsHtml}
+          <div class="chat-bubble ${side}${firstInGroup?' tail-'+side:''}${optsHtml?' has-options':''}">${esc(m.content||'').replace(/\n/g,'<br>')}<span class="bubble-meta">${!isNaN(m.tsMs)?`<span class="bubble-time">${new Date(m.tsMs).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`:''}${isOut?'<span class="bubble-check">✓✓</span>':''}</span>${optsHtml}
           </div>
         </div>`;
       }).join(''):'<div style="color:#667781;font-size:13px;text-align:center;padding:20px">No conversation yet</div>'}
     </div>
     <div id="chatAttachStatus" class="chat-send-status"></div>
-    <div class="chat-input-bar">
+    <div class="chat-mode-row" id="chatModeRow">
+      <button class="chat-mode-btn active" data-mode="reply" onclick="chatSetComposerMode('reply')">💬 Reply</button>
+      <button class="chat-mode-btn" data-mode="note" onclick="chatSetComposerMode('note')">📝 Internal note</button>
+    </div>
+    <div class="chat-input-bar" id="chatInputBar">
       ${canUseTools?`
       <input type="file" id="chatImgInput" accept="image/*" style="display:none" onchange="chatAttachFile(${lead.Id},this.files[0],'image')">
       <input type="file" id="chatDocInput" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" style="display:none" onchange="chatAttachFile(${lead.Id},this.files[0],'document')">
-      <div class="chat-tools">
+      <div class="chat-tools" id="chatToolsWrap">
         <button class="chat-tool-btn" onclick="$id('chatImgInput').click()" title="Attach image">🖼️</button>
         <button class="chat-tool-btn" onclick="$id('chatDocInput').click()" title="Attach document">📎</button>
         <button class="chat-tool-btn" onclick="openSendTemplateModal([${lead.Id}])" title="Send WhatsApp template">📣</button>
-      </div>`:''}
-      <textarea id="chatReplyBox" class="chat-input-box" rows="1" placeholder="Type a message"></textarea>
-      <button class="chat-send-btn" onclick="chatSendFromTab(${lead.Id})" title="Send">➤</button>
+        <button class="chat-tool-btn" onclick="openSavedRepliesModal()" title="Saved replies">⚡</button>
+      </div>`:`<div class="chat-tools" id="chatToolsWrap"><button class="chat-tool-btn" onclick="openSavedRepliesModal()" title="Saved replies">⚡</button></div>`}
+      <div style="position:relative;flex:1;min-width:0">
+        <div class="saved-reply-picker" id="chatSavedReplyPicker" style="display:none"></div>
+        <textarea id="chatReplyBox" class="chat-input-box" rows="1" placeholder="Type a message" oninput="chatComposerInput(${lead.Id})" onkeydown="return chatComposerKeydown(event, ${lead.Id})" onblur="setTimeout(closeSavedReplyPicker,150)"></textarea>
+      </div>
+      <button class="chat-send-btn" onclick="chatSendFromTab(${lead.Id})" title="Send (Enter) — Shift+Enter for a new line">➤</button>
     </div>
     <div id="chatReplyMsg" class="chat-send-status"></div>`;
   // scroll to bottom
   setTimeout(()=>{const b=$id('chatMsgBox');if(b)b.scrollTop=b.scrollHeight;},50);
+  renderSeenBy(lead.Id);
+  chatStartPresenceHeartbeat(lead.Id);
+}
+
+// "Seen by" — ephemeral presence, not a persisted read receipt (see worker.js ClientUpdatesHub's
+// webSocketMessage). A heartbeat every 20s while this lead's thread is open; other connected
+// dashboards age an entry out after CHAT_PRESENCE_TTL_MS of silence (chatSelectLead's onmessage
+// relay never explicitly says "left", a closed tab just stops heartbeating).
+function chatStartPresenceHeartbeat(leadId){
+  clearInterval(_chatHeartbeatTimer);
+  const ping=()=>{ try{ if(_liveSocket && _liveSocket.readyState===1) _liveSocket.send(JSON.stringify({type:'viewing', lead_id:leadId})); }catch(e){} };
+  ping();
+  _chatHeartbeatTimer=setInterval(ping,20000);
+}
+function renderSeenBy(leadId){
+  const box=$id('chatSeenBy');
+  if(!box) return;
+  const map=_chatPresence[leadId]||{};
+  const now=Date.now();
+  const viewers=Object.entries(map).filter(([email,v])=>email!==myEmail && (now-new Date(v.at).getTime())<CHAT_PRESENCE_TTL_MS).slice(0,4);
+  box.innerHTML=viewers.map(([email,v])=>`<span class="seenby-avatar" title="${esc(v.name||email)} is viewing this chat">${esc((v.name||email)[0].toUpperCase())}</span>`).join('');
+}
+
+async function chatSetAssignee(leadId, email){
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead) return;
+  const prev=lead.Owner||'';
+  lead.Owner=email;
+  if(currentLead && currentLead.Id===leadId) currentLead.Owner=email;
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,Owner:email});
+    showToast(email?`Assigned to ${getTeamMembers().find(m=>m.email===email)?.name||email}`:'Unassigned');
+  }catch(e){
+    lead.Owner=prev;
+    if(currentLead && currentLead.Id===leadId) currentLead.Owner=prev;
+    const sel=$id('chatAssigneeSelect'); if(sel) sel.value=prev;
+    showToast('Failed to update assignee','err');
+  }
+}
+
+// Reply vs. internal-note composer (Front/Intercom's private-note pattern) — a note never reaches
+// the customer: chatSendFromTab branches on _chatComposerMode and, in note mode, writes straight
+// to NotesList (chatSubmitNote) instead of calling the Chatwoot/Instagram send endpoint, skipping
+// the "needs a linked conversation" requirement a real reply has.
+function chatSetComposerMode(mode){
+  _chatComposerMode=mode;
+  document.querySelectorAll('.chat-mode-btn').forEach(b=>b.classList.toggle('active', b.dataset.mode===mode));
+  const bar=$id('chatInputBar'); if(bar) bar.classList.toggle('note-mode', mode==='note');
+  const box=$id('chatReplyBox'); if(box) box.placeholder=mode==='note'?'Add a private note — visible to your team only…':'Type a message';
+  closeSavedReplyPicker();
+}
+
+// Enter sends (or picks the highlighted saved reply while that picker is open); Shift+Enter is a
+// normal newline — the keyboard discipline every chat app trains muscle memory around.
+function chatComposerKeydown(e, leadId){
+  const pickerOpen=_chatPickerMatches.length>0;
+  if(pickerOpen){
+    if(e.key==='ArrowDown'){ e.preventDefault(); _chatPickerIndex=Math.min(_chatPickerIndex+1,_chatPickerMatches.length-1); renderSavedReplyPicker(); return false; }
+    if(e.key==='ArrowUp'){ e.preventDefault(); _chatPickerIndex=Math.max(_chatPickerIndex-1,0); renderSavedReplyPicker(); return false; }
+    if(e.key==='Enter'||e.key==='Tab'){ e.preventDefault(); chatPickSavedReply(_chatPickerIndex); return false; }
+    if(e.key==='Escape'){ closeSavedReplyPicker(); return false; }
+  }
+  if(e.key==='Enter' && !e.shiftKey){
+    e.preventDefault();
+    chatSendFromTab(leadId);
+    return false;
+  }
+  return true;
+}
+
+function chatAutosize(box){
+  box.style.height='auto';
+  box.style.height=Math.min(box.scrollHeight,100)+'px';
+}
+
+// Saved-reply "/" picker — triggered by a "/shortcut" token right before the caret, same slash-
+// command convention Slack/Front/Intercom composers use. Reply-mode only (a note doesn't need
+// customer-facing canned text as much, and keeping it reply-only avoids the picker firing while
+// someone's writing a note that happens to contain a literal "/").
+function chatComposerInput(leadId){
+  const box=$id('chatReplyBox');
+  if(!box) return;
+  chatAutosize(box);
+  if(_chatComposerMode!=='reply'){ closeSavedReplyPicker(); return; }
+  const caret=box.selectionStart;
+  const m=box.value.slice(0,caret).match(/(^|\s)\/([a-zA-Z0-9_-]*)$/);
+  if(!m){ closeSavedReplyPicker(); return; }
+  const query=m[2].toLowerCase();
+  let replies=[]; try{replies=JSON.parse(clientRecord?.saved_replies||'[]');}catch(e){}
+  _chatPickerMatches=replies.filter(r=>(r.shortcut||'').toLowerCase().includes(query)||(r.text||'').toLowerCase().includes(query)).slice(0,6);
+  _chatPickerIndex=0;
+  if(!_chatPickerMatches.length){ closeSavedReplyPicker(); return; }
+  const picker=$id('chatSavedReplyPicker');
+  if(picker) picker.style.display='block';
+  renderSavedReplyPicker();
+}
+function renderSavedReplyPicker(){
+  const picker=$id('chatSavedReplyPicker');
+  if(!picker) return;
+  picker.innerHTML=_chatPickerMatches.map((r,i)=>
+    `<div class="saved-reply-opt${i===_chatPickerIndex?' active':''}" onmousedown="event.preventDefault();chatPickSavedReply(${i})"><span class="sr-shortcut">/${esc(r.shortcut||'')}</span><span class="sr-text">${esc((r.text||'').slice(0,60))}</span></div>`
+  ).join('');
+}
+function closeSavedReplyPicker(){
+  const picker=$id('chatSavedReplyPicker');
+  if(picker) picker.style.display='none';
+  _chatPickerMatches=[]; _chatPickerIndex=0;
+}
+function chatPickSavedReply(i){
+  const r=_chatPickerMatches[i];
+  const box=$id('chatReplyBox');
+  if(!r||!box) return;
+  const caret=box.selectionStart;
+  const val=box.value;
+  const m=val.slice(0,caret).match(/(^|\s)\/([a-zA-Z0-9_-]*)$/);
+  const start=m?caret-m[2].length-1:caret;
+  box.value=val.slice(0,start)+r.text+val.slice(caret);
+  const newCaret=start+r.text.length;
+  box.focus(); box.setSelectionRange(newCaret,newCaret);
+  chatAutosize(box);
+  closeSavedReplyPicker();
+}
+
+// Saved Replies manager (modalSavedReplies in dashboard.html) — CLIENTS.saved_replies, a plain
+// JSON array shared across the whole team, same "settings field the first user to touch it
+// creates" convention ensureClientField already uses for qual_questions et al.
+let _savedRepliesDraft=[];
+function openSavedRepliesModal(){
+  let raw=[]; try{raw=JSON.parse(clientRecord?.saved_replies||'[]');}catch(e){}
+  _savedRepliesDraft=raw.map(r=>({shortcut:r.shortcut||'', text:r.text||''}));
+  renderSavedRepliesEditor();
+  openModal('modalSavedReplies');
+}
+function renderSavedRepliesEditor(){
+  const list=$id('savedReplyList');
+  if(!_savedRepliesDraft.length){ list.innerHTML='<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No saved replies yet.</div>'; return; }
+  list.innerHTML=_savedRepliesDraft.map((r,i)=>`
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:flex-start">
+      <input class="form-input" style="width:120px" value="${esc(r.shortcut)}" placeholder="shortcut" oninput="onSavedReplyShortcutInput(${i},this)">
+      <textarea class="form-input" style="flex:1" rows="2" placeholder="Reply text" oninput="_savedRepliesDraft[${i}].text=this.value">${esc(r.text)}</textarea>
+      <button class="svc-del" onclick="removeSavedReplyRow(${i})">✕</button>
+    </div>`).join('');
+}
+function onSavedReplyShortcutInput(i, el){ _savedRepliesDraft[i].shortcut=el.value.replace(/\s+/g,'-'); }
+function addSavedReplyRow(){
+  _savedRepliesDraft.push({shortcut:'', text:''});
+  renderSavedRepliesEditor();
+  $id('savedReplyList').lastElementChild?.querySelector('input')?.focus();
+}
+function removeSavedReplyRow(i){ _savedRepliesDraft.splice(i,1); renderSavedRepliesEditor(); }
+async function saveSavedReplies(){
+  const btn=$id('saveSavedReplies'), msg=$id('saveSavedRepliesMsg');
+  btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+  try{
+    const cleaned=_savedRepliesDraft.map(r=>({shortcut:(r.shortcut||'').trim().replace(/^\/+/,''), text:(r.text||'').trim()})).filter(r=>r.shortcut&&r.text);
+    await ensureClientField('saved_replies','LongText');
+    await patchClient({saved_replies:JSON.stringify(cleaned)});
+    msg.textContent='✓ Saved';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; setTimeout(()=>msg.textContent='',3000); }
 }
 
 // Image/document attach from the Chats composer — same Chatwoot attachment relay (/quote/send)
@@ -302,9 +508,36 @@ async function chatAttachFile(leadId,file,kind){
   chatSelectLead(leadId);
 }
 
+// Internal note — never reaches the customer. Writes straight to NotesList (the same field/shape
+// the Lead Detail panel's addNote() already uses, so a note added from either place shows up in
+// both), then re-renders the merged timeline via chatSelectLead.
+async function chatSubmitNote(leadId, input, msg){
+  const text=(input?.value||'').trim();
+  if(!text) return;
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead) return;
+  let notes=[]; try{notes=JSON.parse(lead.NotesList||'[]');}catch(e){}
+  notes.unshift({text, date:new Date().toLocaleString(), ts:new Date().toISOString(), author:myEmail});
+  const notesStr=JSON.stringify(notes);
+  msg.textContent='Saving note…'; msg.className='chat-send-status';
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,NotesList:notesStr});
+  }catch(e){
+    msg.textContent='Failed to save note: '+e.message; msg.className='chat-send-status err';
+    return;
+  }
+  lead.NotesList=notesStr;
+  if(currentLead && currentLead.Id===lead.Id){ currentLead.NotesList=notesStr; if(typeof renderDetailNotes==='function') renderDetailNotes(currentLead); }
+  input.value='';
+  msg.textContent='Note added ✓'; msg.className='chat-send-status';
+  chatSelectLead(leadId);
+  setTimeout(()=>{if(msg)msg.textContent='';},2500);
+}
+
 async function chatSendFromTab(leadId){
   const input=$id('chatReplyBox');
   const msg=$id('chatReplyMsg');
+  if(_chatComposerMode==='note') return chatSubmitNote(leadId, input, msg);
   const text=(input?.value||'').trim();
   if(!text||!leadId) return;
   const lead=allLeads.find(l=>l.Id===leadId);
@@ -352,6 +585,7 @@ async function chatSendFromTab(leadId){
 }
 
 function renderChatEmpty(){
+  clearInterval(_chatHeartbeatTimer);
   document.querySelector('.chats-layout')?.classList.remove('chat-open');
   $id('chatMain').innerHTML=`<div class="chat-empty" style="flex:1;display:flex">
     <div class="chat-empty-icon">💬</div>
