@@ -2481,15 +2481,19 @@ function followupLadderDefaultStep(step, legacyHours, legacyMessages){
     const legacyIdx=step-1;
     const legacyHour=legacyHours[legacyIdx];
     return {step, type:'session', hours:(legacyHour&&legacyHour<24)?legacyHour:shape.defaultHours, days:null,
-      message:legacyMessages[legacyIdx]||'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0};
+      message:legacyMessages[legacyIdx]||'', message_b:'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0,
+      template_name_b:'', template_language_b:'en_US', template_category_b:'MARKETING', template_body_vars_b:0};
   }
   return {step, type:'template', hours:null, days:shape.days,
-    message:'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0};
+    message:'', message_b:'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0,
+    template_name_b:'', template_language_b:'en_US', template_category_b:'MARKETING', template_body_vars_b:0};
 }
 
 // GET/POST /followups/ladder — the Follow-up Engine tab's single settings surface (replaces the
 // old GET/POST /followups/variants A/B-per-step model, migrations/0007, now unused going forward
-// but left in place rather than dropped).
+// but left in place rather than dropped). Variant B (message_b / template_name_b+language_b+
+// category_b+body_vars_b, migrations/0048) is optional on every step — see pickLadderVariant for
+// how it's chosen at send time once configured.
 async function handleFollowupLadderGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -2505,7 +2509,9 @@ async function handleFollowupLadderGet(request, env){
   const list=FOLLOWUP_LADDER_STEP_SHAPE.map(shape=>{
     const r=bySt[shape.step];
     return r
-      ? {step:r.step, type:r.type, hours:r.hours, days:r.days, message:r.message, template_name:r.template_name, template_language:r.template_language, template_category:r.template_category, template_body_vars:r.template_body_vars}
+      ? {step:r.step, type:r.type, hours:r.hours, days:r.days, message:r.message, message_b:r.message_b,
+         template_name:r.template_name, template_language:r.template_language, template_category:r.template_category, template_body_vars:r.template_body_vars,
+         template_name_b:r.template_name_b, template_language_b:r.template_language_b, template_category_b:r.template_category_b, template_body_vars_b:r.template_body_vars_b}
       : followupLadderDefaultStep(shape.step, legacyHours, legacyMessages);
   });
   return json({list});
@@ -2521,25 +2527,100 @@ async function handleFollowupLadderSave(request, env){
     if(!s) continue;
     if(shape.type==='session'){
       const hours=Math.min(23, Math.max(1, parseInt(s.hours)||shape.defaultHours));
-      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, template_name, template_language, template_category, template_body_vars, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, message=excluded.message, updated_at=excluded.updated_at`)
-        .bind(Number(payload.cid), shape.step, 'session', hours, null, String(s.message||'').trim().slice(0,1000), '', 'en_US', 'MARKETING', 0, now)
+      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, message=excluded.message, message_b=excluded.message_b, updated_at=excluded.updated_at`)
+        .bind(Number(payload.cid), shape.step, 'session', hours, null,
+          String(s.message||'').trim().slice(0,1000), String(s.message_b||'').trim().slice(0,1000),
+          '', 'en_US', 'MARKETING', 0, '', 'en_US', 'MARKETING', 0, now)
         .run();
     } else {
-      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, template_name, template_language, template_category, template_body_vars, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(client_id, step) DO UPDATE SET template_name=excluded.template_name, template_language=excluded.template_language, template_category=excluded.template_category, template_body_vars=excluded.template_body_vars, updated_at=excluded.updated_at`)
-        .bind(Number(payload.cid), shape.step, 'template', null, shape.days, '',
-          String(s.template_name||'').trim().slice(0,200), String(s.template_language||'en_US').trim().slice(0,20), String(s.template_category||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars)||0), now)
+      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(client_id, step) DO UPDATE SET template_name=excluded.template_name, template_language=excluded.template_language, template_category=excluded.template_category, template_body_vars=excluded.template_body_vars,
+          template_name_b=excluded.template_name_b, template_language_b=excluded.template_language_b, template_category_b=excluded.template_category_b, template_body_vars_b=excluded.template_body_vars_b, updated_at=excluded.updated_at`)
+        .bind(Number(payload.cid), shape.step, 'template', null, shape.days, '', '',
+          String(s.template_name||'').trim().slice(0,200), String(s.template_language||'en_US').trim().slice(0,20), String(s.template_category||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars)||0),
+          String(s.template_name_b||'').trim().slice(0,200), String(s.template_language_b||'en_US').trim().slice(0,20), String(s.template_category_b||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars_b)||0),
+          now)
         .run();
     }
   }
   return json({ok:true});
 }
 
-// The actual "send, mark Follow up N, log followup_sends" work for one ladder step — shared by the
-// manual "Send Next Now" route (handleBroadcastFollowupSend) and the automated cron
+// Auto-promoting A/B pick: a step with no Variant B configured always sends A (variant label 'A',
+// same as any step that's never had a B at all). Once B exists, both start at an even 50/50 split
+// — MIN_SAMPLES sends per variant minimum before ANY promotion is considered, so a brand-new step
+// isn't skewed off a handful of noisy early sends. Once both variants have enough samples, the one
+// with a meaningfully higher reply rate (more than PROMOTE_MARGIN apart — anything closer is called
+// a tie, kept at 50/50 rather than over-fitting noise) gets weighted PROMOTE_WEIGHT instead of 0.5.
+// This is a simple, explainable heuristic (epsilon-greedy-ish), not a rigorous statistical test —
+// appropriate for follow-up reply-rate sample sizes, which are rarely large enough to need one.
+const FOLLOWUP_VARIANT_MIN_SAMPLES=20;
+const FOLLOWUP_VARIANT_PROMOTE_MARGIN=0.05; // 5 percentage points
+const FOLLOWUP_VARIANT_PROMOTE_WEIGHT=0.8;
+async function pickLadderVariant(env, clientId, step, stepCfg){
+  const hasB=stepCfg.type==='session'?!!stepCfg.message_b:!!stepCfg.template_name_b;
+  if(!hasB) return 'A';
+  const {results}=await env.DB.prepare(`SELECT variant, COUNT(*) as sent, SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) as replied
+    FROM followup_sends WHERE client_id=? AND step=? AND variant IN ('A','B') GROUP BY variant`)
+    .bind(Number(clientId), step).all();
+  const byVariant={A:{sent:0,replied:0}, B:{sent:0,replied:0}};
+  (results||[]).forEach(r=>{ if(byVariant[r.variant]) byVariant[r.variant]={sent:r.sent, replied:r.replied}; });
+  if(byVariant.A.sent<FOLLOWUP_VARIANT_MIN_SAMPLES || byVariant.B.sent<FOLLOWUP_VARIANT_MIN_SAMPLES){
+    return Math.random()<0.5?'A':'B';
+  }
+  const rateA=byVariant.A.replied/byVariant.A.sent, rateB=byVariant.B.replied/byVariant.B.sent;
+  if(Math.abs(rateA-rateB)<FOLLOWUP_VARIANT_PROMOTE_MARGIN) return Math.random()<0.5?'A':'B';
+  const winner=rateA>rateB?'A':'B';
+  return Math.random()<FOLLOWUP_VARIANT_PROMOTE_WEIGHT?winner:(winner==='A'?'B':'A');
+}
+// Resolves a chosen variant letter down to the actual content to send for this step.
+function ladderVariantContent(stepCfg, variant){
+  if(stepCfg.type==='session') return {message: variant==='B'?stepCfg.message_b:stepCfg.message};
+  return variant==='B'
+    ? {template_name:stepCfg.template_name_b, template_language:stepCfg.template_language_b, template_category:stepCfg.template_category_b, template_body_vars:stepCfg.template_body_vars_b}
+    : {template_name:stepCfg.template_name, template_language:stepCfg.template_language, template_category:stepCfg.template_category, template_body_vars:stepCfg.template_body_vars};
+}
+
+// Real-scarcity line for ecom follow-ups — session steps (1-2) only: a WhatsApp template's approved
+// body text can't be altered beyond filling its own {{n}} variables, so there's no legal way to
+// append this to a template step (3-5). Resolves the lead's own InterestedProduct (free-text, set
+// by the live engine's classifier — see engineClassifyIntent) against the real catalog the same
+// fuzzy way ecomResolveProduct always has, and only speaks up when stock is holding a genuinely low,
+// real number — never a fabricated countdown or "hurry" line with nothing behind it.
+const FOLLOWUP_LOW_STOCK_THRESHOLD=5;
+async function ecomFollowupScarcityLine(env, c, lead){
+  if(c.industry!=='ecommerce' || !lead.InterestedProduct) return '';
+  try{
+    const product=await ecomResolveProduct(env, c.Id, '', lead.InterestedProduct);
+    const stock=Number(product?.stock);
+    if(!product || !Number.isFinite(stock) || stock<=0 || stock>FOLLOWUP_LOW_STOCK_THRESHOLD) return '';
+    return `\n\n⚡ Only ${stock} left in ${product.name} — grab it before it's gone.`;
+  }catch(e){ return ''; }
+}
+
+// Client-wide "preferred send window" (bot_config.followup_quiet_hours_enabled, default on;
+// followup_window_start_hour/followup_window_end_hour, default 18-21 — evenings, after typical
+// office hours) — computed once per client per cron tick (not per lead, since it's the same answer
+// for all of them), same local-time-from-timezone pattern the final-stage-positive callback message
+// already uses (see engineRouteFlow's own `botConfig.timezone` block). A lead who becomes "due"
+// outside the window is simply left for a later tick — nothing is marked sent, so it's never lost,
+// only delayed to the next time this function returns true.
+function followupWithinQuietHours(c){
+  const botConfig=engineParseJsonField(c.bot_config, {});
+  if(botConfig.followup_quiet_hours_enabled===false) return true;
+  const tz=botConfig.timezone||'Asia/Kolkata';
+  const startHour=Number.isFinite(botConfig.followup_window_start_hour)?botConfig.followup_window_start_hour:18;
+  const endHour=Number.isFinite(botConfig.followup_window_end_hour)?botConfig.followup_window_end_hour:21;
+  const nowLocal=new Date(new Date().toLocaleString('en-US',{timeZone:tz}));
+  const hour=nowLocal.getHours();
+  return startHour<=endHour ? (hour>=startHour && hour<endHour) : (hour>=startHour || hour<endHour);
+}
+
+// The actual "pick variant, send, mark Follow up N, log followup_sends" work for one ladder step —
+// shared by the manual "Send Next Now" route (handleBroadcastFollowupSend) and the automated cron
 // (runClassicFollowupsForAllClients) further down, so neither has to fork its own copy.
 // Steps 1-2 (type 'session') go out as a plain Chatwoot session message — only valid within
 // WhatsApp's 24h customer-service window, which is exactly why both are capped under 24h at save
@@ -2553,12 +2634,17 @@ async function handleFollowupLadderSave(request, env){
 async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
   const clientId=String(c.Id);
   let sentText='', sentViaVoice=false;
+  const variant=await pickLadderVariant(env, c.Id, step, stepCfg);
+  const content=ladderVariantContent(stepCfg, variant);
 
   if(stepCfg.type==='session'){
     if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) throw new Error('Chatwoot is not configured for this account.');
     const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
     if(!convId) throw new Error('This lead has no conversation yet.');
-    sentText=String(stepCfg.message||'').replace(/\{name\}/gi, lead.Name||'there');
+    sentText=String(content.message||'').replace(/\{name\}/gi, lead.Name||'there');
+    // Real-scarcity line (ecom only, session steps only — see ecomFollowupScarcityLine's own
+    // comment on why a template step can't carry this).
+    sentText+=await ecomFollowupScarcityLine(env, c, lead);
 
     // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live
     // voice-to-voice replies. Only applies to steps 1-2: a WhatsApp template's approved wording is
@@ -2591,23 +2677,23 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
     // (template_body_vars, counted when the template was picked in the Follow-up Engine UI) — a
     // pragmatic default covering the overwhelmingly common case (a template's only variable is the
     // customer's name), not a general variable-mapping system.
-    const varCount=Math.max(0, stepCfg.template_body_vars||0);
+    const varCount=Math.max(0, content.template_body_vars||0);
     const components=varCount?[{type:'body', parameters:Array.from({length:varCount}, ()=>({type:'text', text:lead.Name||'there'}))}]:[];
     const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
       method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
-      body:JSON.stringify({messaging_product:'whatsapp', to:lead.Phone, type:'template', template:{name:stepCfg.template_name, language:{code:stepCfg.template_language||'en_US'}, components}})
+      body:JSON.stringify({messaging_product:'whatsapp', to:lead.Phone, type:'template', template:{name:content.template_name, language:{code:content.template_language||'en_US'}, components}})
     });
     const data=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(data?.error?.message||('HTTP '+r.status));
-    sentText=`[template: ${stepCfg.template_name}]`;
+    sentText=`[template: ${content.template_name}]`;
   }
 
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+step]:'Yes'}});
   try{
     await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
-      .bind(Number(c.Id), Number(lead.Id), step, 'ladder', new Date().toISOString()).run();
+      .bind(Number(c.Id), Number(lead.Id), step, variant, new Date().toISOString()).run();
   }catch(e){ /* best-effort — the message already went out regardless of whether this logs */ }
-  return {text:sentText, sentViaVoice};
+  return {text:sentText, sentViaVoice, variant};
 }
 
 // Manual "send next follow-up now" — a rep's on-demand override alongside the automated ladder
@@ -2666,6 +2752,10 @@ async function runClassicFollowupsForAllClients(env){
 async function classicFollowupProcessClient(env, c){
   const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
   if(!stepRows||!stepRows.length) return; // Follow-up Engine never configured for this client
+  // Checked once per client per tick, not per lead — it's the same answer for every lead of this
+  // client this tick. A lead who becomes due while outside the window is simply picked up on a
+  // later tick (nothing is marked sent here), not skipped forever.
+  if(!followupWithinQuietHours(c)) return;
   const steps={}; stepRows.forEach(r=>{ steps[r.step]=r; });
   // Silent-hours threshold per step: 1-2 use their own configured `hours`; 3-5 are fixed at their
   // day count * 24 (not merchant-editable — see FOLLOWUP_LADDER_STEP_SHAPE's own comment).
@@ -2732,17 +2822,17 @@ async function handleHumanDealsCoach(request, env){
   });
 }
 
-// Grouped by step only (not step+variant) — the ladder no longer has A/B variants per step, and
-// summing across whatever `variant` value a row happens to carry ('ladder' for new sends, 'A'/'B'/
-// 'legacy' for anything sent before this ladder existed) keeps historical stats visible instead of
-// splitting them out by a distinction the current UI no longer makes.
+// Grouped by step+variant again (migrations/0048 brought Variant B, and pickLadderVariant's
+// auto-promotion, back) — 'ladder' rows from the brief window between migrations/0047 and 0048
+// (when every send was logged as a single unlabeled variant) still show up as their own row here,
+// same as 'legacy'/'A'/'B' rows from before migrations/0047 existed at all; nothing is discarded.
 async function handleFollowupStats(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT step, COUNT(*) as sent, SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) as replied
-    FROM followup_sends WHERE client_id=? GROUP BY step ORDER BY step`)
+  const {results}=await env.DB.prepare(`SELECT step, variant, COUNT(*) as sent, SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) as replied
+    FROM followup_sends WHERE client_id=? GROUP BY step, variant ORDER BY step, variant`)
     .bind(Number(payload.cid)).all();
-  const list=(results||[]).map(r=>({step:r.step, sent:r.sent, replied:r.replied, reply_rate:r.sent?Math.round(r.replied/r.sent*100):0}));
+  const list=(results||[]).map(r=>({step:r.step, variant:r.variant, sent:r.sent, replied:r.replied, reply_rate:r.sent?Math.round(r.replied/r.sent*100):0}));
   return json({list});
 }
 
