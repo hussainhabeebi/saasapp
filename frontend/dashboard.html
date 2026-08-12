@@ -14301,6 +14301,10 @@ window.addEventListener('message', e=>{
   const d=e.data||{};
   if(d.type==='ta:openLead' && d.leadId){ openDetail(d.leadId); }
   else if(d.type==='ta:badge'){ updateAgencyBadge(d.count||0); }
+  else if(d.type==='ta:openLeadCategory' && d.category){
+    navigate('leads');
+    setTimeout(()=>{ const f=$id('leadCategoryFilter'); if(f){ f.value=d.category; onLeadsFilterChange(); } },50);
+  }
 });
 function updateAgencyBadge(count){
   [$id('dnAgencyTab'),$id('moreAgencyTab')].forEach(el=>{

@@ -1379,8 +1379,7 @@ function renderTaLeadsByCategory(){
   </div>`;
 }
 function taOpenLeadCategory(cat){
-  navigate('leads');
-  setTimeout(()=>{ const f=$id('leadCategoryFilter'); if(f){ f.value=cat; onLeadsFilterChange(); } },50);
+  window.parent.postMessage({type:'ta:openLeadCategory', category:cat}, location.origin);
 }
 
 /* ── TA: PACKAGES ── */
