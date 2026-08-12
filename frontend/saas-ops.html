@@ -272,26 +272,43 @@ tbody tr:hover{background:var(--bg)}
 
     <div id="saasSubIntegrations" class="saas-sub">
       <div class="card">
-        <div class="card-title">NocoDB Customers Table</div>
+        <div class="card-title">Customer Data Source</div>
         <div class="s-hint" style="margin-bottom:14px">Point this at the NocoDB table that already holds your real, live SaaS customers — that table becomes the account system of record for this whole module. Every column stays exactly as-is; this app only ever adds its own new "saas_…" columns for computed fields (health score, lifecycle stage, etc.) and never touches or overwrites anything you already have.</div>
         <div class="modal-grid" style="grid-template-columns:2fr 1fr;align-items:end">
-          <div><label class="s-lbl">NocoDB Table ID</label><input class="s-input" id="saasNocodbTableId" placeholder="e.g. mjlc2vi6iqbp87c"></div>
+          <div><label class="s-lbl">Customer Table ID</label><input class="s-input" id="saasNocodbTableId" placeholder="e.g. mjlc2vi6iqbp87c"><div class="s-hint" style="margin-top:4px">The ID from your NocoDB table's URL — ask whoever set up your customer database if you're not sure.</div></div>
           <div><button class="save-btn" onclick="saveSaasNocodbTable()">Save</button></div>
         </div>
         <div class="save-msg" id="saasNocodbSaveMsg" style="margin-top:8px"></div>
       </div>
       <div class="card">
-        <div class="card-title">Billing Providers</div>
-        <div class="s-hint" style="margin-bottom:16px">Paste your own Stripe/Chargebee/Paddle credentials. After saving, point that provider's webhook at the URL shown below for your Client ID.</div>
-        <div class="modal-grid">
-          <div><label class="s-lbl">Stripe Secret Key</label><input class="s-input" id="saasStripeKey" type="password" placeholder="sk_live_…"></div>
-          <div><label class="s-lbl">Stripe Webhook Secret</label><input class="s-input" id="saasStripeWebhookSecret" type="password" placeholder="whsec_…"></div>
-          <div><label class="s-lbl">Chargebee Site</label><input class="s-input" id="saasChargebeeSite" placeholder="yoursite"></div>
-          <div><label class="s-lbl">Chargebee API Key</label><input class="s-input" id="saasChargebeeKey" type="password"></div>
-          <div><label class="s-lbl">Chargebee Webhook Token</label><input class="s-input" id="saasChargebeeWebhookSecret" type="password" placeholder="Your own shared secret — appended as ?token= below"></div>
-          <div><label class="s-lbl">Paddle API Key</label><input class="s-input" id="saasPaddleKey" type="password"></div>
-          <div><label class="s-lbl">Paddle Webhook Secret</label><input class="s-input" id="saasPaddleWebhookSecret" type="password"></div>
-        </div>
+        <div class="card-title">Payment Providers</div>
+        <div class="s-hint" style="margin-bottom:16px">Connect whichever provider(s) you actually bill customers through — open the section below for the one you use and fill in just that one. After saving, point that provider's webhook at the URL shown at the bottom.</div>
+
+        <details style="margin-bottom:10px">
+          <summary style="cursor:pointer;font-weight:600;padding:8px 0">Stripe</summary>
+          <div class="modal-grid" style="margin-top:10px">
+            <div><label class="s-lbl">Secret Key</label><input class="s-input" id="saasStripeKey" type="password" placeholder="sk_live_…"><div class="s-hint" style="margin-top:4px">From your Stripe Dashboard → Developers → API keys.</div></div>
+            <div><label class="s-lbl">Webhook Secret</label><input class="s-input" id="saasStripeWebhookSecret" type="password" placeholder="whsec_…"><div class="s-hint" style="margin-top:4px">From Stripe Dashboard → Developers → Webhooks, after adding the endpoint URL shown below.</div></div>
+          </div>
+        </details>
+
+        <details style="margin-bottom:10px">
+          <summary style="cursor:pointer;font-weight:600;padding:8px 0">Chargebee</summary>
+          <div class="modal-grid" style="margin-top:10px">
+            <div><label class="s-lbl">Site Name</label><input class="s-input" id="saasChargebeeSite" placeholder="yoursite"><div class="s-hint" style="margin-top:4px">The subdomain in your Chargebee URL — e.g. "yoursite" in yoursite.chargebee.com.</div></div>
+            <div><label class="s-lbl">API Key</label><input class="s-input" id="saasChargebeeKey" type="password"><div class="s-hint" style="margin-top:4px">From Chargebee → Settings → API Keys.</div></div>
+            <div><label class="s-lbl">Webhook Token</label><input class="s-input" id="saasChargebeeWebhookSecret" type="password" placeholder="Make up your own"><div class="s-hint" style="margin-top:4px">Make up your own password here, then paste the same value into Chargebee's webhook settings — it's appended as ?token= to the URL shown below.</div></div>
+          </div>
+        </details>
+
+        <details>
+          <summary style="cursor:pointer;font-weight:600;padding:8px 0">Paddle</summary>
+          <div class="modal-grid" style="margin-top:10px">
+            <div><label class="s-lbl">API Key</label><input class="s-input" id="saasPaddleKey" type="password"><div class="s-hint" style="margin-top:4px">From Paddle → Developer Tools → Authentication.</div></div>
+            <div><label class="s-lbl">Webhook Secret</label><input class="s-input" id="saasPaddleWebhookSecret" type="password"><div class="s-hint" style="margin-top:4px">From Paddle → Developer Tools → Notifications, after adding the endpoint URL shown below.</div></div>
+          </div>
+        </details>
+
         <div class="s-hint" id="saasWebhookUrls" style="margin:12px 0;font-family:monospace;font-size:11px;line-height:1.8"></div>
         <button class="save-btn" onclick="saveSaasBillingConfig()">Save Billing Connections</button>
         <span class="save-msg" id="saasBillingSaveMsg"></span>
