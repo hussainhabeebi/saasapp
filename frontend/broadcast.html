@@ -540,27 +540,39 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
   </div><!-- /view-followups -->
 
   <!-- ══════════════════════════════════════
-       TAB: FOLLOW-UP ENGINE — A/B message variants for the classic follow-up sequence above (does
-       NOT change when a step fires — followup_count/followup_hours in Settings still decide that
-       — only what gets sent). Each variant can carry its own time-limited incentive and
-       social-proof line. Since this whole send path only ever fires for a lead who's already gone
-       quiet (same path as "Send Next Now" above), an incentive/social-proof line configured here
-       is structurally never shown to a fresh, still-engaged lead — nothing extra to configure for
-       that.
+       TAB: FOLLOW-UP ENGINE — the single place for every follow-up setting (previously split
+       between here and dashboard.html Settings → Follow-up Messages, now retired). A fixed 5-step
+       ladder: steps 1-2 fire while still inside WhatsApp's 24h customer-service window, so a plain
+       typed message is fine; steps 3-5 fire at fixed 2/4/7-day silence thresholds, always past that
+       window, so only an approved WhatsApp template can legally reach the customer there — sent
+       straight through Meta's Graph API (see worker.js sendFollowupLadderStep), not through
+       Chatwoot. Days/hours for steps 3-5 are fixed, not editable, by design.
   ══════════════════════════════════════ -->
   <div id="view-fuengine" style="display:none">
     <div class="card">
       <div class="card-title">💪 Follow-up Engine</div>
-      <div class="msg info">Give each classic follow-up step up to two message variants — Variant A and B are sent 50/50 so you can see which gets more replies. Leave Variant B blank to always send Variant A. Add a time-limited incentive or a social-proof line to either variant; both only ever go out with a follow-up (i.e. to a lead who's already gone quiet), never to a fresh lead.</div>
-      <div id="fuEngineSteps"></div>
-      <div style="display:flex;gap:10px;align-items:center;margin-top:6px">
+      <div class="msg info">Every follow-up setting lives here now. The first two nudges go out as normal WhatsApp messages while the conversation is still "open" (within 24 hours) — after that, WhatsApp only allows pre-approved template messages, so the day 2/4/7 re-engagement steps each need a template chosen below (sent directly via the WhatsApp Cloud API, not through Chatwoot).</div>
+
+      <div style="font-weight:700;font-size:14px;margin:14px 0 8px">📱 Before 24 Hours — Session Messages</div>
+      <div id="fuLadderSession"></div>
+
+      <div style="font-weight:700;font-size:14px;margin:18px 0 8px">📋 After 2 Days — Template Message</div>
+      <div id="fuLadderStep3"></div>
+
+      <div style="font-weight:700;font-size:14px;margin:18px 0 8px">📋 After 4 Days — Template Message</div>
+      <div id="fuLadderStep4"></div>
+
+      <div style="font-weight:700;font-size:14px;margin:18px 0 8px">📋 After 7 Days — Template Message</div>
+      <div id="fuLadderStep5"></div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin-top:16px">
         <button class="btn btn-primary" onclick="saveFollowupEngine()">Save All Steps</button>
         <span id="fuEngineSaveMsg" style="font-size:12.5px"></span>
       </div>
     </div>
     <div class="card">
-      <div class="card-title">📊 Variant Performance</div>
-      <div class="msg info">Reply rate = the share of sends where the lead sent any real message afterward. "Legacy" is any follow-up sent before a variant was configured for that step.</div>
+      <div class="card-title">📊 Step Performance</div>
+      <div class="msg info">Reply rate = the share of sends where the lead sent any real message afterward.</div>
       <div id="fuEngineStats"></div>
     </div>
   </div><!-- /view-fuengine -->
@@ -875,7 +887,7 @@ async function initApp(){
   if(clientRecord.industry==='real_estate'){
     [$id('dmReFilters'),$id('metaReFilters')].forEach(el=>{ if(el) el.style.display='contents'; });
   }
-  await Promise.all([loadLeads(), loadTemplates()]);
+  await Promise.all([loadLeads(), loadTemplates(), fuLoadLadderStepsQuiet()]);
 }
 
 // ── TABS ──
@@ -1484,12 +1496,26 @@ async function submitTemplate(){
 // sequence gets a manual "Send Next Now" override here — the recovery ladder is its own
 // automation and stays read-only in this view (see SETUP.md).
 const FU_TERMINAL=new Set(['Converted','Lost','Closed','Opt Out']);
+// Quiet (non-throwing, no loading-state UI) ladder-step fetch for the Follow-ups tab's own lead
+// list — separate from loadFollowupEngine's own fetch (which drives the Follow-up Engine tab's
+// editable form and re-fetches fresh every time that tab is opened); this one just needs to know
+// how many of the 5 steps are actually configured, cached once at page load.
+async function fuLoadLadderStepsQuiet(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/ladder`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    fuLadderSteps=data.list||[];
+  }catch(e){ fuLadderSteps=[]; }
+}
+function fuLadderConfiguredStepCount(){
+  return fuLadderSteps.filter(s=>(s.type==='session'&&s.message)||(s.type==='template'&&s.template_name)).length;
+}
 function renderFollowupsTab(){
   const q=($id('fuSearch').value||'').toLowerCase();
-  const fuCount=parseInt(clientRecord.followup_count||0);
+  const fuCount=fuLadderConfiguredStepCount();
   followupLeads=allLeads.filter(l=>{
     if(FU_TERMINAL.has(l.Stage)||l.OptOut==='Yes') return false;
-    const fuSent=[1,2,3].filter(n=>l['Follow up '+n]==='Yes').length;
+    const fuSent=[1,2,3,4,5].filter(n=>l['Follow up '+n]==='Yes').length;
     const inClassic = fuCount>0 && fuSent<fuCount;
     const inRecovery = !!l.recovery_stage && l.recovery_done!=='Yes';
     if(!inClassic && !inRecovery) return false;
@@ -1500,7 +1526,7 @@ function renderFollowupsTab(){
   if(!followupLeads.length){ tbody.innerHTML=''; $id('fuEmpty').classList.remove('hidden'); return; }
   $id('fuEmpty').classList.add('hidden');
   tbody.innerHTML=followupLeads.map(l=>{
-    const fuSent=[1,2,3].filter(n=>l['Follow up '+n]==='Yes').length;
+    const fuSent=[1,2,3,4,5].filter(n=>l['Follow up '+n]==='Yes').length;
     const classicLabel = fuCount>0 ? `${fuSent}/${fuCount} sent` : '—';
     const canSendClassic = fuCount>0 && fuSent<fuCount && leadConvId(l);
     const recoveryLabel = l.recovery_stage ? `Stage ${l.recovery_stage}${l.recovery_done==='Yes'?' (done)':''}` : '—';
@@ -1533,73 +1559,115 @@ async function sendFollowupNow(leadId,btn){
   }
 }
 
-// ── FOLLOW-UP ENGINE TAB ── config lives in D1 (migrations/0007_followup_engine.sql), read/
-// written server-side via /followups/variants and /followups/stats (session-gated), same "not a
-// second copy of anything already in the browser" reasoning as the Reviews tab above.
-let fuEngineVariants=[];
-function fuEngineFieldId(step,variant,field){ return `fuv_${step}_${variant}_${field}`; }
-function renderFollowupEngineSteps(){
-  const byStep={};
-  fuEngineVariants.forEach(v=>{ (byStep[v.step]=byStep[v.step]||{})[v.variant]=v; });
-  $id('fuEngineSteps').innerHTML=[1,2,3].map(step=>{
-    const cols=['A','B'].map(variant=>{
-      const v=byStep[step]?.[variant]||{message:'',cta:'',incentive_text:'',incentive_expires_hours:'',social_proof:false,active:true,media_url:'',media_caption:''};
-      return `<div style="flex:1;min-width:260px;border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px">
-        <div style="font-weight:700;font-size:13px;margin-bottom:8px">Variant ${variant}</div>
-        <div class="form-field">
-          <label>Message ${variant==='A'?'(required to use this step)':'(optional — leave blank to always send A)'}</label>
-          <textarea id="${fuEngineFieldId(step,variant,'message')}" rows="3" placeholder="Use {name} for the customer's name">${esc(v.message)}</textarea>
-        </div>
-        <div class="form-field"><label>CTA (appended as its own line)</label><input type="text" id="${fuEngineFieldId(step,variant,'cta')}" value="${escAttr(v.cta)}" placeholder="e.g. Reply YES to lock this in"></div>
-        <div style="display:flex;gap:8px">
-          <div class="form-field" style="flex:1"><label>Incentive</label><input type="text" id="${fuEngineFieldId(step,variant,'incentive_text')}" value="${escAttr(v.incentive_text)}" placeholder="e.g. 10% off"></div>
-          <div class="form-field" style="width:110px"><label>Expires (h)</label><input type="number" min="1" id="${fuEngineFieldId(step,variant,'incentive_expires_hours')}" value="${esc(v.incentive_expires_hours||'')}"></div>
-        </div>
-        <div class="form-field"><label>Media (optional) — Google Drive link, sent as a real video/image/audio/PDF attachment</label><input type="text" id="${fuEngineFieldId(step,variant,'media_url')}" value="${escAttr(v.media_url||'')}" placeholder="https://drive.google.com/file/d/…/view"></div>
-        <div class="form-field"><label>Media caption</label><input type="text" id="${fuEngineFieldId(step,variant,'media_caption')}" value="${escAttr(v.media_caption||'')}" placeholder="e.g. Here's what our last client got 📸"></div>
-        <label style="display:inline-flex;align-items:center;gap:6px;margin-right:16px;font-size:12.5px"><input type="checkbox" style="width:auto" id="${fuEngineFieldId(step,variant,'social_proof')}" ${v.social_proof?'checked':''}> Include social proof</label>
-        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" style="width:auto" id="${fuEngineFieldId(step,variant,'active')}" ${v.active?'checked':''}> Active</label>
-      </div>`;
-    }).join('');
-    return `<div style="margin-bottom:18px">
-      <div style="font-weight:700;font-size:14px;margin-bottom:8px">Step ${step}</div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">${cols}</div>
+// ── FOLLOW-UP ENGINE TAB ── the fixed 5-step ladder, config lives in D1 (followup_ladder_steps,
+// migrations/0047_followup_ladder.sql), read/written server-side via /followups/ladder and
+// /followups/stats (session-gated), same "not a second copy of anything already in the browser"
+// reasoning as the Reviews tab above. Template steps (3-5) pick from /wa/templates — the same
+// direct Graph API list handleWaSendTemplate itself sends against, deliberately not the Chatwoot-
+// relayed list this page's own allTemplates (loadTemplates() above) uses elsewhere, since the two
+// can differ and this tab's send always goes straight through Graph API.
+let fuLadderSteps=[];
+let fuLadderTemplates=[];
+function fuLadderFieldId(step,field){ return `ful_${step}_${field}`; }
+// Counts {{n}} placeholders in a template's own BODY component text, so the send step
+// (worker.js sendFollowupLadderStep) knows how many parameters to fill — see template_body_vars
+// on the ladder step shape.
+function fuLadderCountBodyVars(tpl){
+  const body=(tpl?.components||[]).find(c=>(c.type||'').toUpperCase()==='BODY');
+  const matches=(body?.text||'').match(/\{\{\d+\}\}/g);
+  return matches?matches.length:0;
+}
+async function fuLoadTemplatesForLadder(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/wa/templates`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    fuLadderTemplates=(data.data||data.list||[]).filter(t=>(t.status||'').toUpperCase()==='APPROVED');
+  }catch(e){ fuLadderTemplates=[]; }
+}
+// Lazily creates and pushes a placeholder into fuLadderSteps for a step the server hasn't
+// returned a row for yet (any brand-new client before their first save) — must return the SAME
+// object reference on every call for a given step, not a fresh throwaway `{}` each time, since
+// fuLadderOnTemplateChange mutates the object it gets back and saveFollowupEngine reads those same
+// mutations back out later via a separate call to this function.
+function fuLadderStepById(step){
+  let s=fuLadderSteps.find(x=>x.step===step);
+  if(!s){ s={step}; fuLadderSteps.push(s); }
+  return s;
+}
+function renderFollowupLadderSession(){
+  $id('fuLadderSession').innerHTML=[1,2].map(step=>{
+    const s=fuLadderStepById(step);
+    return `<div style="border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px;margin-bottom:12px">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
+        <div class="form-field" style="width:140px"><label>Step ${step} — hours of silence</label><input type="number" min="1" max="23" id="${fuLadderFieldId(step,'hours')}" value="${esc(s.hours||(step===1?1:6))}"></div>
+      </div>
+      <div class="form-field"><label>Message — use {name} for the customer's name</label><textarea id="${fuLadderFieldId(step,'message')}" rows="3">${esc(s.message||'')}</textarea></div>
     </div>`;
   }).join('');
 }
+function renderFollowupLadderTemplateStep(step, containerId){
+  const s=fuLadderStepById(step);
+  const options=fuLadderTemplates.map(t=>`<option value="${escAttr(t.name)}"${s.template_name===t.name?' selected':''}>${esc(t.name)} (${esc(t.language)})</option>`).join('');
+  $id(containerId).innerHTML=`<div style="border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px">
+    ${fuLadderTemplates.length
+      ? `<div class="form-field"><label>Template</label><select id="${fuLadderFieldId(step,'template')}" onchange="fuLadderOnTemplateChange(${step})"><option value="">— choose an approved template —</option>${options}</select></div>
+         <div class="msg info" style="margin-top:6px" id="${fuLadderFieldId(step,'info')}">${s.template_name?`This template's body has ${s.template_body_vars||0} variable(s) — each is filled with the customer's name.`:'Pick a template above.'}</div>`
+      : `<div class="msg warn">No approved WhatsApp templates found. <a href="broadcast.html#templates" style="color:inherit;text-decoration:underline">Create one in Manage Templates</a>, or connect WhatsApp Business API from Settings → Channels if you haven't yet.</div>`}
+  </div>`;
+}
+function fuLadderOnTemplateChange(step){
+  const sel=$id(fuLadderFieldId(step,'template'));
+  const tpl=fuLadderTemplates.find(t=>t.name===sel.value);
+  const varCount=tpl?fuLadderCountBodyVars(tpl):0;
+  const s=fuLadderStepById(step);
+  s._pendingLanguage=tpl?.language||'en_US';
+  s._pendingCategory=tpl?.category||'MARKETING';
+  s._pendingBodyVars=varCount;
+  $id(fuLadderFieldId(step,'info')).textContent=tpl?`This template's body has ${varCount} variable(s) — each is filled with the customer's name.`:'Pick a template above.';
+}
 async function loadFollowupEngine(){
-  $id('fuEngineSteps').innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';
+  ['fuLadderSession','fuLadderStep3','fuLadderStep4','fuLadderStep5'].forEach(id=>{ $id(id).innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>'; });
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/variants`,{headers:ncAuthHeaders()});
-    const data=await r.json();
-    fuEngineVariants=data.list||[];
-  }catch(e){ fuEngineVariants=[]; }
-  renderFollowupEngineSteps();
+    const [ladderR]=await Promise.all([
+      fetch(`${CONFIG.WORKER_BASE}/followups/ladder`,{headers:ncAuthHeaders()}),
+      fuLoadTemplatesForLadder(),
+    ]);
+    const data=await ladderR.json();
+    fuLadderSteps=data.list||[];
+  }catch(e){ fuLadderSteps=[]; }
+  renderFollowupLadderSession();
+  renderFollowupLadderTemplateStep(3,'fuLadderStep3');
+  renderFollowupLadderTemplateStep(4,'fuLadderStep4');
+  renderFollowupLadderTemplateStep(5,'fuLadderStep5');
   fetchFollowupEngineStats();
 }
 async function saveFollowupEngine(){
   const msg=$id('fuEngineSaveMsg');
   msg.textContent='Saving…';
-  const variants=[];
-  [1,2,3].forEach(step=>{
-    ['A','B'].forEach(variant=>{
-      variants.push({
-        step, variant,
-        message:$id(fuEngineFieldId(step,variant,'message')).value.trim(),
-        cta:$id(fuEngineFieldId(step,variant,'cta')).value.trim(),
-        incentive_text:$id(fuEngineFieldId(step,variant,'incentive_text')).value.trim(),
-        incentive_expires_hours:parseInt($id(fuEngineFieldId(step,variant,'incentive_expires_hours')).value)||null,
-        social_proof:$id(fuEngineFieldId(step,variant,'social_proof')).checked,
-        active:$id(fuEngineFieldId(step,variant,'active')).checked,
-        media_url:$id(fuEngineFieldId(step,variant,'media_url')).value.trim(),
-        media_caption:$id(fuEngineFieldId(step,variant,'media_caption')).value.trim(),
-      });
+  const steps=[1,2].map(step=>({
+    step, type:'session',
+    hours:parseInt($id(fuLadderFieldId(step,'hours')).value)||(step===1?1:6),
+    message:$id(fuLadderFieldId(step,'message')).value.trim(),
+  }));
+  [3,4,5].forEach(step=>{
+    const s=fuLadderStepById(step);
+    const sel=$id(fuLadderFieldId(step,'template'));
+    const templateName=sel?sel.value:(s.template_name||'');
+    // A step whose dropdown was never touched this session keeps its already-saved
+    // language/category/body-var-count (s.template_*) rather than losing them; only a step whose
+    // template was actively picked/changed uses the freshly-computed _pending* values.
+    steps.push({
+      step, type:'template',
+      template_name:templateName,
+      template_language:s._pendingLanguage||s.template_language||'en_US',
+      template_category:s._pendingCategory||s.template_category||'MARKETING',
+      template_body_vars:s._pendingBodyVars!==undefined?s._pendingBodyVars:(s.template_body_vars||0),
     });
   });
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/variants`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({variants})});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/ladder`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({steps})});
     if(!r.ok) throw new Error('HTTP '+r.status);
-    fuEngineVariants=variants;
+    fuLadderSteps=steps;
     msg.textContent='Saved ✓';
     setTimeout(()=>{ if($id('fuEngineSaveMsg')) $id('fuEngineSaveMsg').textContent=''; },2000);
   }catch(e){ msg.textContent='Failed to save.'; }
@@ -1615,8 +1683,8 @@ async function fetchFollowupEngineStats(){
 function renderFollowupEngineStats(rows){
   if(!rows.length){ $id('fuEngineStats').innerHTML='<div style="font-size:12px;color:var(--muted)">No follow-ups sent yet.</div>'; return; }
   $id('fuEngineStats').innerHTML=`<div class="tbl-wrap"><table class="tbl">
-    <thead><tr><th>Step</th><th>Variant</th><th>Sent</th><th>Replied</th><th>Reply Rate</th></tr></thead>
-    <tbody>${rows.map(r=>`<tr><td>${esc(r.step)}</td><td>${esc(r.variant)}</td><td>${esc(r.sent)}</td><td>${esc(r.replied)}</td><td>${esc(r.reply_rate)}%</td></tr>`).join('')}</tbody>
+    <thead><tr><th>Step</th><th>Sent</th><th>Replied</th><th>Reply Rate</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${esc(r.step)}</td><td>${esc(r.sent)}</td><td>${esc(r.replied)}</td><td>${esc(r.reply_rate)}%</td></tr>`).join('')}</tbody>
   </table></div>`;
 }
 
