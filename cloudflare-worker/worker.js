@@ -15119,6 +15119,23 @@ async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption){
   return r.ok;
 }
 
+// Lightweight Drive-link size check for ecom.html's product/promotion video fields (called onblur,
+// right when a merchant enters the link — see checkDriveVideoSize there) — reuses the exact same
+// fetch-and-bypass-the-virus-scan-interstitial logic sendDriveMediaToChatwoot itself depends on
+// (driveFetchFile), so "how big is this" and "would this actually send" are answered by the
+// identical code path; a link this can't read would fail to send for the same reason. client_id-
+// based rather than session-based (ecom.html has no Authentik session of its own, same reasoning as
+// handleEcomWaTemplatesGet), read-only.
+async function handleEcomDriveFileSize(request, env){
+  const url=new URL(request.url);
+  const driveUrl=url.searchParams.get('url')||'';
+  const fileId=driveFileId(driveUrl);
+  if(!fileId) return json({error:'Not a recognizable Google Drive share link.'}, 400);
+  const fetched=await driveFetchFile(fileId);
+  if(!fetched) return json({error:'Could not read this file — make sure it\'s shared as "Anyone with the link can view."'}, 400);
+  return json({size_bytes:fetched.blob.size, content_type:fetched.contentType});
+}
+
 // Sends one unit's photos/video into the chat as real attachments and marks it sent so it's never
 // repeated for this lead. Each item's stored URL is either a legacy R2-hosted one from before the
 // Google Drive switch (fetched straight from the R2 binding, same as before) or a Google Drive
@@ -18470,6 +18487,7 @@ export default {
       else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }
+      else if(url.pathname==='/ecom/drive-file-size' && request.method==='GET'){ res=await handleEcomDriveFileSize(request, env); }
       else if(url.pathname==='/ecom/products' && request.method==='GET'){ res=await handleEcomList(request, env, 'products'); }
       else if(url.pathname==='/ecom/products' && request.method==='POST'){ res=await handleEcomCreate(request, env, 'products'); }
       else if(url.pathname==='/ecom/products' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'products'); }
