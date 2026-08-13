@@ -7920,12 +7920,65 @@ same special-cased-in-the-click-handler pattern `broadcast.html` already uses si
 standalone page, not a `navigate()` target.
 
 **Board view** drag-and-drop is native HTML5 DnD (`draggable`, `dragstart`/`dragover`/`drop`), no
-library. **Timeline view** is intentionally "Gantt-lite": tasks positioned as bars along a date
-axis by `start_date`/`due_date`, no dependency lines or critical-path computation — that's a later
-phase, not part of this slice.
+library — `kanbanColumnsHtml()`/`wireCardDragHandlers()` are shared between the main Board and the
+Sprints view's own board so both actually support dragging, not just one of them.
 
-**Not built in this pass** (see the standalone PM platform proposal this was scoped from): the
-generic flexible-database engine (custom fields/multiple saved views a user defines themselves —
-this phase ships one fixed Task schema instead), dependency-aware scheduling, time
-tracking/job costing, automations, and the IT-specific module (Sprints, bug tracker, Git links)
-planned as the next phase on top of this core.
+### Phase 2 — dependencies/critical path, time tracking/job costing, automations, IT module
+
+Four features on top of the Phase 1 core (`migrations/0048_pm_phase2.sql` — new columns on
+`pm_projects`/`pm_tasks`, plus `pm_task_dependencies`/`pm_time_entries`/`pm_sprints`/
+`pm_automations`). All follow the same client_id-scoped-D1-table shape as everything else in this
+module; `sprints`/`time`/`automations` join `PM_TABLES`' generic CRUD (`worker.js`), dependencies
+get dedicated handlers since creating one needs a real cycle check.
+
+**Gantt dependencies + critical path** — `pm_task_dependencies` is a finish-to-start edge list
+(`predecessor_id`→`successor_id`, optional `lag_days`), managed from inside the Task modal's
+"Depends on" section, not a separate page. `handlePmDependencyCreate` (`worker.js`) runs a BFS
+(`pmHasPath`) before inserting to reject anything that would close a cycle — both tasks must
+already belong to the same project and the same client. The critical path itself is **not**
+computed server-side: `computeCPM()` in `projects.html` runs a standard forward/backward CPM pass
+(day-offset units, not calendar dates — it only needs to know which tasks have zero slack) over
+whatever tasks+dependencies are already loaded in the browser for the *selected* project ("All
+Projects" skips critical-path highlighting — dependencies never cross projects, so the concept
+only means something for one project at a time). The Timeline view overlays dependency connector
+lines as an SVG (`drawDependencyLines()`) measured from the rendered bars' real DOM positions
+(`getBoundingClientRect`) rather than recomputing the date math a second time, so lines can never
+drift out of sync with where a bar actually landed; critical-path tasks get a red outline and a ⚡
+marker on their row label.
+
+**Time tracking / job costing** — `pm_time_entries` (task_id, user_email, entry_date, hours, note,
+billable, an optional per-entry `hourly_rate` override). `pm_projects` gained `budget_amount`/
+`budget_currency`/`default_hourly_rate`. Logged from a "+ Log time" button inside the Task modal;
+rolled up in the **💰 Budget** header button's modal — total/billable hours, total cost (`Σ hours ×
+(entry's own rate or the project's default rate)`), a budget-vs-actual progress bar, and a
+per-person breakdown. Per-project only (like Sprints/Automations below) — picking "All Projects"
+shows a prompt to select one first, since a budget rollup across unrelated projects isn't a
+meaningful number.
+
+**Automation engine** — deliberately a **fixed catalog**, not a generic condition builder:
+triggers are `status_changed_to`/`task_created`; actions are `set_status`/`set_assignee`/
+`notify_email` (via the existing platform-level `RESEND_API_KEY`/`RESEND_FROM_EMAIL`, same Resend
+account the Scheduled Report Builder above already uses). `runTaskAutomations()` (`worker.js`) is
+called synchronously from inside `handlePmCreate`/`handlePmUpdate` for tasks — there's no
+durable queue/per-tenant cron in this Worker, so "evaluate on save" is the shape that fits without
+new infrastructure. An automation's own writes go straight to D1, not back through
+`handlePmUpdate`, so one rule's action can never recursively re-trigger the engine — no ping-pong
+risk between two rules that could otherwise fight over the same task. Configured per-project from
+the **⚡ Automations** header button.
+
+**IT module (Sprints, bug tracker, Git links)** — `pm_tasks` gained `item_type` (`task`/`bug`,
+same table and same Board/Table/Timeline views for both — a bug is a task with extra fields, not a
+parallel entity with its own view layer to maintain), `severity` (bug-only), `sprint_id`/
+`story_points`, and `link_url`/`link_label`. The **Sprints** tab shows a per-project backlog
+(unsprinted tasks) plus the selected sprint's own Kanban board and a real burndown chart (inline
+SVG, ideal-vs-actual line, actual computed from each done task's `done_at` timestamp against its
+`story_points` — `done_at` is maintained server-side on every status transition to/from `done`,
+never directly writable, since `updated_at` changes on *any* edit and can't stand in for "when did
+this actually finish"). **Git links are a manually-pasted URL + label, not a live GitHub API
+integration** — a real sync (auto-linking commits/PRs, updating status on merge) needs a GitHub
+App/OAuth credentials this repo doesn't have configured, so this stays an honest "paste a link"
+field rather than a fake-looking automatic one.
+
+**Not built yet**: the generic flexible-database engine (custom fields/multiple saved views a user
+defines themselves — every entity in this module still has a fixed schema), resource leveling/
+capacity planning, EVM, offline-first mobile, client portals + e-signature, and a real GitHub sync.

@@ -12276,20 +12276,25 @@ async function handleRecruitDelete(request, env, kind){
   return json({ok:true});
 }
 
-/* ── PROJECTS MODULE (frontend/projects.html — standalone tool, migrations/0047_pm_projects_tasks.sql)
-   Projects/Tasks, same "one shared D1 table per entity, client_id-scoped, generic config-driven
-   CRUD" shape as RECRUIT_TABLES above — same login/session as the CRM (a Leadvyne account gets
-   both), but its own tables: a different product on the same account, not a CRM feature. Two
-   special cases the generic Recruit handlers don't need: tasks carry `updated_at` (touched on
-   every create/update, not just insert) and `position` (a float for cheap kanban drag-reorder —
-   see the migration's own comment), and deleting a project cascades to its tasks so a project
-   deletion can never leave orphaned rows behind. ── */
+/* ── PROJECTS MODULE (frontend/projects.html — standalone tool, migrations/0047_pm_projects_tasks.sql,
+   0048_pm_phase2.sql) Projects/Tasks/Sprints/Time/Automations, same "one shared D1 table per
+   entity, client_id-scoped, generic config-driven CRUD" shape as RECRUIT_TABLES above — same
+   login/session as the CRM (a Leadvyne account gets both), but its own tables: a different
+   product on the same account, not a CRM feature. Special cases the generic Recruit handlers
+   don't need: tasks/sprints/time/automations all reference a project_id that has to be verified
+   as belonging to this client (projectScopedKinds below); tasks carry `updated_at` (touched on
+   every write) and `position` (a float for cheap kanban drag-reorder — see the migration's own
+   comment); `time` entries derive their project_id server-side from the task rather than trusting
+   the client's own copy; deleting a project cascades to its tasks; a task's `done_at` is
+   maintained by the server on status transitions, not directly writable, and a task status change
+   or creation runs any matching automations (see PM automation engine below). ── */
 const PM_TABLES={
   projects:{
     table:'pm_projects', requiredField:'name', orderBy:'created_at DESC',
     fields:{
       name:{type:'str', max:200}, description:{type:'text'},
       color:{type:'str', max:20, def:'#0D9C93'}, status:{type:'str', max:20, def:'active'},
+      budget_amount:{type:'num'}, budget_currency:{type:'str', max:10, def:'USD'}, default_hourly_rate:{type:'num'},
     }
   },
   tasks:{
@@ -12298,10 +12303,38 @@ const PM_TABLES={
       project_id:{type:'int'}, title:{type:'str', max:300}, description:{type:'text'},
       status:{type:'str', max:20, def:'todo'}, priority:{type:'str', max:20, def:'medium'},
       assignee_email:{type:'str', max:140}, start_date:{type:'str', max:10}, due_date:{type:'str', max:10},
-      position:{type:'num'},
+      position:{type:'num'}, item_type:{type:'str', max:10, def:'task'}, severity:{type:'str', max:20},
+      story_points:{type:'int'}, sprint_id:{type:'int'}, link_url:{type:'str', max:500}, link_label:{type:'str', max:100},
+    }
+  },
+  sprints:{
+    table:'pm_sprints', requiredField:'name', orderBy:'start_date ASC, created_at ASC',
+    fields:{
+      project_id:{type:'int'}, name:{type:'str', max:200}, start_date:{type:'str', max:10},
+      end_date:{type:'str', max:10}, status:{type:'str', max:20, def:'planned'},
+    }
+  },
+  time:{
+    table:'pm_time_entries', requiredField:'entry_date', orderBy:'entry_date DESC, created_at DESC',
+    fields:{
+      task_id:{type:'int'}, project_id:{type:'int'}, user_email:{type:'str', max:140},
+      entry_date:{type:'str', max:10}, hours:{type:'num'}, note:{type:'text'},
+      billable:{type:'int', def:1}, hourly_rate:{type:'num'},
+    }
+  },
+  automations:{
+    table:'pm_automations', requiredField:'name', orderBy:'created_at DESC',
+    fields:{
+      project_id:{type:'int'}, name:{type:'str', max:200}, trigger_type:{type:'str', max:40},
+      trigger_config:{type:'text'}, action_type:{type:'str', max:40}, action_config:{type:'text'},
+      enabled:{type:'int', def:1},
     }
   },
 };
+// Entity kinds whose project_id must be verified as belonging to this client before a write —
+// everything project-scoped except `projects` itself and `time` (time entries derive project_id
+// from their task instead, see handlePmCreate).
+const PM_PROJECT_SCOPED=['tasks','sprints','automations'];
 function pmCoerce(spec, raw){
   if(raw===undefined||raw===null||raw===''){
     if(spec.type==='num'||spec.type==='int') return null;
@@ -12312,13 +12345,17 @@ function pmCoerce(spec, raw){
   if(spec.type==='text') return String(raw);
   return String(raw).trim().slice(0, spec.max||255);
 }
+async function pmVerifyProject(env, cid, projectId){
+  const proj=await env.DB.prepare(`SELECT client_id FROM pm_projects WHERE id=?`).bind(parseInt(projectId,10)).first();
+  return proj && String(proj.client_id)===String(cid);
+}
 async function handlePmList(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const cfg=PM_TABLES[kind];
   const url=new URL(request.url);
   const projectId=parseInt(url.searchParams.get('project_id'),10);
-  // tasks only — projects has no project_id column, so this filter simply never applies to it.
+  // projects/time-without-a-filter have no project_id-filtered path; every other kind supports it.
   const {results}=await (projectId
     ? env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE client_id=? AND project_id=? ORDER BY ${cfg.orderBy}`).bind(Number(payload.cid), projectId)
     : env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE client_id=? ORDER BY ${cfg.orderBy}`).bind(Number(payload.cid))
@@ -12331,9 +12368,15 @@ async function handlePmCreate(request, env, kind){
   const cfg=PM_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   if(!String(body[cfg.requiredField]||'').trim()) return json({error:`${cfg.requiredField} required`}, 400);
-  if(kind==='tasks'){
-    const proj=await env.DB.prepare(`SELECT client_id FROM pm_projects WHERE id=?`).bind(parseInt(body.project_id,10)).first();
-    if(!proj || String(proj.client_id)!==String(payload.cid)) return json({error:'project_id not found'}, 400);
+  if(PM_PROJECT_SCOPED.includes(kind)){
+    if(!await pmVerifyProject(env, payload.cid, body.project_id)) return json({error:'project_id not found'}, 400);
+  }
+  if(kind==='time'){
+    // project_id is never trusted from the client here — derived from the task itself, so a time
+    // entry can't be filed against a project it doesn't actually belong to.
+    const task=await env.DB.prepare(`SELECT client_id, project_id FROM pm_tasks WHERE id=?`).bind(parseInt(body.task_id,10)).first();
+    if(!task || String(task.client_id)!==String(payload.cid)) return json({error:'task_id not found'}, 400);
+    body.project_id=task.project_id;
   }
   const cols=Object.keys(cfg.fields);
   const vals=cols.map(k=>pmCoerce(cfg.fields[k], body[k]));
@@ -12344,6 +12387,10 @@ async function handlePmCreate(request, env, kind){
     `INSERT INTO ${cfg.table} (client_id, ${cols.join(', ')}, created_at${extraCols}) VALUES (?, ${cols.map(()=>'?').join(', ')}, ?${extraVals})`
   ).bind(Number(payload.cid), ...vals, now, ...(cfg.hasUpdatedAt?[now]:[])).run();
   const row=await env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE id=?`).bind(r.meta.last_row_id).first();
+  if(kind==='tasks'){
+    if(row.status==='done') await env.DB.prepare(`UPDATE pm_tasks SET done_at=? WHERE id=?`).bind(now, row.id).run();
+    await runTaskAutomations(env, payload.cid, row.project_id, row, 'created', null);
+  }
   return json(row);
 }
 async function handlePmUpdate(request, env, kind){
@@ -12353,17 +12400,34 @@ async function handlePmUpdate(request, env, kind){
   const body=await request.json().catch(()=>({}));
   const id=parseInt(body.Id,10);
   if(!id) return json({error:'Id required'}, 400);
-  const existing=await env.DB.prepare(`SELECT client_id FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  const existing=await env.DB.prepare(`SELECT * FROM ${cfg.table} WHERE id=?`).bind(id).first();
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(PM_PROJECT_SCOPED.includes(kind) && body.project_id!==undefined){
+    if(!await pmVerifyProject(env, payload.cid, body.project_id)) return json({error:'project_id not found'}, 400);
+  }
+  if(kind==='time' && (body.task_id!==undefined || body.project_id!==undefined)){
+    // Same rule as handlePmCreate — project_id always derives from the task, never trusted
+    // directly, so a time entry can't end up claiming a project its task doesn't belong to.
+    const task=await env.DB.prepare(`SELECT client_id, project_id FROM pm_tasks WHERE id=?`).bind(parseInt(body.task_id??existing.task_id,10)).first();
+    if(!task || String(task.client_id)!==String(payload.cid)) return json({error:'task_id not found'}, 400);
+    body.project_id=task.project_id;
+  }
   const sets=[], vals=[];
   for(const k of Object.keys(cfg.fields)){
     if(body[k]===undefined) continue;
     sets.push(`${k}=?`); vals.push(pmCoerce(cfg.fields[k], body[k]));
   }
+  const now=new Date().toISOString();
+  const statusChanged=kind==='tasks' && body.status!==undefined && body.status!==existing.status;
+  if(statusChanged){ sets.push('done_at=?'); vals.push(body.status==='done'?now:null); }
   if(!sets.length) return json({ok:true});
-  if(cfg.hasUpdatedAt){ sets.push('updated_at=?'); vals.push(new Date().toISOString()); }
+  if(cfg.hasUpdatedAt){ sets.push('updated_at=?'); vals.push(now); }
   vals.push(id);
   await env.DB.prepare(`UPDATE ${cfg.table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  if(kind==='tasks' && statusChanged){
+    const fresh=await env.DB.prepare(`SELECT *, id AS Id FROM pm_tasks WHERE id=?`).bind(id).first();
+    await runTaskAutomations(env, payload.cid, existing.project_id, fresh, 'status_changed', existing.status);
+  }
   return json({ok:true});
 }
 async function handlePmDelete(request, env, kind){
@@ -12375,9 +12439,133 @@ async function handlePmDelete(request, env, kind){
   if(!id) return json({error:'Id required'}, 400);
   const existing=await env.DB.prepare(`SELECT client_id FROM ${cfg.table} WHERE id=?`).bind(id).first();
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
-  if(kind==='projects') await env.DB.prepare(`DELETE FROM pm_tasks WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+  if(kind==='projects'){
+    await env.DB.prepare(`DELETE FROM pm_tasks WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+    await env.DB.prepare(`DELETE FROM pm_sprints WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+    await env.DB.prepare(`DELETE FROM pm_time_entries WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+    await env.DB.prepare(`DELETE FROM pm_automations WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+    await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+  }
+  if(kind==='tasks'){
+    await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE client_id=? AND (predecessor_id=? OR successor_id=?)`).bind(Number(payload.cid), id, id).run();
+    await env.DB.prepare(`DELETE FROM pm_time_entries WHERE client_id=? AND task_id=?`).bind(Number(payload.cid), id).run();
+  }
   await env.DB.prepare(`DELETE FROM ${cfg.table} WHERE id=?`).bind(id).run();
   return json({ok:true});
+}
+
+/* ── PM dependencies (finish-to-start task links) ──
+   Not in PM_TABLES/generic CRUD — creating a dependency needs a real cycle check (a DAG walk),
+   which the generic handlers have no place for. List/delete are simple enough to stay dedicated
+   too, for symmetry with create rather than splitting the entity across two code paths. Critical
+   path itself is computed client-side in projects.html from this edge list plus the tasks already
+   loaded there — no separate server endpoint for it. ── */
+async function pmHasPath(env, cid, fromId, toId){
+  // BFS from `fromId` following successor edges — true if `toId` is reachable, meaning adding
+  // fromId->toId as a new edge would close a cycle.
+  const {results}=await env.DB.prepare(`SELECT predecessor_id, successor_id FROM pm_task_dependencies WHERE client_id=?`).bind(Number(cid)).all();
+  const edges=results||[];
+  const seen=new Set([fromId]); const queue=[fromId];
+  while(queue.length){
+    const cur=queue.shift();
+    if(cur===toId) return true;
+    for(const e of edges){
+      if(e.predecessor_id===cur && !seen.has(e.successor_id)){ seen.add(e.successor_id); queue.push(e.successor_id); }
+    }
+  }
+  return false;
+}
+async function handlePmDependenciesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const projectId=parseInt(url.searchParams.get('project_id'),10);
+  if(!projectId) return json({error:'project_id required'}, 400);
+  const {results}=await env.DB.prepare(`SELECT *, id AS Id FROM pm_task_dependencies WHERE client_id=? AND project_id=?`).bind(Number(payload.cid), projectId).all();
+  return json({list:results||[]});
+}
+async function handlePmDependencyCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const predecessorId=parseInt(body.predecessor_id,10), successorId=parseInt(body.successor_id,10);
+  const lagDays=parseInt(body.lag_days,10)||0;
+  if(!predecessorId || !successorId) return json({error:'predecessor_id and successor_id required'}, 400);
+  if(predecessorId===successorId) return json({error:'A task cannot depend on itself'}, 400);
+  const [pred, succ]=await Promise.all([
+    env.DB.prepare(`SELECT client_id, project_id FROM pm_tasks WHERE id=?`).bind(predecessorId).first(),
+    env.DB.prepare(`SELECT client_id, project_id FROM pm_tasks WHERE id=?`).bind(successorId).first(),
+  ]);
+  if(!pred || String(pred.client_id)!==String(payload.cid) || !succ || String(succ.client_id)!==String(payload.cid)){
+    return json({error:'Task not found'}, 400);
+  }
+  if(String(pred.project_id)!==String(succ.project_id)) return json({error:'Both tasks must be in the same project'}, 400);
+  // Would adding predecessor->successor let you follow edges from successor back to predecessor?
+  // If so this link closes a cycle (A depends on B which already, directly or transitively,
+  // depends on A) — reject instead of silently creating a Gantt that can never resolve.
+  if(await pmHasPath(env, payload.cid, successorId, predecessorId)) return json({error:'That would create a circular dependency'}, 400);
+  const now=new Date().toISOString();
+  try{
+    const r=await env.DB.prepare(
+      `INSERT INTO pm_task_dependencies (client_id, project_id, predecessor_id, successor_id, lag_days, created_at) VALUES (?,?,?,?,?,?)`
+    ).bind(Number(payload.cid), pred.project_id, predecessorId, successorId, lagDays, now).run();
+    const row=await env.DB.prepare(`SELECT *, id AS Id FROM pm_task_dependencies WHERE id=?`).bind(r.meta.last_row_id).first();
+    return json(row);
+  }catch(e){ return json({error:'That dependency already exists'}, 400); }
+}
+async function handlePmDependencyDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM pm_task_dependencies WHERE id=?`).bind(id).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ── PM automation engine ──
+   A curated catalog of trigger/action types, evaluated synchronously inside the same request that
+   changed a task — this Worker has no durable queue/cron-per-tenant infra, so "fire on save" is
+   the only shape that fits without new infrastructure. Deliberately a fixed catalog, not a
+   generic condition-expression language: `status_changed_to`/`task_created` triggers,
+   `set_status`/`set_assignee`/`notify_email` actions. Actions write straight to D1 (not through
+   handlePmUpdate), so an automation's own writes can never recursively re-trigger this function —
+   no ping-pong risk between two rules that could otherwise fight over the same task. Best-effort:
+   one failing rule (e.g. Resend not configured) never fails the task edit that triggered it. ── */
+async function runTaskAutomations(env, clientId, projectId, task, event, prevStatus){
+  let rules;
+  try{
+    const {results}=await env.DB.prepare(`SELECT * FROM pm_automations WHERE client_id=? AND project_id=? AND enabled=1`).bind(Number(clientId), Number(projectId)).all();
+    rules=results||[];
+  }catch(e){ return; }
+  for(const rule of rules){
+    let tcfg={}; try{ tcfg=JSON.parse(rule.trigger_config||'{}'); }catch(e){}
+    let matches=false;
+    if(rule.trigger_type==='status_changed_to' && event==='status_changed'){
+      matches = !!tcfg.status && tcfg.status===task.status && task.status!==prevStatus;
+    }else if(rule.trigger_type==='task_created' && event==='created'){
+      matches = true;
+    }
+    if(!matches) continue;
+    let acfg={}; try{ acfg=JSON.parse(rule.action_config||'{}'); }catch(e){}
+    try{
+      if(rule.action_type==='set_status' && acfg.status && acfg.status!==task.status){
+        await env.DB.prepare(`UPDATE pm_tasks SET status=?, updated_at=?, done_at=? WHERE id=?`)
+          .bind(acfg.status, new Date().toISOString(), acfg.status==='done'?new Date().toISOString():null, task.Id||task.id).run();
+      }else if(rule.action_type==='set_assignee'){
+        await env.DB.prepare(`UPDATE pm_tasks SET assignee_email=? WHERE id=?`).bind(acfg.assignee_email||'', task.Id||task.id).run();
+      }else if(rule.action_type==='notify_email' && acfg.to_email && env.RESEND_API_KEY){
+        const subject=(acfg.subject||'Task update: {{title}}').replace('{{title}}', task.title||'');
+        const bodyText=(acfg.body||'Task "{{title}}" changed.').replace('{{title}}', task.title||'');
+        await fetch('https://api.resend.com/emails', {
+          method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
+          body:JSON.stringify({from:env.RESEND_FROM_EMAIL||'Leadvyne Projects <projects@leadvyne.com>', to:[acfg.to_email], subject, html:`<p>${esc(bodyText)}</p>`})
+        });
+      }
+    }catch(e){ /* best-effort — see comment above */ }
+  }
 }
 
 // ── ERPNext Customers / Items — live lookups for the accounting.html Customers tab and the
@@ -18607,6 +18795,21 @@ export default {
       else if(url.pathname==='/pm/tasks' && request.method==='POST'){ res=await handlePmCreate(request, env, 'tasks'); }
       else if(url.pathname==='/pm/tasks' && request.method==='PATCH'){ res=await handlePmUpdate(request, env, 'tasks'); }
       else if(url.pathname==='/pm/tasks' && request.method==='DELETE'){ res=await handlePmDelete(request, env, 'tasks'); }
+      else if(url.pathname==='/pm/sprints' && request.method==='GET'){ res=await handlePmList(request, env, 'sprints'); }
+      else if(url.pathname==='/pm/sprints' && request.method==='POST'){ res=await handlePmCreate(request, env, 'sprints'); }
+      else if(url.pathname==='/pm/sprints' && request.method==='PATCH'){ res=await handlePmUpdate(request, env, 'sprints'); }
+      else if(url.pathname==='/pm/sprints' && request.method==='DELETE'){ res=await handlePmDelete(request, env, 'sprints'); }
+      else if(url.pathname==='/pm/time' && request.method==='GET'){ res=await handlePmList(request, env, 'time'); }
+      else if(url.pathname==='/pm/time' && request.method==='POST'){ res=await handlePmCreate(request, env, 'time'); }
+      else if(url.pathname==='/pm/time' && request.method==='PATCH'){ res=await handlePmUpdate(request, env, 'time'); }
+      else if(url.pathname==='/pm/time' && request.method==='DELETE'){ res=await handlePmDelete(request, env, 'time'); }
+      else if(url.pathname==='/pm/automations' && request.method==='GET'){ res=await handlePmList(request, env, 'automations'); }
+      else if(url.pathname==='/pm/automations' && request.method==='POST'){ res=await handlePmCreate(request, env, 'automations'); }
+      else if(url.pathname==='/pm/automations' && request.method==='PATCH'){ res=await handlePmUpdate(request, env, 'automations'); }
+      else if(url.pathname==='/pm/automations' && request.method==='DELETE'){ res=await handlePmDelete(request, env, 'automations'); }
+      else if(url.pathname==='/pm/dependencies' && request.method==='GET'){ res=await handlePmDependenciesList(request, env); }
+      else if(url.pathname==='/pm/dependencies' && request.method==='POST'){ res=await handlePmDependencyCreate(request, env); }
+      else if(url.pathname==='/pm/dependencies' && request.method==='DELETE'){ res=await handlePmDependencyDelete(request, env); }
       else if(url.pathname==='/erpnext/suppliers' && request.method==='GET'){ res=await handleErpnextSuppliersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }
