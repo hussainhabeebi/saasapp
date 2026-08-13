@@ -4068,8 +4068,10 @@ function isValidShopDomain(shop){ return /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.
 // this Worker does (Shopify below, Google Search Console further down) — not provider-specific
 // despite living next to the Shopify module first. 10-minute expiry: this only needs to survive
 // one redirect hop, not a whole session.
-async function signOauthState(env, clientId){
-  const payload={cid:String(clientId), exp:Math.floor(Date.now()/1000)+600, n:crypto.randomUUID()};
+// returnTo is optional and only used by handleGcalOauthStart (see its own comment) — every other
+// caller passes just (env, clientId) and gets identical behavior to before this param existed.
+async function signOauthState(env, clientId, returnTo){
+  const payload={cid:String(clientId), exp:Math.floor(Date.now()/1000)+600, n:crypto.randomUUID(), ...(returnTo?{rt:returnTo}:{})};
   const body=btoa(JSON.stringify(payload));
   return `${body}.${await hmacSignB64(env, body)}`;
 }
@@ -4343,7 +4345,15 @@ async function handleGcalOauthStart(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET) return json({error:'Google credentials are not configured on the server.'}, 500);
-  const state=await signOauthState(env, payload.cid);
+  // Which page to land back on after Google redirects to the callback below — defaults to
+  // dashboard.html (the original/only caller) when omitted. Restricted to a bare "<name>.html"
+  // (optionally with a query string) served from this same app, never an external URL — the
+  // state token is HMAC-signed so a caller can't forge one to redirect elsewhere regardless, but
+  // this keeps the intent explicit. frontend/projects.html passes its own name here so connecting
+  // Google Calendar from the Projects tool returns there instead of bouncing to the CRM.
+  const {return_to}=await request.json().catch(()=>({}));
+  const safeReturnTo=(typeof return_to==='string' && /^[a-z0-9_-]+\.html(\?[^\s]*)?$/i.test(return_to)) ? return_to : null;
+  const state=await signOauthState(env, payload.cid, safeReturnTo);
   const redirectUri=`${env.WORKER_BASE_URL}/gcal/oauth/callback`;
   const url=`https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(env.GOOGLE_CLIENT_ID)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(GCAL_SCOPE)}&access_type=offline&prompt=consent&state=${encodeURIComponent(state)}`;
   return json({ok:true, url});
@@ -4351,15 +4361,17 @@ async function handleGcalOauthStart(request, env){
 
 async function handleGcalOauthCallback(request, env){
   const url=new URL(request.url);
-  const appBase=env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html';
+  // Verified as early as possible, before any failure path, so an expired/invalid state is the
+  // only case that falls back to the default page — every other outcome (including Google's own
+  // access_denied) still honors whichever page actually started this connection.
+  const statePayload=await verifyOauthState(env, url.searchParams.get('state'));
+  const appBase=statePayload?.rt ? `https://app.leadvyne.com/${statePayload.rt}` : (env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html');
   const fail=(msg)=>Response.redirect(`${appBase}?gcal=error&msg=${encodeURIComponent(msg)}`, 302);
   if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET) return fail('Google credentials are not configured on the server.');
   const err=url.searchParams.get('error');
   if(err) return fail(err==='access_denied'?'Access was denied':err);
   const code=url.searchParams.get('code');
-  const state=url.searchParams.get('state');
   if(!code) return fail('Invalid callback from Google');
-  const statePayload=await verifyOauthState(env, state);
   if(!statePayload) return fail('This connection link expired — try connecting again from Tasks');
 
   const redirectUri=`${env.WORKER_BASE_URL}/gcal/oauth/callback`;
@@ -7043,51 +7055,50 @@ function pipelineFollowupPlan(step, hasReplied){
     ? {channel:'whatsapp', mode:'text', label:'Monthly check-in — still active in this stage', cold:false}
     : {channel:'email', mode:'text', label:'Monthly check-in — try email', cold:true};
 }
-function pipelineBuildTaskItem(lead, stage, step, plan){
-  const now=new Date();
-  const icon=PIPELINE_CHANNEL_ICON[plan.channel]||'💬';
-  return {
-    id:'pf_'+now.getTime().toString(36)+Math.random().toString(36).slice(2,7),
-    title:`${icon} Follow up with ${lead.Name||lead.Phone||'lead'}`,
-    notes:plan.label, due_date:now.toISOString().slice(0,10), due_time:'',
-    lead_id:lead.Id, lead_name:lead.Name||lead.Phone||'', assignee_email:lead.Owner||'',
-    category:'Follow-up', project_id:'', status:'open', created_at:now.toISOString(), completed_at:'',
-    auto_generated:true, followup_step:step, stage_at_creation:stage, channel:plan.channel, mode:plan.mode,
-  };
+// Lazily creates the one shared "Follow-ups" pm_project a client's cadence-generated tasks live
+// in — found by name rather than a dedicated CLIENTS column, since a project is cheap to
+// recreate/rename and this only ever needs to resolve to *a* row, not survive a rename intact.
+async function pmFindOrCreateFollowupsProject(env, clientId){
+  const existing=await env.DB.prepare(`SELECT id FROM pm_projects WHERE client_id=? AND name=?`).bind(Number(clientId), 'Follow-ups').first();
+  if(existing) return existing.id;
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO pm_projects (client_id, name, description, color, status, created_at) VALUES (?,?,?,?,?,?)`
+  ).bind(Number(clientId), 'Follow-ups', 'Auto-generated by the Advanced Pipeline follow-up cadence — one task per lead needing a next touch.', '#D97706', 'active', now).run();
+  return r.meta.last_row_id;
 }
-// Same capped-JSON-array-on-CLIENTS read/write as dashboard.html's own getTasksState/
-// saveTasksState (manual_tasks holds {items, dismissed, projects, notificationLog}) — this is the
-// Worker's side of that same field, needed because the cadence advances on a schedule with no
-// browser tab guaranteed open. Replaces (not appends alongside) any still-open auto-generated task
-// already queued for this lead, so a lead's cadence never shows two auto follow-ups at once.
+// Writes (or replaces) the one open cadence task for a lead directly as a pm_tasks row — this
+// used to be a capped-JSON-array-on-CLIENTS read/modify/write (manual_tasks), now a normal D1
+// write per lead, since pm_tasks is a real table with its own client_id/lead_id index instead of
+// a blob the whole client has to be re-read/re-written to touch. Replaces (not appends alongside)
+// any still-open auto-generated task already queued for this lead, so a lead's cadence never
+// shows two auto follow-ups at once — same rule the old blob version enforced.
+async function pipelineWriteTask(env, clientId, projectId, lead, stage, step, plan){
+  await env.DB.prepare(`DELETE FROM pm_tasks WHERE client_id=? AND lead_id=? AND auto_generated=1 AND status!='done'`).bind(Number(clientId), lead.Id).run();
+  const icon=PIPELINE_CHANNEL_ICON[plan.channel]||'💬';
+  const now=new Date().toISOString();
+  const title=`${icon} Follow up with ${lead.Name||lead.Phone||'lead'}`;
+  const description=`${plan.label} (stage: ${stage})`;
+  const r=await env.DB.prepare(
+    `INSERT INTO pm_tasks (client_id, project_id, title, description, status, priority, assignee_email, due_date, position, category, channel, mode, followup_step, auto_generated, lead_id, lead_name, created_at, updated_at)
+     VALUES (?,?,?,?,'todo','medium',?,?,0,'Follow-up',?,?,?,1,?,?,?,?)`
+  ).bind(Number(clientId), projectId, title, description, lead.Owner||'', now.slice(0,10), plan.channel, plan.mode, step, lead.Id, lead.Name||lead.Phone||'', now, now).run();
+  return r.meta.last_row_id;
+}
+// The instant path's entry point (handlePipelineStageChange below) — resolves the Follow-ups
+// project then delegates to pipelineWriteTask. Kept separate from the batch path
+// (pipelineProcessClient) so that one doesn't pay for a project lookup per lead when several of a
+// client's leads advance on the same cron tick.
 async function pipelineAppendTask(env, clientId, lead, stage, step, plan){
-  const c=await getClientById(env, clientId);
-  if(!c) return;
-  let state={items:[],dismissed:[],projects:[],notificationLog:[]};
-  try{ const parsed=JSON.parse(c.manual_tasks||'{}'); state={items:Array.isArray(parsed.items)?parsed.items:[], dismissed:Array.isArray(parsed.dismissed)?parsed.dismissed:[], projects:Array.isArray(parsed.projects)?parsed.projects:[], notificationLog:Array.isArray(parsed.notificationLog)?parsed.notificationLog:[]}; }catch(e){}
-  state.items=state.items.filter(t=>!(t.auto_generated && t.lead_id===lead.Id && t.status==='open'));
-  const item=pipelineBuildTaskItem(lead, stage, step, plan);
-  state.items.push(item);
-  const openItems=state.items.filter(t=>t.status!=='done');
-  const doneItems=state.items.filter(t=>t.status==='done').slice(-100);
-  state.items=[...openItems,...doneItems];
-  await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), manual_tasks:JSON.stringify(state)}});
-  return item;
+  const projectId=await pmFindOrCreateFollowupsProject(env, clientId);
+  const id=await pipelineWriteTask(env, clientId, projectId, lead, stage, step, plan);
+  return {id};
 }
 // Drops a lead's cadence entirely (D1 row + any still-open auto task) once it reaches a terminal
 // stage — Won/Spam/Lost/human-handover all close the loop this feature exists to chase.
 async function pipelineClearLead(env, clientId, leadId){
   await env.DB.prepare(`DELETE FROM pipeline_followups WHERE lead_id=?`).bind(leadId).run();
-  const c=await getClientById(env, clientId);
-  if(!c) return;
-  try{
-    const parsed=JSON.parse(c.manual_tasks||'{}');
-    const items=Array.isArray(parsed.items)?parsed.items:[];
-    const filtered=items.filter(t=>!(t.auto_generated && t.lead_id===leadId && t.status==='open'));
-    if(filtered.length!==items.length){
-      await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), manual_tasks:JSON.stringify({...parsed, items:filtered})}});
-    }
-  }catch(e){}
+  await env.DB.prepare(`DELETE FROM pm_tasks WHERE client_id=? AND lead_id=? AND auto_generated=1 AND status!='done'`).bind(Number(clientId), leadId).run();
 }
 async function pipelineMaybeTagCold(env, clientId, lead, cold){
   const tags=(lead.Tags||'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -7197,19 +7208,13 @@ async function pipelineProcessClient(env, c){
     newTasks.push({lead, stage, step:nextStep, plan});
   }
   if(!newTasks.length) return;
-  // One read-modify-write of this client's manual_tasks for every lead that advanced this tick.
-  const fresh=await getClientById(env, clientId);
-  if(!fresh) return;
-  let state={items:[],dismissed:[],projects:[],notificationLog:[]};
-  try{ const parsed=JSON.parse(fresh.manual_tasks||'{}'); state={items:Array.isArray(parsed.items)?parsed.items:[], dismissed:Array.isArray(parsed.dismissed)?parsed.dismissed:[], projects:Array.isArray(parsed.projects)?parsed.projects:[], notificationLog:Array.isArray(parsed.notificationLog)?parsed.notificationLog:[]}; }catch(e){}
-  newTasks.forEach(({lead, stage, step, plan})=>{
-    state.items=state.items.filter(t=>!(t.auto_generated && t.lead_id===lead.Id && t.status==='open'));
-    state.items.push(pipelineBuildTaskItem(lead, stage, step, plan));
-  });
-  const openItems=state.items.filter(t=>t.status!=='done');
-  const doneItems=state.items.filter(t=>t.status==='done').slice(-100);
-  state.items=[...openItems,...doneItems];
-  await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), manual_tasks:JSON.stringify(state)}});
+  // One project lookup for every lead that advanced this tick, then one pm_tasks write per lead —
+  // each write is already scoped to its own row (client_id+lead_id), so unlike the old blob
+  // version there's no shared client-level state to read/merge/write back here at all.
+  const projectId=await pmFindOrCreateFollowupsProject(env, clientId);
+  for(const {lead, stage, step, plan} of newTasks){
+    await pipelineWriteTask(env, clientId, projectId, lead, stage, step, plan);
+  }
 }
 // Rep-triggered ad-hoc video send — the genuinely new capability this feature needed (everything
 // else reuses existing send paths: WA text/voice both go through the existing
@@ -12646,6 +12651,7 @@ const PM_TABLES={
       name:{type:'str', max:200}, description:{type:'text'},
       color:{type:'str', max:20, def:'#0D9C93'}, status:{type:'str', max:20, def:'active'},
       budget_amount:{type:'num'}, budget_currency:{type:'str', max:10, def:'USD'}, default_hourly_rate:{type:'num'},
+      client_email:{type:'str', max:200}, ai_auto_stage_enabled:{type:'int', def:0},
     }
   },
   tasks:{
@@ -12656,6 +12662,11 @@ const PM_TABLES={
       assignee_email:{type:'str', max:140}, start_date:{type:'str', max:10}, due_date:{type:'str', max:10},
       position:{type:'num'}, item_type:{type:'str', max:10, def:'task'}, severity:{type:'str', max:20},
       story_points:{type:'int'}, sprint_id:{type:'int'}, link_url:{type:'str', max:500}, link_label:{type:'str', max:100},
+      // Merged in from the legacy manual_tasks blob system (see migrations/0052_pm_merge_legacy_tasks.sql)
+      lead_id:{type:'int'}, lead_name:{type:'str', max:200}, category:{type:'str', max:40},
+      channel:{type:'str', max:20}, mode:{type:'str', max:20}, followup_step:{type:'int'},
+      notify_customer:{type:'int', def:0}, ai_created:{type:'int', def:0}, auto_generated:{type:'int', def:0},
+      gcal_event_id:{type:'str', max:200},
     }
   },
   sprints:{
@@ -12874,6 +12885,156 @@ async function handlePmDependencyDelete(request, env){
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
   await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE id=?`).bind(id).run();
   return json({ok:true});
+}
+
+// "Link to Lead" picker (projects.html Task modal) — a plain name/phone search scoped to this
+// client's own Leads, same NocoDB where-clause shape getClientByAuthentikEmail already uses
+// elsewhere in this file. Read-only, capped at 8 results; the frontend only needs enough to pick
+// the right one, not a full search UI.
+async function handlePmLeadSearch(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const q=(url.searchParams.get('q')||'').trim();
+  if(q.length<2) return json({list:[]});
+  const qSafe=q.replace(/[%()]/g,'');
+  const where=`(ClientId,eq,${Number(payload.cid)})~and((Name,like,%${qSafe}%)~or(Phone,like,%${qSafe}%))`;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?limit=8&fields=Id,Name,Phone,Stage,Email&where=${encodeURIComponent(where)}`);
+  if(!r.ok) return json({list:[]});
+  const data=await r.json().catch(()=>({}));
+  return json({list:(data?.list||[]).map(l=>({Id:l.Id, Name:l.Name||'', Phone:l.Phone||'', Stage:l.Stage||'', Email:l.Email||''}))});
+}
+// Single-lead lookup by id, scoped to this client — used to resolve a linked lead's email at
+// task-completion-notification time (notifyClientOnDone in projects.html), separate from the
+// search-as-you-type route above since that one is capped/fuzzy-matched and this needs exactly
+// one specific row.
+async function handlePmLeadGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const id=parseInt(url.searchParams.get('id'),10);
+  if(!id) return json({error:'id required'}, 400);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,Name,Phone,Stage,Email,ClientId`);
+  if(!r.ok) return json({error:'Not found'}, 404);
+  const lead=await r.json().catch(()=>null);
+  if(!lead || String(lead.ClientId)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  return json({Id:lead.Id, Name:lead.Name||'', Phone:lead.Phone||'', Stage:lead.Stage||'', Email:lead.Email||''});
+}
+
+/* ── One-time legacy migration: CLIENTS.manual_tasks blob → pm_projects/pm_tasks/pm_task_dependencies
+   (SETUP.md "Projects module" — merging the legacy Tasks page). The source blob is never deleted
+   or modified — this only ever reads it and writes new D1 rows — so a bad migration is always
+   safe to just not re-run rather than needing a rollback. Idempotent per client via
+   pm_task_migrations (see migrations/0052_pm_merge_legacy_tasks.sql). Admin-gated since this
+   operates across any/every client's data, not just the caller's own. ── */
+async function pmMigrateClientLegacyTasks(env, c){
+  const clientId=c.Id;
+  const already=await env.DB.prepare(`SELECT client_id FROM pm_task_migrations WHERE client_id=?`).bind(Number(clientId)).first();
+  if(already) return {migrated:false, skipped:'already-migrated'};
+  let state={items:[], projects:[]};
+  try{
+    const parsed=JSON.parse(c.manual_tasks||'{}');
+    state={items:Array.isArray(parsed.items)?parsed.items:[], projects:Array.isArray(parsed.projects)?parsed.projects:[]};
+  }catch(e){ /* unparseable/empty blob — nothing to migrate, still records the attempt below */ }
+  if(!state.items.length && !state.projects.length){
+    await env.DB.prepare(`INSERT INTO pm_task_migrations (client_id, migrated_at, projects_count, tasks_count, deps_count) VALUES (?,?,0,0,0)`)
+      .bind(Number(clientId), new Date().toISOString()).run();
+    return {migrated:true, projects:0, tasks:0, dependencies:0};
+  }
+  const now=new Date().toISOString();
+
+  const projectIdMap=new Map(); // old blob project id (string, e.g. 'p_...') -> new pm_projects.id
+  for(const p of state.projects){
+    const r=await env.DB.prepare(
+      `INSERT INTO pm_projects (client_id, name, description, color, status, client_email, ai_auto_stage_enabled, created_at) VALUES (?,?,?,?,'active',?,?,?)`
+    ).bind(Number(clientId), p.name||'Untitled Project', '', p.color||'#0D9C93', p.client_email||'', p.ai_auto_stage_enabled?1:0, p.created_at||now).run();
+    projectIdMap.set(p.id, r.meta.last_row_id);
+  }
+  // pm_tasks.project_id is NOT NULL, unlike the old blob where a task's project link was
+  // optional — anything with no project (or one whose id wasn't in the blob's own projects list)
+  // lands in one shared catch-all, created lazily so a client with no unlinked tasks never gets
+  // an empty extra project.
+  let fallbackProjectId=null;
+  async function fallbackProject(){
+    if(fallbackProjectId) return fallbackProjectId;
+    const r=await env.DB.prepare(`INSERT INTO pm_projects (client_id, name, description, color, status, created_at) VALUES (?,?,?,?,'active',?)`)
+      .bind(Number(clientId), 'Migrated Tasks', 'Tasks that had no project in the old Tasks page.', '#5C7873', now).run();
+    fallbackProjectId=r.meta.last_row_id;
+    return fallbackProjectId;
+  }
+  const statusMap={open:'todo', in_progress:'in_progress', blocked:'blocked', done:'done'};
+  const taskIdMap=new Map(); // old blob task id (string, e.g. 't_...'/'pf_...') -> new pm_tasks.id
+  const dependsPending=[];
+  let position=0;
+  for(const t of state.items){
+    const projectId = (t.project_id && projectIdMap.has(t.project_id)) ? projectIdMap.get(t.project_id) : await fallbackProject();
+    const r=await env.DB.prepare(
+      `INSERT INTO pm_tasks (client_id, project_id, title, description, status, priority, assignee_email, due_date, position, category, channel, mode, followup_step, notify_customer, ai_created, auto_generated, lead_id, lead_name, gcal_event_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,'medium',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      Number(clientId), projectId, t.title||'Untitled task', t.notes||'', statusMap[t.status]||'todo',
+      t.assignee_email||'', t.due_date||null, position++, t.category||null, t.channel||null, t.mode||null,
+      t.followup_step||null, t.notify_customer?1:0, t.ai_created?1:0, t.auto_generated?1:0,
+      t.lead_id||null, t.lead_name||null, t.gcal_event_id||null, t.created_at||now, t.created_at||now
+    ).run();
+    taskIdMap.set(t.id, r.meta.last_row_id);
+    if(Array.isArray(t.depends_on) && t.depends_on.length) dependsPending.push({newId:r.meta.last_row_id, oldDeps:t.depends_on});
+  }
+  // Same same-project rule handlePmDependencyCreate enforces on every new dependency going
+  // forward — a depends_on pointing at a task that landed in a different pm_project (e.g. one
+  // task had a project link and its dependency didn't, so one went to the fallback project) is
+  // silently dropped rather than creating an edge the rest of this module can't represent.
+  let depCount=0;
+  for(const {newId, oldDeps} of dependsPending){
+    const succRow=await env.DB.prepare(`SELECT project_id FROM pm_tasks WHERE id=?`).bind(newId).first();
+    for(const oldDep of oldDeps){
+      const predId=taskIdMap.get(oldDep);
+      if(!predId || predId===newId) continue;
+      const predRow=await env.DB.prepare(`SELECT project_id FROM pm_tasks WHERE id=?`).bind(predId).first();
+      if(!predRow || predRow.project_id!==succRow.project_id) continue;
+      try{
+        await env.DB.prepare(`INSERT INTO pm_task_dependencies (client_id, project_id, predecessor_id, successor_id, lag_days, created_at) VALUES (?,?,?,?,0,?)`)
+          .bind(Number(clientId), succRow.project_id, predId, newId, now).run();
+        depCount++;
+      }catch(e){ /* duplicate edge — fine, skip */ }
+    }
+  }
+  await env.DB.prepare(`INSERT INTO pm_task_migrations (client_id, migrated_at, projects_count, tasks_count, deps_count) VALUES (?,?,?,?,?)`)
+    .bind(Number(clientId), now, state.projects.length, state.items.length, depCount).run();
+  return {migrated:true, projects:state.projects.length, tasks:state.items.length, dependencies:depCount};
+}
+// POST /admin/pm/migrate-legacy-tasks — body {} migrates every client not yet migrated (paginated
+// same as runPipelineFollowupsForAllClients above); body {client_id} migrates just that one, safe
+// to call repeatedly (a second call for an already-migrated client is a no-op, see
+// pm_task_migrations above) — useful for re-running on one account after fixing something, without
+// re-sweeping the whole platform.
+async function handlePmMigrateLegacyTasks(request, env){
+  const isAdmin=await requireAdminSession(request, env);
+  if(!isAdmin) return json({error:'Invalid or expired admin session'}, 401);
+  const {client_id}=await request.json().catch(()=>({}));
+  if(client_id){
+    const c=await getClientById(env, client_id);
+    if(!c) return json({error:'Client not found'}, 404);
+    const result=await pmMigrateClientLegacyTasks(env, c);
+    return json({ok:true, client_id:String(client_id), ...result});
+  }
+  let page=1; const results=[];
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}&fields=Id,client_name,manual_tasks`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      try{
+        const res=await pmMigrateClientLegacyTasks(env, c);
+        if(res.migrated) results.push({client_id:c.Id, client_name:c.client_name, ...res});
+      }catch(e){ results.push({client_id:c.Id, client_name:c.client_name, error:e.message}); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+  return json({ok:true, clients_migrated:results.length, results});
 }
 
 /* ── PM automation engine ──
@@ -19276,6 +19437,9 @@ export default {
       else if(url.pathname==='/pm/dependencies' && request.method==='GET'){ res=await handlePmDependenciesList(request, env); }
       else if(url.pathname==='/pm/dependencies' && request.method==='POST'){ res=await handlePmDependencyCreate(request, env); }
       else if(url.pathname==='/pm/dependencies' && request.method==='DELETE'){ res=await handlePmDependencyDelete(request, env); }
+      else if(url.pathname==='/pm/lead-search' && request.method==='GET'){ res=await handlePmLeadSearch(request, env); }
+      else if(url.pathname==='/pm/lead' && request.method==='GET'){ res=await handlePmLeadGet(request, env); }
+      else if(url.pathname==='/admin/pm/migrate-legacy-tasks' && request.method==='POST'){ res=await handlePmMigrateLegacyTasks(request, env); }
       else if(url.pathname==='/erpnext/suppliers' && request.method==='GET'){ res=await handleErpnextSuppliersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }
