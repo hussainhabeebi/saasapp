@@ -12276,6 +12276,110 @@ async function handleRecruitDelete(request, env, kind){
   return json({ok:true});
 }
 
+/* ── PROJECTS MODULE (frontend/projects.html — standalone tool, migrations/0047_pm_projects_tasks.sql)
+   Projects/Tasks, same "one shared D1 table per entity, client_id-scoped, generic config-driven
+   CRUD" shape as RECRUIT_TABLES above — same login/session as the CRM (a Leadvyne account gets
+   both), but its own tables: a different product on the same account, not a CRM feature. Two
+   special cases the generic Recruit handlers don't need: tasks carry `updated_at` (touched on
+   every create/update, not just insert) and `position` (a float for cheap kanban drag-reorder —
+   see the migration's own comment), and deleting a project cascades to its tasks so a project
+   deletion can never leave orphaned rows behind. ── */
+const PM_TABLES={
+  projects:{
+    table:'pm_projects', requiredField:'name', orderBy:'created_at DESC',
+    fields:{
+      name:{type:'str', max:200}, description:{type:'text'},
+      color:{type:'str', max:20, def:'#0D9C93'}, status:{type:'str', max:20, def:'active'},
+    }
+  },
+  tasks:{
+    table:'pm_tasks', requiredField:'title', orderBy:'position ASC, created_at ASC', hasUpdatedAt:true,
+    fields:{
+      project_id:{type:'int'}, title:{type:'str', max:300}, description:{type:'text'},
+      status:{type:'str', max:20, def:'todo'}, priority:{type:'str', max:20, def:'medium'},
+      assignee_email:{type:'str', max:140}, start_date:{type:'str', max:10}, due_date:{type:'str', max:10},
+      position:{type:'num'},
+    }
+  },
+};
+function pmCoerce(spec, raw){
+  if(raw===undefined||raw===null||raw===''){
+    if(spec.type==='num'||spec.type==='int') return null;
+    return spec.def!==undefined?spec.def:null;
+  }
+  if(spec.type==='num') return Number(raw)||0;
+  if(spec.type==='int') return parseInt(raw,10)||null;
+  if(spec.type==='text') return String(raw);
+  return String(raw).trim().slice(0, spec.max||255);
+}
+async function handlePmList(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=PM_TABLES[kind];
+  const url=new URL(request.url);
+  const projectId=parseInt(url.searchParams.get('project_id'),10);
+  // tasks only — projects has no project_id column, so this filter simply never applies to it.
+  const {results}=await (projectId
+    ? env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE client_id=? AND project_id=? ORDER BY ${cfg.orderBy}`).bind(Number(payload.cid), projectId)
+    : env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE client_id=? ORDER BY ${cfg.orderBy}`).bind(Number(payload.cid))
+  ).all();
+  return json({list:results||[]});
+}
+async function handlePmCreate(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=PM_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  if(!String(body[cfg.requiredField]||'').trim()) return json({error:`${cfg.requiredField} required`}, 400);
+  if(kind==='tasks'){
+    const proj=await env.DB.prepare(`SELECT client_id FROM pm_projects WHERE id=?`).bind(parseInt(body.project_id,10)).first();
+    if(!proj || String(proj.client_id)!==String(payload.cid)) return json({error:'project_id not found'}, 400);
+  }
+  const cols=Object.keys(cfg.fields);
+  const vals=cols.map(k=>pmCoerce(cfg.fields[k], body[k]));
+  const now=new Date().toISOString();
+  const extraCols=cfg.hasUpdatedAt?', updated_at':'';
+  const extraVals=cfg.hasUpdatedAt?', ?':'';
+  const r=await env.DB.prepare(
+    `INSERT INTO ${cfg.table} (client_id, ${cols.join(', ')}, created_at${extraCols}) VALUES (?, ${cols.map(()=>'?').join(', ')}, ?${extraVals})`
+  ).bind(Number(payload.cid), ...vals, now, ...(cfg.hasUpdatedAt?[now]:[])).run();
+  const row=await env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE id=?`).bind(r.meta.last_row_id).first();
+  return json(row);
+}
+async function handlePmUpdate(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=PM_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  for(const k of Object.keys(cfg.fields)){
+    if(body[k]===undefined) continue;
+    sets.push(`${k}=?`); vals.push(pmCoerce(cfg.fields[k], body[k]));
+  }
+  if(!sets.length) return json({ok:true});
+  if(cfg.hasUpdatedAt){ sets.push('updated_at=?'); vals.push(new Date().toISOString()); }
+  vals.push(id);
+  await env.DB.prepare(`UPDATE ${cfg.table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handlePmDelete(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=PM_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(kind==='projects') await env.DB.prepare(`DELETE FROM pm_tasks WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+  await env.DB.prepare(`DELETE FROM ${cfg.table} WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
 // ── ERPNext Customers / Items — live lookups for the accounting.html Customers tab and the
 // Document modal's customer/item pickers. Always fetched live, no local cache/mirror table — same
 // "no persisted local mapping" choice as erpnextResolveCustomer/erpnextResolveItem above, just
@@ -18495,6 +18599,14 @@ export default {
       else if(url.pathname==='/recruit/placements' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'placements'); }
       else if(url.pathname==='/recruit/placements' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'placements'); }
       else if(url.pathname==='/recruit/placements' && request.method==='DELETE'){ res=await handleRecruitDelete(request, env, 'placements'); }
+      else if(url.pathname==='/pm/projects' && request.method==='GET'){ res=await handlePmList(request, env, 'projects'); }
+      else if(url.pathname==='/pm/projects' && request.method==='POST'){ res=await handlePmCreate(request, env, 'projects'); }
+      else if(url.pathname==='/pm/projects' && request.method==='PATCH'){ res=await handlePmUpdate(request, env, 'projects'); }
+      else if(url.pathname==='/pm/projects' && request.method==='DELETE'){ res=await handlePmDelete(request, env, 'projects'); }
+      else if(url.pathname==='/pm/tasks' && request.method==='GET'){ res=await handlePmList(request, env, 'tasks'); }
+      else if(url.pathname==='/pm/tasks' && request.method==='POST'){ res=await handlePmCreate(request, env, 'tasks'); }
+      else if(url.pathname==='/pm/tasks' && request.method==='PATCH'){ res=await handlePmUpdate(request, env, 'tasks'); }
+      else if(url.pathname==='/pm/tasks' && request.method==='DELETE'){ res=await handlePmDelete(request, env, 'tasks'); }
       else if(url.pathname==='/erpnext/suppliers' && request.method==='GET'){ res=await handleErpnextSuppliersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='POST'){ res=await handleErpnextCustomerCreate(request, env); }

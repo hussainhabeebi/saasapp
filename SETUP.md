@@ -7878,3 +7878,54 @@ both an already-saved report and an in-progress unsaved draft), `POST /reports/s
 key task-notify emails already use) — works out of the box for every client, no per-client Resend
 account needed (unlike the Email Marketing module's bulk campaigns, which rightly stay gated behind
 a client's own Resend key/domain since that's real outbound marketing volume).
+
+## Projects module (`frontend/projects.html` — standalone tool)
+
+A separate project/task-management tool — Projects → Tasks, with Board (Kanban)/Table/Timeline
+views — living on the same Leadvyne login as the CRM (any client's Authentik account reaches both)
+but with its own data model, its own page, and its own nav entry. Phase 1 of a larger plan (a
+Notion-plus PM platform aimed at IT and construction companies, this slice is the generic
+"projects and tasks" core every later vertical-specific feature — Sprints for IT, RFIs/punch lists
+for construction — builds on top of, not a CRM feature).
+
+**Data model** (`migrations/0047_pm_projects_tasks.sql`) — two new `client_id`-scoped D1 tables,
+`pm_projects` (name/description/color/status) and `pm_tasks` (title/description/status/priority/
+assignee_email/start_date/due_date/position), same shape as Recruitment/Hospitality/SaaS Ops. A
+task's `status` is a fixed set (`todo`/`in_progress`/`review`/`done` — the Kanban's four columns)
+and `position` is a float, not an integer: reordering a card within or across columns writes a
+value between its two new neighbors instead of renumbering every other row in the column on every
+drag (see the migration's own comment).
+
+**Backend** (`worker.js` — `PM_TABLES` + `handlePmList/Create/Update/Delete`) — the exact same
+generic config-driven CRUD shape `RECRUIT_TABLES` established (a config object per entity: table
+name, required field, field list with type coercion), with two additions the Recruit handlers
+don't need: `hasUpdatedAt` (tasks get `updated_at` touched on every write) and a cascade delete
+(deleting a project also deletes its tasks, so a project can never leave orphaned task rows
+behind). Session-gated (`requireSession`), routes: `GET/POST/PATCH/DELETE /pm/projects`,
+`/pm/tasks` (`GET /pm/tasks?project_id=` optionally filters to one project).
+
+**Frontend auth** follows `real-estate.html`'s pattern, not `dashboard.html`'s own — `client`/
+`token` read straight from the URL query string (`?client=<id>&token=<sessionToken>`) rather than
+from `localStorage`, so the page never depends on being opened from this exact browser's storage.
+`dashboard.html`'s `openProjectsTool()` builds that URL from the already-signed-in session and
+opens it via `window.open()`; the page shows a plain "reopen from your dashboard" message if
+either param is missing. Team member list (for the assignee picker) comes from the same
+`GET /session/me` call `dashboard.html` itself uses to resume a session — `team_emails`/
+`team_names` on the CLIENTS record, so Projects' assignees are always the same people already in
+that client's Leadvyne team, no separate user list to keep in sync.
+
+**Entry points**: a `🗂️ Projects` desktop nav tab (`#dnProjectsTab`), a mobile "More" sheet item
+(`#moreProjectsTab`), and a Home hero quick-action button — all three call `openProjectsTool()`,
+same special-cased-in-the-click-handler pattern `broadcast.html` already uses since this is a
+standalone page, not a `navigate()` target.
+
+**Board view** drag-and-drop is native HTML5 DnD (`draggable`, `dragstart`/`dragover`/`drop`), no
+library. **Timeline view** is intentionally "Gantt-lite": tasks positioned as bars along a date
+axis by `start_date`/`due_date`, no dependency lines or critical-path computation — that's a later
+phase, not part of this slice.
+
+**Not built in this pass** (see the standalone PM platform proposal this was scoped from): the
+generic flexible-database engine (custom fields/multiple saved views a user defines themselves —
+this phase ships one fixed Task schema instead), dependency-aware scheduling, time
+tracking/job costing, automations, and the IT-specific module (Sprints, bug tracker, Git links)
+planned as the next phase on top of this core.

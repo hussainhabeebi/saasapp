@@ -1191,6 +1191,7 @@ const ROLES = {
     <button class="dnTab" data-page="hospitality" id="dnHospitalityTab" style="display:none">🏨 Hospitality</button>
     <button class="dnTab" data-page="realestate" id="dnRealestateTab" style="display:none">🏘️ Real Estate</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
+    <button class="dnTab" data-page="projects" id="dnProjectsTab">🗂️ Projects</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
 
@@ -1214,6 +1215,7 @@ const ROLES = {
             <button class="hact-btn" onclick="window.open('broadcast.html','_blank')">📢 Campaigns</button>
             <button class="hact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
             <button class="hact-btn" id="homeMarketingStudioBtn" style="display:none" onclick="window.open('marketing-studio.html','_blank')">🎬 Marketing Studio</button>
+            <button class="hact-btn" onclick="openProjectsTool()">🗂️ Projects</button>
           </div>
         </div>
       </div>
@@ -3268,6 +3270,7 @@ const ROLES = {
     <div class="more-sheet-grid">
       <button class="more-item" data-page="leads"><span class="bnIcon">👥</span><span class="bnLabel">Leads</span></button>
       <button class="more-item" data-page="broadcast" id="moreCampaignsTab"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
+      <button class="more-item" data-page="projects" id="moreProjectsTab"><span class="bnIcon">🗂️</span><span class="bnLabel">Projects</span></button>
       <button class="more-item" data-page="team" id="moreTeamTab"><span class="bnIcon">📊</span><span class="bnLabel">Team</span></button>
       <button class="more-item" data-page="reports" id="moreReportsTab"><span class="bnIcon">📈</span><span class="bnLabel">Reports</span></button>
       <button class="more-item" data-page="knowledgebase" id="moreKbTab"><span class="bnIcon">📚</span><span class="bnLabel">Knowledge Base</span></button>
@@ -5053,10 +5056,20 @@ function closeMoreSheet(){
   $id('moreSheet')?.classList.remove('show');
 }
 
+// Projects (frontend/projects.html) — a standalone tool, not a dashboard page, same as Broadcast/
+// Email Marketing/Marketing Studio above. Unlike those, it reads its own client/session from the
+// URL instead of localStorage (real-estate.html's pattern) so it never depends on being opened
+// from this exact origin's storage — passed here, not baked into a link, since sessionToken can
+// rotate (see resumeSession's sliding-window refresh).
+function openProjectsTool(){
+  window.open(`projects.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}`, '_blank');
+}
+
 document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>{
   b.addEventListener('click',()=>{
     if(!b.dataset.page) return; // e.g. the "More" button itself, or Ecommerce (its own onclick opens a new tab)
     if(b.dataset.page==='broadcast'){ window.open('broadcast.html','_blank'); closeMoreSheet(); return; }
+    if(b.dataset.page==='projects'){ openProjectsTool(); closeMoreSheet(); return; }
     navigate(b.dataset.page);
     closeMoreSheet();
   });
