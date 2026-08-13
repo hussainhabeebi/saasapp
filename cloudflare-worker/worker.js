@@ -987,6 +987,26 @@ async function handleInstagramSend(request, env){
   return json({ok:true});
 }
 
+// Pin/unpin a conversation from the Chats tab (chats.js chatTogglePin) — a lightweight, team-shared
+// "keep this at the top" marker distinct from Stage/Score/Handover, so a rep can flag a VIP or
+// urgent lead without changing anything that would affect routing/reporting. Self-heals the
+// `Pinned` Leads column on first use, same "no manual NocoDB step" convention as every other field
+// added this way.
+async function handleChatPinLead(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {lead_id, pinned}=await request.json().catch(()=>({}));
+  if(!lead_id) return json({error:'lead_id required'}, 400);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
+  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  const lead=await leadR.json().catch(()=>({}));
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+  await ensureLeadsColumns(env, ['Pinned']);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), Pinned:pinned?'Yes':'No'}});
+  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  return json({ok:true, pinned:!!pinned});
+}
+
 async function handleQuoteSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -10264,9 +10284,17 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   if(userText) history.push({role:'user', content:userText});
   // options — only present on turns that actually offered the customer tappable choices via
   // engineSendChatwootQuickReply (objection route's next-step buttons, the enquiry route's
-  // category/product picker — both gated on quick_reply_buttons_enabled above); every other reply
-  // keeps the exact same {role,content} shape ConvHistory has always had.
-  if(reply) history.push({role:'assistant', content:reply, ...(routing.quickReplies&&routing.quickReplies.length?{options:routing.quickReplies}:{})});
+  // category/product picker — both gated on quick_reply_buttons_enabled above). media — only
+  // present when this turn's reply carried an inline product/category photo (routing.media, set
+  // right before the engineDeliverReply/engineSendChatwootImageReply call that actually sent it —
+  // see those call sites in handleEngineWebhook), so the Chats tab can render the real photo
+  // instead of a blank bubble (chats.js chatMergedTimeline). Deliberately scoped to just the
+  // primary inline photo, not every supplementary image/audio/video/pdf a turn might also send
+  // (engineMaybeSendProductMedia and friends run after this history entry is already written) —
+  // every other reply keeps the exact same {role,content} shape ConvHistory has always had.
+  if(reply) history.push({role:'assistant', content:reply,
+    ...(routing.quickReplies&&routing.quickReplies.length?{options:routing.quickReplies}:{}),
+    ...(routing.media?{media:routing.media}:{})});
 
   const body={
     ClientId:String(clientId), Phone:state.phone||'', Name:state.name, ConversationID:state.convId,
@@ -10677,6 +10705,7 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           routing.next='order_collect_items';
           routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
+          if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           orderHandledInline=true;
@@ -10684,6 +10713,7 @@ async function handleEngineWebhook(request, env, secret){
           const link=buildCheckoutLink(c, clientId, detection.sku, product);
           sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
           routing.reply=sentText;
+          if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           await logPendingOrder(env, c, clientId, phone, name, product);
@@ -10705,6 +10735,7 @@ async function handleEngineWebhook(request, env, secret){
           // asking about size/color/stock should see the actual item, not just read a description
           // (this was briefly restricted to link-only sends; reverted per explicit product
           // direction — the photo isn't "extra" media here, it's answering what was asked).
+          if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           // Only logged as a pending order when the link was actually made available this turn —
@@ -10737,6 +10768,7 @@ async function handleEngineWebhook(request, env, secret){
             const choices=variants.length?variants.map(v=>({value:v, label:v})):nameChoices;
             const intro=variants.length?`Which type of ${detection.category} are you looking for?`:`Here's what we have in ${detection.category}:`;
             const photoUrl=categoryImage||withImage.image_url;
+            if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
             // Tappable picker (buttons for <=3 choices, a Chatwoot list message for up to 10)
             // instead of a plain text bullet list the customer had to retype by hand — tapping a
             // choice sends its exact name back as a normal incoming message (Chatwoot's own
@@ -18501,6 +18533,7 @@ export default {
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
+      else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
       else if(url.pathname==='/quote/send' && request.method==='POST'){ res=await handleQuoteSend(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='GET'){ res=await handleWaTemplatesGet(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='POST'){ res=await handleWaTemplatesCreate(request, env); }
