@@ -4,16 +4,23 @@
    only, not a behavior change. Depends on globals defined in dashboard.html: $id, esc, timeAgo,
    maskPhone, allLeads, clientId, clientRecord, currentLead, myEmail, sessionToken, CONFIG,
    ncAuthHeaders, ncPatch, patchClient, ensureClientField, freshConvHistory, leadConvId, openDetail,
-   renderDetailNotes, getTeamMembers, teamMemberOptions, openModal, closeModal, showToast,
-   updateChatBadge's DOM targets (dnChatBadge/bnChatBadge), and the "seen by" presence globals
-   _liveSocket/_chatPresence/_chatHeartbeatTimer. connectLiveUpdates/onLiveMessageEvent/
-   onLiveViewingEvent/disconnectLiveUpdates stayed in dashboard.html — they're wired into core app
-   lifecycle (showApp/hLogout) and touch both Home and Chats, not Chats-only, so moving them here
-   would need a lifecycle bridge for no real benefit. */
+   renderDetailNotes, getTeamMembers, teamMemberOptions, getFlow, navigate, openModal, closeModal,
+   showToast, renderChatNotifyBanner, updateChatBadge's DOM targets (dnChatBadge/bnChatBadge), and
+   the "seen by" presence globals _liveSocket/_chatPresence/_chatHeartbeatTimer.
+   connectLiveUpdates/onLiveMessageEvent/onLiveViewingEvent/disconnectLiveUpdates/notifyNewMessage/
+   requestChatNotifyPermission stayed in dashboard.html — they're wired into core app lifecycle
+   (showApp/hLogout) and touch both Home and Chats, not Chats-only, so moving them here would need a
+   lifecycle bridge for no real benefit. */
 let _chatSearchTimer=null, _chatLeadId=null, CHAT_FILTER='all', CHAT_CHANNEL='whatsapp';
 // Composer state — reply vs. internal-note mode (chatSetComposerMode) and the "/" saved-reply
 // picker's current match list (chatComposerInput/chatComposerKeydown/chatPickSavedReply).
 let _chatComposerMode='reply', _chatPickerMatches=[], _chatPickerIndex=0;
+// The currently-rendered timeline (chatMergedTimeline's own return value, kept around so
+// chatSetReplyTarget/in-thread search can look a bubble back up by index without re-parsing
+// ConvHistory), the message currently quoted in the composer's reply-preview bar, and in-thread
+// search state (chatToggleSearch/chatInThreadSearchInput/chatSearchNav).
+let _chatCurrentTimeline=[], _chatReplyTarget=null;
+let _chatSearchOpen=false, _chatSearchMatches=[], _chatSearchIndex=0;
 const CHAT_PRESENCE_TTL_MS=45000;
 // All leads are already in memory (loadAll fetches up to 2000 in one shot — every other page
 // depends on allLeads being the complete set, so that fetch itself isn't paginated here). This is
@@ -67,6 +74,7 @@ function openChatsTab(){
   $id('chatChannelIg').classList.remove('active');
   renderChatEmpty();
   renderChatContacts();
+  if(typeof renderChatNotifyBanner==='function') renderChatNotifyBanner();
 }
 
 function setChatFilter(f){ CHAT_FILTER=f; _chatRenderLimit=CHAT_PAGE_SIZE; renderChatContacts(); }
@@ -117,7 +125,12 @@ function renderChatContacts(){
       return nm||ph||msgMatch;
     }
     return true;
-  }).sort((a,b)=>(b.LastMsgAt||b.Date||'').localeCompare(a.LastMsgAt||a.Date||''));
+  }).sort((a,b)=>{
+    // Pinned conversations (chatTogglePin) float to the top regardless of filter/search, same as
+    // every real chat app's pin behavior — recency still decides the order within each group.
+    const pinDiff=(b.Pinned==='Yes'?1:0)-(a.Pinned==='Yes'?1:0);
+    return pinDiff||(b.LastMsgAt||b.Date||'').localeCompare(a.LastMsgAt||a.Date||'');
+  });
 
   if(!leads.length){
     const emptyMsg=q?'No matches found':(CHAT_FILTER==='all'?'No conversations yet':'Nothing here right now');
@@ -154,7 +167,7 @@ function renderChatContacts(){
       <div class="cc-avatar">${initial}${needsYou}</div>
       <div class="cc-info">
         <div class="cc-row-top">
-          <div class="cc-name"${unread?' style="font-weight:700"':''}>${scoreDot}${esc(l.Name||'Unknown')}</div>
+          <div class="cc-name"${unread?' style="font-weight:700"':''}>${l.Pinned==='Yes'?'<span class="cc-pin-badge" title="Pinned">📌</span>':''}${scoreDot}${esc(l.Name||'Unknown')}</div>
           <div class="cc-time">${esc(when)}</div>
         </div>
         <div class="cc-row-bottom">
@@ -205,7 +218,7 @@ function chatLoadMore(){
 function chatMergedTimeline(lead){
   let history=[]; try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
   let notesRaw=[]; try{notesRaw=JSON.parse(lead.NotesList||'[]');}catch(e){}
-  const timeline=history.map(m=>({kind:'msg', role:m.role, content:m.content, options:m.options||null, tsMs:m.ts?Date.parse(m.ts):NaN}));
+  const timeline=history.map(m=>({kind:'msg', role:m.role, content:m.content, options:m.options||null, media:m.media||null, tsMs:m.ts?Date.parse(m.ts):NaN}));
   notesRaw.slice().reverse().forEach(n=>{
     const tsMs=n.ts?Date.parse(n.ts):(n.date?Date.parse(n.date):NaN);
     const note={kind:'note', text:n.text, author:n.author||'', tsMs};
@@ -222,6 +235,8 @@ function chatSelectLead(leadId){
   if(row) row.classList.add('active');
   _chatLeadId=leadId;
   _chatComposerMode='reply';
+  _chatReplyTarget=null;
+  _chatSearchOpen=false; _chatSearchMatches=[]; _chatSearchIndex=0;
   closeSavedReplyPicker();
   const lead=allLeads.find(l=>l.Id===leadId);
   if(!lead) return;
@@ -234,6 +249,7 @@ function chatSelectLead(leadId){
   }
 
   const timeline=chatMergedTimeline(lead);
+  _chatCurrentTimeline=timeline;
 
   // Attach/template tools reuse the same Chatwoot-conversation relay (/quote/send) and template
   // modal (openSendTemplateModal) already built for Quotes/Leads — neither has an Instagram-DM
@@ -242,6 +258,12 @@ function chatSelectLead(leadId){
   const isInstagram=lead.Channel==='instagram';
   const convId=isInstagram?null:leadConvId(lead);
   const canUseTools=!isInstagram&&!!convId;
+
+  // Stage quick-select — same options stageOptionsForBulk() shows in Leads, but with the current
+  // stage marked so a rep can move a lead along without leaving the conversation.
+  const stageIds=Object.keys(getFlow().stages||{});
+  const stageList=stageIds.length?stageIds:[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))];
+  const stageOptionsHtml=stageList.map(s=>`<option value="${esc(s)}"${s===(lead.Stage||'')?' selected':''}>${esc(s)}</option>`).join('');
 
   document.querySelector('.chats-layout')?.classList.add('chat-open');
   const main=$id('chatMain');
@@ -253,9 +275,19 @@ function chatSelectLead(leadId){
         <div class="chat-main-name">${esc(lead.Name||'Unknown')}</div>
         <div class="chat-main-phone">${lead.Channel==='instagram'?'📷 Instagram DM':esc(lead.Phone||'')} · ${esc(lead.Stage||'new')}</div>
       </div>
+      <button class="chat-tool-btn" onclick="chatToggleSearch()" title="Search this conversation">🔍</button>
       <div class="chat-seenby" id="chatSeenBy"></div>
+      <select class="chat-assignee-select" id="chatStageSelect" title="Stage" onchange="chatSetStage(${lead.Id}, this.value)">${stageOptionsHtml}</select>
       <select class="chat-assignee-select" id="chatAssigneeSelect" title="Assigned to" onchange="chatSetAssignee(${lead.Id}, this.value)">${teamMemberOptions(lead.Owner||'')}</select>
+      <button class="chat-pin-btn${lead.Pinned==='Yes'?' pinned':''}" id="chatPinBtn" onclick="chatTogglePin(${lead.Id})" title="${lead.Pinned==='Yes'?'Unpin conversation':'Pin conversation'}">${lead.Pinned==='Yes'?'📌':'📍'}</button>
       <button class="btn btn-secondary btn-sm" onclick="openDetail(${lead.Id})">View Lead →</button>
+    </div>
+    <div class="chat-search-bar" id="chatSearchBar" style="display:none">
+      <input type="text" id="chatInThreadSearch" placeholder="Search this conversation…" oninput="chatInThreadSearchInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();chatSearchNav(event.shiftKey?-1:1);}">
+      <span class="chat-search-count" id="chatSearchCount"></span>
+      <button onclick="chatSearchNav(-1)" title="Previous match">↑</button>
+      <button onclick="chatSearchNav(1)" title="Next match">↓</button>
+      <button onclick="chatToggleSearch()" title="Close search">✕</button>
     </div>
     <div class="chat-messages" id="chatMsgBox" style="flex:1;overflow-y:auto;padding:16px 6%">
       ${timeline.length?timeline.map((m,i)=>{
@@ -279,13 +311,24 @@ function chatSelectLead(leadId){
         const optsHtml=(m.options&&m.options.length)
           ? `<div class="bubble-options">${m.options.map(o=>`<div class="bubble-option-btn">${esc(o.title||o.value||'')}</div>`).join('')}</div>`
           : '';
-        return `<div class="chat-bubble-row ${side}">
-          <div class="chat-bubble ${side}${firstInGroup?' tail-'+side:''}${optsHtml?' has-options':''}">${esc(m.content||'').replace(/\n/g,'<br>')}<span class="bubble-meta">${!isNaN(m.tsMs)?`<span class="bubble-time">${new Date(m.tsMs).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`:''}${isOut?'<span class="bubble-check">✓✓</span>':''}</span>${optsHtml}
+        // Inline media (routing.media, see worker.js engineBuildLeadUpsertBody) — the actual
+        // product/category photo sent this turn, so the bubble shows what the customer really saw
+        // instead of reading as a blank/text-only message.
+        const mediaHtml=(m.media&&m.media.type==='image'&&m.media.url)
+          ? `<img class="bubble-media-img" src="${esc(m.media.url)}" loading="lazy" onclick="window.open('${esc(m.media.url)}','_blank')">`
+          : '';
+        return `<div class="chat-bubble-row ${side}" id="chatBubbleRow${i}">
+          <div class="chat-bubble ${side}${firstInGroup?' tail-'+side:''}${optsHtml?' has-options':''}">${mediaHtml}${esc(m.content||'').replace(/\n/g,'<br>')}<span class="bubble-meta">${!isNaN(m.tsMs)?`<span class="bubble-time">${new Date(m.tsMs).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`:''}${isOut?'<span class="bubble-check">✓✓</span>':''}</span>${optsHtml}
           </div>
+          <button class="bubble-reply-btn" onclick="chatSetReplyTarget(${i})" title="Reply">↩️</button>
         </div>`;
       }).join(''):'<div style="color:#667781;font-size:13px;text-align:center;padding:20px">No conversation yet</div>'}
     </div>
     <div id="chatAttachStatus" class="chat-send-status"></div>
+    <div class="chat-reply-preview" id="chatReplyPreview" style="display:none">
+      <div class="chat-reply-preview-text" id="chatReplyPreviewText"></div>
+      <button onclick="chatClearReplyTarget()" title="Cancel reply">✕</button>
+    </div>
     <div class="chat-mode-row" id="chatModeRow">
       <button class="chat-mode-btn active" data-mode="reply" onclick="chatSetComposerMode('reply')">💬 Reply</button>
       <button class="chat-mode-btn" data-mode="note" onclick="chatSetComposerMode('note')">📝 Internal note</button>
@@ -347,6 +390,118 @@ async function chatSetAssignee(leadId, email){
     const sel=$id('chatAssigneeSelect'); if(sel) sel.value=prev;
     showToast('Failed to update assignee','err');
   }
+}
+
+// Stage quick-select in the chat header — a contextual action so a rep can move a lead along the
+// funnel without leaving the conversation to open the full Lead Detail panel. Plain direct write,
+// same minimal-side-effect shape as chatSetAssignee just above (no Follow-up-flag reset, no
+// analytics event) — a rep consciously picking a stage here is a deliberate override, same as
+// picking it from the Lead Detail panel's own stage select already is.
+async function chatSetStage(leadId, stage){
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead) return;
+  const prev=lead.Stage||'';
+  lead.Stage=stage;
+  if(currentLead && currentLead.Id===leadId) currentLead.Stage=stage;
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,Stage:stage});
+    showToast(`Stage set to ${stage}`);
+    const phoneEl=document.querySelector('.chat-main-phone');
+    if(phoneEl) phoneEl.textContent=`${lead.Channel==='instagram'?'📷 Instagram DM':(lead.Phone||'')} · ${stage}`;
+  }catch(e){
+    lead.Stage=prev;
+    if(currentLead && currentLead.Id===leadId) currentLead.Stage=prev;
+    const sel=$id('chatStageSelect'); if(sel) sel.value=prev;
+    showToast('Failed to update stage','err');
+  }
+}
+
+// Pin/unpin — POST /chats/pin (worker.js handleChatPinLead) rather than a direct NocoDB write like
+// chatSetAssignee/chatSetStage, so the `Pinned` column gets self-healed (ensureLeadsColumns) on
+// whichever teammate happens to click this first, instead of every write site needing its own
+// "does this column exist yet" guard.
+async function chatTogglePin(leadId){
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead) return;
+  const next=lead.Pinned!=='Yes';
+  const prev=lead.Pinned||'No';
+  lead.Pinned=next?'Yes':'No';
+  const btn=$id('chatPinBtn');
+  if(btn){ btn.classList.toggle('pinned', next); btn.textContent=next?'📌':'📍'; btn.title=next?'Unpin conversation':'Pin conversation'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat/pin`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:leadId,pinned:next})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    showToast(next?'Pinned to top':'Unpinned');
+    if($id('pageChats') && !$id('pageChats').classList.contains('hidden')) renderChatContacts();
+  }catch(e){
+    lead.Pinned=prev;
+    if(btn){ btn.classList.toggle('pinned', prev==='Yes'); btn.textContent=prev==='Yes'?'📌':'📍'; }
+    showToast('Failed to update pin','err');
+  }
+}
+
+// Quote-reply — a bubble's ↩️ button stores its (already-trimmed) text here; chatSendFromTab
+// prefixes the next outgoing message with a short quoted excerpt using WhatsApp's own *bold*
+// markdown (rendered as real bold text on the customer's phone) rather than any Chatwoot-specific
+// "in-reply-to" metadata, since a plain WhatsApp Cloud API text message has no such field to set —
+// this is the same "fake it in the message body" approach every WhatsApp bot integration without
+// native context-reply support uses.
+function chatSetReplyTarget(i){
+  const m=_chatCurrentTimeline[i];
+  if(!m||m.kind!=='msg') return;
+  const isOut=m.role==='assistant'||m.role==='bot';
+  const snippet=(m.content||(m.media?'📷 Photo':'')).replace(/\s+/g,' ').trim().slice(0,80);
+  _chatReplyTarget={snippet, isOut};
+  const bar=$id('chatReplyPreview'), text=$id('chatReplyPreviewText');
+  if(bar){ bar.style.display='flex'; }
+  if(text) text.textContent=`Replying to ${isOut?'yourself':'customer'}: "${snippet}${snippet.length>=80?'…':''}"`;
+  const box=$id('chatReplyBox'); if(box) box.focus();
+}
+function chatClearReplyTarget(){
+  _chatReplyTarget=null;
+  const bar=$id('chatReplyPreview');
+  if(bar) bar.style.display='none';
+}
+
+// In-thread search — pure client-side filter over the already-rendered timeline (no new endpoint;
+// everything's already in ConvHistory/NotesList in the browser). Highlights every matching bubble
+// at once (search-hit class) and chatSearchNav scrolls between them one at a time, wrapping around.
+function chatToggleSearch(){
+  _chatSearchOpen=!_chatSearchOpen;
+  const bar=$id('chatSearchBar');
+  if(!bar) return;
+  bar.style.display=_chatSearchOpen?'flex':'none';
+  if(_chatSearchOpen){ $id('chatInThreadSearch')?.focus(); }
+  else{ chatClearSearchHighlights(); $id('chatInThreadSearch').value=''; }
+}
+function chatClearSearchHighlights(){
+  document.querySelectorAll('.chat-bubble.search-hit').forEach(el=>el.classList.remove('search-hit'));
+  _chatSearchMatches=[]; _chatSearchIndex=0;
+  const cnt=$id('chatSearchCount'); if(cnt) cnt.textContent='';
+}
+function chatInThreadSearchInput(){
+  chatClearSearchHighlights();
+  const q=($id('chatInThreadSearch')?.value||'').trim().toLowerCase();
+  if(!q) return;
+  _chatSearchMatches=_chatCurrentTimeline
+    .map((m,i)=>({m,i}))
+    .filter(({m})=>m.kind==='msg' && (m.content||'').toLowerCase().includes(q))
+    .map(({i})=>i);
+  _chatSearchMatches.forEach(i=>{
+    const row=$id('chatBubbleRow'+i);
+    row?.querySelector('.chat-bubble')?.classList.add('search-hit');
+  });
+  const cnt=$id('chatSearchCount');
+  if(cnt) cnt.textContent=_chatSearchMatches.length?`0/${_chatSearchMatches.length}`:'No matches';
+  if(_chatSearchMatches.length){ _chatSearchIndex=_chatSearchMatches.length-1; chatSearchNav(1); }
+}
+function chatSearchNav(dir){
+  if(!_chatSearchMatches.length) return;
+  _chatSearchIndex=(_chatSearchIndex+dir+_chatSearchMatches.length)%_chatSearchMatches.length;
+  const row=$id('chatBubbleRow'+_chatSearchMatches[_chatSearchIndex]);
+  row?.scrollIntoView({behavior:'smooth', block:'center'});
+  const cnt=$id('chatSearchCount');
+  if(cnt) cnt.textContent=`${_chatSearchIndex+1}/${_chatSearchMatches.length}`;
 }
 
 // Reply vs. internal-note composer (Front/Intercom's private-note pattern) — a note never reaches
@@ -538,8 +693,11 @@ async function chatSendFromTab(leadId){
   const input=$id('chatReplyBox');
   const msg=$id('chatReplyMsg');
   if(_chatComposerMode==='note') return chatSubmitNote(leadId, input, msg);
-  const text=(input?.value||'').trim();
-  if(!text||!leadId) return;
+  const typed=(input?.value||'').trim();
+  if(!typed||!leadId) return;
+  // Quote-reply prefix — see chatSetReplyTarget's own comment on why this is a plain-text
+  // convention (*bold* renders as real bold on WhatsApp) rather than any native reply metadata.
+  const text=_chatReplyTarget?`*↩️ Replying to:* "${_chatReplyTarget.snippet}${_chatReplyTarget.snippet.length>=80?'…':''}"\n\n${typed}`:typed;
   const lead=allLeads.find(l=>l.Id===leadId);
   if(!lead){return;}
   const isInstagram=lead.Channel==='instagram';

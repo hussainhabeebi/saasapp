@@ -125,3 +125,41 @@
 .saved-reply-opt:hover,.saved-reply-opt.active{background:#f0faf7}
 .sr-shortcut{font-size:12.5px;font-weight:700;color:#00806a;flex-shrink:0}
 .sr-text{font-size:12.5px;color:#54656f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* Inline media (routing.media, see worker.js engineBuildLeadUpsertBody) — the product/category
+   photo actually sent this turn, rendered above the bubble's own text instead of a blank/text-only
+   bubble. Click-to-open-full-size since the bubble itself caps the image at a thumbnail width. */
+.bubble-media-img{display:block;max-width:100%;max-height:260px;border-radius:8px;margin-bottom:6px;cursor:zoom-in;object-fit:cover}
+
+/* Reply-to-message ("quote reply") — a small always-visible affordance per bubble (not hover-only,
+   so it works on touch) and the composer's preview bar for whichever message is currently targeted. */
+.bubble-reply-btn{align-self:center;width:26px;height:26px;border-radius:50%;border:none;background:#fff;box-shadow:0 1px 3px rgba(16,24,32,.15);font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#54656f;opacity:0;transition:opacity .12s;flex-shrink:0;margin:0 6px}
+.chat-bubble-row:hover .bubble-reply-btn{opacity:1}
+/* .chat-bubble-row.out already has justify-content:flex-end from the base rule above — pairing
+   row-reverse with flex-start (not flex-end) here is deliberate: in a reversed main axis,
+   flex-start is the visual right edge, so this is what actually keeps outgoing bubbles right-
+   aligned while putting the reply button between the bubble and the center of the screen, same
+   side it lands on for incoming bubbles. Pairing row-reverse with flex-end would left-align the
+   whole row instead, undoing the base rule. */
+.chat-bubble-row.out{flex-direction:row-reverse;justify-content:flex-start}
+.chat-reply-preview{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#f0f2f5;border-top:1px solid #eef0f1;border-left:3px solid #00a884;flex-shrink:0}
+.chat-reply-preview-text{flex:1;font-size:12.5px;color:#54656f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-reply-preview button{border:none;background:none;cursor:pointer;font-size:13px;color:#8a99a3;flex-shrink:0}
+/* A bubble currently quoted in the composer's reply-preview bar, and a bubble a search match
+   currently landed on — both a soft highlight ring, distinct colors so they're never confused. */
+.chat-bubble.reply-target{box-shadow:0 0 0 2px #00a884}
+.chat-bubble.search-hit{box-shadow:0 0 0 2px #f5c453}
+
+/* In-thread search — toggled into the header via chatToggleSearch, replaces nothing (still shows
+   alongside chat-main-hd), just a second bar underneath it. */
+.chat-search-bar{display:flex;align-items:center;gap:8px;padding:8px 20px;background:#fbfbfc;border-bottom:1px solid #e9edef;flex-shrink:0}
+.chat-search-bar input{flex:1;border:1px solid #e3e6e8;border-radius:8px;padding:7px 10px;font-size:13px;font-family:inherit;outline:none}
+.chat-search-bar input:focus{border-color:#00a884}
+.chat-search-count{font-size:12px;color:#8a99a3;white-space:nowrap}
+.chat-search-bar button{border:none;background:#fff;border:1px solid #e3e6e8;border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:12px;color:#54656f}
+
+/* Pin/star — a lightweight, team-shared "keep at top" marker (worker.js /chat/pin, Leads.Pinned). */
+.chat-pin-btn{border:none;background:none;cursor:pointer;font-size:16px;flex-shrink:0;opacity:.55;transition:opacity .12s,transform .1s}
+.chat-pin-btn:hover{opacity:1;transform:scale(1.08)}
+.chat-pin-btn.pinned{opacity:1}
+.cc-pin-badge{font-size:11px;margin-right:2px}

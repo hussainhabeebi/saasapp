@@ -1698,6 +1698,14 @@ const ROLES = {
             </div>
             <div class="chat-filter-row" id="chatFilterRow"></div>
           </div>
+          <!-- Opt-in only (see requestChatNotifyPermission/renderChatNotifyBanner) — never
+               auto-prompted, so opening Chats for the first time never throws an unexpected
+               browser permission popup at a rep. -->
+          <div id="chatNotifyBanner" style="display:none;align-items:center;gap:8px;padding:8px 16px;background:#eefaf6;border-bottom:1px solid #dcf5ed;font-size:12px;color:#00806a;flex-shrink:0">
+            <span style="flex:1">🔔 Get notified when a new message arrives</span>
+            <button class="chat-filter-btn" onclick="requestChatNotifyPermission()">Enable</button>
+            <button style="border:none;background:none;cursor:pointer;color:#8a99a3;font-size:13px" onclick="$id('chatNotifyBanner').style.display='none'" title="Dismiss">✕</button>
+          </div>
           <div class="chat-contact-list" id="chatContactList">
             <div class="chat-empty"><div class="chat-empty-icon">👤</div><div>Loading contacts…</div></div>
           </div>
@@ -4588,13 +4596,54 @@ async function onLiveMessageEvent(msg){
   // from the allLeads global loadAll refreshes, so they'd otherwise run against the stale copy
   // from before this event.
   await loadAll(true, true);
-  // Chats tab has no other live-refresh path at all (unlike Home, its contact list/open thread
+  // Chats tab has no other live-refresh path at all (unlike Home, its contact list/own thread
   // are never touched by the 60s poll either) — only worth the extra render work while it's
   // actually the visible page.
+  const isOpenThread=_chatLeadId && _chatLeadId===msg.lead_id && !$id('pageChats').classList.contains('hidden') && document.hasFocus();
   if(!$id('pageChats').classList.contains('hidden')){
     renderChatContacts();
     if(_chatLeadId && _chatLeadId===msg.lead_id) chatSelectLead(_chatLeadId);
   }
+  if(!isOpenThread) notifyNewMessage(msg);
+}
+// New-message alert (soft tone + browser Notification) for a message that arrives while the rep
+// isn't already looking straight at that exact thread — previously the only signal was the badge
+// count, easy to miss on a hot lead if the Chats tab is backgrounded or a different conversation is
+// open. Both channels are best-effort: the tone needs no permission (Web Audio, muted by browsers
+// only under stricter-than-usual autoplay policies) and is wrapped in try/catch; the OS notification
+// needs Notification.permission==='granted' (see requestChatNotifyPermission, offered once from the
+// Chats tab itself, never auto-prompted on page load) and is skipped silently otherwise — never
+// something the rep has to dismiss or configure to keep using the app normally.
+function notifyNewMessage(msg){
+  try{
+    const ctx=new (window.AudioContext||window.webkitAudioContext)();
+    const osc=ctx.createOscillator(), gain=ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value=880;
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+0.3);
+    osc.start(); osc.stop(ctx.currentTime+0.3);
+  }catch(e){}
+  if('Notification' in window && Notification.permission==='granted'){
+    const lead=allLeads.find(l=>l.Id===msg.lead_id);
+    try{
+      const n=new Notification(`💬 ${lead?.Name||'New message'}`, {body:'Tap to view in Leadvyne', tag:'lv-chat-'+msg.lead_id});
+      n.onclick=()=>{ window.focus(); navigate('chats'); setChatChannel(msg.channel==='instagram'?'instagram':'whatsapp'); chatSelectLead(msg.lead_id); };
+    }catch(e){}
+  }
+}
+// Offered as an explicit opt-in banner/button inside the Chats tab (see openChatsTab) rather than
+// auto-requested on load — an unprompted permission popup the moment a rep opens the dashboard is
+// exactly the kind of thing that trains people to reflexively click "Block" on everything.
+function requestChatNotifyPermission(){
+  if(!('Notification' in window)) return;
+  if(Notification.permission==='default') Notification.requestPermission().then(()=>renderChatNotifyBanner());
+}
+function renderChatNotifyBanner(){
+  const el=$id('chatNotifyBanner');
+  if(!el) return;
+  const supported='Notification' in window;
+  el.style.display=(supported && Notification.permission==='default')?'flex':'none';
 }
 // "Seen by" presence — see chats.js chatSelectLead's heartbeat and renderSeenBy for the
 // send/render halves; this is just the receive half, kept here next to onLiveMessageEvent since
