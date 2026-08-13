@@ -1683,7 +1683,13 @@ const ROLES = {
           <div class="chat-sidebar-hd">
             <div class="chat-sidebar-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
               <span>Chats</span>
-              <a href="#" id="chatwootSsoLink" onclick="openChatwootSso();return false" style="font-size:11px;font-weight:600;color:#00a884;text-decoration:none;white-space:nowrap">Log in to Chatwoot ↗</a>
+              <div style="display:flex;align-items:center;gap:10px">
+                <div style="position:relative">
+                  <button class="chat-tool-btn" style="width:28px;height:28px;font-size:14px" onclick="chatToggleAppearanceMenu()" title="Chat appearance">🎨</button>
+                  <div id="chatAppearanceMenu" class="chat-appearance-menu" style="display:none"></div>
+                </div>
+                <a href="#" id="chatwootSsoLink" onclick="openChatwootSso();return false" style="font-size:11px;font-weight:600;color:#00a884;text-decoration:none;white-space:nowrap">Log in to Chatwoot ↗</a>
+              </div>
             </div>
             <!-- Instagram DM shares this exact page (same ConvHistory shape, same lead table) —
                  this switch just changes which Channel chatConvoLeads() filters for. Defaults to

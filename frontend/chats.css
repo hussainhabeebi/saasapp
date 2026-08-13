@@ -163,3 +163,64 @@
 .chat-pin-btn:hover{opacity:1;transform:scale(1.08)}
 .chat-pin-btn.pinned{opacity:1}
 .cc-pin-badge{font-size:11px;margin-right:2px}
+
+/* Resolve/Reopen — a triage state, distinct from Stage (worker.js handleChatResolveLead,
+   Leads.ConvResolved). Green check when open (tap to resolve), gray undo when already resolved
+   (tap to reopen) — same visual language as a real support inbox's resolve toggle. */
+.chat-resolve-btn{border:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0;display:flex;align-items:center;gap:4px;transition:opacity .12s}
+.chat-resolve-btn.open{background:#e8f8f2;color:#00806a}
+.chat-resolve-btn.resolved{background:#f0f2f5;color:#54656f}
+.chat-resolve-btn:hover{opacity:.8}
+.cc-resolved-badge{font-size:11px;margin-right:2px}
+
+/* Voice note recording — mic button in the composer tools row; turns into a live recording
+   indicator (pulsing red dot + elapsed timer + stop button) in place of the tools row while active. */
+.chat-voice-recording{display:flex;align-items:center;gap:8px;padding:0 8px;flex:1;font-size:13px;color:#c0392b;font-weight:600}
+.chat-voice-dot{width:9px;height:9px;border-radius:50%;background:#e74c3c;animation:chatVoicePulse 1.1s ease-in-out infinite}
+@keyframes chatVoicePulse{0%,100%{opacity:1}50%{opacity:.35}}
+.chat-voice-cancel{border:none;background:none;color:#8a99a3;cursor:pointer;font-size:12px;margin-left:auto}
+
+/* Rich attachment card (image/document/voice-note sent from the composer) — replaces the old plain
+   "📎 filename" text-only bubble with an actual icon+filename+size card, matching how the reference
+   screenshot's file bubbles read. */
+.bubble-attachment{display:flex;align-items:center;gap:9px;background:rgba(255,255,255,.55);border:1px solid rgba(0,0,0,.08);border-radius:8px;padding:8px 10px;margin-bottom:4px;cursor:pointer;max-width:240px}
+.chat-bubble.in .bubble-attachment{background:#f3f6f5}
+.bubble-attachment-icon{font-size:20px;flex-shrink:0}
+.bubble-attachment-info{min-width:0;flex:1}
+.bubble-attachment-name{font-size:12.5px;font-weight:600;color:#111b21;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bubble-attachment-size{font-size:11px;color:#8a99a3}
+.bubble-attachment-audio{width:100%;margin-bottom:4px;height:34px}
+
+/* Chat Appearance picker (🎨 button, chat-sidebar-title) — a small dropdown, not a full modal,
+   since it's just two lightweight preference toggles. */
+.chat-appearance-menu{position:absolute;top:calc(100% + 6px);right:0;background:#fff;border:1px solid #e3e6e8;border-radius:10px;box-shadow:0 6px 20px rgba(16,24,32,.16);padding:8px;min-width:190px;z-index:10;text-align:left}
+.chat-appearance-label{font-size:10.5px;font-weight:700;color:#8a99a3;text-transform:uppercase;letter-spacing:.4px;padding:4px 8px}
+.chat-appearance-opt{font-size:13px;color:#111b21;padding:7px 8px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:space-between}
+.chat-appearance-opt:hover{background:#f7f8fa}
+.chat-appearance-opt.active{background:#eefaf6;color:#00806a;font-weight:600}
+
+/* ── Professional Blue theme (data-chat-theme="professional" on .chats-layout) ──
+   Redeclares only the specific color-bearing properties from the base rules above — everything
+   else (layout, spacing, shadows) is shared with Classic. Wallpaper removal is handled separately
+   by the independent .no-wallpaper class below (chatGetWallpaper defaults it off for this theme,
+   but a rep can still turn it back on, same toggle either theme uses). */
+.chats-layout[data-chat-theme="professional"] .chat-bubble.out{background:#dbeafe}
+.chats-layout[data-chat-theme="professional"] .chat-bubble.tail-out::before{border-color:transparent transparent transparent #dbeafe}
+.chats-layout[data-chat-theme="professional"] .chat-filter-btn.active{background:#2563eb;border-color:#2563eb;box-shadow:0 2px 6px rgba(37,99,235,.3)}
+.chats-layout[data-chat-theme="professional"] .chat-filter-btn:hover{border-color:#2563eb;color:#2563eb}
+.chats-layout[data-chat-theme="professional"] .chat-mode-btn.active[data-mode="reply"]{background:#2563eb;border-color:#2563eb}
+.chats-layout[data-chat-theme="professional"] .chat-send-btn{background:#2563eb;box-shadow:0 2px 8px rgba(37,99,235,.35)}
+.chats-layout[data-chat-theme="professional"] .chat-input-box:focus{border-color:#2563eb}
+.chats-layout[data-chat-theme="professional"] .chat-search:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.chats-layout[data-chat-theme="professional"] .chat-search-bar input:focus{border-color:#2563eb}
+.chats-layout[data-chat-theme="professional"] .chat-reply-preview{border-left-color:#2563eb}
+.chats-layout[data-chat-theme="professional"] .chat-bubble.reply-target{box-shadow:0 0 0 2px #2563eb}
+.chats-layout[data-chat-theme="professional"] .cc-unread-dot{background:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15)}
+.chats-layout[data-chat-theme="professional"] .bubble-check{color:#2563eb}
+/* Card-style attachments read cleaner without the translucent tint the wallpaper-era design used. */
+.chats-layout[data-chat-theme="professional"] .bubble-attachment{background:#fff;border-color:#e3e6e8}
+.chats-layout[data-chat-theme="professional"] .chat-bubble.in .bubble-attachment{background:#f7f8fa}
+
+/* Wallpaper on/off — independent of theme choice (chatSetWallpaper). */
+.chats-layout.no-wallpaper .chat-main{background-image:none;background-color:#eef3ef}
+.chats-layout[data-chat-theme="professional"].no-wallpaper .chat-main{background-color:#fff}
