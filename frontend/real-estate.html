@@ -217,8 +217,8 @@ tbody tr:hover{background:var(--bg)}
           </div>
           <div class="tbl-wrap">
             <table>
-              <thead><tr><th>Tower</th><th>Floor</th><th>Unit</th><th>Type</th><th>Area (sqft)</th><th>Price</th><th>Status</th><th>Hold Expires</th><th>Actions</th></tr></thead>
-              <tbody id="unitsTbody"><tr><td colspan="9" class="empty-state">Select a project to see its units.</td></tr></tbody>
+              <thead><tr><th>Tower</th><th>Floor</th><th>Unit</th><th>Type</th><th>Property Type</th><th>Area (sqft)</th><th>Price</th><th>Media</th><th>Status</th><th>Hold Expires</th><th>Actions</th></tr></thead>
+              <tbody id="unitsTbody"><tr><td colspan="11" class="empty-state">Select a project to see its units.</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -455,12 +455,35 @@ tbody tr:hover{background:var(--bg)}
       <div><label class="s-lbl">Floor</label><input class="s-input" id="uFloor" type="number"></div>
       <div><label class="s-lbl">Unit No.</label><input class="s-input" id="uUnitNo"></div>
       <div><label class="s-lbl">Type</label><input class="s-input" id="uType" placeholder="e.g. 2BHK"></div>
+      <div>
+        <label class="s-lbl">Property Type</label>
+        <select class="s-input" id="uPropertyType">
+          <option value="">— Select —</option>
+          <option value="Residential">Residential</option>
+          <option value="Commercial">Commercial</option>
+          <option value="Villa">Villa</option>
+          <option value="Flat">Flat</option>
+          <option value="Plot">Plot</option>
+        </select>
+      </div>
       <div><label class="s-lbl">Area (sqft)</label><input class="s-input" id="uArea" type="number"></div>
       <div><label class="s-lbl">Base Price</label><input class="s-input" id="uBasePrice" type="number"></div>
       <div><label class="s-lbl">PLC Charges</label><input class="s-input" id="uPlc" type="number"></div>
       <div><label class="s-lbl">Floor Rise Charges</label><input class="s-input" id="uFloorRise" type="number"></div>
       <div><label class="s-lbl">Virtual Tour URL</label><input class="s-input" id="uTourUrl"></div>
+      <div><label class="s-lbl">Image Link</label><input class="s-input" id="uImage" type="url" placeholder="Google Drive share link"></div>
+      <div><label class="s-lbl">Image Link 2 (optional)</label><input class="s-input" id="uImage2" type="url" placeholder="Google Drive share link"></div>
+      <div><label class="s-lbl">Image Link 3 (optional)</label><input class="s-input" id="uImage3" type="url" placeholder="Google Drive share link"></div>
+      <div><label class="s-lbl">Image Link 4 (optional)</label><input class="s-input" id="uImage4" type="url" placeholder="Google Drive share link"></div>
+      <div><label class="s-lbl">Image Link 5 (optional)</label><input class="s-input" id="uImage5" type="url" placeholder="Google Drive share link"></div>
+      <div>
+        <label class="s-lbl">Video Link</label>
+        <input class="s-input" id="uVideoUrl" type="url" placeholder="Google Drive share link" onblur="checkDriveVideoSize(this.value,'uVideoSizeWarning')">
+        <div class="s-hint" id="uVideoSizeWarning" style="display:none"></div>
+      </div>
+      <div><label class="s-lbl">PDF Link</label><input class="s-input" id="uPdfUrl" type="url" placeholder="Google Drive share link"></div>
     </div>
+    <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Image/Video/PDF Links are pasted Google Drive share links (shared as "Anyone with the link can view"). Image Link is the main photo; Image Link 2–5 are optional extra photos — sent along with the video and/or PDF (e.g. a brochure or floor plan) whenever a lead asks about this project/property type over chat.</div>
     <div id="uPriceReasonWrap" style="display:none;margin-bottom:12px">
       <label class="s-lbl">Reason for price change (audit trail)</label>
       <input class="s-input" id="uPriceReason" placeholder="e.g. Festive discount approved by sales head">
@@ -739,6 +762,34 @@ async function reFetch(path,opts){
   if(!r.ok||data.error) throw new Error(data.error||('HTTP '+r.status));
   return data;
 }
+
+// Same Drive-link size warning as ecom.html's product/promotion video fields (checkDriveVideoSize
+// there) — shares the worker's generic, client-agnostic /ecom/drive-file-size endpoint rather than
+// duplicating a real-estate-specific copy.
+const DRIVE_VIDEO_WARN_BYTES = 10 * 1024 * 1024; // 10MB
+async function checkDriveVideoSize(url, warnElId) {
+  const el = document.getElementById(warnElId);
+  if (!el) return;
+  url = (url || '').trim();
+  if (!url) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.style.color = 'var(--muted)';
+  el.textContent = 'Checking file size…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/drive-file-size?url=${encodeURIComponent(url)}`);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.size_bytes) { el.style.display = 'none'; return; }
+    const mb = (data.size_bytes / (1024 * 1024)).toFixed(1);
+    if (data.size_bytes > DRIVE_VIDEO_WARN_BYTES) {
+      el.style.color = '#B23A2E';
+      el.textContent = `⚠️ This video is ${mb}MB — WhatsApp may fail to deliver videos over ~16MB. Consider compressing it before saving.`;
+    } else {
+      el.style.display = 'none';
+    }
+  } catch (e) {
+    el.style.display = 'none';
+  }
+}
 async function patchClient(fields){
   const MAX=3; let lastErr=null;
   for(let attempt=1; attempt<=MAX; attempt++){
@@ -931,22 +982,25 @@ async function selectProject(id){
   const p=allProjects.find(x=>x.id===id);
   $id('unitsCardTitle').textContent='Units — '+(p?p.name:'');
   $id('addUnitBtn').disabled=false;
-  $id('unitsTbody').innerHTML='<tr class="loading-row"><td colspan="9"><span class="spinner"></span>Loading…</td></tr>';
+  $id('unitsTbody').innerHTML='<tr class="loading-row"><td colspan="11"><span class="spinner"></span>Loading…</td></tr>';
   await loadUnits(id);
   renderUnitsTable();
 }
 function renderUnitsTable(){
   const tbody=$id('unitsTbody');
-  if(!selectedProjectId){ tbody.innerHTML='<tr><td colspan="9" class="empty-state">Select a project to see its units.</td></tr>'; return; }
+  if(!selectedProjectId){ tbody.innerHTML='<tr><td colspan="11" class="empty-state">Select a project to see its units.</td></tr>'; return; }
   const q=($id('unitSearch').value||'').toLowerCase();
   const rows=allUnits.filter(u=>!q||(u.unit_no||'').toLowerCase().includes(q)||(u.tower||'').toLowerCase().includes(q));
-  if(!rows.length){ tbody.innerHTML='<tr><td colspan="9" class="empty-state">No units yet — add one.</td></tr>'; return; }
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="11" class="empty-state">No units yet — add one.</td></tr>'; return; }
   const statusClass={available:'green', hold:'yellow', blocked:'gray', booked:'blue', sold:'purple', resale_listed:'red'};
   tbody.innerHTML=rows.map(u=>{
     const total=Number(u.base_price||0)+Number(u.plc_charges||0)+Number(u.floor_rise_charges||0);
+    const imageCount=[u.image_url,u.image_url_2,u.image_url_3,u.image_url_4,u.image_url_5].filter(Boolean).length;
+    const media=[imageCount?`🖼️${imageCount}`:'', u.video_url&&'🎬', u.pdf_url&&'📄'].filter(Boolean).join(' ')||'—';
     return `<tr>
-      <td>${esc(u.tower||'—')}</td><td>${esc(u.floor)}</td><td>${esc(u.unit_no)}</td><td>${esc(u.unit_type||'—')}</td><td>${esc(u.area_sqft||0)}</td>
+      <td>${esc(u.tower||'—')}</td><td>${esc(u.floor)}</td><td>${esc(u.unit_no)}</td><td>${esc(u.unit_type||'—')}</td><td>${esc(u.property_type||'—')}</td><td>${esc(u.area_sqft||0)}</td>
       <td>${fmtMoney(total)}</td>
+      <td>${media}</td>
       <td><span class="badge ${statusClass[u.status]||'gray'}">${esc((u.status||'').replace('_',' '))}</span></td>
       <td>${u.hold_expires_at?esc(new Date(u.hold_expires_at).toLocaleString()):'—'}</td>
       <td class="row-actions">
@@ -983,8 +1037,12 @@ function openUnitModal(id){
   $id('unitModalTitle').textContent=u?'Edit Unit':'+ Add Unit';
   $id('uId').value=u?u.id:'';
   $id('uTower').value=u?u.tower:''; $id('uFloor').value=u?u.floor:''; $id('uUnitNo').value=u?u.unit_no:'';
-  $id('uType').value=u?u.unit_type:''; $id('uArea').value=u?u.area_sqft:''; $id('uBasePrice').value=u?u.base_price:'';
+  $id('uType').value=u?u.unit_type:''; $id('uPropertyType').value=u?(u.property_type||''):''; $id('uArea').value=u?u.area_sqft:''; $id('uBasePrice').value=u?u.base_price:'';
   $id('uPlc').value=u?u.plc_charges:''; $id('uFloorRise').value=u?u.floor_rise_charges:''; $id('uTourUrl').value=u?u.virtual_tour_url:'';
+  $id('uImage').value=u?(u.image_url||''):''; $id('uImage2').value=u?(u.image_url_2||''):''; $id('uImage3').value=u?(u.image_url_3||''):'';
+  $id('uImage4').value=u?(u.image_url_4||''):''; $id('uImage5').value=u?(u.image_url_5||''):'';
+  $id('uVideoUrl').value=u?(u.video_url||''):''; $id('uPdfUrl').value=u?(u.pdf_url||''):'';
+  $id('uVideoSizeWarning').style.display='none';
   $id('uPriceReasonWrap').style.display=u?'block':'none'; $id('uPriceReason').value='';
   openModal('unitModal');
 }
@@ -992,8 +1050,11 @@ async function saveUnit(){
   const id=$id('uId').value;
   const body={
     tower:$id('uTower').value.trim(), floor:$id('uFloor').value, unit_no:$id('uUnitNo').value.trim(), unit_type:$id('uType').value.trim(),
-    area_sqft:$id('uArea').value, base_price:$id('uBasePrice').value, plc_charges:$id('uPlc').value, floor_rise_charges:$id('uFloorRise').value,
-    virtual_tour_url:$id('uTourUrl').value.trim()
+    property_type:$id('uPropertyType').value, area_sqft:$id('uArea').value, base_price:$id('uBasePrice').value, plc_charges:$id('uPlc').value, floor_rise_charges:$id('uFloorRise').value,
+    virtual_tour_url:$id('uTourUrl').value.trim(),
+    image_url:$id('uImage').value.trim(), image_url_2:$id('uImage2').value.trim(), image_url_3:$id('uImage3').value.trim(),
+    image_url_4:$id('uImage4').value.trim(), image_url_5:$id('uImage5').value.trim(),
+    video_url:$id('uVideoUrl').value.trim(), pdf_url:$id('uPdfUrl').value.trim()
   };
   try{
     if(id){

@@ -7888,7 +7888,7 @@ Notion-plus PM platform aimed at IT and construction companies, this slice is th
 "projects and tasks" core every later vertical-specific feature — Sprints for IT, RFIs/punch lists
 for construction — builds on top of, not a CRM feature).
 
-**Data model** (`migrations/0047_pm_projects_tasks.sql`) — two new `client_id`-scoped D1 tables,
+**Data model** (`migrations/0050_pm_projects_tasks.sql`) — two new `client_id`-scoped D1 tables,
 `pm_projects` (name/description/color/status) and `pm_tasks` (title/description/status/priority/
 assignee_email/start_date/due_date/position), same shape as Recruitment/Hospitality/SaaS Ops. A
 task's `status` is a fixed set (`todo`/`in_progress`/`review`/`done` — the Kanban's four columns)
@@ -7925,7 +7925,7 @@ Sprints view's own board so both actually support dragging, not just one of them
 
 ### Phase 2 — dependencies/critical path, time tracking/job costing, automations, IT module
 
-Four features on top of the Phase 1 core (`migrations/0048_pm_phase2.sql` — new columns on
+Four features on top of the Phase 1 core (`migrations/0051_pm_phase2.sql` — new columns on
 `pm_projects`/`pm_tasks`, plus `pm_task_dependencies`/`pm_time_entries`/`pm_sprints`/
 `pm_automations`). All follow the same client_id-scoped-D1-table shape as everything else in this
 module; `sprints`/`time`/`automations` join `PM_TABLES`' generic CRUD (`worker.js`), dependencies
@@ -7982,3 +7982,47 @@ field rather than a fake-looking automatic one.
 **Not built yet**: the generic flexible-database engine (custom fields/multiple saved views a user
 defines themselves — every entity in this module still has a fixed schema), resource leveling/
 capacity planning, EVM, offline-first mobile, client portals + e-signature, and a real GitHub sync.
+
+## Chats tab UX additions (`frontend/chats.js`, `frontend/chats.css`, `frontend/dashboard.html`, `cloudflare-worker/worker.js`)
+
+Four additions to the Chats tab composer/thread, all scoped to that module — no new tables, all
+riding existing fields/infra.
+
+- **Saved replies** — `CLIENTS.saved_replies`, a plain JSON array of `{shortcut, text}` shared
+  across the whole team, same "ensure the column exists on first save" convention `qual_questions`
+  et al. already use (`ensureClientField('saved_replies','LongText')`). Managed via the
+  `modalSavedReplies` modal (`openSavedRepliesModal`/`saveSavedReplies` in chats.js). Typing
+  `/shortcut` in `#chatReplyBox` opens a floating picker (`chatComposerInput` matches on
+  shortcut-or-text substring, capped at 6) navigable with Up/Down/Enter/Tab/Esc
+  (`chatComposerKeydown`), inserting the full text in place of the typed token
+  (`chatPickSavedReply`). Reply-mode only — see below.
+- **Keyboard send discipline** — Enter sends, Shift+Enter is a newline (`chatComposerKeydown`),
+  matching the muscle memory every real chat app trains. The same handler also drives the saved-
+  reply picker's keyboard nav when it's open (Enter there picks the highlighted match instead of
+  sending). `chatAutosize` grows the textarea up to the existing 100px `max-height` as the agent
+  types, instead of a fixed one-line box.
+- **Internal notes** — a Reply/Note toggle above the composer (`chatSetComposerMode`). Note mode
+  never touches Chatwoot/Instagram at all: `chatSendFromTab` branches on `_chatComposerMode` and
+  `chatSubmitNote` writes straight into `Leads.NotesList` — the exact same field and `{text, date,
+  ts, author}` shape the Lead Detail panel's own `addNote()` already used (that function now also
+  stamps `ts`/`author`, added specifically so the two composers interop). `chatMergedTimeline`
+  merges `ConvHistory` and `NotesList` into one chronological thread for rendering, styled as a
+  yellow note block (`.chat-note`) rather than a chat bubble — see that function's own comment for
+  how it copes with most `ConvHistory` entries having no `ts` at all (only manually-sent
+  replies/attachments do).
+- **Per-conversation assignee** — reuses `Leads.Owner` (the same field `bulkAssign` already writes
+  from the Leads list) via a `<select>` in `chat-main-hd` (`chatSetAssignee`), populated by the
+  existing `teamMemberOptions()` helper. No new field.
+- **"Seen by" avatars** — ephemeral presence, not a persisted read receipt: `chatSelectLead` starts
+  a 20s heartbeat (`chatStartPresenceHeartbeat`) sending `{type:'viewing', lead_id}` over the
+  existing `/engine/live` socket (see "Real-time dashboard updates" above) while that lead's thread
+  is open. `ClientUpdatesHub.webSocketMessage` (worker.js, previously a no-op) now relays this to
+  every other socket for the same client, tagged with the sender's identity — captured at connect
+  time via `ws.serializeAttachment({email, name})` from `?email=&name=` query params
+  (`connectLiveUpdates` passes `myEmail`/the matching `getTeamMembers()` name), since the session
+  token itself carries no per-agent identity (`verifySession`'s payload is just `{cid, exp}`). This
+  is the same trust level `Owner` already operates at (an authenticated dashboard tab's own claim
+  about who it is, not independently verified) — acceptable for a display-only presence indicator.
+  Nothing is persisted server-side; a closed tab just stops heartbeating, and every other client
+  ages the avatar out on its own after `CHAT_PRESENCE_TTL_MS` (45s) of silence
+  (`renderSeenBy`/`onLiveViewingEvent`, dashboard.html/chats.js).

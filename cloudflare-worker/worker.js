@@ -997,6 +997,47 @@ async function handleInstagramSend(request, env){
   return json({ok:true});
 }
 
+// Pin/unpin a conversation from the Chats tab (chats.js chatTogglePin) — a lightweight, team-shared
+// "keep this at the top" marker distinct from Stage/Score/Handover, so a rep can flag a VIP or
+// urgent lead without changing anything that would affect routing/reporting. Self-heals the
+// `Pinned` Leads column on first use, same "no manual NocoDB step" convention as every other field
+// added this way.
+async function handleChatPinLead(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {lead_id, pinned}=await request.json().catch(()=>({}));
+  if(!lead_id) return json({error:'lead_id required'}, 400);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
+  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  const lead=await leadR.json().catch(()=>({}));
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+  await ensureLeadsColumns(env, ['Pinned']);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), Pinned:pinned?'Yes':'No'}});
+  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  return json({ok:true, pinned:!!pinned});
+}
+
+// Resolve/Reopen a conversation (chats.js chatToggleResolve) — a triage state distinct from Stage
+// (funnel position) or Handover (needs-a-human flag): "does this thread need anyone's attention
+// right now." Self-heals the `ConvResolved` Leads column on first use. Auto-reopen on the next
+// genuine inbound message is handled separately, in engineBuildLeadUpsertBody — a rep resolving a
+// thread here only ever marks it resolved going forward, it never has to guard against a message
+// that arrives moments later still showing as resolved.
+async function handleChatResolveLead(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {lead_id, resolved}=await request.json().catch(()=>({}));
+  if(!lead_id) return json({error:'lead_id required'}, 400);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
+  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  const lead=await leadR.json().catch(()=>({}));
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+  await ensureLeadsColumns(env, ['ConvResolved']);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), ConvResolved:resolved?'Yes':'No'}});
+  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  return json({ok:true, resolved:!!resolved});
+}
+
 async function handleQuoteSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -1991,12 +2032,11 @@ const HEALTH_CHECKS=[
     return {status:'ok', detail:'Last run '+Math.round(hrs)+'h ago'};
   }},
   { key:'followup_config', label:'Follow-up Sequence Config', category:'core', fn: async (env,c)=>{
-    const count=parseInt(c.followup_count||0);
-    if(!count) return {status:'warn', detail:'Not configured'};
-    const hours=(c.followup_hours||'').split(',').map(s=>s.trim()).filter(Boolean);
-    const msgs=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
-    if(hours.length<count||msgs.length<count) return {status:'fail', detail:`Configured for ${count} steps but only ${hours.length} hour(s) / ${msgs.length} message(s) set`};
-    return {status:'ok', detail:count+'-step sequence configured correctly'};
+    const {results}=await env.DB.prepare(`SELECT step, type, message, template_name FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
+    if(!results||!results.length) return {status:'warn', detail:'Not configured'};
+    const incomplete=(results||[]).filter(r=>(r.type==='session'&&!r.message)||(r.type==='template'&&!r.template_name)).length;
+    if(incomplete) return {status:'fail', detail:`${incomplete} of ${results.length} step(s) missing a message/template`};
+    return {status:'ok', detail:results.length+'-step ladder configured'};
   }},
 ];
 
@@ -2470,154 +2510,280 @@ async function handleBroadcastSendTemplate(request, env){
   return json({ok:true, data:await r.json().catch(()=>({}))});
 }
 
-// Server-side mirror of dashboard.html's getRecentBookingsCount (client-side, used for the AI-assist
-// reply-suggestion prompt) — this Worker route has no access to the browser's allLeads array, so
-// it needs its own copy for the Follow-up Engine's "social proof" line. Same set of "won-ish"
-// stages (dashboard.html's isWonLead) and the same "lead's own Date as a proxy for when they
-// converted" caveat — no dedicated stage-change timestamp exists to do better than that.
-const FOLLOWUP_SOCIAL_PROOF_STAGES=new Set(['won','converted','consultation_booked','visit_booked','appt_booked']);
-async function computeFollowupSocialProofCount(env, clientId){
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=500&sort=-Date&fields=Stage,Date`);
-  if(!r.ok) return 0;
-  const data=await r.json().catch(()=>({list:[]}));
-  const cutoff=Date.now()-7*86400000;
-  return (data.list||[]).filter(l=>FOLLOWUP_SOCIAL_PROOF_STAGES.has(l.Stage)&&l.Date&&new Date(l.Date).getTime()>=cutoff).length;
+// Follow-up Engine's fixed 5-step ladder shape — one single place for every follow-up setting
+// (previously split between this D1 table, added by migrations/0047_followup_ladder.sql, and
+// dashboard.html's now-retired Settings → Follow-up Messages section). Steps 1-2 stay inside
+// WhatsApp's 24h customer-service window, so a plain session message is allowed; steps 3-5 are
+// fixed at 2/4/7 days of silence — always past 24h, so only an approved template can legally reach
+// the customer there (see sendFollowupLadderStep). Days for steps 3-5 are NOT merchant-editable —
+// the whole point of this ladder replacing the old free-form "up to 3 steps, any hours" model is a
+// fixed, predictable shape; hours for steps 1-2 stay editable since both are well inside the same
+// 24h window regardless of the exact value.
+const FOLLOWUP_LADDER_STEP_SHAPE=[
+  {step:1, type:'session', defaultHours:1},
+  {step:2, type:'session', defaultHours:6},
+  {step:3, type:'template', days:2},
+  {step:4, type:'template', days:4},
+  {step:5, type:'template', days:7},
+];
+function followupLadderDefaultStep(step, legacyHours, legacyMessages){
+  const shape=FOLLOWUP_LADDER_STEP_SHAPE.find(s=>s.step===step);
+  if(shape.type==='session'){
+    const legacyIdx=step-1;
+    const legacyHour=legacyHours[legacyIdx];
+    return {step, type:'session', hours:(legacyHour&&legacyHour<24)?legacyHour:shape.defaultHours, days:null,
+      message:legacyMessages[legacyIdx]||'', message_b:'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0,
+      template_name_b:'', template_language_b:'en_US', template_category_b:'MARKETING', template_body_vars_b:0};
+  }
+  return {step, type:'template', hours:null, days:shape.days,
+    message:'', message_b:'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0,
+    template_name_b:'', template_language_b:'en_US', template_category_b:'MARKETING', template_body_vars_b:0};
 }
 
-// Picks which message to actually send for a given classic-sequence step — either an A/B variant
-// configured in the Follow-up Engine (D1, migrations/0007_followup_engine.sql) or, for a client
-// who hasn't set any up, the plain followup_messages text exactly as before. When both Variant A
-// and B are configured and active, one is picked 50/50 per send (not per lead — a lead who
-// receives step 1 and later step 2 can get either variant independently each time) so the sample
-// splits roughly evenly over time. Building the incentive/social-proof line has no separate
-// "is this lead a fresh lead" check: this function is only ever reached from
-// handleBroadcastFollowupSend, whose caller only exists because a lead already went quiet long
-// enough to need a follow-up in the first place — a fresh, still-engaged lead never reaches here.
-async function pickFollowupVariant(env, clientId, step, fallbackText, leadName){
-  const {results}=await env.DB.prepare(`SELECT * FROM followup_variants WHERE client_id=? AND step=? AND active=1 AND message!=''`)
-    .bind(Number(clientId), step).all();
-  const rows=results||[];
-  let chosen=null, variantLabel='legacy';
-  if(rows.length){
-    chosen=rows.length>1?rows[Math.random()<0.5?0:1]:rows[0];
-    variantLabel=chosen.variant;
-  }
-  let text=(chosen?chosen.message:fallbackText).replace(/\{name\}/gi, leadName||'there');
-  if(chosen?.cta) text+=`\n\n${chosen.cta}`;
-  if(chosen?.incentive_text){
-    const expiry=chosen.incentive_expires_hours?` — offer expires in ${chosen.incentive_expires_hours}h`:'';
-    text+=`\n\n⏳ ${chosen.incentive_text}${expiry}.`;
-  }
-  if(chosen?.social_proof){
-    const count=await computeFollowupSocialProofCount(env, clientId);
-    if(count>0) text+=`\n\n${count} customer(s) closed with us in the last 7 days.`;
-  }
-  return {text, variantLabel, mediaUrl:chosen?.media_url||'', mediaCaption:chosen?.media_caption||''};
+// GET/POST /followups/ladder — the Follow-up Engine tab's single settings surface (replaces the
+// old GET/POST /followups/variants A/B-per-step model, migrations/0007, now unused going forward
+// but left in place rather than dropped). Variant B (message_b / template_name_b+language_b+
+// category_b+body_vars_b, migrations/0048) is optional on every step — see pickLadderVariant for
+// how it's chosen at send time once configured.
+async function handleFollowupLadderGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  const {results}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(payload.cid)).all();
+  const bySt={}; (results||[]).forEach(r=>{ bySt[r.step]=r; });
+  // Best-effort one-time read-only migration: a client who configured the old classic sequence
+  // (dashboard.html Settings, now retired) but never saved this new ladder yet sees step 1-2
+  // pre-filled from their existing followup_hours/followup_messages instead of starting blank —
+  // nothing is written here, only shown; hitting Save is what actually persists it.
+  const legacyHours=(c?.followup_hours||'').split(',').map(s=>parseFloat(s.trim())).filter(n=>n>0);
+  const legacyMessages=(c?.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const list=FOLLOWUP_LADDER_STEP_SHAPE.map(shape=>{
+    const r=bySt[shape.step];
+    return r
+      ? {step:r.step, type:r.type, hours:r.hours, days:r.days, message:r.message, message_b:r.message_b,
+         template_name:r.template_name, template_language:r.template_language, template_category:r.template_category, template_body_vars:r.template_body_vars,
+         template_name_b:r.template_name_b, template_language_b:r.template_language_b, template_category_b:r.template_category_b, template_body_vars_b:r.template_body_vars_b}
+      : followupLadderDefaultStep(shape.step, legacyHours, legacyMessages);
+  });
+  return json({list});
 }
-
-// Manual "send next follow-up now" — a rep's on-demand override alongside the automated
-// classic follow-up sequence (followup-template.json) and the recovery ladder (recovery.js).
-// Only covers the classic followup_messages sequence, not the recovery_* ladder, which stays
-// automation-only and read-only in the Follow-ups tab (see SETUP.md).
-// The actual "resolve variant, send (voice-first, falling back to text), attach media, mark
-// Follow up N, log followup_sends" work for one classic-sequence step — shared by the manual
-// "Send Next Now" route below and the automated cron (runClassicFollowupsForAllClients) further
-// down this file, so the automated side never has to fork its own copy of this logic (and, more to
-// the point, so a client's Follow-up Engine A/B content — resolved via pickFollowupVariant — is the
-// primary content for BOTH the manual and the fully-automatic sends, not just the manual one).
-// Throws on a hard send failure (bad Chatwoot config, HTTP error) so callers decide for themselves
-// how to report/log that — a 502 to the rep for the manual route, a caught-and-logged per-lead skip
-// for the cron sweep, same "one lead's failure can't take down the batch" pattern used everywhere
-// else in this file.
-async function sendClassicFollowupStep(env, c, lead, nextIdx, tmpl){
-  const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
-  const {text, variantLabel, mediaUrl, mediaCaption}=await pickFollowupVariant(env, c.Id, nextIdx+1, tmpl, lead.Name);
-  const clientId=String(c.Id);
-
-  // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live
-  // voice-to-voice replies (engineTtsWithFallback). Language: prefer this lead's own last-detected
-  // language (lead.Language, stamped by the live engine's engineClassifyIntent on every inbound
-  // message) over the client's static default — a follow-up should speak back in whatever language
-  // the customer was actually last using, not whatever the account happens to be configured for.
-  let sentViaVoice=false;
-  if(c.voice_followup_enabled==='Yes'){
-    const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
-    if(bcp47){
-      const audioBuf=await engineTtsWithFallback(env, text, (lead.Language||c.language||'en'), c.voice_tts_provider);
-      if(audioBuf){
-        const vfd=new FormData();
-        vfd.append('content', engineExtractLinkPriceCaption(text));
-        vfd.append('message_type','outgoing'); vfd.append('private','false');
-        vfd.append('attachments[]', new Blob([audioBuf], {type:'audio/ogg; codecs=opus'}), 'followup.ogg');
-        const vr=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:vfd});
-        sentViaVoice=vr.ok;
-        if(!vr.ok) await reportOpsError(env, 'sendClassicFollowupStep — voice send failed, falling back to text', new Error('HTTP '+vr.status), {clientId, convId});
-      }
+async function handleFollowupLadderSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const steps=Array.isArray(body.steps)?body.steps:[];
+  const now=new Date().toISOString();
+  for(const shape of FOLLOWUP_LADDER_STEP_SHAPE){
+    const s=steps.find(x=>parseInt(x.step)===shape.step);
+    if(!s) continue;
+    if(shape.type==='session'){
+      const hours=Math.min(23, Math.max(1, parseInt(s.hours)||shape.defaultHours));
+      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, message=excluded.message, message_b=excluded.message_b, updated_at=excluded.updated_at`)
+        .bind(Number(payload.cid), shape.step, 'session', hours, null,
+          String(s.message||'').trim().slice(0,1000), String(s.message_b||'').trim().slice(0,1000),
+          '', 'en_US', 'MARKETING', 0, '', 'en_US', 'MARKETING', 0, now)
+        .run();
+    } else {
+      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(client_id, step) DO UPDATE SET template_name=excluded.template_name, template_language=excluded.template_language, template_category=excluded.template_category, template_body_vars=excluded.template_body_vars,
+          template_name_b=excluded.template_name_b, template_language_b=excluded.template_language_b, template_category_b=excluded.template_category_b, template_body_vars_b=excluded.template_body_vars_b, updated_at=excluded.updated_at`)
+        .bind(Number(payload.cid), shape.step, 'template', null, shape.days, '', '',
+          String(s.template_name||'').trim().slice(0,200), String(s.template_language||'en_US').trim().slice(0,20), String(s.template_category||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars)||0),
+          String(s.template_name_b||'').trim().slice(0,200), String(s.template_language_b||'en_US').trim().slice(0,20), String(s.template_category_b||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars_b)||0),
+          now)
+        .run();
     }
   }
-
-  if(!sentViaVoice){
-    const fd=new FormData();
-    fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
-    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-    if(!r.ok) throw new Error('HTTP '+r.status);
-  }
-
-  // Follow-up Engine — optional per-variant media attachment (video/image/audio/PDF via a Google
-  // Drive link), sent as a second message right after the text above. Best-effort: a failed/missing
-  // Drive fetch never fails this whole send, since the text follow-up (the part that already
-  // succeeded above) is the one thing either caller is actually waiting on.
-  if(mediaUrl) await sendDriveMediaToChatwoot(c, convId, mediaUrl, mediaCaption);
-
-  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+(nextIdx+1)]:'Yes'}});
-  try{
-    await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
-      .bind(Number(c.Id), Number(lead.Id), nextIdx+1, variantLabel, new Date().toISOString()).run();
-  }catch(e){ /* best-effort — the message already went out regardless of whether this logs */ }
-  return {text, variantLabel, sentViaVoice};
+  return json({ok:true});
 }
 
+// Auto-promoting A/B pick: a step with no Variant B configured always sends A (variant label 'A',
+// same as any step that's never had a B at all). Once B exists, both start at an even 50/50 split
+// — MIN_SAMPLES sends per variant minimum before ANY promotion is considered, so a brand-new step
+// isn't skewed off a handful of noisy early sends. Once both variants have enough samples, the one
+// with a meaningfully higher reply rate (more than PROMOTE_MARGIN apart — anything closer is called
+// a tie, kept at 50/50 rather than over-fitting noise) gets weighted PROMOTE_WEIGHT instead of 0.5.
+// This is a simple, explainable heuristic (epsilon-greedy-ish), not a rigorous statistical test —
+// appropriate for follow-up reply-rate sample sizes, which are rarely large enough to need one.
+const FOLLOWUP_VARIANT_MIN_SAMPLES=20;
+const FOLLOWUP_VARIANT_PROMOTE_MARGIN=0.05; // 5 percentage points
+const FOLLOWUP_VARIANT_PROMOTE_WEIGHT=0.8;
+async function pickLadderVariant(env, clientId, step, stepCfg){
+  const hasB=stepCfg.type==='session'?!!stepCfg.message_b:!!stepCfg.template_name_b;
+  if(!hasB) return 'A';
+  const {results}=await env.DB.prepare(`SELECT variant, COUNT(*) as sent, SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) as replied
+    FROM followup_sends WHERE client_id=? AND step=? AND variant IN ('A','B') GROUP BY variant`)
+    .bind(Number(clientId), step).all();
+  const byVariant={A:{sent:0,replied:0}, B:{sent:0,replied:0}};
+  (results||[]).forEach(r=>{ if(byVariant[r.variant]) byVariant[r.variant]={sent:r.sent, replied:r.replied}; });
+  if(byVariant.A.sent<FOLLOWUP_VARIANT_MIN_SAMPLES || byVariant.B.sent<FOLLOWUP_VARIANT_MIN_SAMPLES){
+    return Math.random()<0.5?'A':'B';
+  }
+  const rateA=byVariant.A.replied/byVariant.A.sent, rateB=byVariant.B.replied/byVariant.B.sent;
+  if(Math.abs(rateA-rateB)<FOLLOWUP_VARIANT_PROMOTE_MARGIN) return Math.random()<0.5?'A':'B';
+  const winner=rateA>rateB?'A':'B';
+  return Math.random()<FOLLOWUP_VARIANT_PROMOTE_WEIGHT?winner:(winner==='A'?'B':'A');
+}
+// Resolves a chosen variant letter down to the actual content to send for this step.
+function ladderVariantContent(stepCfg, variant){
+  if(stepCfg.type==='session') return {message: variant==='B'?stepCfg.message_b:stepCfg.message};
+  return variant==='B'
+    ? {template_name:stepCfg.template_name_b, template_language:stepCfg.template_language_b, template_category:stepCfg.template_category_b, template_body_vars:stepCfg.template_body_vars_b}
+    : {template_name:stepCfg.template_name, template_language:stepCfg.template_language, template_category:stepCfg.template_category, template_body_vars:stepCfg.template_body_vars};
+}
+
+// Real-scarcity line for ecom follow-ups — session steps (1-2) only: a WhatsApp template's approved
+// body text can't be altered beyond filling its own {{n}} variables, so there's no legal way to
+// append this to a template step (3-5). Resolves the lead's own InterestedProduct (free-text, set
+// by the live engine's classifier — see engineClassifyIntent) against the real catalog the same
+// fuzzy way ecomResolveProduct always has, and only speaks up when stock is holding a genuinely low,
+// real number — never a fabricated countdown or "hurry" line with nothing behind it.
+const FOLLOWUP_LOW_STOCK_THRESHOLD=5;
+async function ecomFollowupScarcityLine(env, c, lead){
+  if(c.industry!=='ecommerce' || !lead.InterestedProduct) return '';
+  try{
+    const product=await ecomResolveProduct(env, c.Id, '', lead.InterestedProduct);
+    const stock=Number(product?.stock);
+    if(!product || !Number.isFinite(stock) || stock<=0 || stock>FOLLOWUP_LOW_STOCK_THRESHOLD) return '';
+    return `\n\n⚡ Only ${stock} left in ${product.name} — grab it before it's gone.`;
+  }catch(e){ return ''; }
+}
+
+// Client-wide "preferred send window" (bot_config.followup_quiet_hours_enabled, default on;
+// followup_window_start_hour/followup_window_end_hour, default 18-21 — evenings, after typical
+// office hours) — computed once per client per cron tick (not per lead, since it's the same answer
+// for all of them), same local-time-from-timezone pattern the final-stage-positive callback message
+// already uses (see engineRouteFlow's own `botConfig.timezone` block). A lead who becomes "due"
+// outside the window is simply left for a later tick — nothing is marked sent, so it's never lost,
+// only delayed to the next time this function returns true.
+function followupWithinQuietHours(c){
+  const botConfig=engineParseJsonField(c.bot_config, {});
+  if(botConfig.followup_quiet_hours_enabled===false) return true;
+  const tz=botConfig.timezone||'Asia/Kolkata';
+  const startHour=Number.isFinite(botConfig.followup_window_start_hour)?botConfig.followup_window_start_hour:18;
+  const endHour=Number.isFinite(botConfig.followup_window_end_hour)?botConfig.followup_window_end_hour:21;
+  const nowLocal=new Date(new Date().toLocaleString('en-US',{timeZone:tz}));
+  const hour=nowLocal.getHours();
+  return startHour<=endHour ? (hour>=startHour && hour<endHour) : (hour>=startHour || hour<endHour);
+}
+
+// The actual "pick variant, send, mark Follow up N, log followup_sends" work for one ladder step —
+// shared by the manual "Send Next Now" route (handleBroadcastFollowupSend) and the automated cron
+// (runClassicFollowupsForAllClients) further down, so neither has to fork its own copy.
+// Steps 1-2 (type 'session') go out as a plain Chatwoot session message — only valid within
+// WhatsApp's 24h customer-service window, which is exactly why both are capped under 24h at save
+// time (handleFollowupLadderSave). Steps 3-5 (type 'template') go straight through Meta's Graph
+// API as an approved template message instead — same direct-Graph-API shape as
+// handleWaSendTemplate/sendShopifyNotification, deliberately bypassing Chatwoot for the send side
+// (Chatwoot's own template relay depends on a separate sync some inboxes 404 on, per
+// handleWaSendTemplate's own comment) — the only message type WhatsApp allows this far past the
+// customer's last message. Throws on a hard send failure so callers decide how to report it: a 502
+// to the rep for the manual route, a caught-and-logged per-lead skip for the cron sweep.
+async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
+  const clientId=String(c.Id);
+  let sentText='', sentViaVoice=false;
+  const variant=await pickLadderVariant(env, c.Id, step, stepCfg);
+  const content=ladderVariantContent(stepCfg, variant);
+
+  if(stepCfg.type==='session'){
+    if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) throw new Error('Chatwoot is not configured for this account.');
+    const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
+    if(!convId) throw new Error('This lead has no conversation yet.');
+    sentText=String(content.message||'').replace(/\{name\}/gi, lead.Name||'there');
+    // Real-scarcity line (ecom only, session steps only — see ecomFollowupScarcityLine's own
+    // comment on why a template step can't carry this).
+    sentText+=await ecomFollowupScarcityLine(env, c, lead);
+
+    // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live
+    // voice-to-voice replies. Only applies to steps 1-2: a WhatsApp template's approved wording is
+    // fixed by Meta, so there is no text to speak in its place for steps 3-5.
+    if(c.voice_followup_enabled==='Yes'){
+      const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
+      if(bcp47){
+        const audioBuf=await engineTtsWithFallback(env, sentText, (lead.Language||c.language||'en'), c.voice_tts_provider);
+        if(audioBuf){
+          const vfd=new FormData();
+          vfd.append('content', engineExtractLinkPriceCaption(sentText));
+          vfd.append('message_type','outgoing'); vfd.append('private','false');
+          vfd.append('attachments[]', new Blob([audioBuf], {type:'audio/ogg; codecs=opus'}), 'followup.ogg');
+          const vr=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:vfd});
+          sentViaVoice=vr.ok;
+          if(!vr.ok) await reportOpsError(env, 'sendFollowupLadderStep — voice send failed, falling back to text', new Error('HTTP '+vr.status), {clientId, convId});
+        }
+      }
+    }
+    if(!sentViaVoice){
+      const fd=new FormData();
+      fd.append('content', sentText); fd.append('message_type','outgoing'); fd.append('private','false');
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+    }
+  } else {
+    if(!c.wa_phone_id||!c.wa_token) throw new Error('WhatsApp Business API is not connected for this account — connect it from Settings → Channels.');
+    if(!lead.Phone) throw new Error('This lead has no phone number.');
+    // Each {{n}} placeholder in the template's approved BODY text gets filled with the lead's name
+    // (template_body_vars, counted when the template was picked in the Follow-up Engine UI) — a
+    // pragmatic default covering the overwhelmingly common case (a template's only variable is the
+    // customer's name), not a general variable-mapping system.
+    const varCount=Math.max(0, content.template_body_vars||0);
+    const components=varCount?[{type:'body', parameters:Array.from({length:varCount}, ()=>({type:'text', text:lead.Name||'there'}))}]:[];
+    const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp', to:lead.Phone, type:'template', template:{name:content.template_name, language:{code:content.template_language||'en_US'}, components}})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data?.error?.message||('HTTP '+r.status));
+    sentText=`[template: ${content.template_name}]`;
+  }
+
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+step]:'Yes'}});
+  try{
+    await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
+      .bind(Number(c.Id), Number(lead.Id), step, variant, new Date().toISOString()).run();
+  }catch(e){ /* best-effort — the message already went out regardless of whether this logs */ }
+  return {text:sentText, sentViaVoice, variant};
+}
+
+// Manual "send next follow-up now" — a rep's on-demand override alongside the automated ladder
+// cron (runClassicFollowupsForAllClients) and the separate recovery ladder (recovery.js, untouched
+// by this). `stage` in the response keeps its old field name (not `step`) since dashboard.html's
+// sendTaskWaFollowUp already reads response.stage to flip the right Lead field client-side.
 async function handleBroadcastFollowupSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {lead_id}=await request.json().catch(()=>({}));
   if(!lead_id) return json({error:'lead_id required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
 
   const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
   if(!leadR.ok) return json({error:'Lead not found'}, 404);
   const lead=await leadR.json();
   if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Not your lead'}, 403);
-  const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
-  if(!convId) return json({error:'This lead has no conversation yet.'}, 400);
 
-  const messages=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
-  const count=parseInt(c.followup_count||0);
-  let nextIdx=-1;
-  for(let i=0;i<Math.min(count,3);i++){ if(lead['Follow up '+(i+1)]!=='Yes'){ nextIdx=i; break; } }
-  if(nextIdx===-1) return json({error:'No follow-up steps left to send for this lead.'}, 400);
-  const tmpl=messages[nextIdx]||messages[messages.length-1];
-  if(!tmpl) return json({error:'No follow-up message configured for this client.'}, 400);
+  await ensureLeadsColumns(env, ['Follow up 4','Follow up 5']);
+  const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(payload.cid)).all();
+  const steps={}; (stepRows||[]).forEach(r=>{ steps[r.step]=r; });
+  let nextStep=-1;
+  for(let s=1; s<=5; s++){ if(lead['Follow up '+s]!=='Yes'){ nextStep=s; break; } }
+  if(nextStep===-1) return json({error:'No follow-up steps left to send for this lead.'}, 400);
+  const stepCfg=steps[nextStep];
+  if(!stepCfg) return json({error:`Step ${nextStep} isn't set up yet — configure it in Campaigns → Follow-up Engine.`}, 400);
+  if(stepCfg.type==='session' && !stepCfg.message) return json({error:'No message configured for this step yet.'}, 400);
+  if(stepCfg.type==='template' && !stepCfg.template_name) return json({error:'No template chosen for this step yet.'}, 400);
 
   try{
-    const {text, variantLabel, sentViaVoice}=await sendClassicFollowupStep(env, c, lead, nextIdx, tmpl);
-    return json({ok:true, stage:nextIdx+1, sentText:text, sentViaVoice, variant:variantLabel});
+    const {text, sentViaVoice}=await sendFollowupLadderStep(env, c, lead, nextStep, stepCfg);
+    return json({ok:true, stage:nextStep, sentText:text, sentViaVoice});
   }catch(e){ return json({error:e.message||'Send failed'}, 502); }
 }
 
-// Automated classic follow-up sequence — this used to exist only as an external n8n workflow
-// (followup-template.json, a separate repo out of this codebase's scope) that read
-// `followup_messages` straight off the Clients table with zero awareness of this repo's Follow-up
-// Engine A/B variants — so a client's variant content only ever reached the manual "Send Next Now"
-// button above, never the actual scheduled/automatic sends. Migrated in natively so both paths run
-// through the same sendClassicFollowupStep/pickFollowupVariant: the Follow-up Engine's content is
-// now primary wherever a classic follow-up goes out, not just on a rep's click.
-// Runs on the existing `*/15 * * * *` tick (see scheduled() below) rather than the daily one —
-// `followup_hours` is commonly sub-daily (e.g. "6,24,48"), the same reasoning Automations & Flow's
-// own `wait N hours` steps are already checked at this granularity for. Gated per-client on
-// `followup_count>0` (and a configured Chatwoot connection) so a client who never set up the
-// classic sequence is never scanned.
+// Automated ladder sweep — runs on the existing `*/15 * * * *` tick (see scheduled() below) rather
+// than the daily one, since steps 1-2 are sub-daily (hours, not days). Per-client cost stays low:
+// a client who's never touched the Follow-up Engine has zero rows in followup_ladder_steps and is
+// skipped in one query, same as the old count>0 gate.
 async function runClassicFollowupsForAllClients(env){
   let page=1;
   while(true){
@@ -2627,46 +2793,49 @@ async function runClassicFollowupsForAllClients(env){
     const rows=data?.list||[];
     if(!rows.length) break;
     for(const c of rows){
-      const count=parseInt(c.followup_count||0);
-      if(!count||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) continue;
-      try{ await classicFollowupProcessClient(env, c, count); }
+      try{ await classicFollowupProcessClient(env, c); }
       catch(e){ console.error('[classic-followups] failed for client', c.Id, e.message); }
     }
     if(rows.length<200) break;
     page++;
   }
 }
-// `followup_hours` is read as cumulative hours-of-silence-since-last-activity thresholds — step N
-// fires once a lead has been silent for at least hours[N-1] — the same "single fixed anchor,
-// elapsed-time-to-step lookup" model `pipelineFollowupTargetStep`'s cadence already uses in this
-// same file, rather than chaining each step's anchor off the previous step's own send time.
-async function classicFollowupProcessClient(env, c, count){
-  const hours=(c.followup_hours||'').split(',').map(s=>parseFloat(s.trim())).filter(n=>n>0);
-  const messages=(c.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
-  if(!hours.length||!messages.length) return;
-  const steps=Math.min(count,3,hours.length);
+async function classicFollowupProcessClient(env, c){
+  const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
+  if(!stepRows||!stepRows.length) return; // Follow-up Engine never configured for this client
+  // Checked once per client per tick, not per lead — it's the same answer for every lead of this
+  // client this tick. A lead who becomes due while outside the window is simply picked up on a
+  // later tick (nothing is marked sent here), not skipped forever.
+  if(!followupWithinQuietHours(c)) return;
+  const steps={}; stepRows.forEach(r=>{ steps[r.step]=r; });
+  // Silent-hours threshold per step: 1-2 use their own configured `hours`; 3-5 are fixed at their
+  // day count * 24 (not merchant-editable — see FOLLOWUP_LADDER_STEP_SHAPE's own comment).
+  const thresholdHours=step=>steps[step].type==='session'?(steps[step].hours||24):((steps[step].days||0)*24);
+  await ensureLeadsColumns(env, ['Follow up 4','Follow up 5']);
   const where=`(ClientId,eq,${c.Id})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
   let page=1;
   while(true){
-    const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent('Id,Name,Stage,LastMsgAt,Date,Language,ConversationID,conv_id,ConversationId,chatwoot_conv_id,Follow up 1,Follow up 2,Follow up 3')}`);
+    const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent('Id,Name,Phone,Stage,LastMsgAt,Date,Language,ConversationID,conv_id,ConversationId,chatwoot_conv_id,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
     if(!leadsR.ok) break;
     const data=await leadsR.json().catch(()=>({}));
     const leadRows=data?.list||[];
     if(!leadRows.length) break;
     for(const lead of leadRows){
       if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
-      let nextIdx=-1;
-      for(let i=0;i<steps;i++){ if(lead['Follow up '+(i+1)]!=='Yes'){ nextIdx=i; break; } }
-      if(nextIdx===-1) continue; // sequence exhausted or fully sent
-      const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
-      if(!convId) continue;
+      let nextStep=-1;
+      for(let s=1; s<=5; s++){
+        if(!steps[s]) continue; // step not configured yet — transparently skipped, not blocking
+        if(lead['Follow up '+s]!=='Yes'){ nextStep=s; break; }
+      }
+      if(nextStep===-1) continue; // sequence exhausted, or fully sent
+      const stepCfg=steps[nextStep];
+      if(stepCfg.type==='session' && !stepCfg.message) continue;
+      if(stepCfg.type==='template' && !stepCfg.template_name) continue;
       const lastRealMs=lead.LastMsgAt||lead.Date;
       if(!lastRealMs) continue;
       const silentHours=(Date.now()-new Date(lastRealMs).getTime())/3600000;
-      if(silentHours<hours[nextIdx]) continue; // not due yet
-      const tmpl=messages[nextIdx]||messages[messages.length-1];
-      if(!tmpl) continue;
-      try{ await sendClassicFollowupStep(env, c, lead, nextIdx, tmpl); }
+      if(silentHours<thresholdHours(nextStep)) continue; // not due yet
+      try{ await sendFollowupLadderStep(env, c, lead, nextStep, stepCfg); }
       catch(e){ console.error('[classic-followups] send failed for lead', lead.Id, e.message); }
       await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
     }
@@ -2704,51 +2873,10 @@ async function handleHumanDealsCoach(request, env){
   });
 }
 
-async function handleFollowupVariantsList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT * FROM followup_variants WHERE client_id=?`).bind(Number(payload.cid)).all();
-  const byKey={};
-  (results||[]).forEach(r=>{ byKey[`${r.step}_${r.variant}`]=r; });
-  const list=[];
-  for(let step=1; step<=3; step++){
-    for(const variant of ['A','B']){
-      const r=byKey[`${step}_${variant}`];
-      list.push(r
-        ?{step, variant, message:r.message, cta:r.cta, incentive_text:r.incentive_text, incentive_expires_hours:r.incentive_expires_hours, social_proof:!!r.social_proof, active:!!r.active, media_url:r.media_url||'', media_caption:r.media_caption||''}
-        :{step, variant, message:'', cta:'', incentive_text:'', incentive_expires_hours:null, social_proof:false, active:true, media_url:'', media_caption:''});
-    }
-  }
-  return json({list});
-}
-
-async function handleFollowupVariantsSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const variants=Array.isArray(body.variants)?body.variants:[];
-  const now=new Date().toISOString();
-  for(const v of variants){
-    const step=parseInt(v.step);
-    const variant=v.variant==='B'?'B':'A';
-    if(!(step>=1&&step<=3)) continue;
-    await env.DB.prepare(`INSERT INTO followup_variants (client_id, step, variant, message, cta, incentive_text, incentive_expires_hours, social_proof, active, media_url, media_caption, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(client_id, step, variant) DO UPDATE SET message=excluded.message, cta=excluded.cta, incentive_text=excluded.incentive_text, incentive_expires_hours=excluded.incentive_expires_hours, social_proof=excluded.social_proof, active=excluded.active, media_url=excluded.media_url, media_caption=excluded.media_caption, updated_at=excluded.updated_at`)
-      .bind(Number(payload.cid), step, variant,
-        String(v.message||'').trim().slice(0,1000),
-        String(v.cta||'').trim().slice(0,200),
-        String(v.incentive_text||'').trim().slice(0,300),
-        v.incentive_expires_hours?Number(v.incentive_expires_hours):null,
-        v.social_proof?1:0, v.active===false?0:1,
-        String(v.media_url||'').trim().slice(0,500),
-        String(v.media_caption||'').trim().slice(0,300),
-        now)
-      .run();
-  }
-  return json({ok:true});
-}
-
+// Grouped by step+variant again (migrations/0048 brought Variant B, and pickLadderVariant's
+// auto-promotion, back) — 'ladder' rows from the brief window between migrations/0047 and 0048
+// (when every send was logged as a single unlabeled variant) still show up as their own row here,
+// same as 'legacy'/'A'/'B' rows from before migrations/0047 existed at all; nothing is discarded.
 async function handleFollowupStats(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -6014,8 +6142,14 @@ const _ecomStyleFieldsEnsured=new Set();
 // image_url included alongside the newer image_url_2..image_url_5 (up to 5 photos per product —
 // more than Hospitality units/Ecom Categories' 3-photo convention, a deliberate product-specific
 // choice) — image_url itself was the one original field this list somehow never covered, same
-// silent-drop risk category's own fix addressed above.
-const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url'];
+// silent-drop risk category's own fix addressed above. short_label is an optional, merchant-
+// curated short display name (e.g. "Brightening Cream" for a full name like "Glutathione
+// Brightening Combo – Lotion + Cream") — no truncation algorithm can safely guess which words of a
+// long product name actually matter to a customer, so this exists purely so a merchant can supply
+// that judgment call themselves; the enquiry route's category/product picker (below) prefers it
+// over the full name, falling back to auto-truncating the full name when it's blank (the common
+// case — most product names are already short enough).
+const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -7263,6 +7397,44 @@ async function ecomResolveProduct(env, clientId, sku, productName){
   })||null;
 }
 
+// The reverse direction of ecomResolveProduct above: given a block of text (the ecom_faq LLM's own
+// generated reply, not the customer's message), find whether it confidently names exactly one
+// catalog product — used to attach one-tap follow-up buttons (order / more details / talk to a
+// human) to a FAQ answer that happens to recommend a specific item, the free-text path's equivalent
+// of the deterministic category picker's buttons. Deliberately returns null on zero OR more than
+// one match — offering buttons tied to the wrong product (or a random pick among several actually
+// named) is worse than offering no buttons at all.
+async function ecomDetectMentionedProduct(env, clientId, replyText){
+  const text=(replyText||'').toLowerCase();
+  if(!text) return null;
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return null;
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+  const pd=await pr.json().catch(()=>({}));
+  const products=pd?.list||[];
+  const matches=products.filter(p=>{
+    const name=(p.name||'').trim().toLowerCase();
+    return name.length>2 && text.includes(name);
+  });
+  return matches.length===1?matches[0]:null;
+}
+
+// Category-level sibling of ecomDetectMentionedProduct above: an ecom_faq reply that couldn't be
+// pinned to one confident product (e.g. it instead rattled off several category names — "Mattress,
+// Sofa Set, Recliner...") is still a real multiple-choice moment for the customer, just at the
+// category level rather than the product level. Requires 2+ distinct matches — a reply naming
+// only one category is better served by leaving it as prose (or it already matches as a single
+// mentioned product/OPTIONS: question through the other paths). Reuses ecomListCategories so this
+// and the deterministic first-touch menu (handleEngineWebhook) share one source of truth for what
+// "this client's categories" even means.
+async function ecomDetectMentionedCategories(env, clientId, replyText){
+  const text=(replyText||'').toLowerCase();
+  if(!text) return [];
+  const categories=await ecomListCategories(env, clientId);
+  const matches=categories.filter(cat=>cat && text.includes(cat.toLowerCase()));
+  return matches.length>=2?matches:[];
+}
+
 // Product-level audio note / video / PDF (audio_url/video_url/pdf_url, Google Drive share links
 // set on the product itself in ecom.html's Add/Edit Product modal) — sent right after the
 // product's photo whenever a specific product was confidently identified, same "the customer asked
@@ -7287,6 +7459,21 @@ async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
     if(product.video_url) await sendDriveMediaToChatwoot(c, convId, product.video_url, '');
     if(product.pdf_url) await sendDriveMediaToChatwoot(c, convId, product.pdf_url, '');
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductMedia', e, {clientId, convId}); }
+}
+
+// Distinct category strings across this client's active products, capped at 10 — the same limit
+// engineSendChatwootQuickReply's own list-message cap already enforces, so a caller can hand this
+// straight to it as `items` with no further trimming. Two callers: the deterministic first-touch
+// category menu (handleEngineWebhook, a brand-new lead's very first message) and
+// ecomDetectMentionedCategories (the free-text-reply safety net above) — both need the same
+// "what are this client's categories" answer, so this is the one place that fetches it.
+async function ecomListCategories(env, clientId){
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return [];
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&fields=category`);
+  const pd=await pr.json().catch(()=>({}));
+  const products=pd?.list||[];
+  return [...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))].slice(0,10);
 }
 
 // Category-level browsing: the customer named a category ("shirts") rather than one specific
@@ -8926,6 +9113,13 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // instead of one rule that (as observed) can be read as license for either.
   sys+='\n\nDefault style (follow this unless the persona/instructions above specify a different tone, reply length, closing style, or message format — in that case, follow those instead): a short greeting or small talk deserves a short, natural reply, not a long pitch covering everything you could possibly say — but a short, specific question (a number, a policy, a fact) always deserves the real, complete answer, even if that makes the reply a bit longer than the question itself; never trade accuracy or completeness for brevity. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
 
+  // engineExtractReplyOptions (worker.js) parses this exact marker back out and strips it before
+  // the customer ever sees it, then (where the channel/settings support it) resends the options as
+  // tappable buttons instead of leaving the customer to type one back by hand — see that function's
+  // own comment. Must stay a literal, parseable last line whenever it's used, which is why the
+  // instruction pins the keyword itself to English even when the rest of the reply is not.
+  sys+='\n\nIf — and only if — your reply itself asks the customer to choose between 2 and 10 clear, short, named options (e.g. "glowing skin, anti-ageing, or something else?", or a menu of a few named categories/products), add ONE final line after your reply, in exactly this format and nothing else on that line: OPTIONS: option one | option two | option three — keep the literal English word "OPTIONS:" even when the rest of your reply is in another language, write each option itself in the customer\'s language, and keep each option under 24 characters. Leave this line out entirely for any reply that is not itself offering a choice between a few named options — that is most replies.';
+
   if(industry==='ecommerce'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
     // Observed real failure, paired with the routing change above: a product listed sizes "S, M,
@@ -9152,21 +9346,68 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
   }
 }
 
+// Pulls an optional trailing "OPTIONS: A | B | C" directive back out of an LLM-generated FAQ reply
+// — engineBuildFaqSystemPrompt asks the model to append exactly this line, and only this line,
+// whenever its own reply poses a clarifying question with 2-10 named options ("glowing skin,
+// anti-ageing, or something else?", or a short menu of named categories/products), so it can be
+// resent as tappable buttons/list instead of making the customer type one back. Always strips the
+// marker line from the returned text regardless of whether the caller
+// goes on to use `options` — a caller that ignores them (e.g. the Instagram flow, which can't
+// render buttons at all) must never leak a raw "OPTIONS:" line into what the customer reads.
+function engineExtractReplyOptions(replyText){
+  const text=(typeof replyText==='string'?replyText:'');
+  const match=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
+  if(!match) return {text, options:null};
+  const stripped=text.slice(0, match.index).trimEnd();
+  // Capped at 10, not 3 — matches engineSendChatwootQuickReply's own max (it already renders >3
+  // items as a proper WhatsApp list message, not just buttons), so a legitimately larger menu (e.g.
+  // a first-touch reply naming several catalog categories) isn't silently truncated back down.
+  const options=match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10);
+  return {text:stripped, options:options.length?options:null};
+}
 // Same message-create endpoint as engineSendChatwootReply, plus the content_type/content_attributes
-// pair Chatwoot's own WhatsApp Cloud provider turns into a real WhatsApp interactive button message
+// pair Chatwoot's own WhatsApp Cloud provider turns into a real WhatsApp interactive message
 // (confirmed against Chatwoot's own source: MessageBuilder reads content_type/content_attributes —
 // content_attributes accepted as a JSON string over multipart form-data, same as this file already
 // sends content/message_type/private that way — and WhatsappCloudService#create_payload_based_on_items
-// builds a button-type payload for <=3 items). items is [{title, value}]; WhatsApp's Cloud API caps
-// button titles at 20 characters and allows at most 3 buttons, so both are enforced defensively here
-// rather than trusting a caller and getting a silent downstream Meta rejection (see
-// engineSendChatwootReply's own comment on that exact class of failure). List-type payloads (>3
-// items) are a real Chatwoot capability too but aren't used by any caller yet, so this only ever
-// sends the button shape — extra items are dropped, not upgraded to a list, until a caller actually
-// needs more than 3.
+// picks button vs list shape off the same items array itself). items is [{title, value}]; WhatsApp's
+// Cloud API caps plain buttons at 3 (20-char titles) and list rows at 10 (24-char titles), so both
+// shapes are enforced defensively here rather than trusting a caller and getting a silent downstream
+// Meta rejection (see engineSendChatwootReply's own comment on that exact class of failure). >3 items
+// now sends as a Chatwoot list message (still content_type input_select — Chatwoot itself decides
+// button vs list off the item count) instead of silently dropping everything past the 3rd.
+// Titles longer than the cap are truncated on the last word boundary with an ellipsis (see
+// engineTruncateButtonTitle) rather than a hard character cut, so a title never ends mid-word.
+// If two different items still truncate down to the exact same visible title, buttons/list rows
+// would look identical on screen — the customer could tap one meaning the other — so that case
+// falls back to a plain text list of the untruncated titles instead of sending ambiguous buttons.
+function engineTruncateButtonTitle(title, cap){
+  const t=String(title||'').trim();
+  if(t.length<=cap) return t;
+  const slice=t.slice(0, cap-1);
+  const lastSpace=slice.lastIndexOf(' ');
+  // Only break on the space if it doesn't throw away most of the cap (a title like "XL" has no
+  // useful space to break on at all) — otherwise a hard cut is the better of two bad options.
+  const cut=lastSpace>Math.floor(cap*0.4) ? slice.slice(0, lastSpace) : slice;
+  return cut.trimEnd()+'…';
+}
 async function engineSendChatwootQuickReply(env, c, clientId, convId, text, items){
-  const trimmedItems=(items||[]).slice(0,3).map(it=>({title:String(it?.title||'').slice(0,20), value:String(it?.value||it?.title||'')})).filter(it=>it.title);
+  const raw=(items||[]).filter(it=>it && (it.title||it.value));
+  const isList=raw.length>3;
+  const titleCap=isList?24:20;
+  const trimmedItems=raw.slice(0,10).map(it=>({title:engineTruncateButtonTitle(it?.title||it?.value||'', titleCap), value:String(it?.value||it?.title||'')})).filter(it=>it.title);
   if(!trimmedItems.length) return engineSendChatwootReply(env, c, clientId, convId, text);
+  const seenTitles=new Set();
+  const hasCollision=trimmedItems.some(it=>{
+    const key=it.title.toLowerCase();
+    if(seenTitles.has(key)) return true;
+    seenTitles.add(key);
+    return false;
+  });
+  if(hasCollision){
+    const listText=raw.map(it=>`- ${it.title||it.value}`).join('\n');
+    return engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
+  }
   const trimmed=(typeof text==='string'?text:'').trim();
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return;
   try{
@@ -10107,10 +10348,19 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
 
   const history=(state.history||[]).slice();
   if(userText) history.push({role:'user', content:userText});
-  // options — only present on the one route (objection, see quick_reply_buttons_enabled above)
-  // that actually offered the customer tappable choices via engineSendChatwootQuickReply; every
-  // other reply keeps the exact same {role,content} shape ConvHistory has always had.
-  if(reply) history.push({role:'assistant', content:reply, ...(routing.quickReplies&&routing.quickReplies.length?{options:routing.quickReplies}:{})});
+  // options — only present on turns that actually offered the customer tappable choices via
+  // engineSendChatwootQuickReply (objection route's next-step buttons, the enquiry route's
+  // category/product picker — both gated on quick_reply_buttons_enabled above). media — only
+  // present when this turn's reply carried an inline product/category photo (routing.media, set
+  // right before the engineDeliverReply/engineSendChatwootImageReply call that actually sent it —
+  // see those call sites in handleEngineWebhook), so the Chats tab can render the real photo
+  // instead of a blank bubble (chats.js chatMergedTimeline). Deliberately scoped to just the
+  // primary inline photo, not every supplementary image/audio/video/pdf a turn might also send
+  // (engineMaybeSendProductMedia and friends run after this history entry is already written) —
+  // every other reply keeps the exact same {role,content} shape ConvHistory has always had.
+  if(reply) history.push({role:'assistant', content:reply,
+    ...(routing.quickReplies&&routing.quickReplies.length?{options:routing.quickReplies}:{}),
+    ...(routing.media?{media:routing.media}:{})});
 
   const body={
     ClientId:String(clientId), Phone:state.phone||'', Name:state.name, ConversationID:state.convId,
@@ -10118,6 +10368,11 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString(),
     Channel:state.channel||'whatsapp'
   };
+  // A genuine new inbound message always means this conversation needs eyes again — auto-reopens
+  // it (chats.js chatToggleResolve/handleChatResolveLead) the same way a real support inbox does,
+  // rather than leaving a customer's fresh message silently tucked into a "Resolved" filter tab a
+  // rep has no reason to keep checking.
+  if(userText) body.ConvResolved='No';
   // Instagram DM (state.channel==='instagram') keys leads off IgId instead of a phone number —
   // see engineParseInstagramPayload/handleInstagramWebhook.
   if(state.igId) body.IgId=state.igId;
@@ -10131,7 +10386,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   else if(routing.clearOrderCollect) body.OrderCollect='';
   if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
   else body.Stage=next;
-  if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; }
+  if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; body['Follow up 4']='No'; body['Follow up 5']='No'; }
   if(intentData?.booking_time) body.BookingTime=intentData.booking_time;
 
   let score='Cold';
@@ -10521,6 +10776,7 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           routing.next='order_collect_items';
           routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
+          if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           orderHandledInline=true;
@@ -10528,6 +10784,7 @@ async function handleEngineWebhook(request, env, secret){
           const link=buildCheckoutLink(c, clientId, detection.sku, product);
           sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
           routing.reply=sentText;
+          if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           await logPendingOrder(env, c, clientId, phone, name, product);
@@ -10549,6 +10806,7 @@ async function handleEngineWebhook(request, env, secret){
           // asking about size/color/stock should see the actual item, not just read a description
           // (this was briefly restricted to link-only sends; reverted per explicit product
           // direction — the photo isn't "extra" media here, it's answering what was asked).
+          if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
           await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           // Only logged as a pending order when the link was actually made available this turn —
@@ -10569,11 +10827,37 @@ async function handleEngineWebhook(request, env, secret){
             const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
             const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
             const variants=[...new Set(categoryProducts.map(p=>(p.color||'').trim()).filter(Boolean))];
-            const listText=(variants.length?variants:categoryProducts.map(p=>p.name)).map(v=>`- ${v}`).join('\n');
+            // label is what's actually shown to the customer (button/list title or plain-text
+            // line); value is what's sent back and matched against on the next turn — kept as the
+            // real product name even when short_label is set, so tapping/typing a short label still
+            // resolves to the right product the same way the full name always has.
+            const nameChoices=[];
+            for(const p of categoryProducts){
+              if(!p.name || nameChoices.some(ch=>ch.value===p.name)) continue;
+              nameChoices.push({value:p.name, label:(p.short_label||'').trim()||p.name});
+            }
+            const choices=variants.length?variants.map(v=>({value:v, label:v})):nameChoices;
             const intro=variants.length?`Which type of ${detection.category} are you looking for?`:`Here's what we have in ${detection.category}:`;
-            sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
-            routing.reply=sentText;
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:categoryImage||withImage.image_url});
+            const photoUrl=categoryImage||withImage.image_url;
+            if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
+            // Tappable picker (buttons for <=3 choices, a Chatwoot list message for up to 10)
+            // instead of a plain text bullet list the customer had to retype by hand — tapping a
+            // choice sends its exact name back as a normal incoming message (Chatwoot's own
+            // behavior for a button/list reply), which the next turn's product/category resolution
+            // already handles the same as if the customer had typed it themselves.
+            if(botConfig.quick_reply_buttons_enabled!==false && choices.length){
+              sentText=await engineLocalizeReply(env, c, intro, replyLang);
+              routing.reply=sentText;
+              const items=choices.slice(0,10).map(ch=>({title:ch.label, value:ch.value}));
+              routing.quickReplies=items;
+              if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
+              await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+            } else {
+              const listText=choices.map(ch=>`- ${ch.label}`).join('\n');
+              sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
+              routing.reply=sentText;
+              await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:photoUrl});
+            }
             orderHandledInline=true;
           }
           // No products at all in that category — falls through to FAQ below ("we don't carry that").
@@ -10589,6 +10873,17 @@ async function handleEngineWebhook(request, env, secret){
       // product reply. Reset it so the lead record matches what was actually sent.
       if(orderHandledInline && routing.route==='human') routing.route='ecom_faq';
     }
+
+    // A brand-new ecom lead's very first message, when this client has product categories
+    // configured — computed once here (both to gate the branch below and to build it) so the
+    // greeting is a deterministic, instant WhatsApp category list instead of leaving the FAQ LLM
+    // to free-write the same menu as plain-text bullets (real observed case: "Hi" got a long
+    // bulleted category dump with no buttons at all, because that reply wasn't itself a 2-3-way
+    // clarifying question and didn't name one single product, so neither existing button path
+    // fired). Gated behind !orderHandledInline and isNewLead so an order/enquiry/human/qualify
+    // signal already handled above, or a returning customer's "Hi", never gets overridden by this.
+    const newLeadCategories=(!orderHandledInline && routing.route==='ecom_faq' && isNewLead && botConfig.quick_reply_buttons_enabled!==false)
+      ? await ecomListCategories(env, clientId) : [];
 
     if(orderHandledInline){
       // Reply already sent above — Stage/qualAnswers bookkeeping from engineRouteFlow's own
@@ -10641,7 +10936,14 @@ async function handleEngineWebhook(request, env, secret){
       sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
       routing.reply=sentText;
       if(sentText) await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
-    } else if(['faq','ecom_faq','travel_faq'].includes(routing.route)){
+    } else if(newLeadCategories.length){
+      const intro=`Hi! Welcome to ${c.client_name||'our store'}! 😊 What are you looking for today?`;
+      sentText=await engineLocalizeReply(env, c, intro, replyLang);
+      routing.reply=sentText;
+      const items=newLeadCategories.map(cat=>({title:cat, value:cat}));
+      routing.quickReplies=items;
+      await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+    } else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
@@ -10649,22 +10951,62 @@ async function handleEngineWebhook(request, env, secret){
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
+      const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
+      reply=cleanReply;
       routing.reply=reply; sentText=reply;
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      let faqQuickReplies=null;
+      if(botConfig.quick_reply_buttons_enabled!==false){
+        if(replyOptions && replyOptions.length){
+          // The LLM's own clarifying question already named these — tapping one sends its exact
+          // text back as a normal message, resolved the same way a customer typing it by hand
+          // already is (see the OPTIONS: instruction in engineBuildFaqSystemPrompt).
+          faqQuickReplies=replyOptions.map(o=>({title:o, value:o}));
+        } else if(routing.route==='ecom_faq'){
+          // No clarifying question this turn, but the answer named exactly one catalog product with
+          // enough confidence to act on — offer the same one-tap next steps the deterministic
+          // category picker gets. Values are phrased to land on existing keyword/classifier matches
+          // (order detection, ECOM_PRODUCT_DETAILS_KEYWORD_RE, WANTS_HUMAN) the same way a customer
+          // typing them by hand already does — no new receive-side handling needed.
+          const mentionedProduct=await ecomDetectMentionedProduct(env, clientId, reply);
+          if(mentionedProduct){
+            faqQuickReplies=[
+              {title:'🛒 Order this', value:`I want to order ${mentionedProduct.name}`},
+              {title:'📋 More details', value:`Tell me more about ${mentionedProduct.name}`},
+              {title:'🙋 Talk to a human', value:'Talk to a human'},
+            ];
+          } else {
+            // No single product either, but the answer named several catalog categories itself
+            // (e.g. a "what do you sell?" or greeting-style reply listing "Mattress, Sofa Set,
+            // Recliner..." as plain prose) — turn those into the same tappable picker instead of
+            // leaving the customer to retype one by hand. Safety net for exactly the free-form case
+            // the OPTIONS: marker doesn't catch (the LLM wasn't asking a "pick one of these"
+            // question, it just happened to enumerate real categories) — see ecomDetectMentionedCategories.
+            const mentionedCategories=await ecomDetectMentionedCategories(env, clientId, reply);
+            if(mentionedCategories.length) faqQuickReplies=mentionedCategories.map(cat=>({title:cat, value:cat}));
+          }
+        }
+      }
+      routing.quickReplies=faqQuickReplies;
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
-      // The one deterministic, low-risk spot this ships to for now: a customer who just raised an
-      // objection is exactly who benefits from an explicit, one-tap human escalation offered
-      // alongside the LLM's own answer, rather than only ever reachable by typing something the
-      // WANTS_HUMAN classifier happens to catch. Tapping it sends its title back as a normal
+      // A customer who just raised an objection benefits from explicit, one-tap next steps
+      // alongside the LLM's own answer, rather than only ever reachable by typing something a
+      // classifier happens to catch. Tapping any of these sends its title back as a normal
       // incoming text message (Chatwoot's own webhook behavior for a button reply — no special
-      // receive-side handling needed), which the existing WANTS_HUMAN keyword match already
-      // recognizes ("talk to a human" contains "talk to"). Opt-out via the same bot_config a client
-      // already uses for the other handover/objection toggles.
-      const quickReplies=botConfig.quick_reply_buttons_enabled!==false?[{title:'🙋 Talk to a human', value:'Talk to a human'}]:null;
+      // receive-side handling needed): "Talk to a human" is caught by the existing WANTS_HUMAN
+      // keyword match ("talk to a human" contains "talk to"); the other two land as plain text
+      // that the next turn's classifier reads normally (AFFIRMATIVE / QUESTION respectively) — no
+      // new intent handling needed for either. Opt-out via the same bot_config a client already
+      // uses for the other handover/objection toggles.
+      const quickReplies=botConfig.quick_reply_buttons_enabled!==false?[
+        {title:"👍 I'm convinced", value:"Okay, I'm convinced — let's proceed"},
+        {title:'❓ Another question', value:'I have another question'},
+        {title:'🙋 Talk to a human', value:'Talk to a human'},
+      ]:null;
       // Carried on `routing` (already passed to engineBuildLeadUpsertBody just below) purely so the
       // Chats tab can render this turn with the same button styling the customer actually saw on
       // WhatsApp — see that function's own history.push for how it lands in ConvHistory.
@@ -10715,6 +11057,11 @@ async function handleEngineWebhook(request, env, secret){
     // chat, once per (lead, unit) ever (hospitality_media_sent) rather than re-sent on every
     // later message that happens to mention the same unit again.
     await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText);
+    // Real Estate module (migrations/0031_real_estate.sql/0049_re_unit_media.sql) — same shape as
+    // the hospitality call just above: the first time this lead's message names a project or
+    // property type, send that unit's photos/video/PDF straight into the chat, once per (lead, unit)
+    // ever (re_media_sent).
+    await engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolvedLeadId, userText);
     // Ecommerce categories (migrations/0012_ecom_categories.sql) — separate from and never
     // overriding the per-product image send above (orderHandledInline gates it out when a
     // specific product was already handled this turn); see engineMaybeSendEcomCategoryMedia's own
@@ -10893,7 +11240,11 @@ async function handleInstagramWebhook(request, env){
         if(sentText) await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
       }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
         const sysPrompt=engineBuildFaqSystemPrompt(c, state, null, c.industry||'general', replyLang, isNewLead);
-        const reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
+        let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
+        // Instagram is text-only (engineDeliverReply short-circuits to engineSendInstagramReply
+        // before any button/list code) — the OPTIONS: marker itself must still be stripped here so
+        // it never shows up as a literal line in the DM, even though it's never turned into buttons.
+        reply=engineExtractReplyOptions(reply).text;
         routing.reply=reply; sentText=reply;
         await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
       }else if(routing.route==='objection'){
@@ -12276,8 +12627,8 @@ async function handleRecruitDelete(request, env, kind){
   return json({ok:true});
 }
 
-/* ── PROJECTS MODULE (frontend/projects.html — standalone tool, migrations/0047_pm_projects_tasks.sql,
-   0048_pm_phase2.sql) Projects/Tasks/Sprints/Time/Automations, same "one shared D1 table per
+/* ── PROJECTS MODULE (frontend/projects.html — standalone tool, migrations/0050_pm_projects_tasks.sql,
+   0051_pm_phase2.sql) Projects/Tasks/Sprints/Time/Automations, same "one shared D1 table per
    entity, client_id-scoped, generic config-driven CRUD" shape as RECRUIT_TABLES above — same
    login/session as the CRM (a Leadvyne account gets both), but its own tables: a different
    product on the same account, not a CRM feature. Special cases the generic Recruit handlers
@@ -14547,7 +14898,7 @@ async function runSaasSupportPullForAllClients(env){
 // ── Reminders — renewal (90/60/30 days before renewal_date) and activation-milestone-miss nudges.
 // pipeline_followups couldn't be reused for this (see migration comment); saas_account_reminders
 // holds several independent reminder rows per account. Sent via the same Chatwoot conversations-
-// API pattern used throughout this file (fpSendRemindersForClient, sendClassicFollowupStep).
+// API pattern used throughout this file (fpSendRemindersForClient, sendFollowupLadderStep).
 async function saasSendChatwootMessage(c, convId, text){
   if(!c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token || !convId) return false;
   const fd=new FormData();
@@ -15180,11 +15531,10 @@ function driveGuessFilename(contentType){
 }
 // Fetches one Google Drive file (video/image/audio/PDF) and forwards it into a Chatwoot
 // conversation as a real attachment — the general-purpose version of hospitalitySendUnitMedia's
-// per-item send, shared by the Automations & Flow module's send_whatsapp_media step and the
-// classic follow-up sequence's per-variant media attachment (see pickFollowupVariant/
-// handleBroadcastFollowupSend below). Returns false (never throws) on anything that didn't work —
-// an unshared file, a bad link, or a Chatwoot send failure — so callers can treat it as best-effort
-// exactly like every other WhatsApp send in this file.
+// per-item send, shared by the Automations & Flow module's send_whatsapp_media step, ecom
+// promotions/testimonials/product media, and others. Returns false (never throws) on anything that
+// didn't work — an unshared file, a bad link, or a Chatwoot send failure — so callers can treat it
+// as best-effort exactly like every other WhatsApp send in this file.
 async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption){
   const fileId=driveFileId(driveUrl);
   if(!fileId) return false;
@@ -15196,6 +15546,23 @@ async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption){
   fd.append('attachments[]', fetched.blob, driveGuessFilename(fetched.contentType));
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   return r.ok;
+}
+
+// Lightweight Drive-link size check for ecom.html's product/promotion video fields (called onblur,
+// right when a merchant enters the link — see checkDriveVideoSize there) — reuses the exact same
+// fetch-and-bypass-the-virus-scan-interstitial logic sendDriveMediaToChatwoot itself depends on
+// (driveFetchFile), so "how big is this" and "would this actually send" are answered by the
+// identical code path; a link this can't read would fail to send for the same reason. client_id-
+// based rather than session-based (ecom.html has no Authentik session of its own, same reasoning as
+// handleEcomWaTemplatesGet), read-only.
+async function handleEcomDriveFileSize(request, env){
+  const url=new URL(request.url);
+  const driveUrl=url.searchParams.get('url')||'';
+  const fileId=driveFileId(driveUrl);
+  if(!fileId) return json({error:'Not a recognizable Google Drive share link.'}, 400);
+  const fetched=await driveFetchFile(fileId);
+  if(!fetched) return json({error:'Could not read this file — make sure it\'s shared as "Anyone with the link can view."'}, 400);
+  return json({size_bytes:fetched.blob.size, content_type:fetched.contentType});
 }
 
 // Sends one unit's photos/video into the chat as real attachments and marks it sent so it's never
@@ -15275,6 +15642,67 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
     if(alreadyAny) return;
     for(const unit of units) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit);
   }catch(e){ await reportOpsError(env, 'engineMaybeSendHospitalityMedia', e, {clientId, convId}); }
+}
+
+// Real Estate's equivalent of hospitalitySendUnitMedia just above — same Drive-link-only shape as
+// ecom product media (image_url/image_url_2-5/video_url/pdf_url, no legacy R2 branch since this
+// field set is new), reusing sendDriveMediaToChatwoot for every non-empty slot. Marks the send in
+// re_media_sent so a given (lead, unit) pair is never re-sent.
+async function reSendUnitMediaToChatwoot(env, c, clientId, convId, leadId, unit){
+  const items=[unit.image_url, unit.image_url_2, unit.image_url_3, unit.image_url_4, unit.image_url_5, unit.video_url, unit.pdf_url].filter(Boolean);
+  if(!items.length) return false;
+  let sentAny=false;
+  for(let i=0;i<items.length;i++){
+    const caption=i===0?`Here's a look at ${unit.unit_no}${unit.tower?(' — Tower '+unit.tower):''} 📸`:'';
+    if(await sendDriveMediaToChatwoot(c, convId, items[i], caption)) sentAny=true;
+  }
+  if(sentAny){
+    await env.DB.prepare(`INSERT OR IGNORE INTO re_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
+      .bind(Number(clientId), leadId, unit.id, new Date().toISOString()).run();
+  }
+  return sentAny;
+}
+
+// Real Estate general-enquiry match, same "asking about availability at all" shape as
+// HOSPITALITY_GENERAL_ENQUIRY_RE above, vocabulary swapped for property terms.
+const RE_GENERAL_ENQUIRY_RE=/\b(propert(?:y|ies)|units?|flats?|villas?|plots?|apartments?|available|availability|options?|inventory|prices?|pricing|floor\s*plans?)\b/i;
+
+// Auto-sends a unit's photos/video/PDF into the chat, mirroring engineMaybeSendHospitalityMedia's
+// three-tier match: (1) a specific project named in the message — send every matching unit's media,
+// narrowed further by property_type if that was also named; (2) no project named but a property_type
+// keyword was ("looking for a villa") — send that type's units; (3) neither, but the message reads
+// like a general enquiry (RE_GENERAL_ENQUIRY_RE) — send the first few active units once per lead ever.
+// Gated on CLIENTS.real_estate_enabled the same way ecom's product-media send is gated on
+// c.industry==='ecommerce' and hospitality's on c.hospitality_enabled.
+async function engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolvedLeadId, userText){
+  if(c.real_estate_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const {results:units}=await env.DB.prepare(
+      `SELECT u.*, p.name AS project_name FROM re_units u JOIN re_projects p ON p.id=u.project_id
+       WHERE u.client_id=? AND u.status IN ('available','hold') LIMIT 500`
+    ).bind(Number(clientId)).all();
+    if(!units || !units.length) return;
+    const lower=userText.toLowerCase();
+    const typeMatch=lower.match(/\b(residential|commercial|villa|flat|plot)s?\b/i);
+    const projectMatch=units.find(u=>u.project_name && u.project_name.trim().length>=4 && lower.includes(u.project_name.trim().toLowerCase()));
+    let candidates=null;
+    if(projectMatch) candidates=units.filter(u=>u.project_id===projectMatch.project_id);
+    else if(typeMatch) candidates=units.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
+    if(candidates){
+      if(projectMatch && typeMatch) candidates=candidates.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
+      for(const unit of candidates.slice(0,5)){
+        const already=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, unit.id).first();
+        if(already) continue;
+        await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit);
+      }
+      return;
+    }
+    if(!RE_GENERAL_ENQUIRY_RE.test(lower)) return;
+    const alreadyAny=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+    if(alreadyAny) return;
+    for(const unit of units.slice(0,5)) await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit);
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendRealEstateMedia', e, {clientId, convId}); }
 }
 
 async function handleHospitalityBlockedDateCreate(request, env){
@@ -18121,6 +18549,8 @@ const reDocumentsCrud=reCrud('re_documents', [
    re_price_audit row whenever base_price/plc_charges/floor_rise_charges change (RERA compliance —
    "audit trail for price changes and discount approvals"). ── */
 const RE_UNIT_PRICE_FIELDS=['base_price','plc_charges','floor_rise_charges'];
+// Top-level property category (frontend dropdown) — distinct from the freeform unit_type field.
+const RE_PROPERTY_TYPES=['Residential','Commercial','Villa','Flat','Plot'];
 async function handleReUnitsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -18138,11 +18568,14 @@ async function handleReUnitCreate(request, env){
   const body=await request.json().catch(()=>({}));
   if(!body.project_id||!body.unit_no) return json({error:'project_id and unit_no are required'}, 400);
   const now=new Date().toISOString();
-  const r=await env.DB.prepare(`INSERT INTO re_units (client_id,project_id,tower,floor,unit_no,unit_type,area_sqft,base_price,plc_charges,floor_rise_charges,status,virtual_tour_url,created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+  const propertyType=RE_PROPERTY_TYPES.includes(body.property_type) ? body.property_type : '';
+  const r=await env.DB.prepare(`INSERT INTO re_units (client_id,project_id,tower,floor,unit_no,unit_type,area_sqft,base_price,plc_charges,floor_rise_charges,status,virtual_tour_url,property_type,image_url,image_url_2,image_url_3,image_url_4,image_url_5,video_url,pdf_url,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
     Number(payload.cid), Number(body.project_id), String(body.tower||''), Number(body.floor)||0, String(body.unit_no).slice(0,40),
     String(body.unit_type||'').slice(0,60), Number(body.area_sqft)||0, Number(body.base_price)||0, Number(body.plc_charges)||0,
-    Number(body.floor_rise_charges)||0, String(body.status||'available').slice(0,30), String(body.virtual_tour_url||'').slice(0,500), now
+    Number(body.floor_rise_charges)||0, String(body.status||'available').slice(0,30), String(body.virtual_tour_url||'').slice(0,500), propertyType,
+    String(body.image_url||'').slice(0,500), String(body.image_url_2||'').slice(0,500), String(body.image_url_3||'').slice(0,500),
+    String(body.image_url_4||'').slice(0,500), String(body.image_url_5||'').slice(0,500), String(body.video_url||'').slice(0,500), String(body.pdf_url||'').slice(0,500), now
   ).run();
   const row=await env.DB.prepare(`SELECT * FROM re_units WHERE id=?`).bind(r.meta.last_row_id).first();
   return json(row);
@@ -18155,8 +18588,9 @@ async function handleReUnitUpdate(request, env){
   const existing=await env.DB.prepare(`SELECT * FROM re_units WHERE id=?`).bind(Number(body.id)).first();
   if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
   const sets=[], vals=[];
-  const strFields={tower:40, unit_type:60, virtual_tour_url:500};
+  const strFields={tower:40, unit_type:60, virtual_tour_url:500, image_url:500, image_url_2:500, image_url_3:500, image_url_4:500, image_url_5:500, video_url:500, pdf_url:500};
   for(const [k,len] of Object.entries(strFields)){ if(body[k]!==undefined){ sets.push(`${k}=?`); vals.push(String(body[k]).slice(0,len)); } }
+  if(body.property_type!==undefined){ sets.push('property_type=?'); vals.push(RE_PROPERTY_TYPES.includes(body.property_type)?body.property_type:''); }
   if(body.floor!==undefined){ sets.push('floor=?'); vals.push(Number(body.floor)||0); }
   if(body.area_sqft!==undefined){ sets.push('area_sqft=?'); vals.push(Number(body.area_sqft)||0); }
   for(const f of RE_UNIT_PRICE_FIELDS){
@@ -18394,14 +18828,43 @@ export class ClientUpdatesHub{
       return new Response('ok');
     }
     if(request.headers.get('Upgrade')==='websocket'){
+      // email/name identify which teammate this socket belongs to, for the "seen by" presence
+      // relay below — same trust level as every other agent-identity field this app already
+      // takes on faith from an authenticated dashboard tab (e.g. Owner via bulkAssign), since the
+      // shared session token itself carries no per-agent identity (verifySession's payload is
+      // just {cid, exp}). Stored via serializeAttachment so it survives hibernation — the
+      // Hibernatable WebSockets API can evict/recreate this DO between messages, and a plain JS
+      // field on `this` would be lost when that happens.
+      const email=(url.searchParams.get('email')||'').toLowerCase().slice(0,140);
+      const name=(url.searchParams.get('name')||'').slice(0,140);
       const pair=new WebSocketPair();
       const [client, server]=Object.values(pair);
       this.state.acceptWebSocket(server);
+      try{ server.serializeAttachment({email, name}); }catch(e){}
       return new Response(null, {status:101, webSocket:client});
     }
     return new Response('Not found', {status:404});
   }
-  async webSocketMessage(ws, message){}
+  // Chats tab "seen by" avatars (chats.js chatSelectLead/renderSeenBy) — a lead's viewers, not a
+  // persisted read-receipt: dashboard.html sends a small {type:'viewing', lead_id} heartbeat every
+  // ~20s while that lead's thread is open, relayed here to every other connected socket for this
+  // client so teammates see who else is currently looking at the same conversation. Deliberately
+  // ephemeral (nothing written to D1/NocoDB) — a stale/closed tab just stops heartbeating and every
+  // other client ages its avatar out on its own after ~45s (see chats.js renderSeenBy), so there's
+  // nothing here that needs cleaning up server-side.
+  async webSocketMessage(ws, message){
+    let msg=null;
+    try{ msg=JSON.parse(message); }catch(e){ return; }
+    if(msg?.type!=='viewing' || !msg.lead_id) return;
+    let who={};
+    try{ who=ws.deserializeAttachment()||{}; }catch(e){}
+    if(!who.email) return;
+    const out=JSON.stringify({type:'viewing', lead_id:msg.lead_id, email:who.email, name:who.name||who.email, at:new Date().toISOString()});
+    for(const other of this.state.getWebSockets()){
+      if(other===ws) continue;
+      try{ other.send(out); }catch(e){}
+    }
+  }
   async webSocketClose(ws, code, reason, wasClean){ try{ ws.close(code, reason); }catch(e){} }
   async webSocketError(ws, error){}
 }
@@ -18462,6 +18925,8 @@ export default {
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
+      else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
+      else if(url.pathname==='/chat/resolve' && request.method==='POST'){ res=await handleChatResolveLead(request, env); }
       else if(url.pathname==='/quote/send' && request.method==='POST'){ res=await handleQuoteSend(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='GET'){ res=await handleWaTemplatesGet(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='POST'){ res=await handleWaTemplatesCreate(request, env); }
@@ -18520,6 +18985,7 @@ export default {
       else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }
+      else if(url.pathname==='/ecom/drive-file-size' && request.method==='GET'){ res=await handleEcomDriveFileSize(request, env); }
       else if(url.pathname==='/ecom/products' && request.method==='GET'){ res=await handleEcomList(request, env, 'products'); }
       else if(url.pathname==='/ecom/products' && request.method==='POST'){ res=await handleEcomCreate(request, env, 'products'); }
       else if(url.pathname==='/ecom/products' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'products'); }
@@ -18573,8 +19039,8 @@ export default {
       else if(url.pathname==='/broadcast/send-template' && request.method==='POST'){ res=await handleBroadcastSendTemplate(request, env); }
       else if(url.pathname==='/broadcast/followup-send' && request.method==='POST'){ res=await handleBroadcastFollowupSend(request, env); }
       else if(url.pathname==='/human-deals/coach' && request.method==='GET'){ res=await handleHumanDealsCoach(request, env); }
-      else if(url.pathname==='/followups/variants' && request.method==='GET'){ res=await handleFollowupVariantsList(request, env); }
-      else if(url.pathname==='/followups/variants' && request.method==='POST'){ res=await handleFollowupVariantsSave(request, env); }
+      else if(url.pathname==='/followups/ladder' && request.method==='GET'){ res=await handleFollowupLadderGet(request, env); }
+      else if(url.pathname==='/followups/ladder' && request.method==='POST'){ res=await handleFollowupLadderSave(request, env); }
       else if(url.pathname==='/followups/stats' && request.method==='GET'){ res=await handleFollowupStats(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='GET'){ res=await handleAutomationFlowsList(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='POST'){ res=await handleAutomationFlowCreate(request, env); }

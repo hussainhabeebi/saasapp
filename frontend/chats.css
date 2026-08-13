@@ -93,3 +93,134 @@
    opening comment above). */
 .chat-back-btn{width:32px;height:32px;border:none;background:none;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;color:#54656f;flex-shrink:0;transition:background .15s}
 .chat-back-btn:hover{background:#eef0f1}
+
+/* Internal notes — a private timeline entry, never a chat bubble, so it reads as unmistakably
+   different from anything the customer actually saw (Front/Intercom's yellow-note convention). */
+.chat-note-row{display:flex;justify-content:center;margin:10px 0}
+.chat-note{max-width:80%;background:#fff6d8;border:1px solid #f2e2a1;border-radius:8px;padding:8px 12px;font-size:13px;line-height:1.45;color:#5b4b12;box-shadow:0 1px 2px rgba(16,24,32,.06)}
+.chat-note-meta{font-size:10.5px;color:#9c8a3d;margin-top:4px}
+
+/* Reply / Internal note composer toggle */
+.chat-mode-row{display:flex;gap:6px;padding:8px 14px 0;flex-shrink:0}
+.chat-mode-btn{font-size:12px;font-weight:600;padding:5px 12px;border-radius:99px;border:1px solid #d1d7db;background:#fff;color:#54656f;cursor:pointer;transition:background .15s,color .15s,border-color .15s}
+.chat-mode-btn:hover{border-color:#00a884;color:#00a884}
+.chat-mode-btn.active{background:linear-gradient(135deg,#00c39a,#00a884);color:#fff;border-color:#00a884}
+.chat-mode-btn[data-mode="note"].active{background:linear-gradient(135deg,#f5c453,#e8a83c);border-color:#e8a83c}
+.chat-input-bar.note-mode{background:#fffbf0}
+.chat-input-bar.note-mode .chat-input-box{background:#fff3cd}
+.chat-input-bar.note-mode .chat-input-box:focus{border-color:#e8a83c}
+.chat-input-bar.note-mode .chat-send-btn{background:linear-gradient(135deg,#f5c453,#e8a83c);box-shadow:0 2px 8px rgba(232,168,60,.35)}
+
+/* Per-conversation assignee + "seen by" presence, both in chat-main-hd */
+.chat-assignee-select{font-size:12px;font-weight:600;color:#54656f;background:#f7f8fa;border:1px solid #e3e6e8;border-radius:8px;padding:6px 8px;max-width:130px;flex-shrink:0;cursor:pointer;font-family:inherit}
+.chat-seenby{display:flex;flex-shrink:0}
+.seenby-avatar{width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#8ec5fc,#4f8ff7);color:#fff;font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2px solid #fff;margin-left:-8px;box-shadow:0 1px 2px rgba(16,24,32,.15)}
+.seenby-avatar:first-child{margin-left:0}
+
+/* Saved-reply "/" picker — floats above the composer, closest-anchor styling to a Slack-style
+   slash-command menu. */
+.saved-reply-picker{position:absolute;left:0;right:0;bottom:calc(100% + 8px);background:#fff;border:1px solid #e3e6e8;border-radius:10px;box-shadow:0 6px 20px rgba(16,24,32,.14);max-height:220px;overflow-y:auto;z-index:5}
+.saved-reply-opt{display:flex;gap:8px;align-items:baseline;padding:8px 12px;cursor:pointer;border-bottom:1px solid #f3f4f5}
+.saved-reply-opt:last-child{border-bottom:none}
+.saved-reply-opt:hover,.saved-reply-opt.active{background:#f0faf7}
+.sr-shortcut{font-size:12.5px;font-weight:700;color:#00806a;flex-shrink:0}
+.sr-text{font-size:12.5px;color:#54656f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* Inline media (routing.media, see worker.js engineBuildLeadUpsertBody) — the product/category
+   photo actually sent this turn, rendered above the bubble's own text instead of a blank/text-only
+   bubble. Click-to-open-full-size since the bubble itself caps the image at a thumbnail width. */
+.bubble-media-img{display:block;max-width:100%;max-height:260px;border-radius:8px;margin-bottom:6px;cursor:zoom-in;object-fit:cover}
+
+/* Reply-to-message ("quote reply") — a small always-visible affordance per bubble (not hover-only,
+   so it works on touch) and the composer's preview bar for whichever message is currently targeted. */
+.bubble-reply-btn{align-self:center;width:26px;height:26px;border-radius:50%;border:none;background:#fff;box-shadow:0 1px 3px rgba(16,24,32,.15);font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#54656f;opacity:0;transition:opacity .12s;flex-shrink:0;margin:0 6px}
+.chat-bubble-row:hover .bubble-reply-btn{opacity:1}
+/* .chat-bubble-row.out already has justify-content:flex-end from the base rule above — pairing
+   row-reverse with flex-start (not flex-end) here is deliberate: in a reversed main axis,
+   flex-start is the visual right edge, so this is what actually keeps outgoing bubbles right-
+   aligned while putting the reply button between the bubble and the center of the screen, same
+   side it lands on for incoming bubbles. Pairing row-reverse with flex-end would left-align the
+   whole row instead, undoing the base rule. */
+.chat-bubble-row.out{flex-direction:row-reverse;justify-content:flex-start}
+.chat-reply-preview{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#f0f2f5;border-top:1px solid #eef0f1;border-left:3px solid #00a884;flex-shrink:0}
+.chat-reply-preview-text{flex:1;font-size:12.5px;color:#54656f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-reply-preview button{border:none;background:none;cursor:pointer;font-size:13px;color:#8a99a3;flex-shrink:0}
+/* A bubble currently quoted in the composer's reply-preview bar, and a bubble a search match
+   currently landed on — both a soft highlight ring, distinct colors so they're never confused. */
+.chat-bubble.reply-target{box-shadow:0 0 0 2px #00a884}
+.chat-bubble.search-hit{box-shadow:0 0 0 2px #f5c453}
+
+/* In-thread search — toggled into the header via chatToggleSearch, replaces nothing (still shows
+   alongside chat-main-hd), just a second bar underneath it. */
+.chat-search-bar{display:flex;align-items:center;gap:8px;padding:8px 20px;background:#fbfbfc;border-bottom:1px solid #e9edef;flex-shrink:0}
+.chat-search-bar input{flex:1;border:1px solid #e3e6e8;border-radius:8px;padding:7px 10px;font-size:13px;font-family:inherit;outline:none}
+.chat-search-bar input:focus{border-color:#00a884}
+.chat-search-count{font-size:12px;color:#8a99a3;white-space:nowrap}
+.chat-search-bar button{border:none;background:#fff;border:1px solid #e3e6e8;border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:12px;color:#54656f}
+
+/* Pin/star — a lightweight, team-shared "keep at top" marker (worker.js /chat/pin, Leads.Pinned). */
+.chat-pin-btn{border:none;background:none;cursor:pointer;font-size:16px;flex-shrink:0;opacity:.55;transition:opacity .12s,transform .1s}
+.chat-pin-btn:hover{opacity:1;transform:scale(1.08)}
+.chat-pin-btn.pinned{opacity:1}
+.cc-pin-badge{font-size:11px;margin-right:2px}
+
+/* Resolve/Reopen — a triage state, distinct from Stage (worker.js handleChatResolveLead,
+   Leads.ConvResolved). Green check when open (tap to resolve), gray undo when already resolved
+   (tap to reopen) — same visual language as a real support inbox's resolve toggle. */
+.chat-resolve-btn{border:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0;display:flex;align-items:center;gap:4px;transition:opacity .12s}
+.chat-resolve-btn.open{background:#e8f8f2;color:#00806a}
+.chat-resolve-btn.resolved{background:#f0f2f5;color:#54656f}
+.chat-resolve-btn:hover{opacity:.8}
+.cc-resolved-badge{font-size:11px;margin-right:2px}
+
+/* Voice note recording — mic button in the composer tools row; turns into a live recording
+   indicator (pulsing red dot + elapsed timer + stop button) in place of the tools row while active. */
+.chat-voice-recording{display:flex;align-items:center;gap:8px;padding:0 8px;flex:1;font-size:13px;color:#c0392b;font-weight:600}
+.chat-voice-dot{width:9px;height:9px;border-radius:50%;background:#e74c3c;animation:chatVoicePulse 1.1s ease-in-out infinite}
+@keyframes chatVoicePulse{0%,100%{opacity:1}50%{opacity:.35}}
+.chat-voice-cancel{border:none;background:none;color:#8a99a3;cursor:pointer;font-size:12px;margin-left:auto}
+
+/* Rich attachment card (image/document/voice-note sent from the composer) — replaces the old plain
+   "📎 filename" text-only bubble with an actual icon+filename+size card, matching how the reference
+   screenshot's file bubbles read. */
+.bubble-attachment{display:flex;align-items:center;gap:9px;background:rgba(255,255,255,.55);border:1px solid rgba(0,0,0,.08);border-radius:8px;padding:8px 10px;margin-bottom:4px;cursor:pointer;max-width:240px}
+.chat-bubble.in .bubble-attachment{background:#f3f6f5}
+.bubble-attachment-icon{font-size:20px;flex-shrink:0}
+.bubble-attachment-info{min-width:0;flex:1}
+.bubble-attachment-name{font-size:12.5px;font-weight:600;color:#111b21;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bubble-attachment-size{font-size:11px;color:#8a99a3}
+.bubble-attachment-audio{width:100%;margin-bottom:4px;height:34px}
+
+/* Chat Appearance picker (🎨 button, chat-sidebar-title) — a small dropdown, not a full modal,
+   since it's just two lightweight preference toggles. */
+.chat-appearance-menu{position:absolute;top:calc(100% + 6px);right:0;background:#fff;border:1px solid #e3e6e8;border-radius:10px;box-shadow:0 6px 20px rgba(16,24,32,.16);padding:8px;min-width:190px;z-index:10;text-align:left}
+.chat-appearance-label{font-size:10.5px;font-weight:700;color:#8a99a3;text-transform:uppercase;letter-spacing:.4px;padding:4px 8px}
+.chat-appearance-opt{font-size:13px;color:#111b21;padding:7px 8px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:space-between}
+.chat-appearance-opt:hover{background:#f7f8fa}
+.chat-appearance-opt.active{background:#eefaf6;color:#00806a;font-weight:600}
+
+/* ── Professional Blue theme (data-chat-theme="professional" on .chats-layout) ──
+   Redeclares only the specific color-bearing properties from the base rules above — everything
+   else (layout, spacing, shadows) is shared with Classic. Wallpaper removal is handled separately
+   by the independent .no-wallpaper class below (chatGetWallpaper defaults it off for this theme,
+   but a rep can still turn it back on, same toggle either theme uses). */
+.chats-layout[data-chat-theme="professional"] .chat-bubble.out{background:#dbeafe}
+.chats-layout[data-chat-theme="professional"] .chat-bubble.tail-out::before{border-color:transparent transparent transparent #dbeafe}
+.chats-layout[data-chat-theme="professional"] .chat-filter-btn.active{background:#2563eb;border-color:#2563eb;box-shadow:0 2px 6px rgba(37,99,235,.3)}
+.chats-layout[data-chat-theme="professional"] .chat-filter-btn:hover{border-color:#2563eb;color:#2563eb}
+.chats-layout[data-chat-theme="professional"] .chat-mode-btn.active[data-mode="reply"]{background:#2563eb;border-color:#2563eb}
+.chats-layout[data-chat-theme="professional"] .chat-send-btn{background:#2563eb;box-shadow:0 2px 8px rgba(37,99,235,.35)}
+.chats-layout[data-chat-theme="professional"] .chat-input-box:focus{border-color:#2563eb}
+.chats-layout[data-chat-theme="professional"] .chat-search:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.chats-layout[data-chat-theme="professional"] .chat-search-bar input:focus{border-color:#2563eb}
+.chats-layout[data-chat-theme="professional"] .chat-reply-preview{border-left-color:#2563eb}
+.chats-layout[data-chat-theme="professional"] .chat-bubble.reply-target{box-shadow:0 0 0 2px #2563eb}
+.chats-layout[data-chat-theme="professional"] .cc-unread-dot{background:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15)}
+.chats-layout[data-chat-theme="professional"] .bubble-check{color:#2563eb}
+/* Card-style attachments read cleaner without the translucent tint the wallpaper-era design used. */
+.chats-layout[data-chat-theme="professional"] .bubble-attachment{background:#fff;border-color:#e3e6e8}
+.chats-layout[data-chat-theme="professional"] .chat-bubble.in .bubble-attachment{background:#f7f8fa}
+
+/* Wallpaper on/off — independent of theme choice (chatSetWallpaper). */
+.chats-layout.no-wallpaper .chat-main{background-image:none;background-color:#eef3ef}
+.chats-layout[data-chat-theme="professional"].no-wallpaper .chat-main{background-color:#fff}

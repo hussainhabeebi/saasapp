@@ -1,6 +1,6 @@
 -- Projects module Phase 2 (SETUP.md "Projects module") — real Gantt dependencies/critical path,
 -- time tracking/job costing, an automation engine, and the IT module (Sprints, bug tracker, Git
--- links) on top of the Phase 1 core (0047_pm_projects_tasks.sql).
+-- links) on top of the Phase 1 core (0050_pm_projects_tasks.sql).
 
 -- Job costing needs a budget to measure against, and a default rate so a time entry doesn't have
 -- to specify one every time.
