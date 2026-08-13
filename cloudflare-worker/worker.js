@@ -10925,6 +10925,11 @@ async function handleEngineWebhook(request, env, secret){
     // chat, once per (lead, unit) ever (hospitality_media_sent) rather than re-sent on every
     // later message that happens to mention the same unit again.
     await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText);
+    // Real Estate module (migrations/0031_real_estate.sql/0049_re_unit_media.sql) — same shape as
+    // the hospitality call just above: the first time this lead's message names a project or
+    // property type, send that unit's photos/video/PDF straight into the chat, once per (lead, unit)
+    // ever (re_media_sent).
+    await engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolvedLeadId, userText);
     // Ecommerce categories (migrations/0012_ecom_categories.sql) — separate from and never
     // overriding the per-product image send above (orderHandledInline gates it out when a
     // specific product was already handled this turn); see engineMaybeSendEcomCategoryMedia's own
@@ -15215,6 +15220,67 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
   }catch(e){ await reportOpsError(env, 'engineMaybeSendHospitalityMedia', e, {clientId, convId}); }
 }
 
+// Real Estate's equivalent of hospitalitySendUnitMedia just above — same Drive-link-only shape as
+// ecom product media (image_url/image_url_2-5/video_url/pdf_url, no legacy R2 branch since this
+// field set is new), reusing sendDriveMediaToChatwoot for every non-empty slot. Marks the send in
+// re_media_sent so a given (lead, unit) pair is never re-sent.
+async function reSendUnitMediaToChatwoot(env, c, clientId, convId, leadId, unit){
+  const items=[unit.image_url, unit.image_url_2, unit.image_url_3, unit.image_url_4, unit.image_url_5, unit.video_url, unit.pdf_url].filter(Boolean);
+  if(!items.length) return false;
+  let sentAny=false;
+  for(let i=0;i<items.length;i++){
+    const caption=i===0?`Here's a look at ${unit.unit_no}${unit.tower?(' — Tower '+unit.tower):''} 📸`:'';
+    if(await sendDriveMediaToChatwoot(c, convId, items[i], caption)) sentAny=true;
+  }
+  if(sentAny){
+    await env.DB.prepare(`INSERT OR IGNORE INTO re_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
+      .bind(Number(clientId), leadId, unit.id, new Date().toISOString()).run();
+  }
+  return sentAny;
+}
+
+// Real Estate general-enquiry match, same "asking about availability at all" shape as
+// HOSPITALITY_GENERAL_ENQUIRY_RE above, vocabulary swapped for property terms.
+const RE_GENERAL_ENQUIRY_RE=/\b(propert(?:y|ies)|units?|flats?|villas?|plots?|apartments?|available|availability|options?|inventory|prices?|pricing|floor\s*plans?)\b/i;
+
+// Auto-sends a unit's photos/video/PDF into the chat, mirroring engineMaybeSendHospitalityMedia's
+// three-tier match: (1) a specific project named in the message — send every matching unit's media,
+// narrowed further by property_type if that was also named; (2) no project named but a property_type
+// keyword was ("looking for a villa") — send that type's units; (3) neither, but the message reads
+// like a general enquiry (RE_GENERAL_ENQUIRY_RE) — send the first few active units once per lead ever.
+// Gated on CLIENTS.real_estate_enabled the same way ecom's product-media send is gated on
+// c.industry==='ecommerce' and hospitality's on c.hospitality_enabled.
+async function engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolvedLeadId, userText){
+  if(c.real_estate_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const {results:units}=await env.DB.prepare(
+      `SELECT u.*, p.name AS project_name FROM re_units u JOIN re_projects p ON p.id=u.project_id
+       WHERE u.client_id=? AND u.status IN ('available','hold') LIMIT 500`
+    ).bind(Number(clientId)).all();
+    if(!units || !units.length) return;
+    const lower=userText.toLowerCase();
+    const typeMatch=lower.match(/\b(residential|commercial|villa|flat|plot)s?\b/i);
+    const projectMatch=units.find(u=>u.project_name && u.project_name.trim().length>=4 && lower.includes(u.project_name.trim().toLowerCase()));
+    let candidates=null;
+    if(projectMatch) candidates=units.filter(u=>u.project_id===projectMatch.project_id);
+    else if(typeMatch) candidates=units.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
+    if(candidates){
+      if(projectMatch && typeMatch) candidates=candidates.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
+      for(const unit of candidates.slice(0,5)){
+        const already=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, unit.id).first();
+        if(already) continue;
+        await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit);
+      }
+      return;
+    }
+    if(!RE_GENERAL_ENQUIRY_RE.test(lower)) return;
+    const alreadyAny=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+    if(alreadyAny) return;
+    for(const unit of units.slice(0,5)) await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit);
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendRealEstateMedia', e, {clientId, convId}); }
+}
+
 async function handleHospitalityBlockedDateCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -18059,6 +18125,8 @@ const reDocumentsCrud=reCrud('re_documents', [
    re_price_audit row whenever base_price/plc_charges/floor_rise_charges change (RERA compliance —
    "audit trail for price changes and discount approvals"). ── */
 const RE_UNIT_PRICE_FIELDS=['base_price','plc_charges','floor_rise_charges'];
+// Top-level property category (frontend dropdown) — distinct from the freeform unit_type field.
+const RE_PROPERTY_TYPES=['Residential','Commercial','Villa','Flat','Plot'];
 async function handleReUnitsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -18076,11 +18144,14 @@ async function handleReUnitCreate(request, env){
   const body=await request.json().catch(()=>({}));
   if(!body.project_id||!body.unit_no) return json({error:'project_id and unit_no are required'}, 400);
   const now=new Date().toISOString();
-  const r=await env.DB.prepare(`INSERT INTO re_units (client_id,project_id,tower,floor,unit_no,unit_type,area_sqft,base_price,plc_charges,floor_rise_charges,status,virtual_tour_url,created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+  const propertyType=RE_PROPERTY_TYPES.includes(body.property_type) ? body.property_type : '';
+  const r=await env.DB.prepare(`INSERT INTO re_units (client_id,project_id,tower,floor,unit_no,unit_type,area_sqft,base_price,plc_charges,floor_rise_charges,status,virtual_tour_url,property_type,image_url,image_url_2,image_url_3,image_url_4,image_url_5,video_url,pdf_url,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
     Number(payload.cid), Number(body.project_id), String(body.tower||''), Number(body.floor)||0, String(body.unit_no).slice(0,40),
     String(body.unit_type||'').slice(0,60), Number(body.area_sqft)||0, Number(body.base_price)||0, Number(body.plc_charges)||0,
-    Number(body.floor_rise_charges)||0, String(body.status||'available').slice(0,30), String(body.virtual_tour_url||'').slice(0,500), now
+    Number(body.floor_rise_charges)||0, String(body.status||'available').slice(0,30), String(body.virtual_tour_url||'').slice(0,500), propertyType,
+    String(body.image_url||'').slice(0,500), String(body.image_url_2||'').slice(0,500), String(body.image_url_3||'').slice(0,500),
+    String(body.image_url_4||'').slice(0,500), String(body.image_url_5||'').slice(0,500), String(body.video_url||'').slice(0,500), String(body.pdf_url||'').slice(0,500), now
   ).run();
   const row=await env.DB.prepare(`SELECT * FROM re_units WHERE id=?`).bind(r.meta.last_row_id).first();
   return json(row);
@@ -18093,8 +18164,9 @@ async function handleReUnitUpdate(request, env){
   const existing=await env.DB.prepare(`SELECT * FROM re_units WHERE id=?`).bind(Number(body.id)).first();
   if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
   const sets=[], vals=[];
-  const strFields={tower:40, unit_type:60, virtual_tour_url:500};
+  const strFields={tower:40, unit_type:60, virtual_tour_url:500, image_url:500, image_url_2:500, image_url_3:500, image_url_4:500, image_url_5:500, video_url:500, pdf_url:500};
   for(const [k,len] of Object.entries(strFields)){ if(body[k]!==undefined){ sets.push(`${k}=?`); vals.push(String(body[k]).slice(0,len)); } }
+  if(body.property_type!==undefined){ sets.push('property_type=?'); vals.push(RE_PROPERTY_TYPES.includes(body.property_type)?body.property_type:''); }
   if(body.floor!==undefined){ sets.push('floor=?'); vals.push(Number(body.floor)||0); }
   if(body.area_sqft!==undefined){ sets.push('area_sqft=?'); vals.push(Number(body.area_sqft)||0); }
   for(const f of RE_UNIT_PRICE_FIELDS){
