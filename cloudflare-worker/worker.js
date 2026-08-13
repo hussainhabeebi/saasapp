@@ -505,8 +505,7 @@ async function handleSessionExchange(request, env){
   // (browser→Authentik token endpoint, then browser→Worker) into one, and lets the Worker→
   // Authentik hops below run over Cloudflare's own network instead of the user's connection —
   // this is the "waiting on the login screen again" gap on a mobile full-page redirect back from
-  // Authentik. `{access_token}` alone (the old shape) still works, used by autoProvisionAndLogin's
-  // second call after a brand-new signup finishes onboarding.
+  // Authentik.
   if(!access_token && body.code && body.code_verifier){
     const tr=await fetch(`${env.AUTHENTIK_BASE}/application/o/token/`, {
       method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
@@ -525,13 +524,18 @@ async function handleSessionExchange(request, env){
   const claims=await info.json();
   const email=(claims.email||claims.preferred_username||'').toLowerCase();
   if(!email) return json({error:'Your Authentik account has no email set.'}, 400);
-  const rec=await getClientByAuthentikEmail(env, email);
+  let rec=await getClientByAuthentikEmail(env, email);
+  let isNewSignup=false;
   if(!rec||!rec.Id){
-    // Not an error condition by itself — this is also what a brand-new signup looks like on
-    // first login. Return the verified email (and access_token, if this request arrived as a
-    // code+verifier — autoProvisionAndLogin's follow-up call needs it) so the frontend can offer
-    // to finish provisioning this account instead of just showing a dead-end error.
-    return json({error:'no_account', email, access_token:body.code?access_token:undefined}, 403);
+    // A verified Authentik identity with no matching CLIENTS row isn't an error — it's what a
+    // brand-new signup looks like on first login. Provisioning inline here (instead of returning
+    // a "no_account" error and making the browser call /session/auto-provision as a second
+    // request) collapses signup into the same single round trip as an existing user's login —
+    // one browser→Worker request either way, ending in a real session_token.
+    const created=await provisionNewClientRecord(env, email);
+    if(created.error) return json({error:created.error}, created.status||502);
+    rec=created.rec;
+    isNewSignup=true;
   }
   const session_token=await signSession(env, rec.Id, email);
   // Cross-Sell module (dashboard.html Settings → "🔄 Cross-Sell & Upsell", the lead panel's
@@ -540,12 +544,13 @@ async function handleSessionExchange(request, env){
   // /session/me resume — so it's provisioned the moment an existing client next signs in, same
   // "runs the moment a client connects" reasoning as the ig_* fields above.
   await ensureClientColumns(env, ['cross_sell_rules']);
+  if(isNewSignup) await notifyOnboardWebhook(env, rec, email);
   // Individual verified email of whoever just logged in — distinct from the account's own
   // authentik_email when a teammate (added via team_emails) signs in to a shared client account.
   // The frontend keeps this for "assigned to me" task filtering; the Worker also keeps it (signed
   // into the session token itself, see signSession) so the /nocodb passthrough can tell which
   // specific teammate is behind a request, not just which shared account.
-  return json({session_token, client_id:String(rec.Id), client:safeClient(rec), email});
+  return json({session_token, client_id:String(rec.Id), client:safeClient(rec), email, isNewSignup});
 }
 
 // Fetches with a hard timeout — the external onboarding webhook below is a known-slow dependency
@@ -564,25 +569,42 @@ function deriveBusinessNameServer(email){
   const local=(String(email||'').split('@')[0]||'').replace(/[._-]+/g,' ').trim();
   return local.replace(/\b\w/g,c=>c.toUpperCase())||'New Business';
 }
-// Native replacement for the CLIENTS-row-creation half of the old signup flow, which used to
-// depend entirely on an external n8n webhook — a hardcoded passcode shipped to every browser
-// (dashboard.html's old autoProvisionAndLogin), and the frontend had no way to tell a slow
-// webhook apart from a genuinely failed one, so it just retried /session/exchange and hoped.
-// This route is now the single, authoritative, idempotent creator of a brand-new account:
-//  1. Verifies access_token itself (same Authentik /userinfo call handleSessionExchange makes) —
-//     the email this account gets created under is never trusted from the request body.
-//  2. Checks for an existing CLIENTS row FIRST (getClientByAuthentikEmail) — a retried call for
-//     the same email (a flaky network, a double-click) just logs into the account that already
-//     exists instead of risking a second, duplicate row.
-//  3. Creates the row directly via NocoDB (master token, same as every other admin-level CLIENTS
-//     write in this file) and returns a session token in the same response — collapsing the old
-//     "call the webhook, then separately call /session/exchange again and hope" into one round trip.
-// The external n8n webhook is still called too, AFTER the row exists and only for a brand-new
-// signup — best-effort, bounded by fetchWithTimeout, in case it does anything beyond creating the
-// row that isn't visible from this repo (SETUP.md "Conversation Engine" — most industries no longer
-// need the per-client bot workflow it used to provision, but this stays a safety net until that's
-// confirmed dead for every client). Its own passcode is now a Worker secret
+// Shared by handleSessionExchange (the normal login-time signup path) and handleAutoProvision
+// (kept as a standalone, idempotently-retryable fallback — see its own comment below). Never
+// trusts the email from a request body: both callers only ever pass an email already verified
+// against Authentik's own /userinfo endpoint.
+async function provisionNewClientRecord(env, email){
+  const clientName=deriveBusinessNameServer(email);
+  const createR=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'POST', body:{
+    client_name:clientName, authentik_email:email, language:'en', industry:'general',
+  }});
+  if(!createR.ok) return {error:'Could not create your account — please try again in a moment.', status:502};
+  const rec=await createR.json().catch(()=>null);
+  if(!rec||!rec.Id) return {error:'Account created but could not be read back — try logging in again.', status:502};
+  return {rec};
+}
+// Best-effort notification to the external n8n onboarding webhook, in case it does anything
+// beyond creating the CLIENTS row that isn't visible from this repo (SETUP.md "Conversation
+// Engine" — most industries no longer need the per-client bot workflow it used to provision, but
+// this stays a safety net until that's confirmed dead for every client). Bounded by
+// fetchWithTimeout so a slow/dead webhook can never hold up the login response the row and
+// session_token already exist regardless. Its own passcode is a Worker secret
 // (ONBOARD_WEBHOOK_PASSCODE), never sent to or stored in the browser.
+async function notifyOnboardWebhook(env, rec, email){
+  try{
+    await fetchWithTimeout('https://apps.leadvyne.com/webhook/leadvyne-onboard', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({passcode:env.ONBOARD_WEBHOOK_PASSCODE||'', client_name:rec.client_name, authentik_email:email, language:'en', industry:'general'}),
+    }, 8000);
+  }catch(e){ /* best-effort — the account already exists and has a session regardless */ }
+}
+// /session/exchange now provisions a brand-new account inline (see handleSessionExchange), so
+// this route is no longer on the primary login path — dashboard.html doesn't call it anymore.
+// Kept as a standalone, idempotent fallback (same "verify → find-or-create → sign a session"
+// shape, safe to call directly with just an access_token) rather than deleted outright, since
+// it's a documented public contract (SETUP.md "Dashboard login"). And it's still safe to call
+// repeatedly — getClientByAuthentikEmail below means a retried/duplicate call for the same email
+// just logs into the row that already exists instead of risking a second, duplicate one.
 async function handleAutoProvision(request, env){
   const {access_token}=await request.json().catch(()=>({}));
   if(!access_token) return json({error:'access_token required'}, 400);
@@ -595,26 +617,14 @@ async function handleAutoProvision(request, env){
   let rec=await getClientByAuthentikEmail(env, email);
   let isNewSignup=false;
   if(!rec){
-    const clientName=deriveBusinessNameServer(email);
-    const createR=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'POST', body:{
-      client_name:clientName, authentik_email:email, language:'en', industry:'general',
-    }});
-    if(!createR.ok) return json({error:'Could not create your account — please try again in a moment.'}, 502);
-    rec=await createR.json().catch(()=>null);
-    if(!rec||!rec.Id) return json({error:'Account created but could not be read back — try logging in again.'}, 502);
+    const created=await provisionNewClientRecord(env, email);
+    if(created.error) return json({error:created.error}, created.status||502);
+    rec=created.rec;
     isNewSignup=true;
   }
 
   const session_token=await signSession(env, rec.Id, email);
-
-  if(isNewSignup){
-    try{
-      await fetchWithTimeout('https://apps.leadvyne.com/webhook/leadvyne-onboard', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({passcode:env.ONBOARD_WEBHOOK_PASSCODE||'', client_name:rec.client_name, authentik_email:email, language:'en', industry:'general'}),
-      }, 8000);
-    }catch(e){ /* best-effort — the account already exists and has a session regardless */ }
-  }
+  if(isNewSignup) await notifyOnboardWebhook(env, rec, email);
 
   return json({session_token, client_id:String(rec.Id), client:safeClient(rec), email, isNewSignup});
 }

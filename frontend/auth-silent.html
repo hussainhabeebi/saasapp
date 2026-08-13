@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Signing in…</title></head>
+<body>
+<script>
+// Silent OIDC callback target for trySilentAuthentikLogin() in dashboard.html — loaded only
+// inside a hidden iframe (prompt=none request), never visited directly. Its only job is to read
+// Authentik's redirect params and hand them back to the parent page via postMessage, then get
+// torn down by the parent. No PKCE state is validated or acted on here — the parent, which holds
+// the verifier in its own sessionStorage, does the actual token exchange.
+(function(){
+  var p = new URLSearchParams(window.location.search);
+  var code = p.get('code');
+  var state = p.get('state');
+  var error = p.get('error');
+  if (window.parent && window.parent !== window){
+    if (code){
+      window.parent.postMessage({type:'lv_silent_auth_code', code:code, state:state}, window.location.origin);
+    }else{
+      window.parent.postMessage({type:'lv_silent_auth_error', error:error||'no_code'}, window.location.origin);
+    }
+  }
+})();
+</script>
+</body>
+</html>

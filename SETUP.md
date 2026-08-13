@@ -234,32 +234,36 @@ beyond the Application/Provider setup above:
 2. That's it on the Authentik side — a new user can now click "Sign up" there, set an email/
    password, and get redirected back to `dashboard.html`.
 
-**What happens on first login for a brand-new signup — fully automatic, no form:**
-The Worker's `/session/exchange` won't find a matching CLIENTS row (nobody's created one yet) —
-instead of a dead-end error, it returns `{error:'no_account', email, access_token}` and
-`dashboard.html` calls a single Worker route, `POST /session/auto-provision`
-(`handleAutoProvision` in `worker.js`), with just that same access token.
-
-This route is the authoritative account creator — it independently re-verifies the token against
-Authentik's own `/userinfo` (the request body's email is never trusted), checks for an existing
-CLIENTS row first (`getClientByAuthentikEmail`) so a retried/double-clicked request can never
-create a duplicate account, creates the row directly via NocoDB if none exists (business name
-guessed from the email's local part, e.g. `jane.doe@x.com` → "Jane Doe", `industry:'general'`),
-and returns a session token in the same response — one round trip instead of the old
-"call an external webhook, then separately retry `/session/exchange` and hope" dance.
+**What happens on first login for a brand-new signup — fully automatic, no form, one round trip:**
+`dashboard.html`'s OIDC callback (`handleAuthentikCallback`) sends the authorization code to a
+single Worker route, `POST /session/exchange` (`handleSessionExchange` in `worker.js`), same as
+every login. That handler exchanges the code, verifies the resulting access token against
+Authentik's own `/userinfo`, and looks for a matching CLIENTS row (`getClientByAuthentikEmail`).
+If none exists — a verified identity with no CLIENTS row is what a brand-new signup looks like on
+first login, not an error — it creates the row inline (`provisionNewClientRecord`: business name
+guessed from the email's local part, e.g. `jane.doe@x.com` → "Jane Doe", `industry:'general'`) and
+signs a session for it in the same request, rather than sending the browser back for a second call.
+The browser gets a real `session_token` either way, with `isNewSignup:true` marking the signup case
+so the frontend knows to show the Welcome Setup modal below.
 
 For a brand-new signup specifically, the Worker *also* calls the same external onboarding webhook
 (`https://apps.leadvyne.com/webhook/leadvyne-onboard`) server-side afterward, bounded by an 8s
 timeout (`fetchWithTimeout`) — this used to be the only thing that created the account at all, and
 its exact contents beyond "creates the CLIENTS row" aren't visible from this repo (it's an n8n
 workflow, not code here), so it stays wired in as a safety net until that's confirmed unnecessary
-for every client. Its passcode is now a Worker secret, **`ONBOARD_WEBHOOK_PASSCODE`** (`wrangler
+for every client. Its passcode is a Worker secret, **`ONBOARD_WEBHOOK_PASSCODE`** (`wrangler
 secret put ONBOARD_WEBHOOK_PASSCODE`) — previously a literal string shipped in `dashboard.html`'s
 own source, readable by anyone via devtools.
 
+A standalone `POST /session/auto-provision` route (`handleAutoProvision`) still exists with the
+same find-or-create shape, sharing `provisionNewClientRecord`/`notifyOnboardWebhook` with
+`/session/exchange` — it's just no longer on the primary login path, kept as an idempotently-
+retryable fallback rather than deleted.
+
 **Welcome Setup modal** — right after `showApp()` for a brand-new signup specifically (flagged via
-`session.isFreshSignup`, set in `autoProvisionAndLogin` and carried through the popup→opener
-`postMessage` relay since that spreads every property of `session`), `openWelcomeSetupModal()`
+`session.isFreshSignup`, set from the exchange response's `isNewSignup` in `handleAuthentikCallback`
+and carried through the popup→opener `postMessage` relay since that spreads every property of
+`session`), `openWelcomeSetupModal()`
 shows a small, no-skip modal asking for the real Business Name and Industry before the rep ever
 sees the dashboard. This replaces what used to be a silent `industry:'general'` default —
 since Stage tags, theme colour, and terminology throughout the whole app are industry-driven
@@ -312,6 +316,41 @@ Authentik's own hosted flow in a popup, so whatever authentication methods that 
 to offer (a **Source** for Google/social OAuth, or a passwordless **Email** stage) show up there
 automatically with zero changes needed here. Not built in this pass since it requires an admin
 decision + configuration in the Authentik instance itself, outside this repository.
+
+**Passkey / WebAuthn (Face ID / Touch ID / Windows Hello) — registration is live, login isn't yet.**
+The header's **🔑** button (`openPasskeySetup()` in `dashboard.html`) opens
+`{AUTHENTIK_BASE}/if/flow/default-authenticator-webauthn-setup/` in a new tab — Authentik's own
+**built-in** device-enrollment flow, present on every Authentik instance with no blueprint/config
+change required. A signed-in user can register a passkey there right now.
+
+What that alone does *not* do: make Authentik actually **offer or prefer** that passkey the next
+time someone logs in. `default-authentication-flow`'s stage order still runs identification →
+password every time, passkey enrolled or not — registering one today doesn't skip typing a
+password tomorrow. Turning it into real passwordless login means adding an **Authenticator
+Validation stage** (configured to accept WebAuthn) into `default-authentication-flow`, ordered so
+it runs instead of/before the password stage for a user who has a device enrolled.
+
+This blueprint (`authentik/leadvyne-blueprint.yaml`) deliberately does **not** add that stage
+binding for the same reason it already declines to hand-author the enrollment email-verification
+flow (see that file's own header comment): `default-authentication-flow` is the one flow every
+single login goes through, and guessing a stage `order` blind — with no live instance to confirm
+it doesn't collide with or run after the existing password stage — is a real way to lock every
+user out at once if it's wrong. The safe way to add it, same pattern as that other note:
+
+1. Authentik Admin → **Flows & Stages → Stages → Create** → *Authenticator Validation Stage* →
+   device classes: **WebAuthn** (leave TOTP/static/etc. off unless you also want those as
+   alternatives). Save it.
+2. Admin → **Flows & Stages → Flows** → `default-authentication-flow` → **Stage Bindings** tab →
+   bind the new stage, ordered *before* the existing Password stage, with a policy that only
+   evaluates true for a user who actually has a WebAuthn device enrolled (Authentik's flow
+   builder can generate this policy for you when you add the binding — don't hand-write the
+   policy expression either).
+3. Log in from a private/incognito window to confirm both paths still work end to end: a user
+   *with* a passkey gets prompted for it and skips the password; a user *without* one falls
+   straight through to the password stage exactly as today.
+4. Once confirmed, Admin → **Customization → Blueprints → (this blueprint) → Export**, and merge
+   the new stage + stage-binding entries into this file so a second/staging instance gets the same
+   config re-appliably instead of six more manual clicks.
 
 Admin-created clients (the old path — create the CLIENTS row yourself, then create their
 Authentik user manually and set `authentik_email`) still works fine alongside this; both paths
@@ -906,9 +945,8 @@ used to be two sequential browser round trips (browser→Authentik token endpoin
 browser→Worker) into one matters most right after a mobile full-page redirect back from
 Authentik — that's the "waiting on the login screen again" part of the flow, and the
 Worker→Authentik hop now runs over Cloudflare's own network instead of the user's connection.
-`{access_token}` alone (the older shape) still works — `autoProvisionAndLogin`'s second call,
-after a brand-new signup finishes onboarding, still uses it directly since it already has a
-verified access token in hand from the first exchange. This avoids needing OAuth refresh-token
+`{access_token}` alone (the older shape) still works — the standalone `/session/auto-provision`
+fallback route uses it directly. This avoids needing OAuth refresh-token
 logic in the browser altogether, since Authentik's access tokens are only valid a few minutes.
 Every subsequent call sends the Worker's own session token as `Authorization: Bearer …`.
 
@@ -924,7 +962,7 @@ cd cloudflare-worker
 wrangler secret put NOCODB_TOKEN         # the master NocoDB token (nc_pat_...)
 wrangler secret put SESSION_SIGNING_KEY  # a long random string, e.g. `openssl rand -hex 32`
 wrangler secret put AUTHENTIK_API_TOKEN  # User Management → Create New User — see "Dashboard login" above
-wrangler secret put ONBOARD_WEBHOOK_PASSCODE  # POST /session/auto-provision's fallback call to the external onboarding webhook — see "Dashboard login" above
+wrangler secret put ONBOARD_WEBHOOK_PASSCODE  # a brand-new signup's fallback call to the external onboarding webhook (POST /session/exchange, and /session/auto-provision) — see "Dashboard login" above
 wrangler secret put CHATWOOT_PLATFORM_TOKEN  # Channels module — see "Channels module" section below
 wrangler secret put META_APP_ID              # Channels module — Meta Tech Provider app id
 wrangler secret put META_APP_SECRET          # Channels module — Meta Tech Provider app secret
