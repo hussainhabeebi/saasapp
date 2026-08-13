@@ -93,3 +93,35 @@
    opening comment above). */
 .chat-back-btn{width:32px;height:32px;border:none;background:none;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;color:#54656f;flex-shrink:0;transition:background .15s}
 .chat-back-btn:hover{background:#eef0f1}
+
+/* Internal notes — a private timeline entry, never a chat bubble, so it reads as unmistakably
+   different from anything the customer actually saw (Front/Intercom's yellow-note convention). */
+.chat-note-row{display:flex;justify-content:center;margin:10px 0}
+.chat-note{max-width:80%;background:#fff6d8;border:1px solid #f2e2a1;border-radius:8px;padding:8px 12px;font-size:13px;line-height:1.45;color:#5b4b12;box-shadow:0 1px 2px rgba(16,24,32,.06)}
+.chat-note-meta{font-size:10.5px;color:#9c8a3d;margin-top:4px}
+
+/* Reply / Internal note composer toggle */
+.chat-mode-row{display:flex;gap:6px;padding:8px 14px 0;flex-shrink:0}
+.chat-mode-btn{font-size:12px;font-weight:600;padding:5px 12px;border-radius:99px;border:1px solid #d1d7db;background:#fff;color:#54656f;cursor:pointer;transition:background .15s,color .15s,border-color .15s}
+.chat-mode-btn:hover{border-color:#00a884;color:#00a884}
+.chat-mode-btn.active{background:linear-gradient(135deg,#00c39a,#00a884);color:#fff;border-color:#00a884}
+.chat-mode-btn[data-mode="note"].active{background:linear-gradient(135deg,#f5c453,#e8a83c);border-color:#e8a83c}
+.chat-input-bar.note-mode{background:#fffbf0}
+.chat-input-bar.note-mode .chat-input-box{background:#fff3cd}
+.chat-input-bar.note-mode .chat-input-box:focus{border-color:#e8a83c}
+.chat-input-bar.note-mode .chat-send-btn{background:linear-gradient(135deg,#f5c453,#e8a83c);box-shadow:0 2px 8px rgba(232,168,60,.35)}
+
+/* Per-conversation assignee + "seen by" presence, both in chat-main-hd */
+.chat-assignee-select{font-size:12px;font-weight:600;color:#54656f;background:#f7f8fa;border:1px solid #e3e6e8;border-radius:8px;padding:6px 8px;max-width:130px;flex-shrink:0;cursor:pointer;font-family:inherit}
+.chat-seenby{display:flex;flex-shrink:0}
+.seenby-avatar{width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#8ec5fc,#4f8ff7);color:#fff;font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2px solid #fff;margin-left:-8px;box-shadow:0 1px 2px rgba(16,24,32,.15)}
+.seenby-avatar:first-child{margin-left:0}
+
+/* Saved-reply "/" picker — floats above the composer, closest-anchor styling to a Slack-style
+   slash-command menu. */
+.saved-reply-picker{position:absolute;left:0;right:0;bottom:calc(100% + 8px);background:#fff;border:1px solid #e3e6e8;border-radius:10px;box-shadow:0 6px 20px rgba(16,24,32,.14);max-height:220px;overflow-y:auto;z-index:5}
+.saved-reply-opt{display:flex;gap:8px;align-items:baseline;padding:8px 12px;cursor:pointer;border-bottom:1px solid #f3f4f5}
+.saved-reply-opt:last-child{border-bottom:none}
+.saved-reply-opt:hover,.saved-reply-opt.active{background:#f0faf7}
+.sr-shortcut{font-size:12.5px;font-weight:700;color:#00806a;flex-shrink:0}
+.sr-text{font-size:12.5px;color:#54656f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

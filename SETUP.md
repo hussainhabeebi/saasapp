@@ -7840,3 +7840,47 @@ both an already-saved report and an in-progress unsaved draft), `POST /reports/s
 key task-notify emails already use) — works out of the box for every client, no per-client Resend
 account needed (unlike the Email Marketing module's bulk campaigns, which rightly stay gated behind
 a client's own Resend key/domain since that's real outbound marketing volume).
+
+## Chats tab UX additions (`frontend/chats.js`, `frontend/chats.css`, `frontend/dashboard.html`, `cloudflare-worker/worker.js`)
+
+Four additions to the Chats tab composer/thread, all scoped to that module — no new tables, all
+riding existing fields/infra.
+
+- **Saved replies** — `CLIENTS.saved_replies`, a plain JSON array of `{shortcut, text}` shared
+  across the whole team, same "ensure the column exists on first save" convention `qual_questions`
+  et al. already use (`ensureClientField('saved_replies','LongText')`). Managed via the
+  `modalSavedReplies` modal (`openSavedRepliesModal`/`saveSavedReplies` in chats.js). Typing
+  `/shortcut` in `#chatReplyBox` opens a floating picker (`chatComposerInput` matches on
+  shortcut-or-text substring, capped at 6) navigable with Up/Down/Enter/Tab/Esc
+  (`chatComposerKeydown`), inserting the full text in place of the typed token
+  (`chatPickSavedReply`). Reply-mode only — see below.
+- **Keyboard send discipline** — Enter sends, Shift+Enter is a newline (`chatComposerKeydown`),
+  matching the muscle memory every real chat app trains. The same handler also drives the saved-
+  reply picker's keyboard nav when it's open (Enter there picks the highlighted match instead of
+  sending). `chatAutosize` grows the textarea up to the existing 100px `max-height` as the agent
+  types, instead of a fixed one-line box.
+- **Internal notes** — a Reply/Note toggle above the composer (`chatSetComposerMode`). Note mode
+  never touches Chatwoot/Instagram at all: `chatSendFromTab` branches on `_chatComposerMode` and
+  `chatSubmitNote` writes straight into `Leads.NotesList` — the exact same field and `{text, date,
+  ts, author}` shape the Lead Detail panel's own `addNote()` already used (that function now also
+  stamps `ts`/`author`, added specifically so the two composers interop). `chatMergedTimeline`
+  merges `ConvHistory` and `NotesList` into one chronological thread for rendering, styled as a
+  yellow note block (`.chat-note`) rather than a chat bubble — see that function's own comment for
+  how it copes with most `ConvHistory` entries having no `ts` at all (only manually-sent
+  replies/attachments do).
+- **Per-conversation assignee** — reuses `Leads.Owner` (the same field `bulkAssign` already writes
+  from the Leads list) via a `<select>` in `chat-main-hd` (`chatSetAssignee`), populated by the
+  existing `teamMemberOptions()` helper. No new field.
+- **"Seen by" avatars** — ephemeral presence, not a persisted read receipt: `chatSelectLead` starts
+  a 20s heartbeat (`chatStartPresenceHeartbeat`) sending `{type:'viewing', lead_id}` over the
+  existing `/engine/live` socket (see "Real-time dashboard updates" above) while that lead's thread
+  is open. `ClientUpdatesHub.webSocketMessage` (worker.js, previously a no-op) now relays this to
+  every other socket for the same client, tagged with the sender's identity — captured at connect
+  time via `ws.serializeAttachment({email, name})` from `?email=&name=` query params
+  (`connectLiveUpdates` passes `myEmail`/the matching `getTeamMembers()` name), since the session
+  token itself carries no per-agent identity (`verifySession`'s payload is just `{cid, exp}`). This
+  is the same trust level `Owner` already operates at (an authenticated dashboard tab's own claim
+  about who it is, not independently verified) — acceptable for a display-only presence indicator.
+  Nothing is persisted server-side; a closed tab just stops heartbeating, and every other client
+  ages the avatar out on its own after `CHAT_PRESENCE_TTL_MS` (45s) of silence
+  (`renderSeenBy`/`onLiveViewingEvent`, dashboard.html/chats.js).
