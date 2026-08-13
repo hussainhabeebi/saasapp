@@ -490,7 +490,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <div class="s-sec"><span class="s-lbl">Image Link 4 (optional)</span><input class="s-input" id="pmImage4" type="url" placeholder="Google Drive share link"></div>
       <div class="s-sec"><span class="s-lbl">Image Link 5 (optional)</span><input class="s-input" id="pmImage5" type="url" placeholder="Google Drive share link"></div>
       <div class="s-sec"><span class="s-lbl">Audio Note Link</span><input class="s-input" id="pmAudioUrl" type="url" placeholder="Google Drive share link"></div>
-      <div class="s-sec"><span class="s-lbl">Video Link</span><input class="s-input" id="pmVideoUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Video Link</span>
+        <input class="s-input" id="pmVideoUrl" type="url" placeholder="Google Drive share link" onblur="checkDriveVideoSize(this.value,'pmVideoSizeWarning')">
+        <div class="s-hint" id="pmVideoSizeWarning" style="display:none"></div>
+      </div>
       <div class="s-sec"><span class="s-lbl">PDF Link</span><input class="s-input" id="pmPdfUrl" type="url" placeholder="Google Drive share link"></div>
       <div class="s-sec" id="pmShopifyUrlWrap" style="display:none"><span class="s-lbl">Shopify Product Link</span><input class="s-input" id="pmShopifyUrl" type="url" placeholder="https://yourstore.myshopify.com/products/..."></div>
       <div class="s-sec">
@@ -550,7 +554,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     <div class="modal-grid">
       <div class="s-sec"><span class="s-lbl">Image Link</span><input class="s-input" id="pmoImage" type="url" placeholder="Google Drive share link"></div>
       <div class="s-sec"><span class="s-lbl">Audio Note Link</span><input class="s-input" id="pmoAudioUrl" type="url" placeholder="Google Drive share link"></div>
-      <div class="s-sec"><span class="s-lbl">Video Link</span><input class="s-input" id="pmoVideoUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Video Link</span>
+        <input class="s-input" id="pmoVideoUrl" type="url" placeholder="Google Drive share link" onblur="checkDriveVideoSize(this.value,'pmoVideoSizeWarning')">
+        <div class="s-hint" id="pmoVideoSizeWarning" style="display:none"></div>
+      </div>
     </div>
     <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Image/Audio/Video Links are pasted Google Drive share links (shared as "Anyone with the link can view") — the bot sends whichever are set right after the reply text, the same way product photos and videos are sent elsewhere in this module.</div>
     <div class="s-row" style="justify-content:flex-end">
@@ -994,6 +1002,7 @@ function openAddProductModal() {
   document.getElementById('productModalMsg').textContent = '';
   document.getElementById('productModalOverlay').classList.add('active');
   document.getElementById('pmName').focus();
+  document.getElementById('pmVideoSizeWarning').style.display = 'none';
   renderPmCrossSell();
 }
 
@@ -1040,6 +1049,7 @@ function openEditProductModal(id) {
   document.getElementById('productModalMsg').textContent = '';
   document.getElementById('productModalOverlay').classList.add('active');
   document.getElementById('pmName').focus();
+  document.getElementById('pmVideoSizeWarning').style.display = 'none';
   renderPmCrossSell();
 }
 
@@ -1070,6 +1080,37 @@ function renderPmCrossSell() {
   if (!matches.length) { wrap.style.display = 'none'; return; }
   wrap.style.display = 'block';
   list.innerHTML = matches.map(r => `• ${esc(r.suggestion)}`).join('<br>');
+}
+
+// Warns right when a video link is entered (onblur on the field itself) rather than waiting for
+// save — WhatsApp's own video-message size cap sits around 16MB, and Chatwoot's relay fetches the
+// real file bytes (sendDriveMediaToChatwoot, worker.js) rather than just linking to it, so a large
+// video is a real, likely delivery failure, not a cosmetic concern. Non-blocking: this never
+// prevents saving, it's a heads-up so a merchant can compress/re-upload before customers ever see
+// a silently-dropped video.
+const DRIVE_VIDEO_WARN_BYTES = 10 * 1024 * 1024; // 10MB
+async function checkDriveVideoSize(url, warnElId) {
+  const el = document.getElementById(warnElId);
+  if (!el) return;
+  url = (url || '').trim();
+  if (!url) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.style.color = 'var(--muted)';
+  el.textContent = 'Checking file size…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/drive-file-size?url=${encodeURIComponent(url)}`);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.size_bytes) { el.style.display = 'none'; return; }
+    const mb = (data.size_bytes / (1024 * 1024)).toFixed(1);
+    if (data.size_bytes > DRIVE_VIDEO_WARN_BYTES) {
+      el.style.color = '#B23A2E';
+      el.textContent = `⚠️ This video is ${mb}MB — WhatsApp may fail to deliver videos over ~16MB. Consider compressing it before saving.`;
+    } else {
+      el.style.display = 'none';
+    }
+  } catch (e) {
+    el.style.display = 'none';
+  }
 }
 
 async function submitProductForm() {
@@ -1648,6 +1689,7 @@ function openAddPromotionModal() {
   document.getElementById('promotionModalMsg').textContent = '';
   document.getElementById('promotionModalOverlay').classList.add('active');
   document.getElementById('pmoCode').focus();
+  document.getElementById('pmoVideoSizeWarning').style.display = 'none';
 }
 
 function openEditPromotionModal(id) {
@@ -1669,6 +1711,7 @@ function openEditPromotionModal(id) {
   document.getElementById('promotionModalMsg').textContent = '';
   document.getElementById('promotionModalOverlay').classList.add('active');
   document.getElementById('pmoCode').focus();
+  document.getElementById('pmoVideoSizeWarning').style.display = 'none';
 }
 
 function closePromotionModal() {
