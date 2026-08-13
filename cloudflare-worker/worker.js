@@ -1007,6 +1007,27 @@ async function handleChatPinLead(request, env){
   return json({ok:true, pinned:!!pinned});
 }
 
+// Resolve/Reopen a conversation (chats.js chatToggleResolve) — a triage state distinct from Stage
+// (funnel position) or Handover (needs-a-human flag): "does this thread need anyone's attention
+// right now." Self-heals the `ConvResolved` Leads column on first use. Auto-reopen on the next
+// genuine inbound message is handled separately, in engineBuildLeadUpsertBody — a rep resolving a
+// thread here only ever marks it resolved going forward, it never has to guard against a message
+// that arrives moments later still showing as resolved.
+async function handleChatResolveLead(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {lead_id, resolved}=await request.json().catch(()=>({}));
+  if(!lead_id) return json({error:'lead_id required'}, 400);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
+  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  const lead=await leadR.json().catch(()=>({}));
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+  await ensureLeadsColumns(env, ['ConvResolved']);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), ConvResolved:resolved?'Yes':'No'}});
+  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  return json({ok:true, resolved:!!resolved});
+}
+
 async function handleQuoteSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -10302,6 +10323,11 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString(),
     Channel:state.channel||'whatsapp'
   };
+  // A genuine new inbound message always means this conversation needs eyes again — auto-reopens
+  // it (chats.js chatToggleResolve/handleChatResolveLead) the same way a real support inbox does,
+  // rather than leaving a customer's fresh message silently tucked into a "Resolved" filter tab a
+  // rep has no reason to keep checking.
+  if(userText) body.ConvResolved='No';
   // Instagram DM (state.channel==='instagram') keys leads off IgId instead of a phone number —
   // see engineParseInstagramPayload/handleInstagramWebhook.
   if(state.igId) body.IgId=state.igId;
@@ -18534,6 +18560,7 @@ export default {
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
+      else if(url.pathname==='/chat/resolve' && request.method==='POST'){ res=await handleChatResolveLead(request, env); }
       else if(url.pathname==='/quote/send' && request.method==='POST'){ res=await handleQuoteSend(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='GET'){ res=await handleWaTemplatesGet(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='POST'){ res=await handleWaTemplatesCreate(request, env); }

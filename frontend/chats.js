@@ -21,6 +21,11 @@ let _chatComposerMode='reply', _chatPickerMatches=[], _chatPickerIndex=0;
 // search state (chatToggleSearch/chatInThreadSearchInput/chatSearchNav).
 let _chatCurrentTimeline=[], _chatReplyTarget=null;
 let _chatSearchOpen=false, _chatSearchMatches=[], _chatSearchIndex=0;
+// Voice-note recording (chatStartVoiceRecording/chatStopVoiceRecording) — the live MediaRecorder,
+// the audio chunks it emits, the mic stream (kept around so its tracks can be stopped when
+// recording ends — leaving a mic indicator lit in the browser tab otherwise), the timer interval
+// driving the elapsed-time display, and the start timestamp that timer reads from.
+let _chatVoiceRecorder=null, _chatVoiceChunks=[], _chatVoiceStream=null, _chatVoiceTimerInterval=null, _chatVoiceStartedAt=0;
 const CHAT_PRESENCE_TTL_MS=45000;
 // All leads are already in memory (loadAll fetches up to 2000 in one shot — every other page
 // depends on allLeads being the complete set, so that fetch itself isn't paginated here). This is
@@ -64,6 +69,74 @@ function updateChatBadge(){
   if(bnBadge){ bnBadge.style.display=count?'block':'none'; }
 }
 
+/* ── Chat Appearance ──
+   A personal (per-rep, this-browser-only) preference, deliberately separate from the rest of the
+   app's industry-color theme system (see chats.css's own opening comment on why the Chats tab
+   opts out of that) — this is its own small system with its own two knobs: which color/layout
+   preset ("classic" WhatsApp-green-with-wallpaper, default; or "professional" flat blue/white, no
+   wallpaper by default) and whether the background wallpaper pattern shows at all, independent of
+   which preset is picked. Stored per clientId like every other lv_* localStorage key here, so
+   switching accounts on one browser never leaks one client's rep's preference into another's view. */
+function _chatAppearanceKey(){ return `lv_chat_theme_${clientId}`; }
+function _chatWallpaperKey(){ return `lv_chat_wallpaper_${clientId}`; }
+function chatGetAppearance(){
+  try{ return localStorage.getItem(_chatAppearanceKey())||'classic'; }catch(e){ return 'classic'; }
+}
+// No explicit stored value yet — wallpaper defaults on for Classic (the original WhatsApp look)
+// and off for Professional (flat, closer to the reference screenshot), only falling back to a
+// plain "on" default once a rep has actually got Classic selected with no override.
+function chatGetWallpaper(){
+  try{
+    const stored=localStorage.getItem(_chatWallpaperKey());
+    if(stored!==null) return stored==='1';
+  }catch(e){}
+  return chatGetAppearance()!=='professional';
+}
+function chatApplyAppearance(){
+  const layout=document.querySelector('.chats-layout');
+  if(!layout) return;
+  layout.dataset.chatTheme=chatGetAppearance();
+  layout.classList.toggle('no-wallpaper', !chatGetWallpaper());
+}
+function chatSetAppearance(theme){
+  try{ localStorage.setItem(_chatAppearanceKey(), theme); }catch(e){}
+  chatApplyAppearance();
+  renderChatAppearanceMenu();
+}
+function chatSetWallpaper(on){
+  try{ localStorage.setItem(_chatWallpaperKey(), on?'1':'0'); }catch(e){}
+  chatApplyAppearance();
+  renderChatAppearanceMenu();
+}
+function chatToggleAppearanceMenu(){
+  const menu=$id('chatAppearanceMenu');
+  if(!menu) return;
+  const opening=menu.style.display==='none'||!menu.style.display;
+  menu.style.display=opening?'block':'none';
+  if(opening) renderChatAppearanceMenu();
+}
+// Closes the appearance menu on any click outside it — same "outside click dismisses" convention
+// as every other popover in this app, just scoped to this one element instead of reusing a
+// dashboard-wide dropdown-close handler that isn't set up to know about Chats-only elements.
+document.addEventListener('click', (e)=>{
+  const menu=$id('chatAppearanceMenu');
+  if(!menu || menu.style.display==='none') return;
+  if(menu.contains(e.target) || e.target.closest?.('[onclick="chatToggleAppearanceMenu()"]')) return;
+  menu.style.display='none';
+});
+function renderChatAppearanceMenu(){
+  const menu=$id('chatAppearanceMenu');
+  if(!menu) return;
+  const theme=chatGetAppearance(), wallpaper=chatGetWallpaper();
+  const presets=[['classic','🟢 WhatsApp Classic'],['professional','🔵 Professional Blue']];
+  menu.innerHTML=`
+    <div class="chat-appearance-label">Theme</div>
+    ${presets.map(([key,label])=>`<div class="chat-appearance-opt${theme===key?' active':''}" onclick="chatSetAppearance('${key}')">${label}${theme===key?' ✓':''}</div>`).join('')}
+    <div class="chat-appearance-label" style="margin-top:8px">Background</div>
+    <label class="chat-appearance-opt" style="cursor:pointer"><input type="checkbox" style="width:auto;margin-right:6px" ${wallpaper?'checked':''} onchange="chatSetWallpaper(this.checked)"> Show wallpaper pattern</label>
+  `;
+}
+
 function openChatsTab(){
   _chatLeadId=null;
   $id('chatSearch').value='';
@@ -74,6 +147,7 @@ function openChatsTab(){
   $id('chatChannelIg').classList.remove('active');
   renderChatEmpty();
   renderChatContacts();
+  chatApplyAppearance();
   if(typeof renderChatNotifyBanner==='function') renderChatNotifyBanner();
 }
 
@@ -109,7 +183,8 @@ function renderChatContacts(){
     all:base.length,
     needsyou:base.filter(l=>l.Handover==='Yes').length,
     hot:base.filter(l=>l.Score==='Hot').length,
-    mine:myEmail?base.filter(l=>l.Owner===myEmail).length:0
+    mine:myEmail?base.filter(l=>l.Owner===myEmail).length:0,
+    resolved:base.filter(l=>l.ConvResolved==='Yes').length
   };
   renderChatFilterRow(counts);
 
@@ -117,6 +192,7 @@ function renderChatContacts(){
     if(CHAT_FILTER==='needsyou' && l.Handover!=='Yes') return false;
     if(CHAT_FILTER==='hot' && l.Score!=='Hot') return false;
     if(CHAT_FILTER==='mine' && l.Owner!==myEmail) return false;
+    if(CHAT_FILTER==='resolved' && l.ConvResolved!=='Yes') return false;
     if(q){
       const nm=(l.Name||'').toLowerCase().includes(q);
       const ph=(l.Phone||'').includes(q);
@@ -167,7 +243,7 @@ function renderChatContacts(){
       <div class="cc-avatar">${initial}${needsYou}</div>
       <div class="cc-info">
         <div class="cc-row-top">
-          <div class="cc-name"${unread?' style="font-weight:700"':''}>${l.Pinned==='Yes'?'<span class="cc-pin-badge" title="Pinned">📌</span>':''}${scoreDot}${esc(l.Name||'Unknown')}</div>
+          <div class="cc-name"${unread?' style="font-weight:700"':''}>${l.Pinned==='Yes'?'<span class="cc-pin-badge" title="Pinned">📌</span>':''}${l.ConvResolved==='Yes'?'<span class="cc-resolved-badge" title="Resolved">✅</span>':''}${scoreDot}${esc(l.Name||'Unknown')}</div>
           <div class="cc-time">${esc(when)}</div>
         </div>
         <div class="cc-row-bottom">
@@ -191,7 +267,7 @@ function renderChatContacts(){
 }
 
 function renderChatFilterRow(counts){
-  const tabs=[['all','All'],['needsyou','Needs You'],['hot','🔴 Hot'],['mine','Mine']];
+  const tabs=[['all','All'],['needsyou','Needs You'],['hot','🔴 Hot'],['mine','Mine'],['resolved','✅ Resolved']];
   $id('chatFilterRow').innerHTML=tabs.map(([key,label])=>
     `<button class="chat-filter-btn${CHAT_FILTER===key?' active':''}" onclick="setChatFilter('${key}')">${label}<span class="cnt">${counts[key]}</span></button>`
   ).join('');
@@ -218,7 +294,7 @@ function chatLoadMore(){
 function chatMergedTimeline(lead){
   let history=[]; try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
   let notesRaw=[]; try{notesRaw=JSON.parse(lead.NotesList||'[]');}catch(e){}
-  const timeline=history.map(m=>({kind:'msg', role:m.role, content:m.content, options:m.options||null, media:m.media||null, tsMs:m.ts?Date.parse(m.ts):NaN}));
+  const timeline=history.map(m=>({kind:'msg', role:m.role, content:m.content, options:m.options||null, media:m.media||null, attachment:m.attachment||null, tsMs:m.ts?Date.parse(m.ts):NaN}));
   notesRaw.slice().reverse().forEach(n=>{
     const tsMs=n.ts?Date.parse(n.ts):(n.date?Date.parse(n.date):NaN);
     const note={kind:'note', text:n.text, author:n.author||'', tsMs};
@@ -230,6 +306,11 @@ function chatMergedTimeline(lead){
 }
 
 function chatSelectLead(leadId){
+  // Switching threads mid-recording would otherwise leave the MediaRecorder/mic stream running
+  // against DOM elements chatSelectLead is about to destroy — discard (not send) whatever was
+  // captured so far, same as tapping Cancel, and release the mic so the browser's "mic in use"
+  // indicator actually clears.
+  if(_chatVoiceRecorder) chatStopVoiceRecording(_chatLeadId, false);
   document.querySelectorAll('.chat-contact-row').forEach(r=>r.classList.remove('active'));
   const row=$id('ccRow'+leadId);
   if(row) row.classList.add('active');
@@ -280,6 +361,7 @@ function chatSelectLead(leadId){
       <select class="chat-assignee-select" id="chatStageSelect" title="Stage" onchange="chatSetStage(${lead.Id}, this.value)">${stageOptionsHtml}</select>
       <select class="chat-assignee-select" id="chatAssigneeSelect" title="Assigned to" onchange="chatSetAssignee(${lead.Id}, this.value)">${teamMemberOptions(lead.Owner||'')}</select>
       <button class="chat-pin-btn${lead.Pinned==='Yes'?' pinned':''}" id="chatPinBtn" onclick="chatTogglePin(${lead.Id})" title="${lead.Pinned==='Yes'?'Unpin conversation':'Pin conversation'}">${lead.Pinned==='Yes'?'📌':'📍'}</button>
+      <button class="chat-resolve-btn ${lead.ConvResolved==='Yes'?'resolved':'open'}" id="chatResolveBtn" onclick="chatToggleResolve(${lead.Id})">${lead.ConvResolved==='Yes'?'↺ Reopen':'✓ Resolve'}</button>
       <button class="btn btn-secondary btn-sm" onclick="openDetail(${lead.Id})">View Lead →</button>
     </div>
     <div class="chat-search-bar" id="chatSearchBar" style="display:none">
@@ -317,8 +399,25 @@ function chatSelectLead(leadId){
         const mediaHtml=(m.media&&m.media.type==='image'&&m.media.url)
           ? `<img class="bubble-media-img" src="${esc(m.media.url)}" loading="lazy" onclick="window.open('${esc(m.media.url)}','_blank')">`
           : '';
+        // Rich attachment card (chatAttachFile/chatSendVoiceNote) — a voice note with a real
+        // playback URL gets a native <audio> player; everything else (image/document, or a voice
+        // note whose data_url didn't come back in the send response) gets an icon+filename+size
+        // card instead of the old plain "📎 filename" text line. Suppresses the bubble's own text
+        // content when a card is shown — that text is just the same icon+filename the card already
+        // displays, not a separate caption.
+        const attachmentHtml=m.attachment
+          ? (m.attachment.kind==='voice' && m.attachment.url
+              ? `<audio class="bubble-attachment-audio" controls src="${esc(m.attachment.url)}"></audio>`
+              : `<div class="bubble-attachment"${m.attachment.url?` onclick="window.open('${esc(m.attachment.url)}','_blank')"`:''}>
+                   <span class="bubble-attachment-icon">${m.attachment.kind==='image'?'🖼️':(m.attachment.kind==='voice'?'🎤':'📎')}</span>
+                   <div class="bubble-attachment-info">
+                     <div class="bubble-attachment-name">${esc(m.attachment.name||'File')}</div>
+                     <div class="bubble-attachment-size">${esc(chatFileSizeLabel(m.attachment.size))}</div>
+                   </div>
+                 </div>`)
+          : '';
         return `<div class="chat-bubble-row ${side}" id="chatBubbleRow${i}">
-          <div class="chat-bubble ${side}${firstInGroup?' tail-'+side:''}${optsHtml?' has-options':''}">${mediaHtml}${esc(m.content||'').replace(/\n/g,'<br>')}<span class="bubble-meta">${!isNaN(m.tsMs)?`<span class="bubble-time">${new Date(m.tsMs).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`:''}${isOut?'<span class="bubble-check">✓✓</span>':''}</span>${optsHtml}
+          <div class="chat-bubble ${side}${firstInGroup?' tail-'+side:''}${optsHtml?' has-options':''}">${mediaHtml}${attachmentHtml}${attachmentHtml?'':esc(m.content||'').replace(/\n/g,'<br>')}<span class="bubble-meta">${!isNaN(m.tsMs)?`<span class="bubble-time">${new Date(m.tsMs).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`:''}${isOut?'<span class="bubble-check">✓✓</span>':''}</span>${optsHtml}
           </div>
           <button class="bubble-reply-btn" onclick="chatSetReplyTarget(${i})" title="Reply">↩️</button>
         </div>`;
@@ -334,12 +433,21 @@ function chatSelectLead(leadId){
       <button class="chat-mode-btn" data-mode="note" onclick="chatSetComposerMode('note')">📝 Internal note</button>
     </div>
     <div class="chat-input-bar" id="chatInputBar">
+      <div class="chat-voice-recording" id="chatVoiceRecordingBar" style="display:none">
+        <span class="chat-voice-dot"></span>
+        <span id="chatVoiceTimer">0:00</span>
+        <span>Recording voice note…</span>
+        <button class="chat-voice-cancel" onclick="chatStopVoiceRecording(${lead.Id},false)">✕ Cancel</button>
+        <button class="chat-send-btn" style="width:34px;height:34px;font-size:14px" onclick="chatStopVoiceRecording(${lead.Id},true)" title="Send voice note">➤</button>
+      </div>
+      <div id="chatComposerNormal" style="display:contents">
       ${canUseTools?`
       <input type="file" id="chatImgInput" accept="image/*" style="display:none" onchange="chatAttachFile(${lead.Id},this.files[0],'image')">
       <input type="file" id="chatDocInput" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" style="display:none" onchange="chatAttachFile(${lead.Id},this.files[0],'document')">
       <div class="chat-tools" id="chatToolsWrap">
         <button class="chat-tool-btn" onclick="$id('chatImgInput').click()" title="Attach image">🖼️</button>
         <button class="chat-tool-btn" onclick="$id('chatDocInput').click()" title="Attach document">📎</button>
+        <button class="chat-tool-btn" onclick="chatStartVoiceRecording(${lead.Id})" title="Record voice note">🎤</button>
         <button class="chat-tool-btn" onclick="openSendTemplateModal([${lead.Id}])" title="Send WhatsApp template">📣</button>
         <button class="chat-tool-btn" onclick="openSavedRepliesModal()" title="Saved replies">⚡</button>
       </div>`:`<div class="chat-tools" id="chatToolsWrap"><button class="chat-tool-btn" onclick="openSavedRepliesModal()" title="Saved replies">⚡</button></div>`}
@@ -348,6 +456,7 @@ function chatSelectLead(leadId){
         <textarea id="chatReplyBox" class="chat-input-box" rows="1" placeholder="Type a message" oninput="chatComposerInput(${lead.Id})" onkeydown="return chatComposerKeydown(event, ${lead.Id})" onblur="setTimeout(closeSavedReplyPicker,150)"></textarea>
       </div>
       <button class="chat-send-btn" onclick="chatSendFromTab(${lead.Id})" title="Send (Enter) — Shift+Enter for a new line">➤</button>
+      </div>
     </div>
     <div id="chatReplyMsg" class="chat-send-status"></div>`;
   // scroll to bottom
@@ -437,6 +546,31 @@ async function chatTogglePin(leadId){
     lead.Pinned=prev;
     if(btn){ btn.classList.toggle('pinned', prev==='Yes'); btn.textContent=prev==='Yes'?'📌':'📍'; }
     showToast('Failed to update pin','err');
+  }
+}
+
+// Resolve/Reopen — POST /chat/resolve (worker.js handleChatResolveLead), same self-healing-column
+// pattern as chatTogglePin. Reopening is also automatic (engineBuildLeadUpsertBody resets
+// ConvResolved the moment a real inbound message lands), so this button mainly exists for the
+// "mark it done" direction — a rep reopening manually is the rarer case (e.g. remembering something
+// still needs following up on a thread that never got a new customer message).
+async function chatToggleResolve(leadId){
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead) return;
+  const next=lead.ConvResolved!=='Yes';
+  const prev=lead.ConvResolved||'No';
+  lead.ConvResolved=next?'Yes':'No';
+  const btn=$id('chatResolveBtn');
+  if(btn){ btn.classList.toggle('resolved', next); btn.classList.toggle('open', !next); btn.textContent=next?'↺ Reopen':'✓ Resolve'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat/resolve`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:leadId,resolved:next})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    showToast(next?'Marked resolved':'Reopened');
+    if($id('pageChats') && !$id('pageChats').classList.contains('hidden')) renderChatContacts();
+  }catch(e){
+    lead.ConvResolved=prev;
+    if(btn){ btn.classList.toggle('resolved', prev==='Yes'); btn.classList.toggle('open', prev!=='Yes'); btn.textContent=prev==='Yes'?'↺ Reopen':'✓ Resolve'; }
+    showToast('Failed to update resolved status','err');
   }
 }
 
@@ -626,11 +760,22 @@ async function saveSavedReplies(){
   finally{ btn.disabled=false; setTimeout(()=>msg.textContent='',3000); }
 }
 
+function chatFileSizeLabel(bytes){
+  if(!bytes) return '';
+  if(bytes<1024*1024) return Math.max(1,Math.round(bytes/1024))+' KB';
+  return (bytes/(1024*1024)).toFixed(1)+' MB';
+}
+
 // Image/document attach from the Chats composer — same Chatwoot attachment relay (/quote/send)
 // Quotes already uses to send a generated PDF; it just forwards conv_id/caption/file untouched,
-// so any file type works. No new backend endpoint needed.
+// so any file type works. No new backend endpoint needed. The ConvHistory entry now carries a real
+// `attachment` reference (name/size/kind, plus the Chatwoot message's own data_url when it comes
+// back in the response) instead of just a "📎 filename" text line, so the Chats tab can render an
+// actual icon+filename+size card (see chatSelectLead's bubble template) — same reasoning as
+// routing.media for bot-sent photos, just for rep-sent files/voice notes (chatSendVoiceNote below
+// reuses this same function).
 async function chatAttachFile(leadId,file,kind){
-  const input=$id(kind==='image'?'chatImgInput':'chatDocInput');
+  const input=$id(kind==='image'?'chatImgInput':(kind==='voice'?null:'chatDocInput'));
   if(!file){return;}
   const status=$id('chatAttachStatus');
   const lead=allLeads.find(l=>l.Id===leadId);
@@ -639,8 +784,9 @@ async function chatAttachFile(leadId,file,kind){
   if(!convId){status.textContent='No Chatwoot conversation linked to this lead — attachment cannot be sent.';status.className='chat-send-status err';if(input)input.value='';return;}
   const maxBytes=16*1024*1024;
   if(file.size>maxBytes){status.textContent='File too large — max 16 MB.';status.className='chat-send-status err';if(input)input.value='';return;}
-  const kindLabel=kind==='image'?'image':'document';
+  const kindLabel=kind==='image'?'image':(kind==='voice'?'voice note':'document');
   status.textContent=`Sending ${kindLabel}…`;status.className='chat-send-status';
+  let attachmentUrl='';
   try{
     const fd=new FormData();
     fd.append('conv_id',convId);
@@ -649,18 +795,79 @@ async function chatAttachFile(leadId,file,kind){
     const r=await fetch(`${CONFIG.WORKER_BASE}/quote/send`,{method:'POST',headers:ncAuthHeaders(),body:fd});
     const data=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    attachmentUrl=data?.data?.attachments?.[0]?.data_url||'';
   }catch(e){
     status.textContent=`Failed to send ${kindLabel}: `+e.message;status.className='chat-send-status err';
     if(input)input.value='';
     return;
   }
   const hist=await freshConvHistory(lead);
-  hist.push({role:'assistant',content:(kind==='image'?'🖼️ ':'📎 ')+file.name,ts:new Date().toISOString()});
+  const icon=kind==='image'?'🖼️':(kind==='voice'?'🎤':'📎');
+  hist.push({role:'assistant',content:`${icon} ${file.name}`,ts:new Date().toISOString(),
+    attachment:{name:file.name, size:file.size, kind, url:attachmentUrl}});
   try{
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,ConvHistory:JSON.stringify(hist)});
   }catch(e){/* best-effort — the attachment already reached Chatwoot */}
   lead.ConvHistory=JSON.stringify(hist);
   chatSelectLead(leadId);
+}
+
+// In-browser voice note recording (MediaRecorder → chatAttachFile, same /quote/send upload path
+// image/document attach already uses — no new backend endpoint). Records in whatever format the
+// browser's MediaRecorder defaults to for audio (Chrome/Edge/Firefox all produce an Opus-encoded
+// webm/ogg container) — this reaches the customer as a normal, playable audio attachment either
+// way; it just isn't guaranteed to render as WhatsApp's native waveform "voice message" bubble the
+// way a voice note recorded in the WhatsApp app itself does, since that specifically wants an
+// audio/ogg;codecs=opus container (see engineTtsWithFallback's own TTS pipeline, which explicitly
+// produces that format for the same reason) and MediaRecorder's exact container varies by browser.
+function chatMicSupported(){
+  return !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+}
+async function chatStartVoiceRecording(leadId){
+  if(!chatMicSupported()){ showToast('Voice recording is not supported in this browser','err'); return; }
+  try{
+    _chatVoiceStream=await navigator.mediaDevices.getUserMedia({audio:true});
+  }catch(e){
+    showToast('Microphone permission denied','err');
+    return;
+  }
+  _chatVoiceChunks=[];
+  const mimeType=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/webm'].find(t=>window.MediaRecorder.isTypeSupported?.(t))||'';
+  _chatVoiceRecorder=mimeType?new MediaRecorder(_chatVoiceStream,{mimeType}):new MediaRecorder(_chatVoiceStream);
+  _chatVoiceRecorder.ondataavailable=(e)=>{ if(e.data && e.data.size>0) _chatVoiceChunks.push(e.data); };
+  _chatVoiceRecorder.start();
+  _chatVoiceStartedAt=Date.now();
+  const normal=$id('chatComposerNormal'), bar=$id('chatVoiceRecordingBar');
+  if(normal) normal.style.display='none';
+  if(bar) bar.style.display='flex';
+  chatUpdateVoiceTimer();
+  _chatVoiceTimerInterval=setInterval(chatUpdateVoiceTimer,250);
+}
+function chatUpdateVoiceTimer(){
+  const el=$id('chatVoiceTimer');
+  if(!el) return;
+  const secs=Math.floor((Date.now()-_chatVoiceStartedAt)/1000);
+  el.textContent=`${Math.floor(secs/60)}:${String(secs%60).padStart(2,'0')}`;
+}
+async function chatStopVoiceRecording(leadId, send){
+  clearInterval(_chatVoiceTimerInterval);
+  const normal=$id('chatComposerNormal'), bar=$id('chatVoiceRecordingBar');
+  if(bar) bar.style.display='none';
+  if(normal) normal.style.display='contents';
+  const recorder=_chatVoiceRecorder;
+  const stream=_chatVoiceStream;
+  _chatVoiceRecorder=null; _chatVoiceStream=null;
+  if(!recorder){ return; }
+  const chunks=await new Promise(resolve=>{
+    recorder.onstop=()=>resolve(_chatVoiceChunks);
+    if(recorder.state!=='inactive') recorder.stop(); else resolve(_chatVoiceChunks);
+  });
+  stream?.getTracks().forEach(t=>t.stop());
+  if(!send || !chunks.length) return;
+  const blob=new Blob(chunks, {type:recorder.mimeType||'audio/webm'});
+  const ext=(recorder.mimeType||'').includes('ogg')?'ogg':'webm';
+  const file=new File([blob], `voice-note-${Date.now()}.${ext}`, {type:blob.type});
+  await chatAttachFile(leadId, file, 'voice');
 }
 
 // Internal note — never reaches the customer. Writes straight to NotesList (the same field/shape
