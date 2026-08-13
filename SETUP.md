@@ -234,32 +234,36 @@ beyond the Application/Provider setup above:
 2. That's it on the Authentik side — a new user can now click "Sign up" there, set an email/
    password, and get redirected back to `dashboard.html`.
 
-**What happens on first login for a brand-new signup — fully automatic, no form:**
-The Worker's `/session/exchange` won't find a matching CLIENTS row (nobody's created one yet) —
-instead of a dead-end error, it returns `{error:'no_account', email, access_token}` and
-`dashboard.html` calls a single Worker route, `POST /session/auto-provision`
-(`handleAutoProvision` in `worker.js`), with just that same access token.
-
-This route is the authoritative account creator — it independently re-verifies the token against
-Authentik's own `/userinfo` (the request body's email is never trusted), checks for an existing
-CLIENTS row first (`getClientByAuthentikEmail`) so a retried/double-clicked request can never
-create a duplicate account, creates the row directly via NocoDB if none exists (business name
-guessed from the email's local part, e.g. `jane.doe@x.com` → "Jane Doe", `industry:'general'`),
-and returns a session token in the same response — one round trip instead of the old
-"call an external webhook, then separately retry `/session/exchange` and hope" dance.
+**What happens on first login for a brand-new signup — fully automatic, no form, one round trip:**
+`dashboard.html`'s OIDC callback (`handleAuthentikCallback`) sends the authorization code to a
+single Worker route, `POST /session/exchange` (`handleSessionExchange` in `worker.js`), same as
+every login. That handler exchanges the code, verifies the resulting access token against
+Authentik's own `/userinfo`, and looks for a matching CLIENTS row (`getClientByAuthentikEmail`).
+If none exists — a verified identity with no CLIENTS row is what a brand-new signup looks like on
+first login, not an error — it creates the row inline (`provisionNewClientRecord`: business name
+guessed from the email's local part, e.g. `jane.doe@x.com` → "Jane Doe", `industry:'general'`) and
+signs a session for it in the same request, rather than sending the browser back for a second call.
+The browser gets a real `session_token` either way, with `isNewSignup:true` marking the signup case
+so the frontend knows to show the Welcome Setup modal below.
 
 For a brand-new signup specifically, the Worker *also* calls the same external onboarding webhook
 (`https://apps.leadvyne.com/webhook/leadvyne-onboard`) server-side afterward, bounded by an 8s
 timeout (`fetchWithTimeout`) — this used to be the only thing that created the account at all, and
 its exact contents beyond "creates the CLIENTS row" aren't visible from this repo (it's an n8n
 workflow, not code here), so it stays wired in as a safety net until that's confirmed unnecessary
-for every client. Its passcode is now a Worker secret, **`ONBOARD_WEBHOOK_PASSCODE`** (`wrangler
+for every client. Its passcode is a Worker secret, **`ONBOARD_WEBHOOK_PASSCODE`** (`wrangler
 secret put ONBOARD_WEBHOOK_PASSCODE`) — previously a literal string shipped in `dashboard.html`'s
 own source, readable by anyone via devtools.
 
+A standalone `POST /session/auto-provision` route (`handleAutoProvision`) still exists with the
+same find-or-create shape, sharing `provisionNewClientRecord`/`notifyOnboardWebhook` with
+`/session/exchange` — it's just no longer on the primary login path, kept as an idempotently-
+retryable fallback rather than deleted.
+
 **Welcome Setup modal** — right after `showApp()` for a brand-new signup specifically (flagged via
-`session.isFreshSignup`, set in `autoProvisionAndLogin` and carried through the popup→opener
-`postMessage` relay since that spreads every property of `session`), `openWelcomeSetupModal()`
+`session.isFreshSignup`, set from the exchange response's `isNewSignup` in `handleAuthentikCallback`
+and carried through the popup→opener `postMessage` relay since that spreads every property of
+`session`), `openWelcomeSetupModal()`
 shows a small, no-skip modal asking for the real Business Name and Industry before the rep ever
 sees the dashboard. This replaces what used to be a silent `industry:'general'` default —
 since Stage tags, theme colour, and terminology throughout the whole app are industry-driven
@@ -312,6 +316,41 @@ Authentik's own hosted flow in a popup, so whatever authentication methods that 
 to offer (a **Source** for Google/social OAuth, or a passwordless **Email** stage) show up there
 automatically with zero changes needed here. Not built in this pass since it requires an admin
 decision + configuration in the Authentik instance itself, outside this repository.
+
+**Passkey / WebAuthn (Face ID / Touch ID / Windows Hello) — registration is live, login isn't yet.**
+The header's **🔑** button (`openPasskeySetup()` in `dashboard.html`) opens
+`{AUTHENTIK_BASE}/if/flow/default-authenticator-webauthn-setup/` in a new tab — Authentik's own
+**built-in** device-enrollment flow, present on every Authentik instance with no blueprint/config
+change required. A signed-in user can register a passkey there right now.
+
+What that alone does *not* do: make Authentik actually **offer or prefer** that passkey the next
+time someone logs in. `default-authentication-flow`'s stage order still runs identification →
+password every time, passkey enrolled or not — registering one today doesn't skip typing a
+password tomorrow. Turning it into real passwordless login means adding an **Authenticator
+Validation stage** (configured to accept WebAuthn) into `default-authentication-flow`, ordered so
+it runs instead of/before the password stage for a user who has a device enrolled.
+
+This blueprint (`authentik/leadvyne-blueprint.yaml`) deliberately does **not** add that stage
+binding for the same reason it already declines to hand-author the enrollment email-verification
+flow (see that file's own header comment): `default-authentication-flow` is the one flow every
+single login goes through, and guessing a stage `order` blind — with no live instance to confirm
+it doesn't collide with or run after the existing password stage — is a real way to lock every
+user out at once if it's wrong. The safe way to add it, same pattern as that other note:
+
+1. Authentik Admin → **Flows & Stages → Stages → Create** → *Authenticator Validation Stage* →
+   device classes: **WebAuthn** (leave TOTP/static/etc. off unless you also want those as
+   alternatives). Save it.
+2. Admin → **Flows & Stages → Flows** → `default-authentication-flow` → **Stage Bindings** tab →
+   bind the new stage, ordered *before* the existing Password stage, with a policy that only
+   evaluates true for a user who actually has a WebAuthn device enrolled (Authentik's flow
+   builder can generate this policy for you when you add the binding — don't hand-write the
+   policy expression either).
+3. Log in from a private/incognito window to confirm both paths still work end to end: a user
+   *with* a passkey gets prompted for it and skips the password; a user *without* one falls
+   straight through to the password stage exactly as today.
+4. Once confirmed, Admin → **Customization → Blueprints → (this blueprint) → Export**, and merge
+   the new stage + stage-binding entries into this file so a second/staging instance gets the same
+   config re-appliably instead of six more manual clicks.
 
 Admin-created clients (the old path — create the CLIENTS row yourself, then create their
 Authentik user manually and set `authentik_email`) still works fine alongside this; both paths
@@ -906,9 +945,8 @@ used to be two sequential browser round trips (browser→Authentik token endpoin
 browser→Worker) into one matters most right after a mobile full-page redirect back from
 Authentik — that's the "waiting on the login screen again" part of the flow, and the
 Worker→Authentik hop now runs over Cloudflare's own network instead of the user's connection.
-`{access_token}` alone (the older shape) still works — `autoProvisionAndLogin`'s second call,
-after a brand-new signup finishes onboarding, still uses it directly since it already has a
-verified access token in hand from the first exchange. This avoids needing OAuth refresh-token
+`{access_token}` alone (the older shape) still works — the standalone `/session/auto-provision`
+fallback route uses it directly. This avoids needing OAuth refresh-token
 logic in the browser altogether, since Authentik's access tokens are only valid a few minutes.
 Every subsequent call sends the Worker's own session token as `Authorization: Bearer …`.
 
@@ -924,7 +962,7 @@ cd cloudflare-worker
 wrangler secret put NOCODB_TOKEN         # the master NocoDB token (nc_pat_...)
 wrangler secret put SESSION_SIGNING_KEY  # a long random string, e.g. `openssl rand -hex 32`
 wrangler secret put AUTHENTIK_API_TOKEN  # User Management → Create New User — see "Dashboard login" above
-wrangler secret put ONBOARD_WEBHOOK_PASSCODE  # POST /session/auto-provision's fallback call to the external onboarding webhook — see "Dashboard login" above
+wrangler secret put ONBOARD_WEBHOOK_PASSCODE  # a brand-new signup's fallback call to the external onboarding webhook (POST /session/exchange, and /session/auto-provision) — see "Dashboard login" above
 wrangler secret put CHATWOOT_PLATFORM_TOKEN  # Channels module — see "Channels module" section below
 wrangler secret put META_APP_ID              # Channels module — Meta Tech Provider app id
 wrangler secret put META_APP_SECRET          # Channels module — Meta Tech Provider app secret
@@ -7840,6 +7878,110 @@ both an already-saved report and an in-progress unsaved draft), `POST /reports/s
 key task-notify emails already use) — works out of the box for every client, no per-client Resend
 account needed (unlike the Email Marketing module's bulk campaigns, which rightly stay gated behind
 a client's own Resend key/domain since that's real outbound marketing volume).
+
+## Projects module (`frontend/projects.html` — standalone tool)
+
+A separate project/task-management tool — Projects → Tasks, with Board (Kanban)/Table/Timeline
+views — living on the same Leadvyne login as the CRM (any client's Authentik account reaches both)
+but with its own data model, its own page, and its own nav entry. Phase 1 of a larger plan (a
+Notion-plus PM platform aimed at IT and construction companies, this slice is the generic
+"projects and tasks" core every later vertical-specific feature — Sprints for IT, RFIs/punch lists
+for construction — builds on top of, not a CRM feature).
+
+**Data model** (`migrations/0050_pm_projects_tasks.sql`) — two new `client_id`-scoped D1 tables,
+`pm_projects` (name/description/color/status) and `pm_tasks` (title/description/status/priority/
+assignee_email/start_date/due_date/position), same shape as Recruitment/Hospitality/SaaS Ops. A
+task's `status` is a fixed set (`todo`/`in_progress`/`review`/`done` — the Kanban's four columns)
+and `position` is a float, not an integer: reordering a card within or across columns writes a
+value between its two new neighbors instead of renumbering every other row in the column on every
+drag (see the migration's own comment).
+
+**Backend** (`worker.js` — `PM_TABLES` + `handlePmList/Create/Update/Delete`) — the exact same
+generic config-driven CRUD shape `RECRUIT_TABLES` established (a config object per entity: table
+name, required field, field list with type coercion), with two additions the Recruit handlers
+don't need: `hasUpdatedAt` (tasks get `updated_at` touched on every write) and a cascade delete
+(deleting a project also deletes its tasks, so a project can never leave orphaned task rows
+behind). Session-gated (`requireSession`), routes: `GET/POST/PATCH/DELETE /pm/projects`,
+`/pm/tasks` (`GET /pm/tasks?project_id=` optionally filters to one project).
+
+**Frontend auth** follows `real-estate.html`'s pattern, not `dashboard.html`'s own — `client`/
+`token` read straight from the URL query string (`?client=<id>&token=<sessionToken>`) rather than
+from `localStorage`, so the page never depends on being opened from this exact browser's storage.
+`dashboard.html`'s `openProjectsTool()` builds that URL from the already-signed-in session and
+opens it via `window.open()`; the page shows a plain "reopen from your dashboard" message if
+either param is missing. Team member list (for the assignee picker) comes from the same
+`GET /session/me` call `dashboard.html` itself uses to resume a session — `team_emails`/
+`team_names` on the CLIENTS record, so Projects' assignees are always the same people already in
+that client's Leadvyne team, no separate user list to keep in sync.
+
+**Entry points**: a `🗂️ Projects` desktop nav tab (`#dnProjectsTab`), a mobile "More" sheet item
+(`#moreProjectsTab`), and a Home hero quick-action button — all three call `openProjectsTool()`,
+same special-cased-in-the-click-handler pattern `broadcast.html` already uses since this is a
+standalone page, not a `navigate()` target.
+
+**Board view** drag-and-drop is native HTML5 DnD (`draggable`, `dragstart`/`dragover`/`drop`), no
+library — `kanbanColumnsHtml()`/`wireCardDragHandlers()` are shared between the main Board and the
+Sprints view's own board so both actually support dragging, not just one of them.
+
+### Phase 2 — dependencies/critical path, time tracking/job costing, automations, IT module
+
+Four features on top of the Phase 1 core (`migrations/0051_pm_phase2.sql` — new columns on
+`pm_projects`/`pm_tasks`, plus `pm_task_dependencies`/`pm_time_entries`/`pm_sprints`/
+`pm_automations`). All follow the same client_id-scoped-D1-table shape as everything else in this
+module; `sprints`/`time`/`automations` join `PM_TABLES`' generic CRUD (`worker.js`), dependencies
+get dedicated handlers since creating one needs a real cycle check.
+
+**Gantt dependencies + critical path** — `pm_task_dependencies` is a finish-to-start edge list
+(`predecessor_id`→`successor_id`, optional `lag_days`), managed from inside the Task modal's
+"Depends on" section, not a separate page. `handlePmDependencyCreate` (`worker.js`) runs a BFS
+(`pmHasPath`) before inserting to reject anything that would close a cycle — both tasks must
+already belong to the same project and the same client. The critical path itself is **not**
+computed server-side: `computeCPM()` in `projects.html` runs a standard forward/backward CPM pass
+(day-offset units, not calendar dates — it only needs to know which tasks have zero slack) over
+whatever tasks+dependencies are already loaded in the browser for the *selected* project ("All
+Projects" skips critical-path highlighting — dependencies never cross projects, so the concept
+only means something for one project at a time). The Timeline view overlays dependency connector
+lines as an SVG (`drawDependencyLines()`) measured from the rendered bars' real DOM positions
+(`getBoundingClientRect`) rather than recomputing the date math a second time, so lines can never
+drift out of sync with where a bar actually landed; critical-path tasks get a red outline and a ⚡
+marker on their row label.
+
+**Time tracking / job costing** — `pm_time_entries` (task_id, user_email, entry_date, hours, note,
+billable, an optional per-entry `hourly_rate` override). `pm_projects` gained `budget_amount`/
+`budget_currency`/`default_hourly_rate`. Logged from a "+ Log time" button inside the Task modal;
+rolled up in the **💰 Budget** header button's modal — total/billable hours, total cost (`Σ hours ×
+(entry's own rate or the project's default rate)`), a budget-vs-actual progress bar, and a
+per-person breakdown. Per-project only (like Sprints/Automations below) — picking "All Projects"
+shows a prompt to select one first, since a budget rollup across unrelated projects isn't a
+meaningful number.
+
+**Automation engine** — deliberately a **fixed catalog**, not a generic condition builder:
+triggers are `status_changed_to`/`task_created`; actions are `set_status`/`set_assignee`/
+`notify_email` (via the existing platform-level `RESEND_API_KEY`/`RESEND_FROM_EMAIL`, same Resend
+account the Scheduled Report Builder above already uses). `runTaskAutomations()` (`worker.js`) is
+called synchronously from inside `handlePmCreate`/`handlePmUpdate` for tasks — there's no
+durable queue/per-tenant cron in this Worker, so "evaluate on save" is the shape that fits without
+new infrastructure. An automation's own writes go straight to D1, not back through
+`handlePmUpdate`, so one rule's action can never recursively re-trigger the engine — no ping-pong
+risk between two rules that could otherwise fight over the same task. Configured per-project from
+the **⚡ Automations** header button.
+
+**IT module (Sprints, bug tracker, Git links)** — `pm_tasks` gained `item_type` (`task`/`bug`,
+same table and same Board/Table/Timeline views for both — a bug is a task with extra fields, not a
+parallel entity with its own view layer to maintain), `severity` (bug-only), `sprint_id`/
+`story_points`, and `link_url`/`link_label`. The **Sprints** tab shows a per-project backlog
+(unsprinted tasks) plus the selected sprint's own Kanban board and a real burndown chart (inline
+SVG, ideal-vs-actual line, actual computed from each done task's `done_at` timestamp against its
+`story_points` — `done_at` is maintained server-side on every status transition to/from `done`,
+never directly writable, since `updated_at` changes on *any* edit and can't stand in for "when did
+this actually finish"). **Git links are a manually-pasted URL + label, not a live GitHub API
+integration** — a real sync (auto-linking commits/PRs, updating status on merge) needs a GitHub
+App/OAuth credentials this repo doesn't have configured, so this stays an honest "paste a link"
+field rather than a fake-looking automatic one.
+
+**Not built yet**: the generic flexible-database engine (custom fields/multiple saved views a user
+defines themselves — every entity in this module still has a fixed schema), resource leveling/
+capacity planning, EVM, offline-first mobile, client portals + e-signature, and a real GitHub sync.
 
 ## Chats tab UX additions (`frontend/chats.js`, `frontend/chats.css`, `frontend/dashboard.html`, `cloudflare-worker/worker.js`)
 

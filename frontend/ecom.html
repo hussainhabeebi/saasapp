@@ -432,12 +432,18 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 
     <div style="background:var(--accent-soft);border-radius:10px;padding:14px;font-size:13px;color:var(--accent-ink);margin-top:14px">
       <strong>How it works:</strong><br>
-      Changing an order's status here (or via NocoDB) fires a webhook on the <em>ecom_orders</em> table → <em>after.update</em> → POST to:<br>
-      <code style="font-family:var(--mono);font-size:11px;word-break:break-all;overflow-wrap:anywhere;display:block;margin-top:4px">https://n8n.aiingo.com/webhook/leadvyne-ecom-order-event</code><br><br>
+      Changing an order's status automatically sends the matching WhatsApp template to the customer, and also notifies your other connected systems.<br><br>
       • Status → <strong>received / confirmed / processing</strong> → sends the "Order Received" template<br>
       • Status → <strong>shipped / dispatched / out_for_delivery</strong> → sends the "Order Shipped" template<br>
       • Status → <strong>delivered / completed</strong> → sends the "Order Delivered" template<br><br>
       Note: this only fires on a <em>status change</em> — creating a new order already at that status won't trigger it.
+      <details style="margin-top:10px">
+        <summary style="cursor:pointer;font-weight:600">Technical details</summary>
+        <div style="margin-top:6px">
+          Changing an order's status here (or via NocoDB) fires a webhook on the <em>ecom_orders</em> table → <em>after.update</em> → POST to:<br>
+          <code style="font-family:var(--mono);font-size:11px;word-break:break-all;overflow-wrap:anywhere;display:block;margin-top:4px">https://n8n.aiingo.com/webhook/leadvyne-ecom-order-event</code>
+        </div>
+      </details>
     </div>
   </div>
 </div>

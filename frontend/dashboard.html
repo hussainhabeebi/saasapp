@@ -838,6 +838,9 @@ const CONFIG = {
   AUTHENTIK_BASE:        'https://secure.leadvyne.com',
   AUTHENTIK_CLIENT_ID:   'G6pEIZKDGdtLCZ57WYHrOfNMRpJPzfnItmtPTLWw',
   AUTHENTIK_REDIRECT_URI:'https://app.leadvyne.com/dashboard.html',
+  // trySilentAuthentikLogin()'s hidden-iframe target — must also be registered on the Authentik
+  // provider's redirect_uris (see authentik/leadvyne-blueprint.yaml).
+  AUTHENTIK_REDIRECT_URI_SILENT:'https://app.leadvyne.com/auth-silent.html',
   // Both are public identifiers used only in browser-side Meta JS SDK calls (never secrets —
   // the App Secret used for the server-side token exchange lives only in the Worker). Get
   // these from Meta Developer Portal → your Tech Provider app → WhatsApp → Embedded Signup.
@@ -1037,6 +1040,14 @@ const ROLES = {
     <div id="gPanelLogin">
       <button class="gbtn" id="gBtn" onclick="startAuthentikLogin()">Secure Login</button>
       <div class="gerr" id="gErr"></div>
+      <div style="margin-top:14px;color:rgba(255,255,255,.55);font-size:12px;display:flex;align-items:center;justify-content:center;gap:6px">🔒 Secured by Authentik</div>
+    </div>
+    <!-- Shown instead of #gPanelLogin the instant boot() knows a saved session exists and is
+         about to be confirmed (see showResumingGate/resumeSession) — so a returning user's very
+         first frame is "welcome back, loading…", never an interactive login button that might
+         read as "you need to log in again." -->
+    <div id="gPanelResuming" style="display:none;align-items:center;justify-content:center;gap:10px;color:#fff;font-size:14px">
+      <span class="gbtn-spinner"></span><span id="gResumingText">Loading your dashboard…</span>
     </div>
   </div>
 </div>
@@ -1057,6 +1068,7 @@ const ROLES = {
       <button class="icon-btn" id="hDarkToggle" title="Toggle dark mode" onclick="toggleDarkMode()">🌙</button>
       <button class="icon-btn" title="PDF Report" onclick="generateReport()">📄</button>
       <button class="icon-btn" id="hRefresh" title="Refresh">↻</button>
+      <button class="icon-btn" id="hPasskey" title="Set up a Passkey — sign in with Face ID/Touch ID/Windows Hello instead of typing your password" onclick="openPasskeySetup()">🔑</button>
       <button class="icon-btn" id="hLogout" title="Sign out">⏻</button>
     </div>
   </div>
@@ -1082,6 +1094,7 @@ const ROLES = {
     <button class="dnTab" data-page="hospitality" id="dnHospitalityTab" style="display:none">🏨 Hospitality</button>
     <button class="dnTab" data-page="realestate" id="dnRealestateTab" style="display:none">🏘️ Real Estate</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
+    <button class="dnTab" data-page="projects" id="dnProjectsTab">🗂️ Projects</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
 
@@ -1105,6 +1118,7 @@ const ROLES = {
             <button class="hact-btn" onclick="window.open('broadcast.html','_blank')">📢 Campaigns</button>
             <button class="hact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
             <button class="hact-btn" id="homeMarketingStudioBtn" style="display:none" onclick="window.open('marketing-studio.html','_blank')">🎬 Marketing Studio</button>
+            <button class="hact-btn" onclick="openProjectsTool()">🗂️ Projects</button>
           </div>
         </div>
       </div>
@@ -3162,6 +3176,7 @@ const ROLES = {
     <div class="more-sheet-grid">
       <button class="more-item" data-page="leads"><span class="bnIcon">👥</span><span class="bnLabel">Leads</span></button>
       <button class="more-item" data-page="broadcast" id="moreCampaignsTab"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
+      <button class="more-item" data-page="projects" id="moreProjectsTab"><span class="bnIcon">🗂️</span><span class="bnLabel">Projects</span></button>
       <button class="more-item" data-page="team" id="moreTeamTab"><span class="bnIcon">📊</span><span class="bnLabel">Team</span></button>
       <button class="more-item" data-page="reports" id="moreReportsTab"><span class="bnIcon">📈</span><span class="bnLabel">Reports</span></button>
       <button class="more-item" data-page="knowledgebase" id="moreKbTab"><span class="bnIcon">📚</span><span class="bnLabel">Knowledge Base</span></button>
@@ -3860,7 +3875,7 @@ const ROLES = {
 </div>
 
 <!-- Welcome Setup — shown once, right after a brand-new signup finishes (see
-     autoProvisionAndLogin/completeLoginResult), before the rep ever sees a blank/generic
+     handleAuthentikCallback/completeLoginResult), before the rep ever sees a blank/generic
      dashboard. No close/skip icon — see openWelcomeSetupModal for why. Body-level sibling of
      #overlay like every other modal. -->
 <div class="modal" id="modalWelcomeSetup" style="width:460px">
@@ -4119,38 +4134,6 @@ let _reminderTimer=null;
 
 function getIndustry(){ return INDUSTRIES[clientRecord?.industry] || INDUSTRIES.general; }
 
-// Called by handleAuthentikCallback() when Authentik verifies a brand-new identity with no
-// matching CLIENTS row yet. No form, no extra step — one call to the Worker's own
-// /session/auto-provision route creates the CLIENTS row (business name guessed from the email,
-// industry defaulted to general), server-side idempotency means a retried click can never create
-// a duplicate account, and the same response hands back a real session token — no more separate
-// "call an external webhook with a hardcoded passcode, then hope /session/exchange finds the row"
-// dance, and no secret shipped to the browser at all anymore. Chatwoot connection details are
-// filled in later from Settings, once they're already inside the dashboard.
-async function autoProvisionAndLogin(email, accessToken){
-  const err=$id('gErr');
-  // The Worker still calls its own onboarding webhook server-side for a brand-new signup (in case
-  // it does anything beyond creating the row) before responding, so this can take a little while
-  // the first time — worth saying so explicitly rather than leaving a bare spinner up.
-  err.textContent='Setting up your workspace… this can take up to 20 seconds the first time.';
-  try{
-    const sr=await fetch(`${CONFIG.WORKER_BASE}/session/auto-provision`,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({access_token:accessToken})
-    });
-    const session=await sr.json().catch(()=>({}));
-    if(!sr.ok||!session.session_token) throw new Error(session.error||'Account setup failed — try again.');
-    // Flags this as a brand-new account (not just a returning login) so completeLoginResult opens
-    // the Welcome Setup modal (industry + business name) right after showApp() — this survives the
-    // popup→opener postMessage relay too, since that spreads every property of `session`.
-    session.isFreshSignup=!!session.isNewSignup;
-    completeLoginResult(session);
-  }catch(e){
-    completeLoginError(e.message||'Account setup failed — try again.');
-    setGBtnState(false);
-  }
-}
-
 /* ── AUTHENTIK LOGIN (OIDC, Authorization Code + PKCE) ──
    Public SPA client — no client secret, PKCE proves possession of the original
    request instead. The resulting access_token is handed to the Worker proxy,
@@ -4174,6 +4157,21 @@ async function pkceChallenge(verifier){
 // the closest safe equivalent to "same page" without reimplementing password handling ourselves.
 let _authPopup=null, _authPopupTimer=null;
 
+// Cheap trust signal, Google/GitHub-style: "you're securely back in, and here's proof this isn't
+// your first time" — costs zero extra clicks or round trips since it only reads/writes
+// localStorage. Deliberately only called from a real Authentik re-authentication (completeLoginResult),
+// not from resumeSession's silent local-token resume, which fires on every ordinary page reload —
+// showing this every reload would make it noise instead of a signal.
+function showLastLoginToast(){
+  const prev=localStorage.getItem('lv_last_login_at');
+  localStorage.setItem('lv_last_login_at', String(Date.now()));
+  if(!prev) return;
+  const d=new Date(Number(prev));
+  if(isNaN(d.getTime())) return;
+  const when=d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+', '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+  setTimeout(()=>showToast(`🔒 Welcome back — last signed in ${when}`),600);
+}
+
 function completeLoginResult(session){
   if(window.opener && !window.opener.closed){
     window.opener.postMessage({type:'lv_auth_complete', ...session}, window.location.origin);
@@ -4185,7 +4183,12 @@ function completeLoginResult(session){
   localStorage.setItem('lv_cid',clientId);
   localStorage.setItem('lv_session',sessionToken);
   localStorage.setItem('lv_me_email',myEmail);
+  // Purely cosmetic cache, read only by showResumingGate() below on this browser's *next* visit
+  // — never trusted for anything real, /session/me is still the actual source of truth every
+  // time.
+  if(clientRecord?.client_name) localStorage.setItem('lv_cached_name',clientRecord.client_name);
   showApp();
+  if(!session.isFreshSignup) showLastLoginToast();
   if(session.isFreshSignup){
     autoCreateChatwootAccountSilently();
     openWelcomeSetupModal();
@@ -4202,7 +4205,7 @@ function completeLoginError(message){
   setGBtnState(false);
 }
 
-window.addEventListener('message', (event)=>{
+window.addEventListener('message', async (event)=>{
   if(event.origin!==window.location.origin) return;
   if(event.data?.type==='lv_auth_complete'){
     clearInterval(_authPopupTimer);
@@ -4211,8 +4214,75 @@ window.addEventListener('message', (event)=>{
     clearInterval(_authPopupTimer);
     setGBtnState(false);
     $id('gErr').textContent=event.data.message||'Login failed.';
+  }else if(event.data?.type==='lv_silent_auth_code'){
+    // From the hidden iframe frontend/auth-silent.html loads — see trySilentAuthentikLogin().
+    cleanupSilentAuthFrame();
+    const savedState=sessionStorage.getItem('lv_oidc_state_silent');
+    const verifier=sessionStorage.getItem('lv_pkce_verifier_silent');
+    sessionStorage.removeItem('lv_oidc_state_silent'); sessionStorage.removeItem('lv_pkce_verifier_silent');
+    if(!verifier||!event.data.state||event.data.state!==savedState){ setGBtnState(false); return; }
+    try{
+      completeLoginResult(await exchangeCodeForSession(event.data.code, verifier, CONFIG.AUTHENTIK_REDIRECT_URI_SILENT));
+    }catch(e){
+      // Silent means invisible on failure too — no error shown, just fall back to the normal
+      // idle "Secure Login" button so the user can sign in by hand.
+      setGBtnState(false);
+    }
+  }else if(event.data?.type==='lv_silent_auth_error'){
+    // Authentik has no active session for this browser (prompt=none → login_required/etc, the
+    // expected outcome for anyone who hasn't signed in before or explicitly logged out) — not a
+    // real error, just reveal the normal gate button.
+    cleanupSilentAuthFrame();
+    setGBtnState(false);
   }
 });
+
+/* ── SILENT RE-AUTH ──
+   For a browser with no lv_session left (site data cleared, first open on a new device, a
+   reinstalled PWA) but where Authentik's own hosted-login session is still alive, this skips the
+   interactive gate entirely — the same idea as a native app trusting the OS account it's already
+   signed into, rather than asking you to type a password again just because the app's own local
+   storage got wiped. Runs a prompt=none OIDC request in a hidden iframe pointed at
+   auth-silent.html: if Authentik still has a session, it redirects straight back with a code and
+   no user interaction; if not, it redirects back with an error just as fast, and the normal
+   "Secure Login" button appears — the user never sees a broken/awkward state either way.
+   Real-world caveat, not a bug: this relies on the browser sending Authentik's own session
+   cookie when secure.leadvyne.com loads inside this app's iframe — a third-party-cookie context.
+   Chrome/Firefox generally allow it; Safari's ITP blocks it by default, so on Safari this will
+   reliably time out and fall back to the interactive button rather than actually skip it. That's
+   fine — it's designed to fail closed into the normal login, not to be depended on. */
+let _silentAuthTimer=null;
+function cleanupSilentAuthFrame(){
+  clearTimeout(_silentAuthTimer);
+  const f=$id('_silentAuthFrame');
+  if(f) f.remove();
+}
+async function trySilentAuthentikLogin(){
+  setGBtnState(true, 'Checking your session…');
+  const verifier=randomToken(), state=randomToken();
+  sessionStorage.setItem('lv_pkce_verifier_silent',verifier);
+  sessionStorage.setItem('lv_oidc_state_silent',state);
+  const params=new URLSearchParams({
+    client_id:CONFIG.AUTHENTIK_CLIENT_ID,
+    redirect_uri:CONFIG.AUTHENTIK_REDIRECT_URI_SILENT,
+    response_type:'code',
+    scope:'openid email profile',
+    state,
+    prompt:'none',
+    code_challenge:await pkceChallenge(verifier),
+    code_challenge_method:'S256'
+  });
+  const frame=document.createElement('iframe');
+  frame.id='_silentAuthFrame';
+  frame.style.display='none';
+  frame.src=`${CONFIG.AUTHENTIK_BASE}/application/o/authorize/?${params.toString()}`;
+  document.body.appendChild(frame);
+  // On a browser where this works (Authentik answers a prompt=none request almost immediately —
+  // no page for a human to interact with) this resolves in well under a second. Kept short so a
+  // browser where it silently can't work at all (see the Safari/ITP note above) doesn't leave the
+  // gate button stuck disabled for long before falling back to a normal, clickable login.
+  _silentAuthTimer=setTimeout(()=>{ cleanupSilentAuthFrame(); setGBtnState(false); }, 2500);
+}
 
 function isMobileBrowser(){
   return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
@@ -4228,8 +4298,25 @@ function setGBtnState(loading, text){
   btn.innerHTML=loading ? `<span class="gbtn-spinner"></span>${esc(text||'Connecting…')}` : esc(text||'Secure Login');
 }
 
+// Header "🔑" button — hands off to Authentik's own built-in device-enrollment flow (ships with
+// every Authentik instance, no custom flow/stage config needed on our side) so the user can
+// register a WebAuthn passkey (Face ID/Touch ID/Windows Hello/security key). Opens in a new tab
+// so it can reuse the Authentik session cookie already set in this browser from login — if that's
+// expired, Authentik just asks them to sign in there first, same as visiting any other
+// Authentik-hosted page directly. Once a passkey is registered, Authentik's own login page will
+// offer it as an option the next time — this button only covers *registering* one; see SETUP.md
+// "Passkey / WebAuthn login" for the one remaining manual step to make Authentik prefer/require
+// it over a password.
+function openPasskeySetup(){
+  window.open(`${CONFIG.AUTHENTIK_BASE}/if/flow/default-authenticator-webauthn-setup/`, '_blank', 'noopener');
+}
+
 async function startAuthentikLogin(){
   $id('gErr').textContent='';
+  // A deliberate login click always wins over the post-logout silent-auth suppression (see
+  // hLogout) — that flag only exists to stop an *automatic* re-login from undoing an explicit
+  // sign-out, never to block the user's own next explicit attempt.
+  sessionStorage.removeItem('lv_no_silent_auth');
   // Immediate visual feedback on the very first click, before any async work starts.
   setGBtnState(true, 'Connecting…');
   // Mobile browsers are unreliable about giving a script-opened window/tab any sessionStorage
@@ -4275,6 +4362,25 @@ async function startAuthentikLogin(){
   },500);
 }
 
+// Shared by the interactive callback below and trySilentAuthentikLogin()'s hidden-iframe path —
+// one round trip, browser→Worker only. The Worker exchanges the code for an access token itself
+// (still a public-client PKCE exchange, nothing secret changes hands), verifies it against
+// Authentik, and — for a verified identity with no matching CLIENTS row yet, i.e. a brand-new
+// signup — creates that row and signs a session in the same request instead of making the
+// browser come back for a second /session/auto-provision call. See handleSessionExchange in
+// cloudflare-worker/worker.js. Throws on any failure; sets isFreshSignup on the returned session
+// so completeLoginResult knows whether to show the Welcome Setup modal.
+async function exchangeCodeForSession(code, verifier, redirectUri){
+  const sr=await fetch(`${CONFIG.WORKER_BASE}/session/exchange`,{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({code, code_verifier:verifier, client_id:CONFIG.AUTHENTIK_CLIENT_ID, redirect_uri:redirectUri})
+  });
+  const session=await sr.json().catch(()=>({}));
+  if(!sr.ok||!session.session_token) throw new Error(session.error||'Login failed');
+  session.isFreshSignup=!!session.isNewSignup;
+  return session;
+}
+
 // Returns true if this page load is an Authentik redirect-back (so boot can skip resumeSession).
 // Runs either in the popup (normal case) or the main tab (popup-blocked fallback) — completeLoginResult/
 // completeLoginError figure out which via window.opener and relay or finish accordingly.
@@ -4293,36 +4399,40 @@ async function handleAuthentikCallback(){
   sessionStorage.removeItem('lv_oidc_state'); sessionStorage.removeItem('lv_pkce_verifier');
   window.history.replaceState({},'',window.location.pathname); // strip ?code=&state= either way
   if(!verifier||!state||state!==savedState){completeLoginError('Login session expired — try again.');return true;}
+  // A brand-new signup's exchange call can run a few seconds longer than a returning login's
+  // (creating the CLIENTS row, best-effort onboarding webhook) — if it's still going after 3s,
+  // say so explicitly rather than leaving "Verifying your login…" sitting there looking stalled.
+  const slowHintTimer=setTimeout(()=>setGBtnState(true,'Setting up your workspace — first login can take a few extra seconds…'), 3000);
   try{
-    // One round trip instead of two sequential ones (browser→Authentik token endpoint, then
-    // browser→Worker) — the Worker exchanges the code for an access token itself (still a
-    // public-client PKCE exchange, nothing secret changes hands) before verifying it, see
-    // handleSessionExchange in cloudflare-worker/worker.js.
-    const sr=await fetch(`${CONFIG.WORKER_BASE}/session/exchange`,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({code, code_verifier:verifier, client_id:CONFIG.AUTHENTIK_CLIENT_ID, redirect_uri:CONFIG.AUTHENTIK_REDIRECT_URI})
-    });
-    const session=await sr.json().catch(()=>({}));
-    if(!sr.ok||!session.session_token){
-      // A verified Authentik identity with no matching CLIENTS row isn't an error —
-      // it's what a brand-new signup looks like on first login. Auto-provision instead
-      // of dead-ending on an error message.
-      if(session.error==='no_account'&&session.email&&session.access_token){
-        await autoProvisionAndLogin(session.email, session.access_token);
-        return true;
-      }
-      throw new Error(session.error||'Login failed');
-    }
+    const session=await exchangeCodeForSession(code, verifier, CONFIG.AUTHENTIK_REDIRECT_URI);
+    clearTimeout(slowHintTimer);
     setGBtnState(true, 'Loading your dashboard…');
     completeLoginResult(session);
   }catch(e){
+    clearTimeout(slowHintTimer);
     completeLoginError(e.message||'Login failed.');
   }
   return true;
 }
 
+// Shown the instant boot() knows a saved session exists, instead of the interactive gate — a
+// returning user's very first frame should read as "this app is already open, just loading,"
+// not "please log in." Uses the last cached business name purely for the greeting text; nothing
+// here is treated as authenticated until resumeSession's own /session/me call actually succeeds.
+function showResumingGate(){
+  const name=localStorage.getItem('lv_cached_name');
+  $id('gResumingText').textContent=name ? `Welcome back, ${name} — loading your dashboard…` : 'Loading your dashboard…';
+  $id('gPanelLogin').style.display='none';
+  $id('gPanelResuming').style.display='flex';
+}
+function hideResumingGate(){
+  $id('gPanelResuming').style.display='none';
+  $id('gPanelLogin').style.display='';
+}
+
 async function resumeSession(id){
   if(!sessionToken){ localStorage.removeItem('lv_cid'); return; }
+  showResumingGate();
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/session/me`,{headers:{'Authorization':'Bearer '+sessionToken}});
     const data=await r.json().catch(()=>({}));
@@ -4331,8 +4441,12 @@ async function resumeSession(id){
     // Sliding-window refresh — handleSessionMe reissues a fresh, full-length token on every
     // successful call, so an account opened at least once a month never hits the TTL ceiling.
     if(data.session_token){ sessionToken=data.session_token; localStorage.setItem('lv_session',sessionToken); }
+    if(clientRecord?.client_name) localStorage.setItem('lv_cached_name',clientRecord.client_name);
     showApp();
-  }catch(e){ localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); sessionToken=''; }
+  }catch(e){
+    localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); sessionToken='';
+    hideResumingGate();
+  }
 }
 
 $id('hLogout').addEventListener('click',()=>{
@@ -4350,6 +4464,14 @@ $id('hLogout').addEventListener('click',()=>{
   $id('app').classList.remove('show');
   $id('gate').classList.remove('hidden');
   setGBtnState(false, 'Sign in with Authentik');
+  // This app's own logout never ends Authentik's separate SSO session (no RP-initiated logout
+  // call — this app doesn't have Authentik's exact end-session endpoint verified against a live
+  // instance to call safely). Without this flag, trySilentAuthentikLogin would just silently sign
+  // the same person back in the moment they reload — an explicit "Sign out" click has to actually
+  // stick for the rest of this tab's life, even though Authentik itself still thinks they're
+  // signed in. Cleared the moment they choose to sign in again (startAuthentikLogin), so a
+  // deliberate next login isn't affected by this.
+  sessionStorage.setItem('lv_no_silent_auth','1');
 });
 
 $id('hRefresh').addEventListener('click',()=>loadAll());
@@ -4440,10 +4562,20 @@ function closeMoreSheet(){
   $id('moreSheet')?.classList.remove('show');
 }
 
+// Projects (frontend/projects.html) — a standalone tool, not a dashboard page, same as Broadcast/
+// Email Marketing/Marketing Studio above. Unlike those, it reads its own client/session from the
+// URL instead of localStorage (real-estate.html's pattern) so it never depends on being opened
+// from this exact origin's storage — passed here, not baked into a link, since sessionToken can
+// rotate (see resumeSession's sliding-window refresh).
+function openProjectsTool(){
+  window.open(`projects.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}`, '_blank');
+}
+
 document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>{
   b.addEventListener('click',()=>{
     if(!b.dataset.page) return; // e.g. the "More" button itself, or Ecommerce (its own onclick opens a new tab)
     if(b.dataset.page==='broadcast'){ window.open('broadcast.html','_blank'); closeMoreSheet(); return; }
+    if(b.dataset.page==='projects'){ openProjectsTool(); closeMoreSheet(); return; }
     navigate(b.dataset.page);
     closeMoreSheet();
   });
@@ -16249,7 +16381,18 @@ function showUpdateBanner(){
   if(new URLSearchParams(location.search).get('signup')){
     history.replaceState({},'',location.pathname);
     startAuthentikLogin();
+    return;
   }
+  // No local session and no explicit signup intent — before leaving the interactive "Secure
+  // Login" button up, check whether Authentik itself still has this browser signed in (see
+  // trySilentAuthentikLogin above). Unlike the popup flow, this is a same-tab iframe, so it isn't
+  // affected by the sessionStorage-cloning quirk that forces startAuthentikLogin to skip the
+  // popup on mobile — safe to run on every platform. It fails gracefully everywhere it doesn't
+  // work (notably Safari/WebKit, whose ITP blocks the third-party cookie Authentik's session
+  // relies on inside an iframe) — trySilentAuthentikLogin's own timeout bounds the worst case.
+  // Skipped for the rest of this tab's life right after an explicit Sign out (see hLogout) —
+  // otherwise a logout would just get silently undone the next time this page loads.
+  if(!sessionStorage.getItem('lv_no_silent_auth')) trySilentAuthentikLogin();
 })();
 </script>
 </body>

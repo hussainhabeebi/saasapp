@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Leadvyne · Projects</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#0D9C93">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F3FAF9;--card:#FFFFFF;--ink:#0B2320;--muted:#5C7873;
+  --accent:#0D9C93;--accent-ink:#076B65;--accent-soft:#DFF5F2;
+  --line:#D9ECE9;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --r:14px;--r-sm:9px;
+  --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+  --pr-low:#5B8DEF;--pr-medium:#0D9C93;--pr-high:#D97706;--pr-urgent:#DC2626;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14.5px;-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column}
+button,select,input,textarea{font-family:inherit;font-size:inherit}
+button{cursor:pointer}
+
+/* ── Header ── */
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 18px;height:56px;display:flex;align-items:center;gap:12px;flex-shrink:0;box-shadow:0 1px 0 var(--line)}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700;display:flex;align-items:center;gap:7px;white-space:nowrap}
+.brand span{color:var(--accent)}
+.hback{background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;color:var(--muted);font-family:var(--body)}
+.hback:hover{background:var(--bg)}
+.viewtabs{display:flex;gap:2px;background:var(--bg);border-radius:9px;padding:3px;margin-left:6px}
+.viewtab{background:none;border:none;border-radius:7px;padding:7px 14px;font-size:13px;font-weight:600;color:var(--muted);font-family:var(--disp)}
+.viewtab.active{background:var(--card);color:var(--accent-ink);box-shadow:var(--shadow)}
+.hright{margin-left:auto;display:flex;align-items:center;gap:8px}
+.btn{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;color:var(--ink);font-family:var(--body);display:inline-flex;align-items:center;gap:6px}
+.btn:hover{background:var(--bg)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent-ink)}
+.btn.sm{padding:5px 10px;font-size:12px}
+
+/* ── Shell ── */
+#shell{flex:1;display:flex;overflow:hidden;min-height:0}
+#sidebar{width:230px;flex:none;background:var(--card);border-right:1px solid var(--line);overflow-y:auto;padding:14px 10px}
+.sidehead{font-family:var(--disp);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:6px 10px;display:flex;align-items:center;justify-content:space-between}
+.projitem{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;font-size:13.5px;color:var(--ink);cursor:pointer;white-space:nowrap;overflow:hidden}
+.projitem:hover{background:var(--bg)}
+.projitem.active{background:var(--accent-soft);color:var(--accent-ink);font-weight:600}
+.projdot{width:9px;height:9px;border-radius:50%;flex:none}
+.projname{flex:1;overflow:hidden;text-overflow:ellipsis}
+.projcount{font-family:var(--mono);font-size:11px;color:var(--muted);flex:none}
+.projedit{flex:none;font-size:12px;color:var(--muted);opacity:0;padding:2px 3px;border-radius:4px}
+.projitem:hover .projedit{opacity:1}
+.projedit:hover{background:var(--card);color:var(--accent-ink)}
+
+#main{flex:1;overflow-y:auto;overflow-x:hidden;padding:20px;min-height:0}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px}
+.stat{background:var(--card);border-radius:var(--r-sm);border:1px solid var(--line);padding:13px 15px}
+.stat-val{font-family:var(--disp);font-size:22px;font-weight:700;color:var(--accent-ink)}
+.stat-lbl{font-size:11.5px;color:var(--muted);margin-top:2px}
+
+.empty-state{padding:60px 20px;text-align:center;color:var(--muted)}
+.empty-icon{font-size:32px;margin-bottom:10px}
+
+/* ── Board (Kanban) ── */
+#boardWrap{display:flex;gap:14px;overflow-x:auto;padding-bottom:10px;align-items:flex-start}
+.col{background:var(--bg);border-radius:var(--r);width:270px;flex:none;display:flex;flex-direction:column;max-height:calc(100vh - 190px)}
+.col-hd{padding:12px 14px 8px;display:flex;align-items:center;gap:8px;font-family:var(--disp);font-weight:700;font-size:13px;color:var(--muted)}
+.col-hd .n{font-family:var(--mono);font-weight:500;color:var(--muted);background:var(--card);border-radius:20px;padding:1px 8px;font-size:11px}
+.col-body{flex:1;overflow-y:auto;padding:0 8px 8px;display:flex;flex-direction:column;gap:8px;min-height:40px}
+.col-body.dragover{background:var(--accent-soft);border-radius:10px}
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 12px;box-shadow:var(--shadow);cursor:grab}
+.tcard:active{cursor:grabbing}
+.tcard.dragging{opacity:.4}
+.tcard-title{font-size:13.5px;font-weight:600;margin-bottom:8px;line-height:1.35}
+.tcard-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;white-space:nowrap}
+.chip.prio-low{background:#EAF1FD;color:var(--pr-low)}
+.chip.prio-medium{background:var(--accent-soft);color:var(--pr-medium)}
+.chip.prio-high{background:#FEF3E2;color:var(--pr-high)}
+.chip.prio-urgent{background:#FDE8E8;color:var(--pr-urgent)}
+.chip.due{background:#F1F5F9;color:#475569}
+.chip.due.overdue{background:#FDE8E8;color:var(--pr-urgent)}
+.avatar{width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;font-size:10px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;margin-left:auto;flex:none}
+
+/* ── Table ── */
+.tbl-wrap{overflow-x:auto;background:var(--card);border-radius:var(--r);border:1px solid var(--line)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--bg);cursor:pointer}
+.badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap}
+.badge.st-todo{background:#F1F5F9;color:#475569}
+.badge.st-in_progress{background:#EAF1FD;color:var(--pr-low)}
+.badge.st-review{background:#FEF3E2;color:var(--pr-high)}
+.badge.st-done{background:#E1F3EA;color:#15803D}
+
+/* ── Timeline ── */
+#tlWrap{background:var(--card);border-radius:var(--r);border:1px solid var(--line);overflow:hidden;position:relative}
+.tl-head{display:flex;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--card);z-index:2}
+.tl-rowlabel{width:220px;flex:none;padding:9px 12px;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-right:1px solid var(--line)}
+.tl-axis{flex:1;position:relative;overflow:hidden;height:32px}
+.tl-tick{position:absolute;top:0;bottom:0;border-left:1px solid var(--line);font-size:10.5px;color:var(--muted);padding:8px 0 0 4px;font-family:var(--mono)}
+.tl-row{display:flex;border-bottom:1px solid var(--line);min-height:44px;position:relative}
+.tl-row:last-child{border-bottom:none}
+.tl-row.critical .tl-rowlabel{color:#DC2626}
+.tl-row .tl-rowlabel{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--ink);border-right:1px solid var(--line)}
+.tl-track{flex:1;position:relative}
+.tl-track .tl-tick{border-left:1px solid var(--line);opacity:.5}
+.tl-bar{position:absolute;top:8px;height:26px;border-radius:7px;font-size:11px;color:#fff;display:flex;align-items:center;padding:0 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:var(--shadow);cursor:pointer}
+.tl-bar.critical{outline:2px solid #DC2626;outline-offset:1px}
+.tl-legend{display:flex;align-items:center;gap:14px;padding:8px 14px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--line)}
+.tl-legend b{display:inline-flex;align-items:center;gap:5px}
+.tl-legend .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+#tlDeps{position:absolute;top:0;left:0;pointer-events:none;overflow:visible}
+
+/* ── Sprints / IT module ── */
+.sprintbar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.sprintbar select{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--card)}
+.burndown-wrap{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-top:16px}
+.burndown-title{font-family:var(--disp);font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px}
+.backlog-panel{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:16px}
+.backlog-row{display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--line);font-size:13px}
+.backlog-row:last-child{border-bottom:none}
+.backlog-row select{border:1px solid var(--line);border-radius:6px;padding:4px 7px;font-size:12px;margin-left:auto}
+.itype-badge{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px}
+.itype-badge.task{background:var(--accent-soft);color:var(--accent-ink)}
+.itype-badge.bug{background:#FDE8E8;color:#B91C1C}
+.sev-badge{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px}
+.sev-low{background:#EAF1FD;color:var(--pr-low)}
+.sev-medium{background:var(--accent-soft);color:var(--pr-medium)}
+.sev-high{background:#FEF3E2;color:var(--pr-high)}
+.sev-critical{background:#FDE8E8;color:#B91C1C}
+.link-badge{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--accent-ink);text-decoration:none}
+.link-badge:hover{text-decoration:underline}
+.filterbar{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.filterbar select{border:1px solid var(--line);border-radius:8px;padding:6px 10px;background:var(--card);font-size:12.5px}
+
+/* ── Budget / Automations panels (in modals) ── */
+.budget-bar-track{background:var(--bg);border-radius:20px;height:14px;overflow:hidden;margin:8px 0}
+.budget-bar-fill{height:100%;border-radius:20px;background:var(--accent)}
+.budget-bar-fill.over{background:#DC2626}
+.budget-row{display:flex;justify-content:space-between;font-size:13px;padding:7px 0;border-bottom:1px solid var(--line)}
+.budget-row:last-child{border-bottom:none}
+.rule-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px}
+.rule-row:last-child{border-bottom:none}
+.rule-row .rule-desc{flex:1}
+.rule-row .rule-desc b{color:var(--accent-ink)}
+.toggle-switch{width:34px;height:20px;border-radius:20px;background:var(--line);position:relative;cursor:pointer;flex:none;border:none}
+.toggle-switch.on{background:var(--accent)}
+.toggle-switch::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s}
+.toggle-switch.on::after{left:16px}
+.deps-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.dep-chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--line);border-radius:20px;padding:4px 6px 4px 10px;font-size:12px}
+.dep-chip button{background:none;border:none;color:var(--muted);font-size:13px;line-height:1;padding:2px}
+.dep-chip button:hover{color:#DC2626}
+
+/* ── Modals ── */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(11,35,32,.45);z-index:500;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal-card{background:var(--card);border-radius:var(--r);width:100%;max-width:460px;max-height:88vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.25)}
+.modal-hd{padding:18px 20px 6px;font-family:var(--disp);font-size:16px;font-weight:700}
+.modal-body{padding:14px 20px}
+.modal-footer{padding:14px 20px 20px;display:flex;align-items:center;gap:10px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:5px}
+.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:var(--bg);color:var(--ink)}
+.field textarea{resize:vertical;min-height:64px}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.save-msg{font-size:12.5px;color:var(--accent-ink)}
+.danger{color:#DC2626}
+.field-hint{font-size:11.5px;color:var(--muted);margin-top:4px}
+.field-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink)}
+.field-check input{width:auto}
+.modal-card.wide{max-width:600px}
+.subhead{font-family:var(--disp);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
+.subhead:first-child{margin-top:0}
+
+@media (max-width:760px){
+  #sidebar{position:fixed;left:-240px;top:56px;bottom:0;z-index:100;transition:left .2s;box-shadow:2px 0 12px rgba(0,0,0,.1)}
+  #sidebar.open{left:0}
+  .field-row{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">Leadvyne<span>·</span>Projects</div>
+  <div class="viewtabs" id="viewTabs">
+    <button class="viewtab active" data-view="board" onclick="setView('board')">Board</button>
+    <button class="viewtab" data-view="table" onclick="setView('table')">Table</button>
+    <button class="viewtab" data-view="timeline" onclick="setView('timeline')">Timeline</button>
+    <button class="viewtab" data-view="sprints" onclick="setView('sprints')">Sprints</button>
+  </div>
+  <div class="hright">
+    <button class="btn sm" onclick="openBudgetModal()">💰 Budget</button>
+    <button class="btn sm" onclick="openAutomationsModal()">⚡ Automations</button>
+    <button class="btn" onclick="openTaskModal()">+ Task</button>
+    <button class="btn primary" onclick="openProjectModal()">+ Project</button>
+    <button class="hback" onclick="window.close()">← Back to Dashboard</button>
+  </div>
+</header>
+
+<div id="shell">
+  <div id="sidebar">
+    <div class="sidehead"><span>Projects</span></div>
+    <div id="projList"></div>
+  </div>
+  <div id="main">
+    <div class="stats" id="statsRow"></div>
+    <div class="filterbar">
+      <select id="itemTypeFilter" onchange="renderView()">
+        <option value="all">All items</option>
+        <option value="task">Tasks only</option>
+        <option value="bug">Bugs only</option>
+      </select>
+    </div>
+    <div id="viewBoard"><div id="boardWrap"></div></div>
+    <div id="viewTable" style="display:none"><div class="tbl-wrap"><table><thead><tr>
+      <th>Task</th><th>Project</th><th>Status</th><th>Priority</th><th>Assignee</th><th>Due</th>
+    </tr></thead><tbody id="tableBody"></tbody></table></div></div>
+    <div id="viewTimeline" style="display:none"><div id="tlWrap"></div></div>
+    <div id="viewSprints" style="display:none"></div>
+  </div>
+</div>
+
+<!-- TASK MODAL -->
+<div class="modal-overlay" id="taskModalOverlay" onclick="if(event.target===this) closeModal('taskModalOverlay')">
+  <div class="modal-card wide">
+    <div class="modal-hd" id="taskModalTitle">New Task</div>
+    <div class="modal-body">
+      <input type="hidden" id="tmId">
+      <div class="field-row">
+        <div class="field"><label>Type</label><select id="tmItemType" onchange="onItemTypeChange()">
+          <option value="task">Task</option><option value="bug">Bug</option>
+        </select></div>
+        <div class="field" id="tmSeverityField" style="display:none"><label>Severity</label><select id="tmSeverity">
+          <option value="low">Low</option><option value="medium" selected>Medium</option>
+          <option value="high">High</option><option value="critical">Critical</option>
+        </select></div>
+      </div>
+      <div class="field"><label>Title</label><input id="tmTitle" placeholder="e.g. Set up staging environment"></div>
+      <div class="field"><label>Description</label><textarea id="tmDesc"></textarea></div>
+      <div class="field"><label>Project</label><select id="tmProject" onchange="onTaskProjectChange()"></select></div>
+      <div class="field-row">
+        <div class="field"><label>Status</label><select id="tmStatus">
+          <option value="todo">To Do</option><option value="in_progress">In Progress</option>
+          <option value="review">Review</option><option value="done">Done</option>
+        </select></div>
+        <div class="field"><label>Priority</label><select id="tmPriority">
+          <option value="low">Low</option><option value="medium" selected>Medium</option>
+          <option value="high">High</option><option value="urgent">Urgent</option>
+        </select></div>
+      </div>
+      <div class="field"><label>Assignee</label><select id="tmAssignee"></select></div>
+      <div class="field-row">
+        <div class="field"><label>Start date</label><input type="date" id="tmStart"></div>
+        <div class="field"><label>Due date</label><input type="date" id="tmDue"></div>
+      </div>
+
+      <div class="subhead">🏃 Sprint (optional)</div>
+      <div class="field-row">
+        <div class="field"><label>Sprint</label><select id="tmSprint"><option value="">No sprint (backlog)</option></select></div>
+        <div class="field"><label>Story points</label><input type="number" id="tmPoints" min="0" step="1" placeholder="e.g. 3"></div>
+      </div>
+
+      <div class="subhead">🔗 Linked PR / Commit (optional)</div>
+      <div class="field-hint" style="margin-bottom:10px">Paste a link — this is a manual reference, not a live GitHub sync.</div>
+      <div class="field-row">
+        <div class="field"><label>URL</label><input id="tmLinkUrl" placeholder="https://github.com/org/repo/pull/123"></div>
+        <div class="field"><label>Label</label><input id="tmLinkLabel" placeholder="e.g. PR #123"></div>
+      </div>
+
+      <div class="subhead">⛓️ Depends on</div>
+      <div class="field-hint" style="margin-bottom:8px">This task can't start until its dependencies finish — feeds the Timeline's critical path.</div>
+      <div class="deps-chips" id="tmDepsChips"></div>
+      <div class="field-row" id="tmDepsAddRow">
+        <div class="field" style="margin-bottom:0"><select id="tmDepsPicker"></select></div>
+        <div class="field" style="margin-bottom:0"><button class="btn sm" style="width:100%;justify-content:center" onclick="addDependencyFromModal()">+ Add dependency</button></div>
+      </div>
+
+      <div class="subhead">⏱️ Time logged</div>
+      <div id="tmTimeSummary" class="field-hint" style="margin-bottom:8px">Save the task first to log time against it.</div>
+      <div id="tmTimeList"></div>
+      <button class="btn sm" id="tmLogTimeBtn" style="display:none" onclick="openTimeModal(_editingTaskId)">+ Log time</button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn primary" onclick="saveTask()">Save</button>
+      <span class="save-msg" id="tmMsg"></span>
+      <button class="btn danger" id="tmDeleteBtn" style="display:none;margin-left:auto" onclick="deleteTaskFromModal()">Delete</button>
+      <button class="btn" onclick="closeModal('taskModalOverlay')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- PROJECT MODAL -->
+<div class="modal-overlay" id="projectModalOverlay" onclick="if(event.target===this) closeModal('projectModalOverlay')">
+  <div class="modal-card">
+    <div class="modal-hd" id="projectModalTitle">New Project</div>
+    <div class="modal-body">
+      <input type="hidden" id="pmId">
+      <div class="field"><label>Name</label><input id="pmName" placeholder="e.g. Client Portal Rebuild"></div>
+      <div class="field"><label>Description</label><textarea id="pmDesc"></textarea></div>
+      <div class="field-row">
+        <div class="field"><label>Color</label><input type="color" id="pmColor" value="#0D9C93" style="height:40px;padding:4px"></div>
+        <div class="field"><label>Status</label><select id="pmStatus">
+          <option value="active">Active</option><option value="completed">Completed</option><option value="archived">Archived</option>
+        </select></div>
+      </div>
+      <div class="subhead">💰 Budget (optional — powers the Budget panel)</div>
+      <div class="field-row">
+        <div class="field"><label>Budget amount</label><input type="number" id="pmBudget" min="0" step="1" placeholder="e.g. 20000"></div>
+        <div class="field"><label>Currency</label><input id="pmCurrency" placeholder="USD" maxlength="10"></div>
+      </div>
+      <div class="field"><label>Default hourly rate</label><input type="number" id="pmRate" min="0" step="1" placeholder="Used when a time entry doesn't set its own rate"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn primary" onclick="saveProject()">Save</button>
+      <span class="save-msg" id="pmMsg"></span>
+      <button class="btn danger" id="pmDeleteBtn" style="display:none;margin-left:auto" onclick="deleteProjectFromModal()">Delete</button>
+      <button class="btn" onclick="closeModal('projectModalOverlay')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- TIME ENTRY MODAL -->
+<div class="modal-overlay" id="timeModalOverlay" onclick="if(event.target===this) closeModal('timeModalOverlay')">
+  <div class="modal-card">
+    <div class="modal-hd">Log Time</div>
+    <div class="modal-body">
+      <input type="hidden" id="teTaskId">
+      <div class="field-row">
+        <div class="field"><label>Date</label><input type="date" id="teDate"></div>
+        <div class="field"><label>Hours</label><input type="number" id="teHours" min="0" step="0.25" placeholder="e.g. 2.5"></div>
+      </div>
+      <div class="field"><label>Note (optional)</label><input id="teNote" placeholder="What did you work on?"></div>
+      <div class="field-row">
+        <div class="field"><label>Hourly rate (optional)</label><input type="number" id="teRate" min="0" step="1" placeholder="Uses the project's default rate if blank"></div>
+        <div class="field"><label class="field-check" style="margin-top:9px"><input type="checkbox" id="teBillable" checked> Billable</label></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn primary" onclick="saveTimeEntry()">Save</button>
+      <span class="save-msg" id="teMsg"></span>
+      <button class="btn" onclick="closeModal('timeModalOverlay')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- SPRINT MODAL -->
+<div class="modal-overlay" id="sprintModalOverlay" onclick="if(event.target===this) closeModal('sprintModalOverlay')">
+  <div class="modal-card">
+    <div class="modal-hd" id="sprintModalTitle">New Sprint</div>
+    <div class="modal-body">
+      <input type="hidden" id="spId">
+      <div class="field"><label>Name</label><input id="spName" placeholder="e.g. Sprint 12"></div>
+      <div class="field-row">
+        <div class="field"><label>Start date</label><input type="date" id="spStart"></div>
+        <div class="field"><label>End date</label><input type="date" id="spEnd"></div>
+      </div>
+      <div class="field"><label>Status</label><select id="spStatus">
+        <option value="planned">Planned</option><option value="active">Active</option><option value="completed">Completed</option>
+      </select></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn primary" onclick="saveSprint()">Save</button>
+      <span class="save-msg" id="spMsg"></span>
+      <button class="btn danger" id="spDeleteBtn" style="display:none;margin-left:auto" onclick="deleteSprintFromModal()">Delete</button>
+      <button class="btn" onclick="closeModal('sprintModalOverlay')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- BUDGET MODAL -->
+<div class="modal-overlay" id="budgetModalOverlay" onclick="if(event.target===this) closeModal('budgetModalOverlay')">
+  <div class="modal-card wide">
+    <div class="modal-hd">💰 Budget &amp; Time</div>
+    <div class="modal-body" id="budgetModalBody"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('budgetModalOverlay')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- AUTOMATIONS MODAL -->
+<div class="modal-overlay" id="automationsModalOverlay" onclick="if(event.target===this) closeModal('automationsModalOverlay')">
+  <div class="modal-card wide">
+    <div class="modal-hd">⚡ Automations</div>
+    <div class="modal-body">
+      <div class="field-hint" style="margin-bottom:14px">A fixed set of "when this happens, do that" rules — not a full condition builder yet. Rules only apply within the project they're created in.</div>
+      <div id="automationsList"></div>
+      <div class="subhead">+ New rule</div>
+      <div class="field"><label>Name</label><input id="autName" placeholder="e.g. Notify me when something's blocked"></div>
+      <div class="field-row">
+        <div class="field"><label>When…</label><select id="autTrigger" onchange="onAutomationTriggerChange()">
+          <option value="status_changed_to">Status changes to</option>
+          <option value="task_created">A task is created</option>
+        </select></div>
+        <div class="field" id="autTriggerStatusField"><label>Status</label><select id="autTriggerStatus">
+          <option value="todo">To Do</option><option value="in_progress">In Progress</option>
+          <option value="review">Review</option><option value="done">Done</option>
+        </select></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Then…</label><select id="autAction" onchange="onAutomationActionChange()">
+          <option value="set_status">Set status to</option>
+          <option value="set_assignee">Assign to</option>
+          <option value="notify_email">Send an email</option>
+        </select></div>
+        <div class="field" id="autActionStatusField"><label>Status</label><select id="autActionStatus">
+          <option value="todo">To Do</option><option value="in_progress">In Progress</option>
+          <option value="review">Review</option><option value="done">Done</option>
+        </select></div>
+        <div class="field" id="autActionAssigneeField" style="display:none"><label>Assignee</label><select id="autActionAssignee"></select></div>
+      </div>
+      <div class="field-row" id="autActionEmailFields" style="display:none">
+        <div class="field"><label>To email</label><input id="autActionEmail" placeholder="e.g. lead@yourcompany.com"></div>
+        <div class="field"><label>Subject</label><input id="autActionSubject" placeholder="Task update: {{title}}"></div>
+      </div>
+      <div class="field" id="autActionBodyField" style="display:none"><label>Message</label><textarea id="autActionBody" placeholder="Task &quot;{{title}}&quot; changed."></textarea></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn primary" onclick="addAutomationRule()">+ Add rule</button>
+      <span class="save-msg" id="autMsg"></span>
+      <button class="btn" onclick="closeModal('automationsModalOverlay')">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const WORKER_BASE='https://leadvyne-api-proxy.leadvyne.workers.dev';
+const params=new URLSearchParams(location.search);
+const clientId=params.get('client')||'';
+let sessionToken=params.get('token')||'';
+
+function $id(id){ return document.getElementById(id); }
+function esc(str){ return String(str==null?'':str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(str){ return esc(str).replace(/"/g,'&quot;'); }
+function openModal(id){ $id(id).classList.add('active'); }
+function closeModal(id){ $id(id).classList.remove('active'); }
+
+if(!clientId||!sessionToken){
+  document.body.innerHTML='<div class="empty-state" style="padding:80px 20px"><div class="empty-icon">🔒</div>Missing client/session — open Projects from inside your Leadvyne dashboard.</div>';
+  throw new Error('no session');
+}
+
+async function pmFetch(path, opts){
+  const r=await fetch(`${WORKER_BASE}${path}`, {...opts, headers:{'Authorization':'Bearer '+sessionToken,'Content-Type':'application/json',...(opts&&opts.headers)}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.error||'Request failed');
+  return data;
+}
+// Decoded client-side, never trusted for auth (the Worker independently verifies the signature on
+// every request) — just so time entries and automation "assign to" defaults know which teammate
+// is actually behind this browser, the same distinction dashboard.html's own myEmail makes.
+function myCurrentEmail(){
+  try{ return JSON.parse(atob(sessionToken.split('.')[0])).email || clientRecord?.authentik_email || ''; }
+  catch(e){ return clientRecord?.authentik_email || ''; }
+}
+
+/* ── STATE ── */
+let clientRecord=null, teamOptions=[];
+let allProjects=[], allTasks=[], allDependencies=[], allTimeEntries=[], allSprints=[], allAutomations=[];
+let selectedProjectId='all';
+let selectedSprintId=null;
+let currentView='board';
+const STATUS_COLS=[
+  {key:'todo', label:'To Do'}, {key:'in_progress', label:'In Progress'},
+  {key:'review', label:'Review'}, {key:'done', label:'Done'},
+];
+
+function projectById(id){ return allProjects.find(p=>String(p.Id)===String(id)); }
+function taskById(id){ return allTasks.find(t=>String(t.Id)===String(id)); }
+function visibleTasks(){
+  let tasks=selectedProjectId==='all' ? allTasks : allTasks.filter(t=>String(t.project_id)===String(selectedProjectId));
+  const f=$id('itemTypeFilter')?.value;
+  if(f && f!=='all') tasks=tasks.filter(t=>(t.item_type||'task')===f);
+  return tasks;
+}
+function initials(nameOrEmail){
+  const s=(nameOrEmail||'').trim();
+  if(!s) return '?';
+  const parts=s.split(/[\s@.]+/).filter(Boolean);
+  return ((parts[0]||'')[0]+(parts[1]||'')[0]).toUpperCase()||s[0].toUpperCase();
+}
+function assigneeLabel(email){
+  if(!email) return '';
+  const found=teamOptions.find(t=>t.email.toLowerCase()===email.toLowerCase());
+  return found ? found.name : email;
+}
+function isOverdue(due, status){
+  return due && status!=='done' && due<new Date().toISOString().slice(0,10);
+}
+function itemTypeIcon(t){ return (t.item_type==='bug') ? '🐞' : '📋'; }
+function fmtMoney(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); }
+
+/* ── BOOT ── */
+async function boot(){
+  try{
+    const me=await pmFetch('/session/me', {method:'GET'});
+    if(!me.client_id) throw new Error('Session expired');
+    clientRecord=me.client||{};
+    buildTeamOptions();
+    await loadProjects(); // dependencies/sprints/automations below all need this list first
+    await Promise.all([loadTasks(), loadDependencies(), loadTimeEntries(), loadSprints(), loadAutomations()]);
+    renderSidebar();
+    renderStats();
+    renderView();
+  }catch(e){
+    document.body.innerHTML=`<div class="empty-state" style="padding:80px 20px"><div class="empty-icon">🔒</div>${esc(e.message||'Session expired')} — reopen Projects from your Leadvyne dashboard.</div>`;
+  }
+}
+function buildTeamOptions(){
+  const emails=[clientRecord.authentik_email, ...(clientRecord.team_emails||'').split(',')].map(e=>e.trim()).filter(Boolean);
+  let names={}; try{ names=JSON.parse(clientRecord.team_names||'{}'); }catch(e){}
+  const seen=new Set();
+  teamOptions=emails.filter(e=>{ const k=e.toLowerCase(); if(seen.has(k)) return false; seen.add(k); return true; })
+    .map(e=>({email:e, name:names[e]||e}));
+}
+async function loadProjects(){ allProjects=(await pmFetch('/pm/projects',{method:'GET'})).list||[]; }
+async function loadTasks(){ allTasks=(await pmFetch('/pm/tasks',{method:'GET'})).list||[]; }
+async function loadDependencies(){
+  // Loaded per-project (dependencies never cross projects — see handlePmDependencyCreate), then
+  // flattened, mirroring the "load everything, filter client-side" approach the rest of this page
+  // already uses for tasks/projects.
+  const lists=await Promise.all(allProjects.map(p=>pmFetch(`/pm/dependencies?project_id=${p.Id}`,{method:'GET'}).catch(()=>({list:[]}))));
+  allDependencies=lists.flatMap(r=>r.list||[]);
+}
+async function loadTimeEntries(){ allTimeEntries=(await pmFetch('/pm/time',{method:'GET'})).list||[]; }
+async function loadSprints(){ allSprints=(await pmFetch('/pm/sprints',{method:'GET'})).list||[]; }
+async function loadAutomations(){ allAutomations=(await pmFetch('/pm/automations',{method:'GET'})).list||[]; }
+
+/* ── SIDEBAR ── */
+function renderSidebar(){
+  const wrap=$id('projList');
+  const allCount=allTasks.length;
+  let html=`<div class="projitem ${selectedProjectId==='all'?'active':''}" onclick="selectProject('all')">
+    <span class="projdot" style="background:var(--accent)"></span><span class="projname">All Projects</span><span class="projcount">${allCount}</span>
+  </div>`;
+  html+=allProjects.filter(p=>p.status!=='archived').map(p=>{
+    const count=allTasks.filter(t=>String(t.project_id)===String(p.Id)).length;
+    return `<div class="projitem ${String(selectedProjectId)===String(p.Id)?'active':''}">
+      <span class="projdot" style="background:${escAttr(p.color||'#0D9C93')}"></span>
+      <span class="projname" title="${escAttr(p.name)}" onclick="selectProject('${p.Id}')" style="cursor:pointer">${esc(p.name)}</span>
+      <span class="projcount">${count}</span>
+      <span class="projedit" title="Edit project" onclick="openProjectModal(${p.Id})">✎</span>
+    </div>`;
+  }).join('');
+  wrap.innerHTML=html;
+  populateProjectSelect();
+}
+function selectProject(id){ selectedProjectId=id; renderSidebar(); renderStats(); renderView(); }
+function populateProjectSelect(){
+  $id('tmProject').innerHTML=allProjects.filter(p=>p.status!=='archived').map(p=>`<option value="${p.Id}">${esc(p.name)}</option>`).join('') || '<option value="">Create a project first</option>';
+}
+
+/* ── STATS ── */
+function renderStats(){
+  const tasks=visibleTasks();
+  const counts={todo:0,in_progress:0,review:0,done:0};
+  tasks.forEach(t=>{ counts[t.status]=(counts[t.status]||0)+1; });
+  const overdue=tasks.filter(t=>isOverdue(t.due_date,t.status)).length;
+  $id('statsRow').innerHTML=`
+    <div class="stat"><div class="stat-val">${tasks.length}</div><div class="stat-lbl">Total tasks</div></div>
+    <div class="stat"><div class="stat-val">${counts.in_progress||0}</div><div class="stat-lbl">In progress</div></div>
+    <div class="stat"><div class="stat-val">${counts.done||0}</div><div class="stat-lbl">Done</div></div>
+    <div class="stat"><div class="stat-val" style="color:${overdue?'#DC2626':'var(--accent-ink)'}">${overdue}</div><div class="stat-lbl">Overdue</div></div>
+  `;
+}
+
+/* ── VIEW SWITCHING ── */
+function setView(v){
+  currentView=v;
+  document.querySelectorAll('.viewtab').forEach(b=>b.classList.toggle('active', b.dataset.view===v));
+  $id('viewBoard').style.display=v==='board'?'':'none';
+  $id('viewTable').style.display=v==='table'?'':'none';
+  $id('viewTimeline').style.display=v==='timeline'?'':'none';
+  $id('viewSprints').style.display=v==='sprints'?'':'none';
+  // The item-type filter (All/Tasks/Bugs) only means something for the flat views — Sprints has
+  // its own backlog+board scoping already, so hide it there rather than leave a control that
+  // silently does nothing.
+  $id('itemTypeFilter').closest('.filterbar').style.display=v==='sprints'?'none':'';
+  renderView();
+}
+function renderView(){
+  if(currentView==='board') renderBoard();
+  else if(currentView==='table') renderTable();
+  else if(currentView==='sprints') renderSprints();
+  else renderTimeline();
+}
+
+/* ── BOARD (KANBAN) ── */
+function kanbanColumnsHtml(tasks){
+  return STATUS_COLS.map(col=>{
+    const colTasks=tasks.filter(t=>t.status===col.key).sort((a,b)=>a.position-b.position);
+    return `<div class="col">
+      <div class="col-hd">${col.label}<span class="n">${colTasks.length}</span></div>
+      <div class="col-body" data-status="${col.key}" ondragover="onColDragOver(event)" ondragleave="onColDragLeave(event)" ondrop="onColDrop(event,'${col.key}')">
+        ${colTasks.map(t=>taskCardHtml(t)).join('') || ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+// Shared by renderBoard() and renderSprints()'s own sprint board — both render draggable .tcard
+// elements via taskCardHtml/kanbanColumnsHtml, so both need this wired after every render or a
+// card just looks draggable without actually doing anything.
+function wireCardDragHandlers(root){
+  root.querySelectorAll('.tcard').forEach(el=>{
+    el.addEventListener('dragstart', onCardDragStart);
+    el.addEventListener('dragend', onCardDragEnd);
+  });
+}
+function renderBoard(){
+  $id('boardWrap').innerHTML=kanbanColumnsHtml(visibleTasks());
+  wireCardDragHandlers($id('boardWrap'));
+}
+function taskCardHtml(t){
+  const proj=projectById(t.project_id);
+  const due=t.due_date ? `<span class="chip due ${isOverdue(t.due_date,t.status)?'overdue':''}">${t.due_date.slice(5)}</span>` : '';
+  const isBug=t.item_type==='bug';
+  return `<div class="tcard" draggable="true" data-id="${t.Id}" onclick="openTaskModal(${t.Id})">
+    ${proj?`<div style="font-size:10.5px;color:${escAttr(proj.color||'#0D9C93')};font-weight:700;margin-bottom:4px">${esc(proj.name)}</div>`:''}
+    <div class="tcard-title">${itemTypeIcon(t)} ${esc(t.title)}</div>
+    <div class="tcard-meta">
+      ${isBug && t.severity?`<span class="sev-badge sev-${t.severity}">${t.severity}</span>`:`<span class="chip prio-${t.priority}">${t.priority}</span>`}
+      ${t.story_points?`<span class="chip due">${t.story_points} pts</span>`:''}
+      ${due}
+      ${t.link_url?`<a class="link-badge" href="${escAttr(t.link_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="${escAttr(t.link_url)}">🔗</a>`:''}
+      ${t.assignee_email?`<span class="avatar" title="${escAttr(assigneeLabel(t.assignee_email))}">${initials(assigneeLabel(t.assignee_email))}</span>`:''}
+    </div>
+  </div>`;
+}
+
+/* Drag and drop — native HTML5 DnD. position is a float: dropping between two cards writes the
+   average of their positions so reordering never needs to renumber every other row (see the
+   migration's own comment on pm_tasks.position). */
+let _dragId=null;
+function onCardDragStart(e){ _dragId=e.currentTarget.dataset.id; e.currentTarget.classList.add('dragging'); e.dataTransfer.effectAllowed='move'; }
+function onCardDragEnd(e){ e.currentTarget.classList.remove('dragging'); }
+function onColDragOver(e){ e.preventDefault(); e.currentTarget.classList.add('dragover'); }
+function onColDragLeave(e){ e.currentTarget.classList.remove('dragover'); }
+async function onColDrop(e, status){
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  const id=_dragId; _dragId=null;
+  if(!id) return;
+  const task=allTasks.find(t=>String(t.Id)===String(id));
+  if(!task) return;
+  const siblings=allTasks.filter(t=>t.status===status && String(t.Id)!==String(id)).sort((a,b)=>a.position-b.position);
+  // Dropped at the end of the column — precise reordering within a column (dropping between two
+  // specific cards) is a later refinement; landing at the bottom of the target column covers the
+  // common case (working a card through the pipeline) without needing per-pixel drop targets yet.
+  const position=siblings.length ? siblings[siblings.length-1].position+1 : 0;
+  task.status=status; task.position=position;
+  renderBoard(); renderStats();
+  try{ await pmFetch('/pm/tasks',{method:'PATCH', body:JSON.stringify({Id:id, status, position})}); }
+  catch(e){ await loadTasks(); renderBoard(); renderStats(); }
+}
+
+/* ── TABLE ── */
+function renderTable(){
+  const tasks=visibleTasks().slice().sort((a,b)=>(a.due_date||'9999').localeCompare(b.due_date||'9999'));
+  $id('tableBody').innerHTML=tasks.map(t=>{
+    const proj=projectById(t.project_id);
+    return `<tr onclick="openTaskModal(${t.Id})">
+      <td>${itemTypeIcon(t)} ${esc(t.title)} ${t.link_url?`<a class="link-badge" href="${escAttr(t.link_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗</a>`:''}</td>
+      <td>${proj?esc(proj.name):'—'}</td>
+      <td><span class="badge st-${t.status}">${STATUS_COLS.find(c=>c.key===t.status)?.label||t.status}</span></td>
+      <td>${t.item_type==='bug' && t.severity?`<span class="sev-badge sev-${t.severity}">${t.severity}</span>`:`<span class="chip prio-${t.priority}">${t.priority}</span>`}</td>
+      <td>${t.assignee_email?esc(assigneeLabel(t.assignee_email)):'—'}</td>
+      <td style="${isOverdue(t.due_date,t.status)?'color:#DC2626;font-weight:700':''}">${t.due_date||'—'}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📋</div>No tasks yet — click "+ Task" to add one.</div></td></tr>`;
+}
+
+/* ── Critical Path Method (CPM) ──
+   Runs entirely client-side over tasks+dependencies already loaded in the browser — no separate
+   server endpoint. Only meaningful within a single project (dependencies never cross projects, by
+   construction — see handlePmDependencyCreate), so this returns an empty result when "All
+   Projects" is selected; the Timeline still draws normally, just without critical-path
+   highlighting in that view. Units are relative day-offsets, not calendar dates — this only needs
+   to answer "which tasks have zero slack," not reproduce the bars' own date math, which the
+   Timeline already computes separately from start_date/due_date directly. A task with only one of
+   start/due set (or neither) is treated as a 1-day box, same simplification the bar-rendering
+   below already makes. */
+function computeCPM(tasks, deps){
+  const result=new Map();
+  if(!tasks.length) return result;
+  const toDate=s=>new Date(s+'T00:00:00');
+  const oneDay=86400000;
+  const dur=new Map(), preds=new Map(), succs=new Map();
+  tasks.forEach(t=>{
+    const id=String(t.Id);
+    let d=1;
+    if(t.start_date && t.due_date) d=Math.max(1, Math.round((toDate(t.due_date)-toDate(t.start_date))/oneDay)+1);
+    dur.set(id, d); preds.set(id, []); succs.set(id, []);
+  });
+  const ids=new Set(tasks.map(t=>String(t.Id)));
+  deps.forEach(d=>{
+    const p=String(d.predecessor_id), s=String(d.successor_id);
+    if(!ids.has(p)||!ids.has(s)) return;
+    preds.get(s).push({id:p, lag:d.lag_days||0});
+    succs.get(p).push({id:s, lag:d.lag_days||0});
+  });
+  // Kahn's algorithm for topological order — also our only defense here against a cycle (the
+  // server already rejects creating one, but this stays correct even if data is ever inconsistent).
+  const indeg=new Map(); tasks.forEach(t=>indeg.set(String(t.Id), preds.get(String(t.Id)).length));
+  const queue=tasks.filter(t=>indeg.get(String(t.Id))===0).map(t=>String(t.Id));
+  const order=[];
+  while(queue.length){
+    const id=queue.shift(); order.push(id);
+    succs.get(id).forEach(s=>{ indeg.set(s.id, indeg.get(s.id)-1); if(indeg.get(s.id)===0) queue.push(s.id); });
+  }
+  tasks.forEach(t=>{ if(!order.includes(String(t.Id))) order.push(String(t.Id)); }); // cycle fallback
+  const es=new Map(), ef=new Map();
+  order.forEach(id=>{
+    const p=preds.get(id);
+    const start=p.length ? Math.max(...p.map(pr=>(ef.get(pr.id)||0)+pr.lag)) : 0;
+    es.set(id, start); ef.set(id, start+dur.get(id));
+  });
+  const projectEnd=Math.max(0, ...Array.from(ef.values()));
+  const ls=new Map(), lf=new Map();
+  for(let i=order.length-1;i>=0;i--){
+    const id=order[i];
+    const s=succs.get(id);
+    const finish=s.length ? Math.min(...s.map(su=>(ls.get(su.id)??projectEnd)-su.lag)) : projectEnd;
+    lf.set(id, finish); ls.set(id, finish-dur.get(id));
+  }
+  tasks.forEach(t=>{
+    const id=String(t.Id);
+    const slack=(ls.get(id)||0)-(es.get(id)||0);
+    result.set(id, {slack, critical:slack<=0});
+  });
+  return result;
+}
+
+/* ── TIMELINE (Gantt) — date-positioned bars, dependency connector lines, critical path in red ── */
+function renderTimeline(){
+  const tasks=visibleTasks().filter(t=>t.start_date||t.due_date);
+  if(!tasks.length){ $id('tlWrap').innerHTML=`<div class="empty-state"><div class="empty-icon">📆</div>No dated tasks yet — add a start or due date to see them here.</div>`; return; }
+  const singleProject=selectedProjectId!=='all';
+  const deps=allDependencies.filter(d=>tasks.some(t=>String(t.Id)===String(d.predecessor_id)) && tasks.some(t=>String(t.Id)===String(d.successor_id)));
+  const cpm=singleProject ? computeCPM(tasks, deps) : new Map();
+  const toDate=s=>new Date(s+'T00:00:00');
+  let minD=null, maxD=null;
+  tasks.forEach(t=>{
+    const s=toDate(t.start_date||t.due_date), d=toDate(t.due_date||t.start_date);
+    if(!minD||s<minD) minD=s; if(!maxD||d>maxD) maxD=d;
+  });
+  minD.setDate(minD.getDate()-1); maxD.setDate(maxD.getDate()+2);
+  const totalMs=maxD-minD;
+  const pct=d=>((d-minD)/totalMs)*100;
+  const weeks=[];
+  for(let d=new Date(minD); d<maxD; d.setDate(d.getDate()+7)) weeks.push(new Date(d));
+  const axisHtml=weeks.map(w=>`<span class="tl-tick" style="left:${pct(w)}%">${w.toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span>`).join('');
+  const sortedTasks=tasks.slice().sort((a,b)=>(a.start_date||a.due_date).localeCompare(b.start_date||b.due_date));
+  const rows=sortedTasks.map(t=>{
+    const s=toDate(t.start_date||t.due_date), d=toDate(t.due_date||t.start_date);
+    const left=pct(s), width=Math.max(pct(d)-pct(s), 2.2);
+    const proj=projectById(t.project_id);
+    const isCritical=cpm.get(String(t.Id))?.critical;
+    return `<div class="tl-row ${isCritical?'critical':''}">
+      <div class="tl-rowlabel" title="${escAttr(t.title)}">${isCritical?'⚡':''}${esc(t.title)}</div>
+      <div class="tl-track">${axisHtml}
+        <div class="tl-bar ${isCritical?'critical':''}" data-task-id="${t.Id}" style="left:${left}%;width:${width}%;background:${escAttr(proj?.color||'#0D9C93')}" onclick="openTaskModal(${t.Id})" title="${escAttr(t.title)}">${esc(t.title)}</div>
+      </div>
+    </div>`;
+  }).join('');
+  $id('tlWrap').innerHTML=`
+    <div class="tl-head"><div class="tl-rowlabel">Task</div><div class="tl-axis">${axisHtml}</div></div>
+    ${rows}
+    <div class="tl-legend">
+      ${deps.length?`<b><span class="sw" style="background:#94A3B8;border-radius:50%"></span>Dependency</b>`:''}
+      ${singleProject?`<b><span class="sw" style="background:#DC2626"></span>⚡ Critical path</b>`:'<span>Select one project (not "All Projects") to see the critical path.</span>'}
+    </div>
+  `;
+  if(deps.length) drawDependencyLines(deps);
+}
+// Overlays an SVG on top of the rendered bars and draws a curved connector from each
+// predecessor's bar to its successor's — measured from real DOM positions (getBoundingClientRect)
+// after the rows above are already in the document, not computed from the percentage math a
+// second time, so it can never drift out of sync with where the bars actually landed.
+function drawDependencyLines(deps){
+  const wrap=$id('tlWrap');
+  const wrapRect=wrap.getBoundingClientRect();
+  let paths='';
+  deps.forEach(d=>{
+    const predEl=wrap.querySelector(`.tl-bar[data-task-id="${d.predecessor_id}"]`);
+    const succEl=wrap.querySelector(`.tl-bar[data-task-id="${d.successor_id}"]`);
+    if(!predEl||!succEl) return;
+    const pr=predEl.getBoundingClientRect(), sr=succEl.getBoundingClientRect();
+    const x1=pr.right-wrapRect.left, y1=pr.top+pr.height/2-wrapRect.top;
+    const x2=sr.left-wrapRect.left, y2=sr.top+sr.height/2-wrapRect.top;
+    const midX=(x1+x2)/2;
+    paths+=`<path d="M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}" stroke="#94A3B8" stroke-width="1.5" fill="none" marker-end="url(#tlArrow)"/>`;
+  });
+  const svgHtml=`<svg id="tlDeps" width="${wrap.scrollWidth}" height="${wrap.scrollHeight}">
+    <defs><marker id="tlArrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#94A3B8"/></marker></defs>
+    ${paths}
+  </svg>`;
+  wrap.insertAdjacentHTML('beforeend', svgHtml);
+}
+
+/* ── TASK MODAL ── */
+let _editingTaskId=null;
+function onItemTypeChange(){
+  $id('tmSeverityField').style.display = $id('tmItemType').value==='bug' ? '' : 'none';
+}
+function populateSprintSelect(){
+  const projId=$id('tmProject').value;
+  const sprints=allSprints.filter(s=>String(s.project_id)===String(projId) && s.status!=='completed');
+  $id('tmSprint').innerHTML='<option value="">No sprint (backlog)</option>'+sprints.map(s=>`<option value="${s.Id}">${esc(s.name)}</option>`).join('');
+}
+function onTaskProjectChange(){ populateSprintSelect(); renderDepsChips(); }
+function openTaskModal(id){
+  populateProjectSelect();
+  $id('tmAssignee').innerHTML='<option value="">Unassigned</option>'+teamOptions.map(t=>`<option value="${escAttr(t.email)}">${esc(t.name)}</option>`).join('');
+  const task=id?taskById(id):null;
+  _editingTaskId=task?task.Id:null;
+  $id('taskModalTitle').textContent=task?'Edit Task':'New Task';
+  $id('tmId').value=task?task.Id:'';
+  $id('tmItemType').value=task?(task.item_type||'task'):'task';
+  $id('tmSeverity').value=task?(task.severity||'medium'):'medium';
+  onItemTypeChange();
+  $id('tmTitle').value=task?task.title:'';
+  $id('tmDesc').value=task?(task.description||''):'';
+  $id('tmProject').value=task?task.project_id:(selectedProjectId!=='all'?selectedProjectId:($id('tmProject').options[0]?.value||''));
+  $id('tmStatus').value=task?task.status:'todo';
+  $id('tmPriority').value=task?task.priority:'medium';
+  $id('tmAssignee').value=task?(task.assignee_email||''):'';
+  $id('tmStart').value=task?(task.start_date||''):'';
+  $id('tmDue').value=task?(task.due_date||''):'';
+  $id('tmPoints').value=task?(task.story_points??''):'';
+  $id('tmLinkUrl').value=task?(task.link_url||''):'';
+  $id('tmLinkLabel').value=task?(task.link_label||''):'';
+  populateSprintSelect();
+  $id('tmSprint').value=task?(task.sprint_id||''):'';
+  $id('tmMsg').textContent='';
+  $id('tmDeleteBtn').style.display=task?'':'none';
+  renderDepsChips();
+  renderTaskTimeSummary();
+  openModal('taskModalOverlay');
+}
+async function saveTask(){
+  const projectId=$id('tmProject').value;
+  if(!projectId){ $id('tmMsg').textContent='Create a project first.'; return; }
+  const title=$id('tmTitle').value.trim();
+  if(!title){ $id('tmMsg').textContent='Title required.'; return; }
+  const body={
+    project_id:projectId, title, description:$id('tmDesc').value.trim(),
+    status:$id('tmStatus').value, priority:$id('tmPriority').value,
+    assignee_email:$id('tmAssignee').value, start_date:$id('tmStart').value, due_date:$id('tmDue').value,
+    item_type:$id('tmItemType').value, severity:$id('tmItemType').value==='bug'?$id('tmSeverity').value:'',
+    sprint_id:$id('tmSprint').value||'', story_points:$id('tmPoints').value||'',
+    link_url:$id('tmLinkUrl').value.trim(), link_label:$id('tmLinkLabel').value.trim(),
+  };
+  $id('tmMsg').textContent='Saving…';
+  try{
+    if(_editingTaskId){ body.Id=_editingTaskId; body.position=taskById(_editingTaskId)?.position||0; await pmFetch('/pm/tasks',{method:'PATCH', body:JSON.stringify(body)}); }
+    else{ body.position=(allTasks.filter(t=>t.status===body.status).reduce((m,t)=>Math.max(m,t.position),0))+1; await pmFetch('/pm/tasks',{method:'POST', body:JSON.stringify(body)}); }
+    await loadTasks();
+    closeModal('taskModalOverlay');
+    renderSidebar(); renderStats(); renderView();
+  }catch(e){ $id('tmMsg').textContent=e.message||'Could not save.'; }
+}
+async function deleteTaskFromModal(){
+  if(!_editingTaskId || !confirm('Delete this task?')) return;
+  try{ await pmFetch('/pm/tasks',{method:'DELETE', body:JSON.stringify({Id:_editingTaskId})}); await Promise.all([loadTasks(), loadDependencies()]); closeModal('taskModalOverlay'); renderSidebar(); renderStats(); renderView(); }
+  catch(e){ $id('tmMsg').textContent=e.message||'Could not delete.'; }
+}
+
+/* ── Dependencies (inside the Task modal) ── */
+function renderDepsChips(){
+  const chips=$id('tmDepsChips');
+  if(!_editingTaskId){ chips.innerHTML='<div class="field-hint">Save the task first to add dependencies.</div>'; $id('tmDepsAddRow').style.display='none'; return; }
+  $id('tmDepsAddRow').style.display='';
+  const myDeps=allDependencies.filter(d=>String(d.successor_id)===String(_editingTaskId));
+  chips.innerHTML = myDeps.length ? myDeps.map(d=>{
+    const pred=taskById(d.predecessor_id);
+    return `<span class="dep-chip">${esc(pred?pred.title:'#'+d.predecessor_id)}<button onclick="removeDependency(${d.Id})" title="Remove">×</button></span>`;
+  }).join('') : '<div class="field-hint">No dependencies yet.</div>';
+  const projTasks=allTasks.filter(t=>String(t.project_id)===String($id('tmProject').value) && String(t.Id)!==String(_editingTaskId) && !myDeps.some(d=>String(d.predecessor_id)===String(t.Id)));
+  $id('tmDepsPicker').innerHTML=projTasks.length? projTasks.map(t=>`<option value="${t.Id}">${esc(t.title)}</option>`).join('') : '<option value="">No other tasks in this project</option>';
+}
+async function addDependencyFromModal(){
+  const predId=$id('tmDepsPicker').value;
+  if(!predId||!_editingTaskId) return;
+  try{
+    await pmFetch('/pm/dependencies',{method:'POST', body:JSON.stringify({predecessor_id:predId, successor_id:_editingTaskId})});
+    await loadDependencies();
+    renderDepsChips();
+  }catch(e){ alert(e.message||'Could not add dependency.'); }
+}
+async function removeDependency(id){
+  try{ await pmFetch('/pm/dependencies',{method:'DELETE', body:JSON.stringify({Id:id})}); await loadDependencies(); renderDepsChips(); }
+  catch(e){ /* best-effort — chip stays until the next successful load */ }
+}
+
+/* ── Time (inside the Task modal) ── */
+function renderTaskTimeSummary(){
+  if(!_editingTaskId){ $id('tmTimeSummary').textContent='Save the task first to log time against it.'; $id('tmTimeList').innerHTML=''; $id('tmLogTimeBtn').style.display='none'; return; }
+  $id('tmLogTimeBtn').style.display='';
+  const entries=allTimeEntries.filter(e=>String(e.task_id)===String(_editingTaskId));
+  const total=entries.reduce((s,e)=>s+(e.hours||0),0);
+  $id('tmTimeSummary').textContent = entries.length? `${total.toFixed(1)}h logged across ${entries.length} ${entries.length===1?'entry':'entries'}.` : 'No time logged yet.';
+  $id('tmTimeList').innerHTML = entries.slice(0,5).map(e=>`<div class="budget-row"><span>${e.entry_date} — ${esc(assigneeLabel(e.user_email)||'—')}${e.note?': '+esc(e.note):''}</span><b>${e.hours}h</b></div>`).join('');
+}
+
+/* ── PROJECT MODAL ── */
+let _editingProjectId=null;
+function openProjectModal(id){
+  const proj=id?allProjects.find(p=>String(p.Id)===String(id)):null;
+  _editingProjectId=proj?proj.Id:null;
+  $id('projectModalTitle').textContent=proj?'Edit Project':'New Project';
+  $id('pmId').value=proj?proj.Id:'';
+  $id('pmName').value=proj?proj.name:'';
+  $id('pmDesc').value=proj?(proj.description||''):'';
+  $id('pmColor').value=proj?(proj.color||'#0D9C93'):'#0D9C93';
+  $id('pmStatus').value=proj?proj.status:'active';
+  $id('pmBudget').value=proj?(proj.budget_amount??''):'';
+  $id('pmCurrency').value=proj?(proj.budget_currency||'USD'):'USD';
+  $id('pmRate').value=proj?(proj.default_hourly_rate??''):'';
+  $id('pmMsg').textContent='';
+  $id('pmDeleteBtn').style.display=proj?'':'none';
+  openModal('projectModalOverlay');
+}
+async function saveProject(){
+  const name=$id('pmName').value.trim();
+  if(!name){ $id('pmMsg').textContent='Name required.'; return; }
+  const body={
+    name, description:$id('pmDesc').value.trim(), color:$id('pmColor').value, status:$id('pmStatus').value,
+    budget_amount:$id('pmBudget').value||'', budget_currency:$id('pmCurrency').value.trim()||'USD', default_hourly_rate:$id('pmRate').value||'',
+  };
+  $id('pmMsg').textContent='Saving…';
+  try{
+    if(_editingProjectId){ body.Id=_editingProjectId; await pmFetch('/pm/projects',{method:'PATCH', body:JSON.stringify(body)}); }
+    else await pmFetch('/pm/projects',{method:'POST', body:JSON.stringify(body)});
+    await loadProjects();
+    closeModal('projectModalOverlay');
+    renderSidebar(); renderStats(); renderView();
+  }catch(e){ $id('pmMsg').textContent=e.message||'Could not save.'; }
+}
+async function deleteProjectFromModal(){
+  if(!_editingProjectId || !confirm('Delete this project and all its tasks? This cannot be undone.')) return;
+  try{
+    await pmFetch('/pm/projects',{method:'DELETE', body:JSON.stringify({Id:_editingProjectId})});
+    if(String(selectedProjectId)===String(_editingProjectId)) selectedProjectId='all';
+    await loadProjects();
+    await Promise.all([loadTasks(), loadDependencies(), loadTimeEntries(), loadSprints(), loadAutomations()]);
+    closeModal('projectModalOverlay');
+    renderSidebar(); renderStats(); renderView();
+  }catch(e){ $id('pmMsg').textContent=e.message||'Could not delete.'; }
+}
+
+/* ── TIME ENTRY MODAL ── */
+function openTimeModal(taskId){
+  $id('teTaskId').value=taskId;
+  $id('teDate').value=new Date().toISOString().slice(0,10);
+  $id('teHours').value='';
+  $id('teNote').value='';
+  $id('teRate').value='';
+  $id('teBillable').checked=true;
+  $id('teMsg').textContent='';
+  openModal('timeModalOverlay');
+}
+async function saveTimeEntry(){
+  const taskId=$id('teTaskId').value;
+  const hours=parseFloat($id('teHours').value);
+  if(!hours||hours<=0){ $id('teMsg').textContent='Hours required.'; return; }
+  $id('teMsg').textContent='Saving…';
+  try{
+    await pmFetch('/pm/time',{method:'POST', body:JSON.stringify({
+      task_id:taskId, user_email:myCurrentEmail(), entry_date:$id('teDate').value||new Date().toISOString().slice(0,10),
+      hours, note:$id('teNote').value.trim(), billable:$id('teBillable').checked?1:0, hourly_rate:$id('teRate').value||'',
+    })});
+    await loadTimeEntries();
+    closeModal('timeModalOverlay');
+    renderTaskTimeSummary();
+  }catch(e){ $id('teMsg').textContent=e.message||'Could not save.'; }
+}
+
+/* ── SPRINT MODAL ── */
+let _editingSprintId=null;
+function openSprintModal(id){
+  const sprint=id?allSprints.find(s=>String(s.Id)===String(id)):null;
+  _editingSprintId=sprint?sprint.Id:null;
+  $id('sprintModalTitle').textContent=sprint?'Edit Sprint':'New Sprint';
+  $id('spId').value=sprint?sprint.Id:'';
+  $id('spName').value=sprint?sprint.name:'';
+  $id('spStart').value=sprint?(sprint.start_date||''):'';
+  $id('spEnd').value=sprint?(sprint.end_date||''):'';
+  $id('spStatus').value=sprint?sprint.status:'planned';
+  $id('spMsg').textContent='';
+  $id('spDeleteBtn').style.display=sprint?'':'none';
+  openModal('sprintModalOverlay');
+}
+async function saveSprint(){
+  if(selectedProjectId==='all'){ $id('spMsg').textContent='Pick a specific project first.'; return; }
+  const name=$id('spName').value.trim();
+  if(!name){ $id('spMsg').textContent='Name required.'; return; }
+  const body={project_id:selectedProjectId, name, start_date:$id('spStart').value, end_date:$id('spEnd').value, status:$id('spStatus').value};
+  $id('spMsg').textContent='Saving…';
+  try{
+    if(_editingSprintId){ body.Id=_editingSprintId; await pmFetch('/pm/sprints',{method:'PATCH', body:JSON.stringify(body)}); }
+    else{ const created=await pmFetch('/pm/sprints',{method:'POST', body:JSON.stringify(body)}); selectedSprintId=created.Id; }
+    await loadSprints();
+    closeModal('sprintModalOverlay');
+    renderSprints();
+  }catch(e){ $id('spMsg').textContent=e.message||'Could not save.'; }
+}
+async function deleteSprintFromModal(){
+  if(!_editingSprintId || !confirm('Delete this sprint? Its tasks move back to the backlog, they are not deleted.')) return;
+  try{
+    await pmFetch('/pm/sprints',{method:'DELETE', body:JSON.stringify({Id:_editingSprintId})});
+    if(String(selectedSprintId)===String(_editingSprintId)) selectedSprintId=null;
+    await Promise.all([loadSprints(), loadTasks()]);
+    closeModal('sprintModalOverlay');
+    renderSprints();
+  }catch(e){ $id('spMsg').textContent=e.message||'Could not delete.'; }
+}
+async function assignToSprint(taskId, sprintId){
+  const task=taskById(taskId);
+  try{
+    await pmFetch('/pm/tasks',{method:'PATCH', body:JSON.stringify({Id:taskId, sprint_id:sprintId, status:task?.status, position:task?.position})});
+    await loadTasks();
+    renderSprints();
+  }catch(e){ alert(e.message||'Could not move task to sprint.'); }
+}
+
+/* ── SPRINTS VIEW (backlog + sprint board + burndown) ── */
+function renderSprints(){
+  const wrap=$id('viewSprints');
+  if(selectedProjectId==='all'){
+    wrap.innerHTML=`<div class="empty-state"><div class="empty-icon">🏃</div>Pick a specific project from the sidebar — Sprints are per-project.</div>`;
+    return;
+  }
+  const projSprints=allSprints.filter(s=>String(s.project_id)===String(selectedProjectId)).sort((a,b)=>(b.start_date||'').localeCompare(a.start_date||''));
+  if(!selectedSprintId || !projSprints.some(s=>String(s.Id)===String(selectedSprintId))){
+    selectedSprintId=(projSprints.find(s=>s.status==='active')||projSprints[0])?.Id || null;
+  }
+  const activeSprint=projSprints.find(s=>String(s.Id)===String(selectedSprintId));
+  const backlogTasks=allTasks.filter(t=>String(t.project_id)===String(selectedProjectId) && !t.sprint_id);
+
+  let html=`<div class="sprintbar">
+    <select onchange="selectedSprintId=this.value;renderSprints()">
+      <option value="">— Select a sprint —</option>
+      ${projSprints.map(s=>`<option value="${s.Id}" ${String(s.Id)===String(selectedSprintId)?'selected':''}>${esc(s.name)} (${s.status})</option>`).join('')}
+    </select>
+    <button class="btn sm" onclick="openSprintModal()">+ New Sprint</button>
+    ${activeSprint?`<button class="btn sm" onclick="openSprintModal(${activeSprint.Id})">✎ Edit Sprint</button>`:''}
+  </div>`;
+
+  html+=`<div class="backlog-panel"><div class="subhead">📥 Backlog (${backlogTasks.length})</div>`;
+  html+= backlogTasks.length ? backlogTasks.map(t=>`
+    <div class="backlog-row">
+      <span onclick="openTaskModal(${t.Id})" style="cursor:pointer">${itemTypeIcon(t)} ${esc(t.title)}${t.story_points?` <span class="chip due">${t.story_points} pts</span>`:''}</span>
+      ${activeSprint?`<button class="btn sm" onclick="assignToSprint(${t.Id},${activeSprint.Id})">→ ${esc(activeSprint.name)}</button>`:''}
+    </div>`).join('') : `<div class="field-hint">No backlog items — every task in this project is already in a sprint.</div>`;
+  html+=`</div>`;
+
+  if(activeSprint){
+    const sprintTasks=allTasks.filter(t=>String(t.sprint_id)===String(activeSprint.Id));
+    html+=`<div class="subhead">${esc(activeSprint.name)} board</div><div id="sprintBoardWrap" style="display:flex;gap:14px;overflow-x:auto;padding-bottom:10px">${kanbanColumnsHtml(sprintTasks)}</div>`;
+    html+=renderBurndownHtml(activeSprint, sprintTasks);
+  }
+  wrap.innerHTML=html;
+  if(activeSprint) wireCardDragHandlers($id('sprintBoardWrap'));
+}
+function renderBurndownHtml(sprint, tasks){
+  if(!sprint.start_date || !sprint.end_date) return `<div class="burndown-wrap"><div class="burndown-title">Burndown</div><div class="field-hint">Set a start and end date on this sprint to see a burndown chart.</div></div>`;
+  const totalPoints=tasks.reduce((s,t)=>s+(t.story_points||0),0);
+  if(!totalPoints) return `<div class="burndown-wrap"><div class="burndown-title">Burndown</div><div class="field-hint">Add story points to this sprint's tasks to see a burndown chart.</div></div>`;
+  const start=new Date(sprint.start_date+'T00:00:00'), end=new Date(sprint.end_date+'T00:00:00');
+  const days=Math.max(1, Math.round((end-start)/86400000));
+  const w=640, h=180, pad=32;
+  const xAt=i=>pad+(i/days)*(w-pad*2);
+  const yAt=v=>h-pad-(Math.max(0,v)/totalPoints)*(h-pad*2);
+  const idealPath=`M${xAt(0)},${yAt(totalPoints)} L${xAt(days)},${yAt(0)}`;
+  const today=new Date(); today.setHours(0,0,0,0);
+  const todayIdx=Math.min(days, Math.max(0, Math.round((today-start)/86400000)));
+  const actualPts=[];
+  for(let i=0;i<=todayIdx;i++){
+    const dayDate=new Date(start.getTime()+i*86400000);
+    const doneBy=tasks.filter(t=>t.done_at && new Date(t.done_at)<=dayDate).reduce((s,t)=>s+(t.story_points||0),0);
+    actualPts.push(totalPoints-doneBy);
+  }
+  const actualPath=actualPts.map((v,i)=>`${i===0?'M':'L'}${xAt(i)},${yAt(v)}`).join(' ');
+  return `<div class="burndown-wrap">
+    <div class="burndown-title">Burndown — ${totalPoints} points, ${days} days</div>
+    <svg width="100%" viewBox="0 0 ${w} ${h}" style="overflow:visible">
+      <line x1="${pad}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}" stroke="var(--line)"/>
+      <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${h-pad}" stroke="var(--line)"/>
+      <path d="${idealPath}" stroke="#CBD5E1" stroke-width="2" stroke-dasharray="5,4" fill="none"/>
+      <path d="${actualPath}" stroke="var(--accent)" stroke-width="2.5" fill="none"/>
+    </svg>
+    <div class="tl-legend"><b><span class="sw" style="background:#CBD5E1"></span>Ideal</b><b><span class="sw" style="background:var(--accent)"></span>Actual remaining</b></div>
+  </div>`;
+}
+
+/* ── BUDGET MODAL (per-project job costing: hours/cost vs budget, by person) ── */
+function openBudgetModal(){
+  const body=$id('budgetModalBody');
+  if(selectedProjectId==='all'){
+    body.innerHTML=`<div class="empty-state"><div class="empty-icon">💰</div>Pick a specific project from the sidebar — Budget is per-project.</div>`;
+    openModal('budgetModalOverlay'); return;
+  }
+  const proj=projectById(selectedProjectId);
+  const entries=allTimeEntries.filter(e=>String(e.project_id)===String(selectedProjectId));
+  const totalHours=entries.reduce((s,e)=>s+(e.hours||0),0);
+  const billableHours=entries.filter(e=>e.billable).reduce((s,e)=>s+(e.hours||0),0);
+  const defaultRate=proj?.default_hourly_rate||0;
+  const totalCost=entries.reduce((s,e)=>s+(e.hours||0)*(e.hourly_rate||defaultRate||0),0);
+  const budget=proj?.budget_amount||0;
+  const pct=budget? Math.min(100,(totalCost/budget)*100) : 0;
+  const byPerson={};
+  entries.forEach(e=>{
+    const key=e.user_email||'Unassigned';
+    byPerson[key]=byPerson[key]||{hours:0,cost:0};
+    byPerson[key].hours+=e.hours||0;
+    byPerson[key].cost+=(e.hours||0)*(e.hourly_rate||defaultRate||0);
+  });
+  body.innerHTML=`
+    <div class="subhead">${esc(proj?.name||'')}</div>
+    <div class="budget-row"><span>Total hours logged</span><b>${totalHours.toFixed(1)}h</b></div>
+    <div class="budget-row"><span>Billable hours</span><b>${billableHours.toFixed(1)}h</b></div>
+    <div class="budget-row"><span>Total cost</span><b>${fmtMoney(totalCost)} ${esc(proj?.budget_currency||'USD')}</b></div>
+    ${budget? `<div class="budget-row"><span>Budget</span><b>${fmtMoney(budget)} ${esc(proj?.budget_currency||'USD')}</b></div>
+    <div class="budget-bar-track"><div class="budget-bar-fill ${totalCost>budget?'over':''}" style="width:${pct}%"></div></div>
+    <div class="field-hint">${totalCost>budget?`⚠️ ${fmtMoney(totalCost-budget)} over budget`:`${fmtMoney(budget-totalCost)} remaining`}</div>`
+    : `<div class="field-hint">Set a budget amount on this project (✎ edit project) to track spend against it.</div>`}
+    <div class="subhead">By person</div>
+    ${Object.keys(byPerson).length ? Object.entries(byPerson).map(([email,v])=>`<div class="budget-row"><span>${esc(assigneeLabel(email))}</span><b>${v.hours.toFixed(1)}h · ${fmtMoney(v.cost)}</b></div>`).join('') : '<div class="field-hint">No time logged yet — open a task and click "+ Log time."</div>'}
+  `;
+  openModal('budgetModalOverlay');
+}
+
+/* ── AUTOMATIONS MODAL ── */
+function renderAutomationsList(){
+  const list=$id('automationsList');
+  if(selectedProjectId==='all'){ list.innerHTML='<div class="field-hint">Pick a specific project from the sidebar first — automations are per-project.</div>'; return; }
+  const rules=allAutomations.filter(a=>String(a.project_id)===String(selectedProjectId));
+  list.innerHTML = rules.length ? rules.map(r=>{
+    let tcfg={},acfg={};
+    try{tcfg=JSON.parse(r.trigger_config||'{}');}catch(e){}
+    try{acfg=JSON.parse(r.action_config||'{}');}catch(e){}
+    const triggerDesc = r.trigger_type==='status_changed_to' ? `status changes to <b>${esc(STATUS_COLS.find(c=>c.key===tcfg.status)?.label||tcfg.status||'')}</b>` : 'a task is created';
+    const actionDesc = r.action_type==='set_status' ? `set status to <b>${esc(STATUS_COLS.find(c=>c.key===acfg.status)?.label||acfg.status||'')}</b>`
+      : r.action_type==='set_assignee' ? `assign to <b>${esc(assigneeLabel(acfg.assignee_email)||'nobody')}</b>`
+      : `email <b>${esc(acfg.to_email||'')}</b>`;
+    return `<div class="rule-row">
+      <button class="toggle-switch ${r.enabled?'on':''}" onclick="toggleAutomation(${r.Id},${r.enabled?0:1})" title="${r.enabled?'Enabled — click to disable':'Disabled — click to enable'}"></button>
+      <span class="rule-desc"><b>${esc(r.name)}</b><br>When ${triggerDesc} → ${actionDesc}</span>
+      <button class="btn sm danger" onclick="deleteAutomationRule(${r.Id})">Delete</button>
+    </div>`;
+  }).join('') : '<div class="field-hint">No automations yet for this project.</div>';
+}
+function openAutomationsModal(){
+  $id('autName').value=''; $id('autTrigger').value='status_changed_to'; $id('autAction').value='set_status';
+  $id('autActionAssignee').innerHTML=teamOptions.map(t=>`<option value="${escAttr(t.email)}">${esc(t.name)}</option>`).join('');
+  $id('autActionEmail').value=''; $id('autActionSubject').value=''; $id('autActionBody').value='';
+  onAutomationTriggerChange(); onAutomationActionChange();
+  renderAutomationsList();
+  $id('autMsg').textContent = selectedProjectId==='all' ? 'Pick a specific project first.' : '';
+  openModal('automationsModalOverlay');
+}
+function onAutomationTriggerChange(){
+  $id('autTriggerStatusField').style.display = $id('autTrigger').value==='status_changed_to' ? '' : 'none';
+}
+function onAutomationActionChange(){
+  const v=$id('autAction').value;
+  $id('autActionStatusField').style.display = v==='set_status' ? '' : 'none';
+  $id('autActionAssigneeField').style.display = v==='set_assignee' ? '' : 'none';
+  $id('autActionEmailFields').style.display = v==='notify_email' ? 'grid' : 'none';
+  $id('autActionBodyField').style.display = v==='notify_email' ? '' : 'none';
+}
+async function addAutomationRule(){
+  if(selectedProjectId==='all'){ $id('autMsg').textContent='Pick a specific project first.'; return; }
+  const name=$id('autName').value.trim();
+  if(!name){ $id('autMsg').textContent='Name required.'; return; }
+  const triggerType=$id('autTrigger').value;
+  const triggerConfig = triggerType==='status_changed_to' ? {status:$id('autTriggerStatus').value} : {};
+  const actionType=$id('autAction').value;
+  let actionConfig={};
+  if(actionType==='set_status') actionConfig={status:$id('autActionStatus').value};
+  else if(actionType==='set_assignee') actionConfig={assignee_email:$id('autActionAssignee').value};
+  else actionConfig={to_email:$id('autActionEmail').value.trim(), subject:$id('autActionSubject').value.trim(), body:$id('autActionBody').value.trim()};
+  $id('autMsg').textContent='Saving…';
+  try{
+    await pmFetch('/pm/automations',{method:'POST', body:JSON.stringify({
+      project_id:selectedProjectId, name, trigger_type:triggerType, trigger_config:JSON.stringify(triggerConfig),
+      action_type:actionType, action_config:JSON.stringify(actionConfig), enabled:1,
+    })});
+    await loadAutomations();
+    $id('autName').value='';
+    renderAutomationsList();
+    $id('autMsg').textContent='✓ Added';
+  }catch(e){ $id('autMsg').textContent=e.message||'Could not save.'; }
+}
+async function toggleAutomation(id, enabled){
+  try{ await pmFetch('/pm/automations',{method:'PATCH', body:JSON.stringify({Id:id, enabled})}); await loadAutomations(); renderAutomationsList(); }
+  catch(e){ /* best-effort — toggle reflects last successful load */ }
+}
+async function deleteAutomationRule(id){
+  if(!confirm('Delete this automation?')) return;
+  try{ await pmFetch('/pm/automations',{method:'DELETE', body:JSON.stringify({Id:id})}); await loadAutomations(); renderAutomationsList(); }
+  catch(e){ /* best-effort */ }
+}
+
+boot();
+</script>
+</body>
+</html>

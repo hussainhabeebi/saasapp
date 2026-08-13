@@ -56,7 +56,10 @@ entries:
 
   # ── OAuth2/OIDC Provider — the piece dashboard.html's startAuthentikLogin()/CONFIG.client_id
   # actually authenticates against. redirect_uris must include every origin this app is served
-  # from (production + any staging domain).
+  # from (production + any staging domain). The second line is trySilentAuthentikLogin()'s
+  # hidden-iframe prompt=none target (frontend/auth-silent.html) — same app, same client_id,
+  # just a separate landing page so a silent check never has to boot the whole dashboard inside
+  # an iframe just to read a `?code=` off the URL.
   - model: authentik_providers_oauth2.oauth2provider
     identifiers:
       name: Leadvyne
@@ -64,6 +67,7 @@ entries:
       client_type: public
       redirect_uris: |
         https://CHANGE-ME.leadvyne.com/dashboard.html
+        https://CHANGE-ME.leadvyne.com/auth-silent.html
       authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
