@@ -4470,14 +4470,16 @@ function showApp(){
   setTimeout(checkReminders,3000);
   clearInterval(_reminderTimer);
   _reminderTimer=setInterval(checkReminders,6*3600*1000);
-  // Default landing tab is Home. A deep-link query param (Billing/Channels/Integrations/Shopify
-  // redirect) always wins over that default when present, same as before this changed.
+  // Default landing tab is Home — except a Real Estate client (industry==='real_estate') lands on
+  // the Real Estate module tab instead, since that's the whole point of their account. A deep-link
+  // query param (Billing/Channels/Integrations/Shopify redirect) always wins over either default
+  // when present, same as before this changed.
   const params=new URLSearchParams(location.search);
   const shopifyParam=params.get('shopify');
   const instagramParam=params.get('instagram');
   const gscParam=params.get('gsc');
   const gcalParam=params.get('gcal');
-  let landingPage='home';
+  let landingPage=(clientRecord.industry==='real_estate' && clientRecord.real_estate_enabled==='Yes')?'realestate':'home';
   if(params.has('billing')) landingPage='billing';
   else if(params.has('channels')) landingPage='channels';
   else if(params.has('integrations')||shopifyParam||instagramParam) landingPage='integrations';

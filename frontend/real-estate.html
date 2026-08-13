@@ -212,6 +212,7 @@ tbody tr:hover{background:var(--bg)}
             <div class="card-actions">
               <input class="search-input" id="unitSearch" type="text" placeholder="🔍 Search units…" oninput="renderUnitsTable()">
               <button class="save-btn sec" onclick="openPriceAuditModal()">📜 Price Audit</button>
+              <button class="save-btn sec" onclick="openPropertyTypesModal()">🏷️ Property Types</button>
               <button class="save-btn" onclick="openUnitModal()" id="addUnitBtn" disabled>+ Add Unit</button>
             </div>
           </div>
@@ -423,6 +424,20 @@ tbody tr:hover{background:var(--bg)}
   </div>
 </div>
 
+<!-- ── PROPERTY TYPES MODAL ── -->
+<div class="modal-overlay" id="propertyTypesModal">
+  <div class="modal-card">
+    <div class="modal-title">🏷️ Property Types</div>
+    <div class="s-hint" style="margin-bottom:10px">Pick the property types this account deals in — only these show up in the Property Type dropdown when adding/editing a unit, and a unit can't be switched to a type you haven't enabled here.</div>
+    <div id="propertyTypesList"></div>
+    <div class="s-hint" id="propertyTypesModalMsg"></div>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeModal('propertyTypesModal')">Cancel</button>
+      <button class="save-btn" onclick="savePropertyTypes()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── PROJECT MODAL ── -->
 <div class="modal-overlay" id="projectModal">
   <div class="modal-card">
@@ -457,14 +472,7 @@ tbody tr:hover{background:var(--bg)}
       <div><label class="s-lbl">Type</label><input class="s-input" id="uType" placeholder="e.g. 2BHK"></div>
       <div>
         <label class="s-lbl">Property Type</label>
-        <select class="s-input" id="uPropertyType">
-          <option value="">— Select —</option>
-          <option value="Residential">Residential</option>
-          <option value="Commercial">Commercial</option>
-          <option value="Villa">Villa</option>
-          <option value="Flat">Flat</option>
-          <option value="Plot">Plot</option>
-        </select>
+        <select class="s-input" id="uPropertyType"></select>
       </div>
       <div><label class="s-lbl">Area (sqft)</label><input class="s-input" id="uArea" type="number"></div>
       <div><label class="s-lbl">Base Price</label><input class="s-input" id="uBasePrice" type="number"></div>
@@ -815,6 +823,7 @@ async function init(){
     clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
     try{ segments=JSON.parse(clientRecord.re_segments_json||'[]'); }catch(e){ segments=[]; }
     try{ routingRules=JSON.parse(clientRecord.re_agent_routing_json||'[]'); }catch(e){ routingRules=[]; }
+    try{ const parsed=JSON.parse(clientRecord.re_property_types_json||'[]'); enabledPropertyTypes=(Array.isArray(parsed)&&parsed.length)?parsed.filter(t=>RE_PROPERTY_TYPES.includes(t)):RE_PROPERTY_TYPES.slice(); }catch(e){ enabledPropertyTypes=RE_PROPERTY_TYPES.slice(); }
     await Promise.all([loadLeads(), loadProjects(), loadSiteVisits(), loadBookings(), loadTickets(), loadChannelPartners(), loadCommissions(), loadDocuments()]);
     renderAll();
   }catch(e){
@@ -936,6 +945,38 @@ async function openDuplicatesModal(){
     $id('dupList').innerHTML=data.groups.map(g=>`<div class="dup-group"><b>${esc(g[0].Phone)}</b> — ${g.length} leads<br>${g.map(l=>`${esc(l.Name||'Unknown')} · ${esc(l.re_source||'')} · ${esc(l.Stage||'new')} · Owner: ${esc(l.Owner||'—')}`).join('<br>')}</div>`).join('');
   }catch(e){ $id('dupList').innerHTML=`<div class="empty-state">⚠️ ${esc(e.message)}</div>`; }
 }
+// Mirrors RE_PROPERTY_TYPES in cloudflare-worker/worker.js — keep both lists in sync when adding a
+// new type; the backend is the source of truth for what it'll actually accept.
+const RE_PROPERTY_TYPES=['Residential','Commercial','Villa','Flat','Plot','Shared Room'];
+let enabledPropertyTypes=RE_PROPERTY_TYPES.slice();
+
+// Rebuilds the unit modal's Property Type dropdown from enabledPropertyTypes. currentValue (the
+// unit's already-saved type, if editing) is always included even when since disabled in Settings —
+// grandfathered in, same as the backend's own update check — so opening an existing unit for an
+// unrelated edit doesn't silently blank out or reject its type.
+function populatePropertyTypeOptions(currentValue){
+  const opts=enabledPropertyTypes.slice();
+  if(currentValue && !opts.includes(currentValue)) opts.push(currentValue);
+  $id('uPropertyType').innerHTML='<option value="">— Select —</option>'+opts.map(t=>
+    `<option value="${escAttr(t)}"${t===currentValue?' selected':''}>${esc(t)}${(currentValue===t && !enabledPropertyTypes.includes(t))?' (disabled)':''}</option>`
+  ).join('');
+}
+function openPropertyTypesModal(){
+  $id('propertyTypesList').innerHTML=RE_PROPERTY_TYPES.map(t=>
+    `<label style="display:flex;align-items:center;gap:8px;padding:6px 0"><input type="checkbox" class="ptChk" value="${escAttr(t)}"${enabledPropertyTypes.includes(t)?' checked':''}> ${esc(t)}</label>`
+  ).join('');
+  $id('propertyTypesModalMsg').textContent='';
+  openModal('propertyTypesModal');
+}
+async function savePropertyTypes(){
+  const picked=[...document.querySelectorAll('#propertyTypesList .ptChk:checked')].map(el=>el.value);
+  try{
+    await patchClient({re_property_types_json:JSON.stringify(picked)});
+    enabledPropertyTypes=picked.length?picked:RE_PROPERTY_TYPES.slice();
+    closeModal('propertyTypesModal');
+    renderUnitsTable();
+  }catch(e){ showMsg('propertyTypesModalMsg','Failed: '+e.message); }
+}
 function openRoutingModal(){
   $id('routingRows').innerHTML='';
   (routingRules.length?routingRules:[{}]).forEach(r=>addRoutingRow(r));
@@ -997,8 +1038,10 @@ function renderUnitsTable(){
     const total=Number(u.base_price||0)+Number(u.plc_charges||0)+Number(u.floor_rise_charges||0);
     const imageCount=[u.image_url,u.image_url_2,u.image_url_3,u.image_url_4,u.image_url_5].filter(Boolean).length;
     const media=[imageCount?`🖼️${imageCount}`:'', u.video_url&&'🎬', u.pdf_url&&'📄'].filter(Boolean).join(' ')||'—';
+    const typeFlagged=u.property_type && !enabledPropertyTypes.includes(u.property_type);
+    const propertyTypeCell=u.property_type?`${esc(u.property_type)}${typeFlagged?' <span title="Disabled in Settings → Property Types">⚠️</span>':''}`:'—';
     return `<tr>
-      <td>${esc(u.tower||'—')}</td><td>${esc(u.floor)}</td><td>${esc(u.unit_no)}</td><td>${esc(u.unit_type||'—')}</td><td>${esc(u.property_type||'—')}</td><td>${esc(u.area_sqft||0)}</td>
+      <td>${esc(u.tower||'—')}</td><td>${esc(u.floor)}</td><td>${esc(u.unit_no)}</td><td>${esc(u.unit_type||'—')}</td><td>${propertyTypeCell}</td><td>${esc(u.area_sqft||0)}</td>
       <td>${fmtMoney(total)}</td>
       <td>${media}</td>
       <td><span class="badge ${statusClass[u.status]||'gray'}">${esc((u.status||'').replace('_',' '))}</span></td>
@@ -1037,7 +1080,7 @@ function openUnitModal(id){
   $id('unitModalTitle').textContent=u?'Edit Unit':'+ Add Unit';
   $id('uId').value=u?u.id:'';
   $id('uTower').value=u?u.tower:''; $id('uFloor').value=u?u.floor:''; $id('uUnitNo').value=u?u.unit_no:'';
-  $id('uType').value=u?u.unit_type:''; $id('uPropertyType').value=u?(u.property_type||''):''; $id('uArea').value=u?u.area_sqft:''; $id('uBasePrice').value=u?u.base_price:'';
+  $id('uType').value=u?u.unit_type:''; populatePropertyTypeOptions(u?(u.property_type||''):''); $id('uArea').value=u?u.area_sqft:''; $id('uBasePrice').value=u?u.base_price:'';
   $id('uPlc').value=u?u.plc_charges:''; $id('uFloorRise').value=u?u.floor_rise_charges:''; $id('uTourUrl').value=u?u.virtual_tour_url:'';
   $id('uImage').value=u?(u.image_url||''):''; $id('uImage2').value=u?(u.image_url_2||''):''; $id('uImage3').value=u?(u.image_url_3||''):'';
   $id('uImage4').value=u?(u.image_url_4||''):''; $id('uImage5').value=u?(u.image_url_5||''):'';

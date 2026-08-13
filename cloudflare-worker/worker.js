@@ -15260,13 +15260,19 @@ async function engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolved
     ).bind(Number(clientId)).all();
     if(!units || !units.length) return;
     const lower=userText.toLowerCase();
-    const typeMatch=lower.match(/\b(residential|commercial|villa|flat|plot)s?\b/i);
+    // Matched against RE_PROPERTY_TYPES directly (not a hand-maintained regex) so a new type added
+    // there — e.g. "Shared Room" — is recognized here for free, plural "s" tolerated on single-word
+    // types only ("villas", "flats", "plots" but not a nonsensical "shared rooms" mismatch).
+    const typeMatch=RE_PROPERTY_TYPES.find(t=>{
+      const tl=t.toLowerCase();
+      return lower.includes(tl) || (!tl.includes(' ') && lower.includes(tl+'s'));
+    });
     const projectMatch=units.find(u=>u.project_name && u.project_name.trim().length>=4 && lower.includes(u.project_name.trim().toLowerCase()));
     let candidates=null;
     if(projectMatch) candidates=units.filter(u=>u.project_id===projectMatch.project_id);
-    else if(typeMatch) candidates=units.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
+    else if(typeMatch) candidates=units.filter(u=>u.property_type===typeMatch);
     if(candidates){
-      if(projectMatch && typeMatch) candidates=candidates.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
+      if(projectMatch && typeMatch) candidates=candidates.filter(u=>u.property_type===typeMatch);
       for(const unit of candidates.slice(0,5)){
         const already=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, unit.id).first();
         if(already) continue;
@@ -17827,7 +17833,12 @@ async function ensureRealEstateClientFields(env){
     const names=new Set((existing.list||[]).map(f=>f.title));
     const wanted=[
       ['re_segments_json','LongText'], ['re_agent_routing_json','LongText'],
-      ['re_rr_state_json','LongText'], ['re_webhook_secret','SingleLineText']
+      ['re_rr_state_json','LongText'], ['re_webhook_secret','SingleLineText'],
+      // Client-configurable subset of RE_PROPERTY_TYPES (Settings → Property Types in
+      // real-estate.html) — JSON array of the type strings this client deals in, e.g.
+      // '["Residential","Plot"]'. Empty/unset means "all of them", same fallback semantics as
+      // team_permissions' null-means-unrestricted in dashboard.html.
+      ['re_property_types_json','LongText']
     ];
     for(const [title,uidt] of wanted){
       if(!names.has(title)) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title, uidt}});
@@ -18126,7 +18137,21 @@ const reDocumentsCrud=reCrud('re_documents', [
    "audit trail for price changes and discount approvals"). ── */
 const RE_UNIT_PRICE_FIELDS=['base_price','plc_charges','floor_rise_charges'];
 // Top-level property category (frontend dropdown) — distinct from the freeform unit_type field.
-const RE_PROPERTY_TYPES=['Residential','Commercial','Villa','Flat','Plot'];
+// The master list of every type the app supports; a client's own subset (Settings → Property
+// Types) is validated against this and stored in CLIENTS.re_property_types_json.
+const RE_PROPERTY_TYPES=['Residential','Commercial','Villa','Flat','Plot','Shared Room'];
+
+// A client's configured subset of RE_PROPERTY_TYPES (Settings → Property Types in
+// real-estate.html) — empty/unset re_property_types_json means "all of them" (a client who's
+// never opened that settings screen isn't suddenly blocked from saving any type). Used to hard-
+// restrict handleReUnitCreate/Update below: a unit can't be saved with a type the client hasn't
+// enabled.
+async function reClientAllowedPropertyTypes(env, clientId){
+  const c=await getClientById(env, clientId);
+  const configured=engineParseJsonField(c?.re_property_types_json, []);
+  const filtered=Array.isArray(configured) ? configured.filter(t=>RE_PROPERTY_TYPES.includes(t)) : [];
+  return filtered.length ? filtered : RE_PROPERTY_TYPES;
+}
 async function handleReUnitsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -18143,8 +18168,13 @@ async function handleReUnitCreate(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
   if(!body.project_id||!body.unit_no) return json({error:'project_id and unit_no are required'}, 400);
+  let propertyType='';
+  if(body.property_type){
+    const allowed=await reClientAllowedPropertyTypes(env, payload.cid);
+    if(!allowed.includes(body.property_type)) return json({error:`"${body.property_type}" isn't an enabled property type for this account — check Settings → Property Types.`}, 400);
+    propertyType=body.property_type;
+  }
   const now=new Date().toISOString();
-  const propertyType=RE_PROPERTY_TYPES.includes(body.property_type) ? body.property_type : '';
   const r=await env.DB.prepare(`INSERT INTO re_units (client_id,project_id,tower,floor,unit_no,unit_type,area_sqft,base_price,plc_charges,floor_rise_charges,status,virtual_tour_url,property_type,image_url,image_url_2,image_url_3,image_url_4,image_url_5,video_url,pdf_url,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
     Number(payload.cid), Number(body.project_id), String(body.tower||''), Number(body.floor)||0, String(body.unit_no).slice(0,40),
@@ -18166,7 +18196,16 @@ async function handleReUnitUpdate(request, env){
   const sets=[], vals=[];
   const strFields={tower:40, unit_type:60, virtual_tour_url:500, image_url:500, image_url_2:500, image_url_3:500, image_url_4:500, image_url_5:500, video_url:500, pdf_url:500};
   for(const [k,len] of Object.entries(strFields)){ if(body[k]!==undefined){ sets.push(`${k}=?`); vals.push(String(body[k]).slice(0,len)); } }
-  if(body.property_type!==undefined){ sets.push('property_type=?'); vals.push(RE_PROPERTY_TYPES.includes(body.property_type)?body.property_type:''); }
+  if(body.property_type!==undefined){
+    // Only a genuine change to a disallowed type is rejected — grandfathers in a unit whose type
+    // was already saved before the client narrowed their Settings → Property Types list, so an
+    // unrelated field edit (price, status, …) on that unit doesn't start failing.
+    if(body.property_type && body.property_type!==existing.property_type){
+      const allowed=await reClientAllowedPropertyTypes(env, payload.cid);
+      if(!allowed.includes(body.property_type)) return json({error:`"${body.property_type}" isn't an enabled property type for this account — check Settings → Property Types.`}, 400);
+    }
+    sets.push('property_type=?'); vals.push(body.property_type||'');
+  }
   if(body.floor!==undefined){ sets.push('floor=?'); vals.push(Number(body.floor)||0); }
   if(body.area_sqft!==undefined){ sets.push('area_sqft=?'); vals.push(Number(body.area_sqft)||0); }
   for(const f of RE_UNIT_PRICE_FIELDS){
