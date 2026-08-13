@@ -7409,6 +7409,22 @@ async function ecomDetectMentionedProduct(env, clientId, replyText){
   return matches.length===1?matches[0]:null;
 }
 
+// Category-level sibling of ecomDetectMentionedProduct above: an ecom_faq reply that couldn't be
+// pinned to one confident product (e.g. it instead rattled off several category names — "Mattress,
+// Sofa Set, Recliner...") is still a real multiple-choice moment for the customer, just at the
+// category level rather than the product level. Requires 2+ distinct matches — a reply naming
+// only one category is better served by leaving it as prose (or it already matches as a single
+// mentioned product/OPTIONS: question through the other paths). Reuses ecomListCategories so this
+// and the deterministic first-touch menu (handleEngineWebhook) share one source of truth for what
+// "this client's categories" even means.
+async function ecomDetectMentionedCategories(env, clientId, replyText){
+  const text=(replyText||'').toLowerCase();
+  if(!text) return [];
+  const categories=await ecomListCategories(env, clientId);
+  const matches=categories.filter(cat=>cat && text.includes(cat.toLowerCase()));
+  return matches.length>=2?matches:[];
+}
+
 // Product-level audio note / video / PDF (audio_url/video_url/pdf_url, Google Drive share links
 // set on the product itself in ecom.html's Add/Edit Product modal) — sent right after the
 // product's photo whenever a specific product was confidently identified, same "the customer asked
@@ -7433,6 +7449,21 @@ async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
     if(product.video_url) await sendDriveMediaToChatwoot(c, convId, product.video_url, '');
     if(product.pdf_url) await sendDriveMediaToChatwoot(c, convId, product.pdf_url, '');
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductMedia', e, {clientId, convId}); }
+}
+
+// Distinct category strings across this client's active products, capped at 10 — the same limit
+// engineSendChatwootQuickReply's own list-message cap already enforces, so a caller can hand this
+// straight to it as `items` with no further trimming. Two callers: the deterministic first-touch
+// category menu (handleEngineWebhook, a brand-new lead's very first message) and
+// ecomDetectMentionedCategories (the free-text-reply safety net above) — both need the same
+// "what are this client's categories" answer, so this is the one place that fetches it.
+async function ecomListCategories(env, clientId){
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return [];
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&fields=category`);
+  const pd=await pr.json().catch(()=>({}));
+  const products=pd?.list||[];
+  return [...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))].slice(0,10);
 }
 
 // Category-level browsing: the customer named a category ("shirts") rather than one specific
@@ -9077,7 +9108,7 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // tappable buttons instead of leaving the customer to type one back by hand — see that function's
   // own comment. Must stay a literal, parseable last line whenever it's used, which is why the
   // instruction pins the keyword itself to English even when the rest of the reply is not.
-  sys+='\n\nIf — and only if — your reply itself asks the customer to choose between 2 or 3 clear, short, named options (e.g. "glowing skin, anti-ageing, or something else?"), add ONE final line after your reply, in exactly this format and nothing else on that line: OPTIONS: option one | option two | option three — keep the literal English word "OPTIONS:" even when the rest of your reply is in another language, write each option itself in the customer\'s language, and keep each option under 20 characters. Leave this line out entirely for any reply that is not itself offering a choice between a few named options — that is most replies.';
+  sys+='\n\nIf — and only if — your reply itself asks the customer to choose between 2 and 10 clear, short, named options (e.g. "glowing skin, anti-ageing, or something else?", or a menu of a few named categories/products), add ONE final line after your reply, in exactly this format and nothing else on that line: OPTIONS: option one | option two | option three — keep the literal English word "OPTIONS:" even when the rest of your reply is in another language, write each option itself in the customer\'s language, and keep each option under 24 characters. Leave this line out entirely for any reply that is not itself offering a choice between a few named options — that is most replies.';
 
   if(industry==='ecommerce'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
@@ -9307,9 +9338,10 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
 
 // Pulls an optional trailing "OPTIONS: A | B | C" directive back out of an LLM-generated FAQ reply
 // — engineBuildFaqSystemPrompt asks the model to append exactly this line, and only this line,
-// whenever its own reply poses a 2-3-way clarifying question ("glowing skin, anti-ageing, or
-// something else?"), so it can be resent as tappable buttons instead of making the customer type
-// one back. Always strips the marker line from the returned text regardless of whether the caller
+// whenever its own reply poses a clarifying question with 2-10 named options ("glowing skin,
+// anti-ageing, or something else?", or a short menu of named categories/products), so it can be
+// resent as tappable buttons/list instead of making the customer type one back. Always strips the
+// marker line from the returned text regardless of whether the caller
 // goes on to use `options` — a caller that ignores them (e.g. the Instagram flow, which can't
 // render buttons at all) must never leak a raw "OPTIONS:" line into what the customer reads.
 function engineExtractReplyOptions(replyText){
@@ -9317,7 +9349,10 @@ function engineExtractReplyOptions(replyText){
   const match=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
   if(!match) return {text, options:null};
   const stripped=text.slice(0, match.index).trimEnd();
-  const options=match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,3);
+  // Capped at 10, not 3 — matches engineSendChatwootQuickReply's own max (it already renders >3
+  // items as a proper WhatsApp list message, not just buttons), so a legitimately larger menu (e.g.
+  // a first-touch reply naming several catalog categories) isn't silently truncated back down.
+  const options=match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10);
   return {text:stripped, options:options.length?options:null};
 }
 // Same message-create endpoint as engineSendChatwootReply, plus the content_type/content_attributes
@@ -10829,6 +10864,17 @@ async function handleEngineWebhook(request, env, secret){
       if(orderHandledInline && routing.route==='human') routing.route='ecom_faq';
     }
 
+    // A brand-new ecom lead's very first message, when this client has product categories
+    // configured — computed once here (both to gate the branch below and to build it) so the
+    // greeting is a deterministic, instant WhatsApp category list instead of leaving the FAQ LLM
+    // to free-write the same menu as plain-text bullets (real observed case: "Hi" got a long
+    // bulleted category dump with no buttons at all, because that reply wasn't itself a 2-3-way
+    // clarifying question and didn't name one single product, so neither existing button path
+    // fired). Gated behind !orderHandledInline and isNewLead so an order/enquiry/human/qualify
+    // signal already handled above, or a returning customer's "Hi", never gets overridden by this.
+    const newLeadCategories=(!orderHandledInline && routing.route==='ecom_faq' && isNewLead && botConfig.quick_reply_buttons_enabled!==false)
+      ? await ecomListCategories(env, clientId) : [];
+
     if(orderHandledInline){
       // Reply already sent above — Stage/qualAnswers bookkeeping from engineRouteFlow's own
       // decision is left untouched so the flow/qualification funnel resumes from wherever it was
@@ -10880,6 +10926,13 @@ async function handleEngineWebhook(request, env, secret){
       sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
       routing.reply=sentText;
       if(sentText) await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+    } else if(newLeadCategories.length){
+      const intro=`Hi! Welcome to ${c.client_name||'our store'}! 😊 What are you looking for today?`;
+      sentText=await engineLocalizeReply(env, c, intro, replyLang);
+      routing.reply=sentText;
+      const items=newLeadCategories.map(cat=>({title:cat, value:cat}));
+      routing.quickReplies=items;
+      await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
     } else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
@@ -10905,11 +10958,22 @@ async function handleEngineWebhook(request, env, secret){
           // (order detection, ECOM_PRODUCT_DETAILS_KEYWORD_RE, WANTS_HUMAN) the same way a customer
           // typing them by hand already does — no new receive-side handling needed.
           const mentionedProduct=await ecomDetectMentionedProduct(env, clientId, reply);
-          if(mentionedProduct) faqQuickReplies=[
-            {title:'🛒 Order this', value:`I want to order ${mentionedProduct.name}`},
-            {title:'📋 More details', value:`Tell me more about ${mentionedProduct.name}`},
-            {title:'🙋 Talk to a human', value:'Talk to a human'},
-          ];
+          if(mentionedProduct){
+            faqQuickReplies=[
+              {title:'🛒 Order this', value:`I want to order ${mentionedProduct.name}`},
+              {title:'📋 More details', value:`Tell me more about ${mentionedProduct.name}`},
+              {title:'🙋 Talk to a human', value:'Talk to a human'},
+            ];
+          } else {
+            // No single product either, but the answer named several catalog categories itself
+            // (e.g. a "what do you sell?" or greeting-style reply listing "Mattress, Sofa Set,
+            // Recliner..." as plain prose) — turn those into the same tappable picker instead of
+            // leaving the customer to retype one by hand. Safety net for exactly the free-form case
+            // the OPTIONS: marker doesn't catch (the LLM wasn't asking a "pick one of these"
+            // question, it just happened to enumerate real categories) — see ecomDetectMentionedCategories.
+            const mentionedCategories=await ecomDetectMentionedCategories(env, clientId, reply);
+            if(mentionedCategories.length) faqQuickReplies=mentionedCategories.map(cat=>({title:cat, value:cat}));
+          }
         }
       }
       routing.quickReplies=faqQuickReplies;
