@@ -357,12 +357,15 @@ function chatSelectLead(leadId){
         <div class="chat-main-phone">${lead.Channel==='instagram'?'📷 Instagram DM':esc(lead.Phone||'')} · ${esc(lead.Stage||'new')}</div>
       </div>
       <button class="chat-tool-btn" onclick="chatToggleSearch()" title="Search this conversation">🔍</button>
-      <div class="chat-seenby" id="chatSeenBy"></div>
-      <select class="chat-assignee-select" id="chatStageSelect" title="Stage" onchange="chatSetStage(${lead.Id}, this.value)">${stageOptionsHtml}</select>
-      <select class="chat-assignee-select" id="chatAssigneeSelect" title="Assigned to" onchange="chatSetAssignee(${lead.Id}, this.value)">${teamMemberOptions(lead.Owner||'')}</select>
-      <button class="chat-pin-btn${lead.Pinned==='Yes'?' pinned':''}" id="chatPinBtn" onclick="chatTogglePin(${lead.Id})" title="${lead.Pinned==='Yes'?'Unpin conversation':'Pin conversation'}">${lead.Pinned==='Yes'?'📌':'📍'}</button>
-      <button class="chat-resolve-btn ${lead.ConvResolved==='Yes'?'resolved':'open'}" id="chatResolveBtn" onclick="chatToggleResolve(${lead.Id})">${lead.ConvResolved==='Yes'?'↺ Reopen':'✓ Resolve'}</button>
-      <button class="btn btn-secondary btn-sm" onclick="openDetail(${lead.Id})">View Lead →</button>
+      <button class="chat-tool-btn chat-hd-kebab" id="chatHdKebabBtn" onclick="chatToggleHdActions(event)" title="More">⋮</button>
+      <div class="chat-hd-actions" id="chatHdActions">
+        <div class="chat-seenby" id="chatSeenBy"></div>
+        <select class="chat-assignee-select" id="chatStageSelect" title="Stage" onchange="chatSetStage(${lead.Id}, this.value)">${stageOptionsHtml}</select>
+        <select class="chat-assignee-select" id="chatAssigneeSelect" title="Assigned to" onchange="chatSetAssignee(${lead.Id}, this.value)">${teamMemberOptions(lead.Owner||'')}</select>
+        <button class="chat-pin-btn${lead.Pinned==='Yes'?' pinned':''}" id="chatPinBtn" onclick="chatTogglePin(${lead.Id})" title="${lead.Pinned==='Yes'?'Unpin conversation':'Pin conversation'}">${lead.Pinned==='Yes'?'📌':'📍'}</button>
+        <button class="chat-resolve-btn ${lead.ConvResolved==='Yes'?'resolved':'open'}" id="chatResolveBtn" onclick="chatToggleResolve(${lead.Id})">${lead.ConvResolved==='Yes'?'↺ Reopen':'✓ Resolve'}</button>
+        <button class="btn btn-secondary btn-sm" onclick="openDetail(${lead.Id})">View Lead →</button>
+      </div>
     </div>
     <div class="chat-search-bar" id="chatSearchBar" style="display:none">
       <input type="text" id="chatInThreadSearch" placeholder="Search this conversation…" oninput="chatInThreadSearchInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();chatSearchNav(event.shiftKey?-1:1);}">
@@ -608,6 +611,21 @@ function chatToggleSearch(){
   if(_chatSearchOpen){ $id('chatInThreadSearch')?.focus(); }
   else{ chatClearSearchHighlights(); $id('chatInThreadSearch').value=''; }
 }
+// Mobile-only overflow menu (kebab ⋮) for the header's secondary controls (seen-by, stage,
+// assignee, pin, resolve, view lead) — on a phone-width screen these can't all fit inline next
+// to the avatar/name/phone without overlapping (see .chat-hd-kebab/.chat-hd-actions in chats.css
+// for the actual desktop-inline-vs-mobile-dropdown split). No-op if the dropdown isn't in the DOM
+// (desktop CSS never needs it opened).
+function chatToggleHdActions(e){
+  e?.stopPropagation();
+  $id('chatHdActions')?.classList.toggle('open');
+}
+document.addEventListener('click', e=>{
+  const actions=$id('chatHdActions');
+  if(!actions||!actions.classList.contains('open')) return;
+  if(actions.contains(e.target)||e.target.closest('#chatHdKebabBtn')) return;
+  actions.classList.remove('open');
+});
 function chatClearSearchHighlights(){
   document.querySelectorAll('.chat-bubble.search-hit').forEach(el=>el.classList.remove('search-hit'));
   _chatSearchMatches=[]; _chatSearchIndex=0;
