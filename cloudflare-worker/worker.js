@@ -18740,7 +18740,11 @@ const reProjectsCrud=reCrud('re_projects', [
   {key:'rera_number', type:'text', maxLen:100}, {key:'total_towers', type:'number'},
   {key:'description', type:'text', maxLen:2000}, {key:'virtual_tour_url', type:'text', maxLen:500},
   {key:'price_list_version', type:'text', maxLen:50}, {key:'base_price_per_sqft', type:'number'},
-  {key:'status', type:'text', maxLen:30}
+  {key:'status', type:'text', maxLen:30},
+  {key:'image_url', type:'text', maxLen:1000}, {key:'image_url_2', type:'text', maxLen:1000},
+  {key:'image_url_3', type:'text', maxLen:1000}, {key:'image_url_4', type:'text', maxLen:1000},
+  {key:'image_url_5', type:'text', maxLen:1000}, {key:'video_url', type:'text', maxLen:1000},
+  {key:'pdf_url', type:'text', maxLen:1000}
 ]);
 const reSiteVisitsCrud=reCrud('re_site_visits', [
   {key:'lead_id', type:'number'}, {key:'unit_id', type:'number'}, {key:'project_id', type:'number'},
