@@ -7315,20 +7315,20 @@ async function handlePipelineVideoSend(request, env){
 // conversational bot (the external n8n engine, not this repo — see SETUP.md's "Trust Signals"
 // section for why) the moment it decides a customer wants to buy, without a dashboard session:
 // same client_id-based auth model as the rest of /ecom/*, since n8n has no Authentik session.
-// Builds the same storefront link a product card's own "Order on WhatsApp" button already uses
-// (onshope.com/<slug> if the client has one, else store.html?client=<id>, with &sku= for a
-// specific product), sends it directly via Meta's Graph API (bypassing Chatwoot, same as
-// handleWaSend), and always logs a 'pending' row in the client's ecom orders table — so "order
-// intent" leaves a paper trail even if the WhatsApp send itself fails (e.g. outside the 24h
-// free-form-message window) or the customer never finishes checking out.
+// Builds the same product-level/client-wide link buildOrderLink resolves below, sends it directly
+// via Meta's Graph API (bypassing Chatwoot, same as handleWaSend), and always logs a 'pending' row
+// in the client's ecom orders table — so "order intent" leaves a paper trail even if the WhatsApp
+// send itself fails (e.g. outside the 24h free-form-message window) or the customer never finishes
+// checking out.
 // Shared by handleEcomOrderLink and the KB-payload guidance's server-side equivalents. Priority:
 // the specific product's own shopify_product_url (if the matched product carries one) wins over
-// everything, since it's the most specific link possible; next, a client's own external_store_link
-// (Shopify or any other storefront they actually sell through, set in Settings → Order Link);
-// the built-in Ecommerce module's own storefront link (onshope.com/<slug> or
-// store.html?client=<id>) is only the fallback when both are blank. sku deep-linking only applies
-// to the built-in link — an external URL has no known query-param scheme to append one to, so it's
-// returned as-is.
+// everything, since it's the most specific link possible; next, product_link (a generic per-product
+// override); finally, a client's own external_store_link (Shopify or any other storefront they
+// actually sell through, set in Settings → Order Link). The built-in Ecommerce module's own
+// generic storefront/catalog page (onshope.com/<slug>, store.html?client=<id>) is deliberately no
+// longer a fallback here — per explicit product direction, a customer should only ever be handed a
+// link that was actually configured for that product/client, never a generic catalog page standing
+// in for one that wasn't set up. Returns '' when none of the three is set; callers must handle that.
 function buildOrderLink(c, clientId, sku, product){
   // A per-product Shopify product-page URL (set in ecom.html, shown only when Shopify is
   // connected) wins over everything else — it's the most specific link available, pointing
@@ -7338,19 +7338,15 @@ function buildOrderLink(c, clientId, sku, product){
   // product_link — a generic per-product override (ecom.html's "Product Link" field, always
   // visible, unlike shopify_product_url which only appears once Shopify is connected). For a
   // client who sells through something other than Shopify (Instagram, Amazon, their own landing
-  // page, a marketplace listing) this is the one way to point a specific product at that URL
-  // instead of the built-in onshope.com/store.html catalog link below. Checked after the
-  // Shopify-specific field (still the most specific option when both happen to be set) but before
-  // the client-wide external_store_link, since a per-product link is always more specific than a
-  // client-wide one.
+  // page, a marketplace listing) this is the one way to point a specific product at that URL.
+  // Checked after the Shopify-specific field (still the most specific option when both happen to
+  // be set) but before the client-wide external_store_link, since a per-product link is always
+  // more specific than a client-wide one.
   const productLink=(product?.product_link||'').trim();
   if(productLink) return productLink;
   const ext=(c.external_store_link||'').trim();
   if(ext) return ext;
-  const slug=c.client_slug;
-  const base=slug?`https://onshope.com/${slug}`:`https://app.leadvyne.com/store.html?client=${clientId}`;
-  if(!sku) return base;
-  return slug?`${base}?sku=${encodeURIComponent(sku)}`:`${base}&sku=${encodeURIComponent(sku)}`;
+  return '';
 }
 
 // Shared by both order-link senders below — resolves the optional matched product and logs the
@@ -7579,9 +7575,16 @@ async function ecomFindCategoryImage(env, clientId, category){
 async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
   const product=await ecomFindProductBySku(env, clientId, sku);
   const displayName=name||'there';
+  // No link at all (buildOrderLink found no product-level or client-wide link to send) — no
+  // generic catalog page to fall back to anymore, so hand off to a human instead of a dead-end
+  // message with nothing after the colon.
   const text=product
-    ? `Hi ${displayName}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
-    : `Hi ${displayName}! Here's our full catalog — order directly from here:\n${link}`;
+    ? (link
+        ? `Hi ${displayName}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
+        : `Hi ${displayName}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOur team will follow up shortly to help you complete the order.`)
+    : (link
+        ? `Hi ${displayName}! Here's our full catalog — order directly from here:\n${link}`
+        : `Hi ${displayName}! Thanks for your interest — our team will follow up shortly to help you with your order.`);
   return {product, text};
 }
 
@@ -7653,17 +7656,14 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
   return sys;
 }
 
-// order.html's checkout form (frontend/order.html) — collects size, delivery address, phone and
-// email and creates a full order row (handleEcomPublicOrder), unlike the bare "intent detected"
-// row logPendingOrder writes here. Only used for the built-in Ecommerce module's own storefront; a
-// client selling through their own external_store_link (Shopify etc.) has no in-house checkout
-// page for this to point at, so that link is used unchanged, same as buildOrderLink above.
 // `product` is optional (a general FAQ/objection reply has no specific product in view) — when
-// given, its own shopify_product_url/product_link override the client-wide external_store_link
-// exactly like buildOrderLink above does; this used to skip straight to external_store_link with
-// no way to honor a per-product override at all, so a product with its own Product Link set
-// (ecom.html, "sold somewhere other than Shopify") still got the generic client-wide/catalog link
-// in the live chat order flow — the one place most real orders actually happen.
+// given, its own shopify_product_url/product_link win over the client-wide external_store_link,
+// same priority as buildOrderLink above. The built-in Ecommerce module's own generic checkout page
+// (order.html?client=<id>) is deliberately no longer a fallback here — per explicit product
+// direction, only a link actually configured for that product/client should ever be sent, never a
+// generic in-house checkout page standing in for one that wasn't set up. Returns '' when none of
+// the three is set; callers must handle that (e.g. by collecting the order conversationally
+// instead, same as the ecom_order_link_enabled==='No' path).
 function buildCheckoutLink(c, clientId, sku, product){
   const shopifyProductUrl=(product?.shopify_product_url||'').trim();
   if(shopifyProductUrl) return shopifyProductUrl;
@@ -7671,7 +7671,7 @@ function buildCheckoutLink(c, clientId, sku, product){
   if(productLink) return productLink;
   const ext=(c.external_store_link||'').trim();
   if(ext) return ext;
-  return `https://app.leadvyne.com/order.html?client=${clientId}&sku=${encodeURIComponent(sku)}`;
+  return '';
 }
 
 // Client-authored template placeholder — real observed failure: an ecommerce client wrote
@@ -7683,12 +7683,15 @@ function buildCheckoutLink(c, clientId, sku, product){
 // ecommerce clients (`buildCheckoutLink`'s shape is ecom-specific — a client in another industry
 // writing this placeholder is out of scope for now). `sku` is optional — when no specific product
 // is in view (a general FAQ/objection reply, not a matched-product enquiry), falls back to
-// `buildCheckoutLink`'s own no-sku behavior (`external_store_link`, or the generic order.html
-// catalog page). Cheap early-out via the regex test so clients who never use this placeholder pay
-// nothing extra.
+// `buildCheckoutLink`'s own no-sku behavior (`external_store_link`, or nothing at all now that the
+// generic order.html catalog page is gone). If no link resolves at all, leaves the placeholder line
+// out entirely rather than leaving a dangling "click here: " with nothing after it — cleaner than
+// echoing the literal bracket text back at the customer.
 function engineSubstituteOrderLinkPlaceholder(text, c, clientId, sku, product){
   if(!text || c.industry!=='ecommerce' || !/\[order_link\]/i.test(text)) return text;
-  return text.replace(/\[order_link\]/gi, buildCheckoutLink(c, clientId, sku||'', product));
+  const link=buildCheckoutLink(c, clientId, sku||'', product);
+  if(!link) return text.split('\n').filter(line=>!/\[order_link\]/i.test(line)).join('\n');
+  return text.replace(/\[order_link\]/gi, link);
 }
 
 // Core "actually send the order link" logic — direct Meta Graph API, bypassing Chatwoot. Kept as
@@ -9006,7 +9009,12 @@ async function engineBuildEcomContext(env, c, clientId, phone){
       orders.forEach(o=>lines.push(`- ${o.order_id}: ${o.items||'(items unspecified)'} — ${o.currency||''} ${o.total??''} — status: ${o.status}`));
     }
   }
-  lines.push(`## Order Link\nWhen a customer is ready to buy, share this link: ${buildOrderLink(c, clientId)}`);
+  // No product in view here (whole-catalog FAQ context, not a specific matched product) — this can
+  // only ever resolve to the client-wide external_store_link now that the generic store.html/
+  // onshope.com catalog-page fallback is gone, so skip the instruction entirely when that's blank
+  // rather than pointing the model at an empty link.
+  const catalogOrderLink=buildOrderLink(c, clientId);
+  if(catalogOrderLink) lines.push(`## Order Link\nWhen a customer is ready to buy, share this link: ${catalogOrderLink}`);
   return lines.length?('\n\n'+lines.join('\n')):'';
 }
 
@@ -10849,12 +10857,26 @@ async function handleEngineWebhook(request, env, secret){
           orderHandledInline=true;
         } else if(detection.mode==='order' && product){
           const link=buildCheckoutLink(c, clientId, detection.sku, product);
-          sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
-          routing.reply=sentText;
-          if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
-          await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          await logPendingOrder(env, c, clientId, phone, name, product);
+          if(link){
+            sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
+            routing.reply=sentText;
+            if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
+            await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+            await logPendingOrder(env, c, clientId, phone, name, product);
+          }else{
+            // No product-level link and no client-wide external_store_link configured — nothing to
+            // send, so collect the order conversationally instead of a dead-end message, same as
+            // the ecom_order_link_enabled==='No' path above.
+            await ensureOrderCollectField(env);
+            sentText=await engineLocalizeReply(env, c, "Great choice! 🛍️ Let's get this ordered right here — could you tell me exactly what you'd like (item, size/color, quantity)?", replyLang);
+            routing.reply=sentText;
+            routing.next='order_collect_items';
+            routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
+            if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
+            await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          }
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product){
           sentText=await engineLocalizeReply(env, c, 'Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?', replyLang);
@@ -10863,8 +10885,12 @@ async function handleEngineWebhook(request, env, secret){
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
           // Opt-in (ecom_link_on_enquiry) — see engineBuildProductEnquirySystemPrompt's own
-          // comment on this parameter for why it's off by default.
-          const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? buildCheckoutLink(c, clientId, product.sku, product) : null;
+          // comment on this parameter for why it's off by default. Deliberately restricted to a
+          // link actually set on the product itself (shopify_product_url/product_link) — unlike
+          // buildCheckoutLink's broader chain, an enquiry never falls through to the client-wide
+          // external_store_link, per explicit product direction: on enquiry, only ever share the
+          // link given at the product level, nothing client-wide or generic.
+          const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? ((product.shopify_product_url||product.product_link||'').trim()||null) : null;
           const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink);
           sentText=await engineCallLlm(env, c, sysPrompt, userText, 200);
           sentText=engineSubstituteOrderLinkPlaceholder(sentText, c, clientId, product.sku, product);
