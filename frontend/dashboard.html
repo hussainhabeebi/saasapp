@@ -2292,6 +2292,24 @@ const ROLES = {
           </div>
         </div>
 
+        <!-- WhatsApp Business Profile photo — separate from the connection step above; only
+             shown once WhatsApp is actually connected (needs wa_phone_id/wa_token). -->
+        <div class="card" id="chWaProfilePicSection" style="margin-bottom:14px;display:none">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🖼️ WhatsApp Business Profile Photo</div>
+            <div class="s-note">The photo customers see on your WhatsApp Business number, in their chat list and at the top of the conversation. JPG or PNG, square works best, under 5&nbsp;MB.</div>
+            <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+              <img id="chWaProfilePicPreview" src="" alt="" style="width:72px;height:72px;border-radius:50%;object-fit:cover;background:var(--bg-soft);display:none;border:1px solid var(--border)">
+              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                <input type="file" id="chWaProfilePicFile" accept="image/jpeg,image/png" style="display:none" onchange="chWaProfilePicSelected()">
+                <button class="save-btn" onclick="$id('chWaProfilePicFile').click()">Choose Photo</button>
+                <button class="save-btn" id="chWaProfilePicSaveBtn" style="display:none" onclick="chWaProfilePicUpload()">Upload &amp; Set</button>
+                <span class="save-msg" id="chWaProfilePicMsg"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- STEP 3: Other inboxes -->
         <!-- Live status — read straight from Chatwoot, so this never offers to re-create
              something that's already connected. -->
@@ -9595,6 +9613,9 @@ function renderChannelsPage(){
   $id('chConnectedList').innerHTML=list.length
     ? list.map(ib=>`<div style="padding:4px 0">${CHANNEL_ICONS[ib.channel_type]||'📥'} ${esc(ib.name)} <span style="color:var(--muted)">(${esc((ib.channel_type||'').replace('Channel::',''))})</span></div>`).join('')
     : '<div style="color:var(--muted)">No inboxes yet.</div>';
+
+  $id('chWaProfilePicSection').style.display=hasWa?'block':'none';
+  if(hasWa && !_waProfilePicLoaded){ _waProfilePicLoaded=true; loadWaProfilePicture(); }
 }
 
 function channelsInit(){
@@ -9602,6 +9623,59 @@ function channelsInit(){
   renderChannelInboxForm();
   renderChannelsPage();
   loadChannelsStatus();
+}
+
+// WhatsApp Business Profile photo — separate small flow from the WhatsApp connect step
+// (handleChannelsWhatsappProfilePicture in worker.js), only usable once wa_phone_id/wa_token
+// exist. _waProfilePicLoaded guards against loadWaProfilePicture firing again every time
+// renderChannelsPage re-runs (e.g. after loadChannelsStatus resolves).
+let _waProfilePicLoaded=false;
+let _chWaProfilePicFile=null;
+
+function chWaProfilePicSelected(){
+  const input=$id('chWaProfilePicFile');
+  const file=input.files&&input.files[0];
+  if(!file) return;
+  if(!['image/jpeg','image/png'].includes(file.type)){ alert('Please choose a JPG or PNG image.'); input.value=''; return; }
+  if(file.size>5*1024*1024){ alert('Image is too large — max 5 MB.'); input.value=''; return; }
+  _chWaProfilePicFile=file;
+  const reader=new FileReader();
+  reader.onload=()=>{ $id('chWaProfilePicPreview').src=reader.result; $id('chWaProfilePicPreview').style.display='block'; };
+  reader.readAsDataURL(file);
+  $id('chWaProfilePicSaveBtn').style.display='inline-block';
+  $id('chWaProfilePicMsg').textContent='';
+}
+
+async function chWaProfilePicUpload(){
+  if(!_chWaProfilePicFile) return;
+  const btn=$id('chWaProfilePicSaveBtn'), msg=$id('chWaProfilePicMsg');
+  btn.disabled=true; msg.textContent='Uploading…'; msg.style.color='var(--muted)';
+  try{
+    const form=new FormData();
+    form.append('file', _chWaProfilePicFile);
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/profile-picture`, {method:'POST', headers:ncAuthHeaders(), body:form});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    msg.textContent='✅ Profile photo updated'; msg.style.color='#16a34a';
+    _chWaProfilePicFile=null;
+    $id('chWaProfilePicFile').value='';
+    btn.style.display='none';
+  }catch(e){
+    msg.textContent='❌ '+e.message; msg.style.color='#dc2626';
+  }finally{
+    btn.disabled=false;
+  }
+}
+
+async function loadWaProfilePicture(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/profile-picture`, {headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(r.ok && data.profile_picture_url){
+      $id('chWaProfilePicPreview').src=data.profile_picture_url;
+      $id('chWaProfilePicPreview').style.display='block';
+    }
+  }catch(e){}
 }
 
 /* ── INTEGRATIONS TAB (Bulk Marketing module: WhatsApp status, Resend, Sheets, Health Check) ── */

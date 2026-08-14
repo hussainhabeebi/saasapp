@@ -3963,6 +3963,68 @@ async function handleChannelsStatus(request, env){
   return json({ok:true, account:{chatwoot_base:c.chatwoot_base, chatwoot_account_id:c.chatwoot_account_id}, inboxes, has_whatsapp});
 }
 
+async function handleChannelsWhatsappProfileGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp Business API is not connected for this account — connect it from Settings → Channels.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/whatsapp_business_profile?fields=profile_picture_url`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:'Failed to load WhatsApp business profile: '+(data?.error?.message||('HTTP '+r.status))}, 502);
+  const profile=(data?.data||[])[0]||{};
+  return json({ok:true, profile_picture_url:profile.profile_picture_url||null});
+}
+
+const WA_PROFILE_PIC_MAX_BYTES=5*1024*1024;
+
+// Setting a WhatsApp Business Profile photo is a separate flow from sending message media —
+// the /{phone_number_id}/media endpoint used elsewhere in this file issues handles that are only
+// valid for outgoing messages. A profile photo needs a handle from Meta's Resumable Upload API
+// instead: open an upload session against the app itself (step 1), push the bytes into that
+// session (step 2, returns a reusable file handle "h"), then set that handle on the business
+// profile (step 3, this last call is scoped to the client's own phone number/token like every
+// other wa_token call in this file).
+async function handleChannelsWhatsappProfilePicture(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.META_APP_ID||!env.META_APP_SECRET) return json({error:'Meta app credentials are not configured on the server.'}, 500);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp Business API is not connected for this account — connect it from Settings → Channels.'}, 400);
+
+  const form=await request.formData().catch(()=>null);
+  if(!form) return json({error:'multipart form data required'}, 400);
+  const file=form.get('file');
+  if(!file) return json({error:'file required'}, 400);
+  const mime=(file.type||'').split(';')[0];
+  if(!['image/jpeg','image/png'].includes(mime)) return json({error:'Profile photo must be a JPG or PNG image.'}, 400);
+  if(file.size>WA_PROFILE_PIC_MAX_BYTES) return json({error:'Image is too large — max 5 MB.'}, 400);
+
+  const appToken=`${env.META_APP_ID}|${env.META_APP_SECRET}`;
+  const bytes=await file.arrayBuffer();
+
+  const sessionR=await fetch(`https://graph.facebook.com/v18.0/${env.META_APP_ID}/uploads?file_length=${bytes.byteLength}&file_type=${encodeURIComponent(mime)}&access_token=${encodeURIComponent(appToken)}`, {method:'POST'});
+  const sessionData=await sessionR.json().catch(()=>({}));
+  if(!sessionR.ok||!sessionData?.id) return json({error:'Meta upload session failed: '+(sessionData?.error?.message||('HTTP '+sessionR.status))}, 502);
+
+  const uploadR=await fetch(`https://graph.facebook.com/v18.0/${sessionData.id}`, {
+    method:'POST',
+    headers:{Authorization:`OAuth ${appToken}`, file_offset:'0', 'Content-Type':'application/octet-stream'},
+    body:bytes
+  });
+  const uploadData=await uploadR.json().catch(()=>({}));
+  if(!uploadR.ok||!uploadData?.h) return json({error:'Meta file upload failed: '+(uploadData?.error?.message||('HTTP '+uploadR.status))}, 502);
+
+  const profileR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/whatsapp_business_profile`, {
+    method:'POST',
+    headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', profile_picture_handle:uploadData.h})
+  });
+  const profileData=await profileR.json().catch(()=>({}));
+  if(!profileR.ok||!profileData?.success) return json({error:'Setting WhatsApp profile photo failed: '+(profileData?.error?.message||('HTTP '+profileR.status))}, 502);
+
+  return json({ok:true});
+}
+
 // Shopify (and any other Chatwoot-native OAuth integration) is configured at the Chatwoot
 // instance level (SHOPIFY_CLIENT_ID/SECRET) and connected per-account via Chatwoot's own
 // Settings -> Integrations page — that OAuth hop has to run on Chatwoot's own domain/callback,
@@ -19064,6 +19126,8 @@ export default {
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
       else if(url.pathname==='/channels/status' && request.method==='GET'){ res=await handleChannelsStatus(request, env); }
+      else if(url.pathname==='/channels/whatsapp/profile-picture' && request.method==='GET'){ res=await handleChannelsWhatsappProfileGet(request, env); }
+      else if(url.pathname==='/channels/whatsapp/profile-picture' && request.method==='POST'){ res=await handleChannelsWhatsappProfilePicture(request, env); }
       else if(url.pathname==='/channels/chatwoot-sso' && request.method==='GET'){ res=await handleChannelsChatwootSso(request, env); }
       else if(url.pathname==='/ig/oauth/start' && request.method==='POST'){ res=await handleInstagramOauthStart(request, env); }
       else if(url.pathname==='/ig/oauth/callback' && request.method==='GET'){ res=await handleInstagramOauthCallback(request, env); }

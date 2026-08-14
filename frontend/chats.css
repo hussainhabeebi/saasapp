@@ -39,7 +39,13 @@
 .chat-load-more{padding:12px 16px;text-align:center;border:none;background:none;font-size:12.5px;color:#00a884;font-weight:600;cursor:pointer;width:100%}
 .chat-load-more:hover{background:#f7f8fa}
 .chat-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;background:#eef3ef url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><g fill="none" stroke="%23000" stroke-opacity="0.022" stroke-width="1.2"><circle cx="20" cy="20" r="9"/><path d="M55 10 L70 30 L45 35 Z"/><circle cx="80" cy="70" r="12"/><path d="M15 70 q10 -15 25 0 q10 15 -5 20 q-15 5 -20 -20"/></g></svg>')}
-.chat-main-hd{padding:12px 20px;background:#fff;border-bottom:1px solid #e9edef;box-shadow:0 1px 3px rgba(16,24,32,.04);flex-shrink:0;display:flex;align-items:center;gap:12px;z-index:1}
+.chat-main-hd{position:relative;padding:12px 20px;background:#fff;border-bottom:1px solid #e9edef;box-shadow:0 1px 3px rgba(16,24,32,.04);flex-shrink:0;display:flex;align-items:center;gap:12px;z-index:1}
+/* Secondary header controls (seen-by, stage, assignee, pin, resolve, view lead) — inline in the
+   header row by default (desktop has room); collapsed behind the ⋮ kebab into a dropdown on
+   mobile instead, see the max-width:767px block below. .chat-hd-kebab is desktop-hidden here so
+   only one of the two ever shows. */
+.chat-hd-actions{display:flex;align-items:center;gap:12px}
+.chat-hd-kebab{display:none}
 .chat-main-name{font-size:15.5px;font-weight:700;color:#111b21;letter-spacing:-.1px}
 .chat-main-phone{font-size:12.5px;color:#667781}
 .chat-messages{display:flex;flex-direction:column;gap:2px}
@@ -85,6 +91,17 @@
   .chats-layout .chat-main{display:none}
   .chats-layout.chat-open .chat-sidebar{display:none}
   .chats-layout.chat-open .chat-main{display:flex;flex:1}
+  /* Header controls collapse behind a kebab menu — inline (search + stage + assignee + pin +
+     resolve + view-lead, 6+ elements) doesn't fit next to avatar/name/phone on a phone-width
+     screen without overlapping; matches how every real chat app handles this breakpoint. */
+  .chat-main-hd{padding:10px 12px;gap:8px}
+  .chat-hd-kebab{display:flex}
+  .chat-hd-actions{display:none;position:absolute;top:calc(100% + 4px);right:10px;flex-direction:column;align-items:stretch;gap:8px;background:#fff;border:1px solid #e9edef;border-radius:12px;box-shadow:0 6px 20px rgba(16,24,32,.16);padding:10px;min-width:190px;z-index:30}
+  .chat-hd-actions.open{display:flex}
+  .chat-hd-actions .chat-seenby{align-self:flex-start}
+  .chat-hd-actions .chat-assignee-select{max-width:none;width:100%}
+  .chat-hd-actions .chat-pin-btn{align-self:flex-start}
+  .chat-hd-actions .chat-resolve-btn,.chat-hd-actions .btn{width:100%;justify-content:center}
 }
 @media(min-width:768px){.chat-back-btn{display:none}}
 /* Own tiny style rather than reusing the app shell's .icon-btn — that one's hover uses
