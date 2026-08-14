@@ -1043,6 +1043,7 @@ function renderUnitsTable(){
         ${u.status==='available'?`<button class="icon-btn" title="Hold" onclick="holdUnit(${u.id})">⏳</button>`:''}
         ${(u.status==='hold'||u.status==='blocked')?`<button class="icon-btn" title="Release" onclick="releaseUnit(${u.id})">↩️</button>`:''}
         ${(u.status==='available'||u.status==='hold')?`<button class="icon-btn" title="Book" onclick="openBookingModal(${u.id})">🧾</button>`:''}
+        ${(u.status==='available'||u.status==='hold')?`<button class="icon-btn" title="Customer interested — schedule a site visit" onclick="openVisitModal(${u.project_id},${u.id})">📅</button>`:''}
         ${u.virtual_tour_url?`<a class="icon-btn" href="${escAttr(u.virtual_tour_url)}" target="_blank" title="Virtual tour">🕶️</a>`:''}
         <button class="icon-btn" title="Edit" onclick="openUnitModal(${u.id})">✎</button>
         <button class="icon-btn danger" title="Delete" onclick="deleteUnit(${u.id})">🗑</button>
@@ -1168,9 +1169,16 @@ function renderVisitsTable(){
     </tr>`;
   }).join('');
 }
-function openVisitModal(){
+// projectId/unitId are optional — passed by the Units table's 📅 quick action (a rep marking a
+// customer interested in that specific unit) so the visit gets pre-scoped to it instead of making
+// the rep re-pick the project/unit from scratch. Both are omitted when opened from the Site Visits
+// tab's own "+ Schedule Visit" button, which leaves everything to pick.
+function openVisitModal(projectId, unitId){
   $id('vLeadSearch').value=''; $id('vScheduledAt').value=''; $id('vTransport').value='';
-  populateProjectSelects(); renderVisitLeadPicker(); renderVisitUnitOptions();
+  populateProjectSelects(); renderVisitLeadPicker();
+  $id('vProjectId').value=projectId||'';
+  renderVisitUnitOptions();
+  $id('vUnitId').value=unitId||'';
   openModal('visitModal');
 }
 function renderVisitLeadPicker(){
