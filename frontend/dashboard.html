@@ -235,11 +235,20 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .hbrand{font-family:var(--disp);font-size:17px;font-weight:700;letter-spacing:-.2px;display:inline-flex;align-items:center;gap:6px}
 .hbrand span{color:var(--accent)}
 .hbrand img{height:20px;width:20px;object-fit:contain}
-.hchip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:4px 12px;border-radius:20px;font-family:var(--disp)}
+.hchip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:4px 12px;border-radius:20px;font-family:var(--disp);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hright{margin-left:auto;display:flex;align-items:center;gap:6px}
-#hUpdated{font-family:var(--mono);font-size:10px;color:var(--muted)}
+#hUpdated{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap}
 .icon-btn{width:36px;height:36px;border:none;background:none;cursor:pointer;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px;color:var(--muted);transition:background .15s}
 .icon-btn:hover{background:var(--bg)}
+/* Header on mobile — the timestamp and 5 icon buttons don't fit next to the client-name chip on
+   a phone screen without overlapping (matches how #hdr looks unmodified at phone width). Keep
+   only the two used outside a deliberate "I want this" moment (dark mode toggle, notifications)
+   inline; PDF report / Passkey / Sign out move into the existing mobile More sheet instead of
+   disappearing outright — see the new .more-item buttons in the More sheet markup. */
+@media(max-width:767px){
+  .hchip{max-width:96px}
+  #hUpdated,#hdr .icon-btn[title="PDF Report"],#hPasskey,#hLogout{display:none}
+}
 
 /* desktop tab nav */
 #desktopNav{display:none;gap:2px;padding:0 18px;border-bottom:1px solid var(--line);background:var(--card);flex-shrink:0}
@@ -3209,6 +3218,11 @@ const ROLES = {
       <button class="more-item" data-page="hospitality" id="moreHospitalityTab" style="display:none"><span class="bnIcon">🏨</span><span class="bnLabel">Hospitality</span></button>
       <button class="more-item" data-page="realestate" id="moreRealestateTab" style="display:none"><span class="bnIcon">🏘️</span><span class="bnLabel">Real Estate</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
+      <!-- Header actions that don't fit inline on mobile (#hdr's @media(max-width:767px) rule
+           hides these icon buttons there) — same functions, just reachable from here instead. -->
+      <button class="more-item" onclick="generateReport();closeMoreSheet()"><span class="bnIcon">📄</span><span class="bnLabel">PDF Report</span></button>
+      <button class="more-item" onclick="openPasskeySetup();closeMoreSheet()"><span class="bnIcon">🔑</span><span class="bnLabel">Passkey</span></button>
+      <button class="more-item" onclick="$id('hLogout').click();closeMoreSheet()"><span class="bnIcon">⏻</span><span class="bnLabel">Sign Out</span></button>
     </div>
   </div>
 

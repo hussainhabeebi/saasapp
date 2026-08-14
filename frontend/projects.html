@@ -41,6 +41,12 @@ header{background:var(--card);border-bottom:1px solid var(--line);padding:0 18px
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .btn.primary:hover{background:var(--accent-ink)}
 .btn.sm{padding:5px 10px;font-size:12px}
+/* Icon-only header buttons — only used on mobile (sidebar hamburger, "more" overflow trigger),
+   hidden by default so desktop keeps the original all-inline header. */
+.hicon-btn{display:none;width:32px;height:32px;border:none;background:none;border-radius:8px;font-size:16px;align-items:center;justify-content:center;color:var(--muted);flex:none}
+.hicon-btn:hover{background:var(--bg)}
+.hd-more-wrap{position:relative}
+.hd-more{display:contents}
 
 /* ── Shell ── */
 #shell{flex:1;display:flex;overflow:hidden;min-height:0}
@@ -180,16 +186,37 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
 .subhead{font-family:var(--disp);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
 .subhead:first-child{margin-top:0}
 
+/* Sidebar backdrop — dims the page and closes the off-canvas sidebar on tap-outside; only
+   relevant once the sidebar can actually be opened (mobile), so hidden/inert by default. */
+#sidebarBackdrop{display:none;position:fixed;inset:0;background:rgba(10,20,30,.4);z-index:99}
+#sidebarBackdrop.show{display:block}
+
 @media (max-width:760px){
+  header{padding:0 10px;gap:8px}
+  .brand{font-size:14px}
+  .sidebar-toggle-btn{display:flex}
   #sidebar{position:fixed;left:-240px;top:56px;bottom:0;z-index:100;transition:left .2s;box-shadow:2px 0 12px rgba(0,0,0,.1)}
   #sidebar.open{left:0}
   .field-row{grid-template-columns:1fr}
+  /* View tabs (Board/Table/Timeline/Sprints) scroll instead of squeezing; "more" actions
+     (Budget/Automations) collapse behind ⋯ so + Task / + Project / Back stay reachable. */
+  .viewtabs{overflow-x:auto;scrollbar-width:none;max-width:38vw}
+  .viewtabs::-webkit-scrollbar{display:none}
+  .viewtab{padding:7px 10px;white-space:nowrap}
+  .hd-more-btn{display:flex}
+  .hd-more{display:none;position:absolute;top:calc(100% + 6px);right:0;flex-direction:column;gap:6px;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.15);padding:8px;z-index:200;min-width:150px}
+  .hd-more.open{display:flex}
+  .hd-more .btn{width:100%}
+  .hright{gap:6px}
+  .hright .btn{padding:7px 10px;font-size:12px}
+  .hback-label{display:none}
 }
 </style>
 </head>
 <body>
 
 <header>
+  <button class="hicon-btn sidebar-toggle-btn" id="sidebarToggleBtn" onclick="toggleProjSidebar()" title="Projects list">☰</button>
   <div class="brand">Leadvyne<span>·</span>Projects</div>
   <div class="viewtabs" id="viewTabs">
     <button class="viewtab active" data-view="board" onclick="setView('board')">Board</button>
@@ -198,13 +225,19 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
     <button class="viewtab" data-view="sprints" onclick="setView('sprints')">Sprints</button>
   </div>
   <div class="hright">
-    <button class="btn sm" onclick="openBudgetModal()">💰 Budget</button>
-    <button class="btn sm" onclick="openAutomationsModal()">⚡ Automations</button>
+    <div class="hd-more-wrap">
+      <button class="hicon-btn hd-more-btn" id="projMoreBtn" onclick="toggleProjMore(event)" title="More">⋯</button>
+      <div class="hd-more" id="projMore">
+        <button class="btn sm" onclick="openBudgetModal()">💰 Budget</button>
+        <button class="btn sm" onclick="openAutomationsModal()">⚡ Automations</button>
+      </div>
+    </div>
     <button class="btn" onclick="openTaskModal()">+ Task</button>
     <button class="btn primary" onclick="openProjectModal()">+ Project</button>
-    <button class="hback" onclick="window.close()">← Back to Dashboard</button>
+    <button class="hback" onclick="window.close()">← <span class="hback-label">Back to Dashboard</span></button>
   </div>
 </header>
+<div id="sidebarBackdrop" onclick="closeProjSidebar()"></div>
 
 <div id="shell">
   <div id="sidebar">
@@ -445,6 +478,28 @@ function escAttr(str){ return esc(str).replace(/"/g,'&quot;'); }
 function openModal(id){ $id(id).classList.add('active'); }
 function closeModal(id){ $id(id).classList.remove('active'); }
 
+// Mobile-only sidebar toggle — #sidebar is fixed off-canvas under 760px (see the media query in
+// <style>) with nothing that previously opened it, making the project list unreachable on a
+// phone. This hamburger + backdrop is the fix.
+function toggleProjSidebar(){
+  $id('sidebar')?.classList.toggle('open');
+  $id('sidebarBackdrop')?.classList.toggle('show');
+}
+function closeProjSidebar(){
+  $id('sidebar')?.classList.remove('open');
+  $id('sidebarBackdrop')?.classList.remove('show');
+}
+function toggleProjMore(e){
+  e?.stopPropagation();
+  $id('projMore')?.classList.toggle('open');
+}
+document.addEventListener('click', e=>{
+  const more=$id('projMore');
+  if(!more||!more.classList.contains('open')) return;
+  if(more.contains(e.target)||e.target.closest('#projMoreBtn')) return;
+  more.classList.remove('open');
+});
+
 if(!clientId||!sessionToken){
   document.body.innerHTML='<div class="empty-state" style="padding:80px 20px"><div class="empty-icon">🔒</div>Missing client/session — open Projects from inside your Leadvyne dashboard.</div>';
   throw new Error('no session');
@@ -555,7 +610,7 @@ function renderSidebar(){
   wrap.innerHTML=html;
   populateProjectSelect();
 }
-function selectProject(id){ selectedProjectId=id; renderSidebar(); renderStats(); renderView(); }
+function selectProject(id){ selectedProjectId=id; renderSidebar(); renderStats(); renderView(); closeProjSidebar(); }
 function populateProjectSelect(){
   $id('tmProject').innerHTML=allProjects.filter(p=>p.status!=='archived').map(p=>`<option value="${p.Id}">${esc(p.name)}</option>`).join('') || '<option value="">Create a project first</option>';
 }
