@@ -1077,12 +1077,21 @@ async function saveProject(){
     image_url_4:$id('pImage4').value.trim(), image_url_5:$id('pImage5').value.trim(),
     video_url:$id('pVideoUrl').value.trim(), pdf_url:$id('pPdfUrl').value.trim()
   };
+  let saved;
   try{
-    if(id){ body.id=id; await reFetch('/re/projects',{method:'PATCH', body:JSON.stringify(body)}); }
-    else{ body.status='active'; await reFetch('/re/projects',{method:'POST', body:JSON.stringify(body)}); }
-    closeModal('projectModal');
-    await loadProjects(); renderProjectsList(); populateProjectSelects(); await refreshAllUnitsCache(); renderOverview();
-  }catch(e){ alert('Failed: '+e.message); }
+    if(id){ body.id=id; saved=await reFetch('/re/projects',{method:'PATCH', body:JSON.stringify(body)}); }
+    else{ body.status='active'; saved=await reFetch('/re/projects',{method:'POST', body:JSON.stringify(body)}); }
+  }catch(e){ alert('Failed: '+e.message); return; }
+  // Split from the save call above on purpose — if a post-save refresh step throws (a flaky
+  // network blip on the immediate follow-up GET, say), it must not land in the same catch as the
+  // save itself: that previously closed the modal having already saved successfully, but then
+  // surfaced a generic "Failed" alert and left the list showing whatever was in memory *before*
+  // the save — which, for a rename, looked exactly like "the name didn't save" even though it had.
+  closeModal('projectModal');
+  try{ await loadProjects(); }catch(e){ if(saved && saved.id) allProjects=[saved, ...allProjects.filter(p=>p.id!==saved.id)]; }
+  renderProjectsList(); populateProjectSelects();
+  try{ await refreshAllUnitsCache(); }catch(e){}
+  renderOverview();
 }
 function openUnitModal(id){
   const u=id?allUnits.find(x=>x.id===id):null;
