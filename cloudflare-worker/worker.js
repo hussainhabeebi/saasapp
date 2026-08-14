@@ -675,6 +675,11 @@ const HOME_KPI_META = {
   conversion_rate: {label:'Conversion Rate', icon:'📈'},
   followups_due:   {label:'Follow-ups Due',  icon:'⏰'},
   bot_engaged:     {label:'Bot Engaged',     icon:'🤖'},
+  // Deal-value tiles — computed from the Leads table's existing DealValue/DealCurrency columns
+  // (same fields the Kanban/Human Deals views already show), so these need no new data source
+  // either, just a currency-aware sum/average instead of a plain count.
+  pipeline_value:  {label:'Pipeline Value',  icon:'💰'},
+  avg_deal_value:  {label:'Avg. Deal Value', icon:'💵'},
 };
 const HOME_KPI_DEFAULT_ORDER = Object.keys(HOME_KPI_META);
 function homeKpiMetaForIndustry(industry){
@@ -685,13 +690,16 @@ function homeKpiMetaForIndustry(industry){
   meta.active={...meta.active, label:overrides.active};
   return meta;
 }
-// A short, curated starting set per industry rather than dumping all 8 tiles on a first-time
-// user — still fully overridable via the customize panel, which offers every HOME_KPI_DEFAULT_ORDER key.
+// Every KPI that's relevant ships wired in by default — the customize panel is for trimming
+// down to what a client actually looks at, not for hunting through a catalog to find KPIs that
+// were on but hidden. Deal-value tiles are the only ones industry-gated by default (leads in
+// general/healthcare/education rarely carry a DealValue), everything else applies everywhere;
+// all 10 keys remain individually toggleable regardless of industry via the customize panel.
+const HOME_KPI_VALUE_INDUSTRIES = new Set(['real_estate','b2b','insurance','automotive','consultancy','saas_digital_marketing','ecommerce','travel','hospitality']);
 function defaultHomeKpisForIndustry(industry){
-  if(industry==='ecommerce') return ['new_today','booked','conversion_rate','hot_leads'];
-  if(industry==='real_estate') return ['active','booked','hot_leads','followups_due'];
-  if(industry==='travel'||industry==='hospitality') return ['new_today','active','booked','hot_leads'];
-  return ['new_today','total_leads','hot_leads','booked'];
+  const base=['new_today','total_leads','active','booked','hot_leads','conversion_rate','followups_due','bot_engaged'];
+  if(HOME_KPI_VALUE_INDUSTRIES.has(industry)) return [...base.slice(0,4), 'pipeline_value','avg_deal_value', ...base.slice(4)];
+  return base;
 }
 async function handleHomeKpiPrefsGet(request, env){
   const payload=await requireSession(request, env);

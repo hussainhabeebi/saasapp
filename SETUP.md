@@ -2306,15 +2306,32 @@ which is unchanged and still the default landing screen. This one is a small, fu
 independent from the Docker/nginx deploy the rest of `frontend/` uses, so it loads instantly at the
 edge. It reuses the existing Worker for everything — no parallel backend.
 
-**What it shows:** a KPI tile grid computed from the same NocoDB Leads data
-`dashboard.html`'s Home tab already reads (New Today, Total Leads, Hot Leads, Follow-ups Due, Bot
-Engaged, Conversion Rate, plus "Converted"/"Active" — whichever term the client's industry uses,
-see `HOME_KPI_INDUSTRY_LABELS` in `worker.js`, matching `INDUSTRIES` in `dashboard.html`). Every
-KPI is derived from the Leads list alone (no ecom-orders/SaaS-health-score/real-estate-deals
-joins), so "industry-aware" here means the *label* changes (e.g. real estate's "Deals Closed" vs.
-ecommerce's "Orders Closed"), not a different data source per industry — a client can still pick
-any of the 8 tiles regardless of industry via the ⚙️ customize sheet (drag order via ▲▼, not
-HTML5 drag-and-drop, since that doesn't work reliably on touch).
+**What it shows:**
+- A KPI tile grid computed from the same NocoDB Leads data `dashboard.html`'s Home tab already
+  reads (New Today, Total Leads, Hot Leads, Follow-ups Due, Bot Engaged, Conversion Rate, Pipeline
+  Value, Avg. Deal Value, plus "Converted"/"Active" — whichever term the client's industry uses,
+  see `HOME_KPI_INDUSTRY_LABELS` in `worker.js`, matching `INDUSTRIES` in `dashboard.html`). Every
+  KPI is derived from the Leads list alone (Pipeline/Avg. Deal Value from the existing
+  DealValue/DealCurrency columns, currency-aware; no ecom-orders/SaaS-health-score/real-estate
+  -deals joins), so "industry-aware" here means the *label* changes (e.g. real estate's "Deals
+  Closed" vs. ecommerce's "Orders Closed") and the deal-value tiles are on by default only for
+  industries where deals typically carry a value (`HOME_KPI_VALUE_INDUSTRIES` in `worker.js`) — a
+  client can still pick any of the 10 tiles regardless of industry via the ⚙️ customize sheet (drag
+  order via ▲▼, not HTML5 drag-and-drop, since that doesn't work reliably on touch). Every relevant
+  KPI ships wired in and visible by default (`defaultHomeKpisForIndustry()`) — the customize sheet
+  is for trimming down, not for finding what's available.
+- Trust badges (AI Assistant status, encryption/payments reassurance, messages-handled count) —
+  same content as `dashboard.html`'s `renderTrustBadges()`.
+- A Pipeline stage breakdown — a plain CSS bar list (no charting library, keeps this page's only
+  external request the Google Fonts stylesheet) — port of `renderFunnel()`.
+- Hot Leads / Follow-ups Due / Recent Leads panels (5 each) — port of `renderHomeHotLeads()`/
+  `renderHomeFollowUps()`'s sidebar lists, as three panels instead of a sidebar since this page has
+  no fixed sidebar column at any width.
+
+Not ported (still only on the full dashboard's Home tab, each needs its own module's data/logic
+beyond the Leads list — Revenue Forecast, Team/Agent performance leaderboard, Predictive win-rate
+and Benchmark comparisons, PDF report export, the Real Estate module snapshot, the onboarding
+checklist, and billing-health banners tied to the Stripe subscription flow).
 
 **Auth — no login flow of its own.** This page is only ever opened *from* an already-authenticated
 `dashboard.html` tab (the header's 🏠✨ button, `openNewHome()`), which hands it the current session
