@@ -8594,8 +8594,17 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   const lead=rows.find(l=>String(l.ClientId)===String(clientId))||null;
   const isDuplicate=rows.some(l=>String(l.ClientId)!==String(clientId));
   let history=[]; try{ history=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
-  const botMsgs=history.filter(m=>m.role==='assistant').slice(-3).map(m=>m.content);
-  const looping=botMsgs.length===3 && botMsgs.every(m=>m===botMsgs[0]);
+  // 2, not 3 — a real customer (N7 Tours, Aug 2026) got the exact same scripted reply THREE times
+  // in a row ("Ok" and "Sure" both fell through to a generic FAQ answer that just re-asked the same
+  // question, since intermediate flow stages have no dedicated affirmative handling — see
+  // engineRouteFlow's final `else route=industryFaqRoute` fallthrough) before the loop was even
+  // detected, because detection itself required 3 identical replies to already be in history.
+  // Requiring only 2 halves the number of duplicate replies a stuck customer sees before the next
+  // turn escalates to a human via isRealLoop below, without weakening the signal much — two
+  // consecutive byte-identical bot replies is already a strong smell for genuinely distinct customer
+  // turns (engineHandoverCannedTexts still excludes a correctly-repeated handover confirmation).
+  const botMsgs=history.filter(m=>m.role==='assistant').slice(-2).map(m=>m.content);
+  const looping=botMsgs.length===2 && botMsgs.every(m=>m===botMsgs[0]);
   // 20, not 6 — keep roughly the last 10 customer/bot exchanges as working memory instead of ~3,
   // so the bot still recalls what was discussed several turns back (ConvHistory itself has no
   // date-based staleness at all, only this count-based trim of what's "active" for the prompts).
