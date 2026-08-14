@@ -12699,11 +12699,12 @@ const PM_TABLES={
 const PM_PROJECT_SCOPED=['tasks','sprints','automations'];
 function pmCoerce(spec, raw){
   if(raw===undefined||raw===null||raw===''){
-    if(spec.type==='num'||spec.type==='int') return null;
     return spec.def!==undefined?spec.def:null;
   }
-  if(spec.type==='num') return Number(raw)||0;
-  if(spec.type==='int') return parseInt(raw,10)||null;
+  // NaN-checked, not `||` — a real 0 (an unchecked flag like ai_auto_stage_enabled, an explicit
+  // billable:0/enabled:0) must survive coercion, not collapse to null/def just because 0 is falsy.
+  if(spec.type==='num'){ const n=Number(raw); return Number.isNaN(n)?(spec.def!==undefined?spec.def:0):n; }
+  if(spec.type==='int'){ const n=parseInt(raw,10); return Number.isNaN(n)?(spec.def!==undefined?spec.def:null):n; }
   if(spec.type==='text') return String(raw);
   return String(raw).trim().slice(0, spec.max||255);
 }
