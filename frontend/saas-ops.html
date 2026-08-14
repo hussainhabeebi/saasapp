@@ -25,6 +25,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font
 body{display:flex;flex-direction:column}
 
 header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:56px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 1px 0 var(--line)}
+/* Logo + module chip + "Back to CRM" button can run past the viewport on the smallest phones
+   with no wrap/scroll to fall back on — let the header wrap to a second line instead of clipping. */
+@media(max-width:480px){header{flex-wrap:wrap;height:auto;min-height:56px;padding:8px 14px}}
 .brand{font-family:var(--disp);font-size:16px;font-weight:700;display:inline-flex;align-items:center;gap:6px}
 .brand span{color:var(--accent)}
 .chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}

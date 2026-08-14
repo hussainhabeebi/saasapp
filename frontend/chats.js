@@ -448,11 +448,14 @@ function chatSelectLead(leadId){
       <input type="file" id="chatImgInput" accept="image/*" style="display:none" onchange="chatAttachFile(${lead.Id},this.files[0],'image')">
       <input type="file" id="chatDocInput" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" style="display:none" onchange="chatAttachFile(${lead.Id},this.files[0],'document')">
       <div class="chat-tools" id="chatToolsWrap">
-        <button class="chat-tool-btn" onclick="$id('chatImgInput').click()" title="Attach image">🖼️</button>
         <button class="chat-tool-btn" onclick="$id('chatDocInput').click()" title="Attach document">📎</button>
         <button class="chat-tool-btn" onclick="chatStartVoiceRecording(${lead.Id})" title="Record voice note">🎤</button>
-        <button class="chat-tool-btn" onclick="openSendTemplateModal([${lead.Id}])" title="Send WhatsApp template">📣</button>
-        <button class="chat-tool-btn" onclick="openSavedRepliesModal()" title="Saved replies">⚡</button>
+        <button class="chat-tool-btn chat-tools-more-btn" id="chatToolsMoreBtn" onclick="chatToggleToolsMore(event)" title="More">➕</button>
+        <div class="chat-tools-more" id="chatToolsMore">
+          <button class="chat-tool-btn" onclick="$id('chatImgInput').click()" title="Attach image">🖼️</button>
+          <button class="chat-tool-btn" onclick="openSendTemplateModal([${lead.Id}])" title="Send WhatsApp template">📣</button>
+          <button class="chat-tool-btn" onclick="openSavedRepliesModal()" title="Saved replies">⚡</button>
+        </div>
       </div>`:`<div class="chat-tools" id="chatToolsWrap"><button class="chat-tool-btn" onclick="openSavedRepliesModal()" title="Saved replies">⚡</button></div>`}
       <div style="position:relative;flex:1;min-width:0">
         <div class="saved-reply-picker" id="chatSavedReplyPicker" style="display:none"></div>
@@ -625,6 +628,22 @@ document.addEventListener('click', e=>{
   if(!actions||!actions.classList.contains('open')) return;
   if(actions.contains(e.target)||e.target.closest('#chatHdKebabBtn')) return;
   actions.classList.remove('open');
+});
+
+// Mobile-only overflow menu for the composer's less-frequent tools (image attach, template,
+// saved replies) — 📎 attach and 🎤 mic stay inline since those are the two used on nearly every
+// reply; the rest collapse behind ➕ under 768px so the send button is never pushed off-screen
+// (see .chat-tools-more/.chat-tools-more-btn in chats.css — display:contents on desktop keeps
+// them inline exactly as before, no behavior change above the breakpoint).
+function chatToggleToolsMore(e){
+  e?.stopPropagation();
+  $id('chatToolsMore')?.classList.toggle('open');
+}
+document.addEventListener('click', e=>{
+  const more=$id('chatToolsMore');
+  if(!more||!more.classList.contains('open')) return;
+  if(more.contains(e.target)||e.target.closest('#chatToolsMoreBtn')) return;
+  more.classList.remove('open');
 });
 function chatClearSearchHighlights(){
   document.querySelectorAll('.chat-bubble.search-hit').forEach(el=>el.classList.remove('search-hit'));

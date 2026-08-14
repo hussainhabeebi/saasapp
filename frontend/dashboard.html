@@ -147,6 +147,16 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .kpi-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:22px}
 @media(max-width:1200px){.kpi-grid{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:600px){.kpi-grid{grid-template-columns:repeat(2,1fr)}}
+/* Team/Reports/Recruit/Appointments/Hospitality stat rows (teamPerfStats, reportsSalesStats,
+   etc.) were each hand-built with an inline style="...grid-template-columns:repeat(4,1fr)..."
+   (or repeat(5,1fr) for the Meta Ads row) instead of the .kpi-grid class above, so none of them
+   got a mobile override — on a 375px phone each stat tile squeezes to ~70-85px. Rather than edit
+   every one of those ~11 divs individually, this one rule targets them all by matching the
+   literal inline style text (a valid, if unusual, CSS attribute-selector technique) — collapses
+   any inline 4- or 5-column stat grid to 2 columns under 600px, same breakpoint as .kpi-grid. */
+@media(max-width:600px){
+  div[style*="repeat(4,1fr)"],div[style*="repeat(5,1fr)"]{grid-template-columns:repeat(2,1fr)!important}
+}
 .kpi-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow);transition:box-shadow .2s,transform .2s}
 .kpi-card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
 .kpi-card.accent{background:linear-gradient(135deg,#0D9C93,#2DD4BF);border-color:transparent}
@@ -235,11 +245,20 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .hbrand{font-family:var(--disp);font-size:17px;font-weight:700;letter-spacing:-.2px;display:inline-flex;align-items:center;gap:6px}
 .hbrand span{color:var(--accent)}
 .hbrand img{height:20px;width:20px;object-fit:contain}
-.hchip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:4px 12px;border-radius:20px;font-family:var(--disp)}
+.hchip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:4px 12px;border-radius:20px;font-family:var(--disp);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hright{margin-left:auto;display:flex;align-items:center;gap:6px}
-#hUpdated{font-family:var(--mono);font-size:10px;color:var(--muted)}
+#hUpdated{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap}
 .icon-btn{width:36px;height:36px;border:none;background:none;cursor:pointer;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px;color:var(--muted);transition:background .15s}
 .icon-btn:hover{background:var(--bg)}
+/* Header on mobile — the timestamp and 5 icon buttons don't fit next to the client-name chip on
+   a phone screen without overlapping (matches how #hdr looks unmodified at phone width). Keep
+   only the two used outside a deliberate "I want this" moment (dark mode toggle, notifications)
+   inline; PDF report / Passkey / Sign out move into the existing mobile More sheet instead of
+   disappearing outright — see the new .more-item buttons in the More sheet markup. */
+@media(max-width:767px){
+  .hchip{max-width:96px}
+  #hUpdated,#hdr .icon-btn[title="PDF Report"],#hPasskey,#hLogout{display:none}
+}
 
 /* desktop tab nav */
 #desktopNav{display:none;gap:2px;padding:0 18px;border-bottom:1px solid var(--line);background:var(--card);flex-shrink:0}
@@ -421,6 +440,11 @@ tr:hover td{background:#FAFCFB}
 #overlay{position:fixed;inset:0;background:rgba(10,22,16,.55);z-index:100;display:none}
 #overlay.show{display:block}
 .modal{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-radius:24px 24px 0 0;z-index:101;transform:translateY(100%);transition:transform .35s cubic-bezier(.32,.72,0,1);max-height:92vh;display:flex;flex-direction:column}
+/* A number of modals set an inline style="width:NNNpx" (meant only for the desktop centered-card
+   layout below) which, combined with this base rule's left:0;right:0, over-constrains the box and
+   makes the mobile bottom sheet render wider than the viewport instead of full-width. !important
+   here is a deliberate, narrow override of those inline styles rather than editing each one. */
+@media(max-width:767px){.modal{width:auto!important}}
 @media(min-width:768px){.modal{top:50%;left:50%;right:auto;bottom:auto;width:540px;border-radius:var(--r);transform:translate(-50%,-42%);opacity:0;pointer-events:none;transition:transform .25s,opacity .25s;max-height:85vh}}
 .modal.open{transform:translateY(0)}
 @media(min-width:768px){.modal.open{transform:translate(-50%,-50%);opacity:1;pointer-events:auto}}
@@ -3209,6 +3233,11 @@ const ROLES = {
       <button class="more-item" data-page="hospitality" id="moreHospitalityTab" style="display:none"><span class="bnIcon">🏨</span><span class="bnLabel">Hospitality</span></button>
       <button class="more-item" data-page="realestate" id="moreRealestateTab" style="display:none"><span class="bnIcon">🏘️</span><span class="bnLabel">Real Estate</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
+      <!-- Header actions that don't fit inline on mobile (#hdr's @media(max-width:767px) rule
+           hides these icon buttons there) — same functions, just reachable from here instead. -->
+      <button class="more-item" onclick="generateReport();closeMoreSheet()"><span class="bnIcon">📄</span><span class="bnLabel">PDF Report</span></button>
+      <button class="more-item" onclick="openPasskeySetup();closeMoreSheet()"><span class="bnIcon">🔑</span><span class="bnLabel">Passkey</span></button>
+      <button class="more-item" onclick="$id('hLogout').click();closeMoreSheet()"><span class="bnIcon">⏻</span><span class="bnLabel">Sign Out</span></button>
     </div>
   </div>
 
