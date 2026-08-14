@@ -15942,7 +15942,10 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
 // Real Estate's equivalent of hospitalitySendUnitMedia just above — same Drive-link-only shape as
 // ecom product media (image_url/image_url_2-5/video_url/pdf_url, no legacy R2 branch since this
 // field set is new), reusing sendDriveMediaToChatwoot for every non-empty slot. Marks the send in
-// re_media_sent so a given (lead, unit) pair is never re-sent.
+// re_media_sent so a given (lead, unit) pair is re-sent at most once per RE_MEDIA_RESEND_WINDOW_MS
+// (see engineMaybeSendRealEstateMedia's existence check below) rather than never again — an upsert
+// so a later send refreshes sent_at instead of being silently dropped by the (lead_id, unit_id)
+// unique index the way a plain INSERT OR IGNORE would.
 async function reSendUnitMediaToChatwoot(env, c, clientId, convId, leadId, unit){
   const items=[unit.image_url, unit.image_url_2, unit.image_url_3, unit.image_url_4, unit.image_url_5, unit.video_url, unit.pdf_url].filter(Boolean);
   if(!items.length) return false;
@@ -15952,8 +15955,10 @@ async function reSendUnitMediaToChatwoot(env, c, clientId, convId, leadId, unit)
     if(await sendDriveMediaToChatwoot(c, convId, items[i], caption)) sentAny=true;
   }
   if(sentAny){
-    await env.DB.prepare(`INSERT OR IGNORE INTO re_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
-      .bind(Number(clientId), leadId, unit.id, new Date().toISOString()).run();
+    await env.DB.prepare(
+      `INSERT INTO re_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)
+       ON CONFLICT(lead_id, unit_id) DO UPDATE SET sent_at=excluded.sent_at`
+    ).bind(Number(clientId), leadId, unit.id, new Date().toISOString()).run();
   }
   return sentAny;
 }
@@ -15962,11 +15967,18 @@ async function reSendUnitMediaToChatwoot(env, c, clientId, convId, leadId, unit)
 // HOSPITALITY_GENERAL_ENQUIRY_RE above, vocabulary swapped for property terms.
 const RE_GENERAL_ENQUIRY_RE=/\b(propert(?:y|ies)|units?|flats?|villas?|plots?|apartments?|available|availability|options?|inventory|prices?|pricing|floor\s*plans?)\b/i;
 
+// Unlike ecom_category_media_sent/hospitality_media_sent (both deliberately "once ever" — see
+// their own dedupe checks elsewhere in this file), a unit's photos are worth re-sending if a lead
+// comes back asking again a few days later, so re_media_sent's window is capped instead of
+// unbounded: at most one send per (lead, unit) per rolling 24h.
+const RE_MEDIA_RESEND_WINDOW_MS=24*60*60*1000;
+
 // Auto-sends a unit's photos/video/PDF into the chat, mirroring engineMaybeSendHospitalityMedia's
 // three-tier match: (1) a specific project named in the message — send every matching unit's media,
 // narrowed further by property_type if that was also named; (2) no project named but a property_type
 // keyword was ("looking for a villa") — send that type's units; (3) neither, but the message reads
-// like a general enquiry (RE_GENERAL_ENQUIRY_RE) — send the first few active units once per lead ever.
+// like a general enquiry (RE_GENERAL_ENQUIRY_RE) — send the first few active units. Each branch is
+// deduped per lead per unit within RE_MEDIA_RESEND_WINDOW_MS, not forever.
 // Gated on CLIENTS.real_estate_enabled the same way ecom's product-media send is gated on
 // c.industry==='ecommerce' and hospitality's on c.hospitality_enabled.
 async function engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolvedLeadId, userText){
@@ -15978,6 +15990,7 @@ async function engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolved
        WHERE u.client_id=? AND u.status IN ('available','hold') LIMIT 500`
     ).bind(Number(clientId)).all();
     if(!units || !units.length) return;
+    const resendCutoff=new Date(Date.now()-RE_MEDIA_RESEND_WINDOW_MS).toISOString();
     const lower=userText.toLowerCase();
     const typeMatch=lower.match(/\b(residential|commercial|villa|flat|plot)s?\b/i);
     const projectMatch=units.find(u=>u.project_name && u.project_name.trim().length>=4 && lower.includes(u.project_name.trim().toLowerCase()));
@@ -15987,16 +16000,18 @@ async function engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolved
     if(candidates){
       if(projectMatch && typeMatch) candidates=candidates.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
       for(const unit of candidates.slice(0,5)){
-        const already=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, unit.id).first();
+        const already=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? AND unit_id=? AND sent_at>?`).bind(resolvedLeadId, unit.id, resendCutoff).first();
         if(already) continue;
         await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit);
       }
       return;
     }
     if(!RE_GENERAL_ENQUIRY_RE.test(lower)) return;
-    const alreadyAny=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
-    if(alreadyAny) return;
-    for(const unit of units.slice(0,5)) await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit);
+    for(const unit of units.slice(0,5)){
+      const already=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? AND unit_id=? AND sent_at>?`).bind(resolvedLeadId, unit.id, resendCutoff).first();
+      if(already) continue;
+      await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit);
+    }
   }catch(e){ await reportOpsError(env, 'engineMaybeSendRealEstateMedia', e, {clientId, convId}); }
 }
 
@@ -18822,6 +18837,60 @@ const reSiteVisitsCrud=reCrud('re_site_visits', [
   {key:'scheduled_at', type:'text', required:true, maxLen:40}, {key:'status', type:'text', maxLen:30},
   {key:'transport_notes', type:'text', maxLen:500}, {key:'feedback', type:'text', maxLen:1000}
 ]);
+
+// Scheduling a site visit against a Lead is a CRM-relevant event, but the generic reSiteVisitsCrud
+// factory only writes the D1 row — nothing surfaces it in the main CRM (dashboard.html) outside
+// this module. Same "advance Stage + drop a task" convention advanceLeadBookingAndTask uses for
+// appointment-booking intent (worker.js ~7777): only ever advances Stage to 'visit_booked' if the
+// client has actually configured that stage in their own flow_json (never forces a stage they
+// haven't set up), and drops a manual_tasks entry — the same JSON-on-CLIENTS field the dashboard's
+// Tasks page already reads/writes — so a rep sees "confirm this site visit" without needing to be
+// inside the Real Estate module at all. No-ops quietly if the visit has no lead_id (a valid choice
+// in the Schedule Visit modal) or the lead can't be found.
+async function syncSiteVisitToLeadCrm(env, clientId, visit){
+  if(!visit.lead_id) return;
+  const c=await getClientById(env, clientId);
+  if(!c) return;
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(visit.lead_id)}`);
+  if(!leadR.ok) return;
+  const lead=await leadR.json().catch(()=>null);
+  if(!lead) return;
+
+  let flow={}; try{ flow=JSON.parse(c.flow_json||'{}'); }catch(e){}
+  const stageKeys=Object.keys(flow.stages||{});
+  if(stageKeys.includes('visit_booked') && lead.Stage!=='visit_booked'){
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, Stage:'visit_booked'}});
+  }
+
+  let unitLabel='';
+  if(visit.unit_id){
+    const unit=await env.DB.prepare(`SELECT u.unit_no, u.tower, p.name AS project_name FROM re_units u JOIN re_projects p ON p.id=u.project_id WHERE u.id=?`).bind(Number(visit.unit_id)).first();
+    if(unit) unitLabel=` for ${unit.unit_no}${unit.tower?' — Tower '+unit.tower:''}${unit.project_name?' ('+unit.project_name+')':''}`;
+  }
+  const when=visit.scheduled_at?new Date(visit.scheduled_at).toLocaleString():'';
+
+  let manual={items:[],dismissed:[],projects:[]};
+  try{ manual={...manual, ...JSON.parse(c.manual_tasks||'{}')}; }catch(e){}
+  if(!Array.isArray(manual.items)) manual.items=[];
+  manual.items.push({
+    id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    title:`Confirm site visit — ${lead.Name||lead.Phone||'lead'}${unitLabel}${when?' on '+when:''}`,
+    notes:'Scheduled from the Real Estate module — confirm transport/driver and follow up after the visit.',
+    due_date:new Date().toISOString().slice(0,10), due_time:'',
+    lead_id:lead.Id, lead_name:lead.Name||'',
+    assignee_email:'', category:'', project_id:'', status:'open', created_at:new Date().toISOString()
+  });
+  await patchClientFields(env, clientId, {manual_tasks:JSON.stringify(manual)});
+}
+async function handleReSiteVisitCreate(request, env){
+  const res=await reSiteVisitsCrud.create(request, env);
+  const payload=await requireSession(request, env);
+  try{
+    const row=await res.clone().json();
+    if(payload && row && row.id) await syncSiteVisitToLeadCrm(env, payload.cid, row);
+  }catch(e){ await reportOpsError(env, 'syncSiteVisitToLeadCrm', e, {clientId:payload?.cid}); }
+  return res;
+}
 const rePaymentMilestonesCrud=reCrud('re_payment_milestones', [
   {key:'booking_id', type:'number', required:true}, {key:'name', type:'text', required:true, maxLen:120},
   {key:'due_date', type:'nullable', maxLen:20}, {key:'amount', type:'number'}, {key:'status', type:'text', maxLen:30},
@@ -19534,7 +19603,7 @@ export default {
       else if(url.pathname==='/re/units' && request.method==='DELETE'){ res=await handleReUnitDelete(request, env); }
       else if(url.pathname==='/re/price-audit' && request.method==='GET'){ res=await handleRePriceAudit(request, env); }
       else if(url.pathname==='/re/site-visits' && request.method==='GET'){ res=await reSiteVisitsCrud.list(request, env); }
-      else if(url.pathname==='/re/site-visits' && request.method==='POST'){ res=await reSiteVisitsCrud.create(request, env); }
+      else if(url.pathname==='/re/site-visits' && request.method==='POST'){ res=await handleReSiteVisitCreate(request, env); }
       else if(url.pathname==='/re/site-visits' && request.method==='PATCH'){ res=await reSiteVisitsCrud.update(request, env); }
       else if(url.pathname==='/re/site-visits' && request.method==='DELETE'){ res=await reSiteVisitsCrud.del(request, env); }
       else if(url.pathname==='/re/bookings' && request.method==='GET'){ res=await handleReBookingsList(request, env); }
