@@ -7508,6 +7508,32 @@ async function ecomDetectMentionedCategories(env, clientId, replyText){
 // send_whatsapp_media step, Follow-up Engine's per-variant media) instead of duplicating a second
 // Drive-fetch path. Best-effort: a missing/unshared Drive link for any of the three just skips that
 // one send, never blocks or fails the product reply that already went out above it.
+//
+// Per-day-per-product dedup (migrations/0055_ecom_product_image_sent.sql) — observed real
+// complaint: a customer asking about the same product several times in one day (re-confirming
+// size, coming back to it later, etc.) got the full photo/extra-angle/audio/video/PDF bundle
+// resent every single time, which reads as spammy on WhatsApp. engineClaimProductImageForToday
+// below is called once per turn, right before deciding whether to attach the inline photo AND
+// before calling engineMaybeSendProductMedia — both are gated by the same claim so the whole
+// bundle is either sent together (first ask that day) or skipped together (a repeat ask), leaving
+// the text answer itself unaffected either way. The `sent_date` column (not "ever", unlike
+// ecom_testimonial_sent's identical shape) means the SAME product photo/media happily sends again
+// tomorrow — only same-day repeats are being avoided. `leadId` is `state.leadId`, the lead as
+// loaded at the START of this turn (before this turn's own upsert) — a brand-new lead has no id
+// yet at that point, so this always returns true (send) for a lead's very first-ever message,
+// since there is nothing to have already sent. INSERT OR IGNORE + checking meta.changes (rather
+// than a separate SELECT-then-INSERT) is the same atomic single-write claim idiom already used for
+// inbound-message dedup above (engine_processed_messages) — one D1 round trip, not two.
+async function engineClaimProductImageForToday(env, clientId, leadId, productId){
+  if(!leadId || !productId) return true;
+  try{
+    const today=new Date().toISOString().slice(0,10);
+    const ins=await env.DB.prepare(`INSERT OR IGNORE INTO ecom_product_image_sent (client_id, lead_id, product_id, sent_date, sent_at) VALUES (?,?,?,?,?)`)
+      .bind(Number(clientId), leadId, productId, today, new Date().toISOString()).run();
+    return !!ins?.meta?.changes;
+  }catch(e){ await reportOpsError(env, 'engineClaimProductImageForToday', e, {clientId, leadId, productId}); return true; }
+}
+
 async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
   if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   try{
@@ -7651,7 +7677,14 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
   // choose to share it earlier, e.g. as soon as a customer asks about size/stock and sounds ready to
   // move forward. Framed as available-if-natural, not forced into every reply, so a customer who
   // only asked "is this in stock" doesn't get an unsolicited checkout link shoved at them.
-  if(checkoutLink) sys+=`\n\nYou may also share this checkout link if it naturally helps answer their question or they seem ready to move forward (for example, right after confirming their size or stock is available) — not forced into every reply, only when it fits: ${checkoutLink}`;
+  if(checkoutLink){
+    sys+=`\n\nYou may also share this checkout link if it naturally helps answer their question or they seem ready to move forward (for example, right after confirming their size or stock is available) — not forced into every reply, only when it fits: ${checkoutLink}`;
+  }else{
+    // No link was configured for this product — explicit guardrail against the model inventing
+    // one anyway (e.g. a plausible-looking store/product URL guessed from the product name), which
+    // is exactly the kind of hallucinated link a customer could click and land nowhere real.
+    sys+='\n\nNo order/checkout link is available for this product right now — never invent, guess, or make up a URL of any kind (not a store link, not a product link, nothing built from the product name). If the customer asks for a link, tell them you\'ll have the team follow up, or ask what they\'d like to order so it can be arranged — do not output anything that looks like a URL.';
+  }
   sys+=`\n\nRespond ONLY in ${lang}. Never switch languages.`;
   return sys;
 }
@@ -9210,6 +9243,11 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
     // light of what was just discussed. detectOrderSignal (the separate order-link auto-send) has
     // its own version of this same instruction; this is the main conversational reply's version.
     sys+=' A short reply that only mentions a size, color, quantity, or says something like "that one"/"the green one" — with no product name — almost always refers to whichever specific product you (the assistant) most recently described in the Recent Conversation above. Resolve it to that exact product (use its real SKU/price/stock from the catalog above) instead of treating it as a fresh, unscoped catalog search — only ask which product they mean if the recent conversation genuinely doesn\'t make it clear. If specific details are not available even after resolving the product, politely say you will connect them with support.';
+    // Explicit no-hallucination guardrail: the only link this prompt is ever handed is the literal
+    // "## Order Link" line above (client-wide external_store_link, only included when actually
+    // set) — never a per-product URL. Nothing here should ever tempt the model into constructing
+    // a plausible-looking product/store URL out of the product's name/sku itself.
+    sys+=' Never invent, guess, or construct a link/URL of any kind — especially not one built from a product\'s name or SKU. Only ever share a link if one is literally given to you above (an "Order Link" line, or a product\'s own link field); if no link was given, do not output anything that looks like a URL.';
   } else if(industry==='travel'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. A short reply like "the 30 min one" or "that package" with no name almost always refers to whichever specific package/service you most recently described in the Recent Conversation above — resolve it to that one rather than asking a fresh, unscoped question. If specific details are not available, politely say you will connect them with an advisor.';
   } else if(industry==='saas_digital_marketing'){
@@ -10842,6 +10880,10 @@ async function handleEngineWebhook(request, env, secret){
       if(detection.signal){
         const product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
         if(product) matchedProduct=product;
+        // Claimed once per turn, shared by every branch below that might send this product's
+        // photo/media bundle — see engineClaimProductImageForToday's own comment for why this is
+        // gated per (lead, product, calendar day) rather than resent on every repeat question.
+        const sendProductImage=product ? await engineClaimProductImageForToday(env, clientId, state.leadId, product.Id) : false;
         if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
           // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
           // instead: ask for the item(s) now, address next turn, then finalizeChatOrder writes the
@@ -10851,18 +10893,18 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           routing.next='order_collect_items';
           routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
-          if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
-          await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
+          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           orderHandledInline=true;
         } else if(detection.mode==='order' && product){
           const link=buildCheckoutLink(c, clientId, detection.sku, product);
           if(link){
             sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
             routing.reply=sentText;
-            if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
-            await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+            if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
+            if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
             await logPendingOrder(env, c, clientId, phone, name, product);
           }else{
             // No product-level link and no client-wide external_store_link configured — nothing to
@@ -10873,9 +10915,9 @@ async function handleEngineWebhook(request, env, secret){
             routing.reply=sentText;
             routing.next='order_collect_items';
             routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
-            if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
-            await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+            if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
+            if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           }
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product){
@@ -10898,10 +10940,13 @@ async function handleEngineWebhook(request, env, secret){
           // Photo sent whenever a product is confidently identified, link or no link — a customer
           // asking about size/color/stock should see the actual item, not just read a description
           // (this was briefly restricted to link-only sends; reverted per explicit product
-          // direction — the photo isn't "extra" media here, it's answering what was asked).
-          if(product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:product.image_url});
-          await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          // direction — the photo isn't "extra" media here, it's answering what was asked). Still
+          // gated by sendProductImage though — that direction was about link-presence never
+          // suppressing the photo, not about resending the same photo every time the same product
+          // comes up again the same day.
+          if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
+          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           // Only logged as a pending order when the link was actually made available this turn —
           // an enquiry reply with the toggle off shares no link, so there's nothing to log yet.
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
