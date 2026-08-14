@@ -443,9 +443,21 @@ tbody tr:hover{background:var(--bg)}
       <div><label class="s-lbl">Base Price / sqft</label><input class="s-input" id="pBasePrice" type="number"></div>
       <div><label class="s-lbl">Price List Version</label><input class="s-input" id="pPriceVersion" value="v1"></div>
       <div><label class="s-lbl">Virtual Tour URL</label><input class="s-input" id="pTourUrl" placeholder="https://…"></div>
+      <div><label class="s-lbl">Image Link</label><input class="s-input" id="pImage" type="url" placeholder="Google Drive share link"></div>
+      <div><label class="s-lbl">Image Link 2 (optional)</label><input class="s-input" id="pImage2" type="url" placeholder="Google Drive share link"></div>
+      <div><label class="s-lbl">Image Link 3 (optional)</label><input class="s-input" id="pImage3" type="url" placeholder="Google Drive share link"></div>
+      <div><label class="s-lbl">Image Link 4 (optional)</label><input class="s-input" id="pImage4" type="url" placeholder="Google Drive share link"></div>
+      <div><label class="s-lbl">Image Link 5 (optional)</label><input class="s-input" id="pImage5" type="url" placeholder="Google Drive share link"></div>
+      <div>
+        <label class="s-lbl">Video Link</label>
+        <input class="s-input" id="pVideoUrl" type="url" placeholder="Google Drive share link" onblur="checkDriveVideoSize(this.value,'pVideoSizeWarning')">
+        <div class="s-hint" id="pVideoSizeWarning" style="display:none"></div>
+      </div>
+      <div><label class="s-lbl">PDF Link</label><input class="s-input" id="pPdfUrl" type="url" placeholder="Google Drive share link"></div>
     </div>
     <label class="s-lbl">Description</label>
     <textarea class="s-input" id="pDescription" rows="2"></textarea>
+    <div class="s-hint" style="margin-top:8px">Image/Video/PDF Links are pasted Google Drive share links (shared as "Anyone with the link can view"). Image Link is the main photo; Image Link 2–5 are optional extra photos — sent along with the video and/or PDF (e.g. a brochure or floor plan) whenever a lead asks about this project over chat.</div>
     <div class="modal-actions">
       <button class="save-btn sec" onclick="closeModal('projectModal')">Cancel</button>
       <button class="save-btn" onclick="saveProject()">Save Project</button>
@@ -979,10 +991,14 @@ function openLeadCaptureModal(){
 function renderProjectsList(){
   const wrap=$id('projectsList');
   if(!allProjects.length){ wrap.innerHTML='<div class="empty-state"><div class="empty-icon">🏢</div>No projects yet.</div>'; return; }
-  wrap.innerHTML=allProjects.map(p=>`<div class="proj-card ${selectedProjectId===p.id?'active':''}" onclick="selectProject(${p.id})">
+  wrap.innerHTML=allProjects.map(p=>{
+    const imageCount=[p.image_url,p.image_url_2,p.image_url_3,p.image_url_4,p.image_url_5].filter(Boolean).length;
+    const media=[imageCount?`🖼️${imageCount}`:'', p.video_url&&'🎬', p.pdf_url&&'📄'].filter(Boolean).join(' ');
+    return `<div class="proj-card ${selectedProjectId===p.id?'active':''}" onclick="selectProject(${p.id})">
     <div class="proj-name">${esc(p.name)}</div>
-    <div class="proj-meta">${esc(p.location||'')}${p.rera_number?' · RERA '+esc(p.rera_number):''}</div>
-  </div>`).join('');
+    <div class="proj-meta">${esc(p.location||'')}${p.rera_number?' · RERA '+esc(p.rera_number):''}${media?' · '+media:''}</div>
+  </div>`;
+  }).join('');
 }
 async function selectProject(id){
   selectedProjectId=id;
@@ -1023,8 +1039,9 @@ function renderUnitsTable(){
   }).join('');
 }
 function openProjectModal(){
-  ['pName','pLocation','pRera','pBasePrice','pTourUrl','pDescription'].forEach(id=>$id(id).value='');
+  ['pName','pLocation','pRera','pBasePrice','pTourUrl','pDescription','pImage','pImage2','pImage3','pImage4','pImage5','pVideoUrl','pPdfUrl'].forEach(id=>$id(id).value='');
   $id('pTowers').value=1; $id('pPriceVersion').value='v1';
+  $id('pVideoSizeWarning').style.display='none';
   openModal('projectModal');
 }
 async function saveProject(){
@@ -1034,7 +1051,10 @@ async function saveProject(){
     await reFetch('/re/projects',{method:'POST', body:JSON.stringify({
       name, location:$id('pLocation').value.trim(), rera_number:$id('pRera').value.trim(), total_towers:$id('pTowers').value,
       base_price_per_sqft:$id('pBasePrice').value, price_list_version:$id('pPriceVersion').value.trim(), virtual_tour_url:$id('pTourUrl').value.trim(),
-      description:$id('pDescription').value.trim(), status:'active'
+      description:$id('pDescription').value.trim(), status:'active',
+      image_url:$id('pImage').value.trim(), image_url_2:$id('pImage2').value.trim(), image_url_3:$id('pImage3').value.trim(),
+      image_url_4:$id('pImage4').value.trim(), image_url_5:$id('pImage5').value.trim(),
+      video_url:$id('pVideoUrl').value.trim(), pdf_url:$id('pPdfUrl').value.trim()
     })});
     closeModal('projectModal');
     await loadProjects(); renderProjectsList(); populateProjectSelects(); await refreshAllUnitsCache(); renderOverview();

@@ -18766,7 +18766,11 @@ const reProjectsCrud=reCrud('re_projects', [
   {key:'rera_number', type:'text', maxLen:100}, {key:'total_towers', type:'number'},
   {key:'description', type:'text', maxLen:2000}, {key:'virtual_tour_url', type:'text', maxLen:500},
   {key:'price_list_version', type:'text', maxLen:50}, {key:'base_price_per_sqft', type:'number'},
-  {key:'status', type:'text', maxLen:30}
+  {key:'status', type:'text', maxLen:30},
+  {key:'image_url', type:'text', maxLen:1000}, {key:'image_url_2', type:'text', maxLen:1000},
+  {key:'image_url_3', type:'text', maxLen:1000}, {key:'image_url_4', type:'text', maxLen:1000},
+  {key:'image_url_5', type:'text', maxLen:1000}, {key:'video_url', type:'text', maxLen:1000},
+  {key:'pdf_url', type:'text', maxLen:1000}
 ]);
 const reSiteVisitsCrud=reCrud('re_site_visits', [
   {key:'lead_id', type:'number'}, {key:'unit_id', type:'number'}, {key:'project_id', type:'number'},
@@ -18792,6 +18796,27 @@ const reDocumentsCrud=reCrud('re_documents', [
   {key:'project_id', type:'number'}, {key:'unit_id', type:'number'}, {key:'doc_type', type:'text', maxLen:40},
   {key:'title', type:'text', required:true, maxLen:200}, {key:'url', type:'text', required:true, maxLen:1000},
   {key:'is_rera', type:'bool'}
+]);
+
+/* ── Healthcare module (frontend/healthcare.html) — Departments/Doctors, structured like Ecom's
+   Categories/Products (migrations/0054_healthcare.sql) but session-gated + pure D1 like Real
+   Estate, reusing the same generic reCrud factory — no bespoke handlers needed since neither
+   entity has Real Estate units' hold-expiry/price-audit side effects. ── */
+const hcDepartmentsCrud=reCrud('healthcare_departments', [
+  {key:'name', type:'text', required:true, maxLen:200}, {key:'description', type:'text', maxLen:2000},
+  {key:'image_url_1', type:'text', maxLen:1000}, {key:'image_url_2', type:'text', maxLen:1000},
+  {key:'image_url_3', type:'text', maxLen:1000}
+]);
+const hcDoctorsCrud=reCrud('healthcare_doctors', [
+  {key:'department_id', type:'number', required:true}, {key:'name', type:'text', required:true, maxLen:200},
+  {key:'qualification', type:'text', maxLen:200}, {key:'specialization', type:'text', maxLen:200},
+  {key:'experience_years', type:'number'}, {key:'consultation_fee', type:'number'},
+  {key:'phone', type:'text', maxLen:40}, {key:'email', type:'text', maxLen:200},
+  {key:'description', type:'text', maxLen:2000},
+  {key:'image_url', type:'text', maxLen:1000}, {key:'image_url_2', type:'text', maxLen:1000},
+  {key:'image_url_3', type:'text', maxLen:1000}, {key:'image_url_4', type:'text', maxLen:1000},
+  {key:'image_url_5', type:'text', maxLen:1000}, {key:'video_url', type:'text', maxLen:1000},
+  {key:'pdf_url', type:'text', maxLen:1000}, {key:'status', type:'text', maxLen:30}
 ]);
 
 /* ── Units — its own handlers (not the generic factory) for two side effects the generic CRUD
@@ -19493,6 +19518,14 @@ export default {
       else if(url.pathname==='/re/documents' && request.method==='POST'){ res=await reDocumentsCrud.create(request, env); }
       else if(url.pathname==='/re/documents' && request.method==='DELETE'){ res=await reDocumentsCrud.del(request, env); }
       else if(url.pathname==='/re/analytics' && request.method==='GET'){ res=await handleReAnalytics(request, env); }
+      else if(url.pathname==='/healthcare/departments' && request.method==='GET'){ res=await hcDepartmentsCrud.list(request, env); }
+      else if(url.pathname==='/healthcare/departments' && request.method==='POST'){ res=await hcDepartmentsCrud.create(request, env); }
+      else if(url.pathname==='/healthcare/departments' && request.method==='PATCH'){ res=await hcDepartmentsCrud.update(request, env); }
+      else if(url.pathname==='/healthcare/departments' && request.method==='DELETE'){ res=await hcDepartmentsCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/doctors' && request.method==='GET'){ res=await hcDoctorsCrud.list(request, env); }
+      else if(url.pathname==='/healthcare/doctors' && request.method==='POST'){ res=await hcDoctorsCrud.create(request, env); }
+      else if(url.pathname==='/healthcare/doctors' && request.method==='PATCH'){ res=await hcDoctorsCrud.update(request, env); }
+      else if(url.pathname==='/healthcare/doctors' && request.method==='DELETE'){ res=await hcDoctorsCrud.del(request, env); }
       else if(url.pathname==='/recruit/jobs' && request.method==='GET'){ res=await handleRecruitList(request, env, 'jobs'); }
       else if(url.pathname==='/recruit/jobs' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'jobs'); }
       else if(url.pathname==='/recruit/jobs' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'jobs'); }
