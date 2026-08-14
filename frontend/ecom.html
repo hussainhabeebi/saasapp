@@ -921,9 +921,11 @@ function renderProductsTable() {
 }
 
 // Mirrors worker.js's buildOrderLink priority exactly (Shopify product URL > this product's own
-// Product Link > the client-wide external_store_link > the built-in onshope.com/store.html
-// catalog link) so "Copy Link" here always matches what the bot actually sends in chat — not a
-// separate/different link a merchant might get confused by.
+// Product Link > the client-wide external_store_link) so "Copy Link" here always matches what the
+// bot actually sends in chat — not a separate/different link a merchant might get confused by. No
+// more built-in onshope.com/store.html catalog-link fallback — per explicit product direction, only
+// a link actually configured for the product/client should ever be shared, so this returns '' when
+// none of the three is set rather than a generic catalog page.
 function resolveProductLink(p) {
   const shopifyUrl = (p.shopify_product_url || '').trim();
   if (shopifyUrl) return shopifyUrl;
@@ -931,15 +933,13 @@ function resolveProductLink(p) {
   if (productLink) return productLink;
   const ext = (clientRecord?.external_store_link || '').trim();
   if (ext) return ext;
-  const slug = clientRecord?.client_slug;
-  const base = slug ? `https://onshope.com/${slug}` : `https://app.leadvyne.com/store.html?client=${clientId}`;
-  if (!p.sku) return base;
-  return slug ? `${base}?sku=${encodeURIComponent(p.sku)}` : `${base}&sku=${encodeURIComponent(p.sku)}`;
+  return '';
 }
 function copyProductLink(id) {
   const p = allProducts.find(x => x.Id === id);
   if (!p) return;
   const link = resolveProductLink(p);
+  if (!link) { alert('No link set for this product yet — add a Product Link (or Shopify Product Link) in Edit Product, or set a client-wide Order Link in Settings.'); return; }
   navigator.clipboard.writeText(link).then(() => alert('Copied: ' + link)).catch(() => alert(link));
 }
 

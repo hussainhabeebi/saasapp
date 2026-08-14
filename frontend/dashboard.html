@@ -7313,20 +7313,23 @@ async function loadPoProducts(){
 // which of /ecom/order-link vs /leads/booking-link (worker.js) actually applies to this client.
 function isBookingIndustry(){ return !!clientRecord?.industry && clientRecord.industry!=='ecommerce'; }
 
-// Same link a storefront product card's own "Order on WhatsApp" button points at — the client's
-// onshope.com slug if they have one, else the SaaS-branded store.html?client=<id>, both already
-// used verbatim elsewhere (see store.html/onshope-store.html) so this isn't a new URL scheme.
-// If the client has set an external store link (Settings → Order Link — Shopify or any other
-// storefront they actually sell through), that takes priority and this built-in link is only the
-// fallback. sku deep-linking only works for the built-in store — an arbitrary external URL has no
-// known query-param scheme to append one to, so it's returned as-is.
-function buildStorefrontLink(sku){
+// A specific product's own link (shopify_product_url, then product_link — same priority
+// worker.js's buildOrderLink/buildCheckoutLink use) wins over everything, since it points straight
+// at the real product page rather than a generic storefront/catalog link. Falls back to the
+// client's own external_store_link (Settings → Order Link — Shopify or any other storefront they
+// actually sell through) only when the product itself carries no link. The built-in Ecommerce
+// module's own generic storefront page (onshope.com/<slug>, store.html?client=<id>) is
+// deliberately no longer a fallback here — per explicit product direction, a customer should only
+// ever be handed a link that was actually configured for that product/client. Returns '' when none
+// of those is set; callers must handle that (e.g. by disabling the "send link" option).
+function buildStorefrontLink(product){
+  const shopifyProductUrl=(product?.shopify_product_url||'').trim();
+  if(shopifyProductUrl) return shopifyProductUrl;
+  const productLink=(product?.product_link||'').trim();
+  if(productLink) return productLink;
   const ext=(clientRecord?.external_store_link||'').trim();
   if(ext) return ext;
-  const slug=clientRecord?.client_slug;
-  const base=slug?`https://onshope.com/${slug}`:`https://app.leadvyne.com/store.html?client=${clientId}`;
-  if(!sku) return base;
-  return slug?`${base}?sku=${encodeURIComponent(sku)}`:`${base}&sku=${encodeURIComponent(sku)}`;
+  return '';
 }
 
 function updatePoLinkPreview(){
@@ -7335,8 +7338,14 @@ function updatePoLinkPreview(){
   if(!send) return;
   const prodId=$id('poProduct').value;
   const product=prodId?_poProducts.find(p=>String(p.Id)===prodId):null;
-  const link=buildStorefrontLink(product?.sku||'');
+  const link=buildStorefrontLink(product);
   const name=$id('poCustomerName').value.trim()||'there';
+  if(!link){
+    $id('poLinkMessage').value=product
+      ? `Hi ${name}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOur team will follow up shortly to help you complete the order.`
+      : `Hi ${name}! Thanks for your interest — our team will follow up shortly to help you with your order.`;
+    return;
+  }
   $id('poLinkMessage').value=product
     ? `Hi ${name}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
     : `Hi ${name}! Here's our full catalog — order directly from here:\n${link}`;
@@ -12856,9 +12865,13 @@ function buildKbProcessorText(rawText){
     if(bookingLink){
       extra+=`\n## BOOKING LINK\nWhen a customer shows clear intent to book (asks about availability, wants to schedule, or says they want to proceed), share this link so they can pick a time: ${bookingLink}\n`;
     }
-  }else if(hasExt||Object.keys(getEcomTableIds()).length){
-    const link=buildStorefrontLink();
-    extra+=`\n## ORDER LINK\nWhen a customer shows clear buying intent (asks about size, color, price, stock, or says they want to buy/order), share this store link so they can complete the purchase: ${link}\n`;
+  }else if(hasExt){
+    // Only ever the client's own configured storefront now — no more generic store.html/
+    // onshope.com catalog-page fallback when external_store_link is blank. A per-product link
+    // (shopify_product_url/product_link) can't be baked into this whole-catalog static
+    // instruction, so it isn't attempted here; those are only ever shared per-product, in the
+    // engine's own per-message reply (see buildCheckoutLink/buildOrderLink, worker.js).
+    extra+=`\n## ORDER LINK\nWhen a customer shows clear buying intent (asks about size, color, price, stock, or says they want to buy/order), share this store link so they can complete the purchase: ${hasExt}\n`;
   }
   return (rawText||'')+extra;
 }
