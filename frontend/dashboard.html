@@ -1028,6 +1028,7 @@ const MODULE_PERMISSIONS = [
   {key:'appointments', label:'📅 Appointments'},
   {key:'hospitality', label:'🏨 Hospitality'},
   {key:'realestate', label:'🏘️ Real Estate'},
+  {key:'healthcare', label:'🏥 Healthcare'},
   {key:'broadcast', label:'📢 Campaigns'},
   {key:'settings', label:'⚙️ Settings'},
 ];
@@ -1041,7 +1042,7 @@ const MODULE_PERMISSIONS = [
 const ROLES = {
   admin:              { label:'👑 Admin',              modules:null, homeHide:[], leadsDefaultMine:false },
   general_manager:    { label:'📈 General Manager',    modules:null, homeHide:[], leadsDefaultMine:false },
-  sales_manager:      { label:'💼 Sales Manager',      modules:['home','humandeals','chats','leads','tasks','team','reports','agency','b2b','recruit','appointments','realestate','hospitality','broadcast'],
+  sales_manager:      { label:'💼 Sales Manager',      modules:['home','humandeals','chats','leads','tasks','team','reports','agency','b2b','recruit','appointments','realestate','hospitality','healthcare','broadcast'],
                          homeHide:[], leadsDefaultMine:false },
   marketing_manager:  { label:'📢 Marketing Manager',  modules:['home','chats','leads','tasks','reports','knowledgebase','broadcast'],
                          homeHide:['homeAgentCard'], leadsDefaultMine:false },
@@ -1117,6 +1118,7 @@ const ROLES = {
     <button class="dnTab" data-page="appointments" id="dnApptTab" style="display:none">📅 Appointments</button>
     <button class="dnTab" data-page="hospitality" id="dnHospitalityTab" style="display:none">🏨 Hospitality</button>
     <button class="dnTab" data-page="realestate" id="dnRealestateTab" style="display:none">🏘️ Real Estate</button>
+    <button class="dnTab" data-page="healthcare" id="dnHealthcareTab" style="display:none">🏥 Healthcare</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="projects" id="dnProjectsTab">🗂️ Projects</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
@@ -1656,6 +1658,13 @@ const ROLES = {
          uses, plus dedicated /re/* Worker routes for inventory/bookings/channel partners. -->
     <div class="page hidden" id="pageRealestate">
       <iframe id="realEstateFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- HEALTHCARE MODULE (same iframe-embed pattern as Real Estate above — healthcare.html is its
+         own self-contained page. Passed the session token because its /healthcare/* Worker routes
+         (Departments/Doctors) are session-gated the same way Real Estate's /re/* routes are. -->
+    <div class="page hidden" id="pageHealthcare">
+      <iframe id="healthcareFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- TRAVEL AGENCY MODULE (iframe-embed pattern, same as Real Estate/B2B above — travel-agency.html
@@ -2919,6 +2928,14 @@ const ROLES = {
               <span id="realEstateModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>🏥 Healthcare</b><div class="s-note" style="margin:2px 0 0">Department directory with photos, and doctor profiles with photos, an intro video, and a CV/certificate PDF — for clinics and hospitals.</div></div>
+              <select class="form-input" id="cfgHealthcareEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveHealthcareEnabled">Save</button>
+              <span class="save-msg" id="saveHealthcareEnabledMsg"></span>
+              <span id="healthcareModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
             <!-- Marketing Studio (SETUP.md "Marketing Studio module") — a standalone page
                  (marketing-studio.html), not a dashboard tab, so this toggle shows/hides the
                  quick-action buttons that open it (updateMarketingStudioVisibility below) rather
@@ -3232,6 +3249,7 @@ const ROLES = {
       <button class="more-item" data-page="appointments" id="moreApptTab" style="display:none"><span class="bnIcon">📅</span><span class="bnLabel">Appointments</span></button>
       <button class="more-item" data-page="hospitality" id="moreHospitalityTab" style="display:none"><span class="bnIcon">🏨</span><span class="bnLabel">Hospitality</span></button>
       <button class="more-item" data-page="realestate" id="moreRealestateTab" style="display:none"><span class="bnIcon">🏘️</span><span class="bnLabel">Real Estate</span></button>
+      <button class="more-item" data-page="healthcare" id="moreHealthcareTab" style="display:none"><span class="bnIcon">🏥</span><span class="bnLabel">Healthcare</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
       <!-- Header actions that don't fit inline on mobile (#hdr's @media(max-width:767px) rule
            hides these icon buttons there) — same functions, just reachable from here instead. -->
@@ -4589,6 +4607,7 @@ function navigate(page){
   if(page==='appointments') renderAppointments();
   if(page==='hospitality') renderHospitality();
   if(page==='realestate') renderRealEstate();
+  if(page==='healthcare') renderHealthcare();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
   if(page==='usermanagement') populateUserManagementPage();
@@ -4654,6 +4673,7 @@ function showApp(){
   updateApptTabVisibility();
   updateHospitalityTabVisibility();
   updateRealEstateTabVisibility();
+  updateHealthcareTabVisibility();
   updateB2bTabVisibility();
   updateFeatureTabVisibility();
   updateMarketingStudioVisibility();
@@ -5216,6 +5236,13 @@ function renderAccounting(){
 function renderRealEstate(){
   const frame=$id('realEstateFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`real-estate.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+}
+
+// Same pattern as renderRealEstate above — healthcare.html needs the session token too, for the
+// same reason (its /healthcare/* Worker routes are bearer-token session-gated).
+function renderHealthcare(){
+  const frame=$id('healthcareFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`healthcare.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
 }
 
 // Home tab widget for the Real Estate module — hits its /re/* Worker routes directly (same
@@ -8512,14 +8539,18 @@ async function applyIndustryChange(ind, extraPatch){
   else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
   if(ind==='real_estate'){patch.real_estate_enabled='Yes';clientRecord.real_estate_enabled='Yes';}
   else{patch.real_estate_enabled='No';clientRecord.real_estate_enabled='No';}
+  if(ind==='healthcare'){patch.healthcare_enabled='Yes';clientRecord.healthcare_enabled='Yes';}
+  else{patch.healthcare_enabled='No';clientRecord.healthcare_enabled='No';}
   await ensureHospitalityEnabledColumn();
   await ensureRealEstateEnabledColumn();
+  await ensureHealthcareEnabledColumn();
   await patchClient(patch);
   clientRecord.industry=ind;
   applyTheme(ind);
   updateRecruitTabVisibility();
   updateHospitalityTabVisibility();
   updateRealEstateTabVisibility();
+  updateHealthcareTabVisibility();
   _renderModuleBadge('taModuleStatusBadge',ind==='travel');
   _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
 }
@@ -8619,14 +8650,18 @@ $id('saveGeneral').addEventListener('click',async()=>{
     else{patch.hospitality_enabled='No';clientRecord.hospitality_enabled='No';}
     if(ind==='real_estate'){patch.real_estate_enabled='Yes';clientRecord.real_estate_enabled='Yes';}
     else{patch.real_estate_enabled='No';clientRecord.real_estate_enabled='No';}
+    if(ind==='healthcare'){patch.healthcare_enabled='Yes';clientRecord.healthcare_enabled='Yes';}
+    else{patch.healthcare_enabled='No';clientRecord.healthcare_enabled='No';}
     await ensureHospitalityEnabledColumn();
     await ensureRealEstateEnabledColumn();
+    await ensureHealthcareEnabledColumn();
     await patchClient(patch);
     clientRecord.industry=ind;
     applyTheme(ind);
     updateRecruitTabVisibility();
     updateHospitalityTabVisibility();
     updateRealEstateTabVisibility();
+    updateHealthcareTabVisibility();
     _renderModuleBadge('taModuleStatusBadge',ind==='travel');
     _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
     msg.textContent='✓ Saved — theme applied';
@@ -14596,6 +14631,7 @@ function populateModulesPage(){
   initB2bSettings();
   initHospitalitySettings();
   initRealEstateSettings();
+  initHealthcareSettings();
   initMarketingStudioSettings();
   updateFeatureTabVisibility();
 }
@@ -15393,6 +15429,11 @@ function updateRealEstateTabVisibility(){
   [$id('dnRealestateTab'),$id('moreRealestateTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
 }
 
+function updateHealthcareTabVisibility(){
+  const enabled=(clientRecord.healthcare_enabled==='Yes');
+  [$id('dnHealthcareTab'),$id('moreHealthcareTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+}
+
 // Marketing Studio has no dashboard tab of its own (it's a standalone page, marketing-studio.html
 // — see SETUP.md "Marketing Studio module") — this shows/hides the quick-action buttons that
 // open it instead of a dnXTab/moreXTab pair.
@@ -15466,6 +15507,36 @@ $id('saveRealEstateEnabled').addEventListener('click',async()=>{
     await patchClient({real_estate_enabled:val});
     updateRealEstateTabVisibility();
     _renderModuleBadge('realEstateModuleStatusBadge',val==='Yes');
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+// healthcare_enabled is a brand-new CLIENTS column, same "create it on first save" reasoning as
+// ensureRealEstateEnabledColumn above.
+async function ensureHealthcareEnabledColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('healthcare_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'healthcare_enabled',title:'healthcare_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+function initHealthcareSettings(){
+  const sel=$id('cfgHealthcareEnabled'); if(sel) sel.value=(clientRecord.healthcare_enabled==='Yes')?'Yes':'No';
+  _renderModuleBadge('healthcareModuleStatusBadge',clientRecord.healthcare_enabled==='Yes');
+  updateHealthcareTabVisibility();
+}
+
+$id('saveHealthcareEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveHealthcareEnabled'),msg=$id('saveHealthcareEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgHealthcareEnabled').value;
+  try{
+    await ensureHealthcareEnabledColumn();
+    await patchClient({healthcare_enabled:val});
+    updateHealthcareTabVisibility();
+    _renderModuleBadge('healthcareModuleStatusBadge',val==='Yes');
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
