@@ -4608,6 +4608,13 @@ document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>{
     if(!b.dataset.page) return; // e.g. the "More" button itself, or Ecommerce (its own onclick opens a new tab)
     if(b.dataset.page==='broadcast'){ window.open('broadcast.html','_blank'); closeMoreSheet(); return; }
     if(b.dataset.page==='projects'){ openProjectsTool(); closeMoreSheet(); return; }
+    // Real task management (manual tasks, the "Projects" grouping, Google Calendar sync, the
+    // Advanced Pipeline follow-up cadence's to-dos) all moved to the Projects tool — see
+    // SETUP.md "Projects module". This tab's badge (dnTaskBadge/bnTaskBadge) still counts
+    // computeAllTasks()'s reminder/hot-lead/overdue virtual signals, which never lived in
+    // manual_tasks and are unaffected by that move, so the count stays meaningful even though the
+    // click now opens Projects instead of the old in-dashboard Tasks page.
+    if(b.dataset.page==='tasks'){ openProjectsTool(); closeMoreSheet(); return; }
     navigate(b.dataset.page);
     closeMoreSheet();
   });

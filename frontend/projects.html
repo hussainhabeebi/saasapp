@@ -104,6 +104,8 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
 .badge.st-in_progress{background:#EAF1FD;color:var(--pr-low)}
 .badge.st-review{background:#FEF3E2;color:var(--pr-high)}
 .badge.st-done{background:#E1F3EA;color:#15803D}
+.badge.st-blocked{background:#FDE8E8;color:#B91C1C}
+.lock-icon{font-size:11px}
 
 /* ── Timeline ── */
 #tlWrap{background:var(--card);border-radius:var(--r);border:1px solid var(--line);overflow:hidden;position:relative}
@@ -165,6 +167,41 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
 .dep-chip button{background:none;border:none;color:var(--muted);font-size:13px;line-height:1;padding:2px}
 .dep-chip button:hover{color:#DC2626}
 
+/* ── Lead link picker (Task modal) ── */
+.lead-search-wrap{position:relative}
+.lead-results{position:absolute;top:100%;left:0;right:0;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);z-index:20;max-height:220px;overflow-y:auto;margin-top:4px}
+.lead-result-row{padding:9px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line)}
+.lead-result-row:last-child{border-bottom:none}
+.lead-result-row:hover{background:var(--bg)}
+.lead-result-row .lr-sub{color:var(--muted);font-size:11.5px}
+.lead-chip{display:inline-flex;align-items:center;gap:8px;background:var(--accent-soft);color:var(--accent-ink);border-radius:20px;padding:6px 8px 6px 12px;font-size:13px;font-weight:600}
+.lead-chip button{background:none;border:none;color:var(--accent-ink);font-size:14px;line-height:1;padding:2px}
+.lead-chip button:hover{color:#DC2626}
+
+/* ── Google Calendar status banner ── */
+.gcal-banner{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:var(--r-sm);padding:11px 14px;margin-bottom:16px;font-size:13px}
+.gcal-banner a{color:var(--accent-ink);font-weight:600;text-decoration:none;cursor:pointer}
+.gcal-banner a:hover{text-decoration:underline}
+.gcal-banner a.danger-link{color:#DC2626}
+
+/* ── Calendar view ── */
+.calbar{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.calbar h3{font-family:var(--disp);font-size:16px;font-weight:700;min-width:160px}
+.calgrid{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.calgrid-hd{display:grid;grid-template-columns:repeat(7,1fr);background:var(--panel-2,var(--bg));border-bottom:1px solid var(--line)}
+.calgrid-hd div{padding:8px;text-align:center;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase}
+.calgrid-body{display:grid;grid-template-columns:repeat(7,1fr)}
+.calcell{min-height:92px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:6px;font-size:11.5px;vertical-align:top;overflow:hidden}
+.calcell:nth-child(7n){border-right:none}
+.calcell.othermonth{background:var(--bg);color:var(--muted)}
+.calcell.today{background:var(--accent-soft)}
+.calcell .caldate{font-weight:700;margin-bottom:4px}
+.calcell .calitem{background:var(--card);border:1px solid var(--line);border-radius:5px;padding:2px 5px;margin-bottom:3px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.calcell .calitem:hover{border-color:var(--accent)}
+
+/* ── Category chip ── */
+.cat-chip{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px;background:#F1F5F9;color:#475569}
+
 /* ── Modals ── */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(11,35,32,.45);z-index:500;align-items:center;justify-content:center;padding:20px}
 .modal-overlay.active{display:flex}
@@ -223,6 +260,7 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
     <button class="viewtab" data-view="table" onclick="setView('table')">Table</button>
     <button class="viewtab" data-view="timeline" onclick="setView('timeline')">Timeline</button>
     <button class="viewtab" data-view="sprints" onclick="setView('sprints')">Sprints</button>
+    <button class="viewtab" data-view="calendar" onclick="setView('calendar')">Calendar</button>
   </div>
   <div class="hright">
     <div class="hd-more-wrap">
@@ -259,6 +297,19 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
     </tr></thead><tbody id="tableBody"></tbody></table></div></div>
     <div id="viewTimeline" style="display:none"><div id="tlWrap"></div></div>
     <div id="viewSprints" style="display:none"></div>
+    <div id="viewCalendar" style="display:none">
+      <div class="gcal-banner" id="gcalBanner"></div>
+      <div class="calbar">
+        <button class="btn sm" onclick="calShiftMonth(-1)">← Prev</button>
+        <button class="btn sm" onclick="calGoToday()">Today</button>
+        <button class="btn sm" onclick="calShiftMonth(1)">Next →</button>
+        <h3 id="calMonthLabel"></h3>
+      </div>
+      <div class="calgrid">
+        <div class="calgrid-hd"><div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div></div>
+        <div class="calgrid-body" id="calGridBody"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -283,18 +334,37 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
       <div class="field-row">
         <div class="field"><label>Status</label><select id="tmStatus">
           <option value="todo">To Do</option><option value="in_progress">In Progress</option>
-          <option value="review">Review</option><option value="done">Done</option>
+          <option value="review">Review</option><option value="blocked">Blocked</option><option value="done">Done</option>
         </select></div>
         <div class="field"><label>Priority</label><select id="tmPriority">
           <option value="low">Low</option><option value="medium" selected>Medium</option>
           <option value="high">High</option><option value="urgent">Urgent</option>
         </select></div>
       </div>
-      <div class="field"><label>Assignee</label><select id="tmAssignee"></select></div>
+      <div class="field-row">
+        <div class="field"><label>Assignee</label><select id="tmAssignee"></select></div>
+        <div class="field"><label>Category</label><select id="tmCategory">
+          <option value="">— None —</option>
+          <option value="Sales">Sales</option><option value="Follow-up">Follow-up</option>
+          <option value="Admin">Admin</option><option value="Support">Support</option>
+          <option value="Marketing">Marketing</option><option value="Internal">Internal</option>
+        </select></div>
+      </div>
       <div class="field-row">
         <div class="field"><label>Start date</label><input type="date" id="tmStart"></div>
         <div class="field"><label>Due date</label><input type="date" id="tmDue"></div>
       </div>
+
+      <div class="subhead">🔗 Linked Lead (optional)</div>
+      <div class="field-hint" style="margin-bottom:8px">Ties this task to a Lead in your CRM — shows on the Lead's own record too.</div>
+      <div id="tmLeadLinked" style="display:none;margin-bottom:10px"></div>
+      <div class="lead-search-wrap" id="tmLeadSearchWrap">
+        <input id="tmLeadSearch" placeholder="Search leads by name or phone…" oninput="onLeadSearchInput()" autocomplete="off">
+        <div class="lead-results" id="tmLeadResults" style="display:none"></div>
+      </div>
+      <input type="hidden" id="tmLeadId"><input type="hidden" id="tmLeadName">
+
+      <div class="field" style="margin-top:14px"><label class="field-check"><input type="checkbox" id="tmNotifyCustomer"> Email the linked lead/client an update when this task is marked Done</label></div>
 
       <div class="subhead">🏃 Sprint (optional)</div>
       <div class="field-row">
@@ -351,6 +421,9 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
         <div class="field"><label>Currency</label><input id="pmCurrency" placeholder="USD" maxlength="10"></div>
       </div>
       <div class="field"><label>Default hourly rate</label><input type="number" id="pmRate" min="0" step="1" placeholder="Used when a time entry doesn't set its own rate"></div>
+      <div class="subhead">🤝 Client &amp; automation</div>
+      <div class="field"><label>Client email</label><input type="email" id="pmClientEmail" placeholder="Used for task completion updates when a task has no linked lead"></div>
+      <div class="field"><label class="field-check"><input type="checkbox" id="pmAiAutoStage"> AI-suggest the next task whenever one completes in this project</label></div>
     </div>
     <div class="modal-footer">
       <button class="btn primary" onclick="saveProject()">Save</button>
@@ -527,8 +600,9 @@ let selectedSprintId=null;
 let currentView='board';
 const STATUS_COLS=[
   {key:'todo', label:'To Do'}, {key:'in_progress', label:'In Progress'},
-  {key:'review', label:'Review'}, {key:'done', label:'Done'},
+  {key:'review', label:'Review'}, {key:'blocked', label:'Blocked'}, {key:'done', label:'Done'},
 ];
+let _calYear=new Date().getFullYear(), _calMonth=new Date().getMonth(); // 0-indexed month
 
 function projectById(id){ return allProjects.find(p=>String(p.Id)===String(id)); }
 function taskById(id){ return allTasks.find(t=>String(t.Id)===String(id)); }
@@ -567,9 +641,21 @@ async function boot(){
     renderSidebar();
     renderStats();
     renderView();
+    handleGcalReturnParam();
   }catch(e){
     document.body.innerHTML=`<div class="empty-state" style="padding:80px 20px"><div class="empty-icon">🔒</div>${esc(e.message||'Session expired')} — reopen Projects from your Leadvyne dashboard.</div>`;
   }
+}
+// Landed back here from handleGcalOauthCallback (worker.js) via the return_to it was given —
+// same ?gcal=connected/error query-string contract dashboard.html's own boot already handles.
+function handleGcalReturnParam(){
+  const gcalParam=params.get('gcal');
+  if(!gcalParam) return;
+  const cleanUrl=new URL(location.href);
+  cleanUrl.searchParams.delete('gcal'); cleanUrl.searchParams.delete('msg');
+  history.replaceState({}, '', cleanUrl.pathname+cleanUrl.search);
+  if(gcalParam==='connected'){ clientRecord.gcal_connected=true; renderGcalBanner(); }
+  else alert(params.get('msg')||'Google Calendar connection failed.');
 }
 function buildTeamOptions(){
   const emails=[clientRecord.authentik_email, ...(clientRecord.team_emails||'').split(',')].map(e=>e.trim()).filter(Boolean);
@@ -618,12 +704,13 @@ function populateProjectSelect(){
 /* ── STATS ── */
 function renderStats(){
   const tasks=visibleTasks();
-  const counts={todo:0,in_progress:0,review:0,done:0};
+  const counts={todo:0,in_progress:0,review:0,blocked:0,done:0};
   tasks.forEach(t=>{ counts[t.status]=(counts[t.status]||0)+1; });
   const overdue=tasks.filter(t=>isOverdue(t.due_date,t.status)).length;
   $id('statsRow').innerHTML=`
     <div class="stat"><div class="stat-val">${tasks.length}</div><div class="stat-lbl">Total tasks</div></div>
     <div class="stat"><div class="stat-val">${counts.in_progress||0}</div><div class="stat-lbl">In progress</div></div>
+    <div class="stat"><div class="stat-val" style="color:${counts.blocked?'#DC2626':'var(--accent-ink)'}">${counts.blocked||0}</div><div class="stat-lbl">Blocked</div></div>
     <div class="stat"><div class="stat-val">${counts.done||0}</div><div class="stat-lbl">Done</div></div>
     <div class="stat"><div class="stat-val" style="color:${overdue?'#DC2626':'var(--accent-ink)'}">${overdue}</div><div class="stat-lbl">Overdue</div></div>
   `;
@@ -637,16 +724,18 @@ function setView(v){
   $id('viewTable').style.display=v==='table'?'':'none';
   $id('viewTimeline').style.display=v==='timeline'?'':'none';
   $id('viewSprints').style.display=v==='sprints'?'':'none';
-  // The item-type filter (All/Tasks/Bugs) only means something for the flat views — Sprints has
-  // its own backlog+board scoping already, so hide it there rather than leave a control that
+  $id('viewCalendar').style.display=v==='calendar'?'':'none';
+  // The item-type filter (All/Tasks/Bugs) only means something for the flat views — Sprints/
+  // Calendar have their own scoping already, so hide it there rather than leave a control that
   // silently does nothing.
-  $id('itemTypeFilter').closest('.filterbar').style.display=v==='sprints'?'none':'';
+  $id('itemTypeFilter').closest('.filterbar').style.display=(v==='sprints'||v==='calendar')?'none':'';
   renderView();
 }
 function renderView(){
   if(currentView==='board') renderBoard();
   else if(currentView==='table') renderTable();
   else if(currentView==='sprints') renderSprints();
+  else if(currentView==='calendar') renderCalendar();
   else renderTimeline();
 }
 
@@ -675,15 +764,21 @@ function renderBoard(){
   $id('boardWrap').innerHTML=kanbanColumnsHtml(visibleTasks());
   wireCardDragHandlers($id('boardWrap'));
 }
+// A task is "locked" when it has a real pm_task_dependencies predecessor that isn't done yet —
+// informational only (same as the old system's isStageLocked icon), doesn't block any action.
+function isTaskLocked(t){
+  return allDependencies.some(d=>String(d.successor_id)===String(t.Id) && taskById(d.predecessor_id)?.status!=='done');
+}
 function taskCardHtml(t){
   const proj=projectById(t.project_id);
   const due=t.due_date ? `<span class="chip due ${isOverdue(t.due_date,t.status)?'overdue':''}">${t.due_date.slice(5)}</span>` : '';
   const isBug=t.item_type==='bug';
   return `<div class="tcard" draggable="true" data-id="${t.Id}" onclick="openTaskModal(${t.Id})">
     ${proj?`<div style="font-size:10.5px;color:${escAttr(proj.color||'#0D9C93')};font-weight:700;margin-bottom:4px">${esc(proj.name)}</div>`:''}
-    <div class="tcard-title">${itemTypeIcon(t)} ${esc(t.title)}</div>
+    <div class="tcard-title">${isTaskLocked(t)?'<span class="lock-icon" title="Waiting on a dependency">🔒</span> ':''}${itemTypeIcon(t)} ${esc(t.title)}</div>
     <div class="tcard-meta">
       ${isBug && t.severity?`<span class="sev-badge sev-${t.severity}">${t.severity}</span>`:`<span class="chip prio-${t.priority}">${t.priority}</span>`}
+      ${t.category?`<span class="cat-chip">${esc(t.category)}</span>`:''}
       ${t.story_points?`<span class="chip due">${t.story_points} pts</span>`:''}
       ${due}
       ${t.link_url?`<a class="link-badge" href="${escAttr(t.link_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="${escAttr(t.link_url)}">🔗</a>`:''}
@@ -707,6 +802,8 @@ async function onColDrop(e, status){
   if(!id) return;
   const task=allTasks.find(t=>String(t.Id)===String(id));
   if(!task) return;
+  const prevStatus=task.status;
+  if(prevStatus===status) return;
   const siblings=allTasks.filter(t=>t.status===status && String(t.Id)!==String(id)).sort((a,b)=>a.position-b.position);
   // Dropped at the end of the column — precise reordering within a column (dropping between two
   // specific cards) is a later refinement; landing at the bottom of the target column covers the
@@ -714,7 +811,10 @@ async function onColDrop(e, status){
   const position=siblings.length ? siblings[siblings.length-1].position+1 : 0;
   task.status=status; task.position=position;
   renderBoard(); renderStats();
-  try{ await pmFetch('/pm/tasks',{method:'PATCH', body:JSON.stringify({Id:id, status, position})}); }
+  try{
+    await pmFetch('/pm/tasks',{method:'PATCH', body:JSON.stringify({Id:id, status, position})});
+    onTaskStatusChanged(task, prevStatus);
+  }
   catch(e){ await loadTasks(); renderBoard(); renderStats(); }
 }
 
@@ -724,7 +824,7 @@ function renderTable(){
   $id('tableBody').innerHTML=tasks.map(t=>{
     const proj=projectById(t.project_id);
     return `<tr onclick="openTaskModal(${t.Id})">
-      <td>${itemTypeIcon(t)} ${esc(t.title)} ${t.link_url?`<a class="link-badge" href="${escAttr(t.link_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗</a>`:''}</td>
+      <td>${isTaskLocked(t)?'<span class="lock-icon" title="Waiting on a dependency">🔒</span> ':''}${itemTypeIcon(t)} ${esc(t.title)} ${t.category?`<span class="cat-chip">${esc(t.category)}</span>`:''} ${t.link_url?`<a class="link-badge" href="${escAttr(t.link_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗</a>`:''}</td>
       <td>${proj?esc(proj.name):'—'}</td>
       <td><span class="badge st-${t.status}">${STATUS_COLS.find(c=>c.key===t.status)?.label||t.status}</span></td>
       <td>${t.item_type==='bug' && t.severity?`<span class="sev-badge sev-${t.severity}">${t.severity}</span>`:`<span class="chip prio-${t.priority}">${t.priority}</span>`}</td>
@@ -889,11 +989,14 @@ function openTaskModal(id){
   $id('tmStatus').value=task?task.status:'todo';
   $id('tmPriority').value=task?task.priority:'medium';
   $id('tmAssignee').value=task?(task.assignee_email||''):'';
+  $id('tmCategory').value=task?(task.category||''):'';
   $id('tmStart').value=task?(task.start_date||''):'';
   $id('tmDue').value=task?(task.due_date||''):'';
   $id('tmPoints').value=task?(task.story_points??''):'';
   $id('tmLinkUrl').value=task?(task.link_url||''):'';
   $id('tmLinkLabel').value=task?(task.link_label||''):'';
+  $id('tmNotifyCustomer').checked=!!(task&&task.notify_customer);
+  setLinkedLead(task?task.lead_id:'', task?task.lead_name:'');
   populateSprintSelect();
   $id('tmSprint').value=task?(task.sprint_id||''):'';
   $id('tmMsg').textContent='';
@@ -907,25 +1010,33 @@ async function saveTask(){
   if(!projectId){ $id('tmMsg').textContent='Create a project first.'; return; }
   const title=$id('tmTitle').value.trim();
   if(!title){ $id('tmMsg').textContent='Title required.'; return; }
+  const prevStatus=_editingTaskId ? taskById(_editingTaskId)?.status : null;
   const body={
     project_id:projectId, title, description:$id('tmDesc').value.trim(),
     status:$id('tmStatus').value, priority:$id('tmPriority').value,
-    assignee_email:$id('tmAssignee').value, start_date:$id('tmStart').value, due_date:$id('tmDue').value,
+    assignee_email:$id('tmAssignee').value, category:$id('tmCategory').value,
+    start_date:$id('tmStart').value, due_date:$id('tmDue').value,
     item_type:$id('tmItemType').value, severity:$id('tmItemType').value==='bug'?$id('tmSeverity').value:'',
     sprint_id:$id('tmSprint').value||'', story_points:$id('tmPoints').value||'',
     link_url:$id('tmLinkUrl').value.trim(), link_label:$id('tmLinkLabel').value.trim(),
+    lead_id:$id('tmLeadId').value||'', lead_name:$id('tmLeadName').value||'',
+    notify_customer:$id('tmNotifyCustomer').checked?1:0,
   };
   $id('tmMsg').textContent='Saving…';
   try{
+    let taskId=_editingTaskId;
     if(_editingTaskId){ body.Id=_editingTaskId; body.position=taskById(_editingTaskId)?.position||0; await pmFetch('/pm/tasks',{method:'PATCH', body:JSON.stringify(body)}); }
-    else{ body.position=(allTasks.filter(t=>t.status===body.status).reduce((m,t)=>Math.max(m,t.position),0))+1; await pmFetch('/pm/tasks',{method:'POST', body:JSON.stringify(body)}); }
+    else{ body.position=(allTasks.filter(t=>t.status===body.status).reduce((m,t)=>Math.max(m,t.position),0))+1; const created=await pmFetch('/pm/tasks',{method:'POST', body:JSON.stringify(body)}); taskId=created.Id; }
     await loadTasks();
     closeModal('taskModalOverlay');
     renderSidebar(); renderStats(); renderView();
+    const fresh=taskById(taskId);
+    if(fresh) onTaskStatusChanged(fresh, prevStatus);
   }catch(e){ $id('tmMsg').textContent=e.message||'Could not save.'; }
 }
 async function deleteTaskFromModal(){
   if(!_editingTaskId || !confirm('Delete this task?')) return;
+  syncTaskToGcal({Id:_editingTaskId, gcal_event_id:taskById(_editingTaskId)?.gcal_event_id}, 'delete');
   try{ await pmFetch('/pm/tasks',{method:'DELETE', body:JSON.stringify({Id:_editingTaskId})}); await Promise.all([loadTasks(), loadDependencies()]); closeModal('taskModalOverlay'); renderSidebar(); renderStats(); renderView(); }
   catch(e){ $id('tmMsg').textContent=e.message||'Could not delete.'; }
 }
@@ -981,6 +1092,8 @@ function openProjectModal(id){
   $id('pmBudget').value=proj?(proj.budget_amount??''):'';
   $id('pmCurrency').value=proj?(proj.budget_currency||'USD'):'USD';
   $id('pmRate').value=proj?(proj.default_hourly_rate??''):'';
+  $id('pmClientEmail').value=proj?(proj.client_email||''):'';
+  $id('pmAiAutoStage').checked=!!(proj&&proj.ai_auto_stage_enabled);
   $id('pmMsg').textContent='';
   $id('pmDeleteBtn').style.display=proj?'':'none';
   openModal('projectModalOverlay');
@@ -991,6 +1104,7 @@ async function saveProject(){
   const body={
     name, description:$id('pmDesc').value.trim(), color:$id('pmColor').value, status:$id('pmStatus').value,
     budget_amount:$id('pmBudget').value||'', budget_currency:$id('pmCurrency').value.trim()||'USD', default_hourly_rate:$id('pmRate').value||'',
+    client_email:$id('pmClientEmail').value.trim(), ai_auto_stage_enabled:$id('pmAiAutoStage').checked?1:0,
   };
   $id('pmMsg').textContent='Saving…';
   try{
@@ -1265,6 +1379,208 @@ async function deleteAutomationRule(id){
   if(!confirm('Delete this automation?')) return;
   try{ await pmFetch('/pm/automations',{method:'DELETE', body:JSON.stringify({Id:id})}); await loadAutomations(); renderAutomationsList(); }
   catch(e){ /* best-effort */ }
+}
+
+/* ── LINK TO LEAD (Task modal) ── */
+let _leadSearchTimer=null;
+function setLinkedLead(id, name){
+  $id('tmLeadId').value=id||'';
+  $id('tmLeadName').value=name||'';
+  if(id){
+    $id('tmLeadLinked').style.display='';
+    $id('tmLeadLinked').innerHTML=`<span class="lead-chip">${esc(name||'Lead #'+id)}<button onclick="clearLinkedLead()" title="Unlink">×</button></span>`;
+    $id('tmLeadSearchWrap').style.display='none';
+  }else{
+    $id('tmLeadLinked').style.display='none';
+    $id('tmLeadSearchWrap').style.display='';
+    $id('tmLeadSearch').value='';
+    $id('tmLeadResults').style.display='none';
+  }
+}
+function clearLinkedLead(){ setLinkedLead('',''); }
+function onLeadSearchInput(){
+  clearTimeout(_leadSearchTimer);
+  const q=$id('tmLeadSearch').value.trim();
+  if(q.length<2){ $id('tmLeadResults').style.display='none'; return; }
+  _leadSearchTimer=setTimeout(async()=>{
+    try{
+      const r=await pmFetch(`/pm/lead-search?q=${encodeURIComponent(q)}`,{method:'GET'});
+      const box=$id('tmLeadResults');
+      box.innerHTML=(r.list||[]).map(l=>`<div class="lead-result-row" onclick='selectLeadForTask(${l.Id}, ${JSON.stringify(l.Name||l.Phone||('Lead #'+l.Id))})'>
+        <div>${esc(l.Name||l.Phone||'Lead #'+l.Id)}</div>
+        <div class="lr-sub">${esc(l.Phone||'')}${l.Stage?' · '+esc(l.Stage):''}</div>
+      </div>`).join('') || '<div class="lead-result-row" style="color:var(--muted)">No matching leads</div>';
+      box.style.display='';
+    }catch(e){ /* best-effort search — leave results as-is */ }
+  }, 300);
+}
+function selectLeadForTask(id, name){ setLinkedLead(id, name); }
+
+/* ── GOOGLE CALENDAR ──
+   One-way push (app → Google), reusing the exact same primitives/routes dashboard.html's Tasks
+   page already established — no backend changes needed here beyond return_to (see worker.js
+   signOauthState/handleGcalOauthStart) so connecting from this page lands back on this page
+   instead of bouncing to the CRM dashboard. Task due *times* aren't tracked in pm_tasks (only
+   due_date) — Projects syncs events as all-day, unlike the old system's timed events. */
+function renderGcalBanner(){
+  const el=$id('gcalBanner');
+  if(!el) return;
+  el.innerHTML=clientRecord?.gcal_connected
+    ? `🗓️ Synced to Google Calendar ("Leadvyne Tasks &amp; Events"). <a onclick="disconnectGcal()">Disconnect</a>`
+    : `🗓️ Not synced to Google Calendar yet. <a onclick="connectGcal()">Connect Google Calendar</a>`;
+}
+async function connectGcal(){
+  try{
+    const r=await pmFetch('/gcal/oauth/start',{method:'POST', body:JSON.stringify({return_to:'projects.html'})});
+    if(!r.url) throw new Error(r.error||'Failed to start connection');
+    location.href=r.url;
+  }catch(e){ alert('Failed to connect: '+e.message); }
+}
+async function disconnectGcal(){
+  if(!confirm('Disconnect Google Calendar? Already-synced events stay in Google Calendar until you delete them there.')) return;
+  try{ await pmFetch('/gcal/disconnect',{method:'POST'}); clientRecord.gcal_connected=false; renderGcalBanner(); }
+  catch(e){ alert('Failed to disconnect: '+e.message); }
+}
+// Fire-and-forget push for one task, called right after its own save/status-change/delete already
+// succeeded. On success, patches the returned Google event id back onto the task with a second
+// small PATCH — same "a bit of extra chatter, but simple and safe" tradeoff the legacy
+// syncTaskToGoogleCalendar made.
+async function syncTaskToGcal(task, action){
+  if(!clientRecord?.gcal_connected || !task?.Id) return;
+  try{
+    const r=await pmFetch('/gcal/sync-task',{method:'POST', body:JSON.stringify({
+      action:action||'upsert',
+      task:{id:task.Id, title:task.title, notes:task.description, due_date:task.due_date, due_time:'', status:task.status, gcal_event_id:task.gcal_event_id||null},
+    })});
+    if(r.ok && r.gcal_event_id!==(task.gcal_event_id||null)){
+      await pmFetch('/pm/tasks',{method:'PATCH', body:JSON.stringify({Id:task.Id, gcal_event_id:r.gcal_event_id})});
+      const fresh=taskById(task.Id); if(fresh) fresh.gcal_event_id=r.gcal_event_id;
+    }
+  }catch(e){ /* best-effort — sync failures never block the task save that triggered this */ }
+}
+
+/* ── Notification behaviors + AI-suggest-next-task, ported from the legacy Tasks page ──
+   All client-orchestrated against existing generic Worker routes (/tasks/notify, /ai/complete) —
+   no new email-sending logic added server-side for this, same "thin server, orchestration in the
+   browser" shape the old manual_tasks system already used. */
+async function onTaskStatusChanged(task, prevStatus){
+  syncTaskToGcal(task, task.status==='done' ? 'delete' : 'upsert');
+  if(task.status==='blocked' && prevStatus!=='blocked') notifyOwnerBlocked(task);
+  if(task.status==='done' && prevStatus!=='done'){
+    notifyUnlockedDependents(task);
+    if(task.notify_customer) notifyClientOnDone(task);
+    const proj=projectById(task.project_id);
+    if(proj?.ai_auto_stage_enabled) aiSuggestNextTask(task, proj);
+  }
+}
+async function notifyOwnerBlocked(task){
+  const to=clientRecord?.authentik_email;
+  if(!to) return;
+  try{
+    await pmFetch('/tasks/notify',{method:'POST', body:JSON.stringify({
+      to, subject:`Blocked: ${task.title}`, title:task.title,
+      notes:`This task is blocked.${task.description?' '+task.description:''}`,
+      due_date:task.due_date||'', lead_name:task.lead_name||'',
+    })});
+  }catch(e){ /* best-effort */ }
+}
+async function notifyUnlockedDependents(task){
+  const successorEdges=allDependencies.filter(d=>String(d.predecessor_id)===String(task.Id));
+  for(const edge of successorEdges){
+    const succ=taskById(edge.successor_id);
+    if(!succ || succ.status==='done' || !succ.assignee_email) continue;
+    if(isTaskLocked(succ)) continue; // still waiting on another dependency too
+    try{
+      await pmFetch('/tasks/notify',{method:'POST', body:JSON.stringify({
+        to:succ.assignee_email, subject:`Ready to start: ${succ.title}`, title:succ.title,
+        notes:'All of its dependencies are now done — you\'re clear to start.',
+        due_date:succ.due_date||'', lead_name:succ.lead_name||'',
+      })});
+    }catch(e){ /* best-effort */ }
+  }
+}
+async function resolveLeadEmail(leadId){
+  if(!leadId) return '';
+  try{ const r=await pmFetch(`/pm/lead?id=${leadId}`,{method:'GET'}); return r.Email||''; }
+  catch(e){ return ''; }
+}
+async function notifyClientOnDone(task){
+  const proj=projectById(task.project_id);
+  const to=(task.lead_id ? await resolveLeadEmail(task.lead_id) : '') || proj?.client_email || '';
+  if(!to) return;
+  let noteText=task.description||task.title;
+  try{
+    const r=await pmFetch('/ai/complete',{method:'POST', body:JSON.stringify({
+      max_tokens:200,
+      messages:[
+        {role:'system', content:'Rewrite this internal task-completion note into one short, friendly client-facing update. No internal jargon, no mention of internal tools. Plain text, 2-3 sentences max.'},
+        {role:'user', content:`Task: ${task.title}\nInternal notes: ${task.description||'(none)'}`},
+      ],
+    })});
+    const text=r?.choices?.[0]?.message?.content?.trim();
+    if(text) noteText=text;
+  }catch(e){ /* falls back to raw title/notes above — a client update this ordinary is still worth sending even unpolished */ }
+  try{
+    await pmFetch('/tasks/notify',{method:'POST', body:JSON.stringify({ to, subject:`Update: ${task.title}`, title:task.title, notes:noteText, due_date:'', lead_name:task.lead_name||'' })});
+  }catch(e){ /* best-effort */ }
+}
+async function aiSuggestNextTask(completedTask, project){
+  try{
+    const r=await pmFetch('/ai/complete',{method:'POST', body:JSON.stringify({
+      max_tokens:250,
+      messages:[
+        {role:'system', content:'A project task just completed. Suggest ONE concrete next task for this project. Respond with ONLY valid JSON: {"title":"...", "notes":"..."} — no other text.'},
+        {role:'user', content:`Project: ${project.name}\nJust completed: ${completedTask.title}${completedTask.description?' — '+completedTask.description:''}`},
+      ],
+    })});
+    const text=r?.choices?.[0]?.message?.content?.trim()||'';
+    const match=text.match(/\{[\s\S]*\}/);
+    if(!match) return;
+    const suggestion=JSON.parse(match[0]);
+    if(!suggestion?.title) return;
+    const position=(allTasks.filter(t=>String(t.project_id)===String(project.Id) && t.status==='todo').reduce((m,t)=>Math.max(m,t.position),0))+1;
+    const created=await pmFetch('/pm/tasks',{method:'POST', body:JSON.stringify({
+      project_id:project.Id, title:suggestion.title, description:suggestion.notes||'', status:'todo',
+      assignee_email:completedTask.assignee_email||'', ai_created:1, position,
+    })});
+    await pmFetch('/pm/dependencies',{method:'POST', body:JSON.stringify({predecessor_id:completedTask.Id, successor_id:created.Id})}).catch(()=>{});
+    await Promise.all([loadTasks(), loadDependencies()]);
+    renderSidebar(); renderStats(); renderView();
+  }catch(e){ /* best-effort — a missing/invalid OpenRouter key just means no suggestion appears */ }
+}
+
+/* ── CALENDAR VIEW (in-app month grid — separate from Google Calendar sync above) ── */
+function calShiftMonth(delta){
+  _calMonth+=delta;
+  if(_calMonth<0){ _calMonth=11; _calYear--; } else if(_calMonth>11){ _calMonth=0; _calYear++; }
+  renderCalendar();
+}
+function calGoToday(){ _calYear=new Date().getFullYear(); _calMonth=new Date().getMonth(); renderCalendar(); }
+function renderCalendar(){
+  renderGcalBanner();
+  const monthNames=['January','February','March','April','May','June','July','August','September','October','November','December'];
+  $id('calMonthLabel').textContent=`${monthNames[_calMonth]} ${_calYear}`;
+  const firstOfMonth=new Date(_calYear,_calMonth,1);
+  const startDow=firstOfMonth.getDay();
+  const daysInMonth=new Date(_calYear,_calMonth+1,0).getDate();
+  const daysInPrevMonth=new Date(_calYear,_calMonth,0).getDate();
+  const todayStr=new Date().toISOString().slice(0,10);
+  const tasks=visibleTasks().filter(t=>t.due_date);
+  const cells=[];
+  for(let i=startDow-1;i>=0;i--) cells.push({day:daysInPrevMonth-i, other:true, dateStr:null});
+  for(let d=1;d<=daysInMonth;d++){
+    const dateStr=`${_calYear}-${String(_calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    cells.push({day:d, other:false, dateStr});
+  }
+  while(cells.length%7!==0) cells.push({day:cells.length, other:true, dateStr:null});
+  $id('calGridBody').innerHTML=cells.map(c=>{
+    const dayTasks=c.dateStr ? tasks.filter(t=>t.due_date===c.dateStr) : [];
+    return `<div class="calcell ${c.other?'othermonth':''} ${c.dateStr===todayStr?'today':''}">
+      <div class="caldate">${c.day}</div>
+      ${dayTasks.slice(0,4).map(t=>`<div class="calitem" onclick="openTaskModal(${t.Id})" title="${escAttr(t.title)}">${itemTypeIcon(t)} ${esc(t.title)}</div>`).join('')}
+      ${dayTasks.length>4?`<div class="field-hint">+${dayTasks.length-4} more</div>`:''}
+    </div>`;
+  }).join('');
 }
 
 boot();

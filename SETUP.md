@@ -7983,6 +7983,89 @@ field rather than a fake-looking automatic one.
 defines themselves — every entity in this module still has a fixed schema), resource leveling/
 capacity planning, EVM, offline-first mobile, client portals + e-signature, and a real GitHub sync.
 
+### Phase 3 — merging the legacy `manual_tasks` module into Projects
+
+Before this module existed, tasks lived as a JSON blob on `CLIENTS.manual_tasks` — created from the
+dashboard's old Tasks tab and by the Advanced Pipeline follow-up cadence, with lead linking, task
+categories, Google Calendar sync, and AI auto-stage suggestion all built directly against that blob.
+Rather than run two task systems side by side, every feature the old system had was rebuilt on top
+of `pm_tasks`/`pm_projects` and the old data migrated across — the blob itself is left untouched
+(never deleted) so the migration is a pure addition, safely re-run, and easy to audit against.
+
+**Schema** (`migrations/0052_pm_merge_legacy_tasks.sql`) — `pm_tasks` gains `lead_id`/`lead_name`
+(a soft reference to a NocoDB Leads row — cross-database, so a plain integer + denormalized name,
+resolved through the Worker's `/nocodb` proxy, not a real FK), `category` (the old system's six
+fixed values), `channel`/`mode`/`followup_step` (written only by the pipeline cadence — which
+channel/mode the next touch should use and which rung of the escalation ladder it's on),
+`notify_customer` (send an AI-rewritten status update to the linked lead/project's client email on
+completion), `ai_created`/`auto_generated` (provenance flags — AI-suggested and system-written
+respectively, the latter letting the cadence safely replace its own previous auto-task for a lead
+without touching anything a human created), and `gcal_event_id`. `pm_projects` gains `client_email`
+(manual fallback for `notify_customer` when a task has no linked lead, or the lead has no email) and
+`ai_auto_stage_enabled` (per-project opt-in for AI-suggest-next-task). `'blocked'` becomes a fifth
+valid `status` value alongside the Phase 1 four — no schema change, just application-level handling
+in the Board/Table/Timeline views. A new `pm_task_migrations` table (one row per `client_id`) makes
+the one-time data migration idempotent and gives a plain audit trail of what moved.
+
+**Lead linking** — Task modal gained a lead search-and-link picker (`tmLeadSearch`/`tmLeadResults`)
+backed by two new session-gated routes: `GET /pm/lead-search?q=` (`handlePmLeadSearch`, searches
+Leads by Name/Phone scoped to the client's NocoDB table) and `GET /pm/lead?id=` (`handlePmLeadGet`,
+single-lookup used by `resolveLeadEmail()` when a `notify_customer` send needs the lead's email).
+
+**Advanced Pipeline follow-up cadence** used to read-modify-write the whole `manual_tasks` blob on
+every step; it now writes `pm_tasks` rows directly. `pmFindOrCreateFollowupsProject()` finds or
+lazily creates a per-client "Follow-ups" `pm_project`; `pipelineWriteTask()` deletes any existing
+open auto-generated task for that lead (via `auto_generated`) and inserts the new one, so a lead
+never accumulates stale cadence tasks. `pipelineAppendTask()` (the instant path, called from
+`handlePipelineStageChange`) and the daily-cron tail of `pipelineProcessClient()` both now call
+through `pipelineWriteTask()`; `pipelineClearLead()` deletes matching `pm_tasks` rows directly
+instead of filtering the blob. `pipelineBuildTaskItem()` (blob-row shape builder) was removed —
+nothing constructs that shape anymore.
+
+**One-time migration** — `pmMigrateClientLegacyTasks(env, clientId)` parses a client's
+`manual_tasks` JSON once (guarded by `pm_task_migrations`), creates a `pm_project` per legacy
+project (mapping old string ids → new D1 ids), lazily creates a "Migrated Tasks" fallback project
+for any task with no project, creates the `pm_tasks` rows (`open`→`todo`, `in_progress`/`blocked`/
+`done` pass through as-is), and recreates `pm_task_dependencies` from each task's `depends_on` array
+— validated against the same same-project-only rule `handlePmDependencyCreate` itself enforces, so
+a dependency that would violate it is silently dropped rather than crashing the migration.
+`POST /admin/pm/migrate-legacy-tasks` (`handlePmMigrateLegacyTasks`, admin-gated via
+`requireAdminSession`) runs it for one client (`{client_id}`) or every client (`{}`, paginated the
+same way `runPipelineFollowupsForAllClients` already is).
+
+**Google Calendar sync** carries over unchanged at the protocol level — `syncTaskToGcal()`
+(`projects.html`) calls the existing generic `/gcal/sync-task` route with the same `{id, title,
+notes, due_date, due_time, status, gcal_event_id}` shape the old Tasks tab used, so `pm_tasks`
+needed no new sync logic, only the `gcal_event_id` column to round-trip through. Connecting from
+inside Projects did surface one real gap: `handleGcalOauthCallback` always redirected back to
+`dashboard.html` regardless of where the connection started. Fixed by extending `signOauthState()`
+with an optional `returnTo` param (backward compatible — existing 3-arg callers unaffected),
+threaded through as `return_to` in the `/gcal/oauth/start` request body (validated against
+`^[a-z0-9_-]+\.html(\?[^\s]*)?$` before signing) and read back out of the verified state payload's
+`rt` field in the callback, so connecting from `projects.html` returns to `projects.html`.
+
+**Notifications + AI** — `onTaskStatusChanged()` dispatches to `notifyOwnerBlocked()` (a task moved
+to `blocked`), `notifyUnlockedDependents()` (a task's completion frees a dependent that was locked
+by `isTaskLocked()`), and `notifyClientOnDone()` (`notify_customer` tasks — AI-rewrites a plain
+status line via the existing generic `/ai/complete` route using the client's own `openrouter_key`,
+then sends it via the existing `/tasks/notify` route to the resolved lead/project email). Completing
+a task in a project with `ai_auto_stage_enabled` also calls `aiSuggestNextTask()`, which asks
+`/ai/complete` for a `{title, notes}` JSON suggestion and creates a new `pm_task` (`ai_created:1`)
+with a dependency link back to the task that triggered it. Both dispatch points capture the task's
+previous status before mutating it — `saveTask()` (modal save) and `onColDrop()` (Kanban
+drag-and-drop) — so a status-change notification only fires on an actual transition, not a save
+that left status unchanged.
+
+**Calendar view** — a plain month grid (`renderCalendar()`/`calShiftMonth()`/`calGoToday()`)
+alongside Board/Table/Timeline/Sprints, showing tasks on their due date; the one view from the old
+Tasks tab that Phase 1/2 hadn't already replaced with an equivalent.
+
+**Nav**: `dashboard.html`'s Tasks nav item (desktop tab, mobile More sheet) now opens
+`openProjectsTool()` instead of the old in-app `tasks` page, the same special-cased pattern already
+used for Broadcast/Projects — the legacy Tasks page in `dashboard.html` itself is left in place but
+no longer linked to, on the same "don't delete, just stop pointing at it" principle as the
+untouched `manual_tasks` blob.
+
 ## Chats tab UX additions (`frontend/chats.js`, `frontend/chats.css`, `frontend/dashboard.html`, `cloudflare-worker/worker.js`)
 
 Four additions to the Chats tab composer/thread, all scoped to that module — no new tables, all
