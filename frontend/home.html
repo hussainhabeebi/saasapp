@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Home · Leadvyne</title>
+<meta name="theme-color" content="#0D9C93">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%A0%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ── Design tokens — mirrors frontend/dashboard.html's :root exactly so this page (a separate
+   Cloudflare Pages deploy, SETUP.md "Home page (industry KPIs, Cloudflare Pages)") looks like the
+   same product, not a bolted-on side project. Industry theme classes below (.theme-*) are the
+   same values as dashboard.html's INDUSTRIES/.theme-* rules. ── */
+:root{
+  --bg:#F2F5F3;--card:#FFFFFF;--ink:#0C1E16;--muted:#637870;
+  --accent:#0D9C93;--accent-ink:#1E3A6E;--accent-soft:#DFF6F3;
+  --line:#E4EBE7;--warn:#9A5B12;--red:#DC2626;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --shadow-md:0 4px 16px rgba(0,0,0,.10);
+  --r:18px;--r-sm:12px;
+  --disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+  --safe-t:env(safe-area-inset-top,0px);--safe-b:env(safe-area-inset-bottom,0px);
+}
+@media(prefers-color-scheme:dark){
+  html:not(.light):not(.dark){
+    --bg:#0B1613;--card:#141F1B;--ink:#E9F1EC;--muted:#8CA298;--line:#233029;
+    --shadow:0 1px 3px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.35);
+    --shadow-md:0 4px 16px rgba(0,0,0,.45);
+  }
+}
+html.dark{
+  --bg:#0B1613;--card:#141F1B;--ink:#E9F1EC;--muted:#8CA298;--line:#233029;
+  --shadow:0 1px 3px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.35);
+  --shadow-md:0 4px 16px rgba(0,0,0,.45);
+}
+.theme-travel      {--accent:#0369A1;--accent-ink:#075985;--accent-soft:#DDEEFF}
+.theme-insurance   {--accent:#1D4ED8;--accent-ink:#1E3A8A;--accent-soft:#DBEAFE}
+.theme-real_estate {--accent:#B45309;--accent-ink:#92400E;--accent-soft:#FEF3C7}
+.theme-healthcare  {--accent:#0891B2;--accent-ink:#0E7490;--accent-soft:#CFFAFE}
+.theme-education   {--accent:#7C3AED;--accent-ink:#6D28D9;--accent-soft:#EDE9FE}
+.theme-automotive  {--accent:#DC2626;--accent-ink:#B91C1C;--accent-soft:#FEE2E2}
+.theme-ecommerce   {--accent:#7C3AED;--accent-ink:#6D28D9;--accent-soft:#EDE9FE}
+.theme-consultancy {--accent:#2563EB;--accent-ink:#1D4ED8;--accent-soft:#DBEAFE}
+.theme-b2b         {--accent:#0F766E;--accent-ink:#115E59;--accent-soft:#CCFBF1}
+.theme-hospitality {--accent:#EA580C;--accent-ink:#C2410C;--accent-soft:#FFEDD5}
+.theme-saas_digital_marketing{--accent:#4F46E5;--accent-ink:#4338CA;--accent-soft:#E0E7FF}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;overflow-x:hidden;max-width:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);-webkit-font-smoothing:antialiased;
+  min-height:100vh;padding-bottom:calc(24px + var(--safe-b))}
+button,input{font-family:inherit}
+.wrap{max-width:1040px;margin:0 auto;padding:0 16px}
+@media(min-width:640px){.wrap{padding:0 24px}}
+
+/* ── Header ── */
+header{position:sticky;top:0;z-index:20;background:var(--card);border-bottom:1px solid var(--line);
+  padding-top:var(--safe-t)}
+.hdr-row{display:flex;align-items:center;gap:10px;padding:12px 16px;min-height:56px}
+@media(min-width:640px){.hdr-row{padding:14px 24px}}
+.hdr-brand{font-family:var(--disp);font-weight:700;font-size:16px;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.hdr-brand .dot{color:var(--accent)}
+.hdr-spacer{flex:1}
+.icon-btn{width:38px;height:38px;min-width:38px;border-radius:10px;border:1px solid var(--line);
+  background:var(--card);color:var(--ink);font-size:16px;display:flex;align-items:center;justify-content:center;
+  cursor:pointer;transition:background .15s,border-color .15s}
+.icon-btn:hover{background:var(--accent-soft);border-color:var(--accent)}
+.icon-btn:active{transform:scale(.96)}
+.link-btn{font-size:12.5px;font-weight:600;color:var(--accent-ink);text-decoration:none;border:1px solid var(--line);
+  border-radius:10px;padding:9px 14px;white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
+.link-btn:hover{border-color:var(--accent)}
+
+/* ── Hero / greeting ── */
+.hero{padding:22px 0 4px}
+.hero h1{font-family:var(--disp);font-size:clamp(20px,4vw,28px);font-weight:700;margin:0 0 4px;letter-spacing:-.01em}
+.hero p{margin:0;color:var(--muted);font-size:13.5px}
+.industry-chip{display:inline-flex;align-items:center;gap:6px;background:var(--accent-soft);color:var(--accent-ink);
+  font-size:11.5px;font-weight:700;border-radius:99px;padding:5px 12px;margin-top:10px}
+
+/* ── KPI grid — mobile-first: 2 columns on phones, scaling up with viewport width, same visual
+   language (card/shadow/radius) as dashboard.html's .kpi-card so this reads as the same app ── */
+.kpi-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:18px 0}
+@media(min-width:560px){.kpi-grid{grid-template-columns:repeat(3,1fr)}}
+@media(min-width:900px){.kpi-grid{grid-template-columns:repeat(4,1fr);gap:16px}}
+.kpi-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;
+  box-shadow:var(--shadow);min-width:0}
+.kpi-icon{font-size:18px;opacity:.55;display:block;margin-bottom:8px}
+.kpi-val{font-family:var(--disp);font-size:clamp(20px,5vw,28px);font-weight:700;color:var(--accent-ink);
+  line-height:1;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi-lbl{font-size:11.5px;color:var(--muted);margin-top:5px;font-weight:600;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.section-row{display:flex;align-items:center;gap:10px;margin:22px 0 10px;flex-wrap:wrap}
+.section-row h2{font-family:var(--disp);font-size:15px;margin:0;flex:1;min-width:0}
+
+/* ── Empty / loading / error states ── */
+.state-box{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:36px 20px;
+  text-align:center;color:var(--muted);font-size:13.5px}
+.state-box .big{font-size:30px;margin-bottom:8px}
+.skeleton{background:linear-gradient(90deg,var(--line) 25%,var(--accent-soft) 37%,var(--line) 63%);
+  background-size:400% 100%;animation:sk 1.4s ease infinite;border-radius:var(--r)}
+@keyframes sk{0%{background-position:100% 50%}100%{background-position:0 50%}}
+.skel-kpi{height:88px}
+
+/* ── Customize panel — bottom sheet on mobile (thumb-reachable, no reach-to-top-corner drag),
+   centered modal on wider screens. Touch targets kept >=44px throughout for reliable tapping. ── */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:40;display:none}
+.overlay.show{display:block}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--card);
+  border-radius:20px 20px 0 0;max-height:85vh;overflow-y:auto;box-shadow:0 -8px 30px rgba(0,0,0,.2);
+  padding:6px 18px calc(20px + var(--safe-b));transform:translateY(100%);transition:transform .25s ease}
+.sheet.show{transform:translateY(0)}
+@media(min-width:640px){
+  .sheet{left:50%;right:auto;bottom:auto;top:50%;width:min(480px,90vw);max-height:80vh;
+    border-radius:var(--r);transform:translate(-50%,-46%) scale(.97);opacity:0;transition:transform .2s ease,opacity .2s ease}
+  .sheet.show{transform:translate(-50%,-50%) scale(1);opacity:1}
+}
+.sheet-handle{width:36px;height:4px;background:var(--line);border-radius:99px;margin:10px auto}
+@media(min-width:640px){.sheet-handle{display:none}}
+.sheet h3{font-family:var(--disp);font-size:16px;margin:6px 0 4px}
+.sheet .hint{color:var(--muted);font-size:12.5px;margin:0 0 14px}
+.kpi-row{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--line)}
+.kpi-row:last-child{border-bottom:none}
+.kpi-row label{display:flex;align-items:center;gap:10px;flex:1;min-width:0;font-size:13.5px;font-weight:600;cursor:pointer}
+.kpi-row input[type=checkbox]{width:20px;height:20px;flex-shrink:0;accent-color:var(--accent)}
+.kpi-row .icon{font-size:15px}
+.order-btns{display:flex;gap:4px;flex-shrink:0}
+.order-btns button{width:32px;height:32px;border-radius:8px;border:1px solid var(--line);background:var(--bg);
+  color:var(--ink);font-size:13px;cursor:pointer}
+.order-btns button:disabled{opacity:.3;cursor:default}
+.sheet-actions{display:flex;gap:10px;margin-top:16px;position:sticky;bottom:0;background:var(--card);padding-top:8px}
+.btn{border:none;border-radius:12px;padding:13px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:var(--disp);
+  flex:1;min-height:46px}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:active{transform:scale(.98)}
+.btn-secondary{background:var(--bg);color:var(--ink);border:1px solid var(--line)}
+.toast{position:fixed;left:50%;bottom:calc(24px + var(--safe-b));transform:translateX(-50%);background:var(--ink);
+  color:var(--bg);padding:10px 18px;border-radius:99px;font-size:13px;font-weight:600;z-index:50;
+  opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <div class="hdr-row wrap" style="padding-left:0;padding-right:0">
+    <span class="hdr-brand">🏠<span class="dot">Home</span></span>
+    <span class="hdr-spacer"></span>
+    <button class="icon-btn" id="btnDark" title="Toggle dark mode">🌙</button>
+    <button class="icon-btn" id="btnRefresh" title="Refresh">↻</button>
+    <button class="icon-btn" id="btnCustomize" title="Customize KPIs">⚙️</button>
+    <a class="link-btn" id="linkDashboard" href="#">Full dashboard →</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="hero">
+    <h1 id="greeting">Loading…</h1>
+    <p id="subline">Fetching your account…</p>
+    <span class="industry-chip" id="industryChip" style="display:none"></span>
+  </div>
+
+  <div id="kpiArea" class="kpi-grid">
+    <div class="skeleton skel-kpi"></div><div class="skeleton skel-kpi"></div>
+    <div class="skeleton skel-kpi"></div><div class="skeleton skel-kpi"></div>
+  </div>
+
+  <div id="errorArea"></div>
+</div>
+
+<div class="overlay" id="overlay"></div>
+<div class="sheet" id="sheet">
+  <div class="sheet-handle"></div>
+  <h3>Customize your Home</h3>
+  <p class="hint">Pick which KPIs to show, and use ▲▼ to reorder them.</p>
+  <div id="kpiPicker"></div>
+  <div class="sheet-actions">
+    <button class="btn btn-secondary" id="btnCancel">Cancel</button>
+    <button class="btn btn-primary" id="btnSave">Save</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ── Config — WORKER_BASE must match cloudflare-worker/wrangler.toml's deployed Worker, and
+   APP_BASE must match wrangler.toml's APP_BASE_URL (the full dashboard this page links back to
+   and falls back to when there's no valid session — this page has no login flow of its own, it's
+   only ever opened FROM an already-authenticated dashboard tab). ── */
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const APP_BASE = 'https://app.leadvyne.com/dashboard.html';
+const LEADS_TABLE_ID = 'mvg6rcw0ia5qqrx';
+const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
+const TODAY = new Date().toISOString().slice(0,10);
+const SESSION_KEY = 'lv_home_session';
+
+const $ = id => document.getElementById(id);
+
+/* ── Auth bridge — dashboard.html opens this page as home.html#t=<sessionToken>. Read it once,
+   persist to this origin's own localStorage (Cloudflare Pages is a different origin from
+   app.leadvyne.com, so nothing is shared automatically), then strip it from the URL immediately
+   so the token never sits in browser history/referrer headers. Reopening this tab later reuses
+   the stored token via the same /session/me resume dashboard.html itself relies on. ── */
+function bridgeToken(){
+  const m=location.hash.match(/[#&]t=([^&]+)/);
+  if(m){
+    localStorage.setItem(SESSION_KEY, decodeURIComponent(m[1]));
+    history.replaceState(null, '', location.pathname+location.search);
+  }
+}
+bridgeToken();
+let sessionToken = localStorage.getItem(SESSION_KEY) || '';
+$('linkDashboard').href = APP_BASE;
+
+function authHeaders(){ return {'Authorization':'Bearer '+sessionToken}; }
+async function apiGet(url){
+  const r = await fetch(url, {headers:authHeaders()});
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
+
+function showError(msg, {loginCta}={}){
+  $('kpiArea').innerHTML='';
+  $('errorArea').innerHTML = `<div class="state-box">
+    <div class="big">⚠️</div>
+    <div style="margin-bottom:14px">${msg}</div>
+    ${loginCta ? `<a class="link-btn" href="${APP_BASE}">Open dashboard to sign in →</a>` : ''}
+  </div>`;
+}
+
+function toast(msg){
+  const t=$('toast'); t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+/* ── Dark mode — same class-on-<html> convention as dashboard.html so a user's choice would
+   feel consistent if we ever sync it; kept as its own independent toggle for now since this is a
+   separate origin with its own localStorage. ── */
+function initDark(){
+  const saved=localStorage.getItem('lv_home_dark');
+  if(saved==='1') document.documentElement.classList.add('dark');
+  else if(saved==='0') document.documentElement.classList.add('light');
+}
+function toggleDark(){
+  const isDark=document.documentElement.classList.toggle('dark');
+  document.documentElement.classList.remove('light');
+  if(!isDark) document.documentElement.classList.add('light');
+  localStorage.setItem('lv_home_dark', isDark?'1':'0');
+}
+initDark();
+$('btnDark').onclick = toggleDark;
+
+/* ── State ── */
+let clientRecord=null, leads=[], kpiMeta=null, kpiKeys=[], availableKeys=[];
+
+function computeKpiValues(){
+  const booked = leads.filter(l=>TERMINAL.has(l.Stage) && l.Stage!=='human_handover');
+  const active = leads.filter(l=>!TERMINAL.has(l.Stage));
+  const hot = leads.filter(l=>l.Score==='Hot');
+  const newToday = leads.filter(l=>l.Date && l.Date.slice(0,10)===TODAY);
+  const botEngaged = leads.filter(l=>l.ConvHistory && l.ConvHistory!=='[]');
+  // Approximation vs. dashboard.html's fuller computeAllTasks() (which also merges in manual
+  // D1 tasks) — good enough for an at-a-glance tile, and the full dashboard remains the place to
+  // work the actual follow-up list.
+  const followupsDue = leads.filter(l=>l.ReminderDate && l.ReminderDate.slice(0,10)<=TODAY);
+  return {
+    new_today: newToday.length,
+    total_leads: leads.length,
+    hot_leads: hot.length,
+    booked: booked.length,
+    active: active.length,
+    conversion_rate: leads.length ? Math.round(booked.length/leads.length*100)+'%' : '0%',
+    followups_due: followupsDue.length,
+    bot_engaged: leads.length ? Math.round(botEngaged.length/leads.length*100)+'%' : '—',
+  };
+}
+
+function renderKpis(){
+  const values=computeKpiValues();
+  $('kpiArea').innerHTML = kpiKeys.map(k=>{
+    const meta=kpiMeta[k]; if(!meta) return '';
+    return `<div class="kpi-card">
+      <span class="kpi-icon">${meta.icon}</span>
+      <div class="kpi-val">${values[k]}</div>
+      <div class="kpi-lbl">${meta.label}</div>
+    </div>`;
+  }).join('') || `<div class="state-box" style="grid-column:1/-1">
+      <div class="big">🧩</div>No KPIs selected — tap ⚙️ to add some.</div>`;
+}
+
+function renderHero(){
+  const h=new Date().getHours();
+  const greet = h<12?'Good morning':h<17?'Good afternoon':'Good evening';
+  const name=(clientRecord?.client_name||'').split(' ')[0]||'there';
+  $('greeting').textContent = `${greet}, ${name}`;
+  $('subline').textContent = leads.length
+    ? `Here's what's happening today · ${leads.length.toLocaleString()} leads on file`
+    : `Here's what's happening today`;
+  const industry=clientRecord?.industry||'general';
+  if(industry && industry!=='general'){
+    document.documentElement.classList.add('theme-'+industry);
+    const chip=$('industryChip');
+    chip.style.display='inline-flex';
+    chip.textContent = (kpiMeta.booked?.label ? industry.replace(/_/g,' ') : industry).replace(/\b\w/g,c=>c.toUpperCase());
+  }
+}
+
+/* ── Customize sheet ── */
+function openSheet(){
+  $('overlay').classList.add('show');
+  $('sheet').classList.add('show');
+  renderPicker();
+}
+function closeSheet(){
+  $('overlay').classList.remove('show');
+  $('sheet').classList.remove('show');
+}
+function renderPicker(){
+  const selected = kpiKeys.slice();
+  const unselected = availableKeys.filter(k=>!selected.includes(k));
+  const rows = [...selected, ...unselected].map((k,_,arr)=>{
+    const meta=kpiMeta[k]||{label:k,icon:'📊'};
+    const isOn=selected.includes(k);
+    const idx=selected.indexOf(k);
+    return `<div class="kpi-row" data-key="${k}">
+      <label>
+        <input type="checkbox" ${isOn?'checked':''} onchange="toggleKpi('${k}',this.checked)">
+        <span class="icon">${meta.icon}</span><span>${meta.label}</span>
+      </label>
+      ${isOn ? `<div class="order-btns">
+        <button ${idx===0?'disabled':''} onclick="moveKpi('${k}',-1)" aria-label="Move up">▲</button>
+        <button ${idx===selected.length-1?'disabled':''} onclick="moveKpi('${k}',1)" aria-label="Move down">▼</button>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+  $('kpiPicker').innerHTML = rows;
+}
+function toggleKpi(key, on){
+  if(on){ if(!kpiKeys.includes(key)) kpiKeys.push(key); }
+  else { kpiKeys = kpiKeys.filter(k=>k!==key); }
+  renderPicker();
+}
+function moveKpi(key, dir){
+  const i=kpiKeys.indexOf(key); if(i<0) return;
+  const j=i+dir; if(j<0||j>=kpiKeys.length) return;
+  [kpiKeys[i],kpiKeys[j]]=[kpiKeys[j],kpiKeys[i]];
+  renderPicker();
+}
+window.toggleKpi=toggleKpi; window.moveKpi=moveKpi;
+
+async function saveKpis(){
+  try{
+    const r=await fetch(WORKER_BASE+'/home/kpi-prefs', {
+      method:'POST', headers:{...authHeaders(), 'Content-Type':'application/json'},
+      body:JSON.stringify({kpi_keys:kpiKeys})
+    });
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    closeSheet();
+    renderKpis();
+    toast('Saved');
+  }catch(e){ toast('Could not save — try again'); }
+}
+
+$('btnCustomize').onclick = openSheet;
+$('overlay').onclick = closeSheet;
+$('btnCancel').onclick = closeSheet;
+$('btnSave').onclick = saveKpis;
+
+/* ── Load ── */
+async function load(){
+  if(!sessionToken){
+    showError('Open Leadvyne from your dashboard to see your personalized Home.', {loginCta:true});
+    return;
+  }
+  try{
+    const session=await apiGet(WORKER_BASE+'/session/me');
+    clientRecord=session.client;
+    const [leadsData, prefs] = await Promise.all([
+      apiGet(`${WORKER_BASE}/nocodb/api/v2/tables/${LEADS_TABLE_ID}/records?where=(ClientId,eq,${session.client_id})&limit=2000&sort=-Date`),
+      apiGet(WORKER_BASE+'/home/kpi-prefs'),
+    ]);
+    leads = leadsData.list||[];
+    kpiMeta = prefs.kpi_meta; kpiKeys = prefs.kpi_keys; availableKeys = prefs.available;
+    renderHero();
+    renderKpis();
+    $('subline').textContent += ' · Updated ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  }catch(e){
+    showError('Your session has expired or is invalid.', {loginCta:true});
+  }
+}
+$('btnRefresh').onclick = load;
+load();
+</script>
+</body>
+</html>

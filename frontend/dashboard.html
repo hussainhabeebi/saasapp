@@ -830,6 +830,11 @@ const CONFIG = {
   CLIENTS_TABLE_ID: 'mxl33bg4wi70fqj',
   LEADS_TABLE_ID:   'mvg6rcw0ia5qqrx',
   WORKER_BASE,
+  // New Home page (SETUP.md "Home page (industry KPIs, Cloudflare Pages)") — a separate
+  // Cloudflare Pages deploy of frontend/home.html, not this file. openNewHome() below hands it
+  // the current session token via a URL fragment (never sent to a server, and stripped from the
+  // URL by home.html itself on load) since it's a different origin with no shared localStorage.
+  HOME_BASE: 'https://home.leadvyne.com',
   // Login is delegated to Authentik (OIDC, Authorization Code + PKCE — this is a public
   // SPA client with nowhere safe to store a secret). Each Leadvyne client (business) needs
   // a matching Authentik user whose email is set in that client's `authentik_email` field.
@@ -1066,6 +1071,7 @@ const ROLES = {
     <div class="hright">
       <span id="hUpdated"></span>
       <button class="icon-btn" id="hDarkToggle" title="Toggle dark mode" onclick="toggleDarkMode()">🌙</button>
+      <button class="icon-btn" title="Open the new industry-KPI Home page (beta)" onclick="openNewHome()">🏠✨</button>
       <button class="icon-btn" title="PDF Report" onclick="generateReport()">📄</button>
       <button class="icon-btn" id="hRefresh" title="Refresh">↻</button>
       <button class="icon-btn" id="hPasskey" title="Set up a Passkey — sign in with Face ID/Touch ID/Windows Hello instead of typing your password" onclick="openPasskeySetup()">🔑</button>
@@ -4812,6 +4818,14 @@ function onLiveViewingEvent(msg){
 }
 
 /* ── HOME ── */
+// Opens the new industry-KPI Home page (frontend/home.html, a separate Cloudflare Pages deploy —
+// SETUP.md "Home page (industry KPIs, Cloudflare Pages)") in a new tab, handing it this tab's
+// session token via a URL fragment so it can call the same Worker without its own login flow.
+function openNewHome(){
+  if(!sessionToken) return;
+  window.open(CONFIG.HOME_BASE+'/#t='+encodeURIComponent(sessionToken), '_blank', 'noopener');
+}
+
 function renderHome(){
   // Run KPI/greeting first so UI is never blank even if other renders fail
   try{populateCommandCenter(allLeads);}catch(e){}

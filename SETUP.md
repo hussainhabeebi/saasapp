@@ -2284,6 +2284,9 @@ NocoDB's "add this field/table by hand in the UI" process:
   `migrations/0031_real_estate.sql`. Lead-side fields (source, project interest, budget, urgency,
   zone, language, score, investor flag) stay plain NocoDB LEADS columns instead, same reasoning as
   B2B's Brand/Country above.
+- **Home page KPI picker** (which KPI tiles a client has chosen to show on `frontend/home.html`,
+  and in what order) — `migrations/0052_home_kpi_prefs.sql`. See "Home page (industry KPIs,
+  Cloudflare Pages)" below.
 
 All nine still read Stage/DealValue/ClosedAt/Name/Phone/etc. straight out of NocoDB wherever they
 need it — D1 only holds what's genuinely new, and every route that moved keeps its exact pre-D1
@@ -2295,6 +2298,58 @@ request/response shape, so no frontend page needed to change for this migration.
 3. `wrangler d1 migrations apply leadvyne-d1 --remote` (applies every migration file in
    `cloudflare-worker/migrations/` in order — running it again after adding a new migration file
    only applies what's new).
+
+## Home page (industry KPIs, Cloudflare Pages) (`frontend/home.html`, `cloudflare-worker/worker.js`)
+A second, lightweight Home screen — separate from `frontend/dashboard.html`'s own "🏠 Home" tab,
+which is unchanged and still the default landing screen. This one is a small, fully responsive
+(mobile + desktop) single-file page meant to be deployed as its **own Cloudflare Pages project**,
+independent from the Docker/nginx deploy the rest of `frontend/` uses, so it loads instantly at the
+edge. It reuses the existing Worker for everything — no parallel backend.
+
+**What it shows:** a KPI tile grid computed from the same NocoDB Leads data
+`dashboard.html`'s Home tab already reads (New Today, Total Leads, Hot Leads, Follow-ups Due, Bot
+Engaged, Conversion Rate, plus "Converted"/"Active" — whichever term the client's industry uses,
+see `HOME_KPI_INDUSTRY_LABELS` in `worker.js`, matching `INDUSTRIES` in `dashboard.html`). Every
+KPI is derived from the Leads list alone (no ecom-orders/SaaS-health-score/real-estate-deals
+joins), so "industry-aware" here means the *label* changes (e.g. real estate's "Deals Closed" vs.
+ecommerce's "Orders Closed"), not a different data source per industry — a client can still pick
+any of the 8 tiles regardless of industry via the ⚙️ customize sheet (drag order via ▲▼, not
+HTML5 drag-and-drop, since that doesn't work reliably on touch).
+
+**Auth — no login flow of its own.** This page is only ever opened *from* an already-authenticated
+`dashboard.html` tab (the header's 🏠✨ button, `openNewHome()`), which hands it the current session
+token via a URL fragment (`home.html#t=<token>` — never sent to a server, and stripped from the
+address bar immediately on load, see `bridgeToken()`). Cloudflare Pages is a different origin from
+`app.leadvyne.com`, so nothing is shared automatically; the token gets its own `localStorage` entry
+on the Pages origin so re-opening the tab later resumes the session the same way
+`dashboard.html`'s own resume flow does, via `GET /session/me`. If there's no token (or the Worker
+rejects it), the page shows "open your dashboard to sign in" and links back to `APP_BASE` — it
+deliberately does not duplicate Authentik's OIDC flow.
+
+**Endpoints (`cloudflare-worker/worker.js`):**
+- `GET /home/kpi-prefs` — returns the client's saved KPI selection/order (or a sensible
+  industry-specific default on first load, `defaultHomeKpisForIndustry()`), plus the label/icon
+  metadata (`kpi_meta`) and the full list of valid keys (`available`).
+- `POST /home/kpi-prefs` — saves `{kpi_keys:[...]}`, filtered against the known key set, into
+  `home_kpi_prefs` (`migrations/0052_home_kpi_prefs.sql`, one row per client — account-level, not
+  per-teammate, matching how every other account-wide setting in this app works).
+
+Everything else (the actual lead numbers) goes straight through the existing
+`GET /session/me` and `/nocodb/...` passthrough — both already session-scoped and CORS-gated, no
+new read endpoint needed.
+
+**One-time setup:**
+1. Run the D1 migration (see "Storage split" above) — `wrangler d1 migrations apply leadvyne-d1
+   --remote` picks up `0052_home_kpi_prefs.sql` along with everything else pending.
+2. Add the Pages project's domain to `ALLOWED_ORIGINS` in `wrangler.toml` (already includes
+   `https://home.leadvyne.com` as the default placeholder — change it if you deploy elsewhere) and
+   redeploy the Worker.
+3. Deploy `frontend/home.html` as its own Cloudflare Pages project (Pages → Create → point it at
+   this repo/directory, or drag-and-drop the single file — no build step). If you use a different
+   domain than `home.leadvyne.com`, update `WORKER_BASE`/`APP_BASE` constants at the top of
+   `home.html`'s `<script>` (they must match your real Worker URL and `dashboard.html` URL) and the
+   `HOME_BASE` constant in `dashboard.html`'s `CONFIG` (so the 🏠✨ button in the header points at
+   the right place).
 
 ## Review Request module (`frontend/broadcast.html` — "⭐ Reviews" tab, `cloudflare-worker/worker.js`)
 Automated "ask for a review N days after a deal closes" — a dedicated module, not built on top of

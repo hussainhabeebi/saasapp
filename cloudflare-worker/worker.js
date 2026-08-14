@@ -644,6 +644,82 @@ async function handleSessionMe(request, env){
   return json({client_id:String(rec.Id), client:safeClient(rec), session_token});
 }
 
+/* ── Home page (industry-aware KPIs, Cloudflare Pages) — SETUP.md "Home page (industry KPIs,
+   Cloudflare Pages)". frontend/home.html computes the KPI numbers itself, client-side, from the
+   same /nocodb Leads passthrough dashboard.html already uses — no new read endpoint needed for
+   that. This is only the picker state (which KPI tiles a client has chosen + what order), which
+   has no other home, same D1-sidecar rationale as review_config/referral_codes (migrations/0001).
+   Every KPI is computable from the Leads list alone (no ecom-orders/SaaS-health-score/real-estate
+   -deals joins), so "industry-aware" here means booked/active swap to that industry's own term
+   (matching INDUSTRIES in dashboard.html) rather than a different data source per industry. ── */
+const HOME_KPI_INDUSTRY_LABELS = {
+  general:     {booked:'Converted',     active:'Active'},
+  insurance:   {booked:'Policies Sold', active:'Active Quotes'},
+  real_estate: {booked:'Deals Closed',  active:'Active Buyers'},
+  healthcare:  {booked:'Appointments',  active:'Active Cases'},
+  education:   {booked:'Enrollments',   active:'Inquiries'},
+  automotive:  {booked:'Cars Sold',     active:'Test Drives'},
+  travel:      {booked:'Bookings Made', active:'Active Inquiries'},
+  ecommerce:   {booked:'Orders Closed', active:'Active Inquiries'},
+  consultancy: {booked:'Placements',    active:'Active Candidates'},
+  b2b:         {booked:'Deals Closed',  active:'Active Enquiries'},
+  hospitality: {booked:'Stays Booked',  active:'Active Inquiries'},
+  saas_digital_marketing: {booked:'Deals Closed', active:'Active Prospects'},
+};
+const HOME_KPI_META = {
+  new_today:       {label:'New Today',       icon:'💬'},
+  total_leads:     {label:'Total Leads',     icon:'👥'},
+  hot_leads:       {label:'Hot Leads',       icon:'🔥'},
+  booked:          {label:'Converted',       icon:'✅'}, // label overridden per industry, see below
+  active:          {label:'Active',          icon:'📌'}, // label overridden per industry, see below
+  conversion_rate: {label:'Conversion Rate', icon:'📈'},
+  followups_due:   {label:'Follow-ups Due',  icon:'⏰'},
+  bot_engaged:     {label:'Bot Engaged',     icon:'🤖'},
+};
+const HOME_KPI_DEFAULT_ORDER = Object.keys(HOME_KPI_META);
+function homeKpiMetaForIndustry(industry){
+  const overrides=HOME_KPI_INDUSTRY_LABELS[industry]||HOME_KPI_INDUSTRY_LABELS.general;
+  const meta={};
+  for(const [k,v] of Object.entries(HOME_KPI_META)) meta[k]={...v};
+  meta.booked={...meta.booked, label:overrides.booked};
+  meta.active={...meta.active, label:overrides.active};
+  return meta;
+}
+// A short, curated starting set per industry rather than dumping all 8 tiles on a first-time
+// user — still fully overridable via the customize panel, which offers every HOME_KPI_DEFAULT_ORDER key.
+function defaultHomeKpisForIndustry(industry){
+  if(industry==='ecommerce') return ['new_today','booked','conversion_rate','hot_leads'];
+  if(industry==='real_estate') return ['active','booked','hot_leads','followups_due'];
+  if(industry==='travel'||industry==='hospitality') return ['new_today','active','booked','hot_leads'];
+  return ['new_today','total_leads','hot_leads','booked'];
+}
+async function handleHomeKpiPrefsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const rec=await getClientById(env, payload.cid);
+  if(!rec||!rec.Id) return json({error:'Client not found'}, 404);
+  const industry=rec.industry||'general';
+  let kpi_keys=defaultHomeKpisForIndustry(industry);
+  try{
+    const row=await env.DB.prepare(`SELECT kpi_keys FROM home_kpi_prefs WHERE client_id=?`).bind(Number(payload.cid)).first();
+    if(row?.kpi_keys){ const parsed=JSON.parse(row.kpi_keys); if(Array.isArray(parsed)&&parsed.length) kpi_keys=parsed.filter(k=>HOME_KPI_DEFAULT_ORDER.includes(k)); }
+  }catch(e){}
+  if(!kpi_keys.length) kpi_keys=defaultHomeKpisForIndustry(industry);
+  return json({industry, kpi_keys, kpi_meta:homeKpiMetaForIndustry(industry), available:HOME_KPI_DEFAULT_ORDER});
+}
+async function handleHomeKpiPrefsSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {kpi_keys}=await request.json().catch(()=>({}));
+  if(!Array.isArray(kpi_keys)||!kpi_keys.length) return json({error:'kpi_keys must be a non-empty array'}, 400);
+  const clean=kpi_keys.filter(k=>HOME_KPI_DEFAULT_ORDER.includes(k));
+  if(!clean.length) return json({error:'No recognized KPI keys'}, 400);
+  await env.DB.prepare(`INSERT INTO home_kpi_prefs (client_id, kpi_keys, updated_at) VALUES (?,?,?)
+    ON CONFLICT(client_id) DO UPDATE SET kpi_keys=excluded.kpi_keys, updated_at=excluded.updated_at`)
+    .bind(Number(payload.cid), JSON.stringify(clean), new Date().toISOString()).run();
+  return json({ok:true, kpi_keys:clean});
+}
+
 /* ── Team user creation (User Management) — provisions a real Authentik account (username +
    password) for a teammate directly, instead of requiring them to self-serve through Authentik's
    own hosted signup page first. Uses a service-account API token (AUTHENTIK_API_TOKEN, a Worker
@@ -18983,6 +19059,8 @@ export default {
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
       else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
+      else if(url.pathname==='/home/kpi-prefs' && request.method==='GET'){ res=await handleHomeKpiPrefsGet(request, env); }
+      else if(url.pathname==='/home/kpi-prefs' && request.method==='POST'){ res=await handleHomeKpiPrefsSave(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }

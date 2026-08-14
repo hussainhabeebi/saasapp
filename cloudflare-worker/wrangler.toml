@@ -99,7 +99,10 @@ new_sqlite_classes = ["ClientUpdatesHub"]
 [vars]
 NOCODB_BASE = "https://whizz.aiingo.com"
 AUTHENTIK_BASE = "https://secure.leadvyne.com"
-ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com"
+# home.leadvyne.com is the new Cloudflare Pages-hosted Home page (SETUP.md "Home page (industry
+# KPIs, Cloudflare Pages)") — a separate deploy from app.leadvyne.com (still Docker/nginx), calling
+# this same Worker cross-origin for /session/me, /nocodb, and /home/kpi-prefs.
+ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com,https://home.leadvyne.com"
 # Channels module — base URL of the Chatwoot install new client accounts are provisioned on.
 CHATWOOT_INSTANCE_BASE = "https://app.aiingo.com"
 # Billing module — see SETUP.md "Billing module"
