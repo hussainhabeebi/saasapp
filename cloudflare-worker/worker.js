@@ -7651,7 +7651,14 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
   // choose to share it earlier, e.g. as soon as a customer asks about size/stock and sounds ready to
   // move forward. Framed as available-if-natural, not forced into every reply, so a customer who
   // only asked "is this in stock" doesn't get an unsolicited checkout link shoved at them.
-  if(checkoutLink) sys+=`\n\nYou may also share this checkout link if it naturally helps answer their question or they seem ready to move forward (for example, right after confirming their size or stock is available) — not forced into every reply, only when it fits: ${checkoutLink}`;
+  if(checkoutLink){
+    sys+=`\n\nYou may also share this checkout link if it naturally helps answer their question or they seem ready to move forward (for example, right after confirming their size or stock is available) — not forced into every reply, only when it fits: ${checkoutLink}`;
+  }else{
+    // No link was configured for this product — explicit guardrail against the model inventing
+    // one anyway (e.g. a plausible-looking store/product URL guessed from the product name), which
+    // is exactly the kind of hallucinated link a customer could click and land nowhere real.
+    sys+='\n\nNo order/checkout link is available for this product right now — never invent, guess, or make up a URL of any kind (not a store link, not a product link, nothing built from the product name). If the customer asks for a link, tell them you\'ll have the team follow up, or ask what they\'d like to order so it can be arranged — do not output anything that looks like a URL.';
+  }
   sys+=`\n\nRespond ONLY in ${lang}. Never switch languages.`;
   return sys;
 }
@@ -9210,6 +9217,11 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
     // light of what was just discussed. detectOrderSignal (the separate order-link auto-send) has
     // its own version of this same instruction; this is the main conversational reply's version.
     sys+=' A short reply that only mentions a size, color, quantity, or says something like "that one"/"the green one" — with no product name — almost always refers to whichever specific product you (the assistant) most recently described in the Recent Conversation above. Resolve it to that exact product (use its real SKU/price/stock from the catalog above) instead of treating it as a fresh, unscoped catalog search — only ask which product they mean if the recent conversation genuinely doesn\'t make it clear. If specific details are not available even after resolving the product, politely say you will connect them with support.';
+    // Explicit no-hallucination guardrail: the only link this prompt is ever handed is the literal
+    // "## Order Link" line above (client-wide external_store_link, only included when actually
+    // set) — never a per-product URL. Nothing here should ever tempt the model into constructing
+    // a plausible-looking product/store URL out of the product's name/sku itself.
+    sys+=' Never invent, guess, or construct a link/URL of any kind — especially not one built from a product\'s name or SKU. Only ever share a link if one is literally given to you above (an "Order Link" line, or a product\'s own link field); if no link was given, do not output anything that looks like a URL.';
   } else if(industry==='travel'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. A short reply like "the 30 min one" or "that package" with no name almost always refers to whichever specific package/service you most recently described in the Recent Conversation above — resolve it to that one rather than asking a fresh, unscoped question. If specific details are not available, politely say you will connect them with an advisor.';
   } else if(industry==='saas_digital_marketing'){
