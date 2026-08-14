@@ -18768,8 +18768,13 @@ function reCrud(table, fields){
   function coerce(f, v){
     if(f.type==='number') return (v===undefined||v===null||v==='')?0:(Number(v)||0);
     if(f.type==='bool') return v?1:0;
-    if(f.type==='nullable') return (v===undefined||v===null||v==='')?null:String(v).slice(f.maxLen||1000);
-    return (v===undefined||v===null)?'':String(v).slice(f.maxLen||1000);
+    // String.prototype.slice(n) with a single argument means "from index n to the end", not "the
+    // first n characters" — for any value shorter than maxLen (i.e. virtually every real input,
+    // since maxLen is 200-2000) that silently returned '' instead of the value, truncating every
+    // text field on every table this factory backs (re_projects, re_site_visits, re_documents,
+    // healthcare_departments/doctors, ...) down to an empty string on both create and update.
+    if(f.type==='nullable') return (v===undefined||v===null||v==='')?null:String(v).slice(0, f.maxLen||1000);
+    return (v===undefined||v===null)?'':String(v).slice(0, f.maxLen||1000);
   }
   async function list(request, env){
     const payload=await requireSession(request, env);
