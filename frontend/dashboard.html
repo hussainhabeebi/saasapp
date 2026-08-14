@@ -147,6 +147,16 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .kpi-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:22px}
 @media(max-width:1200px){.kpi-grid{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:600px){.kpi-grid{grid-template-columns:repeat(2,1fr)}}
+/* Team/Reports/Recruit/Appointments/Hospitality stat rows (teamPerfStats, reportsSalesStats,
+   etc.) were each hand-built with an inline style="...grid-template-columns:repeat(4,1fr)..."
+   (or repeat(5,1fr) for the Meta Ads row) instead of the .kpi-grid class above, so none of them
+   got a mobile override — on a 375px phone each stat tile squeezes to ~70-85px. Rather than edit
+   every one of those ~11 divs individually, this one rule targets them all by matching the
+   literal inline style text (a valid, if unusual, CSS attribute-selector technique) — collapses
+   any inline 4- or 5-column stat grid to 2 columns under 600px, same breakpoint as .kpi-grid. */
+@media(max-width:600px){
+  div[style*="repeat(4,1fr)"],div[style*="repeat(5,1fr)"]{grid-template-columns:repeat(2,1fr)!important}
+}
 .kpi-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow);transition:box-shadow .2s,transform .2s}
 .kpi-card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
 .kpi-card.accent{background:linear-gradient(135deg,#0D9C93,#2DD4BF);border-color:transparent}
@@ -430,6 +440,11 @@ tr:hover td{background:#FAFCFB}
 #overlay{position:fixed;inset:0;background:rgba(10,22,16,.55);z-index:100;display:none}
 #overlay.show{display:block}
 .modal{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-radius:24px 24px 0 0;z-index:101;transform:translateY(100%);transition:transform .35s cubic-bezier(.32,.72,0,1);max-height:92vh;display:flex;flex-direction:column}
+/* A number of modals set an inline style="width:NNNpx" (meant only for the desktop centered-card
+   layout below) which, combined with this base rule's left:0;right:0, over-constrains the box and
+   makes the mobile bottom sheet render wider than the viewport instead of full-width. !important
+   here is a deliberate, narrow override of those inline styles rather than editing each one. */
+@media(max-width:767px){.modal{width:auto!important}}
 @media(min-width:768px){.modal{top:50%;left:50%;right:auto;bottom:auto;width:540px;border-radius:var(--r);transform:translate(-50%,-42%);opacity:0;pointer-events:none;transition:transform .25s,opacity .25s;max-height:85vh}}
 .modal.open{transform:translateY(0)}
 @media(min-width:768px){.modal.open{transform:translate(-50%,-50%);opacity:1;pointer-events:auto}}
