@@ -345,8 +345,9 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <select class="s-input" id="cfgOrderLinkEnabled">
         <option value="Yes">Send a checkout link — customer completes the order on your store page</option>
         <option value="No">Collect the order in chat — bot asks for items and delivery address, no link sent</option>
+        <option value="Human">Talk to sales team — bot hands the customer off to your team, no link or in-chat collection</option>
       </select>
-      <div class="s-hint">Default is on: the bot sends a checkout link once a customer confirms they want to order. Turn this off to keep the whole order inside WhatsApp instead — the bot asks what they'd like to order and their delivery address right there in chat, then logs the order for your team to confirm (same "pending" status a link-based order gets on the Orders page).</div>
+      <div class="s-hint">Default is on: the bot sends a checkout link once a customer confirms they want to order. Turn this off to keep the whole order inside WhatsApp instead — the bot asks what they'd like to order and their delivery address right there in chat, then logs the order for your team to confirm (same "pending" status a link-based order gets on the Orders page). Choose "Talk to sales team" to skip both — the bot tells the customer someone from your team will reach out, tags the chat for handover, and logs a pending order for your team to take over from there.</div>
     </div>
     <div class="s-row">
       <button class="save-btn" onclick="saveOrderLinkEnabled()">Save</button>
@@ -791,7 +792,7 @@ async function init() {
   if (clientRecord.review_link)         document.getElementById('cfgReviewLink').value    = clientRecord.review_link;
   if (clientRecord.support_phone)       document.getElementById('cfgSupportPhone').value  = clientRecord.support_phone;
   document.getElementById('cfgLinkOnEnquiry').value = clientRecord.ecom_link_on_enquiry === 'Yes' ? 'Yes' : 'No';
-  document.getElementById('cfgOrderLinkEnabled').value = clientRecord.ecom_order_link_enabled === 'No' ? 'No' : 'Yes';
+  document.getElementById('cfgOrderLinkEnabled').value = ['No','Human'].includes(clientRecord.ecom_order_link_enabled) ? clientRecord.ecom_order_link_enabled : 'Yes';
   if (!clientRecord.wa_display_phone && !clientRecord.support_phone) {
     document.getElementById('cfgSupportPhone').placeholder = '+91 94969 71950 — required, no order button will show without this or Channels WhatsApp';
   }

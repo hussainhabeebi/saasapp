@@ -10906,6 +10906,27 @@ async function handleEngineWebhook(request, env, secret){
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           orderHandledInline=true;
+        } else if(detection.mode==='order' && product && c.ecom_order_link_enabled==='Human'){
+          // "Talk to sales team" (ecom.html → Settings → Order Link Sending) — skips both the
+          // checkout link and the in-chat collection ladder, handing the customer straight to a
+          // human. Reuses the same handover machinery the 'human' route already drives further
+          // down this function (engineSendHandoverLabel tags the Chatwoot conversation,
+          // engineBuildLeadUpsertBody's isHuman check sets Stage='human_handover'/Handover='Yes'
+          // once routing.route is 'human' at that point) rather than inventing a second handover
+          // path — routing.humanReason='order_handoff' is a new value distinct from 'explicit'/
+          // 'final_stage_positive'/'low_confidence' specifically so the safety-net reset just below
+          // this whole block (which un-sets a stale pre-existing 'human' route once a product reply
+          // has been sent instead) knows to leave THIS one alone — it's not stale, it's the point.
+          sentText=await engineLocalizeReply(env, c, "Great choice! 🛍️ I'll connect you with our sales team right away — someone will reach out shortly to help you complete this order.", replyLang);
+          routing.reply=sentText;
+          routing.route='human';
+          routing.humanReason='order_handoff';
+          if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
+          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          await engineSendHandoverLabel(c, convId);
+          await logPendingOrder(env, c, clientId, phone, name, product);
+          orderHandledInline=true;
         } else if(detection.mode==='order' && product){
           const link=buildCheckoutLink(c, clientId, detection.sku, product);
           if(link){
@@ -11017,8 +11038,11 @@ async function handleEngineWebhook(request, env, secret){
       // because humanReason wasn't 'explicit'), routing.route is still 'human' at this point —
       // engineBuildLeadUpsertBody's isHuman check would otherwise force Stage='human_handover'/
       // Handover='Yes' onto the lead even though no actual handover happened this turn, just a
-      // product reply. Reset it so the lead record matches what was actually sent.
-      if(orderHandledInline && routing.route==='human') routing.route='ecom_faq';
+      // product reply. Reset it so the lead record matches what was actually sent. Excludes
+      // humanReason==='order_handoff' — that's the "Talk to sales team" order-link-sending branch
+      // above deliberately routing to human just now, not a stale pre-existing classification to
+      // undo.
+      if(orderHandledInline && routing.route==='human' && routing.humanReason!=='order_handoff') routing.route='ecom_faq';
     }
 
     // A brand-new ecom lead's very first message, when this client has product categories
