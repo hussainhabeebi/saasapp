@@ -9523,7 +9523,24 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
   const raw=(items||[]).filter(it=>it && (it.title||it.value));
   const isList=raw.length>3;
   const titleCap=isList?24:20;
-  const trimmedItems=raw.slice(0,10).map(it=>({title:engineTruncateButtonTitle(it?.title||it?.value||'', titleCap), value:String(it?.value||it?.title||'')})).filter(it=>it.title);
+  // WhatsApp Cloud API list rows (unlike plain reply buttons, which have no description field at
+  // all) carry a separate ~72-char description line alongside the 24-char title — real observed
+  // complaint: a long option name ("Semi Medicated Orthopedic Mattress") truncates down to "Semi
+  // Medicated…" with no way to fit more, even though the title's 24-char cap is a hard WhatsApp
+  // platform limit we can't raise. Whenever truncation actually happened, carry the fuller
+  // (still-capped, at description's own real limit) text there too, so a list row loses as little
+  // as the platform allows instead of only ever showing the truncated title. Additive and
+  // best-effort: unlike title/value (confirmed read by Chatwoot's own
+  // WhatsappCloudService#create_payload_based_on_items — see this function's own comment below),
+  // whether that same code path forwards a `description` key through to Meta isn't confirmed the
+  // same way, but an unrecognized JSON key is harmless if it's simply ignored downstream.
+  const trimmedItems=raw.slice(0,10).map(it=>{
+    const full=String(it?.title||it?.value||'').trim();
+    const title=engineTruncateButtonTitle(full, titleCap);
+    const item={title, value:String(it?.value||it?.title||'')};
+    if(isList && title.endsWith('…')) item.description=engineTruncateButtonTitle(full, 72);
+    return item;
+  }).filter(it=>it.title);
   if(!trimmedItems.length) return engineSendChatwootReply(env, c, clientId, convId, text);
   const seenTitles=new Set();
   const hasCollision=trimmedItems.some(it=>{
