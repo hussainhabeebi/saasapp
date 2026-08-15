@@ -9257,6 +9257,14 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
     // set) — never a per-product URL. Nothing here should ever tempt the model into constructing
     // a plausible-looking product/store URL out of the product's name/sku itself.
     sys+=' Never invent, guess, or construct a link/URL of any kind — especially not one built from a product\'s name or SKU. Only ever share a link if one is literally given to you above (an "Order Link" line, or a product\'s own link field); if no link was given, do not output anything that looks like a URL.';
+    // Observed real failure (Cloudnine Beddings): the assistant asked "Which REPOSE mattress are
+    // you interested in?" with no options listed, the customer answered "Only 1" then "Any" (a
+    // real answer — "you choose" — not a product name), and got the exact same clarifying question
+    // back twice more, because nothing told the model a vague non-answer means "stop asking, just
+    // recommend one" rather than "ask again." Paired with the OPTIONS: instruction above so, when
+    // this does need to ask, the customer gets real tappable names instead of a bare question with
+    // nothing to answer with.
+    sys+=' If you already asked the customer to pick a specific product/model in your immediately preceding message (check Recent Conversation above) and their reply does not name one — a vague non-answer like "any", "only 1", "you choose", "whatever", or similar — do NOT ask the same or a similar clarifying question again. Instead pick ONE real product from the Product Catalog above that best fits what has been discussed (their most in-stock or most-mentioned match if nothing else distinguishes them), state its real name, price, and key details, and invite them to confirm or ask for something else. Whenever you do ask the customer to choose between products, name only real products that are literally listed in the Product Catalog above — never a made-up name, and never a bare "which one?" with no options actually named.';
   } else if(industry==='travel'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. A short reply like "the 30 min one" or "that package" with no name almost always refers to whichever specific package/service you most recently described in the Recent Conversation above — resolve it to that one rather than asking a fresh, unscoped question. If specific details are not available, politely say you will connect them with an advisor.';
   } else if(industry==='saas_digital_marketing'){
