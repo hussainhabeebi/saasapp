@@ -7036,25 +7036,21 @@ async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resol
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductTestimonial', e, {clientId, convId}); }
 }
 
-// Explicit "give me the full details/description" phrasing — deliberately narrower than a plain
-// product enquiry (which the AI already answers conversationally, only what was actually asked —
-// see engineBuildProductEnquirySystemPrompt's own "do not recite every field like a spec sheet"
-// instruction) so this doesn't fire on every ordinary question and dump the whole description
-// unasked-for.
-const ECOM_PRODUCT_DETAILS_KEYWORD_RE=/\b(more details?|full details?|more info(?:rmation)?|product details?|tell me more|full description|describe (?:it|this)|specifications?|specs?)\b/i;
-
-/* ── PRODUCT DESCRIPTION on request — no new field, reuses the existing product `description`
-   (ecom.html's Description textarea, already used as AI grounding context via
-   engineBuildProductEnquirySystemPrompt) as a customer-facing message in its own right. The AI's
-   own enquiry reply stays conversational/partial as before; this sends the full description
-   verbatim as a supplementary follow-up, only when the customer's own wording asks for it
-   specifically — same layering as engineMaybeSendProductTestimonial/engineMaybeSendPromoOffer
-   above (a follow-up after the AI's own reply, not a replacement for it). No dedup — a customer
-   asking again later (e.g. they forgot) should get it again, same as the promo/keyword replies. */
-async function engineMaybeSendProductDescription(env, c, clientId, convId, userText, product){
-  if(c.industry!=='ecommerce' || !userText || !convId || !product?.description) return;
+/* ── PRODUCT DESCRIPTION whenever a product is asked about — no new field, reuses the existing
+   product `description` (ecom.html's Description textarea, already used as AI grounding context
+   via engineBuildProductEnquirySystemPrompt) as a customer-facing message in its own right. The
+   AI's own enquiry reply stays conversational/partial as before; this sends the full description
+   verbatim as a supplementary follow-up — same layering as engineMaybeSendProductTestimonial/
+   engineMaybeSendPromoOffer above (a follow-up after the AI's own reply, not a replacement for
+   it). Previously gated on the customer's wording matching ECOM_PRODUCT_DETAILS_KEYWORD_RE
+   ("more details", "full description", etc.) with no dedup at all; per explicit product
+   direction this now sends whenever any product is confidently matched (same trigger as the
+   photo), capped to once per (lead, product, calendar day) by the caller passing the same
+   engineClaimProductImageForToday claim the photo/media bundle already uses — see
+   sendProductDescription in handleEngineWebhook.  */
+async function engineMaybeSendProductDescription(env, c, clientId, convId, product){
+  if(c.industry!=='ecommerce' || !convId || !product?.description) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
-  if(!ECOM_PRODUCT_DETAILS_KEYWORD_RE.test(userText)) return;
   try{
     const heading=product.name?`📋 *${product.name}*\n\n`:'📋 ';
     await engineSendChatwootReply(env, c, clientId, convId, `${heading}${product.description}`);
@@ -10827,6 +10823,12 @@ async function handleEngineWebhook(request, env, secret){
     // engineMaybeSendProductTestimonial, called later once resolvedLeadId exists, knows which
     // product (if any) this turn actually resolved to.
     let matchedProduct=null;
+    // Set alongside matchedProduct, inside the order-detection block below, by the same
+    // engineClaimProductImageForToday claim that already gates the photo/media bundle — reused
+    // here so the full product description (engineMaybeSendProductDescription, called later once
+    // resolvedLeadId exists) rides the exact same "once per (lead, product, calendar day)" cadence
+    // as the photo, instead of its own separate dedup rule.
+    let sendProductDescription=false;
     // Chat-based order collection (ecom_order_link_enabled==='No', see the toggle in ecom.html →
     // Settings) — a dedicated two-step ladder (order_collect_items → order_collect_address →
     // finalize) that fully overrides whatever engineRouteFlow decided for these two stages only,
@@ -10901,6 +10903,7 @@ async function handleEngineWebhook(request, env, secret){
         // photo/media bundle — see engineClaimProductImageForToday's own comment for why this is
         // gated per (lead, product, calendar day) rather than resent on every repeat question.
         const sendProductImage=product ? await engineClaimProductImageForToday(env, clientId, state.leadId, product.Id) : false;
+        sendProductDescription=sendProductImage;
         if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
           // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
           // instead: ask for the item(s) now, address next turn, then finalizeChatOrder writes the
@@ -11144,8 +11147,13 @@ async function handleEngineWebhook(request, env, secret){
           // No clarifying question this turn, but the answer named exactly one catalog product with
           // enough confidence to act on — offer the same one-tap next steps the deterministic
           // category picker gets. Values are phrased to land on existing keyword/classifier matches
-          // (order detection, ECOM_PRODUCT_DETAILS_KEYWORD_RE, WANTS_HUMAN) the same way a customer
-          // typing them by hand already does — no new receive-side handling needed.
+          // (order detection, WANTS_HUMAN) the same way a customer typing them by hand already does
+          // — no new receive-side handling needed. "More details" itself no longer needs a keyword
+          // match to trigger the description send (engineMaybeSendProductDescription now fires
+          // automatically whenever this product resolves and today's per-lead-per-product claim
+          // hasn't already been used) — tapping it just re-asks about the product like any other
+          // enquiry, and gets the description bundled in the same way a first-time ask would,
+          // unless it was already sent today.
           const mentionedProduct=await ecomDetectMentionedProduct(env, clientId, reply);
           if(mentionedProduct){
             faqQuickReplies=[
@@ -11252,8 +11260,9 @@ async function handleEngineWebhook(request, env, secret){
     // Testimonials (migrations/0046_ecom_testimonials.sql) — matchedProduct is whatever
     // product the order-detection block above resolved this turn, if any.
     await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
-    // Full product description on explicit request — same matchedProduct.
-    await engineMaybeSendProductDescription(env, c, clientId, convId, userText, matchedProduct);
+    // Full product description — same matchedProduct, gated by the same once-per-(lead, product,
+    // day) claim as the photo/media bundle (sendProductDescription, set alongside it above).
+    if(sendProductDescription) await engineMaybeSendProductDescription(env, c, clientId, convId, matchedProduct);
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
     // background promise left running past the returned Response risks being cut off mid-flight.
