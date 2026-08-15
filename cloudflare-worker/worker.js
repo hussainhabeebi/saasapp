@@ -7036,25 +7036,23 @@ async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resol
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductTestimonial', e, {clientId, convId}); }
 }
 
-// Explicit "give me the full details/description" phrasing — deliberately narrower than a plain
-// product enquiry (which the AI already answers conversationally, only what was actually asked —
-// see engineBuildProductEnquirySystemPrompt's own "do not recite every field like a spec sheet"
-// instruction) so this doesn't fire on every ordinary question and dump the whole description
-// unasked-for.
-const ECOM_PRODUCT_DETAILS_KEYWORD_RE=/\b(more details?|full details?|more info(?:rmation)?|product details?|tell me more|full description|describe (?:it|this)|specifications?|specs?)\b/i;
-
-/* ── PRODUCT DESCRIPTION on request — no new field, reuses the existing product `description`
-   (ecom.html's Description textarea, already used as AI grounding context via
-   engineBuildProductEnquirySystemPrompt) as a customer-facing message in its own right. The AI's
-   own enquiry reply stays conversational/partial as before; this sends the full description
-   verbatim as a supplementary follow-up, only when the customer's own wording asks for it
-   specifically — same layering as engineMaybeSendProductTestimonial/engineMaybeSendPromoOffer
-   above (a follow-up after the AI's own reply, not a replacement for it). No dedup — a customer
-   asking again later (e.g. they forgot) should get it again, same as the promo/keyword replies. */
-async function engineMaybeSendProductDescription(env, c, clientId, convId, userText, product){
-  if(c.industry!=='ecommerce' || !userText || !convId || !product?.description) return;
+/* ── PRODUCT DESCRIPTION whenever a product is asked about — no new field, reuses the existing
+   product `description` (ecom.html's Description textarea, already used as AI grounding context
+   via engineBuildProductEnquirySystemPrompt) as a customer-facing message in its own right. The
+   AI's own enquiry reply stays conversational/partial as before; this sends the full description
+   verbatim as a supplementary follow-up — same layering as engineMaybeSendProductTestimonial/
+   engineMaybeSendPromoOffer above (a follow-up after the AI's own reply, not a replacement for
+   it). Previously gated on the customer's wording matching ECOM_PRODUCT_DETAILS_KEYWORD_RE
+   ("more details", "full description", etc.) with no dedup at all; per explicit product
+   direction this now sends whenever any product is confidently matched (same trigger as the
+   photo), capped to once per (lead, product, calendar day) by the caller passing the same
+   engineClaimProductImageForToday claim (sendProductImage) the photo/media bundle already uses.
+   Called right before engineMaybeSendProductMedia at each order-detection branch in
+   handleEngineWebhook, so the customer sees description → extra images → audio → video → PDF,
+   in that order, as one bundle. */
+async function engineMaybeSendProductDescription(env, c, clientId, convId, product){
+  if(c.industry!=='ecommerce' || !convId || !product?.description) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
-  if(!ECOM_PRODUCT_DETAILS_KEYWORD_RE.test(userText)) return;
   try{
     const heading=product.name?`📋 *${product.name}*\n\n`:'📋 ';
     await engineSendChatwootReply(env, c, clientId, convId, `${heading}${product.description}`);
@@ -10898,8 +10896,9 @@ async function handleEngineWebhook(request, env, secret){
         const product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
         if(product) matchedProduct=product;
         // Claimed once per turn, shared by every branch below that might send this product's
-        // photo/media bundle — see engineClaimProductImageForToday's own comment for why this is
-        // gated per (lead, product, calendar day) rather than resent on every repeat question.
+        // description/photo/media bundle — see engineClaimProductImageForToday's own comment for
+        // why this is gated per (lead, product, calendar day) rather than resent on every repeat
+        // question.
         const sendProductImage=product ? await engineClaimProductImageForToday(env, clientId, state.leadId, product.Id) : false;
         if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
           // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
@@ -10912,6 +10911,10 @@ async function handleEngineWebhook(request, env, secret){
           routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
           if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
+          // Description first, then the extra-angle photos/audio/video/PDF bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio,
+          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           orderHandledInline=true;
         } else if(detection.mode==='order' && product && c.ecom_order_link_enabled==='Human'){
@@ -10931,6 +10934,10 @@ async function handleEngineWebhook(request, env, secret){
           routing.humanReason='order_handoff';
           if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
+          // Description first, then the extra-angle photos/audio/video/PDF bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio,
+          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           await engineSendHandoverLabel(c, convId);
           await logPendingOrder(env, c, clientId, phone, name, product);
@@ -10942,7 +10949,11 @@ async function handleEngineWebhook(request, env, secret){
             routing.reply=sentText;
             if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
             await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-            if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+            // Description first, then the extra-angle photos/audio/video/PDF bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio,
+          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
+          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
             await logPendingOrder(env, c, clientId, phone, name, product);
           }else{
             // No product-level link and no client-wide external_store_link configured — nothing to
@@ -10955,7 +10966,11 @@ async function handleEngineWebhook(request, env, secret){
             routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
             if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
             await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-            if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+            // Description first, then the extra-angle photos/audio/video/PDF bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio,
+          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
+          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           }
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product){
@@ -10984,6 +10999,10 @@ async function handleEngineWebhook(request, env, secret){
           // comes up again the same day.
           if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
+          // Description first, then the extra-angle photos/audio/video/PDF bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio,
+          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           // Only logged as a pending order when the link was actually made available this turn —
           // an enquiry reply with the toggle off shares no link, so there's nothing to log yet.
@@ -11144,8 +11163,13 @@ async function handleEngineWebhook(request, env, secret){
           // No clarifying question this turn, but the answer named exactly one catalog product with
           // enough confidence to act on — offer the same one-tap next steps the deterministic
           // category picker gets. Values are phrased to land on existing keyword/classifier matches
-          // (order detection, ECOM_PRODUCT_DETAILS_KEYWORD_RE, WANTS_HUMAN) the same way a customer
-          // typing them by hand already does — no new receive-side handling needed.
+          // (order detection, WANTS_HUMAN) the same way a customer typing them by hand already does
+          // — no new receive-side handling needed. "More details" itself no longer needs a keyword
+          // match to trigger the description send (engineMaybeSendProductDescription now fires
+          // automatically whenever this product resolves and today's per-lead-per-product claim
+          // hasn't already been used) — tapping it just re-asks about the product like any other
+          // enquiry, and gets the description bundled in the same way a first-time ask would,
+          // unless it was already sent today.
           const mentionedProduct=await ecomDetectMentionedProduct(env, clientId, reply);
           if(mentionedProduct){
             faqQuickReplies=[
@@ -11252,8 +11276,9 @@ async function handleEngineWebhook(request, env, secret){
     // Testimonials (migrations/0046_ecom_testimonials.sql) — matchedProduct is whatever
     // product the order-detection block above resolved this turn, if any.
     await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
-    // Full product description on explicit request — same matchedProduct.
-    await engineMaybeSendProductDescription(env, c, clientId, convId, userText, matchedProduct);
+    // Full product description — sent inline, right before the photo/media bundle, at each
+    // order-detection branch above (not here) so it goes out in "description, then media" order
+    // rather than trailing the whole turn after testimonials/promos.
 
     // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
     // background promise left running past the returned Response risks being cut off mid-flight.
