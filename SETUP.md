@@ -7575,6 +7575,26 @@ button message for ≤3 items) that this Worker previously never used, sending p
   receive-side parsing needed, since `engineClassifyIntent`'s existing WANTS_HUMAN keyword match
   already recognizes "talk to a human". Opt out via `bot_config.quick_reply_buttons_enabled`
   (default on). Not wired into FAQ or any other route yet.
+- **Since extended well beyond that one flow** — the ecom category/variant picker
+  (`ecomFindProductsByCategory`), the "🛒 Order this"/"📋 More details" product quick replies, the
+  FAQ `OPTIONS:` line, and >3-item sends (a real WhatsApp list message, not just the ≤3-item button
+  case the paragraph above was originally confirmed against — Chatwoot's own
+  `create_payload_based_on_items` picks button vs list shape off the item count itself). List rows
+  also get a `description` field (WhatsApp's own ~72-char row description, separate from the
+  24-char title) whenever `engineTruncateButtonTitle` actually had to cut a title down — additive,
+  not confirmed read by Chatwoot the same rigorous way title/value were, but harmless if ignored.
+- **Deterministic tap resolution** (`handleEngineWebhook`, right after `engineResolveUserText`) —
+  several of the call sites above intentionally give an item a `value` that's longer/more specific
+  than its necessarily-short `title` (e.g. title `"🛒 Order this"`, value `"I want to order Ortho
+  Hybrid - Medium Soft"`), on the assumption that `value` is what a tap sends back. It isn't — per
+  the confirmed-source finding above, Chatwoot echoes the tapped item's `title`. Real observed
+  failure: a customer tapped a picker option and the bot had to re-guess a product out of a
+  truncated title fragment like `"Semi Medicated…"`, unreliably. Since `engineBuildLeadUpsertBody`
+  already records the previous turn's own `options` (title+value) onto its ConvHistory entry, a
+  reply that exactly matches one of those titles now gets swapped back to that option's fuller
+  `value` right there, before `detectOrderSignal`/`engineClassifyIntent` ever see it — deterministic
+  regardless of which field Chatwoot actually echoes, since it's resolved from this app's own
+  record of what it just offered, not from trusting Chatwoot's payload shape.
 
 ## Recruitment & Consultancy module (`frontend/dashboard.html` — 💼 Recruit tab) — rebuilt on D1
 

@@ -10827,6 +10827,24 @@ async function handleEngineWebhook(request, env, secret){
     // Fire-and-forget: covers the slow classify/routing/LLM work below, not worth blocking on.
     engineSendChatwootTyping(env, c, convId, true);
 
+    // Deterministic quick-reply resolution — WhatsApp/Chatwoot returns the tapped list/button
+    // item's visible title back as the customer's message, not any longer/different `value` a
+    // caller may have set on it (title is capped at 20-24 chars — see
+    // engineSendChatwootQuickReply's own comment — genuinely all the platform gives back on tap).
+    // Real observed failure: a customer tapped a picker option and the resulting message carried
+    // only that short, sometimes-truncated title, leaving the general-purpose classifier below to
+    // re-guess a product from a fragment like "Semi Medicated…" with no guarantee of success.
+    // engineBuildLeadUpsertBody already records the immediately preceding bot turn's own options
+    // (title+value) onto that ConvHistory entry, so a reply that exactly matches one of those
+    // titles is resolved HERE, deterministically, back to the fuller value that option was always
+    // meant to carry — before detectOrderSignal/engineClassifyIntent below ever have to guess from
+    // just the short title text. A no-op whenever title and value were already identical.
+    const lastTurn=state.history?.length?state.history[state.history.length-1]:null;
+    if(lastTurn?.role==='assistant' && Array.isArray(lastTurn.options) && lastTurn.options.length){
+      const tappedLower=(text||'').trim().toLowerCase();
+      const tappedOption=lastTurn.options.find(o=>o && String(o.title||'').trim().toLowerCase()===tappedLower);
+      if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
+    }
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls);
