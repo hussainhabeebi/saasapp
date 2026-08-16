@@ -9536,6 +9536,19 @@ function engineTruncateButtonTitle(title, cap){
   const cut=lastSpace>Math.floor(cap*0.4) ? slice.slice(0, lastSpace) : slice;
   return cut.trimEnd()+'…';
 }
+// Returns the items actually presented to the customer as tappable buttons — {title, value},
+// title truncated/deduped exactly as sent — or null on every path that fell back to plain text
+// (no valid items, a title collision, missing creds/convId, or the send itself failing). Real
+// observed bug: every call site used to build its OWN `items` array for routing.quickReplies (the
+// history entry the deterministic tap-resolution in handleEngineWebhook later matches an inbound
+// reply's title against) independently of what this function actually truncated/sent — so a title
+// long enough to truncate was stored one way (untruncated) and echoed back by WhatsApp another way
+// (the truncated version actually displayed), meaning the two could never match. A customer's tap
+// on "Semi Orthopedic…" then had nothing to resolve against, fell through to the AI classifier with
+// nothing but that same truncated fragment, and the whole category picker fired again instead of
+// resolving the specific product. Callers now use THIS return value for routing.quickReplies
+// instead of guessing, so what's stored is always exactly what was sent (or null when nothing
+// tappable actually went out, so a failed send doesn't get misrecorded as one that succeeded).
 async function engineSendChatwootQuickReply(env, c, clientId, convId, text, items){
   const raw=(items||[]).filter(it=>it && (it.title||it.value));
   const isList=raw.length>3;
@@ -9558,7 +9571,7 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     if(isList && title.endsWith('…')) item.description=engineTruncateButtonTitle(full, 72);
     return item;
   }).filter(it=>it.title);
-  if(!trimmedItems.length) return engineSendChatwootReply(env, c, clientId, convId, text);
+  if(!trimmedItems.length){ await engineSendChatwootReply(env, c, clientId, convId, text); return null; }
   const seenTitles=new Set();
   const hasCollision=trimmedItems.some(it=>{
     const key=it.title.toLowerCase();
@@ -9568,10 +9581,11 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
   });
   if(hasCollision){
     const listText=raw.map(it=>`- ${it.title||it.value}`).join('\n');
-    return engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
+    await engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
+    return null;
   }
   const trimmed=(typeof text==='string'?text:'').trim();
-  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return null;
   try{
     const fd=new FormData();
     fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
@@ -9581,12 +9595,15 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     if(!r.ok){
       const errBody=await r.text().catch(()=>'');
       await reportOpsError(env, 'engineSendChatwootQuickReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
-      return engineSendChatwootReply(env, c, clientId, convId, trimmed);
+      await engineSendChatwootReply(env, c, clientId, convId, trimmed);
+      return null;
     }
   }catch(e){
     await reportOpsError(env, 'engineSendChatwootQuickReply — send threw', e, {clientId, convId});
-    return engineSendChatwootReply(env, c, clientId, convId, trimmed);
+    await engineSendChatwootReply(env, c, clientId, convId, trimmed);
+    return null;
   }
+  return trimmedItems.map(it=>({title:it.title, value:it.value}));
 }
 
 // Best-effort Chatwoot "customer sees {agent} typing…" indicator — pure UX polish covering the
@@ -11110,9 +11127,12 @@ async function handleEngineWebhook(request, env, secret){
               sentText=await engineLocalizeReply(env, c, intro, replyLang);
               routing.reply=sentText;
               const items=brandsInCategory.slice(0,10).map(b=>({title:b, value:b}));
-              routing.quickReplies=items;
               if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
-              await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+              // routing.quickReplies is set from what this actually sent (title truncated/deduped
+              // as needed), not the pre-truncation `items` — see engineSendChatwootQuickReply's own
+              // comment for the exact bug this avoids (a stored option that doesn't match what
+              // WhatsApp echoes back on tap).
+              routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
             } else {
               const listText=brandsInCategory.map(b=>`- ${b}`).join('\n');
               sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
@@ -11146,9 +11166,8 @@ async function handleEngineWebhook(request, env, secret){
               sentText=await engineLocalizeReply(env, c, intro, replyLang);
               routing.reply=sentText;
               const items=choices.slice(0,10).map(ch=>({title:ch.label, value:ch.value}));
-              routing.quickReplies=items;
               if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
-              await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+              routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
             } else {
               const listText=choices.map(ch=>`- ${ch.label}`).join('\n');
               sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
@@ -11240,8 +11259,7 @@ async function handleEngineWebhook(request, env, secret){
         const firstQOptions=engineQualQuestionOptions(qualQuestions[0]);
         if(firstQOptions.length && botConfig.quick_reply_buttons_enabled!==false){
           const items=firstQOptions.map(o=>({title:o, value:o}));
-          routing.quickReplies=items;
-          await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+          routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
         } else {
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
         }
@@ -11254,8 +11272,7 @@ async function handleEngineWebhook(request, env, secret){
       // that specific question has real configured choices.
       if(sentText && routing.qualNextOptions?.length && botConfig.quick_reply_buttons_enabled!==false){
         const items=routing.qualNextOptions.map(o=>({title:o, value:o}));
-        routing.quickReplies=items;
-        await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+        routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
       } else if(sentText){
         await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
       }
@@ -11264,8 +11281,7 @@ async function handleEngineWebhook(request, env, secret){
       sentText=await engineLocalizeReply(env, c, intro, replyLang);
       routing.reply=sentText;
       const items=newLeadCategories.map(cat=>({title:cat, value:cat}));
-      routing.quickReplies=items;
-      await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+      routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
     } else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
@@ -11314,8 +11330,12 @@ async function handleEngineWebhook(request, env, secret){
           }
         }
       }
-      routing.quickReplies=faqQuickReplies;
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies});
+      // routing.quickReplies is set from what engineDeliverReply's own quickReplies branch actually
+      // sent (only meaningful when faqQuickReplies was non-empty in the first place — every other
+      // branch it might have taken instead, voice/image/plain text, returns something else) — see
+      // engineSendChatwootQuickReply's own comment for why this can't just be faqQuickReplies as-is.
+      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies});
+      routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
@@ -11337,9 +11357,12 @@ async function handleEngineWebhook(request, env, secret){
       ]:null;
       // Carried on `routing` (already passed to engineBuildLeadUpsertBody just below) purely so the
       // Chats tab can render this turn with the same button styling the customer actually saw on
-      // WhatsApp — see that function's own history.push for how it lands in ConvHistory.
-      routing.quickReplies=quickReplies;
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies});
+      // WhatsApp — see that function's own history.push for how it lands in ConvHistory. Set from
+      // what engineDeliverReply's own quickReplies branch actually sent (title truncated/deduped as
+      // needed), not the pre-truncation `quickReplies` built above — see
+      // engineSendChatwootQuickReply's own comment for why that distinction matters.
+      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies});
+      routing.quickReplies=quickReplies?.length ? sentReply : null;
     }
 
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);

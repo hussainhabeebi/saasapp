@@ -7595,6 +7595,18 @@ button message for ≤3 items) that this Worker previously never used, sending p
   `value` right there, before `detectOrderSignal`/`engineClassifyIntent` ever see it — deterministic
   regardless of which field Chatwoot actually echoes, since it's resolved from this app's own
   record of what it just offered, not from trusting Chatwoot's payload shape.
+- **Stored options now match what was actually sent** (`engineSendChatwootQuickReply` returns the
+  truncated/deduped `{title, value}` list it actually sent — or `null` on any fallback-to-plain-text
+  path — instead of every call site independently guessing) — the deterministic tap resolution
+  above is only as good as what it's matching against. Real observed bug: every call site used to
+  set `routing.quickReplies` from its OWN pre-truncation `items` array, so a title long enough to
+  need truncating was stored one way (the full label) while WhatsApp actually displayed/echoed back
+  the truncated version — the two could never match, tap resolution silently did nothing, and a
+  customer tapping e.g. "Semi Orthopedic…" got the whole category picker re-sent instead of that
+  specific product. Every call site now reads `routing.quickReplies` off this function's return
+  value (or off `engineDeliverReply`'s, which passes it through unchanged), so what's recorded is
+  always exactly what the customer saw and can tap — and a send that fell back to plain text no
+  longer gets misrecorded as though real buttons went out.
 - **Brand-level picker** (`detectOrderSignal` + the category-enquiry branch of
   `handleEngineWebhook`) — the category/variant picker above only ever covered one dimension
   (category → color variant or product name); a client whose catalog carries several distinct
