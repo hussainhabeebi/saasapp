@@ -6467,6 +6467,7 @@ async function handleEcomCreate(request, env, kind){
   const data=await r.json().catch(()=>({}));
   let droppedFields=[];
   if(kind==='products' && r.ok && data?.Id) droppedFields=await ecomVerifyProductWrite(env, clientId, tableId, data.Id, fields);
+  if(kind==='products' && r.ok && data?.Id) await engineMemoryIndexProduct(env, clientId, data);
   return json(droppedFields.length?{...data, dropped_fields:droppedFields}:data, r.status);
 }
 
@@ -6486,6 +6487,10 @@ async function handleEcomUpdate(request, env, kind){
   const data=await r.json().catch(()=>({}));
   let droppedFields=[];
   if(kind==='products' && r.ok) droppedFields=await ecomVerifyProductWrite(env, clientId, tableId, id, fields);
+  // Merged with `existing` (fetched above, before the PATCH) rather than just `data` — NocoDB's
+  // PATCH response isn't reliably the full row, and re-embedding needs every field regardless of
+  // which ones this particular save actually touched.
+  if(kind==='products' && r.ok) await engineMemoryIndexProduct(env, clientId, {...existing, ...fields, Id:id});
   return json(droppedFields.length?{...data, dropped_fields:droppedFields}:data, r.status);
 }
 
@@ -6615,6 +6620,7 @@ async function handleEcomCategoryCreate(request, env){
   if(!clientId||!name) return json({error:'client_id and name required'},400);
   const r=await env.DB.prepare(`INSERT INTO ecom_categories (client_id, name, created_at) VALUES (?,?,?)`)
     .bind(Number(clientId), name, new Date().toISOString()).run();
+  await engineMemoryIndexCategory(env, clientId, {id:r.meta.last_row_id, name});
   return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
 }
 async function findEcomCategory(env, id){
@@ -6641,6 +6647,9 @@ async function handleEcomCategoryUpdate(request, env){
   if(!sets.length) return json({ok:true});
   vals.push(id);
   await env.DB.prepare(`UPDATE ecom_categories SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  // Only re-embeds when the name itself changed — a photo-only save has no effect on the embedded
+  // text, so re-indexing then would just burn an embedding call for no reason.
+  if(body.name!==undefined) await engineMemoryIndexCategory(env, clientId, {id, name:String(body.name).trim().slice(0,80)});
   return json({ok:true});
 }
 async function ecomCategoryDeleteAllMedia(env, clientId, categoryId){
@@ -7699,6 +7708,7 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
   const enquiryHistory=state.activeHistory||[];
   sys+=engineSummaryBlock(state);
   sys+=engineCustomerFactsBlock(state);
+  sys+=engineMemoryBlock(state);
   if(enquiryHistory.length) sys+='\n\n## Recent Conversation\n'+enquiryHistory.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   sys+='\n\nDo not repeat something you already said in Recent Conversation above, and do not ask for something already listed in What We Know About This Customer above. If the customer\'s message is short or generic ("yes", "ok", "sure", "tell me more") figure out from Recent Conversation exactly what they\'re responding to (e.g. if your last message asked "would you like to know about pack options and pricing?", answer that now — the actual options and prices — not the product description again).';
   sys+='\n\nDefault approach (follow this unless the persona/instructions above specify otherwise): when you have a genuinely useful next detail to share (price, what\'s included, a real benefit relevant to what they asked), just share it as part of your answer instead of teasing it behind another "would you like to know more?"-style question — that just makes the customer say "yes" again to get information they already asked for. Frame the product as the answer to what they\'re looking for, not a spec sheet. Only ask a real clarifying question when something is genuinely ambiguous and needed to move forward (e.g. which size/color/quantity), not as a routine way to keep the conversation going.';
@@ -9289,6 +9299,7 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // preferences should still be visible several turns later, not just the last couple of messages.
   sys+=engineSummaryBlock(state);
   sys+=engineCustomerFactsBlock(state);
+  sys+=engineMemoryBlock(state);
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   if(state.customerFacts?.length) sys+='\n\nUse What We Know About This Customer above the same way a rep who already knows this customer would — do not ask for something already listed there, and do not treat them like a stranger if it shows they have real history with you.';
 
@@ -9503,6 +9514,167 @@ function engineSummaryBlock(state){
 // engineSummaryBlock above, placed right alongside it everywhere it's used.
 function engineCustomerFactsBlock(state){
   return state.customerFacts?.length?`\n\n## What We Know About This Customer\n${state.customerFacts.map(f=>'- '+f).join('\n')}`:'';
+}
+
+// ── Semantic memory (Tier 2 — SETUP.md "Semantic memory") ──────────────────────────────────────
+// Distinct from Customer Facts above (a short curated list a human would just remember) — this is
+// for pulling back SPECIFIC old context (a particular past exchange, a particular product) by
+// actual relevance to what's being asked right now, via embeddings + Cloudflare Vectorize
+// (MEMORY_INDEX binding, wrangler.toml — requires a one-time `wrangler vectorize create` plus two
+// `create-metadata-index` calls before this does anything useful; see wrangler.toml's own comment
+// and SETUP.md). Every function below checks env.MEMORY_INDEX exists and fails open (returns
+// null/[]/no-op, never throws) so a deployment that hasn't run that setup, or any live API hiccup,
+// degrades straight back to Tier 1 behavior instead of breaking a reply. This is the first use of
+// Vectorize/embeddings anywhere in this file — treat the exact request/response shapes below as
+// worth re-verifying against Cloudflare's current docs before trusting in production, same caveat
+// already flagged for the WhatsApp Business Profile Resumable Upload API elsewhere in this file.
+//
+// Embeddings via the Gemini Generative Language API's text-embedding-004 model (768 dimensions) —
+// reuses the same shared GEMINI_API_KEY already configured for the intent classifier/voice
+// transcription, no separate credential to provision.
+async function engineEmbedText(env, text){
+  if(!env.GEMINI_API_KEY || !text) return null;
+  try{
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'models/text-embedding-004', content:{parts:[{text:String(text).slice(0,2000)}]}})
+    });
+    const data=await r.json().catch(()=>({}));
+    return Array.isArray(data?.embedding?.values) ? data.embedding.values : null;
+  }catch(e){ return null; }
+}
+
+// Embeds `text` and stores it — D1 (migrations/0056_memory_chunks.sql) for the full text, Vectorize
+// for the vector — under a fresh UUID shared between both. Every indexing function below
+// (product/category/conversation) funnels through this one write path.
+async function engineMemoryUpsert(env, {clientId, leadId, kind, refId, text}){
+  if(!env.MEMORY_INDEX || !env.DB || !text) return;
+  try{
+    const values=await engineEmbedText(env, text);
+    if(!values) return;
+    const id=crypto.randomUUID();
+    await env.DB.prepare(`INSERT INTO memory_chunks (id, client_id, lead_id, kind, ref_id, text, created_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(id, Number(clientId), leadId?Number(leadId):null, kind, refId?String(refId):null, String(text).slice(0,2000), new Date().toISOString()).run();
+    await env.MEMORY_INDEX.upsert([{id, values, metadata:{client_id:Number(clientId), kind}}]);
+  }catch(e){ console.error('[engineMemoryUpsert] failed', kind, e.message); }
+}
+
+// Called from handleEcomCreate/handleEcomUpdate (kind==='products') right after a successful save
+// — see those call sites.
+async function engineMemoryIndexProduct(env, clientId, product){
+  if(!product?.name) return;
+  const parts=[product.name];
+  if(product.category) parts.push('Category: '+product.category);
+  if(product.description) parts.push(product.description);
+  parts.push(...ecomStyleAttributeLines(product));
+  await engineMemoryUpsert(env, {clientId, kind:'product', refId:product.Id||product.id, text:parts.filter(Boolean).join('. ')});
+}
+
+// Called from handleEcomCategoryCreate/handleEcomCategoryUpdate right after a successful save.
+async function engineMemoryIndexCategory(env, clientId, category){
+  if(!category?.name) return;
+  await engineMemoryUpsert(env, {clientId, kind:'category', refId:category.id||category.Id, text:'Category: '+category.name});
+}
+
+// Called alongside engineMaybeSummarizeHistory/engineMaybeExtractCustomerFacts at the lead-upsert
+// step (both WhatsApp and Instagram handlers) — unlike those two, this runs every turn rather than
+// on a cadence, since fine-grained per-exchange recall is the entire point of this tier (a periodic
+// rollup would defeat it).
+async function engineMemoryIndexConversationTurn(env, clientId, leadId, userText, botText){
+  if(!userText && !botText) return;
+  const text=`Customer: ${userText||''}\nBot: ${botText||''}`.trim();
+  await engineMemoryUpsert(env, {clientId, leadId, kind:'conversation', text});
+}
+
+// Retrieves the topK most relevant chunks to `queryText` for this client — 'conversation' results
+// are further filtered to this specific lead (a client-wide product/category chunk is fair game for
+// every customer, but one customer's past messages are not relevant context for a different one).
+// Requires the `client_id` and `kind` metadata indexes to exist (wrangler.toml one-time setup) —
+// without them Vectorize's own `.query()` call throws, caught here and treated as "no results".
+async function engineMemoryRetrieve(env, clientId, leadId, queryText, {kinds=['conversation','product','category'], topK=5}={}){
+  if(!env.MEMORY_INDEX || !env.DB || !queryText) return [];
+  try{
+    const values=await engineEmbedText(env, queryText);
+    if(!values) return [];
+    const scored=[];
+    for(const kind of kinds){
+      const matches=await env.MEMORY_INDEX.query(values, {topK:topK*2, filter:{client_id:Number(clientId), kind}});
+      for(const m of (matches?.matches||[])) scored.push({id:m.id, score:m.score, kind});
+    }
+    if(!scored.length) return [];
+    scored.sort((a,b)=>b.score-a.score);
+    const ids=scored.map(s=>s.id).slice(0, topK*3);
+    if(!ids.length) return [];
+    const placeholders=ids.map(()=>'?').join(',');
+    const {results:rows}=await env.DB.prepare(`SELECT id, lead_id, kind, text FROM memory_chunks WHERE id IN (${placeholders})`).bind(...ids).all();
+    const byId=new Map((rows||[]).map(r=>[r.id, r]));
+    const chunks=[];
+    for(const s of scored){
+      const row=byId.get(s.id);
+      if(!row) continue;
+      if(row.kind==='conversation' && String(row.lead_id)!==String(leadId)) continue;
+      chunks.push({kind:row.kind, text:row.text, score:s.score});
+      if(chunks.length>=topK) break;
+    }
+    return chunks;
+  }catch(e){ console.error('[engineMemoryRetrieve] failed', e.message); return []; }
+}
+
+// Shared by every reply-generating prompt that opts into semantic memory (see state.memoryChunks,
+// set by the caller right before building the system prompt — same pattern as
+// state.customerFacts/state.summary).
+function engineMemoryBlock(state){
+  const chunks=state.memoryChunks;
+  if(!chunks?.length) return '';
+  const byKind={conversation:[], product:[], category:[]};
+  chunks.forEach(c=>{ if(byKind[c.kind]) byKind[c.kind].push(c.text); });
+  const lines=[];
+  if(byKind.conversation.length) lines.push('### Relevant past exchanges with this customer\n'+byKind.conversation.map(t=>'- '+t.replace(/\n/g,' ')).join('\n'));
+  if(byKind.product.length) lines.push('### Possibly relevant products\n'+byKind.product.map(t=>'- '+t).join('\n'));
+  if(byKind.category.length) lines.push('### Possibly relevant categories\n'+byKind.category.map(t=>'- '+t).join('\n'));
+  return lines.length?`\n\n## Semantic Memory (may or may not be relevant — use only what actually applies, ignore the rest)\n${lines.join('\n\n')}`:'';
+}
+
+// Backfills existing catalog items into semantic memory for a client who had products/categories
+// before this feature shipped — indexing otherwise only happens going forward, on create/update.
+// Deliberately NOT run inline during a live customer reply (this Worker's fetch handler has no
+// ctx.waitUntil — see engineMaybeSummarizeHistory's neighboring functions for the same constraint
+// — so anything run inline is fully awaited and would add real latency to whichever customer's
+// message happened to trigger it first); instead piggybacked on the existing daily 2am cron sweep
+// (see the scheduled() handler) alongside runDailyHealthCheckForAllClients and friends. Capped at
+// 60 products / 30 categories per client per run so a huge catalog can't make one cron tick run
+// long; a client above that cap just backfills the rest on the next day's tick (the COUNT(*) check
+// only skips a client once memory_chunks already has ANY product/category rows for them, so this
+// naturally continues rather than silently topping out at the cap forever — see the loop in
+// runMemoryBackfillForAllClients below).
+async function engineMemoryBackfillCatalogIfNeeded(env, clientId){
+  if(!env.MEMORY_INDEX || !env.DB) return;
+  try{
+    const existing=await env.DB.prepare(`SELECT COUNT(*) as n FROM memory_chunks WHERE client_id=? AND kind IN ('product','category')`).bind(Number(clientId)).first();
+    if(existing?.n>0) return;
+    const productsTable=await ecomResolveTable(env, clientId, 'products');
+    if(productsTable){
+      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=60`);
+      const pd=await pr.json().catch(()=>({}));
+      for(const p of (pd?.list||[])) await engineMemoryIndexProduct(env, clientId, p);
+    }
+    const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=? LIMIT 30`).bind(Number(clientId)).all();
+    for(const cat of (categories||[])) await engineMemoryIndexCategory(env, clientId, cat);
+  }catch(e){ console.error('[engineMemoryBackfillCatalogIfNeeded] failed', clientId, e.message); }
+}
+
+// Daily cron entry point (scheduled() handler, "0 2 * * *" tick) — every ecommerce client with an
+// OpenRouter key (a reasonable proxy for "actively using the engine") gets one backfill check.
+async function runMemoryBackfillForAllClients(env){
+  if(!env.MEMORY_INDEX) return;
+  try{
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(industry,eq,ecommerce)&limit=500&fields=Id,openrouter_key`);
+    const d=await r.json().catch(()=>({}));
+    for(const c of (d?.list||[])){
+      if(!c.openrouter_key) continue;
+      await engineMemoryBackfillCatalogIfNeeded(env, c.Id);
+    }
+  }catch(e){ console.error('[runMemoryBackfillForAllClients] failed', e.message); }
 }
 
 // Rolling summary of everything ConvHistory's 40-turn cap (engineBuildLeadUpsertBody) has already
@@ -11300,6 +11472,7 @@ async function handleEngineWebhook(request, env, secret){
           // external_store_link, per explicit product direction: on enquiry, only ever share the
           // link given at the product level, nothing client-wide or generic.
           const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? ((product.shopify_product_url||product.product_link||'').trim()||null) : null;
+          state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:['conversation','product','category']});
           const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink, state);
           sentText=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 200, state.botMsgs?.[state.botMsgs.length-1]);
           sentText=engineSubstituteOrderLinkPlaceholder(sentText, c, clientId, product.sku, product);
@@ -11546,6 +11719,10 @@ async function handleEngineWebhook(request, env, secret){
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
+      // Product/category recall only makes sense for ecom_faq — other industries have no such
+      // catalog concept indexed into memory_chunks at all, so a query there would just return
+      // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
+      state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
@@ -11640,6 +11817,7 @@ async function handleEngineWebhook(request, env, secret){
     const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
     if(newFacts) leadBody['Customer Facts']=newFacts;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
     }
@@ -11866,6 +12044,7 @@ async function handleInstagramWebhook(request, env){
         routing.reply=sentText;
         if(sentText) await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
       }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
+        state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
         const sysPrompt=engineBuildFaqSystemPrompt(c, state, null, c.industry||'general', replyLang, isNewLead);
         let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
         // Instagram is text-only (engineDeliverReply short-circuits to engineSendInstagramReply
@@ -11887,6 +12066,7 @@ async function handleInstagramWebhook(request, env){
       const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
       if(newFacts) leadBody['Customer Facts']=newFacts;
       const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+      if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
       if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
         await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
       }
@@ -20291,6 +20471,10 @@ export default {
       // Instagram DM — long-lived tokens expire in 60 days and need refreshing before then; see
       // runInstagramTokenRefreshForAllClients's own comment for why daily is fine.
       ctx.waitUntil(runInstagramTokenRefreshForAllClients(env));
+      // Semantic memory — one-time-per-client catalog backfill (SETUP.md "Semantic memory"),
+      // piggybacked here rather than the live customer-reply path since this Worker has no
+      // ctx.waitUntil available there — see engineMemoryBackfillCatalogIfNeeded's own comment.
+      ctx.waitUntil(runMemoryBackfillForAllClients(env));
       // Rate limiting (SETUP.md "DDoS protection") — sweep expired per-IP counters so the table
       // doesn't grow unbounded; daily is plenty since rows expire on their own within minutes.
       ctx.waitUntil(cleanupRateLimitCounters(env));

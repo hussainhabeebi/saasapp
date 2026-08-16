@@ -7569,6 +7569,80 @@ conversation was still ongoing.
   Conversation" section before "## Recent Conversation" so the two read in actual chronological
   order. Empty (a no-op) for the vast majority of leads, which never cross 40 turns at all.
 
+## Customer facts memory (`cloudflare-worker/worker.js`)
+
+Distinct from `ConvSummary` above — that only runs once a conversation crosses 40 messages, so most
+real conversations never get it. A human rep doesn't re-read a transcript before replying; they
+recall specific facts (allergies, budget, preferred language) instantly. This is that, for the bot.
+
+- **`Customer Facts`** (Leads table, self-healing via `ensureLeadsColumns`) — a capped JSON array
+  of short fact strings.
+- **`engineMaybeExtractCustomerFacts(env, c, fullHistory, priorFactsJson)`** — runs every
+  `ENGINE_FACTS_EVERY_N_TURNS` (6) turns starting almost immediately (not gated behind the 40-turn
+  `ConvSummary` threshold), re-reads the last 20 messages, and merges with whatever was already
+  extracted so a later contradiction updates/drops a stale fact instead of both coexisting forever.
+  Called from both webhook handlers' lead-upsert step, right alongside
+  `engineMaybeSummarizeHistory`.
+- **`engineCustomerFactsBlock(state)`** — injects `state.customerFacts` as a "## What We Know
+  About This Customer" section into the FAQ/objection/product-enquiry prompts, paired with an
+  instruction not to ask for or repeat what's already known there.
+- Lives on the same lead row as `ConvHistory`, so it survives a Resolve/Reopen cycle and an
+  opt-out/resub (neither clears it) — continuity across separate conversation sessions on the same
+  channel. Does **not** unify identity across channels (WhatsApp and Instagram are separate lead
+  rows, keyed by phone vs. IgId, with no shared identifier to merge them on).
+
+## Semantic memory (`cloudflare-worker/worker.js`, `migrations/0056_memory_chunks.sql`)
+
+Customer Facts above is a short, curated list — good for durable preferences, but not for pulling
+back one *specific* past exchange or the exact right product out of a large catalog by actual
+relevance to what's being asked right now. This is that: embeddings + Cloudflare Vectorize.
+
+**One-time setup** (a deployment that skips this just runs without semantic memory — every call
+site checks the binding exists and fails open, nothing else breaks):
+1. `wrangler vectorize create leadvyne-memory --dimensions=768 --metric=cosine`
+2. `wrangler vectorize create-metadata-index leadvyne-memory --property-name=client_id --type=number`
+3. `wrangler vectorize create-metadata-index leadvyne-memory --property-name=kind --type=string`
+4. `wrangler d1 migrations apply leadvyne-d1 --remote` (creates `memory_chunks`)
+5. `[[vectorize]]` binding already committed in `wrangler.toml` (`MEMORY_INDEX`) — just `wrangler
+   deploy` after the above.
+
+**How it works:**
+- **`engineEmbedText(env, text)`** — Gemini's `text-embedding-004` (768-dim), reusing the existing
+  shared `GEMINI_API_KEY` secret — no separate embeddings credential.
+- **`engineMemoryUpsert`** — the one write path every indexing function funnels through: embeds
+  text, stores the full text in D1 (`memory_chunks`) and the vector in Vectorize, sharing a UUID
+  between the two (Vectorize doesn't reliably hold full text, D1 is the source of truth for it).
+- **`engineMemoryIndexConversationTurn`** — called every turn (not on a cadence — fine-grained
+  per-exchange recall is the point of this tier) from both webhook handlers' lead-upsert step.
+- **`engineMemoryIndexProduct` / `engineMemoryIndexCategory`** — called from
+  `handleEcomCreate`/`handleEcomUpdate` (kind `'products'`) and
+  `handleEcomCategoryCreate`/`handleEcomCategoryUpdate` right after a successful save.
+- **`engineMemoryRetrieve(env, clientId, leadId, queryText, {kinds, topK})`** — embeds the query,
+  queries Vectorize filtered to `client_id` (+ `kind`), then filters `'conversation'` results down
+  to this specific lead in JS (a client-wide product/category chunk is fair game for every
+  customer; another customer's past messages are not). Called before building the FAQ/
+  product-enquiry system prompt, result stashed on `state.memoryChunks` (same pattern as
+  `state.customerFacts`/`state.summary`).
+- **`engineMemoryBlock(state)`** — injects `state.memoryChunks` as a "## Semantic Memory" section,
+  grouped into relevant past exchanges / possibly relevant products / possibly relevant categories.
+- **`engineMemoryBackfillCatalogIfNeeded` / `runMemoryBackfillForAllClients`** — indexes a client's
+  *existing* catalog (capped 60 products / 30 categories per run) since indexing otherwise only
+  happens going forward, on create/update. Deliberately **not** run inline during a live customer
+  reply — this Worker's `fetch` handler has no `ctx.waitUntil`, so anything run inline is fully
+  awaited and would add real latency to whichever customer's message happened to trigger it first.
+  Piggybacked on the existing daily `"0 2 * * *"` cron tick instead, alongside
+  `runDailyHealthCheckForAllClients` and friends.
+
+**Trade-off, stated plainly:** retrieval runs before every ecom_faq/product-enquiry reply, adding
+real latency (embed the query + a Vectorize round-trip) to those turns in exchange for actual
+relevance-based recall instead of only a fixed recency window. Product/category retrieval is
+skipped entirely for non-ecommerce industries (nothing indexed there to retrieve).
+
+**Caveat:** this is the first use of Vectorize/embeddings anywhere in this codebase — treat the
+exact request/response shapes in `engineEmbedText`/`engineMemoryRetrieve` as worth re-verifying
+against Cloudflare's current docs before fully trusting in production, same caveat already flagged
+for the WhatsApp Business Profile Resumable Upload API elsewhere in this file.
+
 ## WhatsApp interactive quick-reply buttons (`cloudflare-worker/worker.js`)
 
 Chatwoot's own message-create endpoint accepts an optional `content_type`/`content_attributes`
