@@ -7609,6 +7609,20 @@ button message for ≤3 items) that this Worker previously never used, sending p
   bare size/color reply); when a category has more than one real brand and none is chosen yet, the
   brand names themselves become a tappable picker first, and once one is chosen (by tap or
   detection), the existing variant/product-name picker runs against that brand's products only.
+- **Qualifying-question choices** (`engineQualQuestionOptions`, `dashboard.html`'s qual-questions
+  editor, `handleEngineWebhook`'s `qualify`/`qualify_next` routes, `engineBuildNativeFormFlowJson`)
+  — none of the pickers above cover `qual_questions` at all, since those are asked by a completely
+  separate code path (the one-question-at-a-time qualifying ladder, or the opt-in Native Forms
+  Flow) that never had any button/choice concept — a business owner's own qual_questions entry can
+  just as easily be phrased as a multiple-choice pick ("Mattress, wooden bed, or something else?")
+  as any AI-driven question, with the exact same "plain text, nothing to tap" result. qual_questions
+  entries can now optionally carry `options: string[]` (dashboard.html's editor: a comma-separated
+  "Choices" field under each question, blank = ordinary free text, unchanged from before). When set,
+  the chat ladder sends that question as a tappable picker (same `engineSendChatwootQuickReply`
+  mechanism as everywhere else) instead of plain text, and Native Forms renders it as a
+  `RadioButtonsGroup` instead of a `TextInput` — `handleNativeFormEndpoint` reads either shape
+  identically (the submitted value is just a string either way). A question with no `options` is
+  completely unaffected either way.
 
 ## Recruitment & Consultancy module (`frontend/dashboard.html` — 💼 Recruit tab) — rebuilt on D1
 
