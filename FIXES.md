@@ -260,6 +260,31 @@ back to plain text successfully — not a failure, just not buttons) so its exis
 **Don't revert:** Making these functions return `undefined` again (or dropping the `logEngineSkip`
 calls) silently brings back "Replied" as an untrustworthy signal — this was a real, confirmed cause
 of at least one "button didn't do anything" report, not a hypothetical.
+
+### 18 — [backend] The rate limiter measured time since the bot's own reply, not since the customer's message
+**Area:** Rate-limit check in `handleEngineWebhook`, `engineGetLeadState`, `engineBuildLeadUpsertBody`
+call site (`cloudflare-worker/worker.js`)
+**Broke:** With Bot Auto-Reply confirmed on and no `quick-reply-not-matched` or `send-failed` row in
+Settings → Logs for the tap (ruling out fixes #16 and #17), some button taps still got zero
+response. Root cause: the rate limiter compared `Date.now()` against `LEADS.LastMsgAt`, but
+`LastMsgAt` is stamped with "now" unconditionally at the end of **every** turn — including the
+bot's own reply, which real logs show taking 8+ seconds (LLM + NocoDB round trips). So the clock
+this check measured was "time since the last activity of either party," not "time since the
+customer last wrote in." A customer tapping a quick-reply button they're already looking at (no
+typing needed, often well under the 4s default `rate_limit_ms`) could land inside the cooldown
+window the bot's *own* prior reply had just reset, and get silently skipped
+(`rate-limited` in `engine_event_log`) with nothing sent — this matches "Bot replay on but some
+replays from button not reaching to Bot or Chatwoot" exactly.
+**Fix:** Added `LEADS.LastCustomerMsgAt`, a separate column stamped only from the customer's own
+message arrival time (`startMs`, captured at the very top of `handleEngineWebhook`, before any
+LLM/NocoDB work) — never from the bot's reply. `engineGetLeadState` now returns
+`lastCustomerMsgAt`, and the rate-limit check reads that instead of `lastMsgAt`. `LastMsgAt` itself
+is untouched and still reflects the most recent activity for any other code that relies on it.
+**Don't revert:** Switching the rate-limit check back to `state.lastMsgAt` reopens the exact race:
+the bot's own reply resets the clock the customer's immediate next tap gets measured against.
+**Not yet done:** No direct unit test — the check lives inline in `handleEngineWebhook`, which
+isn't a pure/exported function. If it's ever extracted, add a test asserting the rate limit is
+measured against the customer's last message time, not the bot's.
 **Not yet done:** `engineLogAnalytics`'s own `IsError` field still doesn't reflect delivery failure
 — it's a separate, larger change (threading a success signal through ~15 different reply-dispatch
 branches in `handleEngineWebhook`) that was deliberately scoped out here to ship the diagnostic

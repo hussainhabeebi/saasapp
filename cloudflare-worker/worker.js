@@ -8680,6 +8680,12 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
     lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping, botMsgs,
     qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
     winProbabilityManual:lead?.WinProbabilityManual||'No', lastMsgAt:lead?.LastMsgAt||null,
+    // Self-healing column (ensureLeadsColumns/ncFetch's own auto-create behavior, same as every
+    // other CLIENTS/LEADS field this file adds over time) — see the rate-limit check in
+    // handleEngineWebhook and LastCustomerMsgAt's own write-side comment for why this is tracked
+    // separately from LastMsgAt. undefined/missing reads as null, same "never rate-limited yet"
+    // treatment lastMsgAt||null already gets.
+    lastCustomerMsgAt:lead?.LastCustomerMsgAt||null,
     // See engineMaybeSummarizeHistory — a rolling summary of everything ConvHistory's 40-turn cap
     // has already dropped, so a long-running lead doesn't lose all memory of anything discussed
     // before that cap. Empty for the vast majority of leads (most conversations never cross 40
@@ -11029,7 +11035,19 @@ async function handleEngineWebhook(request, env, secret){
 
     const botConfig=engineParseJsonField(c.bot_config, {});
     const rateLimitMs=parseInt(botConfig.rate_limit_ms)||4000;
-    const lastMsgAt=state.lastMsgAt?new Date(state.lastMsgAt).getTime():0;
+    // lastCustomerMsgAt, NOT lastMsgAt — lastMsgAt (LEADS.LastMsgAt) is stamped with "now" by
+    // BOTH the customer's message AND the bot's own reply (engineBuildLeadUpsertBody writes it
+    // unconditionally after this whole turn finishes, which real logs show taking 8+ seconds for
+    // an LLM turn). That means this check used to measure time since the BOT's last reply, not
+    // since the customer's last message — so a customer tapping a quick-reply button they're
+    // already looking at (no typing needed, often <4s after the bot's message lands) could get
+    // silently rate-limited by the clock the bot's own previous reply had just reset, with zero
+    // response sent and only a `rate-limited` line in Settings → Logs to show for it. See
+    // FIXES.md #18. lastCustomerMsgAt is written only from the customer's own message arrival
+    // time (startMs), never from the bot's reply, so this now measures genuine rapid-fire
+    // customer typing — which is what this limiter is actually for — without misfiring on the
+    // bot's own turnaround time.
+    const lastMsgAt=state.lastCustomerMsgAt?new Date(state.lastCustomerMsgAt).getTime():0;
     if(Date.now()-lastMsgAt<rateLimitMs){ await logEngineSkip(env, clientId, phone, convId, 'rate-limited', `${Date.now()-lastMsgAt}ms since last, limit ${rateLimitMs}ms`); return json({ok:true, skipped:'rate-limited'}); }
 
     // Claim this message id now, before the slow classify/LLM/context work below — observed in
@@ -11623,6 +11641,21 @@ async function handleEngineWebhook(request, env, secret){
     }
 
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
+    // LastCustomerMsgAt — separate from LastMsgAt (which the upsert body above already stamps
+    // with "now", i.e. after this whole turn's reply was generated and sent). Real observed
+    // failure: the rate limiter a few lines up compares against LastMsgAt, which real production
+    // logs show being 8+ seconds stale relative to when THIS message actually arrived (LLM reply
+    // generation time) — but worse, LastMsgAt gets overwritten by the BOT's own reply too, so a
+    // customer tapping a quick-reply button they're already looking at (no reading/typing needed,
+    // often well under 4s after the bot's message lands) can get silently rate-limited by the
+    // clock the bot's own previous reply just reset, with zero response and only a `rate-limited`
+    // skip line in Settings → Logs to show for it. startMs (captured at the very top of this
+    // handler, before any LLM/NocoDB work) is the actual arrival time of THIS message — stamping
+    // it here means next turn's rate-limit check measures time since the CUSTOMER's own last
+    // message, never since the bot's reply to it, while still correctly throttling genuine
+    // rapid-fire customer typing (which is what this limiter is actually for).
+    await ensureLeadsColumns(env, ['LastCustomerMsgAt']).catch(()=>{});
+    leadBody.LastCustomerMsgAt=new Date(startMs).toISOString();
     const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
     if(newSummary) leadBody.ConvSummary=newSummary;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
