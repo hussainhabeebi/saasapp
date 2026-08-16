@@ -3431,9 +3431,9 @@ What's different from `engine-ecom.json`:
   Color/size matching, progressive relaxation, Drive photo auto-send, and the storefront order
   link all come from calling the existing `ecom-context.json` sub-workflow unchanged.
 - Human handover is now a field the single AI reply call itself returns (`wants_human`), plus
-  the same loop-detection safety net as before (2 identical bot replies in a row forces it — see
-  engineGetLeadState's own comment for the production repeat this threshold was tightened from
-  3 to 2 for).
+  the same loop-detection safety net as before (2 near-duplicate bot replies in a row forces it,
+  not just byte-identical ones — see engineGetLeadState's own comment for the production repeats
+  this threshold was tightened for).
 
 Tested with 53 cases (38 unit tests over the extracted node logic, 15 end-to-end vm simulations
 chaining the actual generated `jsCode` through three full conversation turns — text with a
@@ -4894,6 +4894,17 @@ best-effort and never throws):
 Both are **platform-level, operator-facing** channels for "the system itself is broken" — distinct
 from clients' own per-client `slack_webhook_url` field, which `n8n/notifications.json` uses for
 business alerts (hot leads, SLA breaches) aimed at *that client's* team, not you.
+
+- **Anti-loop escalations now report here too** (`handleEngineWebhook`/`handleInstagramWebhook`,
+  right after `engineRouteFlow` returns) — every fix in the loop-detection thread (SETUP.md's
+  "Conversation Engine" section, `engineGetLeadState`'s `looping` check) started from a business
+  owner manually screenshotting a stuck WhatsApp conversation; by the time that happens, an unknown
+  number of other customers may have silently hit the same stuck pattern. The safety net itself
+  already hands the customer off to a human cleanly either way — this is purely so an operator
+  finds out a client's prompt/catalog/flow has a real gap (the bot couldn't answer or advance
+  normally) without waiting for someone else to notice and report it. **Requires
+  `OPS_ALERT_WEBHOOK_URL` and/or `OPS_ALERT_EMAIL`/`RESEND_API_KEY` to actually be set** — with
+  neither configured, this (like every other `reportOpsError` call) silently no-ops.
 
 Wired into two places:
 - **The global route dispatcher's catch-all** (`fetch()`'s outer `try/catch`) — reports every
@@ -7652,6 +7663,25 @@ button message for ≤3 items) that this Worker previously never used, sending p
   person reading both sees identical text. Invisible with English/Latin text (essentially no such
   ambiguity there), so this only surfaced once a non-Latin script round-tripped through
   Chatwoot/WhatsApp. Both comparisons now call `.normalize('NFC')` on each side first.
+- **Near-duplicate (not just byte-identical) loop detection + a root-cause prompt fix, together**
+  — real observed failure (Wellness Virtue): a customer replied "yes" to a product pitch ending
+  "Would you like to know more about them?", and the FAQ LLM regenerated essentially the same
+  pitch/question with slightly different wording each time — never the actual extra details asked
+  for. `engineGetLeadState`'s `looping` check required the last 2 bot replies to be byte-identical,
+  which AI-generated text almost never is even when saying the same thing, so it never fired at
+  all — this specific failure had **zero** safety net. Two changes, addressing it at both levels:
+  (1) `engineTextSimilarity`, a cheap word-overlap ratio (no extra LLM call — the loop detector
+  runs every turn and needs to stay fast/trustworthy), so `looping` now fires at ≥70% similarity
+  instead of requiring exact equality — a safety net that actually catches this class of loop.
+  (2) `engineBuildFaqSystemPrompt` gets a new shared (all-industries) instruction: if the model's
+  own immediately preceding message asked permission to share more ("would you like to know more",
+  "want the details") and the reply is a plain affirmative, actually give the details — don't
+  restate the same pitch and ask again. (1) is the safety net for when something's already gone
+  wrong; (2) prevents the specific, common way it goes wrong in the first place.
+- **Anti-loop escalations now alert an operator** — see "Error monitoring" above
+  (`OPS_ALERT_WEBHOOK_URL`/`OPS_ALERT_EMAIL`) for why: every fix in this whole thread started from
+  someone manually screenshotting a stuck conversation, which only surfaces the cases someone
+  happened to notice and report.
 - **Brand-level picker** (`detectOrderSignal` + the category-enquiry branch of
   `handleEngineWebhook`) — the category/variant picker above only ever covered one dimension
   (category → color variant or product name); a client whose catalog carries several distinct

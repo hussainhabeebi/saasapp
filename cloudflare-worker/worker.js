@@ -8594,6 +8594,23 @@ function engineParseInstagramPayload(entry){
   return {convId:null, igId, phone:'', name:'', text, mediaType:'text', mediaUrl:''};
 }
 
+// Cheap, dependency-free word-overlap ratio (Jaccard on lowercased word sets, punctuation
+// stripped) — used by engineGetLeadState's loop detector below to catch two AI-generated replies
+// that are near-duplicates of each other, not just byte-identical ones. Deliberately not another
+// LLM call: the loop detector needs to be fast and trustworthy on every single turn, not one more
+// thing that can itself fail/hallucinate. Real observed failure: a customer replied "yes" to a
+// product pitch ending in "Would you like to know more about them?" and the FAQ LLM regenerated
+// essentially the same pitch/question with slightly different wording each time ("For general
+// health and wellness, our Glutathione Tablets..." vs "For general health, our Glutathione
+// Tablets...") — an exact-match loop detector never once saw two identical strings, so it never
+// fired, and the conversation could repeat indefinitely with no safety net at all.
+function engineTextSimilarity(a, b){
+  const words=s=>new Set(String(s||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean));
+  const wa=words(a), wb=words(b);
+  if(!wa.size || !wb.size) return 0;
+  let overlap=0; for(const w of wa) if(wb.has(w)) overlap++;
+  return overlap/Math.max(wa.size, wb.size);
+}
 // Mirrors "HTTP · Get lead" + "Code · State": pulls every LEADS row for this phone across ALL
 // clients (not scoped by client_id — same as engine.json), so a phone that's already a lead for
 // a different client shows up as isDuplicate, matching the original's cross-tenant reporting.
@@ -8616,8 +8633,14 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   // turn escalates to a human via isRealLoop below, without weakening the signal much — two
   // consecutive byte-identical bot replies is already a strong smell for genuinely distinct customer
   // turns (engineHandoverCannedTexts still excludes a correctly-repeated handover confirmation).
+  // Near-duplicate, not just byte-identical (Wellness Virtue, Aug 2026): a customer's "yes" to a
+  // product pitch ending in a question got the FAQ LLM regenerating essentially the same pitch with
+  // slightly different wording each time — exact equality never once matched, so the loop ran with
+  // no safety net at all. engineTextSimilarity (0.7 threshold — high but not exact-match-only;
+  // genuinely different replies about the same product/topic still share some vocabulary but don't
+  // reach this) catches that case the same way exact equality already caught scripted-text repeats.
   const botMsgs=history.filter(m=>m.role==='assistant').slice(-2).map(m=>m.content);
-  const looping=botMsgs.length===2 && botMsgs.every(m=>m===botMsgs[0]);
+  const looping=botMsgs.length===2 && engineTextSimilarity(botMsgs[0], botMsgs[1])>=0.7;
   // 20, not 6 — keep roughly the last 10 customer/bot exchanges as working memory instead of ~3,
   // so the bot still recalls what was discussed several turns back (ConvHistory itself has no
   // date-based staleness at all, only this count-based trim of what's "active" for the prompts).
@@ -9035,7 +9058,15 @@ function engineRouteFlow(c, state, userText, cls){
     reply=(reply||'Great! You can book your slot here 📅')+'\n\n👉 '+c.cal_link;
   }
 
-  return {route, next, reply, qualStage, qualAnswers, qualNextOptions, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:false, isResub:false, humanReason};
+  // Surfaced purely for handleEngineWebhook to log/alert on (see its own call site) — deliberately
+  // NOT folded into humanReason itself: humanBlocksOrderCheck and similar checks elsewhere already
+  // give 'explicit' specific meaning ("a genuine ask or real frustration, never overridden"), and a
+  // loop-forced handover has quietly relied on getting that exact same treatment since the anti-loop
+  // safety net was added — changing what humanReason itself reports here risks changing that
+  // behavior along with it. This is purely additive: the loop was already detected and already
+  // forced effIntent to WANTS_HUMAN above, this just tells the caller it happened.
+  const loopDetected=isRealLoop && botConfig.antiloop_enabled!==false;
+  return {route, next, reply, qualStage, qualAnswers, qualNextOptions, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:false, isResub:false, humanReason, loopDetected};
 }
 
 // From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
@@ -9244,6 +9275,15 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // skip the actual fact being asked for — so the two failure modes get distinct instructions
   // instead of one rule that (as observed) can be read as license for either.
   sys+='\n\nDefault style (follow this unless the persona/instructions above specify a different tone, reply length, closing style, or message format — in that case, follow those instead): a short greeting or small talk deserves a short, natural reply, not a long pitch covering everything you could possibly say — but a short, specific question (a number, a policy, a fact) always deserves the real, complete answer, even if that makes the reply a bit longer than the question itself; never trade accuracy or completeness for brevity. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
+
+  // Real observed failure (Wellness Virtue): the previous turn ended "...Would you like to know
+  // more about them?", the customer replied "yes", and the reply was essentially the SAME pitch
+  // and question again, reworded — never the actual extra details asked for. Repeated a second
+  // time before the anti-loop safety net (engineGetLeadState's near-duplicate check) caught it.
+  // That safety net is a last resort for when something has already gone wrong; this prevents the
+  // specific, common way it goes wrong in the first place — an affirmative reply to the model's
+  // OWN offer needs to be fulfilled, not repeated.
+  sys+="\n\nCheck whether your own immediately preceding message (in Recent Conversation above) ended by asking the customer's permission to share more — \"would you like to know more\", \"want the details\", \"shall I tell you more\", or similar — and if their reply here is a plain affirmative (yes, sure, ok, please do) with no new question of its own: actually GIVE the additional details you offered, in full, this turn. Do not restate the same summary/pitch and ask the same permission question again — that reads as ignoring the customer's answer.";
 
   // engineExtractReplyOptions (worker.js) parses this exact marker back out and strips it before
   // the customer ever sees it, then (where the channel/settings support it) resends the options as
@@ -10967,6 +11007,16 @@ async function handleEngineWebhook(request, env, secret){
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls);
+    // Proactive visibility, not just a customer-facing safety net: every fix in this loop-detection
+    // thread started from a business owner manually screenshotting a stuck WhatsApp conversation —
+    // by the time that happens, an unknown number of OTHER customers may have hit the same stuck
+    // pattern silently. A loop firing at all means this client's prompt/catalog/flow has a real gap
+    // (the bot couldn't answer or advance normally), so it's worth an operator's attention even
+    // though the safety net itself already handed the customer off cleanly. Best-effort, never
+    // blocks the reply — reportOpsError already never throws.
+    if(routing.loopDetected){
+      await reportOpsError(env, 'Anti-loop escalation — bot got stuck repeating itself, handed off to a human', new Error(`client ${clientId} (${c.client_name||'unnamed'}), phone ${phone}, stage ${state.stage||'new'}`));
+    }
     // Per-message detected language for THIS customer (engineClassifyIntent), not
     // CLIENTS.language (a fixed client-wide default used only as the fallback when detection
     // isn't confident) — see engineLocalizeReply's own comment for the scripted-content half of
@@ -11675,6 +11725,10 @@ async function handleInstagramWebhook(request, env){
       const userText=parsed.text;
       const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
       const routing=engineRouteFlow(c, state, userText, cls);
+      // Same proactive visibility as handleEngineWebhook's own call site — see its comment.
+      if(routing.loopDetected){
+        await reportOpsError(env, 'Anti-loop escalation — bot got stuck repeating itself, handed off to a human (Instagram)', new Error(`client ${clientId} (${c.client_name||'unnamed'}), stage ${state.stage||'new'}`));
+      }
       const replyLang=routing.customerLanguage||c.language||'en';
       const deliverOpts={channel:'instagram', igRecipientId:parsed.igId, langCode:replyLang};
       const isNewLead=!state.leadId;
