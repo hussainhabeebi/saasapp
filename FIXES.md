@@ -198,6 +198,28 @@ removing the alert means loops go back to being invisible until someone screensh
 this is configured, not just that the code is present.
 **Tested:** `worker.test.js` → `engineRouteFlow` anti-loop escalation (`loopDetected`).
 
+### 15 — [backend] Retry a near-duplicate reply before it's ever sent, not just after
+**Area:** `engineCallLlmAvoidingRepeat` (new), its 5 call sites in `handleEngineWebhook`/
+`handleInstagramWebhook` (FAQ/ecom_faq/travel_faq/saas_faq route, objection route, product-enquiry
+route) (`cloudflare-worker/worker.js`)
+**Broke:** Fix #14's prompt instruction is a request, not a guarantee — the exact same Wellness
+Virtue case recurred after #14 shipped: "would you like to know more?" → customer says "ok" →
+essentially the same pitch/question comes back. Fix #13's `looping` flag can only detect this
+*after* both near-duplicate messages already exist in history (it looks backward at the START of a
+turn), so it can escalate on the 3rd customer turn but can't stop the 2nd bot message — the one the
+customer actually sees repeated — from going out in the first place.
+**Fix:** `engineCallLlmAvoidingRepeat` wraps `engineCallLlm`: generate the reply, compare it against
+the bot's own immediately-preceding message with `engineTextSimilarity` (same ≥0.7 threshold as fix
+#13's `looping`), and if it's a near-duplicate, retry once with an explicit instruction quoting the
+rejected text and demanding new information or a different question. Fully fail-open — any retry
+failure just falls back to the original reply rather than blocking the turn.
+**Don't revert:** This is the only check that runs *before* a reply is sent, not after — removing it
+reopens the specific recurring failure #13/#14 were both written to close, even with both of those
+still in place.
+**Tested:** `engineTextSimilarity` (the comparison it relies on) already covered in
+`worker.test.js`; `engineCallLlmAvoidingRepeat` itself calls the network (Gemini/OpenRouter) and is
+intentionally left out of the pure-logic suite, consistent with this file's existing scope.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
