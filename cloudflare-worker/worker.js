@@ -7394,6 +7394,25 @@ async function ensureOrderCollectField(env){
   }catch(e){ console.error('[ecom] ensureOrderCollectField failed', e.message); }
 }
 
+// Remembers whichever product this lead was last confidently matched to (written right below,
+// wherever `matchedProduct` gets set in the order/enquiry detection block), so a later message
+// with no product-identifying detail of its own ("proceed with order", a bare "yes") can still be
+// resolved instead of asking the customer to repeat the product name — real observed failure: a
+// customer discussed a specific product, then replied "Proceed with order" to a quote-reply, and
+// got "which item would you like?" even though it was obvious from the conversation. Same cached-
+// per-isolate pattern as ensureOrderCollectField above.
+let _lastProductSkuFieldEnsured=false;
+async function ensureLastProductSkuField(env){
+  if(_lastProductSkuFieldEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('Last Product Sku')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'Last Product Sku', uidt:'SingleLineText'}});
+    _lastProductSkuFieldEnsured=true;
+  }catch(e){ console.error('[ecom] ensureLastProductSkuField failed', e.message); }
+}
+
 // Writes the order a customer just finished dictating in chat (see the order_collect_items/
 // order_collect_address handling in handleEngineWebhook) — the ecom_order_link_enabled==='No'
 // alternative to sending a checkout link at all. Deliberately its own writer rather than reusing
@@ -7652,7 +7671,7 @@ function ecomStyleAttributeLines(product){
   return lines;
 }
 
-function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLink){
+function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLink, state={}){
   const lang=replyLang||c.language||'en';
   const lines=[`Name: ${product.name}`];
   if(product.price) lines.push(`Price: ${product.currency||''} ${product.price}`.trim());
@@ -7671,6 +7690,17 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
   let sys=c.main_prompt||'';
   sys+=`\n\nYou are replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}`;
   sys+='\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Default style (follow this unless the persona/instructions above specify a different tone, reply length, or closing style — in that case, follow those instead): do not mention the price unless the customer\'s message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
+  // Recent Conversation/summary — same pattern as engineBuildFaqSystemPrompt/
+  // engineBuildObjectionSystemPrompt (see engineSummaryBlock). This prompt used to build the exact
+  // same reply from scratch every single turn with zero memory of anything already said — real
+  // observed failure: the bot described a product in full, asked "would you like to know about the
+  // pack options and pricing?", the customer said "yes", and got the identical opening description
+  // sent right back instead of an answer to what it had just itself asked.
+  const enquiryHistory=state.activeHistory||[];
+  sys+=engineSummaryBlock(state);
+  if(enquiryHistory.length) sys+='\n\n## Recent Conversation\n'+enquiryHistory.slice(-20).map(m=>m.role+': '+m.content).join('\n');
+  sys+='\n\nDo not repeat something you already said in Recent Conversation above. If the customer\'s message is short or generic ("yes", "ok", "sure", "tell me more") figure out from Recent Conversation exactly what they\'re responding to (e.g. if your last message asked "would you like to know about pack options and pricing?", answer that now — the actual options and prices — not the product description again).';
+  sys+='\n\nDefault approach (follow this unless the persona/instructions above specify otherwise): when you have a genuinely useful next detail to share (price, what\'s included, a real benefit relevant to what they asked), just share it as part of your answer instead of teasing it behind another "would you like to know more?"-style question — that just makes the customer say "yes" again to get information they already asked for. Frame the product as the answer to what they\'re looking for, not a spec sheet. Only ask a real clarifying question when something is genuinely ambiguous and needed to move forward (e.g. which size/color/quantity), not as a routine way to keep the conversation going.';
   // Opt-in per client (Ecommerce → Settings → "Share order link on product questions",
   // ecom_link_on_enquiry) — the default product behavior deliberately withholds the checkout link
   // until real order intent (see the routing comment at this prompt's call site), but a client can
@@ -10678,6 +10708,9 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // stale seed.
   if(routing.orderCollectSeed) body.OrderCollect=JSON.stringify(routing.orderCollectSeed);
   else if(routing.clearOrderCollect) body.OrderCollect='';
+  // See ensureLastProductSkuField's comment — the write side of the "resolve a bare 'yes'/'proceed
+  // with order' back to the product actually being discussed" fallback above.
+  if(routing.matchedProductSku) body['Last Product Sku']=routing.matchedProductSku;
   if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
   else body.Stage=next;
   if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; body['Follow up 4']='No'; body['Follow up 5']='No'; }
@@ -11097,8 +11130,20 @@ async function handleEngineWebhook(request, env, secret){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       if(detection.signal){
-        const product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
-        if(product) matchedProduct=product;
+        let product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
+        // Fallback for a message with no product detail of its own ("proceed with order", a bare
+        // "yes") where detectOrderSignal's own context-inference (see its system prompt) still came
+        // back empty — try whichever product this lead was last confidently discussing, persisted
+        // in Last Product Sku (write side just below) instead of asking them to repeat themselves.
+        // Not used for the category branch (detection.category) — that's a genuinely different,
+        // still-undecided request, not a short reply to what was already being discussed.
+        if(!product && (detection.mode==='order' || (detection.mode==='enquiry' && !detection.category)) && state.lead?.['Last Product Sku']){
+          product=await ecomFindProductBySku(env, clientId, state.lead['Last Product Sku']);
+        }
+        if(product){
+          matchedProduct=product;
+          if(product.sku){ routing.matchedProductSku=product.sku; await ensureLastProductSkuField(env); }
+        }
         // Claimed once per turn, shared by every branch below that might send this product's
         // description/photo/media bundle — see engineClaimProductImageForToday's own comment for
         // why this is gated per (lead, product, calendar day) rather than resent on every repeat
@@ -11190,7 +11235,7 @@ async function handleEngineWebhook(request, env, secret){
           // external_store_link, per explicit product direction: on enquiry, only ever share the
           // link given at the product level, nothing client-wide or generic.
           const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? ((product.shopify_product_url||product.product_link||'').trim()||null) : null;
-          const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink);
+          const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink, state);
           sentText=await engineCallLlm(env, c, sysPrompt, userText, 200);
           sentText=engineSubstituteOrderLinkPlaceholder(sentText, c, clientId, product.sku, product);
           routing.reply=sentText;
