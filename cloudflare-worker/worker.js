@@ -2264,10 +2264,11 @@ async function detectOrderSignal(env, c, clientId, message, contextText){
   let productList='';
   let categoryList=[];
   if(productsTable){
-    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100&fields=name,sku,color,size,category,brand`);
+    const classifierFields=['name','short_label','sku','color','size','category','brand','variant','style','shade','skin_type','hair_type','concern','volume_ml','ingredient','description'];
+    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100&fields=${classifierFields.join(',')}`);
     const pd=await pr.json().catch(()=>({}));
     const products=pd?.list||[];
-    productList=products.map(p=>`- ${p.name}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.brand?' brand:'+p.brand:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}`).join('\n');
+    productList=products.map(p=>`- ${p.name}${p.short_label?' short label:'+p.short_label:''}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.brand?' brand:'+p.brand:''}${p.variant?' variant:'+p.variant:''}${p.style?' style:'+p.style:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.shade?' shade:'+p.shade:''}${p.skin_type?' skin type:'+p.skin_type:''}${p.hair_type?' hair type:'+p.hair_type:''}${p.concern?' concern:'+p.concern:''}${p.volume_ml?' volume:'+p.volume_ml:''}${p.ingredient?' ingredient:'+p.ingredient:''}${p.description?' description:'+String(p.description).slice(0,500):''}`).join('\n');
     categoryList=[...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))];
   }
 
@@ -2276,6 +2277,7 @@ async function detectOrderSignal(env, c, clientId, message, contextText){
 - "enquiry": genuine interest in a specific product without yet committing to buy — a size/color/stock/price question about one item, "tell me more", "give me the details", "do you have it in red".
 - neither (not a signal at all) — general browsing, greetings, or unrelated questions.
 If "order" or "enquiry", try to match it to exactly one product from the catalog below.
+- Search broadly across every catalog value shown: exact name, short label, SKU, category, brand, variant, style, color, size, shade, skin/hair type, concern, volume, ingredient and description. A customer's everyday phrase can match any of those stored Product fields.
 - Match by reasonable everyday judgment, not exact string equality — a customer writes informally, the catalog doesn't. "Green shirt" should match a catalog color of "Light Green" or "Bottle Green"; "greenshirt" and "green shirt" are the same query; a size like "S"/"small"/"S size" are the same detail. Don't withhold sku just because the wording isn't identical to the catalog fields — withhold it only when you genuinely can't tell which product (or no product) is meant.
 - A message with NO distinguishing detail of its own — "order it", "M size" alone, "that one", "yes please" — should be resolved using the recent conversation below, if given: it very likely refers to whichever product was just discussed.
 - A message that names its own distinguishing detail (a color, size, or product name) should be matched against the catalog by that detail. If it's consistent with the product just discussed (e.g. "size M" right after that same shirt was shown), match to that one. If it conflicts with the product just discussed (e.g. "red shirt" right after a green shirt was shown), treat it as asking about a NEW product and match fresh by the new detail — don't keep reusing the old product's sku just because it was recently discussed. Only omit sku (or classify as neither, if it's clearly asking for something not carried at all) when the named detail truly doesn't correspond to anything in the catalog.
@@ -7574,6 +7576,79 @@ async function ecomListCategories(env, clientId){
   return [...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))].slice(0,10);
 }
 
+// Broad but deterministic Ecom catalogue lookup. It searches only values physically stored on
+// this client's Product records; it never asks an LLM to invent a candidate. This catches natural
+// wording such as "sofa", "3 seater sofa", a brand, variant, material/concern from Description,
+// color, size, style, SKU, etc. Multiple real matches are intentionally returned so the caller can
+// show exact Product-record choices as WhatsApp buttons/list rows instead of guessing one.
+function ecomNormalizeCatalogueText(value){
+  return String(value||'')
+    .toLowerCase()
+    .replace(/\b(one|single)\b/g,'1').replace(/\btwo\b/g,'2').replace(/\bthree\b/g,'3')
+    .replace(/\bfour\b/g,'4').replace(/\bfive\b/g,'5').replace(/\bsix\b/g,'6')
+    .replace(/[^\p{L}\p{N}]+/gu,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function ecomCatalogueQueryTokens(value){
+  const stop=new Set(['a','an','the','i','me','my','we','you','your','want','need','looking','look','for','show','tell','about','have','has','do','does','is','are','please','pls','price','cost','buy','order','available','availability','product','item']);
+  return [...new Set(ecomNormalizeCatalogueText(value).split(' ').filter(t=>t && !stop.has(t) && (t.length>1 || /^\d$/.test(t))))];
+}
+function ecomProductChoiceItems(products){
+  const seen=new Set();
+  const items=[];
+  for(const p of products||[]){
+    const value=String(p?.name||'').trim();
+    if(!value) continue;
+    const key=String(p?.Id||p?.sku||value).toLowerCase();
+    if(seen.has(key)) continue;
+    seen.add(key);
+    // Both visible label and returned value come directly from Ecom → Products. short_label is
+    // preferred only when the merchant explicitly configured it; otherwise the exact name is used.
+    items.push({title:String(p.short_label||p.name).trim(), value});
+  }
+  return items.slice(0,10);
+}
+async function ecomFindBroadProductMatches(env, clientId, message){
+  const query=ecomNormalizeCatalogueText(message);
+  const tokens=ecomCatalogueQueryTokens(message);
+  if(!query || !tokens.length) return [];
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return [];
+  const fields=['Id','name','short_label','sku','category','brand','variant','style','color','size','shade','skin_type','hair_type','concern','volume_ml','ingredient','description','price','currency','stock','status','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','shopify_product_url','product_link'];
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&fields=${fields.join(',')}`);
+  const pd=await pr.json().catch(()=>({}));
+  const products=pd?.list||[];
+  const weightedFields=[
+    ['sku',30],['short_label',24],['name',22],['variant',14],['category',12],['brand',11],
+    ['style',10],['color',9],['size',9],['shade',8],['skin_type',8],['hair_type',8],
+    ['concern',8],['volume_ml',7],['ingredient',6],['description',4]
+  ];
+  const scored=[];
+  for(const product of products){
+    const normalizedFields=weightedFields.map(([field,weight])=>({field,weight,text:ecomNormalizeCatalogueText(product[field])})).filter(x=>x.text);
+    const combined=normalizedFields.map(x=>x.text).join(' ');
+    const matched=tokens.filter(token=>new RegExp(`(^| )${escapeRegexLiteral(token)}( |$)`,'u').test(combined));
+    const required=tokens.length<=2?1:Math.ceil(tokens.length*0.6);
+    if(matched.length<required) continue;
+    let score=(matched.length/tokens.length)*100;
+    for(const f of normalizedFields){
+      if(f.text===query) score+=f.weight*3;
+      else if(f.text.includes(query)) score+=f.weight*2;
+      for(const token of matched){
+        if(new RegExp(`(^| )${escapeRegexLiteral(token)}( |$)`,'u').test(f.text)) score+=f.weight;
+      }
+    }
+    scored.push({product,score});
+  }
+  if(!scored.length) return [];
+  scored.sort((a,b)=>b.score-a.score || String(a.product.name||'').localeCompare(String(b.product.name||'')));
+  const best=scored[0].score;
+  // Keep genuinely relevant alternatives, but not weak incidental description matches far below
+  // the best candidate. Every returned row is still an actual Product record.
+  return scored.filter(x=>x.score>=Math.max(100,best*0.55)).slice(0,10).map(x=>x.product);
+}
+
 // Category-level browsing: the customer named a category ("shirts") rather than one specific
 // product, so detectOrderSignal returned `category` instead of a sku. Used to send a representative
 // photo (the first matching product that actually has one) alongside a clarifying question listing
@@ -11194,8 +11269,35 @@ async function handleEngineWebhook(request, env, secret){
     if(!orderHandledInline && c.industry==='ecommerce' && c.openrouter_key && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
-      if(detection.signal){
+      let broadMatches=null;
+      // Deterministic safety net for broad catalogue language the intent model may classify as a
+      // generic FAQ ("sofa") or may return as a non-exact product name ("3 seater sofa").
+      if(!detection.signal){
+        broadMatches=await ecomFindBroadProductMatches(env, clientId, userText);
+        if(broadMatches.length===1){
+          detection.signal=true; detection.mode='enquiry';
+          detection.sku=broadMatches[0].sku||undefined;
+          detection.productName=broadMatches[0].name;
+        }else if(broadMatches.length>1){
+          sentText=await engineLocalizeReply(env, c, 'Please choose the exact product you are interested in:', replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, ecomProductChoiceItems(broadMatches));
+          orderHandledInline=true;
+        }
+      }
+      if(detection.signal && !orderHandledInline){
         let product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
+        if(!product && !detection.category){
+          broadMatches=broadMatches||await ecomFindBroadProductMatches(env, clientId, userText);
+          if(broadMatches.length===1){
+            product=broadMatches[0];
+          }else if(broadMatches.length>1){
+            sentText=await engineLocalizeReply(env, c, 'Please choose the exact product you are interested in:', replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, ecomProductChoiceItems(broadMatches));
+            orderHandledInline=true;
+          }
+        }
         // Fallback for a message with no product detail of its own ("proceed with order", a bare
         // "yes") where detectOrderSignal's own context-inference (see its system prompt) still came
         // back empty — try whichever product this lead was last confidently discussing, persisted
@@ -11283,7 +11385,7 @@ async function handleEngineWebhook(request, env, secret){
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           }
           orderHandledInline=true;
-        } else if(detection.mode==='order' && !product){
+        } else if(detection.mode==='order' && !product && !orderHandledInline){
           sentText=await engineLocalizeReply(env, c, 'Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?', replyLang);
           routing.reply=sentText;
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
@@ -11354,22 +11456,12 @@ async function handleEngineWebhook(request, env, secret){
             const photoUrl=categoryImage||withImage.image_url;
             const intro=`Which brand of ${detection.category} are you interested in?`;
             if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
-            if(botConfig.quick_reply_buttons_enabled!==false){
-              sentText=await engineLocalizeReply(env, c, intro, replyLang);
-              routing.reply=sentText;
-              const items=brandsInCategory.slice(0,10).map(b=>({title:b, value:b}));
-              if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
-              // routing.quickReplies is set from what this actually sent (title truncated/deduped
-              // as needed), not the pre-truncation `items` — see engineSendChatwootQuickReply's own
-              // comment for the exact bug this avoids (a stored option that doesn't match what
-              // WhatsApp echoes back on tap).
-              routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
-            } else {
-              const listText=brandsInCategory.map(b=>`- ${b}`).join('\n');
-              sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
-              routing.reply=sentText;
-              await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:photoUrl});
-            }
+            // Ecom catalogue choices are always interactive and come verbatim from Product data.
+            sentText=await engineLocalizeReply(env, c, intro, replyLang);
+            routing.reply=sentText;
+            const items=brandsInCategory.slice(0,10).map(b=>({title:b, value:b}));
+            if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
+            routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
             orderHandledInline=true;
           } else if(categoryProducts.length){
             const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
@@ -11393,17 +11485,13 @@ async function handleEngineWebhook(request, env, secret){
             // choice sends its exact name back as a normal incoming message (Chatwoot's own
             // behavior for a button/list reply), which the next turn's product/category resolution
             // already handles the same as if the customer had typed it themselves.
-            if(botConfig.quick_reply_buttons_enabled!==false && choices.length){
+            if(choices.length){
+              // Always buttons/list rows; every title/value is an exact Ecom Product field.
               sentText=await engineLocalizeReply(env, c, intro, replyLang);
               routing.reply=sentText;
               const items=choices.slice(0,10).map(ch=>({title:ch.label, value:ch.value}));
               if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
               routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
-            } else {
-              const listText=choices.map(ch=>`- ${ch.label}`).join('\n');
-              sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
-              routing.reply=sentText;
-              await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:photoUrl});
             }
             orderHandledInline=true;
           }
@@ -11439,7 +11527,7 @@ async function handleEngineWebhook(request, env, secret){
     // clarifying question and didn't name one single product, so neither existing button path
     // fired). Gated behind !orderHandledInline and isNewLead so an order/enquiry/human/qualify
     // signal already handled above, or a returning customer's "Hi", never gets overridden by this.
-    const newLeadCategories=(!orderHandledInline && routing.route==='ecom_faq' && isNewLead && botConfig.quick_reply_buttons_enabled!==false)
+    const newLeadCategories=(!orderHandledInline && routing.route==='ecom_faq' && isNewLead)
       ? await ecomListCategories(env, clientId) : [];
 
     if(orderHandledInline){
