@@ -2264,8 +2264,9 @@ async function detectOrderSignal(env, c, clientId, message, contextText){
   let productList='';
   let categoryList=[];
   if(productsTable){
-    const classifierFields=['name','short_label','sku','color','size','category','brand','variant','style','shade','skin_type','hair_type','concern','volume_ml','ingredient','description'];
-    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100&fields=${classifierFields.join(',')}`);
+    // Full rows keep this compatible with older Products tables where some optional style fields
+    // do not exist yet; only fields actually present on each row are added to the classifier text.
+    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100`);
     const pd=await pr.json().catch(()=>({}));
     const products=pd?.list||[];
     productList=products.map(p=>`- ${p.name}${p.short_label?' short label:'+p.short_label:''}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.brand?' brand:'+p.brand:''}${p.variant?' variant:'+p.variant:''}${p.style?' style:'+p.style:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.shade?' shade:'+p.shade:''}${p.skin_type?' skin type:'+p.skin_type:''}${p.hair_type?' hair type:'+p.hair_type:''}${p.concern?' concern:'+p.concern:''}${p.volume_ml?' volume:'+p.volume_ml:''}${p.ingredient?' ingredient:'+p.ingredient:''}${p.description?' description:'+String(p.description).slice(0,500):''}`).join('\n');
@@ -7615,8 +7616,9 @@ async function ecomFindBroadProductMatches(env, clientId, message){
   if(!query || !tokens.length) return [];
   const productsTable=await ecomResolveTable(env, clientId, 'products');
   if(!productsTable) return [];
-  const fields=['Id','name','short_label','sku','category','brand','variant','style','color','size','shade','skin_type','hair_type','concern','volume_ml','ingredient','description','price','currency','stock','status','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','shopify_product_url','product_link'];
-  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&fields=${fields.join(',')}`);
+  // Fetch full rows instead of requesting an explicit optional-field list: older client tables may
+  // not yet have every style/media column, and one missing NocoDB column must not break matching.
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
   const pd=await pr.json().catch(()=>({}));
   const products=pd?.list||[];
   const weightedFields=[
