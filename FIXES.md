@@ -153,7 +153,11 @@ marker," which real testing showed is unreliable.
 routes fall back to fix #10's extraction on the actual text about to be sent whenever no
 `options` are configured.
 **Don't revert:** Removing the `value` cap reopens a silent-rejection risk; removing the
-localization or extraction fallback reopens their respective original failures.
+extraction fallback reopens its original failure. **Superseded in part by fix #19:**
+`engineLocalizeOptions` (point 2 above) was later removed entirely — translating button/list
+*titles* into the customer's language turned out to cause a worse problem (a non-English tap reply
+can get silently rejected by Chatwoot's own inbound webhook). The question *text* is still
+localized as this fix intended; only the tappable option labels are no longer translated.
 
 ### 12 — [backend] Fix Malayalam (and other complex-script) button taps never resolving
 **Area:** Tap-resolution comparison in `handleEngineWebhook`, collision check in
@@ -260,6 +264,12 @@ back to plain text successfully — not a failure, just not buttons) so its exis
 **Don't revert:** Making these functions return `undefined` again (or dropping the `logEngineSkip`
 calls) silently brings back "Replied" as an untrustworthy signal — this was a real, confirmed cause
 of at least one "button didn't do anything" report, not a hypothetical.
+**Not yet done:** `engineLogAnalytics`'s own `IsError` field still doesn't reflect delivery failure
+— it's a separate, larger change (threading a success signal through ~15 different reply-dispatch
+branches in `handleEngineWebhook`) that was deliberately scoped out here to ship the diagnostic
+value now at low risk. The new `logEngineSkip` rows are the actual fix; "Replied" itself is still
+just "didn't crash," so keep reading both columns together.
+**Tested:** `worker.test.js` → `engineSendChatwootReply` return value (mocked `fetch`).
 
 ### 18 — [backend] The rate limiter measured time since the bot's own reply, not since the customer's message
 **Area:** Rate-limit check in `handleEngineWebhook`, `engineGetLeadState`, `engineBuildLeadUpsertBody`
@@ -285,12 +295,45 @@ the bot's own reply resets the clock the customer's immediate next tap gets meas
 **Not yet done:** No direct unit test — the check lives inline in `handleEngineWebhook`, which
 isn't a pure/exported function. If it's ever extracted, add a test asserting the rate limit is
 measured against the customer's last message time, not the bot's.
-**Not yet done:** `engineLogAnalytics`'s own `IsError` field still doesn't reflect delivery failure
-— it's a separate, larger change (threading a success signal through ~15 different reply-dispatch
-branches in `handleEngineWebhook`) that was deliberately scoped out here to ship the diagnostic
-value now at low risk. The new `logEngineSkip` rows are the actual fix; "Replied" itself is still
-just "didn't crash," so keep reading both columns together.
-**Tested:** `worker.test.js` → `engineSendChatwootReply` return value (mocked `fetch`).
+
+### 19 — [backend] Button/list titles were translated into the customer's language — WhatsApp echoes them back on tap
+**Area:** `engineBuildFaqSystemPrompt`'s OPTIONS: instruction, `engineExtractPlainOptionsFromReply`,
+the `qualify`/`qualify_next` routes in `handleEngineWebhook`, `engineLocalizeOptions` (removed)
+(`cloudflare-worker/worker.js`)
+**Broke:** A Chatwoot server log showed a genuinely different failure mode than fixes #16-#18: a
+plain-typed Malayalam text message from a customer was rejected outright by Chatwoot's own inbound
+WhatsApp webhook with `Filter chain halted as :verify_meta_signature!` → `401 Unauthorized` — never
+even reaching this engine, let alone the bot or CRM. The exact same phone number's ASCII `"Hi"`
+moments earlier passed the same check fine, and the same failure reproduced for an unrelated
+client/account too, pointing at something in front of the whole Chatwoot deployment (proxy/WAF/CDN)
+mishandling non-ASCII UTF-8 request bodies specifically — outside this repo, not fixable here.
+What IS controllable from this side: WhatsApp echoes a button/list item's exact `title` back as the
+message body when a customer taps it. Every Malayalam-language quick-reply button this engine had
+ever sent (qual_questions options translated via `engineLocalizeOptions`, and FAQ-route OPTIONS:
+menus the LLM wrote directly in the customer's language) turned a tap into exactly the kind of
+non-ASCII inbound webhook body that trips this bug — a very plausible explanation for every "button
+tap didn't do anything" report involving Malayalam specifically.
+**Fix:** Button/list titles are now pinned to English everywhere they're built, regardless of the
+customer's detected language — only the surrounding message *text* (the question itself) stays
+localized: (1) `engineLocalizeOptions` (translated configured qual_questions options into replyLang)
+removed entirely — `firstQOptions`/`qualNextOptions` are sent as configured, untranslated; (2) both
+qual-question extraction-fallback call sites (`engineExtractPlainOptionsFromReply`) now read the
+pre-localization English source text (`firstQ` / the next question's pre-localization text) instead
+of the already-localized `sentText`; (3) `engineExtractPlainOptionsFromReply`'s own LLM prompt now
+explicitly requires English output regardless of the input reply's language, fixing the FAQ route's
+extraction fallback too; (4) `engineBuildFaqSystemPrompt`'s OPTIONS: instruction now tells the model
+to write option labels in English even while writing the rest of the reply in the customer's
+language.
+**Don't revert:** Re-adding a translation step for button/list titles (or reverting the FAQ
+system prompt's OPTIONS: instruction back to "in the customer's language") reopens this exact class
+of silently-dropped tap. If a genuinely localized button label is wanted again, it needs a real fix
+on the Chatwoot/infra side (why non-ASCII inbound webhook bodies get 401'd) first — this fix is a
+mitigation for the button/tap subset of the problem, not a cure; free-typed non-English text
+messages (not button taps) are unaffected by anything in this repo and will keep failing until the
+infra issue is fixed.
+**Tested:** `worker.test.js` → asserts `engineBuildFaqSystemPrompt`'s OPTIONS: instruction requires
+English labels (and that the old "customer's language" wording is gone), and that
+`engineExtractPlainOptionsFromReply`'s own LLM prompt does the same (mocked `fetch`).
 
 ---
 

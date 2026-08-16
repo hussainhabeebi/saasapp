@@ -9266,7 +9266,7 @@ async function engineBuildTravelContext(env, c, clientId){
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
-function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, isNewLead){
+export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, isNewLead){
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
   let sys=c.main_prompt||'';
@@ -9326,7 +9326,15 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // tappable buttons instead of leaving the customer to type one back by hand — see that function's
   // own comment. Must stay a literal, parseable last line whenever it's used, which is why the
   // instruction pins the keyword itself to English even when the rest of the reply is not.
-  sys+='\n\nIf — and only if — your reply itself asks the customer to choose between 2 and 10 clear, short, named options (e.g. "glowing skin, anti-ageing, or something else?", or a menu of a few named categories/products), add ONE final line after your reply, in exactly this format and nothing else on that line: OPTIONS: option one | option two | option three — keep the literal English word "OPTIONS:" even when the rest of your reply is in another language, write each option itself in the customer\'s language, and keep each option under 24 characters. Leave this line out entirely for any reply that is not itself offering a choice between a few named options — that is most replies.';
+  // Option labels themselves are pinned to English too now (FIXES.md #19) — not just the OPTIONS:
+  // keyword. Real production failure: Chatwoot's own inbound WhatsApp webhook (Meta signature
+  // verification) has been observed rejecting a customer's tap reply outright (401, message never
+  // even reaches this engine) when its body contains non-ASCII UTF-8 bytes — Malayalam text taps
+  // specifically. WhatsApp echoes back exactly the button title we sent when tapped, so a
+  // Malayalam-language option here becomes a Malayalam-byte tap reply, which then has a real chance
+  // of never arriving at all. Keeping button labels English is the one thing this engine can
+  // control on its own side of that bug.
+  sys+='\n\nIf — and only if — your reply itself asks the customer to choose between 2 and 10 clear, short, named options (e.g. "glowing skin, anti-ageing, or something else?", or a menu of a few named categories/products), add ONE final line after your reply, in exactly this format and nothing else on that line: OPTIONS: option one | option two | option three — keep the literal English word "OPTIONS:" even when the rest of your reply is in another language, and write each option itself in ENGLISH too, even when the rest of your reply is in the customer\'s own language (e.g. reply in Malayalam, but OPTIONS: Mattress | Wooden bed | Something else) — keep each option under 24 characters. Leave this line out entirely for any reply that is not itself offering a choice between a few named options — that is most replies.';
 
   if(industry==='ecommerce'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
@@ -9558,22 +9566,6 @@ async function engineLocalizeReply(env, c, text, targetLang){
   }
   return text;
 }
-// Batches a qual_questions choice list through ONE engineLocalizeReply call (joined on a delimiter
-// short enough option text won't plausibly contain, split back apart after) instead of one call
-// per option — same "the scripted question shouldn't read as a different language than its own
-// answer choices" fix engineLocalizeReply's own comment already describes for the question text
-// itself, extended to the choices a customer taps. Falls back to the original (untranslated)
-// options on any failure, empty targetLang/English, or a shape mismatch (translation merged/split
-// an item unexpectedly) — a button in the "wrong" language is a far better outcome than losing a
-// choice or displaying a garbled split.
-async function engineLocalizeOptions(env, c, options, targetLang){
-  if(!options || !options.length || !targetLang || targetLang==='en') return options;
-  const DELIM=' ||| ';
-  const translated=await engineLocalizeReply(env, c, options.join(DELIM), targetLang);
-  const parts=(translated||'').split(DELIM).map(s=>s.trim()).filter(Boolean);
-  return parts.length===options.length ? parts : options;
-}
-
 // The one delivery point a customer's reply actually depends on — a silent failure here means
 // the customer gets nothing and nobody finds out, so (unlike most best-effort sends elsewhere in
 // this file) this specifically reports to reportOpsError on both a thrown fetch and a non-OK
@@ -9653,7 +9645,7 @@ export function engineExtractReplyOptions(replyText){
 // extracts one already phrased as a choice; returns null on anything that doesn't confidently read
 // as a real 2-10-way menu, same "no options" fallback as engineExtractReplyOptions's own marker
 // miss.
-async function engineExtractPlainOptionsFromReply(env, c, replyText){
+export async function engineExtractPlainOptionsFromReply(env, c, replyText){
   const text=(typeof replyText==='string'?replyText:'').trim();
   if(!text || !c.openrouter_key) return null;
   // Cheap skip gate before spending an LLM call on the common case (most FAQ replies aren't a
@@ -9662,7 +9654,12 @@ async function engineExtractPlainOptionsFromReply(env, c, replyText){
   // not just the very last one, since a reply can trail an emoji or extra whitespace after the
   // actual question mark (e.g. the "...today? ✨" case this fallback was added for).
   if(!/[?؟]/.test(text.slice(-20))) return null;
-  const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today", keep it in the reply's own language), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
+  // Extracted options always come back in English, even when replyText itself is in another
+  // language (FIXES.md #19) — these become tappable button/list titles, and WhatsApp echoes a
+  // button's title back verbatim when tapped. Chatwoot's inbound webhook signature check has been
+  // observed rejecting (401) a tap reply that carries non-ASCII UTF-8 bytes before it ever reaches
+  // this engine, so an option label must never be allowed to inherit the reply's own language here.
+  const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today"), ALWAYS translated into English regardless of what language the reply itself is written in (e.g. a Malayalam reply ending "...മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ?" -> ["Mattress","Wooden bed"]), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
   try{
     const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
@@ -9749,9 +9746,11 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
   if(!trimmedItems.length){ const sent=await engineSendChatwootReply(env, c, clientId, convId, text); return sent?null:false; }
   const seenTitles=new Set();
   // .normalize('NFC') — same reasoning as the tap-resolution comparison in handleEngineWebhook:
-  // two independently-translated titles (engineLocalizeOptions) can be visually identical Malayalam
-  // (or any complex script) text made of different Unicode code point sequences, which would
-  // otherwise dodge collision detection here.
+  // two items can be visually identical text (a non-Latin catalog name, or any complex script) made
+  // of different Unicode code point sequences, which would otherwise dodge collision detection here.
+  // Button/list titles built from catalog/config data are not translated into the customer's
+  // language (FIXES.md #19), but this stays as defense-in-depth for content that legitimately does
+  // vary — e.g. two catalog items whose real names are non-Latin script and visually identical.
   const hasCollision=trimmedItems.some(it=>{
     const key=it.title.toLowerCase().normalize('NFC');
     if(seenTitles.has(key)) return true;
@@ -11504,39 +11503,49 @@ async function handleEngineWebhook(request, env, secret){
         // a wooden bed, or something else?") but never fills in the explicit Choices field above —
         // that field is opt-in/manual, so an already-choice-shaped question a business owner wrote
         // before it existed (or just never revisited) still had nothing to fall back on. Same
-        // plain-English extraction safety net the FAQ route uses, applied to the actual text about
-        // to be sent (isNewLead's intro + question combined) so it still catches the question even
-        // wrapped in a warm opener.
-        let usingConfiguredOptions=firstQOptions.length>0;
+        // plain-English extraction safety net the FAQ route uses, applied to firstQ itself (the
+        // pre-localization, business-typed question — normally already English) rather than
+        // sentText (the localized isNewLead intro + question, e.g. Malayalam) — see FIXES.md #19:
+        // button/list titles must stay English, and extracting from the English source is more
+        // reliable than trusting a translation call to translate back correctly every time.
         if(!firstQOptions.length && botConfig.quick_reply_buttons_enabled!==false){
-          firstQOptions=await engineExtractPlainOptionsFromReply(env, c, sentText)||[];
+          firstQOptions=await engineExtractPlainOptionsFromReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?')||[];
         }
         if(firstQOptions.length && botConfig.quick_reply_buttons_enabled!==false){
-          // Localized to match the question text above (isNewLead's intro/firstQ is already in
-          // replyLang) — only for the business's OWN configured choices (usually typed in whatever
-          // language they work in); the extraction fallback already reads the reply in replyLang,
-          // so its output needs no further translation.
-          const items=(usingConfiguredOptions?await engineLocalizeOptions(env, c, firstQOptions, replyLang):firstQOptions).map(o=>({title:o, value:o}));
+          // Deliberately NOT translated into replyLang (previously engineLocalizeOptions did this)
+          // — see FIXES.md #19. Button/list titles must stay English: WhatsApp echoes a button's
+          // title back verbatim on tap, and a Malayalam-language title became a Malayalam-byte tap
+          // reply that Chatwoot's own inbound webhook signature check has been observed silently
+          // rejecting (401, never reaches this engine at all). The question text above it
+          // (sentText) is still localized as always — only the tappable labels are pinned to English.
+          const items=firstQOptions.map(o=>({title:o, value:o}));
           routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
         } else {
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
         }
       }
     } else if(routing.route==='qualify_next'){
+      // Captured before routing.reply is overwritten with the localized version below — the
+      // pre-localization text (normally English, engineRouteFlow's own next-question phrasing) is
+      // what the extraction fallback should read from, not the localized sentText. See FIXES.md #19.
+      const nextQPreLocalization=routing.reply;
       sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
       routing.reply=sentText;
       // Same tappable-picker treatment as the first qualifying question above, for the NEXT one
       // this turn is asking — routing.qualNextOptions (engineRouteFlow) is only ever populated when
       // that specific question has real configured choices.
       let qualNextOptions=routing.qualNextOptions||[];
-      const usingConfiguredQualNextOptions=qualNextOptions.length>0;
       // Same "business phrased this as a choice question but never filled in Choices" fallback as
-      // the first qualifying question above.
+      // the first qualifying question above — reads the pre-localization (English) text so the
+      // extracted labels don't inherit replyLang.
       if(sentText && !qualNextOptions.length && botConfig.quick_reply_buttons_enabled!==false){
-        qualNextOptions=await engineExtractPlainOptionsFromReply(env, c, sentText)||[];
+        qualNextOptions=await engineExtractPlainOptionsFromReply(env, c, nextQPreLocalization)||[];
       }
       if(sentText && qualNextOptions.length && botConfig.quick_reply_buttons_enabled!==false){
-        const items=(usingConfiguredQualNextOptions?await engineLocalizeOptions(env, c, qualNextOptions, replyLang):qualNextOptions).map(o=>({title:o, value:o}));
+        // Deliberately NOT translated into replyLang — see fix #19 above (same reasoning as the
+        // first qualifying question's picker). Button/list titles stay English; sentText (the
+        // question itself) is still localized as always.
+        const items=qualNextOptions.map(o=>({title:o, value:o}));
         routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
       } else if(sentText){
         await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});

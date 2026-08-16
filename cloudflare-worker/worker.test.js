@@ -18,6 +18,8 @@ import {
   engineHandoverCannedTexts,
   engineRouteFlow,
   engineSendChatwootReply,
+  engineBuildFaqSystemPrompt,
+  engineExtractPlainOptionsFromReply,
 } from './worker.js';
 
 describe('engineTruncateButtonTitle — WhatsApp title-length safety (FIXES.md #5)', () => {
@@ -172,5 +174,34 @@ describe('engineSendChatwootReply — return value reflects actual delivery (FIX
   test('returns false, not undefined, when there is nothing to send to', async () => {
     const ok = await engineSendChatwootReply(env, {}, 'client1', 'conv1', 'hello');
     assert.equal(ok, false, 'missing Chatwoot credentials must be reported as non-delivery, not silently ignored');
+  });
+});
+
+describe('Button/list titles are pinned to English regardless of reply language (FIXES.md #19)', () => {
+  // Real production failure: Chatwoot's own inbound WhatsApp webhook (Meta signature verification)
+  // has been observed rejecting a customer's tap reply outright (401, never reaches this engine at
+  // all) when its body contains non-ASCII UTF-8 bytes — Malayalam-language button taps specifically.
+  // WhatsApp echoes a button's title back verbatim when tapped, so any code path that lets an
+  // option/button label inherit the reply's own (non-English) language reintroduces this exact bug.
+
+  test('the FAQ system prompt instructs the model to keep OPTIONS: labels in English even when replying in another language', () => {
+    const c = { main_prompt: '', services: '[]', kb_summary: '' };
+    const state = {};
+    const sys = engineBuildFaqSystemPrompt(c, state, null, 'ecommerce', 'ml', false);
+    assert.match(sys, /write each option itself in ENGLISH/i, 'must explicitly override "reply in the customer\'s language" for OPTIONS: labels');
+    assert.doesNotMatch(sys, /write each option itself in the customer's language/i, 'the old instruction (translate options into replyLang) must not come back');
+  });
+
+  test('engineExtractPlainOptionsFromReply asks the LLM to translate extracted labels into English, not keep the reply\'s own language', async (t) => {
+    let capturedSystemPrompt = null;
+    t.mock.method(global, 'fetch', async (url, opts) => {
+      capturedSystemPrompt = JSON.parse(opts.body).messages[0].content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"options":["Mattress","Wooden bed"]}' } }] }), { status: 200 });
+    });
+    const c = { openrouter_key: 'test-key' };
+    const options = await engineExtractPlainOptionsFromReply({}, c, 'നിങ്ങൾക്ക് ഒരു മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ വേണ്ടത്?');
+    assert.match(capturedSystemPrompt, /ALWAYS translated into English/i, 'must not let extracted option labels inherit the source reply\'s language');
+    assert.doesNotMatch(capturedSystemPrompt, /keep it in the reply's own language/i, 'the old instruction must not come back');
+    assert.deepEqual(options, ['Mattress', 'Wooden bed']);
   });
 });
