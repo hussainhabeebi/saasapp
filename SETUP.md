@@ -7618,7 +7618,30 @@ button message for ≤3 items) that this Worker previously never used, sending p
   words like "are you looking for"/"options today" a naive comma/"or" split can't cleanly do) — only
   called when nothing else above (the `OPTIONS:` marker, or ecom's mentioned-product/category
   fallbacks) already found something, and only ever extracts a question the reply already asked,
-  never invents one.
+  never invents one. Gated behind a cheap pre-check (does the reply even end in `?`/`؟` within its
+  last 20 characters) before spending the extra call, since most FAQ replies aren't a choice
+  question at all.
+- **Same extraction fallback wired into `qualify`/`qualify_next`** — the original failure this
+  whole thread started from (Cloudnine Beddings): a business phrases `qual_questions[0]` itself as
+  a choice question ("Do you need a mattress, a wooden bed, or something else?") but never fills in
+  the explicit `options` field, since that's opt-in/manual and the question may predate it existing
+  at all. Both qualifying-question routes now fall back to `engineExtractPlainOptionsFromReply` on
+  the actual text about to be sent (including a brand-new lead's intro sentence ahead of the
+  question) whenever no configured `options` are set, catching an already-choice-shaped question a
+  business owner wrote without needing them to separately re-enter its choices in Settings.
+- **`engineLocalizeOptions`** — a client's own configured `qual_questions[i].options` are typically
+  typed once in whatever language the business works in, same as the question text itself
+  (`engineLocalizeReply`, already applied to that text) — batches every option through ONE
+  translation call (delimiter-joined, split back apart) instead of one call per option, so the
+  choices a customer sees read in the same language as the question asking them. Only applied to a
+  business's own configured options; the plain-English extraction fallback above already reads the
+  reply in the customer's language, so its output needs no further translation.
+- **`value`'s own real WhatsApp length limit** (`engineSendChatwootQuickReply`) — `value` becomes a
+  list row's/button's own `id` in the real Meta payload (200/256-char limits respectively); several
+  callers deliberately build a longer `value` than the visible `title` (e.g. "I want to order
+  <full product name>"), so an unusually long product name was a real, previously uncapped risk of
+  a silent Meta rejection — now defensively capped at 200 (the smaller of the two limits) the same
+  way `title` already is.
 - **Brand-level picker** (`detectOrderSignal` + the category-enquiry branch of
   `handleEngineWebhook`) — the category/variant picker above only ever covered one dimension
   (category → color variant or product name); a client whose catalog carries several distinct

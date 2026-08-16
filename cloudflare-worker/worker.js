@@ -9461,6 +9461,21 @@ async function engineLocalizeReply(env, c, text, targetLang){
   }
   return text;
 }
+// Batches a qual_questions choice list through ONE engineLocalizeReply call (joined on a delimiter
+// short enough option text won't plausibly contain, split back apart after) instead of one call
+// per option — same "the scripted question shouldn't read as a different language than its own
+// answer choices" fix engineLocalizeReply's own comment already describes for the question text
+// itself, extended to the choices a customer taps. Falls back to the original (untranslated)
+// options on any failure, empty targetLang/English, or a shape mismatch (translation merged/split
+// an item unexpectedly) — a button in the "wrong" language is a far better outcome than losing a
+// choice or displaying a garbled split.
+async function engineLocalizeOptions(env, c, options, targetLang){
+  if(!options || !options.length || !targetLang || targetLang==='en') return options;
+  const DELIM=' ||| ';
+  const translated=await engineLocalizeReply(env, c, options.join(DELIM), targetLang);
+  const parts=(translated||'').split(DELIM).map(s=>s.trim()).filter(Boolean);
+  return parts.length===options.length ? parts : options;
+}
 
 // The one delivery point a customer's reply actually depends on — a silent failure here means
 // the customer gets nothing and nobody finds out, so (unlike most best-effort sends elsewhere in
@@ -9528,6 +9543,12 @@ function engineExtractReplyOptions(replyText){
 async function engineExtractPlainOptionsFromReply(env, c, replyText){
   const text=(typeof replyText==='string'?replyText:'').trim();
   if(!text || !c.openrouter_key) return null;
+  // Cheap skip gate before spending an LLM call on the common case (most FAQ replies aren't a
+  // choice question at all): a real clarifying question ends in '?' (or Arabic '؟', for an AED/UAE
+  // client's Arabic-language reply) somewhere near the end — checked within the last 20 characters,
+  // not just the very last one, since a reply can trail an emoji or extra whitespace after the
+  // actual question mark (e.g. the "...today? ✨" case this fallback was added for).
+  if(!/[?؟]/.test(text.slice(-20))) return null;
   const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today", keep it in the reply's own language), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
   try{
     const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -9601,7 +9622,14 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
   const trimmedItems=raw.slice(0,10).map(it=>{
     const full=String(it?.title||it?.value||'').trim();
     const title=engineTruncateButtonTitle(full, titleCap);
-    const item={title, value:String(it?.value||it?.title||'')};
+    // value becomes the row/button's own `id` in the real WhatsApp Cloud API payload — Meta caps
+    // that at 200 (list rows) / 256 (reply buttons) characters, same "defensively capped here
+    // rather than trusting a caller and getting a silent downstream Meta rejection" reasoning as
+    // titleCap above. Several callers deliberately build a longer value than the visible title
+    // (e.g. "I want to order <full product name>"), so this is a real risk, not a hypothetical one,
+    // for an unusually long product name — 200 (the smaller of the two real limits) covers both
+    // shapes regardless of which one isList ends up picking.
+    const item={title, value:String(it?.value||it?.title||'').slice(0,200)};
     if(isList && title.endsWith('…')) item.description=engineTruncateButtonTitle(full, 72);
     return item;
   }).filter(it=>it.title);
@@ -11290,9 +11318,25 @@ async function handleEngineWebhook(request, env, secret){
         // those as a tappable picker instead of leaving a choice-shaped question as plain text
         // with nothing to tap (real observed failure — see this function's own comment history on
         // quick-reply buttons). Falls back to plain text exactly as before when no options are set.
-        const firstQOptions=engineQualQuestionOptions(qualQuestions[0]);
+        let firstQOptions=engineQualQuestionOptions(qualQuestions[0]);
+        // The exact original failure this whole thread started from (Cloudnine Beddings): a
+        // business phrases qual_questions[0] itself as a choice question ("Do you need a mattress,
+        // a wooden bed, or something else?") but never fills in the explicit Choices field above —
+        // that field is opt-in/manual, so an already-choice-shaped question a business owner wrote
+        // before it existed (or just never revisited) still had nothing to fall back on. Same
+        // plain-English extraction safety net the FAQ route uses, applied to the actual text about
+        // to be sent (isNewLead's intro + question combined) so it still catches the question even
+        // wrapped in a warm opener.
+        let usingConfiguredOptions=firstQOptions.length>0;
+        if(!firstQOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+          firstQOptions=await engineExtractPlainOptionsFromReply(env, c, sentText)||[];
+        }
         if(firstQOptions.length && botConfig.quick_reply_buttons_enabled!==false){
-          const items=firstQOptions.map(o=>({title:o, value:o}));
+          // Localized to match the question text above (isNewLead's intro/firstQ is already in
+          // replyLang) — only for the business's OWN configured choices (usually typed in whatever
+          // language they work in); the extraction fallback already reads the reply in replyLang,
+          // so its output needs no further translation.
+          const items=(usingConfiguredOptions?await engineLocalizeOptions(env, c, firstQOptions, replyLang):firstQOptions).map(o=>({title:o, value:o}));
           routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
         } else {
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
@@ -11304,8 +11348,15 @@ async function handleEngineWebhook(request, env, secret){
       // Same tappable-picker treatment as the first qualifying question above, for the NEXT one
       // this turn is asking — routing.qualNextOptions (engineRouteFlow) is only ever populated when
       // that specific question has real configured choices.
-      if(sentText && routing.qualNextOptions?.length && botConfig.quick_reply_buttons_enabled!==false){
-        const items=routing.qualNextOptions.map(o=>({title:o, value:o}));
+      let qualNextOptions=routing.qualNextOptions||[];
+      const usingConfiguredQualNextOptions=qualNextOptions.length>0;
+      // Same "business phrased this as a choice question but never filled in Choices" fallback as
+      // the first qualifying question above.
+      if(sentText && !qualNextOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+        qualNextOptions=await engineExtractPlainOptionsFromReply(env, c, sentText)||[];
+      }
+      if(sentText && qualNextOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+        const items=(usingConfiguredQualNextOptions?await engineLocalizeOptions(env, c, qualNextOptions, replyLang):qualNextOptions).map(o=>({title:o, value:o}));
         routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
       } else if(sentText){
         await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
