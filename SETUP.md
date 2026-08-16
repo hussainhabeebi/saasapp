@@ -7595,6 +7595,20 @@ button message for ≤3 items) that this Worker previously never used, sending p
   `value` right there, before `detectOrderSignal`/`engineClassifyIntent` ever see it — deterministic
   regardless of which field Chatwoot actually echoes, since it's resolved from this app's own
   record of what it just offered, not from trusting Chatwoot's payload shape.
+- **Brand-level picker** (`detectOrderSignal` + the category-enquiry branch of
+  `handleEngineWebhook`) — the category/variant picker above only ever covered one dimension
+  (category → color variant or product name); a client whose catalog carries several distinct
+  brands within one category had no deterministic path for the brand itself, since a bare brand
+  name ("REPOSE") has no `category` of its own for the classifier to key off. That left it to the
+  free-form FAQ LLM, which sometimes phrased it as a real tappable-looking question and sometimes
+  didn't (`OPTIONS:` isn't reliably added every time) — real observed failure: a plain-text "Are
+  you interested in our Cloudnine Hybrid range, or perhaps PEPS or REPOSE?" with no buttons, and a
+  customer's bare "REPOSE" reply afterward getting the generic FAQ answer again instead of a model
+  list, because nothing narrowed the catalog by it. `detectOrderSignal` now also returns `brand`
+  (resolving a bare brand name from recent conversation context the same way it already resolves a
+  bare size/color reply); when a category has more than one real brand and none is chosen yet, the
+  brand names themselves become a tappable picker first, and once one is chosen (by tap or
+  detection), the existing variant/product-name picker runs against that brand's products only.
 
 ## Recruitment & Consultancy module (`frontend/dashboard.html` — 💼 Recruit tab) — rebuilt on D1
 
