@@ -2264,10 +2264,10 @@ async function detectOrderSignal(env, c, clientId, message, contextText){
   let productList='';
   let categoryList=[];
   if(productsTable){
-    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100&fields=name,sku,color,size,category`);
+    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100&fields=name,sku,color,size,category,brand`);
     const pd=await pr.json().catch(()=>({}));
     const products=pd?.list||[];
-    productList=products.map(p=>`- ${p.name}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}`).join('\n');
+    productList=products.map(p=>`- ${p.name}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.brand?' brand:'+p.brand:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}`).join('\n');
     categoryList=[...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))];
   }
 
@@ -2281,7 +2281,8 @@ If "order" or "enquiry", try to match it to exactly one product from the catalog
 - A message that names its own distinguishing detail (a color, size, or product name) should be matched against the catalog by that detail. If it's consistent with the product just discussed (e.g. "size M" right after that same shirt was shown), match to that one. If it conflicts with the product just discussed (e.g. "red shirt" right after a green shirt was shown), treat it as asking about a NEW product and match fresh by the new detail — don't keep reusing the old product's sku just because it was recently discussed. Only omit sku (or classify as neither, if it's clearly asking for something not carried at all) when the named detail truly doesn't correspond to anything in the catalog.
 - Always also include product_name (the catalog product's plain name) whenever you include sku, or whenever you're confident which product is meant even if you're not 100% sure you copied the sku exactly right — copying a product's name correctly is much more reliable than copying an alphanumeric code, and product_name lets a name-based lookup succeed even if the sku string doesn't match exactly.
 - If you cannot confidently match one specific product, but the message clearly asks about a product category rather than any one item (e.g. "shirts", "do you have pants") AND that category (or something close to it) is in the Known categories list below, include "category" instead — the exact string from Known categories that best matches. Never include both sku and category; category only applies when no single product is a confident match.
-Respond with ONLY valid JSON: {"signal":true,"mode":"order","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","category":"..."} (sku/product_name omitted if no confident single-product match; category omitted unless that's the only match) or {"signal":false}.
+- Separately (and only when a category is also included, or already clear from recent conversation), if the message itself names a specific brand from the catalog above (e.g. "REPOSE", "do you have Cloudnine Hybrid") rather than a specific model, also include "brand" — the exact brand string from the catalog that best matches. A bare brand name with no other detail ("REPOSE" on its own, right after being asked which brand) still counts — resolve the category from recent conversation the same way a bare size/color reply already does.
+Respond with ONLY valid JSON: {"signal":true,"mode":"order","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","category":"...","brand":"..."} (sku/product_name omitted if no confident single-product match; category/brand omitted unless relevant — brand only ever accompanies category, never sku) or {"signal":false}.
 ${contextText?`\nRecent conversation (oldest first — use this to resolve references back to a specific product):\n${contextText}\n`:''}
 Known categories: ${categoryList.join(', ')||'(none)'}
 Product catalog:
@@ -2305,7 +2306,8 @@ ${productList||'(no products listed)'}`;
     signal:!!parsed.signal, mode,
     sku:parsed.signal?(parsed.sku||undefined):undefined,
     productName:parsed.signal?(parsed.product_name||undefined):undefined,
-    category:parsed.signal?(parsed.category||undefined):undefined
+    category:parsed.signal?(parsed.category||undefined):undefined,
+    brand:parsed.signal?(parsed.brand||undefined):undefined
   };
 }
 
@@ -9523,7 +9525,24 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
   const raw=(items||[]).filter(it=>it && (it.title||it.value));
   const isList=raw.length>3;
   const titleCap=isList?24:20;
-  const trimmedItems=raw.slice(0,10).map(it=>({title:engineTruncateButtonTitle(it?.title||it?.value||'', titleCap), value:String(it?.value||it?.title||'')})).filter(it=>it.title);
+  // WhatsApp Cloud API list rows (unlike plain reply buttons, which have no description field at
+  // all) carry a separate ~72-char description line alongside the 24-char title — real observed
+  // complaint: a long option name ("Semi Medicated Orthopedic Mattress") truncates down to "Semi
+  // Medicated…" with no way to fit more, even though the title's 24-char cap is a hard WhatsApp
+  // platform limit we can't raise. Whenever truncation actually happened, carry the fuller
+  // (still-capped, at description's own real limit) text there too, so a list row loses as little
+  // as the platform allows instead of only ever showing the truncated title. Additive and
+  // best-effort: unlike title/value (confirmed read by Chatwoot's own
+  // WhatsappCloudService#create_payload_based_on_items — see this function's own comment below),
+  // whether that same code path forwards a `description` key through to Meta isn't confirmed the
+  // same way, but an unrecognized JSON key is harmless if it's simply ignored downstream.
+  const trimmedItems=raw.slice(0,10).map(it=>{
+    const full=String(it?.title||it?.value||'').trim();
+    const title=engineTruncateButtonTitle(full, titleCap);
+    const item={title, value:String(it?.value||it?.title||'')};
+    if(isList && title.endsWith('…')) item.description=engineTruncateButtonTitle(full, 72);
+    return item;
+  }).filter(it=>it.title);
   if(!trimmedItems.length) return engineSendChatwootReply(env, c, clientId, convId, text);
   const seenTitles=new Set();
   const hasCollision=trimmedItems.some(it=>{
@@ -10810,6 +10829,24 @@ async function handleEngineWebhook(request, env, secret){
     // Fire-and-forget: covers the slow classify/routing/LLM work below, not worth blocking on.
     engineSendChatwootTyping(env, c, convId, true);
 
+    // Deterministic quick-reply resolution — WhatsApp/Chatwoot returns the tapped list/button
+    // item's visible title back as the customer's message, not any longer/different `value` a
+    // caller may have set on it (title is capped at 20-24 chars — see
+    // engineSendChatwootQuickReply's own comment — genuinely all the platform gives back on tap).
+    // Real observed failure: a customer tapped a picker option and the resulting message carried
+    // only that short, sometimes-truncated title, leaving the general-purpose classifier below to
+    // re-guess a product from a fragment like "Semi Medicated…" with no guarantee of success.
+    // engineBuildLeadUpsertBody already records the immediately preceding bot turn's own options
+    // (title+value) onto that ConvHistory entry, so a reply that exactly matches one of those
+    // titles is resolved HERE, deterministically, back to the fuller value that option was always
+    // meant to carry — before detectOrderSignal/engineClassifyIntent below ever have to guess from
+    // just the short title text. A no-op whenever title and value were already identical.
+    const lastTurn=state.history?.length?state.history[state.history.length-1]:null;
+    if(lastTurn?.role==='assistant' && Array.isArray(lastTurn.options) && lastTurn.options.length){
+      const tappedLower=(text||'').trim().toLowerCase();
+      const tappedOption=lastTurn.options.find(o=>o && String(o.title||'').trim().toLowerCase()===tappedLower);
+      if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
+    }
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls);
@@ -11017,8 +11054,49 @@ async function handleEngineWebhook(request, env, secret){
           // photo — a customer asking "which type of shirt" shouldn't be shown one arbitrary shirt
           // as if it were the answer; fall back to the first matching product's photo only when the
           // category itself has no photo configured.
-          const categoryProducts=await ecomFindProductsByCategory(env, clientId, detection.category);
-          if(categoryProducts.length){
+          let categoryProducts=await ecomFindProductsByCategory(env, clientId, detection.category);
+          // Brand-level narrowing — same "never leave a multi-way choice as free text" reasoning
+          // as the variant/product picker below, one level up. Real observed failure: a customer
+          // asking about a category with several carried brands got a free-form LLM paragraph
+          // ("Are you interested in our Cloudnine Hybrid range, or perhaps PEPS or REPOSE?") with
+          // no buttons at all, because a bare brand name has no `category` of its own for
+          // detectOrderSignal to key off, so it fell out of this deterministic path entirely; the
+          // customer's next brand-only reply ("REPOSE") then had nothing to narrow the catalog by
+          // either, and got the generic FAQ answer again instead of the actual model picker.
+          // detectOrderSignal now recognizes a bare brand name from recent conversation context
+          // the same way it already resolves a bare size/color reply, so this can filter down to
+          // it deterministically once known, or offer every real brand in this category as
+          // tappable buttons (never invented — only brands actually carried) when it isn't yet.
+          const brandsInCategory=[...new Set(categoryProducts.map(p=>(p.brand||'').trim()).filter(Boolean))];
+          let chosenBrand=null;
+          if(detection.brand){
+            const guess=detection.brand.trim().toLowerCase();
+            chosenBrand=brandsInCategory.find(b=>b.toLowerCase()===guess)
+              || brandsInCategory.find(b=>b.toLowerCase().includes(guess)||guess.includes(b.toLowerCase()))
+              || null;
+          }
+          if(chosenBrand) categoryProducts=categoryProducts.filter(p=>(p.brand||'').trim().toLowerCase()===chosenBrand.toLowerCase());
+          if(categoryProducts.length && brandsInCategory.length>1 && !chosenBrand){
+            const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
+            const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
+            const photoUrl=categoryImage||withImage.image_url;
+            const intro=`Which brand of ${detection.category} are you interested in?`;
+            if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
+            if(botConfig.quick_reply_buttons_enabled!==false){
+              sentText=await engineLocalizeReply(env, c, intro, replyLang);
+              routing.reply=sentText;
+              const items=brandsInCategory.slice(0,10).map(b=>({title:b, value:b}));
+              routing.quickReplies=items;
+              if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
+              await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+            } else {
+              const listText=brandsInCategory.map(b=>`- ${b}`).join('\n');
+              sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
+              routing.reply=sentText;
+              await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:photoUrl});
+            }
+            orderHandledInline=true;
+          } else if(categoryProducts.length){
             const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
             const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
             const variants=[...new Set(categoryProducts.map(p=>(p.color||'').trim()).filter(Boolean))];
@@ -11032,7 +11110,7 @@ async function handleEngineWebhook(request, env, secret){
               nameChoices.push({value:p.name, label:(p.short_label||'').trim()||p.name});
             }
             const choices=variants.length?variants.map(v=>({value:v, label:v})):nameChoices;
-            const intro=variants.length?`Which type of ${detection.category} are you looking for?`:`Here's what we have in ${detection.category}:`;
+            const intro=variants.length?`Which type of ${chosenBrand||detection.category} are you looking for?`:`Here's what we have in ${chosenBrand||detection.category}:`;
             const photoUrl=categoryImage||withImage.image_url;
             if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
             // Tappable picker (buttons for <=3 choices, a Chatwoot list message for up to 10)
@@ -11055,7 +11133,8 @@ async function handleEngineWebhook(request, env, secret){
             }
             orderHandledInline=true;
           }
-          // No products at all in that category — falls through to FAQ below ("we don't carry that").
+          // No products at all in that category (or that brand within it) — falls through to FAQ
+          // below ("we don't carry that").
         }
         // enquiry with no confident product or category match falls through to the normal FAQ/flow
         // handling below (no canned reply, no link) — the context-aware FAQ LLM can respond
