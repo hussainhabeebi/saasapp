@@ -7698,8 +7698,9 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
   // sent right back instead of an answer to what it had just itself asked.
   const enquiryHistory=state.activeHistory||[];
   sys+=engineSummaryBlock(state);
+  sys+=engineCustomerFactsBlock(state);
   if(enquiryHistory.length) sys+='\n\n## Recent Conversation\n'+enquiryHistory.slice(-20).map(m=>m.role+': '+m.content).join('\n');
-  sys+='\n\nDo not repeat something you already said in Recent Conversation above. If the customer\'s message is short or generic ("yes", "ok", "sure", "tell me more") figure out from Recent Conversation exactly what they\'re responding to (e.g. if your last message asked "would you like to know about pack options and pricing?", answer that now — the actual options and prices — not the product description again).';
+  sys+='\n\nDo not repeat something you already said in Recent Conversation above, and do not ask for something already listed in What We Know About This Customer above. If the customer\'s message is short or generic ("yes", "ok", "sure", "tell me more") figure out from Recent Conversation exactly what they\'re responding to (e.g. if your last message asked "would you like to know about pack options and pricing?", answer that now — the actual options and prices — not the product description again).';
   sys+='\n\nDefault approach (follow this unless the persona/instructions above specify otherwise): when you have a genuinely useful next detail to share (price, what\'s included, a real benefit relevant to what they asked), just share it as part of your answer instead of teasing it behind another "would you like to know more?"-style question — that just makes the customer say "yes" again to get information they already asked for. Frame the product as the answer to what they\'re looking for, not a spec sheet. Only ask a real clarifying question when something is genuinely ambiguous and needed to move forward (e.g. which size/color/quantity), not as a routine way to keep the conversation going.';
   // Opt-in per client (Ecommerce → Settings → "Share order link on product questions",
   // ecom_link_on_enquiry) — the default product behavior deliberately withholds the checkout link
@@ -8676,6 +8677,7 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   // date-based staleness at all, only this count-based trim of what's "active" for the prompts).
   const activeHistory=history.length>20?history.slice(-20):history;
   let qualAnswers={}; try{ qualAnswers=JSON.parse(lead?.QualAnswers||'{}'); }catch(e){}
+  let customerFacts=[]; try{ customerFacts=JSON.parse(lead?.['Customer Facts']||'[]'); }catch(e){}
   return {
     lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping, botMsgs,
     qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
@@ -8684,7 +8686,10 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
     // has already dropped, so a long-running lead doesn't lose all memory of anything discussed
     // before that cap. Empty for the vast majority of leads (most conversations never cross 40
     // turns at all), so this stays a no-op read for them.
-    summary:lead?.ConvSummary||''
+    summary:lead?.ConvSummary||'',
+    // See engineMaybeExtractCustomerFacts — durable preferences/constraints, kept up to date every
+    // few turns from early in the conversation, not gated behind the 40-turn ConvSummary threshold.
+    customerFacts
   };
 }
 
@@ -9283,7 +9288,9 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
   // to resolve against (see the instruction below), and a returning customer's earlier stated
   // preferences should still be visible several turns later, not just the last couple of messages.
   sys+=engineSummaryBlock(state);
+  sys+=engineCustomerFactsBlock(state);
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
+  if(state.customerFacts?.length) sys+='\n\nUse What We Know About This Customer above the same way a rep who already knows this customer would — do not ask for something already listed there, and do not treat them like a stranger if it shows they have real history with you.';
 
   // Observed real failure: with no concrete data to answer from (e.g. an unconfigured product/
   // package catalog), the model didn't just say it would connect the customer with support — it
@@ -9402,6 +9409,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
       : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
   }
   sys+=engineSummaryBlock(state);
+  sys+=engineCustomerFactsBlock(state);
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // See engineBuildFaqSystemPrompt's matching comment.
@@ -9491,6 +9499,12 @@ function engineSummaryBlock(state){
   return state.summary?`\n\n## Earlier in This Conversation (summary)\n${state.summary}`:'';
 }
 
+// See engineMaybeExtractCustomerFacts — same "shared by every reply-generating prompt" pairing as
+// engineSummaryBlock above, placed right alongside it everywhere it's used.
+function engineCustomerFactsBlock(state){
+  return state.customerFacts?.length?`\n\n## What We Know About This Customer\n${state.customerFacts.map(f=>'- '+f).join('\n')}`:'';
+}
+
 // Rolling summary of everything ConvHistory's 40-turn cap (engineBuildLeadUpsertBody) has already
 // dropped — without this, a lead whose conversation runs past that cap loses all memory of
 // anything discussed before it, even though the conversation is still ongoing. Regenerates every
@@ -9515,6 +9529,36 @@ async function engineMaybeSummarizeHistory(env, c, fullHistory, priorSummary){
   // already makes internally.
   await ensureLeadsColumns(env, ['ConvSummary']);
   return summary;
+}
+
+// Durable "what we know about this customer" — distinct from ConvSummary above, which only exists
+// to cover for the 40-turn ConvHistory cap and so never runs on the vast majority of real
+// conversations (most never reach 40 messages). Facts a human rep would just remember — stated
+// preferences (size/color/style/budget), constraints (allergies, must-haves, deal-breakers),
+// preferred language/communication style — are usually said once, early, and are worth recalling
+// from message 5 onward, not just once a conversation has gotten unusually long. Runs every
+// ENGINE_FACTS_EVERY_N_TURNS turns starting almost immediately (see the length<4 floor below, not
+// gated behind the 40-turn ConvSummary threshold), each time re-reading the last 20 messages and
+// merging with whatever was already extracted — so a stated fact survives even after the raw
+// message that stated it ages out of the "Recent Conversation" window, and a later contradiction
+// ("actually I don't want that color anymore") can update/drop it instead of both facts coexisting
+// forever. Persists on the same lead row as ConvSummary/ConvHistory, so it survives a Resolve/
+// Reopen cycle or an opt-out/resub (neither clears ConvHistory or this) — the closest thing this
+// data model has to "the relationship continues even across separate conversation sessions."
+const ENGINE_FACTS_EVERY_N_TURNS=6;
+async function engineMaybeExtractCustomerFacts(env, c, fullHistory, priorFactsJson){
+  if(fullHistory.length<4 || fullHistory.length%ENGINE_FACTS_EVERY_N_TURNS!==0) return null;
+  let priorFacts=[]; try{ priorFacts=JSON.parse(priorFactsJson||'[]'); }catch(e){}
+  const recentSlice=fullHistory.slice(-20);
+  const transcript=recentSlice.map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+  const system=`Extract durable facts about this customer from the WhatsApp conversation below — things worth remembering for future replies, not one-off details that only matter for the current message. Examples of what counts: stated preferences (color/size/style/budget), constraints (allergies, must-haves, deal-breakers), preferred language or communication style, anything they explicitly told you to remember. Examples of what does NOT count: "asked about pricing just now", "said hello" — routine turns, not standing facts.${priorFacts.length?` You already know this about them: ${JSON.stringify(priorFacts)} — update or drop any of these the conversation below contradicts, keep the rest, add anything new. Return the full updated list, not just what's new.`:''} Respond with ONLY a JSON array of short fact strings (max 10), e.g. ["Prefers Malayalam","Budget around ₹2000","Has sensitive skin"]. Empty array if nothing durable was said.`;
+  const raw=await engineCallLlm(env, c, system, transcript, 200);
+  let facts=null; try{ facts=JSON.parse(raw); }catch(e){}
+  if(!Array.isArray(facts)) return null;
+  const merged=facts.filter(f=>typeof f==='string' && f.trim()).slice(0,10);
+  if(!merged.length && !priorFacts.length) return null;
+  await ensureLeadsColumns(env, ['Customer Facts']);
+  return JSON.stringify(merged);
 }
 
 // flow_json stage messages, qual_questions, and callback_msg/callback_msg_frustrated are static
@@ -11593,6 +11637,8 @@ async function handleEngineWebhook(request, env, secret){
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
     const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
     if(newSummary) leadBody.ConvSummary=newSummary;
+    const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
+    if(newFacts) leadBody['Customer Facts']=newFacts;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
@@ -11838,6 +11884,8 @@ async function handleInstagramWebhook(request, env){
       const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
       const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
       if(newSummary) leadBody.ConvSummary=newSummary;
+      const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
+      if(newFacts) leadBody['Customer Facts']=newFacts;
       const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
       if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
         await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);

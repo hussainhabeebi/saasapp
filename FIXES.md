@@ -220,6 +220,38 @@ still in place.
 `worker.test.js`; `engineCallLlmAvoidingRepeat` itself calls the network (Gemini/OpenRouter) and is
 intentionally left out of the pure-logic suite, consistent with this file's existing scope.
 
+### 16 — [backend] Durable customer facts, not just raw transcript + a summary
+**Area:** `engineMaybeExtractCustomerFacts`, `engineCustomerFactsBlock` (new), `engineGetLeadState`'s
+`customerFacts`, both lead-upsert call sites in `handleEngineWebhook`/`handleInstagramWebhook`
+(`cloudflare-worker/worker.js`)
+**Broke:** Nothing broke — this is the requested follow-up to #13-#15: "memory like a human" and
+"connection between each chat." Before this, the only durable memory was raw ConvHistory (last 40
+turns) and `ConvSummary`, a rolling prose summary that only ever runs once a conversation crosses 40
+messages — the vast majority of real conversations never do, so most customers got no durable memory
+at all beyond the raw recent-turns window. A human rep doesn't re-read a transcript before replying —
+they recall specific facts (allergies, budget, preferred language, "already told them X") instantly.
+**Fix:** `engineMaybeExtractCustomerFacts` runs every 6 turns starting almost immediately (not gated
+behind the 40-turn threshold), re-reading the last 20 messages, merging with whatever was already
+extracted (so a later contradiction updates/drops a fact instead of both coexisting), and persists a
+capped JSON array of short fact strings in a new `Customer Facts` lead column (self-healing, same
+pattern as `ConvSummary`/`OrderCollect`/`Last Product Sku`). `engineCustomerFactsBlock` injects a
+"## What We Know About This Customer" section into all three reply prompts (FAQ/objection/enquiry),
+paired with an explicit instruction not to ask for or repeat what's already known there. Because this
+lives on the same lead row as `ConvHistory`, it survives a Resolve/Reopen cycle and an opt-out/resub
+(neither clears it) — continuity across separate conversation sessions on the same channel, without
+needing new infrastructure.
+**Known limitation:** This does not unify identity *across channels* — a customer on WhatsApp and
+Instagram to the same business is two separate lead rows (keyed by phone vs. IgId) with no shared
+identifier to merge them on; that would need the customer to provide a matching identifier (email/
+phone) in some form, which isn't reliably available today.
+**Don't revert:** Removing this reopens the exact "memory like a human" gap this session's fixes were
+building toward, and weakens the anti-repeat instructions in the FAQ/enquiry/objection prompts, which
+now lean on it to know what's already been established.
+**Tested:** Not covered in `worker.test.js` — `engineMaybeExtractCustomerFacts` calls the network
+(same reasoning as #15's `engineCallLlmAvoidingRepeat`); `engineCustomerFactsBlock` is a small pure
+formatter without its own documented failure case, consistent with this file's per-bug (not
+per-helper) test scope.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
