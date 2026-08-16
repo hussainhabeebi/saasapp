@@ -9461,6 +9461,27 @@ async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
   return 'One moment 🙏';
 }
 
+// Deterministic backstop against a reply-generating LLM call regenerating essentially the same
+// message it just sent — engineGetLeadState's `looping` flag (engineTextSimilarity, 0.7
+// threshold) can only ever catch this AFTER it's already happened twice (it looks backward at
+// history at the START of a turn, so it has no way to stop THIS turn's fresh reply from becoming
+// the second half of that very pair) — and the "don't repeat yourself" instructions already
+// baked into engineBuildFaqSystemPrompt/engineBuildProductEnquirySystemPrompt are a request, not
+// a guarantee (real recurring observed failure, Wellness Virtue: a "yes"/"ok" to "would you like
+// to know more?" kept getting essentially the same pitch/question back despite that instruction
+// already being in the prompt). This checks the actual generated text before it goes out and
+// forces exactly one retry, with an explicit instruction quoting the rejected duplicate, only
+// when the model has demonstrably disregarded the softer version already in systemPrompt — fully
+// fail-open: any retry failure just falls back to the original (possibly-repetitive) reply rather
+// than blocking the customer's message.
+async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg){
+  const reply=await engineCallLlm(env, c, systemPrompt, userText, maxTokens);
+  if(!lastBotMsg || !reply || engineTextSimilarity(reply, lastBotMsg)<0.7) return reply;
+  const retryPrompt=systemPrompt+`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
+  const retryReply=await engineCallLlm(env, c, retryPrompt, userText, maxTokens);
+  return retryReply || reply;
+}
+
 // Shared by both FAQ/objection prompt builders (engineBuildFaqSystemPrompt/
 // engineBuildObjectionSystemPrompt) — see engineMaybeSummarizeHistory for how state.summary gets
 // generated/updated. Placed before "## Recent Conversation" in both callers so a returning
@@ -11236,7 +11257,7 @@ async function handleEngineWebhook(request, env, secret){
           // link given at the product level, nothing client-wide or generic.
           const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? ((product.shopify_product_url||product.product_link||'').trim()||null) : null;
           const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink, state);
-          sentText=await engineCallLlm(env, c, sysPrompt, userText, 200);
+          sentText=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 200, state.botMsgs?.[state.botMsgs.length-1]);
           sentText=engineSubstituteOrderLinkPlaceholder(sentText, c, clientId, product.sku, product);
           routing.reply=sentText;
           // Photo sent whenever a product is confidently identified, link or no link — a customer
@@ -11482,7 +11503,7 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
-      let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
+      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
@@ -11542,7 +11563,7 @@ async function handleEngineWebhook(request, env, secret){
       routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
-      let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
+      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
       // A customer who just raised an objection benefits from explicit, one-tap next steps
@@ -11800,7 +11821,7 @@ async function handleInstagramWebhook(request, env){
         if(sentText) await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
       }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
         const sysPrompt=engineBuildFaqSystemPrompt(c, state, null, c.industry||'general', replyLang, isNewLead);
-        let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
+        let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
         // Instagram is text-only (engineDeliverReply short-circuits to engineSendInstagramReply
         // before any button/list code) — the OPTIONS: marker itself must still be stripped here so
         // it never shows up as a literal line in the DM, even though it's never turned into buttons.
@@ -11809,7 +11830,7 @@ async function handleInstagramWebhook(request, env){
         await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
       }else if(routing.route==='objection'){
         const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
-        const reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
+        const reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
         routing.reply=reply; sentText=reply;
         await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
       }
