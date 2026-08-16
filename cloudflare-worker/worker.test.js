@@ -1,7 +1,8 @@
 // Regression tests for the fixes made across the "message repetition" / quick-reply-buttons
-// session (see ../FIXES.md for the full log). These cover the pure, synchronous logic only —
-// no NocoDB/Chatwoot/OpenRouter calls, no live worker — so they run in plain Node with zero
-// network access and zero setup. Run with `npm test` from this directory, or `node --test`.
+// session (see ../FIXES.md for the full log). Most of these cover pure, synchronous logic with
+// zero network access; a few mock `fetch` to test the Chatwoot-send functions' return values
+// without a live worker or real credentials. Run with `npm test` from this directory, or
+// `node --test`.
 //
 // Before editing any function tested here, read its entry in ../FIXES.md — these tests encode
 // real, previously-observed production failures, not hypothetical edge cases.
@@ -16,6 +17,9 @@ import {
   engineExtractReplyOptions,
   engineHandoverCannedTexts,
   engineRouteFlow,
+  engineSendChatwootReply,
+  engineBuildFaqSystemPrompt,
+  engineExtractPlainOptionsFromReply,
 } from './worker.js';
 
 describe('engineTruncateButtonTitle — WhatsApp title-length safety (FIXES.md #5)', () => {
@@ -141,3 +145,63 @@ describe('engineRouteFlow — qualifying-question choices carry through (FIXES.m
 function baseClsFor() {
   return { intent: 'QUESTION', sentiment: 'Neutral', objectionCategory: 'none', aiWinProbability: null, customerLanguage: null, nextStage: null, confidence: null, productInterest: '' };
 }
+
+describe('engineSendChatwootReply — return value reflects actual delivery (FIXES.md #17)', () => {
+  const c = { chatwoot_base: 'https://chatwoot.example', chatwoot_account_id: '1', chatwoot_token: 'tok' };
+  // Minimal env: no env.DB / OPS_ALERT_* — logEngineSkip/reportOpsError both swallow their own
+  // failures internally (see worker.js), so calling them against an incomplete env is safe and
+  // exercises the same no-op path production takes when neither alert channel is configured.
+  const env = {};
+
+  test('returns true when Chatwoot accepts the send', async (t) => {
+    t.mock.method(global, 'fetch', async () => new Response('{}', { status: 200 }));
+    const ok = await engineSendChatwootReply(env, c, 'client1', 'conv1', 'hello');
+    assert.equal(ok, true);
+  });
+
+  test('returns false — not just "didn\'t throw" — when Chatwoot rejects the send', async (t) => {
+    t.mock.method(global, 'fetch', async () => new Response('server error', { status: 500 }));
+    const ok = await engineSendChatwootReply(env, c, 'client1', 'conv1', 'hello');
+    assert.equal(ok, false, 'a rejected Chatwoot send must not be reported as delivered — this is the exact gap that made Settings → Logs show "Replied" for a message the customer never received');
+  });
+
+  test('returns false when the request itself throws (network failure)', async (t) => {
+    t.mock.method(global, 'fetch', async () => { throw new Error('network unreachable'); });
+    const ok = await engineSendChatwootReply(env, c, 'client1', 'conv1', 'hello');
+    assert.equal(ok, false);
+  });
+
+  test('returns false, not undefined, when there is nothing to send to', async () => {
+    const ok = await engineSendChatwootReply(env, {}, 'client1', 'conv1', 'hello');
+    assert.equal(ok, false, 'missing Chatwoot credentials must be reported as non-delivery, not silently ignored');
+  });
+});
+
+describe('Button/list titles are pinned to English regardless of reply language (FIXES.md #19)', () => {
+  // Real production failure: Chatwoot's own inbound WhatsApp webhook (Meta signature verification)
+  // has been observed rejecting a customer's tap reply outright (401, never reaches this engine at
+  // all) when its body contains non-ASCII UTF-8 bytes — Malayalam-language button taps specifically.
+  // WhatsApp echoes a button's title back verbatim when tapped, so any code path that lets an
+  // option/button label inherit the reply's own (non-English) language reintroduces this exact bug.
+
+  test('the FAQ system prompt instructs the model to keep OPTIONS: labels in English even when replying in another language', () => {
+    const c = { main_prompt: '', services: '[]', kb_summary: '' };
+    const state = {};
+    const sys = engineBuildFaqSystemPrompt(c, state, null, 'ecommerce', 'ml', false);
+    assert.match(sys, /write each option itself in ENGLISH/i, 'must explicitly override "reply in the customer\'s language" for OPTIONS: labels');
+    assert.doesNotMatch(sys, /write each option itself in the customer's language/i, 'the old instruction (translate options into replyLang) must not come back');
+  });
+
+  test('engineExtractPlainOptionsFromReply asks the LLM to translate extracted labels into English, not keep the reply\'s own language', async (t) => {
+    let capturedSystemPrompt = null;
+    t.mock.method(global, 'fetch', async (url, opts) => {
+      capturedSystemPrompt = JSON.parse(opts.body).messages[0].content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"options":["Mattress","Wooden bed"]}' } }] }), { status: 200 });
+    });
+    const c = { openrouter_key: 'test-key' };
+    const options = await engineExtractPlainOptionsFromReply({}, c, 'നിങ്ങൾക്ക് ഒരു മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ വേണ്ടത്?');
+    assert.match(capturedSystemPrompt, /ALWAYS translated into English/i, 'must not let extracted option labels inherit the source reply\'s language');
+    assert.doesNotMatch(capturedSystemPrompt, /keep it in the reply's own language/i, 'the old instruction must not come back');
+    assert.deepEqual(options, ['Mattress', 'Wooden bed']);
+  });
+});
