@@ -15,6 +15,13 @@ wrapper (per client) ── Execute Workflow ──► engine.json (shared logic
 followup-template.json  → clone per client for scheduled nudges
 ```
 
+**Before editing anything in `cloudflare-worker/worker.js` or `frontend/dashboard.html`'s
+qualifying-questions editor, check `FIXES.md`** — a chronological log of real production bugs
+already fixed, with why each one can't be casually reverted. Regression coverage for it lives in
+`cloudflare-worker/worker.test.js` (`npm test`) and `frontend/tests/*.spec.js` (`npm test`, needs
+`npx playwright install chromium` once), both run automatically on every PR via
+`.github/workflows/ci.yml`.
+
 ## 1. CLIENTS config table (NocoDB control plane)
 One table holding every client's config. Read with your **master** NocoDB token.
 
