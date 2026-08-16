@@ -220,6 +220,53 @@ still in place.
 `worker.test.js`; `engineCallLlmAvoidingRepeat` itself calls the network (Gemini/OpenRouter) and is
 intentionally left out of the pure-logic suite, consistent with this file's existing scope.
 
+### 16 — [backend] Diagnostic logging for an unresolved quick-reply tap
+**Area:** Tap-resolution block in `handleEngineWebhook`, right where fix #12's comparison runs
+(`cloudflare-worker/worker.js`)
+**Broke (a gap, not a bug):** "The button tap didn't do anything" was reported multiple times
+(fixes #6, #9, #12 all came from this same class of report), and each time there was no way to
+tell, from a screenshot alone, whether the tap (a) reached this webhook but didn't match any
+offered option, or (b) never reached Chatwoot/this webhook at all — those two failure modes need
+completely different fixes (one is a bug in this repo, the other is a Chatwoot/Meta delivery
+issue outside it), and guessing which one happened wastes a round of speculative fixes.
+**Fix:** Whenever a picker was just shown and the reply doesn't match any of its options (even
+after fix #12's normalization), log it (`engine_event_log`, reason `quick-reply-not-matched`,
+Settings → Logs) — diagnostic only, never blocks or alters the turn. If a report comes in and
+**nothing** appears in Settings → Logs for that phone/time (not even this entry), the problem is
+upstream of this codebase — check Chatwoot's own conversation view and Meta's delivery logs next,
+not another code fix here.
+**Don't revert:** Removing this reopens the exact "which layer failed?" guessing game.
+
+### 17 — [backend] "✓ Replied" in Settings → Logs didn't mean the message was actually delivered
+**Area:** `engineSendChatwootReply`, `engineSendChatwootImageReply`, `engineSendChatwootAudioReply`,
+`engineSendChatwootQuickReply`, `engineDeliverReply` (`cloudflare-worker/worker.js`)
+**Broke:** Following up on fix #16's diagnostic: a real case where a customer's tap genuinely
+reached the engine (a `✓ Replied / ecom_faq` row was logged, matching timestamp, 8.4s round trip)
+but nothing arrived on WhatsApp. Root cause: `engineLogAnalytics` (the source of every "Replied"
+row) is called **unconditionally** at the end of a turn, regardless of whether the actual Chatwoot
+send succeeded — every one of the 4 send functions already caught its own failures and reported
+them to `reportOpsError` (operator-only Slack/email), but that's invisible in the client-facing
+Settings → Logs a business owner actually checks. Same gap for `bot_reply_disabled='Yes'`
+(Settings → Bot Auto-Reply off): `engineDeliverReply` intentionally suppresses the send for that
+client, but the turn still finishes and still logs "Replied."
+**Fix:** All 4 send functions now return `true`/`false` reflecting whether something actually went
+out (not just "didn't throw"), and log a specific reason to `engine_event_log`
+(`send-failed`/`send-skipped-no-setup`/`bot-reply-disabled`) whenever they don't deliver — visible
+in Settings → Logs right alongside (not instead of) the still-present "Replied" analytics row, so a
+business owner can now see *why* nothing arrived instead of just seeing an unexplained "Replied."
+`engineSendChatwootQuickReply` distinguishes `false` (nothing delivered at all) from `null` (fell
+back to plain text successfully — not a failure, just not buttons) so its existing
+`routing.quickReplies` contract (fix #9) is unaffected.
+**Don't revert:** Making these functions return `undefined` again (or dropping the `logEngineSkip`
+calls) silently brings back "Replied" as an untrustworthy signal — this was a real, confirmed cause
+of at least one "button didn't do anything" report, not a hypothetical.
+**Not yet done:** `engineLogAnalytics`'s own `IsError` field still doesn't reflect delivery failure
+— it's a separate, larger change (threading a success signal through ~15 different reply-dispatch
+branches in `handleEngineWebhook`) that was deliberately scoped out here to ship the diagnostic
+value now at low risk. The new `logEngineSkip` rows are the actual fix; "Replied" itself is still
+just "didn't crash," so keep reading both columns together.
+**Tested:** `worker.test.js` → `engineSendChatwootReply` return value (mocked `fetch`).
+
 ---
 
 ## Data contracts (frontend ⇄ backend)

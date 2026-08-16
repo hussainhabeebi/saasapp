@@ -9578,9 +9578,20 @@ async function engineLocalizeOptions(env, c, options, targetLang){
 // "text.body" schema errors) happens after this function has already returned successfully, and
 // only shows up in Chatwoot's own UI as "Failed to send." That class of failure is invisible to
 // this synchronous check by construction; it isn't something r.ok can catch.
-async function engineSendChatwootReply(env, c, clientId, convId, text){
+// Returns true/false — whether the message actually went out, not just whether this function ran
+// without throwing. Real observed gap: Settings → Logs' "✓ Replied" status (engineLogAnalytics,
+// handleEngineWebhook) is written unconditionally at the end of a turn, regardless of whether any
+// of the sends that happened during it actually succeeded — every failure here already called
+// reportOpsError (an operator-only Slack/email alert), but that's invisible in the client-facing
+// Settings → Logs a business owner actually checks, so "Replied" read as confirmed delivery when
+// it only ever meant "didn't crash." logEngineSkip here (reason 'send-failed'/'send-skipped-no-
+// setup') makes an actual delivery failure show up in that same table instead.
+export async function engineSendChatwootReply(env, c, clientId, convId, text){
   const trimmed=(typeof text==='string'?text:(text==null?'':String(text))).trim();
-  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed){
+    if(convId && trimmed) await logEngineSkip(env, clientId, null, convId, 'send-skipped-no-setup', 'Chatwoot base/account/token missing for this client');
+    return false;
+  }
   if(typeof text!=='string'){
     await reportOpsError(env, 'engineSendChatwootReply — reply was not a string', new Error(`typeof=${typeof text} value=${JSON.stringify(text)?.slice(0,300)}`), {clientId, convId});
   }
@@ -9591,9 +9602,14 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
     if(!r.ok){
       const errBody=await r.text().catch(()=>'');
       await reportOpsError(env, 'engineSendChatwootReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+      await logEngineSkip(env, clientId, null, convId, 'send-failed', `Chatwoot rejected the send: HTTP ${r.status}`);
+      return false;
     }
+    return true;
   }catch(e){
     await reportOpsError(env, 'engineSendChatwootReply — send threw', e, {clientId, convId});
+    await logEngineSkip(env, clientId, null, convId, 'send-failed', `send threw: ${e?.message||e}`);
+    return false;
   }
 }
 
@@ -9724,7 +9740,7 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     if(isList && title.endsWith('…')) item.description=engineTruncateButtonTitle(full, 72);
     return item;
   }).filter(it=>it.title);
-  if(!trimmedItems.length){ await engineSendChatwootReply(env, c, clientId, convId, text); return null; }
+  if(!trimmedItems.length){ const sent=await engineSendChatwootReply(env, c, clientId, convId, text); return sent?null:false; }
   const seenTitles=new Set();
   // .normalize('NFC') — same reasoning as the tap-resolution comparison in handleEngineWebhook:
   // two independently-translated titles (engineLocalizeOptions) can be visually identical Malayalam
@@ -9738,8 +9754,8 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
   });
   if(hasCollision){
     const listText=raw.map(it=>`- ${it.title||it.value}`).join('\n');
-    await engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
-    return null;
+    const sent=await engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
+    return sent?null:false;
   }
   const trimmed=(typeof text==='string'?text:'').trim();
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return null;
@@ -9752,13 +9768,13 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     if(!r.ok){
       const errBody=await r.text().catch(()=>'');
       await reportOpsError(env, 'engineSendChatwootQuickReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
-      await engineSendChatwootReply(env, c, clientId, convId, trimmed);
-      return null;
+      const sent=await engineSendChatwootReply(env, c, clientId, convId, trimmed);
+      return sent?null:false;
     }
   }catch(e){
     await reportOpsError(env, 'engineSendChatwootQuickReply — send threw', e, {clientId, convId});
-    await engineSendChatwootReply(env, c, clientId, convId, trimmed);
-    return null;
+    const sent=await engineSendChatwootReply(env, c, clientId, convId, trimmed);
+    return sent?null:false;
   }
   return trimmedItems.map(it=>({title:it.title, value:it.value}));
 }
@@ -9798,10 +9814,13 @@ function engineResolveDirectImageUrl(url){
 // link. Falls back to a plain text reply (engineSendChatwootReply) whenever there's no image, or
 // fetching/attaching one fails for any reason — a customer getting the text-only reply they'd
 // have gotten before this existed is a far better failure mode than getting nothing at all.
+// Returns true/false — see engineSendChatwootReply's own comment on why this matters (Settings →
+// Logs' "Replied" status needs to reflect whether something was actually delivered, not just
+// whether this function ran without throwing).
 async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, captionText){
   const directUrl=engineResolveDirectImageUrl(imageUrl);
   if(!directUrl) return engineSendChatwootReply(env, c, clientId, convId, captionText);
-  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return engineSendChatwootReply(env, c, clientId, convId, captionText);
   try{
     const imgR=await fetch(directUrl);
     if(!imgR.ok) return engineSendChatwootReply(env, c, clientId, convId, captionText);
@@ -9816,6 +9835,7 @@ async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, 
       await reportOpsError(env, 'engineSendChatwootImageReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
       return engineSendChatwootReply(env, c, clientId, convId, captionText);
     }
+    return true;
   }catch(e){
     await reportOpsError(env, 'engineSendChatwootImageReply — send threw', e, {clientId, convId});
     return engineSendChatwootReply(env, c, clientId, convId, captionText);
@@ -9830,6 +9850,7 @@ async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, 
 // Falls back to a plain text reply (engineSendChatwootReply) on any failure — a customer getting
 // the text-only reply they'd have gotten before this existed is a far better failure mode than
 // getting nothing at all, same reasoning as the image-reply fallback above.
+// Returns true/false — see engineSendChatwootReply's own comment.
 async function engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, captionText, fallbackText){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!audioBuf) return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
   try{
@@ -9844,6 +9865,7 @@ async function engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, 
       await reportOpsError(env, 'engineSendChatwootAudioReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
       return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
     }
+    return true;
   }catch(e){
     await reportOpsError(env, 'engineSendChatwootAudioReply — send threw', e, {clientId, convId});
     return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
@@ -10463,7 +10485,17 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // custom n8n workflow wired to the same Chatwoot inbox) to own the reply, while this CRM keeps
   // tracking leads/stages/analytics off the same conversation exactly as if the built-in bot were
   // still replying.
-  if(c.bot_reply_disabled==='Yes') return;
+  // Real observed gap: with this on, nothing below ever sends — but the caller's turn still
+  // finishes normally and engineLogAnalytics (handleEngineWebhook) still logs "✓ Replied" in
+  // Settings → Logs, since that log is written unconditionally at end-of-turn regardless of
+  // whether a reply actually went out (see engineSendChatwootReply's own comment for the same gap
+  // on the failure side). A business owner checking Settings → Logs for "why didn't my customer
+  // get a reply" would see "Replied" and have no way to know this toggle is why. Logging it
+  // explicitly here — distinct from a genuine send failure — closes that.
+  if(c.bot_reply_disabled==='Yes'){
+    await logEngineSkip(env, clientId, null, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off for this client — reply computed but not sent');
+    return false;
+  }
   const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
   if(!trimmed) return;
   // Instagram DM (channel==='instagram') never goes through Chatwoot at all — no voice/image

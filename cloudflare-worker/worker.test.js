@@ -1,7 +1,8 @@
 // Regression tests for the fixes made across the "message repetition" / quick-reply-buttons
-// session (see ../FIXES.md for the full log). These cover the pure, synchronous logic only —
-// no NocoDB/Chatwoot/OpenRouter calls, no live worker — so they run in plain Node with zero
-// network access and zero setup. Run with `npm test` from this directory, or `node --test`.
+// session (see ../FIXES.md for the full log). Most of these cover pure, synchronous logic with
+// zero network access; a few mock `fetch` to test the Chatwoot-send functions' return values
+// without a live worker or real credentials. Run with `npm test` from this directory, or
+// `node --test`.
 //
 // Before editing any function tested here, read its entry in ../FIXES.md — these tests encode
 // real, previously-observed production failures, not hypothetical edge cases.
@@ -16,6 +17,7 @@ import {
   engineExtractReplyOptions,
   engineHandoverCannedTexts,
   engineRouteFlow,
+  engineSendChatwootReply,
 } from './worker.js';
 
 describe('engineTruncateButtonTitle — WhatsApp title-length safety (FIXES.md #5)', () => {
@@ -141,3 +143,34 @@ describe('engineRouteFlow — qualifying-question choices carry through (FIXES.m
 function baseClsFor() {
   return { intent: 'QUESTION', sentiment: 'Neutral', objectionCategory: 'none', aiWinProbability: null, customerLanguage: null, nextStage: null, confidence: null, productInterest: '' };
 }
+
+describe('engineSendChatwootReply — return value reflects actual delivery (FIXES.md #17)', () => {
+  const c = { chatwoot_base: 'https://chatwoot.example', chatwoot_account_id: '1', chatwoot_token: 'tok' };
+  // Minimal env: no env.DB / OPS_ALERT_* — logEngineSkip/reportOpsError both swallow their own
+  // failures internally (see worker.js), so calling them against an incomplete env is safe and
+  // exercises the same no-op path production takes when neither alert channel is configured.
+  const env = {};
+
+  test('returns true when Chatwoot accepts the send', async (t) => {
+    t.mock.method(global, 'fetch', async () => new Response('{}', { status: 200 }));
+    const ok = await engineSendChatwootReply(env, c, 'client1', 'conv1', 'hello');
+    assert.equal(ok, true);
+  });
+
+  test('returns false — not just "didn\'t throw" — when Chatwoot rejects the send', async (t) => {
+    t.mock.method(global, 'fetch', async () => new Response('server error', { status: 500 }));
+    const ok = await engineSendChatwootReply(env, c, 'client1', 'conv1', 'hello');
+    assert.equal(ok, false, 'a rejected Chatwoot send must not be reported as delivered — this is the exact gap that made Settings → Logs show "Replied" for a message the customer never received');
+  });
+
+  test('returns false when the request itself throws (network failure)', async (t) => {
+    t.mock.method(global, 'fetch', async () => { throw new Error('network unreachable'); });
+    const ok = await engineSendChatwootReply(env, c, 'client1', 'conv1', 'hello');
+    assert.equal(ok, false);
+  });
+
+  test('returns false, not undefined, when there is nothing to send to', async () => {
+    const ok = await engineSendChatwootReply(env, {}, 'client1', 'conv1', 'hello');
+    assert.equal(ok, false, 'missing Chatwoot credentials must be reported as non-delivery, not silently ignored');
+  });
+});
