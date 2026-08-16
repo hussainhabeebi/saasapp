@@ -7607,6 +7607,18 @@ button message for ≤3 items) that this Worker previously never used, sending p
   value (or off `engineDeliverReply`'s, which passes it through unchanged), so what's recorded is
   always exactly what the customer saw and can tap — and a send that fell back to plain text no
   longer gets misrecorded as though real buttons went out.
+- **Plain-English options fallback** (`engineExtractPlainOptionsFromReply`, any industry) — the
+  `OPTIONS:` marker is the FAQ LLM's own choice to tag a reply as a menu, and real testing showed
+  it doesn't reliably remember to, even for the exact "skincare, wellness, or diet plan options
+  today?"/"glowing skin, anti-ageing, or something else?" phrasing given as the textbook example in
+  its own instructions — sent as plain prose with nothing to tap. Rather than a second attempt at
+  the same formatting instruction (the same reliability risk that missed it the first time), this is
+  a small, single-purpose classification call that reads the already-generated reply text itself and
+  extracts a plain-English "X, Y, or Z?" choice question into short option labels (stripping filler
+  words like "are you looking for"/"options today" a naive comma/"or" split can't cleanly do) — only
+  called when nothing else above (the `OPTIONS:` marker, or ecom's mentioned-product/category
+  fallbacks) already found something, and only ever extracts a question the reply already asked,
+  never invents one.
 - **Brand-level picker** (`detectOrderSignal` + the category-enquiry branch of
   `handleEngineWebhook`) — the category/variant picker above only ever covered one dimension
   (category → color variant or product name); a client whose catalog carries several distinct

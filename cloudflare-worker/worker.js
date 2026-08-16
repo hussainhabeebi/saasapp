@@ -9510,6 +9510,40 @@ function engineExtractReplyOptions(replyText){
   const options=match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10);
   return {text:stripped, options:options.length?options:null};
 }
+// Fallback for when a FAQ reply reads as a plain-English "X, Y, or Z?" choice question but the
+// model didn't add the OPTIONS: marker — real observed failure: unreliable even for the exact
+// "skincare, wellness, or diet plan?"/"glowing skin, anti-ageing, or something else?" phrasing
+// engineBuildFaqSystemPrompt gives as its own textbook example, sent as plain prose with nothing
+// to tap. A small, single-purpose extraction call rather than a hand-rolled regex: real phrasing
+// ("Are you looking for skincare, wellness, or diet plan options today?") has filler words woven
+// around the actual list ("Are you looking for" / "options today") that a naive comma/"or" split
+// can't cleanly strip without also mangling the real options — a short, focused classification
+// call (same reliability trade-off intent/sentiment/language already carry elsewhere in this file)
+// reads it correctly the way a person would, far more reliably than a second attempt at the same
+// formatting instruction the primary reply call already sometimes skips. Only ever the safety net
+// for a reply the model already generated — never invents a question that wasn't there, only
+// extracts one already phrased as a choice; returns null on anything that doesn't confidently read
+// as a real 2-10-way menu, same "no options" fallback as engineExtractReplyOptions's own marker
+// miss.
+async function engineExtractPlainOptionsFromReply(env, c, replyText){
+  const text=(typeof replyText==='string'?replyText:'').trim();
+  if(!text || !c.openrouter_key) return null;
+  const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today", keep it in the reply's own language), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
+  try{
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', temperature:0.1, max_tokens:150, messages:[{role:'system',content:system},{role:'user',content:text}]})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const raw=data?.choices?.[0]?.message?.content?.trim()||'';
+    const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+    if(!m) return null;
+    const parsed=JSON.parse(m[0]);
+    const options=Array.isArray(parsed.options)?parsed.options.map(o=>String(o||'').trim()).filter(Boolean).slice(0,10):[];
+    return options.length>=2 ? options : null;
+  }catch(e){ return null; }
+}
 // Same message-create endpoint as engineSendChatwootReply, plus the content_type/content_attributes
 // pair Chatwoot's own WhatsApp Cloud provider turns into a real WhatsApp interactive message
 // (confirmed against Chatwoot's own source: MessageBuilder reads content_type/content_attributes —
@@ -11328,6 +11362,16 @@ async function handleEngineWebhook(request, env, secret){
             const mentionedCategories=await ecomDetectMentionedCategories(env, clientId, reply);
             if(mentionedCategories.length) faqQuickReplies=mentionedCategories.map(cat=>({title:cat, value:cat}));
           }
+        }
+        // Last resort, any industry (not just ecom — the mentionedProduct/mentionedCategories
+        // fallbacks above only ever apply to ecom_faq): the OPTIONS: marker is the LLM's OWN choice
+        // to tag a reply as a menu, and it doesn't always remember to, even for a textbook example
+        // straight out of its own instructions. engineExtractPlainOptionsFromReply reads the
+        // already-generated reply text itself for a plain-English "X, Y, or Z?" choice question, so
+        // a clarifying menu still becomes tappable buttons even when nothing above caught it.
+        if(!faqQuickReplies){
+          const plainOptions=await engineExtractPlainOptionsFromReply(env, c, reply);
+          if(plainOptions) faqQuickReplies=plainOptions.map(o=>({title:o, value:o}));
         }
       }
       // routing.quickReplies is set from what engineDeliverReply's own quickReplies branch actually
