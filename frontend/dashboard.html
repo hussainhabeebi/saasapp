@@ -9340,26 +9340,37 @@ $id('saveObjPlaybook').addEventListener('click',async()=>{
 // Qualifying Questions + Native Forms — see worker.js's "NATIVE FORMS" section for how these are
 // consumed (engineQualQuestionText/engineQualQuestionOptional read either the legacy plain-string
 // shape or {text, optional}; engineSendNativeForm/handleNativeFormEndpoint for the WhatsApp Flow).
+// `options` (engineQualQuestionOptions) is the same idea one step further: when a question is
+// really a fixed multiple-choice pick ("Mattress, wooden bed, or something else?") rather than
+// open-ended free text, listing its real choices here is what lets the bot send it as tappable
+// WhatsApp buttons/a list instead of plain text with nothing to tap — see handleEngineWebhook's
+// qualify/qualify_next routes. Leave the Choices field blank for an ordinary free-text question;
+// nothing else about it changes.
 let _qualQuestions=[];
 function loadQualQuestions(){
   let raw=[]; try{ raw=JSON.parse(clientRecord.qual_questions||'[]'); }catch(e){ raw=[]; }
-  _qualQuestions=raw.map(q=>typeof q==='string'?{text:q, optional:false}:{text:q?.text||'', optional:!!q?.optional});
+  _qualQuestions=raw.map(q=>typeof q==='string'?{text:q, optional:false, options:[]}:{text:q?.text||'', optional:!!q?.optional, options:Array.isArray(q?.options)?q.options:[]});
   renderQualQuestions();
 }
 function renderQualQuestions(){
   const list=$id('qualQuestionList');
   if(!_qualQuestions.length){ list.innerHTML='<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No qualifying questions yet.</div>'; return; }
   list.innerHTML=_qualQuestions.map((q,i)=>`
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-      <input class="form-input" style="flex:1" value="${esc(q.text||'')}" oninput="_qualQuestions[${i}].text=this.value" placeholder="e.g. What's your budget?" />
-      <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);white-space:nowrap">
-        <input type="checkbox" ${q.optional?'checked':''} onchange="_qualQuestions[${i}].optional=this.checked">Optional
-      </label>
-      <button class="svc-del" onclick="removeQualQuestion(${i})">✕</button>
+    <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <input class="form-input" style="flex:1" value="${esc(q.text||'')}" oninput="_qualQuestions[${i}].text=this.value" placeholder="e.g. What's your budget?" />
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);white-space:nowrap">
+          <input type="checkbox" ${q.optional?'checked':''} onchange="_qualQuestions[${i}].optional=this.checked">Optional
+        </label>
+        <button class="svc-del" onclick="removeQualQuestion(${i})">✕</button>
+      </div>
+      <input class="form-input" style="margin-top:6px;font-size:12px" value="${esc((q.options||[]).join(', '))}"
+        oninput="_qualQuestions[${i}].options=this.value.split(',').map(s=>s.trim()).filter(Boolean)"
+        placeholder="Choices, comma separated — leave blank for free text (e.g. Mattress, Wooden bed, Something else)" />
     </div>`).join('');
 }
 function addQualQuestion(){
-  _qualQuestions.push({text:'', optional:false});
+  _qualQuestions.push({text:'', optional:false, options:[]});
   renderQualQuestions();
   $id('qualQuestionList').lastElementChild?.querySelector('input')?.focus();
 }
@@ -9368,7 +9379,7 @@ async function saveQualQuestions(){
   const btn=$id('saveQualQuestions'),msg=$id('saveQualQuestionsMsg');
   btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   try{
-    const cleaned=_qualQuestions.map(q=>({text:(q.text||'').trim(), optional:!!q.optional})).filter(q=>q.text);
+    const cleaned=_qualQuestions.map(q=>({text:(q.text||'').trim(), optional:!!q.optional, options:(q.options||[]).map(o=>o.trim()).filter(Boolean)})).filter(q=>q.text);
     await patchClient({qual_questions:JSON.stringify(cleaned)});
     msg.textContent='✓ Saved';
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }

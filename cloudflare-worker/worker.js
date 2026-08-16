@@ -8520,6 +8520,19 @@ function engineParseJsonField(raw, fallback){ try{ const v=JSON.parse(raw||''); 
 // the native-forms flow builder/endpoint) reads it the same way instead of re-deriving it.
 function engineQualQuestionText(q){ return typeof q==='string'?q:String(q?.text??''); }
 function engineQualQuestionOptional(q){ return !!(q && typeof q==='object' && q.optional===true); }
+// Same {text, optional} extension, for a question whose answer is really a fixed multiple-choice
+// pick ("Mattress, wooden bed, or something else?") rather than open-ended free text — real
+// observed failure: a client's own qual_questions[0] was phrased exactly like that, and being a
+// plain string with no structured choices anywhere, the chat ladder had no data to build tappable
+// buttons from and could only ever send it as plain text, however choice-shaped the wording was.
+// Entries WITHOUT `options` (the vast majority — free-text questions like "what's your budget?")
+// are completely unaffected; this only ever activates when a business owner explicitly lists
+// choices for a question in Settings. Capped at 10 like every other quick-reply picker in this
+// file (engineSendChatwootQuickReply's own real WhatsApp limit).
+function engineQualQuestionOptions(q){
+  if(!q || typeof q!=='object' || !Array.isArray(q.options)) return [];
+  return q.options.map(o=>String(o||'').trim()).filter(Boolean).slice(0,10);
+}
 function engineParseSalesReps(raw){
   try{ const a=JSON.parse(raw||'[]'); if(Array.isArray(a)&&a.length) return a; }catch(e){}
   return (raw||'').split('\n').map(s=>s.trim()).filter(Boolean);
@@ -8992,6 +9005,7 @@ function engineRouteFlow(c, state, userText, cls){
   }
 
   let qualAnswers={...state.qualAnswers};
+  let qualNextOptions=[];
   if(route==='qualify_next'){
     const currentIdx=qualStage!==null?qualStage:0;
     const nextIdx=currentIdx+1;
@@ -9001,6 +9015,7 @@ function engineRouteFlow(c, state, userText, cls){
       // above) — either way this coerces defensively so a malformed entry (a bare number, etc.)
       // can never reach the Chatwoot/WhatsApp send as a non-string value.
       reply=engineQualQuestionText(qualQuestions[nextIdx]);
+      qualNextOptions=engineQualQuestionOptions(qualQuestions[nextIdx]);
       next='qual_'+nextIdx;
     } else {
       // The one place flow_json content is still sent verbatim — the single, one-time transition
@@ -9020,7 +9035,7 @@ function engineRouteFlow(c, state, userText, cls){
     reply=(reply||'Great! You can book your slot here 📅')+'\n\n👉 '+c.cal_link;
   }
 
-  return {route, next, reply, qualStage, qualAnswers, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:false, isResub:false, humanReason};
+  return {route, next, reply, qualStage, qualAnswers, qualNextOptions, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:false, isResub:false, humanReason};
 }
 
 // From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
@@ -9966,15 +9981,24 @@ async function engineTtsWithFallback(env, text, langCode, provider){
 const NATIVE_FORM_SCREEN_ID='QUALIFY';
 
 // Builds the Flow JSON Meta expects as the FLOW_JSON asset (handleNativeFormSync uploads this
-// verbatim). One screen, one TextInput per qual_questions entry (required unless
-// engineQualQuestionOptional), whose "Submit" button fires a data_exchange action — NOT the
-// simpler 'complete' terminal action — specifically so the answers reach handleNativeFormEndpoint
-// below instead of arriving as an nfm_reply Chatwoot would drop (see block comment above).
+// verbatim). One field per qual_questions entry (required unless engineQualQuestionOptional) —
+// a TextInput by default, or a RadioButtonsGroup when the question has real configured choices
+// (engineQualQuestionOptions), same "send a genuine multiple-choice question as tappable choices,
+// not free text" treatment the classic chat ladder gets (see handleEngineWebhook's qualify/
+// qualify_next routes) — handleNativeFormEndpoint reads either shape identically (submitted[name]
+// is just a string either way: the typed text, or the selected option's id). Whose "Submit" button
+// fires a data_exchange action — NOT the simpler 'complete' terminal action — specifically so the
+// answers reach handleNativeFormEndpoint below instead of arriving as an nfm_reply Chatwoot would
+// drop (see block comment above).
 function engineBuildNativeFormFlowJson(qualQuestions){
-  const fields=qualQuestions.map((q,i)=>({
-    type:'TextInput', name:'q'+i, label:engineQualQuestionText(q).slice(0,80)||('Question '+(i+1)),
-    'input-type':'text', required:!engineQualQuestionOptional(q)
-  }));
+  const fields=qualQuestions.map((q,i)=>{
+    const label=engineQualQuestionText(q).slice(0,80)||('Question '+(i+1));
+    const required=!engineQualQuestionOptional(q);
+    const options=engineQualQuestionOptions(q);
+    return options.length
+      ? {type:'RadioButtonsGroup', name:'q'+i, label, required, 'data-source':options.map(o=>({id:o, title:o.slice(0,80)}))}
+      : {type:'TextInput', name:'q'+i, label, 'input-type':'text', required};
+  });
   return {
     version:'3.0',
     screens:[
@@ -11207,12 +11231,34 @@ async function handleEngineWebhook(request, env, secret){
           ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang)
           : await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
         routing.reply=sentText;
-        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        // engineQualQuestionOptions — a client-configured qualifying question can be a genuine
+        // multiple-choice pick ("Mattress, wooden bed, or something else?"), not just open-ended
+        // free text; when the business owner has listed real choices for it in Settings, send
+        // those as a tappable picker instead of leaving a choice-shaped question as plain text
+        // with nothing to tap (real observed failure — see this function's own comment history on
+        // quick-reply buttons). Falls back to plain text exactly as before when no options are set.
+        const firstQOptions=engineQualQuestionOptions(qualQuestions[0]);
+        if(firstQOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+          const items=firstQOptions.map(o=>({title:o, value:o}));
+          routing.quickReplies=items;
+          await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+        } else {
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        }
       }
     } else if(routing.route==='qualify_next'){
       sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
       routing.reply=sentText;
-      if(sentText) await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      // Same tappable-picker treatment as the first qualifying question above, for the NEXT one
+      // this turn is asking — routing.qualNextOptions (engineRouteFlow) is only ever populated when
+      // that specific question has real configured choices.
+      if(sentText && routing.qualNextOptions?.length && botConfig.quick_reply_buttons_enabled!==false){
+        const items=routing.qualNextOptions.map(o=>({title:o, value:o}));
+        routing.quickReplies=items;
+        await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+      } else if(sentText){
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      }
     } else if(newLeadCategories.length){
       const intro=`Hi! Welcome to ${c.client_name||'our store'}! 😊 What are you looking for today?`;
       sentText=await engineLocalizeReply(env, c, intro, replyLang);
