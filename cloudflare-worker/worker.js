@@ -7698,6 +7698,7 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
   // above specify otherwise" way as the other three prompts, so main_prompt stays authoritative.
   let sys=c.main_prompt||'';
   sys+=`\n\nYou are replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}`;
+  sys+='\n\nThe list above is everything real you know about this product — never invent or guess an additional detail that isn\'t in it (a specific supply duration, an ingredient/material, a certification, a use-case claim, a different name/category than given). If the customer asks about something not covered above, say honestly that you don\'t have that specific detail and will find out, instead of making up a plausible-sounding answer.';
   sys+='\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Default style (follow this unless the persona/instructions above specify a different tone, reply length, or closing style — in that case, follow those instead): do not mention the price unless the customer\'s message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // Recent Conversation/summary — same pattern as engineBuildFaqSystemPrompt/
   // engineBuildObjectionSystemPrompt (see engineSummaryBlock). This prompt used to build the exact
@@ -9349,6 +9350,11 @@ function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang,
     // actually support. Only the whole product's `stock` count is real; there is no per-size
     // number to check.
     sys+=' A product\'s size field lists every size it is made in — never claim a size listed there is out of stock or unavailable; only the product\'s overall stock count (available vs. not) is real data you have. If stock is 0 or the product genuinely is not in the catalog, say that honestly instead of guessing.';
+    // General companion to the size/stock and link guardrails above — those close two specific
+    // observed failures, this closes the broader pattern: any product attribute not literally in
+    // the Product Catalog above (a supply duration, a pack-size breakdown, an ingredient, a
+    // certification) is not real data, even if it sounds plausible for the category.
+    sys+=' Only state a product fact (name, price, category, size/color options, stock, or anything else) that is literally present in the Product Catalog above — never add a plausible-sounding detail that isn\'t there (a supply duration like "1-month supply", a pack-size breakdown, an ingredient, a certification). If a customer asks about something the catalog entry doesn\'t cover, say honestly that you\'ll check rather than guessing an answer that sounds right for the category.';
     // Closes an observed real failure: a customer replied "Order M size" to a product the
     // assistant had just shown sizes for, and got "we don't have anything matching" back instead
     // of the shown product — because a bare size/color reply carries no signal on its own, only in
@@ -9480,25 +9486,55 @@ async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
   return 'One moment 🙏';
 }
 
-// Deterministic backstop against a reply-generating LLM call regenerating essentially the same
-// message it just sent — engineGetLeadState's `looping` flag (engineTextSimilarity, 0.7
-// threshold) can only ever catch this AFTER it's already happened twice (it looks backward at
-// history at the START of a turn, so it has no way to stop THIS turn's fresh reply from becoming
-// the second half of that very pair) — and the "don't repeat yourself" instructions already
-// baked into engineBuildFaqSystemPrompt/engineBuildProductEnquirySystemPrompt are a request, not
-// a guarantee (real recurring observed failure, Wellness Virtue: a "yes"/"ok" to "would you like
-// to know more?" kept getting essentially the same pitch/question back despite that instruction
-// already being in the prompt). This checks the actual generated text before it goes out and
-// forces exactly one retry, with an explicit instruction quoting the rejected duplicate, only
-// when the model has demonstrably disregarded the softer version already in systemPrompt — fully
-// fail-open: any retry failure just falls back to the original (possibly-repetitive) reply rather
-// than blocking the customer's message.
-async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg){
+// Finds a URL in `replyText` that isn't one of the real links the model was actually handed this
+// turn — `allowedLinks` (e.g. the enquiry/checkout link, a product's own configured links, the
+// client's catalog order link). Real observed failure (Wellness Virtue): asked to share a
+// product's checkout link when none was actually configured on that product, the model invented a
+// plausible-looking Shopify collection URL out of thin air ("https://thevirtues.in/collections/
+// glutathione-collection") instead of saying it didn't have one — despite engineBuildFaqSystemPrompt
+// already carrying an explicit "never invent a link" instruction, the same class of "instruction
+// isn't a guarantee" gap engineCallLlmAvoidingRepeat exists to close for repeats. A returned URL
+// counts as allowed if it exactly matches, or is a prefix/suffix match of, one of allowedLinks —
+// tolerates trailing slashes/punctuation without requiring byte-exact equality.
+export function engineFindHallucinatedLink(replyText, allowedLinks){
+  const urls=(replyText.match(/https?:\/\/[^\s)\]]+/g))||[];
+  for(const raw of urls){
+    const url=raw.replace(/[.,;:!?]+$/,'');
+    if(!allowedLinks.some(a=>a && (url===a || url.startsWith(a) || a.startsWith(url)))) return url;
+  }
+  return null;
+}
+
+// Deterministic backstop against a reply-generating LLM call (a) regenerating essentially the same
+// message it just sent, and (b) inventing a link that was never actually given to it — both are
+// cases where a "don't do this" instruction already baked into
+// engineBuildFaqSystemPrompt/engineBuildProductEnquirySystemPrompt is a request, not a guarantee.
+// engineGetLeadState's `looping` flag (engineTextSimilarity, 0.7 threshold) can only ever catch
+// case (a) AFTER it's already happened twice (it looks backward at history at the START of a
+// turn, so it has no way to stop THIS turn's fresh reply from becoming the second half of that
+// very pair) — nothing existed to catch (b) at all. This checks the actual generated text before
+// it goes out and forces at most one retry, with an explicit instruction addressing whichever
+// problem(s) were found, quoting the specific rejected text. `allowedLinks` is optional — omit it
+// (or pass undefined) to skip the link check entirely, same behavior as before this existed;
+// pass `[]` explicitly to mean "no link is legitimate at all this turn." Fully fail-open: if the
+// retry still isn't clean, a last-resort string-replace strips a still-hallucinated link (never
+// knowingly sends a fabricated URL a customer might click) rather than blocking the reply outright.
+async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg, allowedLinks){
   const reply=await engineCallLlm(env, c, systemPrompt, userText, maxTokens);
-  if(!lastBotMsg || !reply || engineTextSimilarity(reply, lastBotMsg)<0.7) return reply;
-  const retryPrompt=systemPrompt+`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
-  const retryReply=await engineCallLlm(env, c, retryPrompt, userText, maxTokens);
-  return retryReply || reply;
+  if(!reply) return reply;
+  const isRepeat=lastBotMsg && engineTextSimilarity(reply, lastBotMsg)>=0.7;
+  const badLink=allowedLinks ? engineFindHallucinatedLink(reply, allowedLinks) : null;
+  if(!isRepeat && !badLink) return reply;
+  let correction='';
+  if(isRepeat) correction+=`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
+  if(badLink){
+    const linksLine=allowedLinks.length?`The ONLY real link(s) you may share right now: ${allowedLinks.join(', ')}.`:'You have NO real link to share right now — do not include any URL at all.';
+    correction+=`\n\nIMPORTANT: your draft reply included a link that does not exist and was never given to you: "${badLink}". Never invent, guess, or construct a URL of any kind — not from a product name, brand, or store domain, no matter how plausible it looks. ${linksLine} If you don't have a real link to share, say so honestly (offer to check and follow up) instead of fabricating one.`;
+  }
+  const retryReply=await engineCallLlm(env, c, systemPrompt+correction, userText, maxTokens);
+  if(!retryReply) return reply;
+  const retryBadLink=allowedLinks ? engineFindHallucinatedLink(retryReply, allowedLinks) : null;
+  return retryBadLink ? retryReply.replace(retryBadLink, '').trim() : retryReply;
 }
 
 // Shared by both FAQ/objection prompt builders (engineBuildFaqSystemPrompt/
@@ -11474,7 +11510,7 @@ async function handleEngineWebhook(request, env, secret){
           const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? ((product.shopify_product_url||product.product_link||'').trim()||null) : null;
           state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:['conversation','product','category']});
           const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink, state);
-          sentText=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 200, state.botMsgs?.[state.botMsgs.length-1]);
+          sentText=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 200, state.botMsgs?.[state.botMsgs.length-1], enquiryLink?[enquiryLink]:[]);
           sentText=engineSubstituteOrderLinkPlaceholder(sentText, c, clientId, product.sku, product);
           routing.reply=sentText;
           // Photo sent whenever a product is confidently identified, link or no link — a customer
@@ -11724,7 +11760,13 @@ async function handleEngineWebhook(request, env, secret){
       // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
       state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
-      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+      // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
+      // own catalogOrderLink exactly (same pure function, same args), the one real link this
+      // route's prompt was actually handed via "## Order Link" this turn. undefined (not []) for
+      // every other industry, so the check is skipped there rather than treating a link the model
+      // may legitimately reference from Knowledge Base text as a hallucination.
+      const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
+      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
@@ -12046,7 +12088,8 @@ async function handleInstagramWebhook(request, env){
       }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
         state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
         const sysPrompt=engineBuildFaqSystemPrompt(c, state, null, c.industry||'general', replyLang, isNewLead);
-        let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+        const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
+        let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
         // Instagram is text-only (engineDeliverReply short-circuits to engineSendInstagramReply
         // before any button/list code) — the OPTIONS: marker itself must still be stripped here so
         // it never shows up as a literal line in the DM, even though it's never turned into buttons.

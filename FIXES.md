@@ -252,6 +252,34 @@ now lean on it to know what's already been established.
 formatter without its own documented failure case, consistent with this file's per-bug (not
 per-helper) test scope.
 
+### 17 — [backend] Reject a hallucinated link before it's ever sent
+**Area:** `engineFindHallucinatedLink` (new), `engineCallLlmAvoidingRepeat`'s extended signature
+(now also takes `allowedLinks`), its 3 ecom call sites (product-enquiry route, ecom_faq route —
+WhatsApp and Instagram), plus a new general "only state a fact literally in the catalog" instruction
+in `engineBuildFaqSystemPrompt`'s ecommerce branch (`cloudflare-worker/worker.js`)
+**Broke:** A customer picked a pack size from a real, catalog-driven quick-reply list, then the bot
+replied "You can order them directly from our Shopify store here:
+https://thevirtues.in/collections/glutathione-collection" — a fully invented, plausible-looking URL.
+`engineBuildFaqSystemPrompt`'s ecommerce branch already had an explicit "never invent a link"
+instruction (added well before this fix) and the product-enquiry prompt already had its own version
+too — neither stopped it. Same class of gap as #15: an instruction is a request, not a guarantee.
+**Fix:** `engineFindHallucinatedLink(replyText, allowedLinks)` scans a generated reply for any
+`https?://` URL and checks it against the specific real links the model was actually handed that
+turn (the enquiry/checkout link, the client's catalog order link) — a prefix/suffix match tolerates
+trailing slashes/punctuation without requiring byte-exact equality. `engineCallLlmAvoidingRepeat`
+now checks this alongside its existing near-duplicate check in the same pass (at most one retry
+total, not two stacked ones) and forces a retry with an explicit correction quoting the invented
+URL when it fires; if the retry is still bad, a last-resort string-replace strips the fabricated
+link rather than ever knowingly sending one a customer could click. Also added a general
+"only state a product fact literally in the catalog above" instruction (supply duration, ingredient,
+certification, etc.) to both the FAQ ecommerce branch and the product-enquiry prompt, alongside the
+link-specific ones — the same hallucination risk isn't unique to URLs.
+**Don't revert:** Removing the deterministic check reopens a real, already-observed failure mode
+that the softer prompt instructions demonstrably did not prevent on their own, even with those
+instructions still in place.
+**Tested:** `worker.test.js` → `engineFindHallucinatedLink`, including the exact Wellness Virtue
+case as a named test.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
