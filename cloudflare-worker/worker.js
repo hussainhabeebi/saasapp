@@ -2169,15 +2169,20 @@ async function handleAiComplete(request, env){
   const {model, temperature, max_tokens, messages}=await request.json().catch(()=>({}));
   if(!Array.isArray(messages)||!messages.length) return json({error:'messages required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.openrouter_key) return json({error:'No OpenRouter API key set for this account.'}, 400);
-  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method:'POST',
-    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({model:model||c.model||'google/gemini-2.5-flash', temperature, max_tokens, messages})
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return json({error:'No AI provider is configured on the server.'}, 503);
+
+  // Shared Gemini is primary for every client. Preserve the OpenAI-compatible response shape
+  // because dashboard callers already read choices[0].message.content.
+  const systemText=messages.filter(m=>m?.role==='system').map(m=>String(m.content||'')).join('\n\n');
+  const userText=messages.filter(m=>m?.role!=='system').map(m=>`${m.role||'user'}: ${String(m.content||'')}`).join('\n');
+  const text=await engineGeminiGenerateWithFallback(env, c, systemText, userText, {
+    model:model&&String(model).startsWith('gemini-')?model:undefined,
+    temperature:temperature??0.3,
+    maxOutputTokens:max_tokens||300
   });
-  const data=await r.json();
-  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
-  return json(data);
+  if(!text) return json({error:'All configured AI providers failed.'}, 502);
+  return json({choices:[{message:{role:'assistant',content:text}}]});
 }
 
 // Automation entry point for objection/trust-signal handling — meant to be called by the
@@ -2197,7 +2202,7 @@ async function handleAiObjectionReply(request, env){
   if(!clientId||!message) return json({error:'client_id and message required'}, 400);
   const c=await getClientById(env, clientId);
   if(!c) return json({error:'Client not found'}, 404);
-  if(!c.openrouter_key) return json({error:'No OpenRouter API key set for this account.'}, 400);
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return json({error:'No AI provider is configured on the server.'}, 503);
 
   let pol={}; try{ pol=JSON.parse(c.business_policies||'{}'); }catch(e){}
   const policyLines=[];
@@ -2211,17 +2216,9 @@ async function handleAiObjectionReply(request, env){
 ${policyLines.length?policyLines.join('\n'):'No policies configured yet — if the message is an objection you can\'t ground in a real policy, respond {"handled":false} rather than inventing one.'}
 ${reviewLink?`Review link: ${reviewLink}`:''}`;
 
-  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method:'POST',
-    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({
-      model:c.model||'google/gemini-2.5-flash', temperature:0.3, max_tokens:250,
-      messages:[{role:'system',content:system},{role:'user',content:message}]
-    })
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
-  const raw=data?.choices?.[0]?.message?.content?.trim()||'{"handled":false}';
+  const raw=(await engineGeminiGenerateWithFallback(env, c, system, message, {
+    temperature:0.3, maxOutputTokens:250, json:true
+  }))||'{"handled":false}';
   let parsed={handled:false};
   try{ parsed=JSON.parse(raw); }catch(e){}
   return json({handled:!!parsed.handled, reply:parsed.handled?String(parsed.reply||'').trim():undefined});
@@ -2258,7 +2255,7 @@ async function fetchRecentChatwootContext(c, conversationId, limit){
 // When the model can confidently match to one product, `sku` comes back too. Never sends anything
 // — purely a screen.
 async function detectOrderSignal(env, c, clientId, message, contextText){
-  if(!c.openrouter_key) return {signal:false, error:'No OpenRouter API key set for this account.'};
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return {signal:false, error:'No AI provider configured.'};
 
   const productsTable=await ecomResolveTable(env, clientId, 'products');
   let productList='';
@@ -2291,17 +2288,9 @@ Known categories: ${categoryList.join(', ')||'(none)'}
 Product catalog:
 ${productList||'(no products listed)'}`;
 
-  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method:'POST',
-    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({
-      model:c.model||'google/gemini-2.5-flash', temperature:0.2, max_tokens:150,
-      messages:[{role:'system',content:system},{role:'user',content:message}]
-    })
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return {signal:false, error:data?.error?.message||'HTTP '+r.status};
-  const raw=data?.choices?.[0]?.message?.content?.trim()||'{"signal":false}';
+  const raw=(await engineGeminiGenerateWithFallback(env, c, system, message, {
+    temperature:0.2, maxOutputTokens:150, json:true
+  }))||'{"signal":false}';
   let parsed={signal:false};
   try{ parsed=JSON.parse(raw); }catch(e){}
   const mode=parsed.mode==='order'?'order':'enquiry'; // defaults to the more conservative 'enquiry' (no link sent) if the model omits mode or returns something unrecognized
@@ -2329,7 +2318,7 @@ async function handleAiOrderSignal(request, env){
   const c=await getClientById(env, clientId);
   if(!c) return json({error:'Client not found'}, 404);
   const result=await detectOrderSignal(env, c, clientId, message, String(body.context||''));
-  if(result.error) return json({error:result.error}, result.error.startsWith('No OpenRouter')?400:502);
+  if(result.error) return json({error:result.error}, result.error.startsWith('No AI provider')?400:502);
   return json({signal:result.signal, sku:result.sku});
 }
 
@@ -2350,7 +2339,7 @@ async function handleAiOrderSignal(request, env){
 // "the 30 min one" back to whichever service was actually just discussed. Returns
 // {signal, service_id?} — never sends anything, purely a screen.
 async function detectBookingSignal(env, c, clientId, message, contextText){
-  if(!c.openrouter_key) return {signal:false, error:'No OpenRouter API key set for this account.'};
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return {signal:false, error:'No AI provider configured.'};
 
   const servicesTable=apptResolveTable(c, 'services');
   let serviceList='';
@@ -2366,17 +2355,9 @@ ${contextText?`\nRecent conversation (oldest first — use this to resolve refer
 Services offered:
 ${serviceList||'(no services listed)'}`;
 
-  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method:'POST',
-    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({
-      model:c.model||'google/gemini-2.5-flash', temperature:0.2, max_tokens:150,
-      messages:[{role:'system',content:system},{role:'user',content:message}]
-    })
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return {signal:false, error:data?.error?.message||'HTTP '+r.status};
-  const raw=data?.choices?.[0]?.message?.content?.trim()||'{"signal":false}';
+  const raw=(await engineGeminiGenerateWithFallback(env, c, system, message, {
+    temperature:0.2, maxOutputTokens:150, json:true
+  }))||'{"signal":false}';
   let parsed={signal:false};
   try{ parsed=JSON.parse(raw); }catch(e){}
   return {signal:!!parsed.signal, service_id:parsed.signal?(parsed.service_id||undefined):undefined};
@@ -2392,7 +2373,7 @@ async function handleAiBookingSignal(request, env){
   const c=await getClientById(env, clientId);
   if(!c) return json({error:'Client not found'}, 404);
   const result=await detectBookingSignal(env, c, clientId, message, String(body.context||''));
-  if(result.error) return json({error:result.error}, result.error.startsWith('No OpenRouter')?400:502);
+  if(result.error) return json({error:result.error}, result.error.startsWith('No AI provider')?400:502);
   return json({signal:result.signal, service_id:result.service_id});
 }
 
@@ -8221,7 +8202,7 @@ async function handleChatwootIncomingBookingSignal(env, c, clientId, content, bo
   const ordersTable=await ecomResolveTable(env, clientId, 'orders');
   if(ordersTable) return json({ok:true, skipped:'ecom-client'});
   if(!c.wa_phone_id||!c.wa_token) return json({ok:true, skipped:'whatsapp-not-configured'});
-  if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return json({ok:true, skipped:'no-ai-provider-key'});
 
   const phone=String(
     body.conversation?.meta?.sender?.phone_number ||
@@ -8269,7 +8250,7 @@ async function handleChatwootIncomingBookingSignal(env, c, clientId, content, bo
 // just discussed, instead of depending on whatever matching logic n8n's own flow has.
 async function handleChatwootIncomingOrderSignal(env, c, clientId, content, body, ordersTable){
   if(!c.wa_phone_id||!c.wa_token) return json({ok:true, skipped:'whatsapp-not-configured'});
-  if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return json({ok:true, skipped:'no-ai-provider-key'});
 
   const phone=String(
     body.conversation?.meta?.sender?.phone_number ||
@@ -9532,6 +9513,11 @@ function engineStripHallucinatedToolCode(text){
 async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
   const geminiReply=engineStripHallucinatedToolCode(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL}));
   if(geminiReply) return geminiReply;
+  // OpenRouter is optional legacy fallback only; never request it with an absent key.
+  if(!c?.openrouter_key){
+    await reportOpsError(env, 'engineCallLlm — shared Gemini returned no usable reply and no OpenRouter fallback exists', new Error('no usable AI reply'), {clientId:c?.Id});
+    return 'One moment 🙏';
+  }
   try{
     const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
@@ -9719,7 +9705,7 @@ export function engineExtractReplyOptions(replyText){
 // miss.
 export async function engineExtractPlainOptionsFromReply(env, c, replyText){
   const text=(typeof replyText==='string'?replyText:'').trim();
-  if(!text || !c.openrouter_key) return null;
+  if(!text || (!env.GEMINI_API_KEY && !c.openrouter_key)) return null;
   // Cheap skip gate before spending an LLM call on the common case (most FAQ replies aren't a
   // choice question at all): a real clarifying question ends in '?' (or Arabic '؟', for an AED/UAE
   // client's Arabic-language reply) somewhere near the end — checked within the last 20 characters,
@@ -9733,13 +9719,9 @@ export async function engineExtractPlainOptionsFromReply(env, c, replyText){
   // this engine, so an option label must never be allowed to inherit the reply's own language here.
   const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today"), ALWAYS translated into English regardless of what language the reply itself is written in (e.g. a Malayalam reply ending "...മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ?" -> ["Mattress","Wooden bed"]), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
   try{
-    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-      body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', temperature:0.1, max_tokens:150, messages:[{role:'system',content:system},{role:'user',content:text}]})
-    });
-    if(!r.ok) return null;
-    const data=await r.json().catch(()=>({}));
-    const raw=data?.choices?.[0]?.message?.content?.trim()||'';
+    const raw=(await engineGeminiGenerateWithFallback(env, c, system, text, {
+      temperature:0.1, maxOutputTokens:150, json:true
+    }))||'';
     const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
     if(!m) return null;
     const parsed=JSON.parse(m[0]);
@@ -11073,7 +11055,7 @@ async function handleEngineWebhook(request, env, secret){
     }
 
     if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')){ await logEngineSkip(env, clientId, phone, convId, 'test-mode'); return json({ok:true, skipped:'test-mode'}); }
-    if(!c.openrouter_key){ await logEngineSkip(env, clientId, phone, convId, 'no-openrouter-key'); return json({ok:true, skipped:'no-openrouter-key'}); }
+    if(!env.GEMINI_API_KEY && !c.openrouter_key){ await logEngineSkip(env, clientId, phone, convId, 'no-ai-provider-key'); return json({ok:true, skipped:'no-ai-provider-key'}); }
 
     const state=await engineGetLeadState(env, clientId, phone);
     state.phone=phone; state.name=name; state.convId=convId;
@@ -11268,7 +11250,7 @@ async function handleEngineWebhook(request, env, secret){
     // whenever the checkout link goes out (order, or enquiry with the link toggle on) — link
     // presence no longer gates the photo, only whether a product was actually identified.
     const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
-    if(!orderHandledInline && c.industry==='ecommerce' && c.openrouter_key && routing.route!=='drop' && !humanBlocksOrderCheck){
+    if(!orderHandledInline && c.industry==='ecommerce' && (env.GEMINI_API_KEY || c.openrouter_key) && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       let broadMatches=null;
@@ -11929,7 +11911,7 @@ async function handleInstagramWebhook(request, env){
       if(!c){ results.push({skipped:'no client found for ig_id', recipientId}); continue; }
       if(c.active==='No'){ results.push({skipped:'client inactive', clientId:c.Id}); continue; }
       if(c.engine_disabled==='Yes'){ results.push({skipped:'engine_disabled for client', clientId:c.Id}); continue; }
-      if(!c.openrouter_key){ results.push({skipped:'no openrouter_key set for client', clientId:c.Id}); continue; }
+      if(!env.GEMINI_API_KEY && !c.openrouter_key){ results.push({skipped:'no AI provider configured', clientId:c.Id}); continue; }
       const clientId=String(c.Id);
 
       // Same fast D1 dedup gate handleEngineWebhook uses for WhatsApp redeliveries, reusing the
