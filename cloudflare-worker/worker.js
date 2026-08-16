@@ -9635,8 +9635,12 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
   }).filter(it=>it.title);
   if(!trimmedItems.length){ await engineSendChatwootReply(env, c, clientId, convId, text); return null; }
   const seenTitles=new Set();
+  // .normalize('NFC') — same reasoning as the tap-resolution comparison in handleEngineWebhook:
+  // two independently-translated titles (engineLocalizeOptions) can be visually identical Malayalam
+  // (or any complex script) text made of different Unicode code point sequences, which would
+  // otherwise dodge collision detection here.
   const hasCollision=trimmedItems.some(it=>{
-    const key=it.title.toLowerCase();
+    const key=it.title.toLowerCase().normalize('NFC');
     if(seenTitles.has(key)) return true;
     seenTitles.add(key);
     return false;
@@ -10946,8 +10950,18 @@ async function handleEngineWebhook(request, env, secret){
     // just the short title text. A no-op whenever title and value were already identical.
     const lastTurn=state.history?.length?state.history[state.history.length-1]:null;
     if(lastTurn?.role==='assistant' && Array.isArray(lastTurn.options) && lastTurn.options.length){
-      const tappedLower=(text||'').trim().toLowerCase();
-      const tappedOption=lastTurn.options.find(o=>o && String(o.title||'').trim().toLowerCase()===tappedLower);
+      // .normalize('NFC') on both sides — real observed failure, Malayalam-language options
+      // specifically: a tap on a translated (engineLocalizeOptions) option never resolved, even
+      // though the exact same title was visibly, correctly displayed on screen. Complex scripts
+      // like Malayalam can represent the same visible text as different Unicode code point
+      // sequences (precomposed vs. decomposed conjuncts/vowel signs) — a plain string comparison
+      // sees those as different strings even though a person reading both sees identical text.
+      // English/Latin text has essentially no such ambiguity, so this was invisible until a
+      // non-Latin script round-tripped through Chatwoot/WhatsApp with a different normalization
+      // than what was stored. toLowerCase() is a no-op for Malayalam but still matters for other
+      // scripts this same comparison serves.
+      const tappedLower=(text||'').trim().toLowerCase().normalize('NFC');
+      const tappedOption=lastTurn.options.find(o=>o && String(o.title||'').trim().toLowerCase().normalize('NFC')===tappedLower);
       if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
     }
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
