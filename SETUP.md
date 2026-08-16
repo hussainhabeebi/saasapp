@@ -3431,9 +3431,9 @@ What's different from `engine-ecom.json`:
   Color/size matching, progressive relaxation, Drive photo auto-send, and the storefront order
   link all come from calling the existing `ecom-context.json` sub-workflow unchanged.
 - Human handover is now a field the single AI reply call itself returns (`wants_human`), plus
-  the same loop-detection safety net as before (2 identical bot replies in a row forces it — see
-  engineGetLeadState's own comment for the production repeat this threshold was tightened from
-  3 to 2 for).
+  the same loop-detection safety net as before (2 near-duplicate bot replies in a row forces it,
+  not just byte-identical ones — see engineGetLeadState's own comment for the production repeats
+  this threshold was tightened for).
 
 Tested with 53 cases (38 unit tests over the extracted node logic, 15 end-to-end vm simulations
 chaining the actual generated `jsCode` through three full conversation turns — text with a

@@ -8594,6 +8594,23 @@ function engineParseInstagramPayload(entry){
   return {convId:null, igId, phone:'', name:'', text, mediaType:'text', mediaUrl:''};
 }
 
+// Cheap, dependency-free word-overlap ratio (Jaccard on lowercased word sets, punctuation
+// stripped) — used by engineGetLeadState's loop detector below to catch two AI-generated replies
+// that are near-duplicates of each other, not just byte-identical ones. Deliberately not another
+// LLM call: the loop detector needs to be fast and trustworthy on every single turn, not one more
+// thing that can itself fail/hallucinate. Real observed failure: a customer replied "yes" to a
+// product pitch ending in "Would you like to know more about them?" and the FAQ LLM regenerated
+// essentially the same pitch/question with slightly different wording each time ("For general
+// health and wellness, our Glutathione Tablets..." vs "For general health, our Glutathione
+// Tablets...") — an exact-match loop detector never once saw two identical strings, so it never
+// fired, and the conversation could repeat indefinitely with no safety net at all.
+function engineTextSimilarity(a, b){
+  const words=s=>new Set(String(s||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean));
+  const wa=words(a), wb=words(b);
+  if(!wa.size || !wb.size) return 0;
+  let overlap=0; for(const w of wa) if(wb.has(w)) overlap++;
+  return overlap/Math.max(wa.size, wb.size);
+}
 // Mirrors "HTTP · Get lead" + "Code · State": pulls every LEADS row for this phone across ALL
 // clients (not scoped by client_id — same as engine.json), so a phone that's already a lead for
 // a different client shows up as isDuplicate, matching the original's cross-tenant reporting.
@@ -8616,8 +8633,14 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   // turn escalates to a human via isRealLoop below, without weakening the signal much — two
   // consecutive byte-identical bot replies is already a strong smell for genuinely distinct customer
   // turns (engineHandoverCannedTexts still excludes a correctly-repeated handover confirmation).
+  // Near-duplicate, not just byte-identical (Wellness Virtue, Aug 2026): a customer's "yes" to a
+  // product pitch ending in a question got the FAQ LLM regenerating essentially the same pitch with
+  // slightly different wording each time — exact equality never once matched, so the loop ran with
+  // no safety net at all. engineTextSimilarity (0.7 threshold — high but not exact-match-only;
+  // genuinely different replies about the same product/topic still share some vocabulary but don't
+  // reach this) catches that case the same way exact equality already caught scripted-text repeats.
   const botMsgs=history.filter(m=>m.role==='assistant').slice(-2).map(m=>m.content);
-  const looping=botMsgs.length===2 && botMsgs.every(m=>m===botMsgs[0]);
+  const looping=botMsgs.length===2 && engineTextSimilarity(botMsgs[0], botMsgs[1])>=0.7;
   // 20, not 6 — keep roughly the last 10 customer/bot exchanges as working memory instead of ~3,
   // so the bot still recalls what was discussed several turns back (ConvHistory itself has no
   // date-based staleness at all, only this count-based trim of what's "active" for the prompts).
