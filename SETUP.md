@@ -7642,6 +7642,16 @@ button message for ≤3 items) that this Worker previously never used, sending p
   <full product name>"), so an unusually long product name was a real, previously uncapped risk of
   a silent Meta rejection — now defensively capped at 200 (the smaller of the two limits) the same
   way `title` already is.
+- **Unicode normalization on the tap-resolution comparison** (`handleEngineWebhook`, and the
+  collision check in `engineSendChatwootQuickReply`) — real observed failure, Malayalam-language
+  qualifying-question options specifically: a tap on a translated (`engineLocalizeOptions`) button
+  never resolved, even though the tapped title was visibly, correctly displayed on screen and
+  identical to what was sent. Complex scripts (Malayalam, and Indic scripts generally) can encode
+  the exact same visible text as different Unicode code point sequences (precomposed vs. decomposed
+  conjuncts/vowel signs) — a plain string comparison sees those as different strings even though a
+  person reading both sees identical text. Invisible with English/Latin text (essentially no such
+  ambiguity there), so this only surfaced once a non-Latin script round-tripped through
+  Chatwoot/WhatsApp. Both comparisons now call `.normalize('NFC')` on each side first.
 - **Brand-level picker** (`detectOrderSignal` + the category-enquiry branch of
   `handleEngineWebhook`) — the category/variant picker above only ever covered one dimension
   (category → color variant or product name); a client whose catalog carries several distinct
