@@ -9461,6 +9461,21 @@ async function engineLocalizeReply(env, c, text, targetLang){
   }
   return text;
 }
+// Batches a qual_questions choice list through ONE engineLocalizeReply call (joined on a delimiter
+// short enough option text won't plausibly contain, split back apart after) instead of one call
+// per option — same "the scripted question shouldn't read as a different language than its own
+// answer choices" fix engineLocalizeReply's own comment already describes for the question text
+// itself, extended to the choices a customer taps. Falls back to the original (untranslated)
+// options on any failure, empty targetLang/English, or a shape mismatch (translation merged/split
+// an item unexpectedly) — a button in the "wrong" language is a far better outcome than losing a
+// choice or displaying a garbled split.
+async function engineLocalizeOptions(env, c, options, targetLang){
+  if(!options || !options.length || !targetLang || targetLang==='en') return options;
+  const DELIM=' ||| ';
+  const translated=await engineLocalizeReply(env, c, options.join(DELIM), targetLang);
+  const parts=(translated||'').split(DELIM).map(s=>s.trim()).filter(Boolean);
+  return parts.length===options.length ? parts : options;
+}
 
 // The one delivery point a customer's reply actually depends on — a silent failure here means
 // the customer gets nothing and nobody finds out, so (unlike most best-effort sends elsewhere in
@@ -9510,6 +9525,46 @@ function engineExtractReplyOptions(replyText){
   const options=match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10);
   return {text:stripped, options:options.length?options:null};
 }
+// Fallback for when a FAQ reply reads as a plain-English "X, Y, or Z?" choice question but the
+// model didn't add the OPTIONS: marker — real observed failure: unreliable even for the exact
+// "skincare, wellness, or diet plan?"/"glowing skin, anti-ageing, or something else?" phrasing
+// engineBuildFaqSystemPrompt gives as its own textbook example, sent as plain prose with nothing
+// to tap. A small, single-purpose extraction call rather than a hand-rolled regex: real phrasing
+// ("Are you looking for skincare, wellness, or diet plan options today?") has filler words woven
+// around the actual list ("Are you looking for" / "options today") that a naive comma/"or" split
+// can't cleanly strip without also mangling the real options — a short, focused classification
+// call (same reliability trade-off intent/sentiment/language already carry elsewhere in this file)
+// reads it correctly the way a person would, far more reliably than a second attempt at the same
+// formatting instruction the primary reply call already sometimes skips. Only ever the safety net
+// for a reply the model already generated — never invents a question that wasn't there, only
+// extracts one already phrased as a choice; returns null on anything that doesn't confidently read
+// as a real 2-10-way menu, same "no options" fallback as engineExtractReplyOptions's own marker
+// miss.
+async function engineExtractPlainOptionsFromReply(env, c, replyText){
+  const text=(typeof replyText==='string'?replyText:'').trim();
+  if(!text || !c.openrouter_key) return null;
+  // Cheap skip gate before spending an LLM call on the common case (most FAQ replies aren't a
+  // choice question at all): a real clarifying question ends in '?' (or Arabic '؟', for an AED/UAE
+  // client's Arabic-language reply) somewhere near the end — checked within the last 20 characters,
+  // not just the very last one, since a reply can trail an emoji or extra whitespace after the
+  // actual question mark (e.g. the "...today? ✨" case this fallback was added for).
+  if(!/[?؟]/.test(text.slice(-20))) return null;
+  const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today", keep it in the reply's own language), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
+  try{
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', temperature:0.1, max_tokens:150, messages:[{role:'system',content:system},{role:'user',content:text}]})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const raw=data?.choices?.[0]?.message?.content?.trim()||'';
+    const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+    if(!m) return null;
+    const parsed=JSON.parse(m[0]);
+    const options=Array.isArray(parsed.options)?parsed.options.map(o=>String(o||'').trim()).filter(Boolean).slice(0,10):[];
+    return options.length>=2 ? options : null;
+  }catch(e){ return null; }
+}
 // Same message-create endpoint as engineSendChatwootReply, plus the content_type/content_attributes
 // pair Chatwoot's own WhatsApp Cloud provider turns into a real WhatsApp interactive message
 // (confirmed against Chatwoot's own source: MessageBuilder reads content_type/content_attributes —
@@ -9536,6 +9591,19 @@ function engineTruncateButtonTitle(title, cap){
   const cut=lastSpace>Math.floor(cap*0.4) ? slice.slice(0, lastSpace) : slice;
   return cut.trimEnd()+'…';
 }
+// Returns the items actually presented to the customer as tappable buttons — {title, value},
+// title truncated/deduped exactly as sent — or null on every path that fell back to plain text
+// (no valid items, a title collision, missing creds/convId, or the send itself failing). Real
+// observed bug: every call site used to build its OWN `items` array for routing.quickReplies (the
+// history entry the deterministic tap-resolution in handleEngineWebhook later matches an inbound
+// reply's title against) independently of what this function actually truncated/sent — so a title
+// long enough to truncate was stored one way (untruncated) and echoed back by WhatsApp another way
+// (the truncated version actually displayed), meaning the two could never match. A customer's tap
+// on "Semi Orthopedic…" then had nothing to resolve against, fell through to the AI classifier with
+// nothing but that same truncated fragment, and the whole category picker fired again instead of
+// resolving the specific product. Callers now use THIS return value for routing.quickReplies
+// instead of guessing, so what's stored is always exactly what was sent (or null when nothing
+// tappable actually went out, so a failed send doesn't get misrecorded as one that succeeded).
 async function engineSendChatwootQuickReply(env, c, clientId, convId, text, items){
   const raw=(items||[]).filter(it=>it && (it.title||it.value));
   const isList=raw.length>3;
@@ -9554,11 +9622,18 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
   const trimmedItems=raw.slice(0,10).map(it=>{
     const full=String(it?.title||it?.value||'').trim();
     const title=engineTruncateButtonTitle(full, titleCap);
-    const item={title, value:String(it?.value||it?.title||'')};
+    // value becomes the row/button's own `id` in the real WhatsApp Cloud API payload — Meta caps
+    // that at 200 (list rows) / 256 (reply buttons) characters, same "defensively capped here
+    // rather than trusting a caller and getting a silent downstream Meta rejection" reasoning as
+    // titleCap above. Several callers deliberately build a longer value than the visible title
+    // (e.g. "I want to order <full product name>"), so this is a real risk, not a hypothetical one,
+    // for an unusually long product name — 200 (the smaller of the two real limits) covers both
+    // shapes regardless of which one isList ends up picking.
+    const item={title, value:String(it?.value||it?.title||'').slice(0,200)};
     if(isList && title.endsWith('…')) item.description=engineTruncateButtonTitle(full, 72);
     return item;
   }).filter(it=>it.title);
-  if(!trimmedItems.length) return engineSendChatwootReply(env, c, clientId, convId, text);
+  if(!trimmedItems.length){ await engineSendChatwootReply(env, c, clientId, convId, text); return null; }
   const seenTitles=new Set();
   const hasCollision=trimmedItems.some(it=>{
     const key=it.title.toLowerCase();
@@ -9568,10 +9643,11 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
   });
   if(hasCollision){
     const listText=raw.map(it=>`- ${it.title||it.value}`).join('\n');
-    return engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
+    await engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
+    return null;
   }
   const trimmed=(typeof text==='string'?text:'').trim();
-  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return null;
   try{
     const fd=new FormData();
     fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
@@ -9581,12 +9657,15 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     if(!r.ok){
       const errBody=await r.text().catch(()=>'');
       await reportOpsError(env, 'engineSendChatwootQuickReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
-      return engineSendChatwootReply(env, c, clientId, convId, trimmed);
+      await engineSendChatwootReply(env, c, clientId, convId, trimmed);
+      return null;
     }
   }catch(e){
     await reportOpsError(env, 'engineSendChatwootQuickReply — send threw', e, {clientId, convId});
-    return engineSendChatwootReply(env, c, clientId, convId, trimmed);
+    await engineSendChatwootReply(env, c, clientId, convId, trimmed);
+    return null;
   }
+  return trimmedItems.map(it=>({title:it.title, value:it.value}));
 }
 
 // Best-effort Chatwoot "customer sees {agent} typing…" indicator — pure UX polish covering the
@@ -11110,9 +11189,12 @@ async function handleEngineWebhook(request, env, secret){
               sentText=await engineLocalizeReply(env, c, intro, replyLang);
               routing.reply=sentText;
               const items=brandsInCategory.slice(0,10).map(b=>({title:b, value:b}));
-              routing.quickReplies=items;
               if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
-              await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+              // routing.quickReplies is set from what this actually sent (title truncated/deduped
+              // as needed), not the pre-truncation `items` — see engineSendChatwootQuickReply's own
+              // comment for the exact bug this avoids (a stored option that doesn't match what
+              // WhatsApp echoes back on tap).
+              routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
             } else {
               const listText=brandsInCategory.map(b=>`- ${b}`).join('\n');
               sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
@@ -11146,9 +11228,8 @@ async function handleEngineWebhook(request, env, secret){
               sentText=await engineLocalizeReply(env, c, intro, replyLang);
               routing.reply=sentText;
               const items=choices.slice(0,10).map(ch=>({title:ch.label, value:ch.value}));
-              routing.quickReplies=items;
               if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
-              await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+              routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
             } else {
               const listText=choices.map(ch=>`- ${ch.label}`).join('\n');
               sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
@@ -11237,11 +11318,26 @@ async function handleEngineWebhook(request, env, secret){
         // those as a tappable picker instead of leaving a choice-shaped question as plain text
         // with nothing to tap (real observed failure — see this function's own comment history on
         // quick-reply buttons). Falls back to plain text exactly as before when no options are set.
-        const firstQOptions=engineQualQuestionOptions(qualQuestions[0]);
+        let firstQOptions=engineQualQuestionOptions(qualQuestions[0]);
+        // The exact original failure this whole thread started from (Cloudnine Beddings): a
+        // business phrases qual_questions[0] itself as a choice question ("Do you need a mattress,
+        // a wooden bed, or something else?") but never fills in the explicit Choices field above —
+        // that field is opt-in/manual, so an already-choice-shaped question a business owner wrote
+        // before it existed (or just never revisited) still had nothing to fall back on. Same
+        // plain-English extraction safety net the FAQ route uses, applied to the actual text about
+        // to be sent (isNewLead's intro + question combined) so it still catches the question even
+        // wrapped in a warm opener.
+        let usingConfiguredOptions=firstQOptions.length>0;
+        if(!firstQOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+          firstQOptions=await engineExtractPlainOptionsFromReply(env, c, sentText)||[];
+        }
         if(firstQOptions.length && botConfig.quick_reply_buttons_enabled!==false){
-          const items=firstQOptions.map(o=>({title:o, value:o}));
-          routing.quickReplies=items;
-          await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+          // Localized to match the question text above (isNewLead's intro/firstQ is already in
+          // replyLang) — only for the business's OWN configured choices (usually typed in whatever
+          // language they work in); the extraction fallback already reads the reply in replyLang,
+          // so its output needs no further translation.
+          const items=(usingConfiguredOptions?await engineLocalizeOptions(env, c, firstQOptions, replyLang):firstQOptions).map(o=>({title:o, value:o}));
+          routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
         } else {
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
         }
@@ -11252,10 +11348,16 @@ async function handleEngineWebhook(request, env, secret){
       // Same tappable-picker treatment as the first qualifying question above, for the NEXT one
       // this turn is asking — routing.qualNextOptions (engineRouteFlow) is only ever populated when
       // that specific question has real configured choices.
-      if(sentText && routing.qualNextOptions?.length && botConfig.quick_reply_buttons_enabled!==false){
-        const items=routing.qualNextOptions.map(o=>({title:o, value:o}));
-        routing.quickReplies=items;
-        await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+      let qualNextOptions=routing.qualNextOptions||[];
+      const usingConfiguredQualNextOptions=qualNextOptions.length>0;
+      // Same "business phrased this as a choice question but never filled in Choices" fallback as
+      // the first qualifying question above.
+      if(sentText && !qualNextOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+        qualNextOptions=await engineExtractPlainOptionsFromReply(env, c, sentText)||[];
+      }
+      if(sentText && qualNextOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+        const items=(usingConfiguredQualNextOptions?await engineLocalizeOptions(env, c, qualNextOptions, replyLang):qualNextOptions).map(o=>({title:o, value:o}));
+        routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
       } else if(sentText){
         await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
       }
@@ -11264,8 +11366,7 @@ async function handleEngineWebhook(request, env, secret){
       sentText=await engineLocalizeReply(env, c, intro, replyLang);
       routing.reply=sentText;
       const items=newLeadCategories.map(cat=>({title:cat, value:cat}));
-      routing.quickReplies=items;
-      await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+      routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
     } else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
@@ -11313,9 +11414,23 @@ async function handleEngineWebhook(request, env, secret){
             if(mentionedCategories.length) faqQuickReplies=mentionedCategories.map(cat=>({title:cat, value:cat}));
           }
         }
+        // Last resort, any industry (not just ecom — the mentionedProduct/mentionedCategories
+        // fallbacks above only ever apply to ecom_faq): the OPTIONS: marker is the LLM's OWN choice
+        // to tag a reply as a menu, and it doesn't always remember to, even for a textbook example
+        // straight out of its own instructions. engineExtractPlainOptionsFromReply reads the
+        // already-generated reply text itself for a plain-English "X, Y, or Z?" choice question, so
+        // a clarifying menu still becomes tappable buttons even when nothing above caught it.
+        if(!faqQuickReplies){
+          const plainOptions=await engineExtractPlainOptionsFromReply(env, c, reply);
+          if(plainOptions) faqQuickReplies=plainOptions.map(o=>({title:o, value:o}));
+        }
       }
-      routing.quickReplies=faqQuickReplies;
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies});
+      // routing.quickReplies is set from what engineDeliverReply's own quickReplies branch actually
+      // sent (only meaningful when faqQuickReplies was non-empty in the first place — every other
+      // branch it might have taken instead, voice/image/plain text, returns something else) — see
+      // engineSendChatwootQuickReply's own comment for why this can't just be faqQuickReplies as-is.
+      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies});
+      routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlm(env, c, sysPrompt, userText, 300);
@@ -11337,9 +11452,12 @@ async function handleEngineWebhook(request, env, secret){
       ]:null;
       // Carried on `routing` (already passed to engineBuildLeadUpsertBody just below) purely so the
       // Chats tab can render this turn with the same button styling the customer actually saw on
-      // WhatsApp — see that function's own history.push for how it lands in ConvHistory.
-      routing.quickReplies=quickReplies;
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies});
+      // WhatsApp — see that function's own history.push for how it lands in ConvHistory. Set from
+      // what engineDeliverReply's own quickReplies branch actually sent (title truncated/deduped as
+      // needed), not the pre-truncation `quickReplies` built above — see
+      // engineSendChatwootQuickReply's own comment for why that distinction matters.
+      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies});
+      routing.quickReplies=quickReplies?.length ? sentReply : null;
     }
 
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
