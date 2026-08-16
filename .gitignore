@@ -4,3 +4,9 @@
 .env
 *.env
 !*.env.example
+
+# Test tooling (frontend/package.json, cloudflare-worker/package.json — see FIXES.md)
+node_modules/
+test-results/
+playwright-report/
+blob-report/

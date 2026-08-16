@@ -1,0 +1,52 @@
+name: CI
+
+# Catches what every fix in FIXES.md was, until now, only ever caught by a customer or business
+# owner noticing something broken and screenshotting it. See FIXES.md's own header for the
+# convention this enforces: before touching a function/file listed there, read its entry — this
+# workflow is the automated backstop for when that doesn't happen.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (cloudflare-worker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax check worker.js
+        run: node --check cloudflare-worker/worker.js
+      - name: Run unit tests
+        working-directory: cloudflare-worker
+        run: npm test
+
+  frontend:
+    name: Frontend (dashboard.html smoke tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run Playwright smoke tests
+        working-directory: frontend
+        run: npm test
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 14

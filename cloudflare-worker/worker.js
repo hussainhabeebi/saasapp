@@ -8518,8 +8518,8 @@ function engineParseJsonField(raw, fallback){ try{ const v=JSON.parse(raw||''); 
 // unchanged (still required, same as before this existed); these two helpers are the one place
 // that shape difference is resolved, so every call site (the classic chat qualify_next ladder AND
 // the native-forms flow builder/endpoint) reads it the same way instead of re-deriving it.
-function engineQualQuestionText(q){ return typeof q==='string'?q:String(q?.text??''); }
-function engineQualQuestionOptional(q){ return !!(q && typeof q==='object' && q.optional===true); }
+export function engineQualQuestionText(q){ return typeof q==='string'?q:String(q?.text??''); }
+export function engineQualQuestionOptional(q){ return !!(q && typeof q==='object' && q.optional===true); }
 // Same {text, optional} extension, for a question whose answer is really a fixed multiple-choice
 // pick ("Mattress, wooden bed, or something else?") rather than open-ended free text — real
 // observed failure: a client's own qual_questions[0] was phrased exactly like that, and being a
@@ -8529,7 +8529,7 @@ function engineQualQuestionOptional(q){ return !!(q && typeof q==='object' && q.
 // are completely unaffected; this only ever activates when a business owner explicitly lists
 // choices for a question in Settings. Capped at 10 like every other quick-reply picker in this
 // file (engineSendChatwootQuickReply's own real WhatsApp limit).
-function engineQualQuestionOptions(q){
+export function engineQualQuestionOptions(q){
   if(!q || typeof q!=='object' || !Array.isArray(q.options)) return [];
   return q.options.map(o=>String(o||'').trim()).filter(Boolean).slice(0,10);
 }
@@ -8604,7 +8604,7 @@ function engineParseInstagramPayload(entry){
 // health and wellness, our Glutathione Tablets..." vs "For general health, our Glutathione
 // Tablets...") — an exact-match loop detector never once saw two identical strings, so it never
 // fired, and the conversation could repeat indefinitely with no safety net at all.
-function engineTextSimilarity(a, b){
+export function engineTextSimilarity(a, b){
   const words=s=>new Set(String(s||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean));
   const wa=words(a), wb=words(b);
   if(!wa.size || !wb.size) return 0;
@@ -8895,7 +8895,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
 // live: a lead stuck replying "Sure 🙏 connecting you to our advisor..." to every message
 // including plain "Hi", even after being released back to the bot from Human Deals (release clears
 // Stage/Handover, but never touches ConvHistory, which is what this check actually looks at).
-function engineHandoverCannedTexts(botConfig){
+export function engineHandoverCannedTexts(botConfig){
   return new Set([
     'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.',
     'Sure — connecting you to our team now. Someone will reply here shortly.',
@@ -8907,7 +8907,7 @@ function engineHandoverCannedTexts(botConfig){
   ].filter(Boolean));
 }
 
-function engineRouteFlow(c, state, userText, cls){
+export function engineRouteFlow(c, state, userText, cls){
   const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest}=cls;
   const lowText=userText.toLowerCase().trim();
   const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
@@ -9554,7 +9554,7 @@ async function engineSendChatwootReply(env, c, clientId, convId, text){
 // marker line from the returned text regardless of whether the caller
 // goes on to use `options` — a caller that ignores them (e.g. the Instagram flow, which can't
 // render buttons at all) must never leak a raw "OPTIONS:" line into what the customer reads.
-function engineExtractReplyOptions(replyText){
+export function engineExtractReplyOptions(replyText){
   const text=(typeof replyText==='string'?replyText:'');
   const match=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
   if(!match) return {text, options:null};
@@ -9621,7 +9621,7 @@ async function engineExtractPlainOptionsFromReply(env, c, replyText){
 // If two different items still truncate down to the exact same visible title, buttons/list rows
 // would look identical on screen — the customer could tap one meaning the other — so that case
 // falls back to a plain text list of the untruncated titles instead of sending ambiguous buttons.
-function engineTruncateButtonTitle(title, cap){
+export function engineTruncateButtonTitle(title, cap){
   const t=String(title||'').trim();
   if(t.length<=cap) return t;
   const slice=t.slice(0, cap-1);
