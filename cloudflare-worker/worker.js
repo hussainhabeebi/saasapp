@@ -2279,7 +2279,7 @@ If "order" or "enquiry", try to match it to exactly one product from the catalog
 - Match by reasonable everyday judgment, not exact string equality — a customer writes informally, the catalog doesn't. "Green shirt" should match a catalog color of "Light Green" or "Bottle Green"; "greenshirt" and "green shirt" are the same query; a size like "S"/"small"/"S size" are the same detail. Don't withhold sku just because the wording isn't identical to the catalog fields — withhold it only when you genuinely can't tell which product (or no product) is meant.
 - A message with NO distinguishing detail of its own — "order it", "M size" alone, "that one", "yes please" — should be resolved using the recent conversation below, if given: it very likely refers to whichever product was just discussed.
 - A message that names its own distinguishing detail (a color, size, or product name) should be matched against the catalog by that detail. If it's consistent with the product just discussed (e.g. "size M" right after that same shirt was shown), match to that one. If it conflicts with the product just discussed (e.g. "red shirt" right after a green shirt was shown), treat it as asking about a NEW product and match fresh by the new detail — don't keep reusing the old product's sku just because it was recently discussed. Only omit sku (or classify as neither, if it's clearly asking for something not carried at all) when the named detail truly doesn't correspond to anything in the catalog.
-- Always also include product_name (the catalog product's plain name) whenever you include sku, or whenever you're confident which product is meant even if you're not 100% sure you copied the sku exactly right — copying a product's name correctly is much more reliable than copying an alphanumeric code, and product_name lets a name-based lookup succeed even if the sku string doesn't match exactly.
+- Always also include product_name using the catalog product's EXACT plain name whenever you include sku. Never shorten, expand, paraphrase, autocomplete, or invent a product name. If no single catalog record is a confident exact match, omit sku and product_name; the application will ask the customer to clarify instead of guessing.
 - If you cannot confidently match one specific product, but the message clearly asks about a product category rather than any one item (e.g. "shirts", "do you have pants") AND that category (or something close to it) is in the Known categories list below, include "category" instead — the exact string from Known categories that best matches. Never include both sku and category; category only applies when no single product is a confident match.
 - Separately (and only when a category is also included, or already clear from recent conversation), if the message itself names a specific brand from the catalog above (e.g. "REPOSE", "do you have Cloudnine Hybrid") rather than a specific model, also include "brand" — the exact brand string from the catalog that best matches. A bare brand name with no other detail ("REPOSE" on its own, right after being asked which brand) still counts — resolve the category from recent conversation the same way a bare size/color reply already does.
 Respond with ONLY valid JSON: {"signal":true,"mode":"order","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","category":"...","brand":"..."} (sku/product_name omitted if no confident single-product match; category/brand omitted unless relevant — brand only ever accompanies category, never sku) or {"signal":false}.
@@ -7050,7 +7050,7 @@ async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resol
    photo), capped to once per (lead, product, calendar day) by the caller passing the same
    engineClaimProductImageForToday claim (sendProductImage) the photo/media bundle already uses.
    Called right before engineMaybeSendProductMedia at each order-detection branch in
-   handleEngineWebhook, so the customer sees description → extra images → audio → video → PDF,
+   handleEngineWebhook, so the customer sees description → extra images → audio → video,
    in that order, as one bundle. */
 async function engineMaybeSendProductDescription(env, c, clientId, convId, product){
   if(c.industry!=='ecommerce' || !convId || !product?.description) return;
@@ -7330,22 +7330,12 @@ async function handlePipelineVideoSend(request, env){
 // link that was actually configured for that product/client, never a generic catalog page standing
 // in for one that wasn't set up. Returns '' when none of the three is set; callers must handle that.
 function buildOrderLink(c, clientId, sku, product){
-  // A per-product Shopify product-page URL (set in ecom.html, shown only when Shopify is
-  // connected) wins over everything else — it's the most specific link available, pointing
-  // straight at the real product page rather than a generic storefront/catalog link.
+  // Ecommerce product lock: customer order links may come only from the matched Ecom Product
+  // record. Never fall back to a client-wide store/catalog URL for a specific product.
   const shopifyProductUrl=(product?.shopify_product_url||'').trim();
   if(shopifyProductUrl) return shopifyProductUrl;
-  // product_link — a generic per-product override (ecom.html's "Product Link" field, always
-  // visible, unlike shopify_product_url which only appears once Shopify is connected). For a
-  // client who sells through something other than Shopify (Instagram, Amazon, their own landing
-  // page, a marketplace listing) this is the one way to point a specific product at that URL.
-  // Checked after the Shopify-specific field (still the most specific option when both happen to
-  // be set) but before the client-wide external_store_link, since a per-product link is always
-  // more specific than a client-wide one.
   const productLink=(product?.product_link||'').trim();
   if(productLink) return productLink;
-  const ext=(c.external_store_link||'').trim();
-  if(ext) return ext;
   return '';
 }
 
@@ -7464,19 +7454,21 @@ async function ecomFindProductBySku(env, clientId, sku){
 // (catalog name contains the guess, or the guess contains the catalog name) against the same
 // client's products, capped the same as detectOrderSignal's own catalog scan.
 async function ecomResolveProduct(env, clientId, sku, productName){
+  // Zero-hallucination product resolution: an SKU must exist in this client's Products table,
+  // otherwise the model-returned product name must match one stored product name exactly after
+  // harmless punctuation/spacing normalization. Never use substring matching here: a guessed
+  // "Cream" must not silently resolve to an arbitrary "Night Cream" product.
   const bySku=await ecomFindProductBySku(env, clientId, sku);
   if(bySku) return bySku;
-  const guess=(productName||'').trim().toLowerCase();
+  const normalizeName=v=>String(v||'').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+  const guess=normalizeName(productName);
   if(!guess) return null;
   const productsTable=await ecomResolveTable(env, clientId, 'products');
   if(!productsTable) return null;
   const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
   const pd=await pr.json().catch(()=>({}));
   const products=pd?.list||[];
-  return products.find(p=>{
-    const name=(p.name||'').trim().toLowerCase();
-    return name && (name.includes(guess) || guess.includes(name));
-  })||null;
+  return products.find(p=>normalizeName(p.name)===guess)||null;
 }
 
 // The reverse direction of ecomResolveProduct above: given a block of text (the ecom_faq LLM's own
@@ -7556,16 +7548,14 @@ async function engineClaimProductImageForToday(env, clientId, leadId, productId)
 async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
   if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   try{
-    // image_url itself is sent separately, inline as the reply's own photo+caption
-    // (engineDeliverReply's imageUrl param at each call site) — these four are extra angles/views
-    // (ecom.html "Image Link 2"–"Image Link 5"), sent as follow-up attachments same as audio/video/pdf below.
+    // image_url is sent separately as the primary product photo. Send only the additional
+    // Product-level media explicitly configured in Ecom → Products: images 2–5, audio and video.
     if(product.image_url_2) await sendDriveMediaToChatwoot(c, convId, product.image_url_2, '');
     if(product.image_url_3) await sendDriveMediaToChatwoot(c, convId, product.image_url_3, '');
     if(product.image_url_4) await sendDriveMediaToChatwoot(c, convId, product.image_url_4, '');
     if(product.image_url_5) await sendDriveMediaToChatwoot(c, convId, product.image_url_5, '');
     if(product.audio_url) await sendDriveMediaToChatwoot(c, convId, product.audio_url, '');
     if(product.video_url) await sendDriveMediaToChatwoot(c, convId, product.video_url, '');
-    if(product.pdf_url) await sendDriveMediaToChatwoot(c, convId, product.pdf_url, '');
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductMedia', e, {clientId, convId}); }
 }
 
@@ -7674,10 +7664,15 @@ function ecomStyleAttributeLines(product){
 function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLink, state={}){
   const lang=replyLang||c.language||'en';
   const lines=[`Name: ${product.name}`];
+  if(product.sku) lines.push(`SKU: ${product.sku}`);
+  if(product.description) lines.push(`Description (exact Product record text): ${product.description}`);
   if(product.price) lines.push(`Price: ${product.currency||''} ${product.price}`.trim());
   if(product.color) lines.push(`Color: ${product.color}`);
   if(product.size) lines.push(`Size options: ${product.size}`);
   if(product.category) lines.push(`Category: ${product.category}`);
+  if(product.brand) lines.push(`Brand: ${product.brand}`);
+  if(product.variant) lines.push(`Variant: ${product.variant}`);
+  if(product.warranty_period) lines.push(`Warranty: ${product.warranty_period}`);
   lines.push(...ecomStyleAttributeLines(product));
   const stockNum=Number(product.stock);
   lines.push(Number.isFinite(stockNum) && stockNum<=0 ? 'Currently out of stock' : 'In stock');
@@ -7688,7 +7683,8 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
   // instruction below is phrased the same "Default X — follow this unless the persona/instructions
   // above specify otherwise" way as the other three prompts, so main_prompt stays authoritative.
   let sys=c.main_prompt||'';
-  sys+=`\n\nYou are replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}`;
+  sys+=`\n\nYou are replying to a customer asking about one specific product. The verified Ecom Product record below is the ONLY source of truth for every product fact:\n${lines.join('\n')}`;
+  sys+='\n\nZERO-HALLUCINATION PRODUCT LOCK: Use only values explicitly present in the verified Product record above. Never use general knowledge, assumptions, likely specifications, the product name, the client persona, or previous conversation to invent or infer a product fact, benefit, compatibility, availability, variant, price, stock, warranty, ingredient, result, or URL. The client main prompt controls tone only; it is not product data. If the customer asks for a detail that is missing, say that detail is not available and offer human confirmation. Never claim that an unavailable field exists.';
   sys+='\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Default style (follow this unless the persona/instructions above specify a different tone, reply length, or closing style — in that case, follow those instead): do not mention the price unless the customer\'s message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // Recent Conversation/summary — same pattern as engineBuildFaqSystemPrompt/
   // engineBuildObjectionSystemPrompt (see engineSummaryBlock). This prompt used to build the exact
@@ -7728,12 +7724,11 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
 // the three is set; callers must handle that (e.g. by collecting the order conversationally
 // instead, same as the ecom_order_link_enabled==='No' path).
 function buildCheckoutLink(c, clientId, sku, product){
+  // Same product-level-only rule as buildOrderLink: no generic or guessed checkout URL.
   const shopifyProductUrl=(product?.shopify_product_url||'').trim();
   if(shopifyProductUrl) return shopifyProductUrl;
   const productLink=(product?.product_link||'').trim();
   if(productLink) return productLink;
-  const ext=(c.external_store_link||'').trim();
-  if(ext) return ext;
   return '';
 }
 
@@ -11230,9 +11225,8 @@ async function handleEngineWebhook(request, env, secret){
           routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
           if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra-angle photos/audio/video/PDF bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio,
-          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+          // Description first, then the extra product images/audio/video bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           orderHandledInline=true;
@@ -11253,9 +11247,8 @@ async function handleEngineWebhook(request, env, secret){
           routing.humanReason='order_handoff';
           if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra-angle photos/audio/video/PDF bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio,
-          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+          // Description first, then the extra product images/audio/video bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           await engineSendHandoverLabel(c, convId);
@@ -11268,9 +11261,8 @@ async function handleEngineWebhook(request, env, secret){
             routing.reply=sentText;
             if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
             await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-            // Description first, then the extra-angle photos/audio/video/PDF bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio,
-          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+            // Description first, then the extra product images/audio/video bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
             await logPendingOrder(env, c, clientId, phone, name, product);
@@ -11285,9 +11277,8 @@ async function handleEngineWebhook(request, env, secret){
             routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
             if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
             await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-            // Description first, then the extra-angle photos/audio/video/PDF bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio,
-          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+            // Description first, then the extra product images/audio/video bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           }
@@ -11318,9 +11309,8 @@ async function handleEngineWebhook(request, env, secret){
           // comes up again the same day.
           if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra-angle photos/audio/video/PDF bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio,
-          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+          // Description first, then the extra product images/audio/video bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           // Only logged as a pending order when the link was actually made available this turn —
@@ -11420,9 +11410,15 @@ async function handleEngineWebhook(request, env, secret){
           // No products at all in that category (or that brand within it) — falls through to FAQ
           // below ("we don't carry that").
         }
-        // enquiry with no confident product or category match falls through to the normal FAQ/flow
-        // handling below (no canned reply, no link) — the context-aware FAQ LLM can respond
-        // naturally, e.g. "we don't carry that, but here's what we do have."
+        // Zero-hallucination fallback: a product/category signal that did not resolve to a real
+        // Products-table row must never fall through to the general FAQ model, which has no
+        // verified product record and could improvise availability or specifications.
+        if(!orderHandledInline && detection.mode==='enquiry' && !product){
+          sentText=await engineLocalizeReply(env, c, "I couldn't verify that exact product in our current catalogue. Please share the exact product name or SKU, and I'll check the verified product details.", replyLang);
+          routing.reply=sentText;
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+          orderHandledInline=true;
+        }
       }
       // If this turn overrode a false-positive 'human' route (humanBlocksOrderCheck was false only
       // because humanReason wasn't 'explicit'), routing.route is still 'human' at this point —
