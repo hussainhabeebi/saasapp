@@ -25,6 +25,7 @@ import {
   hcServiceChoiceItems,
   hcVerifiedServiceText,
   hcEmergencyMatch,
+  hcEnsureOperationsSchema,
 } from './worker.js';
 
 describe('Healthcare verified-data routing', () => {
@@ -58,6 +59,17 @@ describe('Healthcare verified-data routing', () => {
 
   test('generic words are removed before service matching', () => {
     assert.deepEqual(hcQueryTokens('Please book a doctor appointment for root canal'), ['root','canal']);
+  });
+
+  test('repairs a missing Healthcare schema once per D1 binding', async () => {
+    const statements=[];
+    const DB={prepare(sql){statements.push(sql);return {async run(){return {success:true};}};}};
+    await hcEnsureOperationsSchema({DB});
+    await hcEnsureOperationsSchema({DB});
+    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent']){
+      assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS healthcare_${table}`)).length,1,table);
+    }
+    assert.equal(statements.filter(sql=>sql.includes('idx_healthcare_insurance_client')).length,1);
   });
 });
 
