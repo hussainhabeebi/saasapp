@@ -232,7 +232,7 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
 #sidebarBackdrop.show{display:block}
 
 /* Mobile app shell — hidden on desktop. */
-.mobile-page-title,.mobile-quick-add,.mobile-bottom-nav,.mobile-fab,.mobile-status-tabs,.mobile-card-actions,.mobile-agenda,.mobile-more-action{display:none}
+.mobile-page-title,.mobile-quick-add,.mobile-bottom-nav,.mobile-fab,.mobile-status-tabs,.mobile-card-actions,.mobile-agenda,.mobile-more-action,.mobile-project-picker-head,.mobile-project-search,.mobile-project-picker-footer{display:none}
 
 @media (max-width:760px){
   html,body{overscroll-behavior:none}
@@ -242,12 +242,29 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
   .mobile-page-title{display:flex;flex:1;min-width:0;flex-direction:column;line-height:1.1}
   .mobile-page-title small{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--accent)}
   .mobile-page-title strong{font-family:var(--disp);font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #sidebar{width:min(86vw,330px);left:min(-86vw,-330px);top:0;bottom:0;z-index:120;padding:74px 12px 110px;border-radius:0 22px 22px 0;transition:left .22s ease;box-shadow:12px 0 32px rgba(11,35,32,.18)}
+  #sidebar{position:fixed;width:100%;left:-100%;top:0;bottom:0;z-index:300;padding:0;background:var(--bg);border:0;border-radius:0;transition:left .2s ease;box-shadow:none;overflow:hidden;display:flex;flex-direction:column}
   #sidebar.open{left:0}
-  #sidebarBackdrop{z-index:110;backdrop-filter:blur(2px)}
-  .sidehead{font-size:12px;padding:9px 12px}
-  .projitem{min-height:48px;padding:11px 12px;border-radius:12px;font-size:14px}
-  .projedit{opacity:1;padding:7px}
+  #sidebarBackdrop{display:none!important}
+  #sidebar .sidehead{display:none}
+  .mobile-project-picker-head{display:flex;align-items:center;gap:12px;padding:calc(14px + env(safe-area-inset-top)) 16px 12px;background:var(--card);border-bottom:1px solid var(--line)}
+  .mobile-project-picker-title{flex:1;min-width:0}
+  .mobile-project-picker-title strong{display:block;font-family:var(--disp);font-size:20px;line-height:1.15}
+  .mobile-project-picker-title small{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+  .mobile-project-close{width:40px;height:40px;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink);font-size:24px;line-height:1}
+  .mobile-project-search{display:block;margin:12px 14px 8px;position:relative}
+  .mobile-project-search input{width:100%;height:44px;border:1px solid var(--line);border-radius:13px;background:var(--card);padding:0 14px 0 40px;font-size:16px;color:var(--ink)}
+  .mobile-project-search::before{content:'⌕';position:absolute;left:14px;top:8px;font-size:22px;color:var(--muted);z-index:1}
+  #projList{flex:1;overflow-y:auto;padding:4px 14px 16px;-webkit-overflow-scrolling:touch}
+  .projitem{min-height:50px;padding:8px 11px;border-radius:13px;font-size:14px;gap:10px;margin-bottom:3px;background:var(--card);border:1px solid transparent}
+  .projitem.active{border-color:#BCE4DF;background:var(--accent-soft)}
+  .projdot{width:10px;height:10px}
+  .projname{font-weight:600}
+  .projcount{min-width:28px;text-align:center;background:var(--bg);border-radius:20px;padding:4px 7px;font-size:10px}
+  .projcount.zero{display:none}
+  .projedit{display:none}
+  .mobile-project-picker-footer{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:10px 14px calc(10px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line)}
+  .mobile-project-picker-footer .btn{min-height:46px;justify-content:center;border-radius:13px}
+  .mobile-project-picker-footer .btn:disabled{opacity:.45}
   #main{padding:12px 12px calc(94px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch}
   .field-row{grid-template-columns:1fr}
   .stats{display:flex;overflow-x:auto;gap:8px;margin:0 -12px 12px;padding:0 12px;scroll-snap-type:x proximity;scrollbar-width:none}
@@ -352,8 +369,17 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
 
 <div id="shell">
   <div id="sidebar">
+    <div class="mobile-project-picker-head">
+      <div class="mobile-project-picker-title"><strong>Choose project</strong><small>Switch the task board instantly</small></div>
+      <button class="mobile-project-close" onclick="closeProjSidebar()" aria-label="Close projects">×</button>
+    </div>
+    <label class="mobile-project-search"><input id="mobileProjectSearch" type="search" placeholder="Search projects" oninput="renderSidebar()" autocomplete="off"></label>
     <div class="sidehead"><span>Projects</span></div>
     <div id="projList"></div>
+    <div class="mobile-project-picker-footer">
+      <button class="btn" id="mobileEditProjectBtn" onclick="editSelectedProject()">Edit selected</button>
+      <button class="btn primary" onclick="closeProjSidebar();openProjectModal()">＋ New project</button>
+    </div>
   </div>
   <div id="main">
     <div class="stats" id="statsRow"></div>
@@ -671,12 +697,16 @@ function closeModal(id){ $id(id).classList.remove('active'); }
 // <style>) with nothing that previously opened it, making the project list unreachable on a
 // phone. This hamburger + backdrop is the fix.
 function toggleProjSidebar(){
-  $id('sidebar')?.classList.toggle('open');
-  $id('sidebarBackdrop')?.classList.toggle('show');
+  const sidebar=$id('sidebar'), opening=!sidebar?.classList.contains('open');
+  sidebar?.classList.toggle('open',opening);
+  $id('sidebarBackdrop')?.classList.toggle('show',opening);
+  $id('sidebarToggleBtn')?.setAttribute('aria-expanded',String(opening));
+  if(opening) setTimeout(()=>$id('mobileProjectSearch')?.focus(),220);
 }
 function closeProjSidebar(){
   $id('sidebar')?.classList.remove('open');
   $id('sidebarBackdrop')?.classList.remove('show');
+  $id('sidebarToggleBtn')?.setAttribute('aria-expanded','false');
 }
 function toggleProjMore(e){
   e?.stopPropagation();
@@ -810,24 +840,32 @@ async function loadAutomationHealth(){
 function renderSidebar(){
   const wrap=$id('projList');
   const allCount=allTasks.length;
+  const query=String($id('mobileProjectSearch')?.value||'').trim().toLowerCase();
   let html=`<div class="projitem ${selectedProjectId==='all'?'active':''}" onclick="selectProject('all')">
-    <span class="projdot" style="background:var(--accent)"></span><span class="projname">All Projects</span><span class="projcount">${allCount}</span>
+    <span class="projdot" style="background:var(--accent)"></span><span class="projname">All Projects</span><span class="projcount ${allCount?'':'zero'}">${allCount}</span>
   </div>`;
-  html+=allProjects.filter(p=>p.status!=='archived').map(p=>{
+  const projects=allProjects.filter(p=>p.status!=='archived'&&(!query||String(p.name||'').toLowerCase().includes(query)));
+  html+=projects.map(p=>{
     const count=allTasks.filter(t=>String(t.project_id)===String(p.Id)).length;
     return `<div class="projitem ${String(selectedProjectId)===String(p.Id)?'active':''}" onclick="selectProject('${p.Id}')">
       <span class="projdot" style="background:${escAttr(p.color||'#0D9C93')}"></span>
       <span class="projname" title="${escAttr(p.name)}">${esc(p.name)}</span>
-      <span class="projcount">${count}</span>
+      <span class="projcount ${count?'':'zero'}">${count}</span>
       <span class="projedit" title="Edit project" onclick="event.stopPropagation();openProjectModal(${p.Id})">✎</span>
     </div>`;
   }).join('');
+  if(query&&!projects.length) html+=`<div class="empty-state" style="padding:32px 12px"><div class="empty-icon">⌕</div>No matching projects.</div>`;
   wrap.innerHTML=html;
   const selected=selectedProjectId==='all'?null:projectById(selectedProjectId);
   if($id('mobileProjectTitle')) $id('mobileProjectTitle').textContent=selected?.name||'All Projects';
+  if($id('mobileEditProjectBtn')) $id('mobileEditProjectBtn').disabled=!selected;
   populateProjectSelect();
 }
 function selectProject(id){ selectedProjectId=id; renderSidebar(); renderStats(); renderView(); closeProjSidebar(); }
+function editSelectedProject(){
+  if(selectedProjectId==='all') return;
+  closeProjSidebar(); openProjectModal(selectedProjectId);
+}
 function populateProjectSelect(){
   $id('tmProject').innerHTML=allProjects.filter(p=>p.status!=='archived').map(p=>`<option value="${p.Id}">${esc(p.name)}</option>`).join('') || '<option value="">Create a project first</option>';
 }
