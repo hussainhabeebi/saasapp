@@ -41,6 +41,7 @@ import {
   ecomMatchProductCategory,
   ecomAvailableCatalogueItems,
   ecomExactProductSelection,
+  ecomProductsForCategory,
 } from './worker.js';
 
 describe('Ecom category button and minimal matching', () => {
@@ -71,6 +72,15 @@ describe('Ecom category button and minimal matching', () => {
     assert.equal(ecomExactProductSelection(products,'Bonnell King')?.sku,'RBK-01');
     assert.equal(ecomExactProductSelection(products,'RBK-01')?.name,'REPOSE Bonnell King');
     assert.equal(ecomExactProductSelection(products,'King size'),null);
+  });
+
+  test('lists products from the selected category without relying on NocoDB like syntax', () => {
+    const products=[
+      {name:'Mattress A',category:'Mattress'},
+      {name:'Mattress B',category:' mattress '},
+      {name:'Bed A',category:'Wooden Bed'},
+    ];
+    assert.deepEqual(ecomProductsForCategory(products,'MATTRESS').map(product=>product.name),['Mattress A','Mattress B']);
   });
 });
 
