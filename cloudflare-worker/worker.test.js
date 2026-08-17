@@ -214,6 +214,12 @@ describe('Healthcare verified-data routing', () => {
     assert.equal(text, '*Dental Checkup*\n\nA routine dental examination.');
   });
 
+  test('keeps Healthcare booking inside WhatsApp even when an old service link exists', () => {
+    const text=hcVerifiedServiceText({name:'Dental Care',description:'Dental consultation',booking_url:'https://example.com/book'},'Book a dental appointment');
+    assert.doesNotMatch(text,/https?:\/\//);
+    assert.doesNotMatch(text,/Book here:/);
+  });
+
   test('emergency matcher catches configured phrases but respects simple negation', () => {
     const settings={emergency_keywords:'chest pain,severe bleeding'};
     assert.equal(hcEmergencyMatch(settings,'I have severe chest pain'), 'chest pain');
@@ -229,7 +235,7 @@ describe('Healthcare verified-data routing', () => {
     const DB={prepare(sql){statements.push(sql);return {async run(){return {success:true};}};}};
     await hcEnsureOperationsSchema({DB});
     await hcEnsureOperationsSchema({DB});
-    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent','automation_settings','appointment_automation','appointment_notifications','queue_failures']){
+    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent','automation_settings','appointment_automation','appointment_notifications','queue_failures','booking_sessions']){
       assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS healthcare_${table}`)).length,1,table);
     }
     assert.equal(statements.filter(sql=>sql.includes('idx_healthcare_insurance_client')).length,1);
@@ -254,6 +260,16 @@ describe('Healthcare verified-data routing', () => {
     assert.match(dbUpdates[0].sql,/workflow_status='complete'/);
     assert.deepEqual(sleeps.map(x=>x.when),['2026-08-17T02:00:00.000Z','2026-08-18T00:00:00.000Z']);
     assert.deepEqual(result,{appointment_id:9,status:'reminders_queued'});
+  });
+
+  test('native WhatsApp booking sends its confirmation immediately and Workflow avoids a duplicate', async () => {
+    const jobs=[];
+    const DB={prepare(){return {bind(){return this;},async run(){return {success:true};}};}};
+    const workflow=new HealthcareAppointmentWorkflow({}, {DB,HEALTHCARE_JOBS:{async send(job){jobs.push(job);}}});
+    const step={async do(name,...args){return args.at(-1)();},async sleepUntil(){}};
+    const started=Date.parse('2026-08-17T00:00:00.000Z');
+    await workflow.run({payload:{client_id:7,appointment_id:10,appointment_version:'v2',appointment_at_ms:started+26*3600000,workflow_started_at_ms:started,skip_confirmation:true,reminder_24h_enabled:true,reminder_2h_enabled:true}},step);
+    assert.deepEqual(jobs.map(x=>x.kind),['reminder_24h','reminder_2h']);
   });
 
   test('Queue failures retry exponentially and DLQ messages are durably recorded', async () => {
