@@ -44,6 +44,8 @@ import {
   ecomProductsForCategory,
   ecomBroadProductMatches,
   ecomIsGenericProductCatalogueQuery,
+  ecomFashionFieldChoices,
+  ecomFashionOrderItems,
 } from './worker.js';
 
 describe('Ecom category button and minimal matching', () => {
@@ -544,5 +546,17 @@ describe('Ecom communication style is opt-in per client', () => {
     const sys = engineBuildFaqSystemPrompt(c, state, null, 'ecommerce', 'en', false);
     assert.match(sys, /FURNITURE & HOME APPLIANCES COMMUNICATION STYLE/);
     assert.match(sys, /Never invent dimensions, materials, capacity, warranty, compatibility or availability/);
+  });
+});
+
+describe('Fashion ecommerce verified order flow', () => {
+  test('size and colour choices come only from configured Product fields', () => {
+    assert.deepEqual(ecomFashionFieldChoices('S, M / L | XL'),['S','M','L','XL']);
+    assert.deepEqual(ecomFashionFieldChoices('["Black","White","Black"]'),['Black','White']);
+    assert.deepEqual(ecomFashionFieldChoices(''),[]);
+  });
+
+  test('confirmed order item text contains only selected product variants', () => {
+    assert.equal(ecomFashionOrderItems({productName:'Linen Shirt',size:'M',color:'Blue'}),'Linen Shirt | Size: M | Color: Blue');
   });
 });
