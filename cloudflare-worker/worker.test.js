@@ -522,3 +522,27 @@ describe('Button/list titles are pinned to English regardless of reply language 
     assert.deepEqual(options, ['Mattress', 'Wooden bed']);
   });
 });
+
+describe('Ecom communication style is opt-in per client', () => {
+  const state = {};
+
+  test('existing clients with no selection retain the legacy prompt', () => {
+    const c = { main_prompt: 'Be helpful.', services: '[]', kb_summary: '', bot_config: '{}' };
+    const sys = engineBuildFaqSystemPrompt(c, state, null, 'ecommerce', 'en', false);
+    assert.doesNotMatch(sys, /FASHION ECOM COMMUNICATION STYLE|SHOPIFY \/ GENERAL STORE COMMUNICATION STYLE|FURNITURE & HOME APPLIANCES COMMUNICATION STYLE/);
+  });
+
+  test('selected fashion style adds fashion guidance without weakening catalogue grounding', () => {
+    const c = { main_prompt: '', services: '[]', kb_summary: '', bot_config: JSON.stringify({ecom_communication_style:'fashion'}) };
+    const sys = engineBuildFaqSystemPrompt(c, state, null, 'ecommerce', 'en', false);
+    assert.match(sys, /FASHION ECOM COMMUNICATION STYLE/);
+    assert.match(sys, /VERIFIED ECOM PRODUCT DATA/);
+  });
+
+  test('selected furniture style prohibits invented specifications', () => {
+    const c = { main_prompt: '', services: '[]', kb_summary: '', bot_config: JSON.stringify({ecom_communication_style:'furniture_appliances'}) };
+    const sys = engineBuildFaqSystemPrompt(c, state, null, 'ecommerce', 'en', false);
+    assert.match(sys, /FURNITURE & HOME APPLIANCES COMMUNICATION STYLE/);
+    assert.match(sys, /Never invent dimensions, materials, capacity, warranty, compatibility or availability/);
+  });
+});

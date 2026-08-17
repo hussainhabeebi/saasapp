@@ -9838,6 +9838,14 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   }
   if(industry==='ecommerce'){
     sys+='\n\nECOM ZERO-HALLUCINATION LOCK: Use the configured business prompt for general business answers. Use VERIFIED ECOM PRODUCT DATA only for product facts. Never invent or infer a category, product, brand, model, material, size, specification, availability, price, media, PDF or link. Never create product choices or promise to check the catalogue later. If a requested fact is absent, say it is not verified and offer staff handover.';
+    const ecomCommunicationStyle=engineParseJsonField(c.bot_config, {}).ecom_communication_style||'';
+    const ecomStyleInstructions={
+      fashion:'FASHION ECOM COMMUNICATION STYLE: Sound concise, confident, visual and trend-aware without inventing trends or product facts. Guide discovery in this order when applicable: customer segment, category, size, colour, then verified products. Ask only one short question at a time. Never use a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
+      shopify:'SHOPIFY / GENERAL STORE COMMUNICATION STYLE: Sound clear, friendly and conversion-focused. Guide discovery in this order when applicable: category, customer requirement, then verified matching products. Keep replies compact and make the next action obvious. Never use a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
+      furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.'
+    };
+    // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
+    if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
   }
   // First-ever message from this lead — give a short, natural intro to what the business offers
   // (drawing on Services/Knowledge Base above) before/alongside answering, instead of jumping

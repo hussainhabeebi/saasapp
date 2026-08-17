@@ -1937,6 +1937,26 @@ const ROLES = {
           </div>
         </div>
 
+        <div class="card" style="margin-bottom:14px" id="ecomCommunicationStyleCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🛍️ Ecom Communication Style</div>
+            <div class="s-note">Choose how the assistant speaks and guides product discovery. This changes wording and question order only; categories, products, prices, specifications and media still come strictly from Ecom. Existing customers remain on their current behaviour until a style is selected and saved.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
+              <div style="flex:1;min-width:240px;max-width:420px">
+                <label class="form-label">Store communication style</label>
+                <select class="form-input" id="cfgEcomCommunicationStyle">
+                  <option value="">Current style (no change)</option>
+                  <option value="fashion">Fashion ecommerce</option>
+                  <option value="shopify">Shopify / general store</option>
+                  <option value="furniture_appliances">Furniture &amp; home appliances</option>
+                </select>
+              </div>
+              <button class="save-btn" id="saveEcomCommunicationStyle">Save Style</button>
+              <span class="save-msg" id="saveEcomCommunicationStyleMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- User Management moved to its own "👥 User Management" settings sub-page — see
              pageUsermanagement below — same reasoning as Modules: who can sign in, what they can
              see, and their Chatwoot login are a big enough decision to deserve their own page. -->
@@ -8366,6 +8386,10 @@ function populateSettings(){
   // treated as off when explicitly === false), so an unset key shows as "Yes" here too.
   try{ $id('cfgQuickReplyButtons').value=(JSON.parse(clientRecord.bot_config||'{}').quick_reply_buttons_enabled===false)?'No':'Yes'; }
   catch(e){ $id('cfgQuickReplyButtons').value='Yes'; }
+  let ecomBotConfig={};
+  try{ ecomBotConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  $id('ecomCommunicationStyleCard').style.display=clientRecord.industry==='ecommerce'?'block':'none';
+  $id('cfgEcomCommunicationStyle').value=ecomBotConfig.ecom_communication_style||'';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -8557,6 +8581,7 @@ async function applyIndustryChange(ind, extraPatch){
   await ensureHealthcareEnabledColumn();
   await patchClient(patch);
   clientRecord.industry=ind;
+  if($id('ecomCommunicationStyleCard')) $id('ecomCommunicationStyleCard').style.display=ind==='ecommerce'?'block':'none';
   applyTheme(ind);
   updateRecruitTabVisibility();
   updateHospitalityTabVisibility();
@@ -9316,6 +9341,14 @@ $id('saveQuickReplyButtons').addEventListener('click',async()=>{
   try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
   botConfig.quick_reply_buttons_enabled=$id('cfgQuickReplyButtons').value!=='No';
   await saveField('saveQuickReplyButtons','saveQuickReplyButtonsMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveEcomCommunicationStyle').addEventListener('click',async()=>{
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const selected=$id('cfgEcomCommunicationStyle').value;
+  if(selected) botConfig.ecom_communication_style=selected;
+  else delete botConfig.ecom_communication_style;
+  await saveField('saveEcomCommunicationStyle','saveEcomCommunicationStyleMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
