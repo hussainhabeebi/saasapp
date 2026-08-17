@@ -8083,14 +8083,13 @@ async function ecomFindBroadProductMatches(env, clientId, message){
 // this data model, so `color` (the field that reliably varies within a category) stands in for it.
 // `like` (not `eq`) absorbs minor case/wording drift between the LLM's category guess and the
 // catalog string, same tolerance handleEcomList already gives shop-owner category filters.
-async function ecomFindProductsByCategory(env, clientId, category){
+export function ecomProductsForCategory(products, category){
   if(!category) return [];
-  const productsTable=await ecomResolveTable(env, clientId, 'products');
-  if(!productsTable) return [];
-  const qs=new URLSearchParams({where:`(client_id,eq,${clientId})~and(category,like,${ecomSanitizeFilterValue(category)})~and(status,neq,inactive)`, limit:'50'});
-  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?${qs.toString()}`);
-  const pd=await pr.json().catch(()=>({}));
-  return pd?.list||[];
+  const wanted=ecomNormalizeCatalogueText(category);
+  return (products||[]).filter(product=>ecomNormalizeCatalogueText(product.category)===wanted).slice(0,50);
+}
+async function ecomFindProductsByCategory(env, clientId, category){
+  return ecomProductsForCategory(await ecomListActiveProducts(env, clientId),category);
 }
 
 // The shop-owner-managed category photo (ecom_categories.image_url_1/2/3, set up in the CRM's
@@ -10314,6 +10313,36 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
   return trimmedItems.map(it=>({title:it.title, value:it.value}));
 }
 
+// Ecom catalogue navigation must arrive as a real WhatsApp interactive message. Chatwoot can
+// accept input_select while its downstream provider still emits only the body text, so Ecom uses
+// the connected Cloud API directly first and keeps Chatwoot as a compatibility fallback.
+async function engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, text, items){
+  const raw=(items||[]).filter(item=>item&&(item.title||item.value)).slice(0,10);
+  if(!raw.length) return null;
+  const isList=raw.length>3;
+  const titleCap=isList?24:20;
+  const prepared=raw.map(item=>{
+    const full=String(item.title||item.value).trim();
+    return {title:engineTruncateButtonTitle(full,titleCap),value:String(item.value||item.title).slice(0,200),full};
+  });
+  const destination=String(phone||'').replace(/\D/g,'');
+  if(c.wa_phone_id&&c.wa_token&&destination){
+    const action=isList
+      ? {button:'Choose an item',sections:[{title:'Available options',rows:prepared.map(item=>({id:item.value,title:item.title,...(item.title!==item.full?{description:engineTruncateButtonTitle(item.full,72)}:{})}))}]}
+      : {buttons:prepared.map(item=>({type:'reply',reply:{id:item.value,title:item.title}}))};
+    const body={messaging_product:'whatsapp',to:destination,type:'interactive',interactive:{type:isList?'list':'button',body:{text:String(text||'').trim()},action}};
+    try{
+      const response=await fetch(`https://graph.facebook.com/v24.0/${c.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(response.ok) return prepared.map(item=>({title:item.title,value:item.value}));
+      const errorBody=await response.text().catch(()=>'');
+      await reportOpsError(env,'engineSendEcomVerifiedPicker — Meta rejected interactive',new Error(`HTTP ${response.status} — ${errorBody.slice(0,500)}`),{clientId,convId});
+    }catch(error){
+      await reportOpsError(env,'engineSendEcomVerifiedPicker — Meta send threw',error,{clientId,convId});
+    }
+  }
+  return engineSendChatwootQuickReply(env,c,clientId,convId,text,raw);
+}
+
 // Best-effort Chatwoot "customer sees {agent} typing…" indicator — pure UX polish covering the
 // 2-4s LLM latency window between the inbound webhook and the actual reply. Unlike
 // engineSendChatwootReply this never calls reportOpsError on failure: a missed typing toggle costs
@@ -11868,7 +11897,7 @@ async function handleEngineWebhook(request, env, secret){
         if(categories.length){
           sentText=await engineLocalizeReply(env, c, 'Please choose a product category:', replyLang);
           routing.reply=sentText;
-          routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, categories.map(category=>({title:category,value:category})));
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, categories.map(category=>({title:category,value:category})));
           orderHandledInline=true;
         }
       }
@@ -12010,7 +12039,7 @@ async function handleEngineWebhook(request, env, secret){
             // brand, material, size, spring type, colour or variant questions between them.
             sentText=await engineLocalizeReply(env, c, `Please choose a product from ${detection.category}:`, replyLang);
             routing.reply=sentText;
-            routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, ecomProductChoiceItems(categoryProducts));
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, ecomProductChoiceItems(categoryProducts));
             orderHandledInline=true;
           }
           if(!orderHandledInline){
