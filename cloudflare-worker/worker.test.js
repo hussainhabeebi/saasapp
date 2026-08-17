@@ -40,6 +40,7 @@ import {
   ecomIsGeneralBusinessInfoQuery,
   ecomMatchProductCategory,
   ecomAvailableCatalogueItems,
+  ecomExactProductSelection,
 } from './worker.js';
 
 describe('Ecom category button and minimal matching', () => {
@@ -57,8 +58,19 @@ describe('Ecom category button and minimal matching', () => {
     assert.equal(ecomMatchProductCategory('bed',['Wooden Bed','Bed Linen']),null);
   });
 
-  test('does not downgrade a product-like multiword phrase into category browsing', () => {
-    assert.equal(ecomMatchProductCategory('Cloudnine Mattress Deluxe',categories),null);
+  test('falls back to a verified category when a phrase is not an exact saved product', () => {
+    assert.equal(ecomMatchProductCategory('Cloudnine Mattress Deluxe',categories),'Mattress');
+  });
+
+  test('recognizes a saved category inside a natural product enquiry', () => {
+    assert.equal(ecomMatchProductCategory('I am looking for mattresses',categories),'Mattress');
+  });
+
+  test('accepts only an exact saved product name, short label or SKU as a selection', () => {
+    const products=[{name:'REPOSE Bonnell King',short_label:'Bonnell King',sku:'RBK-01'}];
+    assert.equal(ecomExactProductSelection(products,'Bonnell King')?.sku,'RBK-01');
+    assert.equal(ecomExactProductSelection(products,'RBK-01')?.name,'REPOSE Bonnell King');
+    assert.equal(ecomExactProductSelection(products,'King size'),null);
   });
 });
 

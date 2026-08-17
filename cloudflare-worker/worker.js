@@ -7632,6 +7632,7 @@ async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
     if(product.image_url_5) await sendDriveMediaToChatwoot(c, convId, product.image_url_5, '');
     if(product.audio_url) await sendDriveMediaToChatwoot(c, convId, product.audio_url, '');
     if(product.video_url) await sendDriveMediaToChatwoot(c, convId, product.video_url, '');
+    if(product.pdf_url) await sendDriveMediaToChatwoot(c, convId, product.pdf_url, '');
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductMedia', e, {clientId, convId}); }
 }
 
@@ -7680,6 +7681,14 @@ export function ecomAvailableCatalogueItems(categories, products, limit=10){
     items.push(item);
   }
   return items;
+}
+
+export function ecomExactProductSelection(products, message){
+  const query=ecomNormalizeCatalogueText(message);
+  if(!query) return null;
+  const matches=(products||[]).filter(product=>[product?.name,product?.short_label,product?.sku]
+    .some(value=>value&&ecomNormalizeCatalogueText(value)===query));
+  return matches.length===1?matches[0]:null;
 }
 
 // Zero-hallucination catalogue fallback. The labels and returned values are copied verbatim from
@@ -7738,9 +7747,12 @@ export function ecomMatchProductCategory(message, categories){
   const exact=cleaned.find(category=>ecomNormalizeCatalogueText(category)===query);
   if(exact) return exact;
   const tokens=ecomCatalogueQueryTokens(message);
-  if(tokens.length!==1) return null;
-  const token=ecomCatalogueTokenRoot(tokens[0]);
-  const matches=cleaned.filter(category=>ecomNormalizeCatalogueText(category).split(' ').map(ecomCatalogueTokenRoot).includes(token));
+  if(!tokens.length) return null;
+  const roots=tokens.map(ecomCatalogueTokenRoot);
+  const matches=cleaned.filter(category=>{
+    const categoryRoots=ecomNormalizeCatalogueText(category).split(' ').map(ecomCatalogueTokenRoot);
+    return roots.length===1 ? categoryRoots.includes(roots[0]) : categoryRoots.every(token=>roots.includes(token));
+  });
   return matches.length===1?matches[0]:null;
 }
 
@@ -9792,6 +9804,9 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
     if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover.';
   }
+  if(industry==='ecommerce'){
+    sys+='\n\nECOM ZERO-HALLUCINATION LOCK: Use the configured business prompt for general business answers. Use VERIFIED ECOM PRODUCT DATA only for product facts. Never invent or infer a category, product, brand, model, material, size, specification, availability, price, media, PDF or link. Never create product choices or promise to check the catalogue later. If a requested fact is absent, say it is not verified and offer staff handover.';
+  }
   // First-ever message from this lead — give a short, natural intro to what the business offers
   // (drawing on Services/Knowledge Base above) before/alongside answering, instead of jumping
   // straight into an answer with no context on who they're talking to. Short and blended into the
@@ -11820,48 +11835,46 @@ async function handleEngineWebhook(request, env, secret){
     if(!orderHandledInline && !routing.businessInfoOnly && c.industry==='ecommerce' && (env.GEMINI_API_KEY || c.openrouter_key) && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+      const activeProducts=await ecomListActiveProducts(env, clientId);
+      const exactSelectedProduct=ecomExactProductSelection(activeProducts, userText);
       // Category buttons are populated from this same Products data, so recognize their returned
       // value before trusting an LLM interpretation. Without this override, a tap on "Mattress"
       // can be treated as a product name, fail exact product resolution, and incorrectly trigger
       // the zero-hallucination SKU fallback instead of showing the category's verified choices.
       const matchedCategory=await ecomFindMatchedProductCategory(env, clientId, userText);
-      if(matchedCategory){
+      if(exactSelectedProduct){
+        detection.signal=true;
+        detection.mode='enquiry';
+        detection.category=undefined;
+        detection.sku=exactSelectedProduct.sku||undefined;
+        detection.productName=exactSelectedProduct.name;
+      }else if(matchedCategory){
         detection.signal=true;
         detection.mode='enquiry';
         detection.category=matchedCategory;
         detection.sku=undefined;
         detection.productName=undefined;
         detection.brand=undefined;
-      }
-      let broadMatches=null;
-      // Deterministic safety net for broad catalogue language the intent model may classify as a
-      // generic FAQ ("sofa") or may return as a non-exact product name ("3 seater sofa").
-      if(!detection.signal){
-        broadMatches=await ecomFindBroadProductMatches(env, clientId, userText);
-        if(broadMatches.length===1){
-          detection.signal=true; detection.mode='enquiry';
-          detection.sku=broadMatches[0].sku||undefined;
-          detection.productName=broadMatches[0].name;
-        }else if(broadMatches.length>1){
-          sentText=await engineLocalizeReply(env, c, 'Please choose the exact product you are interested in:', replyLang);
+      }else if(detection.signal && detection.mode==='enquiry' && state.lead?.['Last Product Sku'] && !/\b(show|list|browse|categories|catalog(?:ue)?)\b/i.test(userText)){
+        // Follow-up question about the already selected product: answer from the configured prompt
+        // plus verified catalogue context below. Do not restart navigation or invent a new option.
+        detection.signal=false;
+        routing.route='ecom_faq';
+      }else if(detection.signal && detection.mode==='enquiry'){
+        // Product-related, but neither an exact saved category nor an exact saved product was
+        // selected. Do not let the LLM invent a subtype/brand/size ladder: restart navigation at
+        // the exact active category list.
+        const categories=await ecomListCategories(env, clientId);
+        if(categories.length){
+          sentText=await engineLocalizeReply(env, c, 'Please choose a product category:', replyLang);
           routing.reply=sentText;
-          routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, ecomProductChoiceItems(broadMatches));
+          routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, categories.map(category=>({title:category,value:category})));
           orderHandledInline=true;
         }
       }
+      let broadMatches=null;
       if(detection.signal && !orderHandledInline){
         let product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
-        if(!product && !detection.category){
-          broadMatches=broadMatches||await ecomFindBroadProductMatches(env, clientId, userText);
-          if(broadMatches.length===1){
-            product=broadMatches[0];
-          }else if(broadMatches.length>1){
-            sentText=await engineLocalizeReply(env, c, 'Please choose the exact product you are interested in:', replyLang);
-            routing.reply=sentText;
-            routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, ecomProductChoiceItems(broadMatches));
-            orderHandledInline=true;
-          }
-        }
         // Fallback for a message with no product detail of its own ("proceed with order", a bare
         // "yes") where detectOrderSignal's own context-inference (see its system prompt) still came
         // back empty — try whichever product this lead was last confidently discussing, persisted
@@ -11955,16 +11968,14 @@ async function handleEngineWebhook(request, env, secret){
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
-          // Opt-in (ecom_link_on_enquiry) — see engineBuildProductEnquirySystemPrompt's own
-          // comment on this parameter for why it's off by default. Deliberately restricted to a
-          // link actually set on the product itself (shopify_product_url/product_link) — unlike
-          // buildCheckoutLink's broader chain, an enquiry never falls through to the client-wide
-          // external_store_link, per explicit product direction: on enquiry, only ever share the
-          // link given at the product level, nothing client-wide or generic.
-          const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? ((product.shopify_product_url||product.product_link||'').trim()||null) : null;
-          const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink, state);
-          sentText=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 200, state.botMsgs?.[state.botMsgs.length-1]);
-          sentText=engineSubstituteOrderLinkPlaceholder(sentText, c, clientId, product.sku, product);
+          // Exact product selection is rendered directly from its saved Ecom row. No LLM rewrite:
+          // product name/description/link stay verbatim and absent facts remain absent.
+          const enquiryLink=((product.shopify_product_url||product.product_link||'').trim()||null);
+          const productLines=[`*${product.name}*`];
+          if(product.description) productLines.push(String(product.description));
+          if(enquiryLink) productLines.push(`Order / product link: ${enquiryLink}`);
+          else productLines.push('An online product link is not available. I’ll connect you with our team.');
+          sentText=productLines.join('\n\n');
           routing.reply=sentText;
           // Photo sent whenever a product is confidently identified, link or no link — a customer
           // asking about size/color/stock should see the actual item, not just read a description
@@ -11975,13 +11986,14 @@ async function handleEngineWebhook(request, env, secret){
           // comes up again the same day.
           if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra product images/audio/video bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
-          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
+          // Primary image is attached above; additional images, audio, video and PDF follow.
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          // Only logged as a pending order when the link was actually made available this turn —
-          // an enquiry reply with the toggle off shares no link, so there's nothing to log yet.
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
+          else{
+            routing.route='human';
+            routing.humanReason='product_link_missing';
+            await engineSendHandoverLabel(c, convId);
+          }
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && !product && detection.category){
           // Named a category ("shirts"), not one specific product — detectOrderSignal only returns
@@ -11993,6 +12005,15 @@ async function handleEngineWebhook(request, env, secret){
           // as if it were the answer; fall back to the first matching product's photo only when the
           // category itself has no photo configured.
           let categoryProducts=await ecomFindProductsByCategory(env, clientId, detection.category);
+          if(categoryProducts.length){
+            // One deterministic step only: category -> exact products. Never insert AI-created
+            // brand, material, size, spring type, colour or variant questions between them.
+            sentText=await engineLocalizeReply(env, c, `Please choose a product from ${detection.category}:`, replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, ecomProductChoiceItems(categoryProducts));
+            orderHandledInline=true;
+          }
+          if(!orderHandledInline){
           let categoryPromptReply=null;
           if(categoryProducts.length){
             const categoryContext=await engineBuildEcomContext(env, c, clientId, phone);
@@ -12067,6 +12088,7 @@ async function handleEngineWebhook(request, env, secret){
             }
             orderHandledInline=true;
           }
+          }
           // No products at all in that category (or that brand within it) — falls through to FAQ
           // below ("we don't carry that").
         }
@@ -12088,7 +12110,7 @@ async function handleEngineWebhook(request, env, secret){
       // humanReason==='order_handoff' — that's the "Talk to sales team" order-link-sending branch
       // above deliberately routing to human just now, not a stale pre-existing classification to
       // undo.
-      if(orderHandledInline && routing.route==='human' && routing.humanReason!=='order_handoff') routing.route='ecom_faq';
+      if(orderHandledInline && routing.route==='human' && !['order_handoff','product_link_missing'].includes(routing.humanReason)) routing.route='ecom_faq';
     }
 
     // A brand-new ecom lead's very first message, when this client has product categories
@@ -12218,14 +12240,16 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
       let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
-      if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt and verified Ecom context. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact. Verified catalogue choices will be appended separately as buttons.';
+      if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
       routing.reply=reply; sentText=reply;
       let faqQuickReplies=null;
-      if(botConfig.quick_reply_buttons_enabled!==false){
+      // The LLM never creates Ecom navigation. Exact categories/products are handled before this
+      // branch; general/additional Ecom questions receive prompt text only.
+      if(botConfig.quick_reply_buttons_enabled!==false && routing.route!=='ecom_faq'){
         if(!routing.businessInfoOnly && replyOptions && replyOptions.length){
           // The LLM's own clarifying question already named these — tapping one sends its exact
           // text back as a normal message, resolved the same way a customer typing it by hand
