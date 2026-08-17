@@ -42,6 +42,8 @@ import {
   ecomAvailableCatalogueItems,
   ecomExactProductSelection,
   ecomProductsForCategory,
+  ecomBroadProductMatches,
+  ecomIsGenericProductCatalogueQuery,
 } from './worker.js';
 
 describe('Ecom category button and minimal matching', () => {
@@ -85,6 +87,24 @@ describe('Ecom category button and minimal matching', () => {
 });
 
 describe('Ecom verified fallback catalogue menu', () => {
+  test('broad-matches only real Product rows across category, name and description', () => {
+    const products=[
+      {Id:1,name:'REPOSE Bonnell King',category:'Mattress',description:'King size spring mattress'},
+      {Id:2,name:'Teak Three Seater',category:'Sofa Sets',description:'Solid wood furniture'},
+      {Id:3,name:'Dining Chair',category:'Chairs'},
+    ];
+    assert.deepEqual(ecomBroadProductMatches(products,'Do you have sofa?').map(p=>p.Id),[2]);
+    assert.deepEqual(ecomBroadProductMatches(products,'show king spring mattresses').map(p=>p.Id),[1]);
+    assert.deepEqual(ecomBroadProductMatches(products,'what time do you close?'),[]);
+  });
+
+  test('recognizes generic catalogue browsing without treating business questions as products', () => {
+    assert.equal(ecomIsGenericProductCatalogueQuery('Show me your products'),true);
+    assert.equal(ecomIsGenericProductCatalogueQuery('What do you sell?'),true);
+    assert.equal(ecomIsGenericProductCatalogueQuery('What are your working hours?'),false);
+    assert.equal(ecomIsGenericProductCatalogueQuery('Tell me about your business'),false);
+  });
+
   test('combines exact categories and active Product rows in one ten-option menu', () => {
     const categories=['Mattress','Furniture','Bedding','Pillows','Beds','Sofas','Chairs','Tables'];
     const products=[
