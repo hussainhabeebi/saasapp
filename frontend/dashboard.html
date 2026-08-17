@@ -2452,6 +2452,7 @@ const ROLES = {
               <span class="save-msg" id="intInstagramMsg"></span>
             </div>
             <div id="intInstagramConnectedActions" style="display:none;margin-top:8px">
+              <button class="save-btn" id="intInstagramRepairBtn" onclick="refreshInstagramHealth(true)">Repair &amp; recheck</button>
               <button class="save-btn" style="background:var(--muted)" onclick="disconnectInstagram()">Disconnect</button>
               <span class="save-msg" id="intInstagramDisconnectMsg"></span>
             </div>
@@ -10388,13 +10389,33 @@ async function saveManualWaCreds(){
 // against instagram.com directly, not through the Meta JS SDK's FB.login popup (that's a
 // Facebook-Login-for-Business thing, a different product) — so this is a plain full-page OAuth
 // redirect, same shape as connectShopifyOAuth above, not connectWhatsApp's Embedded-Signup flow.
+let instagramHealthChecked=false;
 function renderInstagramStatus(){
   const connected=!!clientRecord?.ig_id;
   $id('intInstagramConnectForm').style.display=connected?'none':'block';
   $id('intInstagramConnectedActions').style.display=connected?'block':'none';
   $id('intInstagramStatus').innerHTML=connected
-    ? `✅ Connected — <b>@${esc(clientRecord.ig_username||clientRecord.ig_id)}</b>`
+    ? `⏳ Checking token and message delivery — <b>@${esc(clientRecord.ig_username||clientRecord.ig_id)}</b>`
     : 'Not connected.';
+  if(connected&&!instagramHealthChecked){ instagramHealthChecked=true; refreshInstagramHealth(true); }
+}
+
+async function refreshInstagramHealth(repair=false){
+  const status=$id('intInstagramStatus'), btn=$id('intInstagramRepairBtn');
+  if(!clientRecord?.ig_id) return renderInstagramStatus();
+  status.innerHTML=`⏳ ${repair?'Repairing webhook subscription…':'Checking Instagram…'}`;
+  if(btn) btn.disabled=true;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/ig/health`,{method:repair?'POST':'GET',headers:ncAuthHeaders()});
+    const data=await r.json().catch(()=>({}));
+    if(data.token_valid&&data.messages_subscribed){
+      status.innerHTML=`✅ Ready — <b>@${esc(data.username||clientRecord.ig_username||clientRecord.ig_id)}</b><br><span style="color:var(--muted)">Token valid · Messages subscribed${data.last_webhook_at?' · Last DM received '+esc(new Date(data.last_webhook_at).toLocaleString()):''}</span>`;
+    }else{
+      const problem=data.error||(!data.token_valid?'Access token is invalid or expired.':'Message webhook is not subscribed.');
+      status.innerHTML=`⚠️ Connected, but not ready — ${esc(problem)}<br><span style="color:var(--muted)">Use Repair &amp; recheck. If the token expired, disconnect and reconnect.</span>`;
+    }
+  }catch(e){ status.innerHTML=`⚠️ Health check failed — ${esc(e.message)}`; }
+  finally{ if(btn) btn.disabled=false; }
 }
 
 async function connectInstagram(){
@@ -10418,6 +10439,7 @@ async function disconnectInstagram(){
     const data=await r.json();
     if(!r.ok){ msg.textContent=data.error||'Failed to disconnect'; return; }
     Object.assign(clientRecord,{ig_id:'', ig_access_token:'', ig_username:''});
+    instagramHealthChecked=false;
     renderInstagramStatus();
     showToast('Instagram disconnected');
   }catch(e){ msg.textContent='Error: '+e.message; }
