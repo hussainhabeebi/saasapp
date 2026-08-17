@@ -48,6 +48,8 @@ describe('Ecom category button and minimal matching', () => {
   test('resolves an exact database category regardless of case or punctuation', () => {
     assert.equal(ecomMatchProductCategory('  MATTRESS! ',categories),'Mattress');
     assert.equal(ecomMatchProductCategory('Wooden bed',categories),'Wooden Bed');
+    assert.equal(ecomMatchProductCategory('mattresses',categories),'Mattress');
+    assert.equal(ecomMatchProductCategory('sofas',['Sofa']),'Sofa');
   });
 
   test('accepts a unique minimal word but never guesses an ambiguous category', () => {

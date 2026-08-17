@@ -7717,6 +7717,15 @@ function ecomCatalogueQueryTokens(value){
   return [...new Set(ecomNormalizeCatalogueText(value).split(' ').filter(t=>t && !stop.has(t) && (t.length>1 || /^\d$/.test(t))))];
 }
 
+function ecomCatalogueTokenRoot(token){
+  const value=String(token||'');
+  if(value.length>4 && value.endsWith('ies')) return value.slice(0,-3)+'y';
+  if(value.length>4 && value.endsWith('sses')) return value.slice(0,-2);
+  if(value.length>4 && value.endsWith('es') && !value.endsWith('ses')) return value.slice(0,-2);
+  if(value.length>3 && value.endsWith('s') && !value.endsWith('ss')) return value.slice(0,-1);
+  return value;
+}
+
 // Resolve a short customer reply against the exact category values stored in Ecom → Products.
 // This is deliberately deterministic: tapping a category button such as "Mattress" must browse
 // that category, not be sent to the product/SKU resolver and rejected as an unknown product. A
@@ -7730,8 +7739,8 @@ export function ecomMatchProductCategory(message, categories){
   if(exact) return exact;
   const tokens=ecomCatalogueQueryTokens(message);
   if(tokens.length!==1) return null;
-  const token=tokens[0];
-  const matches=cleaned.filter(category=>ecomNormalizeCatalogueText(category).split(' ').includes(token));
+  const token=ecomCatalogueTokenRoot(tokens[0]);
+  const matches=cleaned.filter(category=>ecomNormalizeCatalogueText(category).split(' ').map(ecomCatalogueTokenRoot).includes(token));
   return matches.length===1?matches[0]:null;
 }
 
@@ -11636,6 +11645,14 @@ async function handleEngineWebhook(request, env, secret){
       routing.businessInfoOnly=true;
       routing.reply=null;
     }
+    // Ecom customer enquiries always receive their conversational answer through the configured
+    // business prompt plus verified Products/categories context. The product/order resolver below
+    // may still handle a confidently identified product or explicit order first; otherwise this
+    // prevents generic flow/qualification copy from replacing the merchant's actual prompt.
+    if(c.industry==='ecommerce' && routing.route!=='drop' && !(routing.route==='human'&&routing.humanReason==='explicit') && !routing.isOptOut && !routing.isResub){
+      routing.route='ecom_faq';
+      routing.reply=null;
+    }
     // Proactive visibility, not just a customer-facing safety net: every fix in this loop-detection
     // thread started from a business owner manually screenshotting a stuck WhatsApp conversation —
     // by the time that happens, an unknown number of OTHER customers may have hit the same stuck
@@ -11830,16 +11847,6 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, ecomProductChoiceItems(broadMatches));
           orderHandledInline=true;
-        }else{
-          // No verified match: never let the general FAQ model guess a product or suggest a
-          // made-up "closest" alternative. Show only active database categories/products.
-          const available=await ecomSendAvailableCatalogueOptions(env, c, clientId, convId, replyLang);
-          if(available.sent){
-            sentText=available.text;
-            routing.reply=available.text;
-            routing.quickReplies=available.quickReplies;
-            orderHandledInline=true;
-          }
         }
       }
       if(detection.signal && !orderHandledInline){
@@ -11986,6 +11993,14 @@ async function handleEngineWebhook(request, env, secret){
           // as if it were the answer; fall back to the first matching product's photo only when the
           // category itself has no photo configured.
           let categoryProducts=await ecomFindProductsByCategory(env, clientId, detection.category);
+          let categoryPromptReply=null;
+          if(categoryProducts.length){
+            const categoryContext=await engineBuildEcomContext(env, c, clientId, phone);
+            const categorySystemPrompt=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead)
+              +'\n\nCATEGORY ENQUIRY: Answer from the configured business prompt and VERIFIED ECOM CATALOGUE only. Do not invent products, availability, prices, features, or alternatives. A separate verified database picker will follow your answer, so do not output OPTIONS.';
+            const generated=await engineCallLlmAvoidingRepeat(env, c, categorySystemPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+            categoryPromptReply=engineExtractReplyOptions(engineSubstituteOrderLinkPlaceholder(generated, c, clientId, '')).text;
+          }
           // Brand-level narrowing — same "never leave a multi-way choice as free text" reasoning
           // as the variant/product picker below, one level up. Real observed failure: a customer
           // asking about a category with several carried brands got a free-form LLM paragraph
@@ -12011,7 +12026,7 @@ async function handleEngineWebhook(request, env, secret){
             const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
             const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
             const photoUrl=categoryImage||withImage.image_url;
-            const intro=`Which brand of ${detection.category} are you interested in?`;
+            const intro=categoryPromptReply||`Which brand of ${detection.category} are you interested in?`;
             if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
             // Ecom catalogue choices are always interactive and come verbatim from Product data.
             sentText=await engineLocalizeReply(env, c, intro, replyLang);
@@ -12034,7 +12049,7 @@ async function handleEngineWebhook(request, env, secret){
               nameChoices.push({value:p.name, label:(p.short_label||'').trim()||p.name});
             }
             const choices=variants.length?variants.map(v=>({value:v, label:v})):nameChoices;
-            const intro=variants.length?`Which type of ${chosenBrand||detection.category} are you looking for?`:`Here's what we have in ${chosenBrand||detection.category}:`;
+            const intro=categoryPromptReply||(variants.length?`Which type of ${chosenBrand||detection.category} are you looking for?`:`Here's what we have in ${chosenBrand||detection.category}:`);
             const photoUrl=categoryImage||withImage.image_url;
             if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
             // Tappable picker (buttons for <=3 choices, a Chatwoot list message for up to 10)
@@ -12059,18 +12074,10 @@ async function handleEngineWebhook(request, env, secret){
         // Products-table row must never fall through to the general FAQ model, which has no
         // verified product record and could improvise availability or specifications.
         if(!orderHandledInline && detection.mode==='enquiry' && !product){
-          const available=await ecomSendAvailableCatalogueOptions(env, c, clientId, convId, replyLang);
-          if(available.sent){
-            sentText=available.text;
-            routing.reply=available.text;
-            routing.quickReplies=available.quickReplies;
-            orderHandledInline=true;
-          }else{
-            sentText=await engineLocalizeReply(env, c, 'There are no active products available in our catalogue right now.', replyLang);
-            routing.reply=sentText;
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
-            orderHandledInline=true;
-          }
+          // Unresolved enquiry is not a dead end. Continue into ecom_faq below, whose LLM receives
+          // the merchant prompt and verified catalogue context; its buttons are added separately
+          // from active Products data only.
+          routing.route='ecom_faq';
         }
       }
       // If this turn overrode a false-positive 'human' route (humanBlocksOrderCheck was false only
@@ -12092,8 +12099,7 @@ async function handleEngineWebhook(request, env, secret){
     // clarifying question and didn't name one single product, so neither existing button path
     // fired). Gated behind !orderHandledInline and isNewLead so an order/enquiry/human/qualify
     // signal already handled above, or a returning customer's "Hi", never gets overridden by this.
-    const newLeadCategories=(!orderHandledInline && !routing.businessInfoOnly && routing.route==='ecom_faq' && isNewLead)
-      ? await ecomListCategories(env, clientId) : [];
+    const newLeadCategories=[];
 
     if(orderHandledInline){
       // Reply already sent above — Stage/qualAnswers bookkeeping from engineRouteFlow's own
@@ -12207,12 +12213,12 @@ async function handleEngineWebhook(request, env, secret){
       routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
     } else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
       let contextBlock=null;
-      if(routing.route==='ecom_faq' && !routing.businessInfoOnly) contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
+      if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
       let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
-      if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using only facts explicitly provided in the main business prompt above. Do not treat vague words such as "this" as a product reference. Do not ask for a product name or SKU unless the customer actually asks about a product. Do not invent any business fact that is absent from the prompt. Give only the requested business information; do not add an OPTIONS marker, product picker, or product choices.';
+      if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt and verified Ecom context. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact. Verified catalogue choices will be appended separately as buttons.';
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
@@ -12263,6 +12269,14 @@ async function handleEngineWebhook(request, env, secret){
         if(!faqQuickReplies){
           const plainOptions=await engineExtractPlainOptionsFromReply(env, c, reply);
           if(plainOptions) faqQuickReplies=plainOptions.map(o=>({title:o, value:o}));
+        }
+        // Every Ecom enquiry keeps the prompt-generated answer above, then adds one verified menu
+        // in the SAME message when the answer did not already provide a choice. No label or value
+        // here comes from the LLM: categories and recommended products are copied from active
+        // Ecom Product rows only.
+        if(!faqQuickReplies && routing.route==='ecom_faq'){
+          const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
+          faqQuickReplies=ecomAvailableCatalogueItems(categories,products);
         }
       }
       // routing.quickReplies is set from what engineDeliverReply's own quickReplies branch actually
