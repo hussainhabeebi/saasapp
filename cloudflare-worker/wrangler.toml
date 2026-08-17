@@ -94,6 +94,36 @@ tag = "v1"
 # still needs SOME storage backend attached to the namespace, so this is required regardless.
 new_sqlite_classes = ["ClientUpdatesHub"]
 
+# Healthcare appointment reliability. API requests publish small ID-only jobs to the primary
+# queue; the consumer retries transient Calendar/WhatsApp failures with exponential delay. After
+# five failed deliveries Cloudflare moves the job to the DLQ, which this Worker consumes and
+# records in healthcare_queue_failures for dashboard visibility.
+[[queues.producers]]
+binding = "HEALTHCARE_JOBS"
+queue = "leadvyne-healthcare-jobs"
+
+[[queues.consumers]]
+queue = "leadvyne-healthcare-jobs"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+retry_delay = 60
+dead_letter_queue = "leadvyne-healthcare-jobs-dlq"
+
+[[queues.consumers]]
+queue = "leadvyne-healthcare-jobs-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
+# One durable instance per saved appointment version. It queues the confirmation immediately,
+# then sleeps until the configured 24-hour and 2-hour reminder points. Rescheduling terminates the
+# previous instance and creates a fresh version so stale reminders cannot reach a patient.
+[[workflows]]
+name = "leadvyne-healthcare-appointment"
+binding = "HEALTHCARE_APPOINTMENT_WORKFLOW"
+class_name = "HealthcareAppointmentWorkflow"
+
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
 [vars]
