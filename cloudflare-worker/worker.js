@@ -7927,6 +7927,15 @@ const HC_OPERATIONS_SCHEMA=[
     failure_reason TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_booking_sessions (
+    client_id INTEGER NOT NULL, patient_phone TEXT NOT NULL,
+    conversation_id INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT '',
+    service_id INTEGER NOT NULL DEFAULT 0, doctor_id INTEGER NOT NULL DEFAULT 0,
+    appointment_date TEXT NOT NULL DEFAULT '', start_time TEXT NOT NULL DEFAULT '',
+    end_time TEXT NOT NULL DEFAULT '', patient_name TEXT NOT NULL DEFAULT '',
+    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, patient_phone)
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_departments_client ON healthcare_departments(client_id)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_client ON healthcare_doctors(client_id)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_department ON healthcare_doctors(department_id)`,
@@ -7942,7 +7951,9 @@ const HC_OPERATIONS_SCHEMA=[
   `CREATE INDEX IF NOT EXISTS idx_healthcare_automation_status
     ON healthcare_appointment_automation(client_id, workflow_status, calendar_status, reminder_status)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_queue_failures_client
-    ON healthcare_queue_failures(client_id, created_at)`
+    ON healthcare_queue_failures(client_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_booking_sessions_expiry
+    ON healthcare_booking_sessions(expires_at)`
 ];
 export async function hcEnsureOperationsSchema(env){
   if(!env?.DB) throw new Error('D1 DB binding is not configured');
@@ -8022,7 +8033,8 @@ export function hcVerifiedServiceText(service,question){
   if(/price|cost|fee|how much/i.test(question||'')&&Number(service.price)>0)lines.push(`Price: ${service.currency||''} ${service.price}`.trim());
   if(/duration|how long|time/i.test(question||'')&&Number(service.duration_minutes)>0)lines.push(`Duration: ${service.duration_minutes} minutes`);
   if(/prepare|preparation|before|fasting/i.test(question||'')&&service.preparation)lines.push(`Preparation: ${service.preparation}`);
-  if(/book|appointment|schedule/i.test(question||'')&&service.booking_url)lines.push(`Book here: ${service.booking_url}`);
+  // Healthcare appointments are completed inside WhatsApp. Never leak an external booking URL
+  // into a service answer; the deterministic Book Appointment button owns this transition.
   return lines.join('\n\n');
 }
 async function hcClaimServiceMediaForToday(env,clientId,leadId,serviceId){
@@ -8673,6 +8685,7 @@ const CHATWOOT_HOOK_LINK_RE=/https:\/\/(?:onshope\.com\/([a-z0-9-]+)|app\.leadvy
 // the message as a signal, and only once per lead (dedupe below) so it can't fire repeatedly in
 // one conversation.
 async function handleChatwootIncomingBookingSignal(env, c, clientId, content, body){
+  if(c.industry==='healthcare') return json({ok:true, skipped:'healthcare-native-whatsapp-booking'});
   const link=(c.external_store_link||'').trim();
   if(!link) return json({ok:true, skipped:'no-booking-link'});
   const ordersTable=await ecomResolveTable(env, clientId, 'orders');
@@ -11792,6 +11805,12 @@ async function handleEngineWebhook(request, env, secret){
         await engineSendHandoverLabel(c,convId);
         orderHandledInline=true;
       }else{
+        const bookingFlow=await hcHandleWhatsappBooking(env,c,clientId,convId,phone,state.leadId,userText,replyLang);
+        if(bookingFlow.handled){
+          sentText=bookingFlow.text; routing.reply=sentText; routing.quickReplies=bookingFlow.quickReplies||null;
+          orderHandledInline=true;
+        }
+        if(!orderHandledInline){
         let matches=await hcFindBroadServiceMatches(env,clientId,userText);
         if(!matches.length&&isNewLead&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())) matches=await hcListActiveServices(env,clientId);
         if(matches.length>1){
@@ -11804,14 +11823,15 @@ async function handleEngineWebhook(request, env, secret){
           sentText=await engineLocalizeReply(env,c,hcVerifiedServiceText(service,userText),replyLang);
           routing.reply=sentText;
           if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
-          const {results:serviceDoctors}=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service.department_id||0)).all();
+          const {results:serviceDoctors}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 9`).bind(Number(clientId),Number(service.department_id||0)).all();
           const doctorChoices=(serviceDoctors||[]).map(d=>({title:d.name,value:d.name}));
-          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:doctorChoices});
+          const bookingChoices=[{title:'📅 Book Appointment',value:`HC_BOOK_SERVICE:${service.id}`},...doctorChoices];
+          const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
           if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
           // If the primary image path was used, send the exact doctor choices as a separate picker
           // because engineDeliverReply deliberately prioritizes an image over quick replies.
-          if(sendMedia&&service.image_url&&doctorChoices.length) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Available doctors:',doctorChoices);
-          else if(doctorChoices.length) routing.quickReplies=doctorChoices;
+          if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Book or choose a doctor:',bookingChoices);
+          else routing.quickReplies=bookingChoices.length?delivered:null;
           orderHandledInline=true;
         }else{
           const doctorMatches=await hcFindDoctorMatches(env,clientId,userText);
@@ -11827,6 +11847,7 @@ async function handleEngineWebhook(request, env, secret){
             if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
             await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:doctor.image_url||null});
             await hcSendDoctorMedia(env,c,clientId,convId,doctor);
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book an appointment?',[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`}]);
             orderHandledInline=true;
           }else{
             const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
@@ -11850,6 +11871,7 @@ async function handleEngineWebhook(request, env, secret){
             routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,providers.map(p=>({title:p.provider_name,value:p.provider_name})));
             orderHandledInline=true;
           }
+        }
         }
       }
     }
@@ -12492,7 +12514,7 @@ async function handleEngineWebhook(request, env, secret){
     // ecommerce here would just re-call detectOrderSignal a second, redundant time, and could
     // violate the "never send a link before order intent" rule for the one case the order-check
     // above deliberately leaves unhandled (an enquiry with no confident product match).
-    if(!orderHandledInline && c.bot_reply_disabled!=='Yes' && c.industry!=='ecommerce' && !['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && (c.external_store_link||'').trim()){
+    if(!orderHandledInline && c.bot_reply_disabled!=='Yes' && !['ecommerce','healthcare'].includes(c.industry) && !['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && (c.external_store_link||'').trim()){
       // Only runs once a booking link is actually configured, and skips a lead already at a
       // booking-terminal stage or one with a `requested` appointment already pending.
       const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
@@ -20527,6 +20549,149 @@ async function handleHcAvailability(request, env){
   return json({list:await hcAvailableSlots(env,auth.payload.cid,auth.c,doctorId,date,serviceId,appointmentId), gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
 }
 
+function hcBookingExpiry(){ return new Date(Date.now()+30*60*1000).toISOString(); }
+async function hcBookingSession(env,clientId,phone){
+  const row=await env.DB.prepare(`SELECT * FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).first();
+  if(row&&Date.parse(row.expires_at)<=Date.now()){
+    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+    return null;
+  }
+  return row||null;
+}
+async function hcSaveBookingSession(env,clientId,phone,values={}){
+  const old=await hcBookingSession(env,clientId,phone)||{};
+  const row={...old,...values,client_id:Number(clientId),patient_phone:String(phone),expires_at:hcBookingExpiry(),updated_at:new Date().toISOString()};
+  await env.DB.prepare(`INSERT INTO healthcare_booking_sessions
+    (client_id,patient_phone,conversation_id,stage,service_id,doctor_id,appointment_date,start_time,end_time,patient_name,expires_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(client_id,patient_phone) DO UPDATE SET
+    conversation_id=excluded.conversation_id,stage=excluded.stage,service_id=excluded.service_id,
+    doctor_id=excluded.doctor_id,appointment_date=excluded.appointment_date,start_time=excluded.start_time,
+    end_time=excluded.end_time,patient_name=excluded.patient_name,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
+    .bind(row.client_id,row.patient_phone,Number(row.conversation_id)||0,String(row.stage||''),Number(row.service_id)||0,
+      Number(row.doctor_id)||0,String(row.appointment_date||''),String(row.start_time||''),String(row.end_time||''),
+      String(row.patient_name||'').slice(0,200),row.expires_at,row.updated_at).run();
+  return row;
+}
+function hcClinicDateAfter(c,days){
+  const timezone=hcClientTimezone(c), shifted=new Date(Date.now()+Number(days||0)*86400000);
+  try{
+    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(shifted);
+    const v=Object.fromEntries(parts.map(p=>[p.type,p.value]));
+    return `${v.year}-${v.month}-${v.day}`;
+  }catch(e){ return shifted.toISOString().slice(0,10); }
+}
+function hcBookingDateTitle(date){
+  try{return new Intl.DateTimeFormat('en',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}).format(new Date(`${date}T12:00:00Z`));}
+  catch(e){return date;}
+}
+function hcBookableSlots(c,date,slots){
+  const today=hcClinicDateAfter(c,0);
+  if(date!==today) return slots;
+  let current='00:00';
+  try{current=new Intl.DateTimeFormat('en-GB',{timeZone:hcClientTimezone(c),hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date());}catch(e){}
+  return (slots||[]).filter(slot=>slot.start_time>current);
+}
+async function hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang){
+  const items=[];
+  for(let day=0;day<14&&items.length<7;day++){
+    const date=hcClinicDateAfter(c,day);
+    const slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
+    if(slots.length) items.push({title:hcBookingDateTitle(date),value:`HC_BOOK_DATE:${date}`});
+  }
+  if(!items.length){
+    const text=await engineLocalizeReply(env,c,'No available appointment dates are configured. I will connect you to the clinic team.',replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text); await engineSendHandoverLabel(c,convId);
+    return {handled:true,text,quickReplies:null};
+  }
+  await hcSaveBookingSession(env,clientId,phone,{...session,conversation_id:Number(convId)||0,stage:'choose_date'});
+  const text=await engineLocalizeReply(env,c,'Please choose an available appointment date:',replyLang);
+  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,items);
+  return {handled:true,text,quickReplies};
+}
+async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId=0,doctorId=0}={}){
+  const service=serviceId?await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first():null;
+  const doctor=doctorId?await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(Number(doctorId),Number(clientId)).first():null;
+  if((serviceId&&!service)||(doctorId&&!doctor)) return {handled:false};
+  const seed={conversation_id:Number(convId)||0,stage:'',service_id:Number(service?.id)||0,doctor_id:Number(doctor?.id)||0,appointment_date:'',start_time:'',end_time:'',patient_name:''};
+  if(doctor) return hcSendBookingDates(env,c,clientId,convId,phone,seed,replyLang);
+  const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service?.department_id)||0).all();
+  const doctors=results||[];
+  if(doctors.length===1) return hcSendBookingDates(env,c,clientId,convId,phone,{...seed,doctor_id:Number(doctors[0].id)},replyLang);
+  if(!doctors.length){
+    const text=await engineLocalizeReply(env,c,'No doctor is currently configured for online booking. I will connect you to the clinic team.',replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text); await engineSendHandoverLabel(c,convId);
+    return {handled:true,text,quickReplies:null};
+  }
+  await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_doctor'});
+  const text=await engineLocalizeReply(env,c,'Please choose a doctor:',replyLang);
+  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,doctors.map(d=>({title:d.name,value:`HC_BOOK_DOCTOR:${d.id}`})));
+  return {handled:true,text,quickReplies};
+}
+async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userText,replyLang){
+  await hcEnsureOperationsSchema(env);
+  const action=String(userText||'').trim();
+  let match=action.match(/^HC_BOOK_SERVICE:(\d+)$/); if(match) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(match[1])});
+  match=action.match(/^HC_BOOK_DOCTOR:(\d+)$/);
+  if(match){
+    const session=await hcBookingSession(env,clientId,phone);
+    if(session?.stage==='choose_doctor') return hcSendBookingDates(env,c,clientId,convId,phone,{...session,doctor_id:Number(match[1])},replyLang);
+    return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{doctorId:Number(match[1])});
+  }
+  const session=await hcBookingSession(env,clientId,phone);
+  if(!session) return {handled:false};
+  if(action==='HC_BOOK_CANCEL'||/^(?:cancel|stop) booking$/i.test(action)){
+    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+    const text=await engineLocalizeReply(env,c,'Appointment booking cancelled.',replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
+    return {handled:true,text,quickReplies:null};
+  }
+  if(action==='HC_BOOK_DATES') return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+  match=action.match(/^HC_BOOK_DATE:(\d{4}-\d{2}-\d{2})$/);
+  if(match&&session.doctor_id){
+    const date=match[1], slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
+    if(!slots.length) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'choose_slot',appointment_date:date,start_time:'',end_time:''});
+    const text=await engineLocalizeReply(env,c,'Please choose an available time:',replyLang);
+    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,slots.slice(0,10).map(s=>({title:`${s.start_time}–${s.end_time}`,value:`HC_BOOK_SLOT:${s.start_time}`})));
+    return {handled:true,text,quickReplies};
+  }
+  match=action.match(/^HC_BOOK_SLOT:(\d{2}:\d{2})$/);
+  if(match&&session.appointment_date&&session.doctor_id){
+    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===match[1]);
+    if(!chosen) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'patient_name',start_time:chosen.start_time,end_time:chosen.end_time});
+    const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
+    return {handled:true,text,quickReplies:null};
+  }
+  if(session.stage==='patient_name'&&!action.startsWith('HC_BOOK_')){
+    const patientName=action.replace(/\s+/g,' ').trim().slice(0,200);
+    if(patientName.length<2){const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return {handled:true,text,quickReplies:null};}
+    const service=session.service_id?await env.DB.prepare(`SELECT name FROM healthcare_services WHERE id=? AND client_id=?`).bind(session.service_id,Number(clientId)).first():null;
+    const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(session.doctor_id,Number(clientId)).first();
+    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'confirm',patient_name:patientName});
+    const summary=`Please confirm your appointment:\n\nPatient: ${patientName}\n${service?.name?`Service: ${service.name}\n`:''}Doctor: ${doctor?.name||''}\nDate: ${session.appointment_date}\nTime: ${session.start_time}`;
+    const text=await engineLocalizeReply(env,c,summary,replyLang);
+    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,[{title:'Confirm Booking',value:'HC_BOOK_CONFIRM'},{title:'Change Date',value:'HC_BOOK_DATES'},{title:'Cancel',value:'HC_BOOK_CANCEL'}]);
+    return {handled:true,text,quickReplies};
+  }
+  if(action==='HC_BOOK_CONFIRM'&&session.stage==='confirm'){
+    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===session.start_time);
+    if(!chosen){const text=await engineLocalizeReply(env,c,'That slot was just booked. Please choose another date.',replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);}
+    const now=new Date().toISOString(); let result;
+    try{
+      result=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'confirmed','whatsapp','','',?,?)`)
+        .bind(Number(clientId),session.patient_name,String(phone),Number(leadId)||0,Number(session.service_id)||0,Number(session.doctor_id),session.appointment_date,session.start_time,chosen.end_time,now,now).run();
+    }catch(error){
+      if(/unique|constraint/i.test(String(error?.message||error))) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+      throw error;
+    }
+    const row=await hcAppointmentRow(env,clientId,result.meta.last_row_id); await hcQueueAppointmentAutomation(env,row,null,'upsert');
+    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+    const text=await engineLocalizeReply(env,c,`Appointment confirmed ✅\n\n${row.service_name?row.service_name+'\n':''}${row.doctor_name||''}\n${row.appointment_date} at ${row.start_time}`,replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text); return {handled:true,text,quickReplies:null,appointmentId:row.id};
+  }
+  return {handled:false};
+}
+
 async function hcAppointmentRow(env, clientId, id){
   return env.DB.prepare(`SELECT a.*,s.name service_name,d.name doctor_name FROM healthcare_appointments a LEFT JOIN healthcare_services s ON s.id=a.service_id LEFT JOIN healthcare_doctors d ON d.id=a.doctor_id WHERE a.id=? AND a.client_id=?`).bind(Number(id),Number(clientId)).first();
 }
@@ -20683,6 +20848,7 @@ async function hcStartAppointmentWorkflow(env,job){
     await env.HEALTHCARE_APPOINTMENT_WORKFLOW.create({id:instanceId,params:{
       client_id:Number(row.client_id),appointment_id:Number(row.id),appointment_version:String(row.updated_at),
       appointment_at_ms:appointmentAt,workflow_started_at_ms:Date.now(),
+      skip_confirmation:row.source==='whatsapp',
       reminder_24h_enabled:settings.reminder_24h_enabled!==0,reminder_2h_enabled:settings.reminder_2h_enabled!==0
     }});
   }catch(error){
@@ -20738,9 +20904,9 @@ export async function hcHandleQueueBatch(batch,env){
 export class HealthcareAppointmentWorkflow extends WorkflowEntrypointBase{
   async run(event,step){
     const p=event.payload||{}, retry={retries:{limit:5,delay:'30 seconds',backoff:'exponential'}};
-    await step.do('queue appointment confirmation',retry,async()=>{
-      await this.env.HEALTHCARE_JOBS.send({type:'appointment_message',kind:'confirmation',client_id:p.client_id,appointment_id:p.appointment_id,appointment_version:p.appointment_version});
-    });
+    if(!p.skip_confirmation) await step.do('queue appointment confirmation',retry,async()=>{
+        await this.env.HEALTHCARE_JOBS.send({type:'appointment_message',kind:'confirmation',client_id:p.client_id,appointment_id:p.appointment_id,appointment_version:p.appointment_version});
+      });
     const reminders=[
       {kind:'reminder_24h',enabled:p.reminder_24h_enabled,offset:24*3600000},
       {kind:'reminder_2h',enabled:p.reminder_2h_enabled,offset:2*3600000}
