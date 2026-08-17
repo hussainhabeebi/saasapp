@@ -7592,7 +7592,110 @@ export function hcQueryTokens(value){
   const stop=new Set(['a','an','the','i','me','my','we','you','your','want','need','looking','look','for','show','tell','about','have','has','do','does','is','are','please','pls','clinic','hospital','doctor','appointment','book','available','availability','treatment','service']);
   return [...new Set(hcNormalizeText(value).split(' ').filter(t=>t&&!stop.has(t)&&t.length>1))];
 }
+
+// D1 migrations are a separate deployment step from `wrangler deploy`. Keep the checked-in
+// migration as the canonical schema, but also repair a Worker whose code reached production
+// before migration 0056 was applied. Every statement is additive/idempotent, so this never drops,
+// replaces or clears existing Healthcare data. Cache the promise per D1 binding so the check runs
+// only once per Worker isolate instead of on every Healthcare request/message.
+const hcOperationsSchemaReady=new WeakMap();
+const HC_OPERATIONS_SCHEMA=[
+  `CREATE TABLE IF NOT EXISTS healthcare_departments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+    image_url_1 TEXT NOT NULL DEFAULT '', image_url_2 TEXT NOT NULL DEFAULT '',
+    image_url_3 TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_doctors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    department_id INTEGER NOT NULL, name TEXT NOT NULL,
+    qualification TEXT NOT NULL DEFAULT '', specialization TEXT NOT NULL DEFAULT '',
+    experience_years INTEGER NOT NULL DEFAULT 0, consultation_fee REAL NOT NULL DEFAULT 0,
+    phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '', image_url TEXT NOT NULL DEFAULT '',
+    image_url_2 TEXT NOT NULL DEFAULT '', image_url_3 TEXT NOT NULL DEFAULT '',
+    image_url_4 TEXT NOT NULL DEFAULT '', image_url_5 TEXT NOT NULL DEFAULT '',
+    video_url TEXT NOT NULL DEFAULT '', pdf_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    department_id INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL,
+    short_label TEXT NOT NULL DEFAULT '', aliases TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '', price REAL NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT '', duration_minutes INTEGER NOT NULL DEFAULT 30,
+    preparation TEXT NOT NULL DEFAULT '', booking_url TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '', image_url_2 TEXT NOT NULL DEFAULT '',
+    image_url_3 TEXT NOT NULL DEFAULT '', image_url_4 TEXT NOT NULL DEFAULT '',
+    image_url_5 TEXT NOT NULL DEFAULT '', audio_url TEXT NOT NULL DEFAULT '',
+    video_url TEXT NOT NULL DEFAULT '', pdf_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_doctor_schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    doctor_id INTEGER NOT NULL, weekday INTEGER NOT NULL, start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL, break_start TEXT NOT NULL DEFAULT '',
+    break_end TEXT NOT NULL DEFAULT '', slot_minutes INTEGER NOT NULL DEFAULT 30,
+    status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_appointments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    patient_name TEXT NOT NULL, patient_phone TEXT NOT NULL,
+    lead_id INTEGER NOT NULL DEFAULT 0, service_id INTEGER NOT NULL DEFAULT 0,
+    doctor_id INTEGER NOT NULL DEFAULT 0, appointment_date TEXT NOT NULL,
+    start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'requested', source TEXT NOT NULL DEFAULT 'dashboard',
+    notes TEXT NOT NULL DEFAULT '', gcal_event_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_insurance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    provider_name TEXT NOT NULL, network_name TEXT NOT NULL DEFAULT '',
+    plan_name TEXT NOT NULL DEFAULT '', covered_services TEXT NOT NULL DEFAULT '',
+    preapproval_required INTEGER NOT NULL DEFAULT 0,
+    verification_note TEXT NOT NULL DEFAULT '', contact TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active', last_verified_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_settings (
+    client_id INTEGER PRIMARY KEY, strict_zero_hallucination INTEGER NOT NULL DEFAULT 1,
+    emergency_keywords TEXT NOT NULL DEFAULT 'chest pain,cannot breathe,can''t breathe,unconscious,severe bleeding,stroke,suicidal,overdose',
+    emergency_message TEXT NOT NULL DEFAULT 'This may require urgent medical attention. Please contact local emergency services or the clinic immediately.',
+    handover_message TEXT NOT NULL DEFAULT 'I am connecting you to the clinic team now. Please stay available for their response.',
+    emergency_contact TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_media_sent (
+    client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, service_id INTEGER NOT NULL,
+    sent_date TEXT NOT NULL, sent_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, lead_id, service_id, sent_date)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_departments_client ON healthcare_departments(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_client ON healthcare_doctors(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_department ON healthcare_doctors(department_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_services_client ON healthcare_services(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_services_department ON healthcare_services(department_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_schedules_doctor ON healthcare_doctor_schedules(client_id, doctor_id, weekday)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_appointments_client_date ON healthcare_appointments(client_id, appointment_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_appointments_doctor_slot ON healthcare_appointments(client_id, doctor_id, appointment_date, start_time)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_healthcare_appointments_active_slot
+    ON healthcare_appointments(client_id, doctor_id, appointment_date, start_time)
+    WHERE status NOT IN ('cancelled','completed','no_show')`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_insurance_client ON healthcare_insurance(client_id)`
+];
+export async function hcEnsureOperationsSchema(env){
+  if(!env?.DB) throw new Error('D1 DB binding is not configured');
+  const cached=hcOperationsSchemaReady.get(env.DB);
+  if(cached) return cached;
+  const pending=(async()=>{
+    for(const statement of HC_OPERATIONS_SCHEMA) await env.DB.prepare(statement).run();
+  })();
+  hcOperationsSchemaReady.set(env.DB,pending);
+  try{ await pending; }
+  catch(error){ hcOperationsSchemaReady.delete(env.DB); throw error; }
+}
 async function hcListActiveServices(env, clientId){
+  await hcEnsureOperationsSchema(env);
   const {results}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
   return results||[];
 }
@@ -7677,6 +7780,7 @@ async function hcSendServiceMedia(env,c,clientId,convId,service){
 }
 async function hcSettingsForClient(env,clientId){
   try{
+    await hcEnsureOperationsSchema(env);
     await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_settings (client_id) VALUES (?)`).bind(Number(clientId)).run();
     return await env.DB.prepare(`SELECT * FROM healthcare_settings WHERE client_id=?`).bind(Number(clientId)).first();
   }catch(e){return null;}
@@ -20319,6 +20423,7 @@ export default {
 
     let res;
     try{
+      if(url.pathname.startsWith('/healthcare/')) await hcEnsureOperationsSchema(env);
       if(url.pathname==='/health'){ res=json({ok:true, marketing_build:MARKETING_BUILD_TAG}); }
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
       else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
