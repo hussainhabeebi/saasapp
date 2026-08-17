@@ -11861,11 +11861,12 @@ async function handleEngineWebhook(request, env, secret){
     // whenever the checkout link goes out (order, or enquiry with the link toggle on) — link
     // presence no longer gates the photo, only whether a product was actually identified.
     const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
-    if(!orderHandledInline && !routing.businessInfoOnly && c.industry==='ecommerce' && (env.GEMINI_API_KEY || c.openrouter_key) && routing.route!=='drop' && !humanBlocksOrderCheck){
+    if(!orderHandledInline && !routing.businessInfoOnly && c.industry==='ecommerce' && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       const activeProducts=await ecomListActiveProducts(env, clientId);
       const exactSelectedProduct=ecomExactProductSelection(activeProducts, userText);
+      const broadMatches=await ecomFindBroadProductMatches(env, clientId, userText);
       // Category buttons are populated from this same Products data, so recognize their returned
       // value before trusting an LLM interpretation. Without this override, a tap on "Mattress"
       // can be treated as a product name, fail exact product resolution, and incorrectly trigger
@@ -11889,19 +11890,28 @@ async function handleEngineWebhook(request, env, secret){
         // plus verified catalogue context below. Do not restart navigation or invent a new option.
         detection.signal=false;
         routing.route='ecom_faq';
-      }else if(detection.signal && detection.mode==='enquiry'){
-        // Product-related, but neither an exact saved category nor an exact saved product was
-        // selected. Do not let the LLM invent a subtype/brand/size ladder: restart navigation at
-        // the exact active category list.
+      }else if((detection.signal && detection.mode==='enquiry') || broadMatches.length){
+        // One self-contained verified catalogue response: active categories plus broad-matched
+        // active products. The same exact rows are included in the message body and interactive
+        // picker, so a provider-side button failure can never leave only a dead-end instruction.
         const categories=await ecomListCategories(env, clientId);
-        if(categories.length){
-          sentText=await engineLocalizeReply(env, c, 'Please choose a product category:', replyLang);
+        const productChoices=broadMatches.length?broadMatches:activeProducts;
+        const items=ecomAvailableCatalogueItems(categories,productChoices);
+        if(items.length){
+          const intro=await engineLocalizeReply(env, c, 'Please choose an available category or matching product:', replyLang);
+          const categoryKeys=new Set(categories.map(category=>ecomNormalizeCatalogueText(category)));
+          const categoryLines=[],productLines=[];
+          for(const item of items){
+            const line=`- ${item.title}`;
+            if(categoryKeys.has(ecomNormalizeCatalogueText(item.value))) categoryLines.push(line);
+            else productLines.push(line);
+          }
+          sentText=[intro,categoryLines.length?`Categories:\n${categoryLines.join('\n')}`:'',productLines.length?`Matching products:\n${productLines.join('\n')}`:''].filter(Boolean).join('\n\n');
           routing.reply=sentText;
-          routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, categories.map(category=>({title:category,value:category})));
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, items);
           orderHandledInline=true;
         }
       }
-      let broadMatches=null;
       if(detection.signal && !orderHandledInline){
         let product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
         // Fallback for a message with no product detail of its own ("proceed with order", a bare
