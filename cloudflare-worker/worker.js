@@ -7522,6 +7522,20 @@ async function ecomResolveProduct(env, clientId, sku, productName){
   return products.find(p=>normalizeName(p.name)===guess)||null;
 }
 
+// Click-to-WhatsApp/Instagram ads commonly prefill a deliberately generic opener such as
+// "Hello! Can I get more info on this?". That is a request to introduce the BUSINESS shown by
+// the ad, not evidence that the customer named a catalog product. Treating "this" as a product
+// made detectOrderSignal invent a product signal and trigger the strict SKU fallback before the
+// main prompt ever got a chance to answer. Keep this matcher intentionally narrow: any explicit
+// product/item/SKU/model/price/stock/size/colour/order wording remains on the verified Products
+// path and retains the zero-hallucination lock.
+export function ecomIsGeneralBusinessInfoQuery(text){
+  const normalized=String(text||'').trim().toLowerCase().replace(/[’']/g,"'").replace(/\s+/g,' ');
+  if(!normalized) return false;
+  if(/\b(product|item|sku|model|price|cost|stock|available|availability|size|colou?r|variant|order|buy|purchase)\b/i.test(normalized)) return false;
+  return /^(?:(?:hi|hello|hey)[,! .-]*)?(?:(?:can|could|may) i (?:get|have) (?:some )?more (?:info|information)(?: (?:on|about))? (?:this|your business|your company|your store)?|tell me (?:more )?about (?:your business|your company|your store|what you do)|what (?:does your (?:business|company) do|do you do)|(?:business|company|store) (?:info|information|details))[?!. ]*$/i.test(normalized);
+}
+
 // The reverse direction of ecomResolveProduct above: given a block of text (the ecom_faq LLM's own
 // generated reply, not the customer's message), find whether it confidently names exactly one
 // catalog product — used to attach one-tap follow-up buttons (order / more details / talk to a
@@ -11533,6 +11547,14 @@ async function handleEngineWebhook(request, env, secret){
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls);
+    // A generic ad CTA/business-information request must be answered from the client's prompt,
+    // even if the probabilistic intent model guesses that the pronoun "this" means a product.
+    // Explicit human/opt-out routes still win; explicit product language never matches the helper.
+    if(c.industry==='ecommerce' && ecomIsGeneralBusinessInfoQuery(userText) && routing.route!=='drop' && !(routing.route==='human'&&routing.humanReason==='explicit') && !routing.isOptOut && !routing.isResub){
+      routing.route='ecom_faq';
+      routing.businessInfoOnly=true;
+      routing.reply=null;
+    }
     // Proactive visibility, not just a customer-facing safety net: every fix in this loop-detection
     // thread started from a business owner manually screenshotting a stuck WhatsApp conversation —
     // by the time that happens, an unknown number of OTHER customers may have hit the same stuck
@@ -11697,7 +11719,7 @@ async function handleEngineWebhook(request, env, secret){
     // whenever the checkout link goes out (order, or enquiry with the link toggle on) — link
     // presence no longer gates the photo, only whether a product was actually identified.
     const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
-    if(!orderHandledInline && c.industry==='ecommerce' && (env.GEMINI_API_KEY || c.openrouter_key) && routing.route!=='drop' && !humanBlocksOrderCheck){
+    if(!orderHandledInline && !routing.businessInfoOnly && c.industry==='ecommerce' && (env.GEMINI_API_KEY || c.openrouter_key) && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       let broadMatches=null;
@@ -11958,7 +11980,7 @@ async function handleEngineWebhook(request, env, secret){
     // clarifying question and didn't name one single product, so neither existing button path
     // fired). Gated behind !orderHandledInline and isNewLead so an order/enquiry/human/qualify
     // signal already handled above, or a returning customer's "Hi", never gets overridden by this.
-    const newLeadCategories=(!orderHandledInline && routing.route==='ecom_faq' && isNewLead)
+    const newLeadCategories=(!orderHandledInline && !routing.businessInfoOnly && routing.route==='ecom_faq' && isNewLead)
       ? await ecomListCategories(env, clientId) : [];
 
     if(orderHandledInline){
@@ -12073,11 +12095,12 @@ async function handleEngineWebhook(request, env, secret){
       routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
     } else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
       let contextBlock=null;
-      if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
+      if(routing.route==='ecom_faq' && !routing.businessInfoOnly) contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
-      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
+      let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
+      if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using only facts explicitly provided in the main business prompt above. Do not treat vague words such as "this" as a product reference. Do not ask for a product name or SKU unless the customer actually asks about a product. Do not invent any business fact that is absent from the prompt. Give only the requested business information; do not add an OPTIONS marker, product picker, or product choices.';
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
@@ -12085,12 +12108,12 @@ async function handleEngineWebhook(request, env, secret){
       routing.reply=reply; sentText=reply;
       let faqQuickReplies=null;
       if(botConfig.quick_reply_buttons_enabled!==false){
-        if(replyOptions && replyOptions.length){
+        if(!routing.businessInfoOnly && replyOptions && replyOptions.length){
           // The LLM's own clarifying question already named these — tapping one sends its exact
           // text back as a normal message, resolved the same way a customer typing it by hand
           // already is (see the OPTIONS: instruction in engineBuildFaqSystemPrompt).
           faqQuickReplies=replyOptions.map(o=>({title:o, value:o}));
-        } else if(routing.route==='ecom_faq'){
+        } else if(routing.route==='ecom_faq' && !routing.businessInfoOnly){
           // No clarifying question this turn, but the answer named exactly one catalog product with
           // enough confidence to act on — offer the same one-tap next steps the deterministic
           // category picker gets. Values are phrased to land on existing keyword/classifier matches

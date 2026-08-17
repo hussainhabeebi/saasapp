@@ -37,7 +37,22 @@ import {
   engineSendInstagramReply,
   subscribeInstagramWebhooks,
   verifyWebhookSignature,
+  ecomIsGeneralBusinessInfoQuery,
 } from './worker.js';
+
+describe('Ecom general business information routing', () => {
+  test('recognizes generic ad CTA and business-introduction questions', () => {
+    assert.equal(ecomIsGeneralBusinessInfoQuery('Hello! Can I get more info on this?'),true);
+    assert.equal(ecomIsGeneralBusinessInfoQuery('Tell me more about your business'),true);
+    assert.equal(ecomIsGeneralBusinessInfoQuery('What does your company do?'),true);
+  });
+
+  test('never diverts explicit product enquiries from verified Products data', () => {
+    assert.equal(ecomIsGeneralBusinessInfoQuery('Can I get more info on this product?'),false);
+    assert.equal(ecomIsGeneralBusinessInfoQuery('Can I get price and stock for this sofa?'),false);
+    assert.equal(ecomIsGeneralBusinessInfoQuery('I want to order SKU SOFA-3'),false);
+  });
+});
 
 describe('Instagram messaging reliability', () => {
   test('parses every actionable event in a webhook batch and ignores echoes', () => {
