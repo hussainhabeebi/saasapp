@@ -38,7 +38,52 @@ import {
   subscribeInstagramWebhooks,
   verifyWebhookSignature,
   ecomIsGeneralBusinessInfoQuery,
+  ecomMatchProductCategory,
+  ecomAvailableCatalogueItems,
 } from './worker.js';
+
+describe('Ecom category button and minimal matching', () => {
+  const categories=['Mattress','Wooden Bed','Sofa Sets'];
+
+  test('resolves an exact database category regardless of case or punctuation', () => {
+    assert.equal(ecomMatchProductCategory('  MATTRESS! ',categories),'Mattress');
+    assert.equal(ecomMatchProductCategory('Wooden bed',categories),'Wooden Bed');
+  });
+
+  test('accepts a unique minimal word but never guesses an ambiguous category', () => {
+    assert.equal(ecomMatchProductCategory('sofa',['Premium Sofa Sets','Mattress']),'Premium Sofa Sets');
+    assert.equal(ecomMatchProductCategory('bed',['Wooden Bed','Bed Linen']),null);
+  });
+
+  test('does not downgrade a product-like multiword phrase into category browsing', () => {
+    assert.equal(ecomMatchProductCategory('Cloudnine Mattress Deluxe',categories),null);
+  });
+});
+
+describe('Ecom verified fallback catalogue menu', () => {
+  test('combines exact categories and active Product rows in one ten-option menu', () => {
+    const categories=['Mattress','Furniture','Bedding','Pillows','Beds','Sofas','Chairs','Tables'];
+    const products=[
+      {Id:1,name:'Cloudnine Ortho Mattress',short_label:'Ortho Mattress'},
+      {Id:2,name:'Teak Wooden Cot'},
+      {Id:3,name:'Three Seater Sofa'},
+      {Id:4,name:'Recliner Chair'},
+    ];
+    const items=ecomAvailableCatalogueItems(categories,products);
+    assert.equal(items.length,10);
+    assert.deepEqual(items.slice(-3),[
+      {title:'Ortho Mattress',value:'Cloudnine Ortho Mattress'},
+      {title:'Teak Wooden Cot',value:'Teak Wooden Cot'},
+      {title:'Three Seater Sofa',value:'Three Seater Sofa'},
+    ]);
+  });
+
+  test('uses only product records when categories are not configured', () => {
+    assert.deepEqual(ecomAvailableCatalogueItems([], [{Id:1,name:'Verified Product'}]),[
+      {title:'Verified Product',value:'Verified Product'},
+    ]);
+  });
+});
 
 describe('Ecom general business information routing', () => {
   test('recognizes generic ad CTA and business-introduction questions', () => {
