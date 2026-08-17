@@ -13741,6 +13741,7 @@ const PM_TABLES={
       color:{type:'str', max:20, def:'#0D9C93'}, status:{type:'str', max:20, def:'active'},
       budget_amount:{type:'num'}, budget_currency:{type:'str', max:10, def:'USD'}, default_hourly_rate:{type:'num'},
       client_email:{type:'str', max:200}, ai_auto_stage_enabled:{type:'int', def:0},
+      task_reminders_enabled:{type:'int', def:0}, overdue_escalation_enabled:{type:'int', def:0},
     }
   },
   tasks:{
@@ -13786,6 +13787,43 @@ const PM_TABLES={
 // everything project-scoped except `projects` itself and `time` (time entries derive project_id
 // from their task instead, see handlePmCreate).
 const PM_PROJECT_SCOPED=['tasks','sprints','automations'];
+const pmAutomationSchemaReady=new WeakMap();
+const PM_AUTOMATION_SCHEMA=[
+  `CREATE TABLE IF NOT EXISTS pm_task_automation (
+    client_id INTEGER NOT NULL, project_id INTEGER NOT NULL, task_id INTEGER NOT NULL,
+    task_version TEXT NOT NULL DEFAULT '', workflow_instance_id TEXT NOT NULL DEFAULT '',
+    workflow_status TEXT NOT NULL DEFAULT 'pending', reminder_status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, task_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS pm_task_notifications (
+    client_id INTEGER NOT NULL, task_id INTEGER NOT NULL, task_version TEXT NOT NULL, kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'processing', sent_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, task_id, task_version, kind)
+  )`,
+  `CREATE TABLE IF NOT EXISTS pm_queue_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL DEFAULT 0,
+    project_id INTEGER NOT NULL DEFAULT 0, task_id INTEGER NOT NULL DEFAULT 0,
+    job_type TEXT NOT NULL DEFAULT '', failure_reason TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_pm_task_automation_status
+    ON pm_task_automation(client_id, project_id, workflow_status, reminder_status)`,
+  `CREATE INDEX IF NOT EXISTS idx_pm_queue_failures_client ON pm_queue_failures(client_id, created_at)`
+];
+export async function pmEnsureAutomationSchema(env){
+  if(!env?.DB) throw new Error('D1 DB binding is not configured');
+  const cached=pmAutomationSchemaReady.get(env.DB); if(cached) return cached;
+  const pending=(async()=>{
+    const info=await env.DB.prepare(`PRAGMA table_info(pm_projects)`).all();
+    const columns=new Set((info?.results||[]).map(x=>x.name));
+    if(!columns.has('task_reminders_enabled')) await env.DB.prepare(`ALTER TABLE pm_projects ADD COLUMN task_reminders_enabled INTEGER NOT NULL DEFAULT 0`).run();
+    if(!columns.has('overdue_escalation_enabled')) await env.DB.prepare(`ALTER TABLE pm_projects ADD COLUMN overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0`).run();
+    for(const statement of PM_AUTOMATION_SCHEMA) await env.DB.prepare(statement).run();
+  })();
+  pmAutomationSchemaReady.set(env.DB,pending);
+  try{ await pending; }catch(error){ pmAutomationSchemaReady.delete(env.DB); throw error; }
+}
 function pmCoerce(spec, raw){
   if(raw===undefined||raw===null||raw===''){
     return spec.def!==undefined?spec.def:null;
@@ -13841,7 +13879,8 @@ async function handlePmCreate(request, env, kind){
   const row=await env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE id=?`).bind(r.meta.last_row_id).first();
   if(kind==='tasks'){
     if(row.status==='done') await env.DB.prepare(`UPDATE pm_tasks SET done_at=? WHERE id=?`).bind(now, row.id).run();
-    await runTaskAutomations(env, payload.cid, row.project_id, row, 'created', null);
+    const fresh=await pmTaskRow(env,payload.cid,row.id);
+    row.automation=await pmQueueTaskLifecycle(env,fresh,{event:'created'});
   }
   return json(row);
 }
@@ -13876,9 +13915,13 @@ async function handlePmUpdate(request, env, kind){
   if(cfg.hasUpdatedAt){ sets.push('updated_at=?'); vals.push(now); }
   vals.push(id);
   await env.DB.prepare(`UPDATE ${cfg.table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
-  if(kind==='tasks' && statusChanged){
-    const fresh=await env.DB.prepare(`SELECT *, id AS Id FROM pm_tasks WHERE id=?`).bind(id).first();
-    await runTaskAutomations(env, payload.cid, existing.project_id, fresh, 'status_changed', existing.status);
+  if(kind==='tasks'){
+    const fresh=await pmTaskRow(env,payload.cid,id);
+    return json({ok:true,automation:await pmQueueTaskLifecycle(env,fresh,{event:statusChanged?'status_changed':'',prevStatus:existing.status})});
+  }
+  if(kind==='projects'&&(body.task_reminders_enabled!==undefined||body.overdue_escalation_enabled!==undefined)){
+    try{ await pmDispatchJobs(env,[{type:'pm_project_refresh',client_id:Number(payload.cid),project_id:id}]); }
+    catch(error){ await reportOpsError(env,'pmProjectRefresh',error,{clientId:payload.cid,projectId:id}); }
   }
   return json({ok:true});
 }
@@ -13889,9 +13932,11 @@ async function handlePmDelete(request, env, kind){
   const body=await request.json().catch(()=>({}));
   const id=parseInt(body.Id,10);
   if(!id) return json({error:'Id required'}, 400);
-  const existing=await env.DB.prepare(`SELECT client_id FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  const existing=await env.DB.prepare(`SELECT * FROM ${cfg.table} WHERE id=?`).bind(id).first();
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
   if(kind==='projects'){
+    try{ await pmDispatchJobs(env,[{type:'pm_project_terminate',client_id:Number(payload.cid),project_id:id}]); }
+    catch(error){ await reportOpsError(env,'pmProjectTerminate',error,{clientId:payload.cid,projectId:id}); }
     await env.DB.prepare(`DELETE FROM pm_tasks WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
     await env.DB.prepare(`DELETE FROM pm_sprints WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
     await env.DB.prepare(`DELETE FROM pm_time_entries WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
@@ -13899,6 +13944,8 @@ async function handlePmDelete(request, env, kind){
     await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
   }
   if(kind==='tasks'){
+    try{ await pmDispatchJobs(env,[{type:'pm_workflow_terminate',client_id:Number(payload.cid),project_id:Number(existing.project_id),task_id:id,task_version:String(existing.updated_at||'')}]); }
+    catch(error){ await reportOpsError(env,'pmTaskTerminate',error,{clientId:payload.cid,taskId:id}); }
     await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE client_id=? AND (predecessor_id=? OR successor_id=?)`).bind(Number(payload.cid), id, id).run();
     await env.DB.prepare(`DELETE FROM pm_time_entries WHERE client_id=? AND task_id=?`).bind(Number(payload.cid), id).run();
   }
@@ -14127,47 +14174,240 @@ async function handlePmMigrateLegacyTasks(request, env){
   return json({ok:true, clients_migrated:results.length, results});
 }
 
-/* ── PM automation engine ──
-   A curated catalog of trigger/action types, evaluated synchronously inside the same request that
-   changed a task — this Worker has no durable queue/cron-per-tenant infra, so "fire on save" is
-   the only shape that fits without new infrastructure. Deliberately a fixed catalog, not a
-   generic condition-expression language: `status_changed_to`/`task_created` triggers,
-   `set_status`/`set_assignee`/`notify_email` actions. Actions write straight to D1 (not through
-   handlePmUpdate), so an automation's own writes can never recursively re-trigger this function —
-   no ping-pong risk between two rules that could otherwise fight over the same task. Best-effort:
-   one failing rule (e.g. Resend not configured) never fails the task edit that triggered it. ── */
-async function runTaskAutomations(env, clientId, projectId, task, event, prevStatus){
-  let rules;
-  try{
-    const {results}=await env.DB.prepare(`SELECT * FROM pm_automations WHERE client_id=? AND project_id=? AND enabled=1`).bind(Number(clientId), Number(projectId)).all();
-    rules=results||[];
-  }catch(e){ return; }
-  for(const rule of rules){
-    let tcfg={}; try{ tcfg=JSON.parse(rule.trigger_config||'{}'); }catch(e){}
-    let matches=false;
-    if(rule.trigger_type==='status_changed_to' && event==='status_changed'){
-      matches = !!tcfg.status && tcfg.status===task.status && task.status!==prevStatus;
-    }else if(rule.trigger_type==='task_created' && event==='created'){
-      matches = true;
-    }
-    if(!matches) continue;
-    let acfg={}; try{ acfg=JSON.parse(rule.action_config||'{}'); }catch(e){}
-    try{
-      if(rule.action_type==='set_status' && acfg.status && acfg.status!==task.status){
-        await env.DB.prepare(`UPDATE pm_tasks SET status=?, updated_at=?, done_at=? WHERE id=?`)
-          .bind(acfg.status, new Date().toISOString(), acfg.status==='done'?new Date().toISOString():null, task.Id||task.id).run();
-      }else if(rule.action_type==='set_assignee'){
-        await env.DB.prepare(`UPDATE pm_tasks SET assignee_email=? WHERE id=?`).bind(acfg.assignee_email||'', task.Id||task.id).run();
-      }else if(rule.action_type==='notify_email' && acfg.to_email && env.RESEND_API_KEY){
-        const subject=(acfg.subject||'Task update: {{title}}').replace('{{title}}', task.title||'');
-        const bodyText=(acfg.body||'Task "{{title}}" changed.').replace('{{title}}', task.title||'');
-        await fetch('https://api.resend.com/emails', {
-          method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
-          body:JSON.stringify({from:env.RESEND_FROM_EMAIL||'Leadvyne Projects <projects@leadvyne.com>', to:[acfg.to_email], subject, html:`<p>${esc(bodyText)}</p>`})
-        });
-      }
-    }catch(e){ /* best-effort — see comment above */ }
+/* ── Durable Project automations ──
+   Task writes publish ID-only jobs. Consumers re-read client-scoped D1 rows before every action,
+   and Workflow notification jobs carry the task's updated_at version so an edit makes every old
+   sleep/job harmless. This keeps request latency low while Queue retries and the DLQ make delivery
+   failures visible instead of silently losing them. ── */
+async function pmTaskRow(env,clientId,taskId){
+  return env.DB.prepare(`SELECT t.*,p.name project_name,p.task_reminders_enabled,p.overdue_escalation_enabled
+    FROM pm_tasks t JOIN pm_projects p ON p.id=t.project_id AND p.client_id=t.client_id
+    WHERE t.client_id=? AND t.id=?`).bind(Number(clientId),Number(taskId)).first();
+}
+function pmWorkflowInstanceId(row){
+  const version=Number.isFinite(Date.parse(row.updated_at))?Date.parse(row.updated_at):Date.now();
+  return `pm-${Number(row.client_id)}-${Number(row.id)}-${version}`.slice(0,100);
+}
+export function pmTaskDueUtcMs(date,timezone='Asia/Dubai',dayOffset=0){
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date||''));
+  if(!match) return NaN;
+  const shifted=new Date(Date.UTC(Number(match[1]),Number(match[2])-1,Number(match[3])+Number(dayOffset||0)));
+  return hcAppointmentUtcMs(shifted.toISOString().slice(0,10),'09:00',timezone);
+}
+async function pmAutomationState(env,clientId,taskId){
+  return env.DB.prepare(`SELECT * FROM pm_task_automation WHERE client_id=? AND task_id=?`).bind(Number(clientId),Number(taskId)).first();
+}
+async function pmUpsertAutomationState(env,row,fields={}){
+  await env.DB.prepare(`INSERT INTO pm_task_automation
+    (client_id,project_id,task_id,task_version,workflow_instance_id,workflow_status,reminder_status,last_error,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(client_id,task_id) DO UPDATE SET
+      project_id=CASE WHEN excluded.project_id!=0 THEN excluded.project_id ELSE project_id END,
+      task_version=CASE WHEN excluded.task_version!='' THEN excluded.task_version ELSE task_version END,
+      workflow_instance_id=CASE WHEN excluded.workflow_instance_id!='' THEN excluded.workflow_instance_id ELSE workflow_instance_id END,
+      workflow_status=CASE WHEN excluded.workflow_status!='' THEN excluded.workflow_status ELSE workflow_status END,
+      reminder_status=CASE WHEN excluded.reminder_status!='' THEN excluded.reminder_status ELSE reminder_status END,
+      last_error=excluded.last_error,updated_at=excluded.updated_at`)
+    .bind(Number(row.client_id),Number(row.project_id)||0,Number(row.id||row.task_id),String(row.updated_at||row.task_version||''),
+      String(fields.workflow_instance_id||''),String(fields.workflow_status||''),String(fields.reminder_status||''),
+      String(fields.last_error||'').slice(0,1000),new Date().toISOString()).run();
+}
+async function pmRecordAutomationError(env,job,error){
+  if(!Number(job?.client_id)||!Number(job?.task_id)) return;
+  await pmUpsertAutomationState(env,{client_id:job.client_id,project_id:job.project_id,task_id:job.task_id,task_version:job.task_version},
+    {workflow_status:'failed',last_error:String(error?.message||error)}).catch(()=>{});
+}
+async function pmDispatchJobs(env,jobs){
+  if(!jobs.length) return;
+  if(env.PROJECT_JOBS){
+    if(jobs.length===1) await env.PROJECT_JOBS.send(jobs[0]);
+    else await env.PROJECT_JOBS.sendBatch(jobs.map(body=>({body})));
+    return;
   }
+  for(const job of jobs) await pmProcessQueueJob(env,job);
+}
+async function pmQueueTaskLifecycle(env,row,{event='',prevStatus='',runAutomations=true}={}){
+  const base={client_id:Number(row.client_id),project_id:Number(row.project_id),task_id:Number(row.id),task_version:String(row.updated_at)};
+  const active=row.status!=='done'&&!!row.due_date&&(Number(row.task_reminders_enabled)===1||Number(row.overdue_escalation_enabled)===1);
+  const jobs=[];
+  if(runAutomations&&event) jobs.push({...base,type:'pm_automation_event',event,prev_status:String(prevStatus||'')});
+  jobs.push({...base,type:active?'pm_workflow_start':'pm_workflow_terminate'});
+  await pmUpsertAutomationState(env,row,{workflow_status:active?'queued':'terminating',reminder_status:active?'queued':'cancelled',last_error:''});
+  try{ await pmDispatchJobs(env,jobs); return {queued:true}; }
+  catch(error){ await pmRecordAutomationError(env,jobs[0]||base,error); await reportOpsError(env,'pmQueueTaskLifecycle',error,{clientId:row.client_id,taskId:row.id}); return {queued:false,error:String(error?.message||error)}; }
+}
+async function pmSendEmail(env,to,subject,bodyText){
+  if(!env.RESEND_API_KEY) throw new Error('Resend API key is not configured');
+  const recipients=[...new Set((Array.isArray(to)?to:[to]).map(x=>String(x||'').trim().toLowerCase()).filter(Boolean))];
+  if(!recipients.length) throw new Error('Project notification has no recipient');
+  const response=await fetch('https://api.resend.com/emails',{
+    method:'POST',headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'},
+    body:JSON.stringify({from:env.RESEND_FROM_EMAIL||'Leadvyne Projects <projects@leadvyne.com>',to:recipients,subject,html:`<p>${esc(bodyText).replace(/\n/g,'<br>')}</p>`})
+  });
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok) throw new Error(data?.message||`Resend HTTP ${response.status}`);
+}
+async function pmClaimNotification(env,job){
+  const now=new Date().toISOString();
+  const claim=await env.DB.prepare(`INSERT OR IGNORE INTO pm_task_notifications
+    (client_id,task_id,task_version,kind,status,sent_at,created_at) VALUES (?,?,?,?,?,'',?)`)
+    .bind(Number(job.client_id),Number(job.task_id),String(job.task_version),String(job.kind),'processing',now).run();
+  return !!claim?.meta?.changes;
+}
+async function pmReleaseNotification(env,job){
+  await env.DB.prepare(`DELETE FROM pm_task_notifications WHERE client_id=? AND task_id=? AND task_version=? AND kind=?`)
+    .bind(Number(job.client_id),Number(job.task_id),String(job.task_version),String(job.kind)).run();
+}
+async function pmSendTaskNotification(env,job){
+  const row=await pmTaskRow(env,job.client_id,job.task_id);
+  if(!row||String(row.updated_at)!==String(job.task_version)||row.status==='done') return;
+  if((job.kind==='reminder_48h'||job.kind==='due_today')&&Number(row.task_reminders_enabled)!==1) return;
+  if(job.kind==='overdue'&&Number(row.overdue_escalation_enabled)!==1) return;
+  if(!await pmClaimNotification(env,job)) return;
+  try{
+    const client=await getClientById(env,job.client_id); if(!client) throw new Error('Project client not found');
+    const owner=String(client.authentik_email||'').trim();
+    const assignee=String(row.assignee_email||'').trim();
+    const recipients=job.kind==='overdue'?[assignee,owner]:[assignee||owner];
+    const prefix=job.kind==='reminder_48h'?'Due in 2 days':job.kind==='due_today'?'Due today':'Overdue';
+    await pmSendEmail(env,recipients,`${prefix}: ${row.title}`,`${row.title}\nProject: ${row.project_name}\nDue date: ${row.due_date}\nStatus: ${row.status}`);
+    await env.DB.prepare(`UPDATE pm_task_notifications SET status='sent',sent_at=? WHERE client_id=? AND task_id=? AND task_version=? AND kind=?`)
+      .bind(new Date().toISOString(),Number(job.client_id),Number(job.task_id),String(job.task_version),String(job.kind)).run();
+    await pmUpsertAutomationState(env,row,{reminder_status:`${job.kind}_sent`,last_error:''});
+  }catch(error){ await pmReleaseNotification(env,job); throw error; }
+}
+async function pmRunAutomationEvent(env,job){
+  const task=await pmTaskRow(env,job.client_id,job.task_id);
+  if(!task||String(task.updated_at)!==String(job.task_version)) return;
+  const {results}=await env.DB.prepare(`SELECT * FROM pm_automations WHERE client_id=? AND project_id=? AND enabled=1`).bind(Number(job.client_id),Number(job.project_id)).all();
+  const matching=[];
+  for(const rule of results||[]){
+    let trigger={}; try{ trigger=JSON.parse(rule.trigger_config||'{}'); }catch(e){}
+    const matches=(rule.trigger_type==='task_created'&&job.event==='created')||
+      (rule.trigger_type==='status_changed_to'&&job.event==='status_changed'&&trigger.status===task.status&&task.status!==job.prev_status);
+    if(!matches) continue;
+    let action={}; try{ action=JSON.parse(rule.action_config||'{}'); }catch(e){}
+    matching.push({rule,action});
+  }
+  // Deliver retryable notifications before idempotent D1 mutations. If an email fails, a retry
+  // still sees the original task version instead of treating the whole event as stale.
+  matching.sort((a,b)=>Number(b.rule.action_type==='notify_email')-Number(a.rule.action_type==='notify_email'));
+  let mutated=false;
+  for(const {rule,action} of matching){
+    if(rule.action_type==='set_status'&&action.status&&action.status!==task.status){
+      const now=new Date().toISOString();
+      await env.DB.prepare(`UPDATE pm_tasks SET status=?,updated_at=?,done_at=? WHERE id=? AND client_id=?`)
+        .bind(action.status,now,action.status==='done'?now:null,task.id,Number(job.client_id)).run();
+      task.status=action.status; mutated=true;
+    }else if(rule.action_type==='set_assignee'&&String(action.assignee_email||'')!==String(task.assignee_email||'')){
+      await env.DB.prepare(`UPDATE pm_tasks SET assignee_email=?,updated_at=? WHERE id=? AND client_id=?`)
+        .bind(action.assignee_email||'',new Date().toISOString(),task.id,Number(job.client_id)).run();
+      task.assignee_email=action.assignee_email||''; mutated=true;
+    }else if(rule.action_type==='notify_email'&&action.to_email){
+      const emailJob={...job,kind:`automation_${rule.id}_${job.event}`};
+      if(!await pmClaimNotification(env,emailJob)) continue;
+      try{
+        const subject=String(action.subject||'Task update: {{title}}').replaceAll('{{title}}',task.title||'');
+        const body=String(action.body||'Task "{{title}}" changed.').replaceAll('{{title}}',task.title||'');
+        await pmSendEmail(env,action.to_email,subject,body);
+        await env.DB.prepare(`UPDATE pm_task_notifications SET status='sent',sent_at=? WHERE client_id=? AND task_id=? AND task_version=? AND kind=?`)
+          .bind(new Date().toISOString(),Number(job.client_id),Number(job.task_id),String(job.task_version),emailJob.kind).run();
+      }catch(error){ await pmReleaseNotification(env,emailJob); throw error; }
+    }
+  }
+  if(mutated){ const fresh=await pmTaskRow(env,job.client_id,job.task_id); if(fresh) await pmQueueTaskLifecycle(env,fresh,{runAutomations:false}); }
+}
+async function pmStartTaskWorkflow(env,job){
+  const row=await pmTaskRow(env,job.client_id,job.task_id);
+  if(!row||String(row.updated_at)!==String(job.task_version)||row.status==='done'||!row.due_date) return;
+  if(Number(row.task_reminders_enabled)!==1&&Number(row.overdue_escalation_enabled)!==1) return;
+  if(!env.PROJECT_TASK_WORKFLOW) throw new Error('Project Task Workflow binding is not configured');
+  const previous=await pmAutomationState(env,job.client_id,job.task_id), instanceId=pmWorkflowInstanceId(row);
+  if(previous?.workflow_instance_id&&previous.workflow_instance_id!==instanceId){
+    try{ const old=await env.PROJECT_TASK_WORKFLOW.get(previous.workflow_instance_id); await old.terminate(); }catch(e){}
+  }
+  const client=await getClientById(env,job.client_id), timezone=hcClientTimezone(client);
+  const dueAt=pmTaskDueUtcMs(row.due_date,timezone), overdueAt=pmTaskDueUtcMs(row.due_date,timezone,1);
+  if(!Number.isFinite(dueAt)||!Number.isFinite(overdueAt)) throw new Error('Task due date is invalid');
+  try{
+    await env.PROJECT_TASK_WORKFLOW.create({id:instanceId,params:{
+      client_id:Number(row.client_id),project_id:Number(row.project_id),task_id:Number(row.id),task_version:String(row.updated_at),
+      due_at_ms:dueAt,overdue_at_ms:overdueAt,workflow_started_at_ms:Date.now(),
+      reminders_enabled:Number(row.task_reminders_enabled)===1,overdue_enabled:Number(row.overdue_escalation_enabled)===1
+    }});
+  }catch(error){ if(!/already|exist|used/i.test(String(error?.message||error))) throw error; }
+  await pmUpsertAutomationState(env,row,{workflow_instance_id:instanceId,workflow_status:'running',reminder_status:'scheduled',last_error:''});
+}
+async function pmTerminateTaskWorkflow(env,job){
+  const state=await pmAutomationState(env,job.client_id,job.task_id);
+  if(state?.workflow_instance_id&&env.PROJECT_TASK_WORKFLOW){
+    try{ const instance=await env.PROJECT_TASK_WORKFLOW.get(state.workflow_instance_id); await instance.terminate(); }catch(e){}
+  }
+  await pmUpsertAutomationState(env,{client_id:job.client_id,project_id:job.project_id,task_id:job.task_id,task_version:job.task_version},
+    {workflow_status:'terminated',reminder_status:'cancelled',last_error:''});
+}
+async function pmRefreshProjectWorkflows(env,job){
+  const {results}=await env.DB.prepare(`SELECT t.*,p.task_reminders_enabled,p.overdue_escalation_enabled
+    FROM pm_tasks t JOIN pm_projects p ON p.id=t.project_id AND p.client_id=t.client_id
+    WHERE t.client_id=? AND t.project_id=?`).bind(Number(job.client_id),Number(job.project_id)).all();
+  for(const row of results||[]) await pmQueueTaskLifecycle(env,row,{runAutomations:false});
+}
+async function pmTerminateProjectWorkflows(env,job){
+  const {results}=await env.DB.prepare(`SELECT * FROM pm_task_automation WHERE client_id=? AND project_id=?`).bind(Number(job.client_id),Number(job.project_id)).all();
+  for(const state of results||[]) await pmTerminateTaskWorkflow(env,{client_id:state.client_id,project_id:state.project_id,task_id:state.task_id,task_version:state.task_version});
+}
+export async function pmProcessQueueJob(env,job){
+  if(!job?.type) throw new Error('Project queue job type is required');
+  if(job.type==='pm_workflow_start') return pmStartTaskWorkflow(env,job);
+  if(job.type==='pm_workflow_terminate') return pmTerminateTaskWorkflow(env,job);
+  if(job.type==='pm_project_refresh') return pmRefreshProjectWorkflows(env,job);
+  if(job.type==='pm_project_terminate') return pmTerminateProjectWorkflows(env,job);
+  if(job.type==='pm_automation_event') return pmRunAutomationEvent(env,job);
+  if(job.type==='pm_notification') return pmSendTaskNotification(env,job);
+  throw new Error(`Unknown Project queue job: ${job.type}`);
+}
+async function pmRecordDeadLetter(env,message){
+  const job=message.body||{},state=await pmAutomationState(env,job.client_id,job.task_id).catch(()=>null);
+  await env.DB.prepare(`INSERT INTO pm_queue_failures (client_id,project_id,task_id,job_type,failure_reason,attempts,created_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(Number(job.client_id)||0,Number(job.project_id)||0,Number(job.task_id)||0,String(job.type||'unknown').slice(0,80),
+      String(state?.last_error||'Retries exhausted').slice(0,1000),Number(message.attempts)||0,new Date().toISOString()).run();
+}
+export async function pmHandleQueueBatch(batch,env){
+  await pmEnsureAutomationSchema(env);
+  const deadLetter=String(batch.queue||'').endsWith('-dlq');
+  for(const message of batch.messages){
+    try{ if(deadLetter) await pmRecordDeadLetter(env,message); else await pmProcessQueueJob(env,message.body); message.ack(); }
+    catch(error){ await pmRecordAutomationError(env,message.body||{},error); message.retry({delaySeconds:Math.min(900,60*(2**Math.max(0,(Number(message.attempts)||1)-1)))}); }
+  }
+}
+export class ProjectTaskWorkflow extends WorkflowEntrypointBase{
+  async run(event,step){
+    const p=event.payload||{},retry={retries:{limit:5,delay:'30 seconds',backoff:'exponential'}};
+    const reminders=[
+      {kind:'reminder_48h',enabled:p.reminders_enabled,wakeAt:Number(p.due_at_ms)-48*3600000},
+      {kind:'due_today',enabled:p.reminders_enabled,wakeAt:Number(p.due_at_ms)},
+      {kind:'overdue',enabled:p.overdue_enabled,wakeAt:Number(p.overdue_at_ms)}
+    ];
+    for(const reminder of reminders){
+      if(!reminder.enabled||reminder.wakeAt<=Number(p.workflow_started_at_ms)) continue;
+      await step.sleepUntil(`wait for ${reminder.kind}`,new Date(reminder.wakeAt));
+      await step.do(`queue ${reminder.kind}`,retry,async()=>{
+        await this.env.PROJECT_JOBS.send({type:'pm_notification',kind:reminder.kind,client_id:p.client_id,project_id:p.project_id,task_id:p.task_id,task_version:p.task_version});
+      });
+    }
+    await step.do('mark task workflow complete',retry,async()=>{
+      await this.env.DB.prepare(`UPDATE pm_task_automation SET workflow_status='complete',updated_at=?
+        WHERE client_id=? AND task_id=? AND task_version=?`)
+        .bind(new Date().toISOString(),Number(p.client_id),Number(p.task_id),String(p.task_version)).run();
+    });
+    return {task_id:p.task_id,status:'reminders_queued'};
+  }
+}
+async function handlePmAutomationHealth(request,env){
+  const payload=await requireSession(request,env); if(!payload) return json({error:'Invalid or expired session'},401);
+  const active=await env.DB.prepare(`SELECT COUNT(*) count FROM pm_task_automation WHERE client_id=? AND workflow_status IN ('queued','running')`).bind(Number(payload.cid)).first();
+  const failed=await env.DB.prepare(`SELECT COUNT(*) count FROM pm_queue_failures WHERE client_id=?`).bind(Number(payload.cid)).first();
+  return json({active_workflows:Number(active?.count)||0,failed_jobs:Number(failed?.count)||0,queue_configured:!!env.PROJECT_JOBS,workflow_configured:!!env.PROJECT_TASK_WORKFLOW});
 }
 
 // ── ERPNext Customers / Items — live lookups for the accounting.html Customers tab and the
@@ -20721,6 +20961,7 @@ export default {
     let res;
     try{
       if(url.pathname.startsWith('/healthcare/')) await hcEnsureOperationsSchema(env);
+      if(url.pathname.startsWith('/pm/')) await pmEnsureAutomationSchema(env);
       if(url.pathname==='/health'){ res=json({ok:true, marketing_build:MARKETING_BUILD_TAG}); }
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
       else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
@@ -21112,6 +21353,7 @@ export default {
       else if(url.pathname==='/pm/dependencies' && request.method==='DELETE'){ res=await handlePmDependencyDelete(request, env); }
       else if(url.pathname==='/pm/lead-search' && request.method==='GET'){ res=await handlePmLeadSearch(request, env); }
       else if(url.pathname==='/pm/lead' && request.method==='GET'){ res=await handlePmLeadGet(request, env); }
+      else if(url.pathname==='/pm/automation-health' && request.method==='GET'){ res=await handlePmAutomationHealth(request, env); }
       else if(url.pathname==='/admin/pm/migrate-legacy-tasks' && request.method==='POST'){ res=await handlePmMigrateLegacyTasks(request, env); }
       else if(url.pathname==='/erpnext/suppliers' && request.method==='GET'){ res=await handleErpnextSuppliersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
@@ -21207,11 +21449,11 @@ export default {
     return new Response(res.body, {status:res.status, headers});
   },
 
-  // The primary Healthcare queue retries each message independently. Its configured dead-letter
-  // queue is consumed by this same handler and persisted to healthcare_queue_failures, giving the
-  // clinic a durable failure record instead of letting exhausted jobs disappear after retention.
+  // Healthcare and Projects use separate queues and DLQs, but share the Worker's Queue entrypoint.
+  // Each handler retries messages independently and persists exhausted jobs for dashboard health.
   async queue(batch,env,ctx){
-    ctx.waitUntil(hcHandleQueueBatch(batch,env));
+    const isProjectQueue=String(batch.queue||'').startsWith('leadvyne-project-');
+    ctx.waitUntil(isProjectQueue?pmHandleQueueBatch(batch,env):hcHandleQueueBatch(batch,env));
   },
 
   // Cloudflare Cron Triggers — see wrangler.toml [triggers]. Four schedules share this one entry

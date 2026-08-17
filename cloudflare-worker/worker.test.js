@@ -29,6 +29,10 @@ import {
   hcAppointmentUtcMs,
   hcHandleQueueBatch,
   HealthcareAppointmentWorkflow,
+  pmEnsureAutomationSchema,
+  pmTaskDueUtcMs,
+  pmHandleQueueBatch,
+  ProjectTaskWorkflow,
 } from './worker.js';
 
 describe('Healthcare verified-data routing', () => {
@@ -108,6 +112,58 @@ describe('Healthcare verified-data routing', () => {
     await hcHandleQueueBatch({queue:'leadvyne-healthcare-jobs-dlq',messages:[dead]},{DB});
     assert.equal(dead.acked,true);
     assert.ok(statements.some(sql=>sql.includes('INSERT INTO healthcare_queue_failures')));
+  });
+});
+
+describe('Project Queues and Workflows', () => {
+  test('repairs Project automation tables and settings columns once per D1 binding', async () => {
+    const statements=[];
+    const DB={prepare(sql){
+      statements.push(sql);
+      return {async all(){ return sql.includes('PRAGMA table_info')?{results:[{name:'id'}]}:{results:[]}; },async run(){return {success:true};}};
+    }};
+    await pmEnsureAutomationSchema({DB});
+    await pmEnsureAutomationSchema({DB});
+    assert.equal(statements.filter(sql=>sql.includes('ADD COLUMN task_reminders_enabled')).length,1);
+    assert.equal(statements.filter(sql=>sql.includes('ADD COLUMN overdue_escalation_enabled')).length,1);
+    for(const table of ['task_automation','task_notifications','queue_failures']){
+      assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS pm_${table}`)).length,1,table);
+    }
+  });
+
+  test('converts the task due-day 9 AM in the account timezone to UTC', () => {
+    assert.equal(new Date(pmTaskDueUtcMs('2026-08-20','Asia/Dubai')).toISOString(),'2026-08-20T05:00:00.000Z');
+    assert.equal(new Date(pmTaskDueUtcMs('2026-08-20','Asia/Dubai',1)).toISOString(),'2026-08-21T05:00:00.000Z');
+  });
+
+  test('task Workflow queues 48-hour, due-day and overdue notifications', async () => {
+    const sent=[],sleeps=[],updates=[];
+    const env={
+      PROJECT_JOBS:{async send(job){sent.push(job);}},
+      DB:{prepare(sql){return {bind(...values){updates.push({sql,values});return this;},async run(){return {success:true};}};}}
+    };
+    const workflow=new ProjectTaskWorkflow({},env);
+    const start=Date.parse('2026-08-17T00:00:00Z'),due=Date.parse('2026-08-20T05:00:00Z');
+    const step={async sleepUntil(name,date){sleeps.push({name,date:date.toISOString()});},async do(name,options,fn){return fn();}};
+    const result=await workflow.run({payload:{client_id:7,task_id:11,task_version:'v1',due_at_ms:due,overdue_at_ms:due+86400000,workflow_started_at_ms:start,reminders_enabled:true,overdue_enabled:true}},step);
+    assert.deepEqual(sent.map(x=>x.kind),['reminder_48h','due_today','overdue']);
+    assert.equal(sleeps.length,3);
+    assert.equal(updates.length,1);
+    assert.deepEqual(result,{task_id:11,status:'reminders_queued'});
+  });
+
+  test('Project Queue retries failures exponentially and records DLQ messages', async () => {
+    const statements=[];
+    const DB={prepare(sql){
+      statements.push(sql);
+      return {bind(){return this;},async all(){return sql.includes('PRAGMA table_info')?{results:[{name:'task_reminders_enabled'},{name:'overdue_escalation_enabled'}]}:{results:[]};},async first(){return null;},async run(){return {success:true,meta:{changes:1}};}};
+    }};
+    let delay=0,retried=false,acked=false;
+    await pmHandleQueueBatch({queue:'leadvyne-project-jobs',messages:[{body:{type:'unknown',client_id:1,project_id:2,task_id:3,task_version:'v1'},attempts:3,ack(){acked=true;},retry(o){retried=true;delay=o.delaySeconds;}}]},{DB});
+    assert.equal(acked,false); assert.equal(retried,true); assert.equal(delay,240);
+    await pmHandleQueueBatch({queue:'leadvyne-project-jobs-dlq',messages:[{body:{type:'pm_notification',client_id:1,project_id:2,task_id:3},attempts:6,ack(){acked=true;},retry(){}}]},{DB});
+    assert.equal(acked,true);
+    assert.ok(statements.some(sql=>sql.includes('INSERT INTO pm_queue_failures')));
   });
 });
 

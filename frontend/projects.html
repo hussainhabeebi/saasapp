@@ -537,6 +537,9 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
       <div class="subhead">🤝 Client &amp; automation</div>
       <div class="field"><label>Client email</label><input type="email" id="pmClientEmail" placeholder="Used for task completion updates when a task has no linked lead"></div>
       <div class="field"><label class="field-check"><input type="checkbox" id="pmAiAutoStage"> AI-suggest the next task whenever one completes in this project</label></div>
+      <div class="field"><label class="field-check"><input type="checkbox" id="pmTaskReminders"> Email the assignee 48 hours before and on the due date</label></div>
+      <div class="field"><label class="field-check"><input type="checkbox" id="pmOverdueEscalation"> Email the assignee and project owner when a task becomes overdue</label></div>
+      <div class="field-hint">Reminders run at 9:00 AM in the account timezone. Queue retries and Workflow scheduling are monitored in the Project summary.</div>
     </div>
     <div class="modal-footer">
       <button class="btn primary" onclick="saveProject()">Save</button>
@@ -714,6 +717,7 @@ function myCurrentEmail(){
 /* ── STATE ── */
 let clientRecord=null, teamOptions=[];
 let allProjects=[], allTasks=[], allDependencies=[], allTimeEntries=[], allSprints=[], allAutomations=[];
+let pmAutomationHealth={active_workflows:0,failed_jobs:0,queue_configured:false,workflow_configured:false};
 let selectedProjectId='all';
 let selectedSprintId=null;
 let currentView='board';
@@ -759,7 +763,7 @@ async function boot(){
     clientRecord=me.client||{};
     buildTeamOptions();
     await loadProjects(); // dependencies/sprints/automations below all need this list first
-    await Promise.all([loadTasks(), loadDependencies(), loadTimeEntries(), loadSprints(), loadAutomations()]);
+    await Promise.all([loadTasks(), loadDependencies(), loadTimeEntries(), loadSprints(), loadAutomations(), loadAutomationHealth()]);
     renderSidebar();
     renderStats();
     renderView();
@@ -798,6 +802,9 @@ async function loadDependencies(){
 async function loadTimeEntries(){ allTimeEntries=(await pmFetch('/pm/time',{method:'GET'})).list||[]; }
 async function loadSprints(){ allSprints=(await pmFetch('/pm/sprints',{method:'GET'})).list||[]; }
 async function loadAutomations(){ allAutomations=(await pmFetch('/pm/automations',{method:'GET'})).list||[]; }
+async function loadAutomationHealth(){
+  pmAutomationHealth=await pmFetch('/pm/automation-health',{method:'GET'}).catch(()=>({active_workflows:0,failed_jobs:0,queue_configured:false,workflow_configured:false}));
+}
 
 /* ── SIDEBAR ── */
 function renderSidebar(){
@@ -837,6 +844,8 @@ function renderStats(){
     <div class="stat"><div class="stat-val" style="color:${counts.blocked?'#DC2626':'var(--accent-ink)'}">${counts.blocked||0}</div><div class="stat-lbl">Blocked</div></div>
     <div class="stat"><div class="stat-val">${counts.done||0}</div><div class="stat-lbl">Done</div></div>
     <div class="stat"><div class="stat-val" style="color:${overdue?'#DC2626':'var(--accent-ink)'}">${overdue}</div><div class="stat-lbl">Overdue</div></div>
+    <div class="stat"><div class="stat-val">${pmAutomationHealth.active_workflows||0}</div><div class="stat-lbl">Scheduled</div></div>
+    <div class="stat"><div class="stat-val" style="color:${pmAutomationHealth.failed_jobs?'#DC2626':'var(--accent-ink)'}">${pmAutomationHealth.failed_jobs||0}</div><div class="stat-lbl">Failed jobs</div></div>
   `;
 }
 
@@ -1293,6 +1302,8 @@ function openProjectModal(id){
   $id('pmRate').value=proj?(proj.default_hourly_rate??''):'';
   $id('pmClientEmail').value=proj?(proj.client_email||''):'';
   $id('pmAiAutoStage').checked=!!(proj&&proj.ai_auto_stage_enabled);
+  $id('pmTaskReminders').checked=!!(proj&&proj.task_reminders_enabled);
+  $id('pmOverdueEscalation').checked=!!(proj&&proj.overdue_escalation_enabled);
   $id('pmMsg').textContent='';
   $id('pmDeleteBtn').style.display=proj?'':'none';
   openModal('projectModalOverlay');
@@ -1304,12 +1315,13 @@ async function saveProject(){
     name, description:$id('pmDesc').value.trim(), color:$id('pmColor').value, status:$id('pmStatus').value,
     budget_amount:$id('pmBudget').value||'', budget_currency:$id('pmCurrency').value.trim()||'USD', default_hourly_rate:$id('pmRate').value||'',
     client_email:$id('pmClientEmail').value.trim(), ai_auto_stage_enabled:$id('pmAiAutoStage').checked?1:0,
+    task_reminders_enabled:$id('pmTaskReminders').checked?1:0, overdue_escalation_enabled:$id('pmOverdueEscalation').checked?1:0,
   };
   $id('pmMsg').textContent='Saving…';
   try{
     if(_editingProjectId){ body.Id=_editingProjectId; await pmFetch('/pm/projects',{method:'PATCH', body:JSON.stringify(body)}); }
     else await pmFetch('/pm/projects',{method:'POST', body:JSON.stringify(body)});
-    await loadProjects();
+    await Promise.all([loadProjects(),loadAutomationHealth()]);
     closeModal('projectModalOverlay');
     renderSidebar(); renderStats(); renderView();
   }catch(e){ $id('pmMsg').textContent=e.message||'Could not save.'; }

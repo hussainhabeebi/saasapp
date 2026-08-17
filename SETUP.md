@@ -8283,3 +8283,27 @@ template names and language. The templates must accept six body variables in thi
 service, doctor, date, time, and message type. Templates are required for reliable reminders
 outside WhatsApp's customer-service conversation window; when no template is set, delivery only
 falls back to an existing Chatwoot conversation and failures are retried before going to the DLQ.
+
+## Project task Queues and Workflows
+
+Project task writes publish identifiers and the task version to `leadvyne-project-jobs`; titles,
+descriptions and email addresses never enter Queue or Workflow payloads. The consumer runs saved
+Project automation rules, retries transient email/automation failures five times, and records
+exhausted jobs from `leadvyne-project-jobs-dlq` in `pm_queue_failures` for the Projects dashboard.
+
+Projects can independently enable 48-hour/due-day assignee reminders and next-day overdue
+escalation. Each eligible task starts a versioned `leadvyne-project-task-lifecycle` Workflow that
+sleeps durably until 9:00 AM in the account timezone. Task edits, completion and deletion terminate
+the previous instance, and every notification re-reads D1 and verifies the saved task version.
+
+Create both Queue resources before the first deploy (Wrangler does not create a referenced DLQ):
+
+```bash
+npx wrangler queues create leadvyne-project-jobs
+npx wrangler queues create leadvyne-project-jobs-dlq
+npx wrangler d1 migrations apply leadvyne-d1 --remote
+npx wrangler deploy
+```
+
+The deploy registers the Workflow named `leadvyne-project-task-lifecycle`. Configure
+`RESEND_API_KEY` (and optionally `RESEND_FROM_EMAIL`) as Worker secrets before enabling reminders.
