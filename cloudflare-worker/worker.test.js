@@ -20,7 +20,46 @@ import {
   engineSendChatwootReply,
   engineBuildFaqSystemPrompt,
   engineExtractPlainOptionsFromReply,
+  hcNormalizeText,
+  hcQueryTokens,
+  hcServiceChoiceItems,
+  hcVerifiedServiceText,
+  hcEmergencyMatch,
 } from './worker.js';
+
+describe('Healthcare verified-data routing', () => {
+  test('normalizes natural patient wording without losing Unicode text', () => {
+    assert.equal(hcNormalizeText('  Root-Canal / RCT!  '), 'root canal rct');
+    assert.equal(hcNormalizeText('ദന്ത ചികിത്സ'), 'ദന്ത ചികിത്സ');
+  });
+
+  test('choice labels and values come only from saved Service records', () => {
+    const rows=[
+      {id:1,name:'Root Canal Treatment',short_label:'Root Canal'},
+      {id:2,name:'Dental Cleaning',short_label:''},
+      {id:3,name:'Root Canal Treatment',short_label:'Duplicate'},
+    ];
+    assert.deepEqual(hcServiceChoiceItems(rows), [
+      {title:'Root Canal',value:'Root Canal Treatment'},
+      {title:'Dental Cleaning',value:'Dental Cleaning'},
+    ]);
+  });
+
+  test('verified service reply never invents absent price, duration, preparation or link', () => {
+    const text=hcVerifiedServiceText({name:'Dental Checkup',description:'A routine dental examination.',price:0,duration_minutes:0,preparation:'',booking_url:''}, 'how much and how long?');
+    assert.equal(text, '*Dental Checkup*\n\nA routine dental examination.');
+  });
+
+  test('emergency matcher catches configured phrases but respects simple negation', () => {
+    const settings={emergency_keywords:'chest pain,severe bleeding'};
+    assert.equal(hcEmergencyMatch(settings,'I have severe chest pain'), 'chest pain');
+    assert.equal(hcEmergencyMatch(settings,'I have no chest pain'), null);
+  });
+
+  test('generic words are removed before service matching', () => {
+    assert.deepEqual(hcQueryTokens('Please book a doctor appointment for root canal'), ['root','canal']);
+  });
+});
 
 describe('engineTruncateButtonTitle — WhatsApp title-length safety (FIXES.md #5)', () => {
   test('leaves a short title untouched', () => {

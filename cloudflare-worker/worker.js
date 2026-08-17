@@ -2341,12 +2341,17 @@ async function handleAiOrderSignal(request, env){
 async function detectBookingSignal(env, c, clientId, message, contextText){
   if(!env.GEMINI_API_KEY && !c.openrouter_key) return {signal:false, error:'No AI provider configured.'};
 
-  const servicesTable=apptResolveTable(c, 'services');
   let serviceList='';
-  if(servicesTable){
+  if(c.industry==='healthcare'){
+    const services=await hcListActiveServices(env,clientId);
+    serviceList=services.map(s=>`- ${s.name} [service_id:${s.id}]${s.duration_minutes?' ('+s.duration_minutes+' min)':''}${Number(s.price)>0?' '+((s.currency||'')+' '+s.price):''}`).join('\n');
+  }else{
+    const servicesTable=apptResolveTable(c, 'services');
+    if(servicesTable){
     const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&fields=Id,name,duration_minutes,price,currency`);
     const sd=await sr.json().catch(()=>({}));
     serviceList=(sd?.list||[]).map(s=>`- ${s.name} [service_id:${s.Id}]${s.duration_minutes?' ('+s.duration_minutes+' min)':''}${s.price?' '+((s.currency||'')+' '+s.price):''}`).join('\n');
+    }
   }
 
   const system=`You are screening one incoming WhatsApp message for a services business (healthcare, consultancy, salon, etc), to decide if it's a booking-readiness signal — either an explicit request to book/schedule an appointment, OR a specific question about availability, duration, or price of one particular service that shows they're close to booking. General browsing questions, greetings, or unrelated questions are NOT signals.
@@ -4414,7 +4419,8 @@ async function handleGcalOauthCallback(request, env){
   // access_denied) still honors whichever page actually started this connection.
   const statePayload=await verifyOauthState(env, url.searchParams.get('state'));
   const appBase=statePayload?.rt ? `https://app.leadvyne.com/${statePayload.rt}` : (env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html');
-  const fail=(msg)=>Response.redirect(`${appBase}?gcal=error&msg=${encodeURIComponent(msg)}`, 302);
+  const redirectSep=appBase.includes('?')?'&':'?';
+  const fail=(msg)=>Response.redirect(`${appBase}${redirectSep}gcal=error&msg=${encodeURIComponent(msg)}`, 302);
   if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET) return fail('Google credentials are not configured on the server.');
   const err=url.searchParams.get('error');
   if(err) return fail(err==='access_denied'?'Access was denied':err);
@@ -4437,7 +4443,7 @@ async function handleGcalOauthCallback(request, env){
   if(!calId) return fail('Connected to Google, but could not create the "Leadvyne Tasks & Events" calendar — try again.');
 
   await patchClientFields(env, statePayload.cid, {gcal_refresh_token:tokenData.refresh_token, gcal_calendar_id:calId, gcal_connected_at:new Date().toISOString()});
-  return Response.redirect(`${appBase}?client=${statePayload.cid}&gcal=connected`, 302);
+  return Response.redirect(`${appBase}${redirectSep}client=${statePayload.cid}&gcal=connected`, 302);
 }
 
 async function gcalCreateCalendar(accessToken){
@@ -4483,14 +4489,14 @@ async function handleGcalDisconnect(request, env){
 // native RRULE recurrence for display — purely cosmetic on the Google side; Leadvyne's own
 // Calendar Events cadence/dedupe logic (see calendarOccurrenceDate above) is entirely unaffected
 // by however this renders in Google Calendar.
-async function gcalUpsertEvent(env, c, {gcalEventId, title, notes, date, time, allDay, recurrenceYearly}){
+async function gcalUpsertEvent(env, c, {gcalEventId, title, notes, date, time, allDay, recurrenceYearly, durationMinutes}){
   const token=await gcalGetAccessToken(env, c);
   if(!token||!c.gcal_calendar_id) return null;
   const body={
     summary:title||'(untitled)', description:notes||'',
     ...(allDay
       ? {start:{date}, end:{date}}
-      : {start:{dateTime:`${date}T${time||'09:00'}:00`}, end:{dateTime:gcalAddMinutes(date, time||'09:00', 30)}}),
+      : {start:{dateTime:`${date}T${time||'09:00'}:00`}, end:{dateTime:gcalAddMinutes(date, time||'09:00', Math.max(5, Number(durationMinutes)||30))}}),
     ...(recurrenceYearly?{recurrence:['RRULE:FREQ=YEARLY']}:{}),
   };
   const method=gcalEventId?'PATCH':'POST';
@@ -7576,6 +7582,130 @@ function ecomCatalogueQueryTokens(value){
   const stop=new Set(['a','an','the','i','me','my','we','you','your','want','need','looking','look','for','show','tell','about','have','has','do','does','is','are','please','pls','price','cost','buy','order','available','availability','product','item']);
   return [...new Set(ecomNormalizeCatalogueText(value).split(' ').filter(t=>t && !stop.has(t) && (t.length>1 || /^\d$/.test(t))))];
 }
+
+// Healthcare's verified equivalent of the Ecom Products matcher. It only searches active rows
+// saved in Healthcare → Services and returns real records for exact WhatsApp choice labels.
+export function hcNormalizeText(value){
+  return String(value||'').normalize('NFC').toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+}
+export function hcQueryTokens(value){
+  const stop=new Set(['a','an','the','i','me','my','we','you','your','want','need','looking','look','for','show','tell','about','have','has','do','does','is','are','please','pls','clinic','hospital','doctor','appointment','book','available','availability','treatment','service']);
+  return [...new Set(hcNormalizeText(value).split(' ').filter(t=>t&&!stop.has(t)&&t.length>1))];
+}
+async function hcListActiveServices(env, clientId){
+  const {results}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  return results||[];
+}
+export function hcServiceChoiceItems(services){
+  const seen=new Set(), items=[];
+  for(const s of services||[]){
+    const name=String(s.name||'').trim(), label=String(s.short_label||name).trim();
+    if(!name||seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase()); items.push({title:label,value:name});
+  }
+  return items.slice(0,10);
+}
+async function hcFindBroadServiceMatches(env,clientId,message){
+  const query=hcNormalizeText(message), tokens=hcQueryTokens(message); if(!query||!tokens.length)return [];
+  const services=await hcListActiveServices(env,clientId), scored=[];
+  for(const service of services){
+    const fields=[['name',25],['short_label',22],['aliases',18],['description',5],['preparation',3]]
+      .map(([key,weight])=>({text:hcNormalizeText(service[key]),weight})).filter(x=>x.text);
+    const combined=fields.map(x=>x.text).join(' '), matched=tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(combined));
+    if(!matched.length)continue;
+    let score=(matched.length/tokens.length)*100;
+    for(const f of fields){if(f.text===query)score+=f.weight*3;else if(f.text.includes(query))score+=f.weight*2;for(const t of matched)if(new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(f.text))score+=f.weight;}
+    scored.push({service,score});
+  }
+  if(!scored.length)return [];
+  scored.sort((a,b)=>b.score-a.score||String(a.service.name).localeCompare(String(b.service.name)));
+  const best=scored[0].score;
+  return scored.filter(x=>x.score>=Math.max(80,best*.55)).slice(0,10).map(x=>x.service);
+}
+async function hcFindDoctorMatches(env,clientId,message){
+  const tokens=hcQueryTokens(message).filter(t=>t!=='dr'); if(!tokens.length)return [];
+  const {results}=await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  return (results||[]).map(doctor=>{
+    const text=hcNormalizeText([doctor.name,doctor.specialization,doctor.qualification,doctor.description].join(' '));
+    const hits=tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(text));
+    return {doctor,score:hits.length/tokens.length};
+  }).filter(x=>x.score>=.5).sort((a,b)=>b.score-a.score).slice(0,10).map(x=>x.doctor);
+}
+async function hcFindDepartmentMatches(env,clientId,message){
+  const tokens=hcQueryTokens(message); if(!tokens.length)return [];
+  const {results}=await env.DB.prepare(`SELECT * FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  return (results||[]).filter(dep=>{
+    const text=hcNormalizeText([dep.name,dep.description].join(' '));
+    return tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(text)).length>=Math.max(1,Math.ceil(tokens.length*.5));
+  }).slice(0,10);
+}
+function hcVerifiedDoctorText(doctor,question){
+  const lines=[`*${doctor.name}*`];
+  if(doctor.specialization)lines.push(doctor.specialization);
+  if(doctor.qualification)lines.push(`Qualification: ${doctor.qualification}`);
+  if(Number(doctor.experience_years)>0)lines.push(`Experience: ${doctor.experience_years} years`);
+  if(/price|cost|fee|how much|consultation/i.test(question||'')&&Number(doctor.consultation_fee)>0)lines.push(`Consultation fee: ${doctor.consultation_fee}`);
+  if(doctor.description)lines.push(doctor.description);
+  return lines.join('\n\n');
+}
+async function hcSendDoctorMedia(env,c,clientId,convId,doctor){
+  try{for(const key of ['image_url_2','image_url_3','image_url_4','image_url_5','video_url','pdf_url'])if(doctor[key])await sendDriveMediaToChatwoot(c,convId,doctor[key],'');}
+  catch(e){await reportOpsError(env,'hcSendDoctorMedia',e,{clientId,convId,doctorId:doctor.id});}
+}
+export function hcVerifiedServiceText(service,question){
+  const lines=[`*${service.name}*`];
+  if(service.description)lines.push(service.description);
+  if(/price|cost|fee|how much/i.test(question||'')&&Number(service.price)>0)lines.push(`Price: ${service.currency||''} ${service.price}`.trim());
+  if(/duration|how long|time/i.test(question||'')&&Number(service.duration_minutes)>0)lines.push(`Duration: ${service.duration_minutes} minutes`);
+  if(/prepare|preparation|before|fasting/i.test(question||'')&&service.preparation)lines.push(`Preparation: ${service.preparation}`);
+  if(/book|appointment|schedule/i.test(question||'')&&service.booking_url)lines.push(`Book here: ${service.booking_url}`);
+  return lines.join('\n\n');
+}
+async function hcClaimServiceMediaForToday(env,clientId,leadId,serviceId){
+  if(!leadId||!serviceId)return true;
+  try{
+    const now=new Date(), date=now.toISOString().slice(0,10);
+    const r=await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_media_sent (client_id,lead_id,service_id,sent_date,sent_at) VALUES (?,?,?,?,?)`).bind(Number(clientId),Number(leadId),Number(serviceId),date,now.toISOString()).run();
+    return !!r?.meta?.changes;
+  }catch(e){return true;}
+}
+async function hcSendServiceMedia(env,c,clientId,convId,service){
+  if(!service||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token)return;
+  try{
+    for(const key of ['image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url'])if(service[key])await sendDriveMediaToChatwoot(c,convId,service[key],'');
+  }catch(e){await reportOpsError(env,'hcSendServiceMedia',e,{clientId,convId,serviceId:service.id});}
+}
+async function hcSettingsForClient(env,clientId){
+  try{
+    await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_settings (client_id) VALUES (?)`).bind(Number(clientId)).run();
+    return await env.DB.prepare(`SELECT * FROM healthcare_settings WHERE client_id=?`).bind(Number(clientId)).first();
+  }catch(e){return null;}
+}
+export function hcEmergencyMatch(settings,message){
+  const text=hcNormalizeText(message), keywords=String(settings?.emergency_keywords||'').split(',').map(hcNormalizeText).filter(Boolean);
+  return keywords.find(k=>{
+    const at=text.indexOf(k); if(at<0)return false;
+    const before=text.slice(Math.max(0,at-18),at);
+    return !/(?:no|not|without|don t|dont)\s*$/.test(before);
+  })||null;
+}
+async function engineBuildHealthcareContext(env,clientId){
+  const [services,deps,docs,insurance,hcSettings]=await Promise.all([
+    hcListActiveServices(env,clientId),
+    env.DB.prepare(`SELECT id,name,description FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 50`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT id,department_id,name,qualification,specialization,experience_years,consultation_fee,description FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT provider_name,network_name,plan_name,covered_services,preapproval_required,verification_note,last_verified_at FROM healthcare_insurance WHERE client_id=? AND status='active' ORDER BY provider_name LIMIT 100`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    hcSettingsForClient(env,clientId)
+  ]);
+  const strict=hcSettings?.strict_zero_hallucination!==0;
+  const lines=[`\n\n## VERIFIED HEALTHCARE DATA${strict?' — ONLY SOURCE OF TRUTH':''}`,`STRICT_ZERO_HALLUCINATION=${strict?'ON':'OFF'}`];
+  lines.push(`Never diagnose, prescribe, guarantee insurance coverage, invent availability, price, doctor, treatment, or policy.${strict?' If the requested fact is absent below, say it is not verified and offer clinic-team handover.':''}`);
+  if(services.length){lines.push('### Services');services.forEach(s=>lines.push(`- ${s.name}${s.short_label?' | label: '+s.short_label:''}${s.aliases?' | aliases: '+s.aliases:''}${s.description?' | '+s.description:''}${Number(s.price)>0?' | '+(s.currency||'')+' '+s.price:''}${Number(s.duration_minutes)>0?' | '+s.duration_minutes+' min':''}${s.preparation?' | preparation: '+s.preparation:''}${s.booking_url?' | booking: '+s.booking_url:''}`));}
+  if(deps.length){lines.push('### Departments');deps.forEach(d=>lines.push(`- ${d.name}${d.description?' | '+d.description:''}`));}
+  if(docs.length){lines.push('### Doctors');docs.forEach(d=>lines.push(`- ${d.name}${d.specialization?' | '+d.specialization:''}${d.qualification?' | '+d.qualification:''}${d.experience_years?' | '+d.experience_years+' years':''}${d.consultation_fee?' | consultation fee '+d.consultation_fee:''}${d.description?' | '+d.description:''}`));}
+  if(insurance.length){lines.push('### Insurance (coverage always requires clinic verification)');insurance.forEach(i=>lines.push(`- ${i.provider_name}${i.network_name?' | network '+i.network_name:''}${i.plan_name?' | plan '+i.plan_name:''}${i.covered_services?' | listed services '+i.covered_services:''}${i.preapproval_required?' | pre-approval required':''}${i.verification_note?' | '+i.verification_note:''}${i.last_verified_at?' | last verified '+i.last_verified_at:''}`));}
+  return lines.join('\n');
+}
 function ecomProductChoiceItems(products){
   const seen=new Set();
   const items=[];
@@ -7927,7 +8057,7 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service,
   if(bookingsTable){
     const insert=async()=>ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{
       client_id:clientId, customer_name:name||'', customer_phone:phone,
-      service_id:service?String(service.Id):'', service_name:service?.name||'',
+      service_id:service?String(service.Id||service.id):'', service_name:service?.name||'',
       appt_date:explicitWhen?.date||'', appt_time:explicitWhen?.time||'',
       status:'requested', source:explicitWhen?'public':'bot', lead_id:lead?String(lead.Id):'', calcom_uid:'',
       notes:explicitWhen?'Booked via the public booking page — awaiting confirmation.':'Booking link sent — awaiting confirmed date/time.',
@@ -7955,13 +8085,18 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service,
 async function resolveApptServiceAndText(env, c, clientId, name, serviceId, link){
   let service=null;
   if(serviceId){
-    const servicesTable=apptResolveTable(c, 'services');
-    if(servicesTable){
+    if(c.industry==='healthcare'){
+      service=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first();
+    }else{
+      const servicesTable=apptResolveTable(c, 'services');
+      if(servicesTable){
       const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(Id,eq,${Number(serviceId)})&limit=1`);
       const sd=await sr.json().catch(()=>({}));
       service=sd?.list?.[0]||null;
+      }
     }
   }
+  if(service?.booking_url) link=service.booking_url;
   const displayName=name||'there';
   const text=service
     ? `Hi ${displayName}! Here's the link to book your *${service.name}*${service.duration_minutes?' ('+service.duration_minutes+' min)':''}: ${link}`
@@ -7975,8 +8110,12 @@ async function resolveApptServiceAndText(env, c, clientId, name, serviceId, link
 // optional and only resolved if the Appointment module is set up; without it the message is just
 // the plain booking-link text.
 async function sendBookingLinkNow(env, c, clientId, phone, name, serviceId){
-  const link=(c.external_store_link||'').trim();
-  if(!link) return {error:'No booking link configured — set one in Settings → Order Link.'};
+  let link=(c.external_store_link||'').trim();
+  if(c.industry==='healthcare'&&serviceId){
+    const s=await env.DB.prepare(`SELECT booking_url FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first();
+    link=(s?.booking_url||link).trim();
+  }
+  if(!link) return {error:'No booking link configured for this service.'};
   if(!c.wa_phone_id||!c.wa_token) return {error:'WhatsApp phone / token not configured.'};
 
   const {service, text}=await resolveApptServiceAndText(env, c, clientId, name, serviceId, link);
@@ -8000,8 +8139,12 @@ async function sendBookingLinkNow(env, c, clientId, phone, name, serviceId){
 // during WhatsApp connect — see handleChannelsWhatsappConnect) does the actual Meta relay, so this
 // path never has to hand-build a Graph API text payload at all.
 async function sendBookingLinkViaChatwoot(env, c, clientId, conversationId, phone, name, serviceId){
-  const link=(c.external_store_link||'').trim();
-  if(!link) return {error:'No booking link configured — set one in Settings → Order Link.'};
+  let link=(c.external_store_link||'').trim();
+  if(c.industry==='healthcare'&&serviceId){
+    const s=await env.DB.prepare(`SELECT booking_url FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first();
+    link=(s?.booking_url||link).trim();
+  }
+  if(!link) return {error:'No booking link configured for this service.'};
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return {error:'Chatwoot is not configured for this account.'};
 
   const {service, text}=await resolveApptServiceAndText(env, c, clientId, name, serviceId, link);
@@ -9331,6 +9474,10 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   }
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
   if(contextBlock) sys+=contextBlock;
+  if(industry==='healthcare'){
+    sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
+    if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover.';
+  }
   // First-ever message from this lead — give a short, natural intro to what the business offers
   // (drawing on Services/Knowledge Base above) before/alongside answering, instead of jumping
   // straight into an answer with no context on who they're talking to. Short and blended into the
@@ -11222,6 +11369,84 @@ async function handleEngineWebhook(request, env, secret){
         orderHandledInline=true;
       }
     }
+    // Healthcare is grounded before the general FAQ LLM. Emergency phrases deterministically
+    // hand over; service lookup searches only Healthcare → Services; every picker label is copied
+    // from a real active service/doctor row. A single match gets its stored facts and media only.
+    if(!orderHandledInline && c.industry==='healthcare' && routing.route!=='drop' && !routing.isOptOut && !routing.isResub){
+      const hcSettings=await hcSettingsForClient(env,clientId);
+      const emergency=hcEmergencyMatch(hcSettings,userText);
+      if(emergency){
+        const contact=String(hcSettings?.emergency_contact||'').trim();
+        sentText=String(hcSettings?.emergency_message||'This may require urgent medical attention. Please contact local emergency services or the clinic immediately.').trim();
+        if(contact) sentText+=`\n\nEmergency contact: ${contact}`;
+        if(hcSettings?.handover_message) sentText+=`\n\n${hcSettings.handover_message}`;
+        sentText=await engineLocalizeReply(env,c,sentText,replyLang);
+        routing.reply=sentText; routing.route='human'; routing.humanReason='healthcare_emergency';
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
+        await engineSendHandoverLabel(c,convId);
+        orderHandledInline=true;
+      }else{
+        let matches=await hcFindBroadServiceMatches(env,clientId,userText);
+        if(!matches.length&&isNewLead&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())) matches=await hcListActiveServices(env,clientId);
+        if(matches.length>1){
+          sentText=await engineLocalizeReply(env,c,isNewLead?`Welcome to ${c.client_name||'our clinic'}. Please choose the service you need:`:'Please choose the exact service you need:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(matches));
+          orderHandledInline=true;
+        }else if(matches.length===1){
+          const service=matches[0], sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
+          sentText=await engineLocalizeReply(env,c,hcVerifiedServiceText(service,userText),replyLang);
+          routing.reply=sentText;
+          if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
+          const {results:serviceDoctors}=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service.department_id||0)).all();
+          const doctorChoices=(serviceDoctors||[]).map(d=>({title:d.name,value:d.name}));
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:doctorChoices});
+          if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
+          // If the primary image path was used, send the exact doctor choices as a separate picker
+          // because engineDeliverReply deliberately prioritizes an image over quick replies.
+          if(sendMedia&&service.image_url&&doctorChoices.length) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Available doctors:',doctorChoices);
+          else if(doctorChoices.length) routing.quickReplies=doctorChoices;
+          orderHandledInline=true;
+        }else{
+          const doctorMatches=await hcFindDoctorMatches(env,clientId,userText);
+          if(doctorMatches.length>1){
+            sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,doctorMatches.map(d=>({title:d.name,value:d.name})));
+            orderHandledInline=true;
+          }else if(doctorMatches.length===1){
+            const doctor=doctorMatches[0];
+            sentText=await engineLocalizeReply(env,c,hcVerifiedDoctorText(doctor,userText),replyLang);
+            routing.reply=sentText;
+            if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:doctor.image_url||null});
+            await hcSendDoctorMedia(env,c,clientId,convId,doctor);
+            orderHandledInline=true;
+          }else{
+            const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
+            if(departmentMatches.length){
+              const ids=departmentMatches.map(d=>Number(d.id));
+              const departmentServices=(await hcListActiveServices(env,clientId)).filter(s=>ids.includes(Number(s.department_id)));
+              if(departmentServices.length){
+                sentText=await engineLocalizeReply(env,c,'Please choose the exact service you need:',replyLang);
+                routing.reply=sentText;
+                routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(departmentServices));
+                orderHandledInline=true;
+              }
+            }
+          }
+        }
+        if(!orderHandledInline&&/insurance|coverage|covered|network|policy/i.test(userText)){
+          const {results:providers}=await env.DB.prepare(`SELECT provider_name,network_name,plan_name FROM healthcare_insurance WHERE client_id=? AND status='active' ORDER BY provider_name LIMIT 10`).bind(Number(clientId)).all();
+          if(providers?.length){
+            sentText=await engineLocalizeReply(env,c,'Please choose your insurance provider. Coverage still needs confirmation by the clinic:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,providers.map(p=>({title:p.provider_name,value:p.provider_name})));
+            orderHandledInline=true;
+          }
+        }
+      }
+    }
     // Order-readiness overrides the flow_json state machine's own routing entirely, not just
     // within the ecom_faq branch — observed real failure: a customer given a product's full detail
     // card said "Order this" next, and instead of the order link got a scripted, unrelated
@@ -11629,6 +11854,7 @@ async function handleEngineWebhook(request, env, secret){
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
+      else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
       const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
@@ -11812,7 +12038,7 @@ async function handleEngineWebhook(request, env, secret){
     // ecommerce here would just re-call detectOrderSignal a second, redundant time, and could
     // violate the "never send a link before order intent" rule for the one case the order-check
     // above deliberately leaves unhandled (an enquiry with no confident product match).
-    if(c.bot_reply_disabled!=='Yes' && c.industry!=='ecommerce' && !['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && (c.external_store_link||'').trim()){
+    if(!orderHandledInline && c.bot_reply_disabled!=='Yes' && c.industry!=='ecommerce' && !['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && (c.external_store_link||'').trim()){
       // Only runs once a booking link is actually configured, and skips a lead already at a
       // booking-terminal stage or one with a `requested` appointment already pending.
       const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
@@ -19502,10 +19728,10 @@ const reDocumentsCrud=reCrud('re_documents', [
   {key:'is_rera', type:'bool'}
 ]);
 
-/* ── Healthcare module (frontend/healthcare.html) — Departments/Doctors, structured like Ecom's
-   Categories/Products (migrations/0054_healthcare.sql) but session-gated + pure D1 like Real
-   Estate, reusing the same generic reCrud factory — no bespoke handlers needed since neither
-   entity has Real Estate units' hold-expiry/price-audit side effects. ── */
+/* ── Healthcare module (frontend/healthcare.html) ─────────────────────────────────────────────
+   Departments/Doctors remain the directory. Services are the verified patient-facing source of
+   truth; schedules and appointments provide real availability; Insurance and Settings provide
+   verified coverage/emergency language. Everything is session-gated and client-scoped. */
 const hcDepartmentsCrud=reCrud('healthcare_departments', [
   {key:'name', type:'text', required:true, maxLen:200}, {key:'description', type:'text', maxLen:2000},
   {key:'image_url_1', type:'text', maxLen:1000}, {key:'image_url_2', type:'text', maxLen:1000},
@@ -19522,6 +19748,203 @@ const hcDoctorsCrud=reCrud('healthcare_doctors', [
   {key:'image_url_5', type:'text', maxLen:1000}, {key:'video_url', type:'text', maxLen:1000},
   {key:'pdf_url', type:'text', maxLen:1000}, {key:'status', type:'text', maxLen:30}
 ]);
+const hcServicesCrud=reCrud('healthcare_services', [
+  {key:'department_id', type:'number'}, {key:'name', type:'text', required:true, maxLen:200},
+  {key:'short_label', type:'text', maxLen:80}, {key:'aliases', type:'text', maxLen:1000},
+  {key:'description', type:'text', required:true, maxLen:4000}, {key:'price', type:'number'},
+  {key:'currency', type:'text', maxLen:20}, {key:'duration_minutes', type:'number'},
+  {key:'preparation', type:'text', maxLen:2000}, {key:'booking_url', type:'text', maxLen:1000},
+  {key:'image_url', type:'text', maxLen:1000}, {key:'image_url_2', type:'text', maxLen:1000},
+  {key:'image_url_3', type:'text', maxLen:1000}, {key:'image_url_4', type:'text', maxLen:1000},
+  {key:'image_url_5', type:'text', maxLen:1000}, {key:'audio_url', type:'text', maxLen:1000},
+  {key:'video_url', type:'text', maxLen:1000}, {key:'pdf_url', type:'text', maxLen:1000},
+  {key:'status', type:'text', maxLen:30}, {key:'updated_at', type:'text', maxLen:40}
+]);
+const hcSchedulesCrud=reCrud('healthcare_doctor_schedules', [
+  {key:'doctor_id', type:'number', required:true}, {key:'weekday', type:'number'},
+  {key:'start_time', type:'text', required:true, maxLen:8}, {key:'end_time', type:'text', required:true, maxLen:8},
+  {key:'break_start', type:'text', maxLen:8}, {key:'break_end', type:'text', maxLen:8},
+  {key:'slot_minutes', type:'number'}, {key:'status', type:'text', maxLen:30}
+]);
+const hcInsuranceCrud=reCrud('healthcare_insurance', [
+  {key:'provider_name', type:'text', required:true, maxLen:200}, {key:'network_name', type:'text', maxLen:200},
+  {key:'plan_name', type:'text', maxLen:200}, {key:'covered_services', type:'text', maxLen:2000},
+  {key:'preapproval_required', type:'bool'}, {key:'verification_note', type:'text', maxLen:2000},
+  {key:'contact', type:'text', maxLen:200}, {key:'status', type:'text', maxLen:30},
+  {key:'last_verified_at', type:'text', maxLen:40}
+]);
+
+async function hcRequireSessionClient(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return null;
+  const c=await getClientById(env, payload.cid);
+  return c?{payload,c}:null;
+}
+async function handleHcSettingsGet(request, env){
+  const auth=await hcRequireSessionClient(request, env);
+  if(!auth) return json({error:'Invalid or expired session'}, 401);
+  await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_settings (client_id) VALUES (?)`).bind(Number(auth.payload.cid)).run();
+  const row=await env.DB.prepare(`SELECT * FROM healthcare_settings WHERE client_id=?`).bind(Number(auth.payload.cid)).first();
+  return json(row||{});
+}
+async function handleHcSettingsUpdate(request, env){
+  const auth=await hcRequireSessionClient(request, env);
+  if(!auth) return json({error:'Invalid or expired session'}, 401);
+  const b=await request.json().catch(()=>({}));
+  await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_settings (client_id) VALUES (?)`).bind(Number(auth.payload.cid)).run();
+  await env.DB.prepare(`UPDATE healthcare_settings SET strict_zero_hallucination=?, emergency_keywords=?, emergency_message=?, handover_message=?, emergency_contact=?, updated_at=? WHERE client_id=?`)
+    .bind(b.strict_zero_hallucination===false||b.strict_zero_hallucination===0?0:1,
+      String(b.emergency_keywords||'').slice(0,3000), String(b.emergency_message||'').slice(0,2000),
+      String(b.handover_message||'').slice(0,2000), String(b.emergency_contact||'').slice(0,200),
+      new Date().toISOString(), Number(auth.payload.cid)).run();
+  return json({ok:true});
+}
+
+function hcTimeToMinutes(value){
+  const m=/^(\d{1,2}):(\d{2})$/.exec(String(value||''));
+  return m?Number(m[1])*60+Number(m[2]):null;
+}
+function hcMinutesToTime(value){
+  const n=Math.max(0, Math.min(1439, Number(value)||0));
+  return `${String(Math.floor(n/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`;
+}
+function hcRangesOverlap(aStart,aEnd,bStart,bEnd){ return aStart<bEnd && bStart<aEnd; }
+async function hcGoogleBusyRanges(env, c, date, excludeEventId){
+  if(!c?.gcal_refresh_token||!c?.gcal_calendar_id) return [];
+  try{
+    const token=await gcalGetAccessToken(env,c); if(!token) return [];
+    const timeMin=encodeURIComponent(`${date}T00:00:00Z`), timeMax=encodeURIComponent(`${date}T23:59:59Z`);
+    const r=await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(c.gcal_calendar_id)}/events?singleEvents=true&orderBy=startTime&timeMin=${timeMin}&timeMax=${timeMax}`, {headers:{Authorization:`Bearer ${token}`}});
+    const d=await r.json().catch(()=>({})); if(!r.ok) return [];
+    return (d.items||[]).filter(x=>x.id!==excludeEventId&&x.status!=='cancelled'&&x.start?.dateTime&&x.end?.dateTime).map(x=>({
+      start:hcTimeToMinutes(String(x.start.dateTime).slice(11,16)), end:hcTimeToMinutes(String(x.end.dateTime).slice(11,16)), id:x.id
+    })).filter(x=>x.start!==null&&x.end!==null);
+  }catch(e){ return []; }
+}
+async function hcAvailableSlots(env, clientId, c, doctorId, date, serviceId, excludeAppointmentId){
+  const weekday=new Date(`${date}T12:00:00Z`).getUTCDay();
+  const {results:scheduleRows}=await env.DB.prepare(`SELECT * FROM healthcare_doctor_schedules WHERE client_id=? AND doctor_id=? AND weekday=? AND status='active' ORDER BY start_time`)
+    .bind(Number(clientId), Number(doctorId), weekday).all();
+  if(!scheduleRows?.length) return [];
+  const service=serviceId?await env.DB.prepare(`SELECT duration_minutes FROM healthcare_services WHERE id=? AND client_id=?`).bind(Number(serviceId),Number(clientId)).first():null;
+  const {results:appointmentRows}=await env.DB.prepare(`SELECT id,start_time,end_time FROM healthcare_appointments WHERE client_id=? AND doctor_id=? AND appointment_date=? AND status NOT IN ('cancelled','completed','no_show')`)
+    .bind(Number(clientId),Number(doctorId),date).all();
+  const internal=(appointmentRows||[]).filter(x=>!excludeAppointmentId||Number(x.id)!==Number(excludeAppointmentId)).map(x=>({start:hcTimeToMinutes(x.start_time),end:hcTimeToMinutes(x.end_time)}));
+  const excluded=excludeAppointmentId?await env.DB.prepare(`SELECT gcal_event_id FROM healthcare_appointments WHERE id=? AND client_id=?`).bind(Number(excludeAppointmentId),Number(clientId)).first():null;
+  const google=await hcGoogleBusyRanges(env,c,date,excluded?.gcal_event_id||'');
+  const busy=[...internal,...google].filter(x=>x.start!==null&&x.end!==null);
+  const slots=[], seen=new Set();
+  for(const schedule of scheduleRows){
+    const duration=Math.max(5, Number(service?.duration_minutes||schedule.slot_minutes)||30);
+    const start=hcTimeToMinutes(schedule.start_time), end=hcTimeToMinutes(schedule.end_time);
+    if(start===null||end===null||end<=start) continue;
+    const breakStart=hcTimeToMinutes(schedule.break_start), breakEnd=hcTimeToMinutes(schedule.break_end);
+    for(let at=start;at+duration<=end;at+=Math.max(5,Number(schedule.slot_minutes)||duration)){
+      if(breakStart!==null&&breakEnd!==null&&hcRangesOverlap(at,at+duration,breakStart,breakEnd)) continue;
+      if(busy.some(x=>hcRangesOverlap(at,at+duration,x.start,x.end))) continue;
+      const key=`${at}:${at+duration}`; if(seen.has(key)) continue; seen.add(key);
+      slots.push({start_time:hcMinutesToTime(at),end_time:hcMinutesToTime(at+duration)});
+    }
+  }
+  return slots.sort((a,b)=>a.start_time.localeCompare(b.start_time));
+}
+async function handleHcAvailability(request, env){
+  const auth=await hcRequireSessionClient(request, env);
+  if(!auth) return json({error:'Invalid or expired session'}, 401);
+  const u=new URL(request.url), doctorId=Number(u.searchParams.get('doctor_id')), serviceId=Number(u.searchParams.get('service_id')||0), appointmentId=Number(u.searchParams.get('appointment_id')||0), date=String(u.searchParams.get('date')||'');
+  if(!doctorId||!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({error:'doctor_id and date are required'},400);
+  const doctor=await env.DB.prepare(`SELECT id FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(doctorId,Number(auth.payload.cid)).first();
+  if(!doctor) return json({error:'Doctor not found'},404);
+  return json({list:await hcAvailableSlots(env,auth.payload.cid,auth.c,doctorId,date,serviceId,appointmentId), gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
+}
+
+async function hcAppointmentRow(env, clientId, id){
+  return env.DB.prepare(`SELECT a.*,s.name service_name,d.name doctor_name FROM healthcare_appointments a LEFT JOIN healthcare_services s ON s.id=a.service_id LEFT JOIN healthcare_doctors d ON d.id=a.doctor_id WHERE a.id=? AND a.client_id=?`).bind(Number(id),Number(clientId)).first();
+}
+async function hcSyncAppointmentToGoogle(env,c,row,action){
+  if(!c?.gcal_refresh_token||!c?.gcal_calendar_id) return row.gcal_event_id||'';
+  if(action==='delete'||['cancelled','completed','no_show'].includes(row.status)){
+    if(row.gcal_event_id) await gcalDeleteEvent(env,c,row.gcal_event_id);
+    return '';
+  }
+  const title=`Appointment — ${row.patient_name}${row.doctor_name?' · '+row.doctor_name:''}`;
+  const notes=[row.service_name&&`Service: ${row.service_name}`,row.patient_phone&&`Patient phone: ${row.patient_phone}`,row.notes].filter(Boolean).join('\n');
+  const duration=Math.max(5,(hcTimeToMinutes(row.end_time)||0)-(hcTimeToMinutes(row.start_time)||0))||30;
+  return await gcalUpsertEvent(env,c,{gcalEventId:row.gcal_event_id||null,title,notes,date:row.appointment_date,time:row.start_time,allDay:false,durationMinutes:duration})||'';
+}
+async function handleHcAppointmentsList(request,env){
+  const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
+  const u=new URL(request.url), binds=[Number(auth.payload.cid)]; let where='a.client_id=?';
+  if(u.searchParams.get('date')){where+=' AND a.appointment_date=?';binds.push(u.searchParams.get('date'));}
+  if(u.searchParams.get('status')){where+=' AND a.status=?';binds.push(u.searchParams.get('status'));}
+  const {results}=await env.DB.prepare(`SELECT a.*,s.name service_name,d.name doctor_name FROM healthcare_appointments a LEFT JOIN healthcare_services s ON s.id=a.service_id LEFT JOIN healthcare_doctors d ON d.id=a.doctor_id WHERE ${where} ORDER BY a.appointment_date DESC,a.start_time DESC LIMIT 1000`).bind(...binds).all();
+  return json({list:results||[]});
+}
+async function handleHcAppointmentCreate(request,env){
+  const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
+  const b=await request.json().catch(()=>({}));
+  if(!b.patient_name||!b.patient_phone||!b.doctor_id||!b.appointment_date||!b.start_time) return json({error:'Patient, phone, doctor, date and time are required'},400);
+  const doctor=await env.DB.prepare(`SELECT id FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(Number(b.doctor_id),Number(auth.payload.cid)).first();
+  if(!doctor) return json({error:'Doctor not found'},404);
+  const slots=await hcAvailableSlots(env,auth.payload.cid,auth.c,Number(b.doctor_id),String(b.appointment_date),Number(b.service_id||0),0);
+  const chosen=slots.find(s=>s.start_time===b.start_time);
+  if(!chosen) return json({error:'That time is no longer available. Please select another slot.'},409);
+  const now=new Date().toISOString();
+  let r;
+  try{
+    r=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(auth.payload.cid),String(b.patient_name).slice(0,200),String(b.patient_phone).slice(0,40),Number(b.lead_id)||0,Number(b.service_id)||0,Number(b.doctor_id),String(b.appointment_date),String(b.start_time),chosen.end_time,String(b.status||'requested').slice(0,30),String(b.source||'dashboard').slice(0,40),String(b.notes||'').slice(0,2000),'',now,now).run();
+  }catch(e){
+    if(/unique|constraint/i.test(String(e?.message||e))) return json({error:'That time was just booked. Please select another slot.'},409);
+    throw e;
+  }
+  let row=await hcAppointmentRow(env,auth.payload.cid,r.meta.last_row_id);
+  const gcal=await hcSyncAppointmentToGoogle(env,auth.c,row,'upsert');
+  if(gcal){await env.DB.prepare(`UPDATE healthcare_appointments SET gcal_event_id=? WHERE id=?`).bind(gcal,row.id).run();row.gcal_event_id=gcal;}
+  return json(row);
+}
+async function handleHcAppointmentUpdate(request,env){
+  const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
+  const b=await request.json().catch(()=>({})); if(!b.id) return json({error:'id required'},400);
+  const existing=await hcAppointmentRow(env,auth.payload.cid,b.id); if(!existing) return json({error:'Not found'},404);
+  const doctorId=Number(b.doctor_id===undefined?existing.doctor_id:b.doctor_id), serviceId=Number(b.service_id===undefined?existing.service_id:b.service_id), date=String(b.appointment_date===undefined?existing.appointment_date:b.appointment_date), startTime=String(b.start_time===undefined?existing.start_time:b.start_time);
+  if(!['cancelled','completed','no_show'].includes(String(b.status||existing.status))){
+    const slots=await hcAvailableSlots(env,auth.payload.cid,auth.c,doctorId,date,serviceId,existing.id);
+    const chosen=slots.find(s=>s.start_time===startTime);
+    if(!chosen) return json({error:'That time is no longer available. Please select another slot.'},409);
+    b.end_time=chosen.end_time;
+  }
+  const allowed=['patient_name','patient_phone','lead_id','service_id','doctor_id','appointment_date','start_time','end_time','status','source','notes'];
+  const sets=[],vals=[]; for(const key of allowed){if(b[key]===undefined)continue;sets.push(`${key}=?`);vals.push(['lead_id','service_id','doctor_id'].includes(key)?Number(b[key])||0:String(b[key]).slice(0,key==='notes'?2000:200));}
+  sets.push('updated_at=?');vals.push(new Date().toISOString(),Number(b.id),Number(auth.payload.cid));
+  try{ await env.DB.prepare(`UPDATE healthcare_appointments SET ${sets.join(',')} WHERE id=? AND client_id=?`).bind(...vals).run(); }
+  catch(e){ if(/unique|constraint/i.test(String(e?.message||e))) return json({error:'That time was just booked. Please select another slot.'},409); throw e; }
+  let row=await hcAppointmentRow(env,auth.payload.cid,b.id);
+  const gcal=await hcSyncAppointmentToGoogle(env,auth.c,row,'upsert');
+  if(gcal!==row.gcal_event_id){await env.DB.prepare(`UPDATE healthcare_appointments SET gcal_event_id=? WHERE id=?`).bind(gcal,row.id).run();row.gcal_event_id=gcal;}
+  return json(row);
+}
+async function handleHcAppointmentDelete(request,env){
+  const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
+  const b=await request.json().catch(()=>({})), row=await hcAppointmentRow(env,auth.payload.cid,b.id);
+  if(!row) return json({error:'Not found'},404);
+  await hcSyncAppointmentToGoogle(env,auth.c,row,'delete');
+  await env.DB.prepare(`DELETE FROM healthcare_appointments WHERE id=? AND client_id=?`).bind(Number(b.id),Number(auth.payload.cid)).run();
+  return json({ok:true});
+}
+async function handleHcAnalytics(request,env){
+  const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
+  const cid=Number(auth.payload.cid), today=new Date().toISOString().slice(0,10);
+  const [services,doctors,todayCount,pending,confirmed,insurance]=await Promise.all([
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_services WHERE client_id=? AND status='active'`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_doctors WHERE client_id=? AND status='active'`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointments WHERE client_id=? AND appointment_date=?`).bind(cid,today).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointments WHERE client_id=? AND status='requested'`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointments WHERE client_id=? AND status='confirmed'`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_insurance WHERE client_id=? AND status='active'`).bind(cid).first()
+  ]);
+  return json({services:services?.n||0,doctors:doctors?.n||0,today:todayCount?.n||0,pending:pending?.n||0,confirmed:confirmed?.n||0,insurance:insurance?.n||0,gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
+}
 
 /* ── Units — its own handlers (not the generic factory) for two side effects the generic CRUD
    can't express: sweeping expired holds back to "available" on every list, and writing a
@@ -20230,6 +20653,26 @@ export default {
       else if(url.pathname==='/healthcare/doctors' && request.method==='POST'){ res=await hcDoctorsCrud.create(request, env); }
       else if(url.pathname==='/healthcare/doctors' && request.method==='PATCH'){ res=await hcDoctorsCrud.update(request, env); }
       else if(url.pathname==='/healthcare/doctors' && request.method==='DELETE'){ res=await hcDoctorsCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/services' && request.method==='GET'){ res=await hcServicesCrud.list(request, env); }
+      else if(url.pathname==='/healthcare/services' && request.method==='POST'){ res=await hcServicesCrud.create(request, env); }
+      else if(url.pathname==='/healthcare/services' && request.method==='PATCH'){ res=await hcServicesCrud.update(request, env); }
+      else if(url.pathname==='/healthcare/services' && request.method==='DELETE'){ res=await hcServicesCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/schedules' && request.method==='GET'){ res=await hcSchedulesCrud.list(request, env); }
+      else if(url.pathname==='/healthcare/schedules' && request.method==='POST'){ res=await hcSchedulesCrud.create(request, env); }
+      else if(url.pathname==='/healthcare/schedules' && request.method==='PATCH'){ res=await hcSchedulesCrud.update(request, env); }
+      else if(url.pathname==='/healthcare/schedules' && request.method==='DELETE'){ res=await hcSchedulesCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/availability' && request.method==='GET'){ res=await handleHcAvailability(request, env); }
+      else if(url.pathname==='/healthcare/appointments' && request.method==='GET'){ res=await handleHcAppointmentsList(request, env); }
+      else if(url.pathname==='/healthcare/appointments' && request.method==='POST'){ res=await handleHcAppointmentCreate(request, env); }
+      else if(url.pathname==='/healthcare/appointments' && request.method==='PATCH'){ res=await handleHcAppointmentUpdate(request, env); }
+      else if(url.pathname==='/healthcare/appointments' && request.method==='DELETE'){ res=await handleHcAppointmentDelete(request, env); }
+      else if(url.pathname==='/healthcare/insurance' && request.method==='GET'){ res=await hcInsuranceCrud.list(request, env); }
+      else if(url.pathname==='/healthcare/insurance' && request.method==='POST'){ res=await hcInsuranceCrud.create(request, env); }
+      else if(url.pathname==='/healthcare/insurance' && request.method==='PATCH'){ res=await hcInsuranceCrud.update(request, env); }
+      else if(url.pathname==='/healthcare/insurance' && request.method==='DELETE'){ res=await hcInsuranceCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/settings' && request.method==='GET'){ res=await handleHcSettingsGet(request, env); }
+      else if(url.pathname==='/healthcare/settings' && request.method==='PATCH'){ res=await handleHcSettingsUpdate(request, env); }
+      else if(url.pathname==='/healthcare/analytics' && request.method==='GET'){ res=await handleHcAnalytics(request, env); }
       else if(url.pathname==='/recruit/jobs' && request.method==='GET'){ res=await handleRecruitList(request, env, 'jobs'); }
       else if(url.pathname==='/recruit/jobs' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'jobs'); }
       else if(url.pathname==='/recruit/jobs' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'jobs'); }
