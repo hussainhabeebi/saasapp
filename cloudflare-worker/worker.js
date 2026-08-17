@@ -7726,6 +7726,17 @@ function ecomCatalogueQueryTokens(value){
   return [...new Set(ecomNormalizeCatalogueText(value).split(' ').filter(t=>t && !stop.has(t) && (t.length>1 || /^\d$/.test(t))))];
 }
 
+// Generic catalogue requests have no product-specific token to match ("show products", "what do
+// you sell", "catalogue"), but they are still unambiguously asking to browse Ecom. Keep this
+// deterministic and deliberately narrow so working-hours, location, delivery-policy and other
+// business questions continue to the client's configured prompt instead of opening the catalogue.
+export function ecomIsGenericProductCatalogueQuery(text){
+  const normalized=ecomNormalizeCatalogueText(text);
+  if(!normalized) return false;
+  return /\b(?:products?|items?|catalog(?:ue)?|collection|range)\b/u.test(normalized)
+    || /\bwhat (?:do|are) (?:you|u) sell\b/u.test(normalized);
+}
+
 function ecomCatalogueTokenRoot(token){
   const value=String(token||'');
   if(value.length>4 && value.endsWith('ies')) return value.slice(0,-3)+'y';
@@ -7733,6 +7744,46 @@ function ecomCatalogueTokenRoot(token){
   if(value.length>4 && value.endsWith('es') && !value.endsWith('ses')) return value.slice(0,-2);
   if(value.length>3 && value.endsWith('s') && !value.endsWith('ss')) return value.slice(0,-1);
   return value;
+}
+
+// Pure form of the broad matcher, exported for regression tests. Every returned value is one of
+// the supplied Product rows; scoring can rank or filter verified records but can never manufacture
+// a product. The async database wrapper below only loads active rows and delegates here.
+export function ecomBroadProductMatches(products, message){
+  const query=ecomNormalizeCatalogueText(message);
+  const tokens=ecomCatalogueQueryTokens(message);
+  if(!query || !tokens.length) return [];
+  const weightedFields=[
+    ['sku',30],['short_label',24],['name',22],['variant',14],['category',12],['brand',11],
+    ['style',10],['color',9],['size',9],['shade',8],['skin_type',8],['hair_type',8],
+    ['concern',8],['volume_ml',7],['ingredient',6],['description',4]
+  ];
+  const scored=[];
+  for(const product of products||[]){
+    const normalizedFields=weightedFields.map(([field,weight])=>({field,weight,text:ecomNormalizeCatalogueText(product[field])})).filter(x=>x.text);
+    const combinedWords=normalizedFields.flatMap(x=>x.text.split(' '));
+    const matched=tokens.filter(token=>{
+      const root=ecomCatalogueTokenRoot(token);
+      return combinedWords.some(word=>ecomCatalogueTokenRoot(word)===root);
+    });
+    const required=tokens.length<=2?1:Math.ceil(tokens.length*0.6);
+    if(matched.length<required) continue;
+    let score=(matched.length/tokens.length)*100;
+    for(const f of normalizedFields){
+      if(f.text===query) score+=f.weight*3;
+      else if(f.text.includes(query)) score+=f.weight*2;
+      const fieldWords=f.text.split(' ');
+      for(const token of matched){
+        const root=ecomCatalogueTokenRoot(token);
+        if(fieldWords.some(word=>ecomCatalogueTokenRoot(word)===root)) score+=f.weight;
+      }
+    }
+    scored.push({product,score});
+  }
+  if(!scored.length) return [];
+  scored.sort((a,b)=>b.score-a.score || String(a.product.name||'').localeCompare(String(b.product.name||'')));
+  const best=scored[0].score;
+  return scored.filter(x=>x.score>=Math.max(100,best*0.55)).slice(0,10).map(x=>x.product);
 }
 
 // Resolve a short customer reply against the exact category values stored in Ecom → Products.
@@ -8036,44 +8087,13 @@ function ecomProductChoiceItems(products){
   return items.slice(0,10);
 }
 async function ecomFindBroadProductMatches(env, clientId, message){
-  const query=ecomNormalizeCatalogueText(message);
-  const tokens=ecomCatalogueQueryTokens(message);
-  if(!query || !tokens.length) return [];
   const productsTable=await ecomResolveTable(env, clientId, 'products');
   if(!productsTable) return [];
   // Fetch full rows instead of requesting an explicit optional-field list: older client tables may
   // not yet have every style/media column, and one missing NocoDB column must not break matching.
   const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
   const pd=await pr.json().catch(()=>({}));
-  const products=pd?.list||[];
-  const weightedFields=[
-    ['sku',30],['short_label',24],['name',22],['variant',14],['category',12],['brand',11],
-    ['style',10],['color',9],['size',9],['shade',8],['skin_type',8],['hair_type',8],
-    ['concern',8],['volume_ml',7],['ingredient',6],['description',4]
-  ];
-  const scored=[];
-  for(const product of products){
-    const normalizedFields=weightedFields.map(([field,weight])=>({field,weight,text:ecomNormalizeCatalogueText(product[field])})).filter(x=>x.text);
-    const combined=normalizedFields.map(x=>x.text).join(' ');
-    const matched=tokens.filter(token=>new RegExp(`(^| )${escapeRegexLiteral(token)}( |$)`,'u').test(combined));
-    const required=tokens.length<=2?1:Math.ceil(tokens.length*0.6);
-    if(matched.length<required) continue;
-    let score=(matched.length/tokens.length)*100;
-    for(const f of normalizedFields){
-      if(f.text===query) score+=f.weight*3;
-      else if(f.text.includes(query)) score+=f.weight*2;
-      for(const token of matched){
-        if(new RegExp(`(^| )${escapeRegexLiteral(token)}( |$)`,'u').test(f.text)) score+=f.weight;
-      }
-    }
-    scored.push({product,score});
-  }
-  if(!scored.length) return [];
-  scored.sort((a,b)=>b.score-a.score || String(a.product.name||'').localeCompare(String(b.product.name||'')));
-  const best=scored[0].score;
-  // Keep genuinely relevant alternatives, but not weak incidental description matches far below
-  // the best candidate. Every returned row is still an actual Product record.
-  return scored.filter(x=>x.score>=Math.max(100,best*0.55)).slice(0,10).map(x=>x.product);
+  return ecomBroadProductMatches(pd?.list||[],message);
 }
 
 // Category-level browsing: the customer named a category ("shirts") rather than one specific
@@ -11885,12 +11905,12 @@ async function handleEngineWebhook(request, env, secret){
         detection.sku=undefined;
         detection.productName=undefined;
         detection.brand=undefined;
-      }else if(detection.signal && detection.mode==='enquiry' && state.lead?.['Last Product Sku'] && !/\b(show|list|browse|categories|catalog(?:ue)?)\b/i.test(userText)){
+      }else if(detection.signal && detection.mode==='enquiry' && state.lead?.['Last Product Sku'] && !broadMatches.length && !ecomIsGenericProductCatalogueQuery(userText) && !/\b(show|list|browse|categories|catalog(?:ue)?)\b/i.test(userText)){
         // Follow-up question about the already selected product: answer from the configured prompt
         // plus verified catalogue context below. Do not restart navigation or invent a new option.
         detection.signal=false;
         routing.route='ecom_faq';
-      }else if((detection.signal && detection.mode==='enquiry') || broadMatches.length){
+      }else if(broadMatches.length || ecomIsGenericProductCatalogueQuery(userText)){
         // One self-contained verified catalogue response: active categories plus broad-matched
         // active products. The same exact rows are included in the message body and interactive
         // picker, so a provider-side button failure can never leave only a dead-end instruction.
